@@ -737,11 +737,127 @@ plants a rogue policy instance to confirm the raise path.
 
 ## `client`
 
-`LLMClient(config: ModelConfig)` composes a `ModelCapabilities` and wraps
-litellm's `completion()`. `generate(...)` returns a `GenerationResult`
-carrying `text`, `tool_calls`, `usage: Usage`, `latency_s`, `cost_usd`,
+`LLMClient(config: ModelConfig, *, rate_limit_probe: RateLimitProbeConfig | None = None)`
+composes a `ModelCapabilities` and wraps litellm's `completion()`.
+`generate(...)` returns a `GenerationResult` carrying `text`, `tool_calls`,
+`usage: Usage`, `latency_s`, `cost_usd`,
 `reasoning: StructuredReasoning | None`, and `effective_system_prompt`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
 `UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
 `scripted` or `llm` modes.
+
+### Outer retry controllers
+
+`generate()` builds a fresh `tenacity.Retrying` per call, so a stubbed
+`_retry_sleep` and the call's `LLMCallObservation` are both read at call time
+(the client instance is shared across concurrent trials).
+
+| Controller | Selected when | `stop` | `wait` |
+|---|---|---|---|
+| default (`_build_retrying`) | always, unless probe mode is on | `stop_after_attempt(5)` | `wait_exponential(multiplier=2, min=4, max=60)` |
+| probe (`_build_probe_retrying`) | `rate_limit_probe` resolves to an enabled config | 429: `seconds_since_start >= per_call_budget_s`; other: 5 **non-429** attempts | 429: `wait_fixed(retry_interval_s)`, combined with `wait_random(+/- jitter_fraction x interval)` unless the fraction is `0`; other: the same exponential |
+
+Both install the same `before_sleep` hook (`_make_before_sleep`), so
+`llm_retry_scheduled` events are identical on either path. `retry` is
+`_should_retry_exception` on both.
+
+The probe's split accounting is load-bearing: a 5xx must not inherit the
+multi-hour 429 budget, so the non-429 attempt cap counts only non-429
+attempts. The non-429 exponential reads the *global* attempt number, so after
+a long 429 stretch a later 5xx resumes the curve rather than restarting it —
+waits only ever get longer, and the five-attempt cap is unchanged. The jitter
+applies only to the 429 wait; it is symmetric, so the mean interval is exactly
+`retry_interval_s` and the `1 / retry_interval_s` poll-rate arithmetic the mode
+exists for survives in expectation.
+
+429 classification on the probe path is `_is_rate_limit_exception`. It answers
+"is this a **transient** 429?" in three tiers, walking the `__cause__` chain
+because `_call_with_key_rotation` re-raises provider errors as
+`RuntimeError(...) from e`:
+
+1. **Type / status** — `isinstance(exc, openai.RateLimitError)` (which litellm's
+   `RateLimitError` subclasses) or `status_code == 429`.
+2. **Terminal-condition veto** — `AllApiKeysExhaustedError`. Key rotation is
+   triggered by OpenRouter's own per-key **429** ("Key limit exceeded") and the
+   final raise chains that typed 429 as its `__cause__`, so tier 1 would classify
+   a spent credential set as transient and hand it the multi-hour budget —
+   permanently, since `_rotate_key` only ever advances its index. The type stops
+   the walk and returns `False`, so the condition takes the ordinary
+   five-attempt exponential branch instead. `_should_retry_exception` is
+   deliberately unchanged, so a probe-off run retries it exactly as before.
+3. **Anchored text** (`_RATE_LIMIT_TEXT_PATTERNS`), last resort: a 429 must sit
+   in a status position (`Error code: 429`, `status_code=429`, `HTTP/1.1 429`),
+   or the message must carry the HTTP reason phrase or rate-limit prose in an
+   error construction. An unanchored `"429" in str(exc)` matched token counts
+   (`you requested 4429`), request ids (`req_8f429ab2`) and JSON bodies. This
+   tier runs **only when no link in the chain carried an HTTP status at all** —
+   i.e. for the shape it exists for, a wrapper that stringified the provider
+   error instead of chaining it. An authoritative non-429 status beats prose,
+   because the outermost message is `RuntimeError(f"LLM API call failed: {e}")`
+   and `e`'s message can embed a response body that echoes request content: a
+   task conversation about rate limiting would otherwise hand a deterministic 400
+   the multi-hour budget. Untyped chains still text-match — under-matching a real
+   429 is the more expensive direction, since the absorption is the whole feature.
+
+The text tier is a catalogue of *engine-wrapper* shapes, not of provider quota
+prose. Vertex `RESOURCE_EXHAUSTED`, OpenAI `insufficient_quota`, `TPM limit
+reached` and Anthropic `overloaded_error` match nothing there on purpose: they
+arrive typed through litellm, so tier 1 catches them.
+
+The engine's three string-only classifiers (`core/loop.py`, `core/runner.py`,
+`core/resume.py`) are separate and unaffected — `AllApiKeysExhaustedError`
+subclasses `RuntimeError` and carries the same message as before.
+
+### Probe telemetry recording sites
+
+Both sides of throughput are recorded by the two ends of the same pair of hooks
+`generate()` already installs, so no new plumbing crosses the client boundary:
+
+| Census | Hook | Recorded |
+|---|---|---|
+| failure (429s) | `_make_before_sleep` | `retries`, `wait_s`, the 429 window |
+| success (goodput) | `_record_probe_success`, called from `_fire_call_finished` | successful calls, summed `duration_s`, prompt + completion tokens |
+
+Both are keyed by the call's `role` and the client's model slug — both already in
+scope at those sites, which is the whole reason the recording lives there — and
+both are gated the same two ways: the trial must carry a `RateLimitProbeStats`
+*and* this client's own probe must be active. The second half is load-bearing: a
+default-path client (the rubric judge, a fallback-chain member) must never
+contribute to a measurement it is not part of.
+
+The agent and the user simulator are different models in an arena config, so
+their counters never merge; and `Metrics.usage` cannot answer the same questions —
+`usage.calls` holds agent calls only and carries no role field. See
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `rate_limit_*` / `probe_*`.
+
+`duration_s` is the *outer* per-attempt wall time (`generate` brackets
+`_generate_once`), i.e. how long the client actually held the call in flight —
+summed over successes and divided by wall time it is the Little's-law in-flight
+concurrency the provider served. Tokens come off the `Usage` that
+`_assemble_result` already built for that call, so nothing is re-extracted and
+`usage.calls` is never double-counted.
+
+Successes are additionally bucketed into fixed-width windows whose boundary is
+`floor(epoch / bucket_width_s) * bucket_width_s` — **absolute time, not run
+start** — so windows emitted by simultaneous run legs in separate processes align
+and can be summed window by window. See
+`RateLimitProbeStats.bucket_start` for the boundary contract and the bucket-cap
+drop policy.
+
+Probe mode is a run policy, not a model property: it is configured under
+`orchestrator.rate_limit_probe` (see
+[CONFIG.md](CONFIG.md:1) § `rate_limit_probe`), never through the preset
+registry, so `effective_preset` in the run artifacts stays the model's real
+preset. There is no env override — the passed config block is the only
+activation channel, so the paths that must never probe (the rubric judge, a
+`--fallback-models` chain) cannot be armed by an environment variable, and the
+budget assertions cannot be bypassed.
+
+The client is only half the mode. The orchestrator arms this client; the
+**conductor** wires the user-simulator probe, the per-task effective-budget
+re-check and the per-trial telemetry accumulator. Conductors are a plugin group,
+so `Orchestrator._build_conductor` and `run_trial` both refuse to start an armed
+run on a conductor that does not declare `supports_rate_limit_probe` — otherwise
+the run would absorb 429s while writing all-default `rate_limit_*` / `probe_*`
+metrics, and nothing in the artifacts would show it.

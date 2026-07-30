@@ -520,6 +520,8 @@ Cursor advancement is at `generate()` granularity, not per-trial. A trial that s
 
 Rate-limit-style transient errors are handled by the inner `LLMClient` retry (5 attempts) and never reach the fallback wrapper. The chain fires only on what the primary itself declared unrecoverable. Chain exhaustion — every model in the chain raised — re-raises the last exception, and the trial fails through the orchestrator's normal path.
 
+A fallback chain is incompatible with [`orchestrator.rate_limit_probe.enabled: true`](CONFIG.md#rate_limit_probe--measure-a-providers-served-throughput): switching models mid-probe attributes one model's 429s to another, so the combination is rejected at run start. Run a probe against a single model.
+
 Every fallback event emits a structured log line on the `tolokaforge.core.llm.fallback` logger — `"Fallback triggered"` at `WARNING` level with scope pairs `from_provider`, `from_name`, `to_provider`, `to_name`, `cursor`, `error`, `error_type`. The line interleaves above the Rich Live region.
 
 ```yaml

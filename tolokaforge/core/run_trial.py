@@ -20,16 +20,23 @@ from pydantic import BaseModel
 from tolokaforge.adapters import get_adapter
 from tolokaforge.adapters.base import BaseAdapter
 from tolokaforge.core.compose_materialisation import LogCaptureConfig
-from tolokaforge.core.conductor import Conductor, ConductorContext
+from tolokaforge.core.conductor import (
+    Conductor,
+    ConductorContext,
+    require_rate_limit_probe_support,
+)
 from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
+    RATE_LIMIT_PROBE_MIN_EPISODE_S,
     ComputeConfig,
     EvaluationConfig,
     ModelConfig,
     OrchestratorConfig,
+    RateLimitProbeConfig,
     RunConfig,
     TaskConfig,
+    TimeoutConfig,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.plugin_registry import (
@@ -81,6 +88,7 @@ def run_trial(
     conductor: str = "in_process",
     output_dir: Path | str | None = None,
     trial_index: int = 0,
+    rate_limit_probe: RateLimitProbeConfig | None = None,
 ) -> TrialResult:
     """Run one trial in-process and return its :class:`TrialResult`.
 
@@ -102,6 +110,14 @@ def run_trial(
             artifacts are written under this directory.
         trial_index: Trial index within the task; forms the ``"{task_id}:{n}"``
             trial id.
+        rate_limit_probe: Rate-limit probe mode for the agent and simulator
+            clients. ``None`` (default) runs the standard bounded-exponential
+            retry path. Enabling it raises the composed run config's episode
+            budget to twice the probe's per-*turn* 429 wall ceiling (a probe
+            absorbs 429s by sleeping, and episode wall-time counts that sleep),
+            which is what keeps the budget invariant true by construction for
+            this composed-config surface. ``conductor`` must name an
+            implementation that supports the mode.
 
     Returns:
         The trial's :class:`TrialResult`.
@@ -109,6 +125,9 @@ def run_trial(
     Raises:
         pydantic.ValidationError: ``models`` is missing ``agent`` or malformed,
             or the composed run config is invalid.
+        ValueError: ``rate_limit_probe`` is enabled with budgets that cannot
+            fit inside the episode budget, or with a ``conductor`` that does not
+            support the mode.
         UnknownImplementationError: ``runtime`` / ``grader`` / ``conductor``
             names no registered implementation.
         ProvisionError: The substrate failed to provision (propagated, not
@@ -136,13 +155,19 @@ def run_trial(
         TrialGraderContext(runtime_backend=runtime_backend, logger=logger)
     )
 
-    agent_client = LLMClient(resolved_models.agent)
+    agent_client = LLMClient(resolved_models.agent, rate_limit_probe=rate_limit_probe)
     user_config = resolved_models.user or _DEFAULT_USER_MODEL
     judge_config = resolved_models.judge
 
     output_path = Path(output_dir) if output_dir is not None else Path(_RUN_ID)
     artifact_writer = FileArtifactWriter() if output_dir is not None else InMemoryArtifactWriter()
-    config = _build_run_config(resolved_models.agent, user_config, judge_config, output_path)
+    config = _build_run_config(
+        resolved_models.agent,
+        user_config,
+        judge_config,
+        output_path,
+        rate_limit_probe,
+    )
 
     conductor_impl = load_conductor(conductor)(
         ConductorContext(
@@ -158,6 +183,13 @@ def run_trial(
             output_dir=output_path,
             request_limiter=None,
         )
+    )
+    # ``conductor`` names any registered implementation, and the agent client
+    # above is already armed — the same split the orchestrator guards.
+    require_rate_limit_probe_support(
+        conductor_impl,
+        config.orchestrator.rate_limit_probe,
+        source=f"run_trial(conductor={conductor!r})",
     )
 
     spec = TrialSpec(
@@ -246,6 +278,7 @@ def _build_run_config(
     user: ModelConfig,
     judge: ModelConfig | None,
     output_path: Path,
+    rate_limit_probe: RateLimitProbeConfig | None,
 ) -> RunConfig:
     """Compose the minimal :class:`RunConfig` the conductor reads.
 
@@ -255,8 +288,35 @@ def _build_run_config(
     models: dict[str, ModelConfig] = {"agent": agent, "user": user}
     if judge is not None:
         models["judge"] = judge
+    orchestrator_kwargs: dict[str, Any] = {
+        "workers": 1,
+        "repeats": 1,
+        "auto_start_services": False,
+    }
+    if rate_limit_probe is not None and rate_limit_probe.enabled:
+        orchestrator_kwargs["rate_limit_probe"] = rate_limit_probe
+        orchestrator_kwargs["timeouts"] = TimeoutConfig(
+            episode_s=_probe_episode_s(rate_limit_probe)
+        )
     return RunConfig(
         models=models,
-        orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+        # OrchestratorConfig validates the probe budget against this episode
+        # budget on construction, so an unfittable combination fails here.
+        orchestrator=OrchestratorConfig(**orchestrator_kwargs),
         evaluation=EvaluationConfig(output_dir=str(output_path)),
+    )
+
+
+def _probe_episode_s(probe: RateLimitProbeConfig) -> int:
+    """Episode budget wide enough for *probe*'s per-turn 429 handling to fit inside.
+
+    Twice ``turn_wall_ceiling_s`` — both per-call budgets, which one turn spends
+    back to back, plus the overshoot each of those calls can add — floored at the
+    mode's minimum. Doubling the *ceiling* rather than the bare budget is what
+    makes :func:`validate_rate_limit_probe_budget` pass by construction for any
+    legal block, including one with a large ``retry_interval_s``.
+    """
+    return max(
+        int(probe.turn_wall_ceiling_s * 2) + 1,
+        RATE_LIMIT_PROBE_MIN_EPISODE_S + 1,
     )

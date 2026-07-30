@@ -20,7 +20,7 @@ flight.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Literal, Protocol, TypedDict, runtime_checkable
 
@@ -351,6 +351,332 @@ class RunDisplayEvents(Protocol):
         """
 
 
+DEFAULT_PROBE_BUCKET_WIDTH_S = 30
+"""Default width of a :class:`RateLimitProbeStats` throughput bucket, seconds.
+
+Integer seconds on purpose — see
+:meth:`RateLimitProbeStats.bucket_start` for why the boundary must be an
+exact whole second.
+"""
+
+DEFAULT_PROBE_MAX_BUCKETS = 4096
+"""Default cap on the number of throughput buckets one trial may open.
+
+A bucket is one ``(role, model, window)`` row, so the capacity is **per
+series**, not per trial wall-clock: at the 30 s default width 4096 rows is
+~34 h for a single-role trial and ~17 h for the two-role default (agent +
+user simulator), both far past any episode budget the invariant permits. See
+:meth:`RateLimitProbeStats.bucket_start` for the drop policy that applies once
+the cap is reached.
+"""
+
+
+@dataclass
+class RateLimitProbeCounters:
+    """One accounting bucket: the 429 side and the SUCCESS side of throughput.
+
+    Both censuses live in one counter because the pair is what makes a
+    measurement interpretable. The 429 census alone is schedule-dependent and,
+    for some providers, silent — a provider can throttle by slowing calls down
+    rather than rejecting them. Goodput (``successes``) and served concurrency
+    (``success_duration_s``) catch that; ``retries`` does not. See
+    ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
+
+    ``prompt_tokens`` / ``completion_tokens`` are carried because tokens/s — not
+    calls/s — is the quantity that sums across run legs: measured token profiles
+    differ several-fold between domains, so calls/s from two different domains
+    are not the same unit.
+
+    Used both for the per-``(role, model)`` cumulative rows and for the
+    fixed-width absolute-time buckets, which need exactly the same columns.
+    """
+
+    retries: int = 0
+    """429 retries the probe absorbed in this bucket."""
+
+    wait_s: float = 0.0
+    """Summed retry sleep the probe scheduled for those retries."""
+
+    first_ts: float | None = None
+    """``time.time()`` of the first 429 in this bucket.
+
+    The 429 window specifically, not the first event of any kind — the
+    success side deliberately does not move it, so
+    ``Metrics.rate_limit_first_ts`` keeps meaning "when did this trial first
+    get throttled".
+
+    Surfaced on the per-``(role, model)`` rows only. The window view
+    (:class:`~tolokaforge.core.models.RateLimitProbeBucketMetrics`) omits both
+    timestamps because its own key already bounds them to
+    ``[start, start + bucket_width_s)`` — a sub-window position is not a
+    quantity anything sums. This class serves both views, so the fields are
+    still written when it backs a window; that write is one attribute
+    assignment, and splitting the class to avoid it would duplicate eight
+    columns.
+    """
+
+    last_ts: float | None = None
+    """``time.time()`` of the most recent 429 in this bucket."""
+
+    successes: int = 0
+    """LLM calls that returned a result in this bucket.
+
+    One per successful ``LLMClient.generate`` return, counted at completion.
+    """
+
+    success_duration_s: float = 0.0
+    """Summed client-observed duration of those successful calls.
+
+    Divided by the bucket's wall width this is the Little's-law in-flight
+    concurrency actually served — computed on successes only, which is what
+    makes it schedule-independent.
+    """
+
+    prompt_tokens: int = 0
+    """Prompt tokens the provider reported for those successful calls."""
+
+    completion_tokens: int = 0
+    """Completion tokens the provider reported for those successful calls."""
+
+    def record_retry(self, *, wait_s: float, ts: float) -> None:
+        self.retries += 1
+        self.wait_s += wait_s
+        if self.first_ts is None:
+            self.first_ts = ts
+        self.last_ts = ts
+
+    def record_success(
+        self, *, duration_s: float, prompt_tokens: int, completion_tokens: int
+    ) -> None:
+        """Record one successful call. Takes no ``ts``.
+
+        The bucket's own key carries the time, and the ``first_ts`` /
+        ``last_ts`` pair is reserved for the 429 window (see ``first_ts``).
+        """
+        self.successes += 1
+        self.success_duration_s += duration_s
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+
+
+@dataclass
+class RateLimitProbeStats:
+    """Per-trial throughput + 429 accounting accumulated by the probe.
+
+    Mutable and shared by every role's :class:`LLMCallObservation` within one
+    trial: the ``LLMClient`` is shared across concurrent trials, so per-trial
+    state has to ride the call rather than live on the client. The trial runner
+    owns the instance and copies the totals onto ``Metrics`` at trial end.
+
+    Accounting is keyed by ``(role, model slug)`` because a trial's roles are
+    different models — in an arena config the agent is the model under test and
+    the user simulator is a fixed, unrelated one — so a single flat counter
+    would blend a measured model's numbers with an unmeasured one's. The flat
+    fields are kept as the sum across buckets for consumers that only want the
+    trial total. ``Metrics.usage.calls`` cannot substitute: it holds agent calls
+    only and carries no role, so per-model goodput is not derivable from it.
+
+    **Two censuses, one recorder.** ``retries`` / ``wait_s`` are the FAILURE
+    side; ``successes`` / ``success_duration_s`` / the token counts are the
+    SUCCESS side. Both are needed because the 429 census is schedule-dependent
+    and, for some providers, silent — see :class:`RateLimitProbeCounters`.
+
+    **Three views of the same events.** The flat fields are the trial total,
+    ``by_role_model`` is the cumulative per-model breakdown, and ``by_bucket``
+    is the same breakdown resolved into fixed-width absolute-time windows.
+    Cumulative totals alone are not sufficient: measured goodput decays at a
+    CONSTANT offered concurrency while the rejection rate climbs, and a single
+    cumulative counter reports one blended average that hides both
+    (``docs/OUTPUT_FORMAT.md`` § Field observations).
+
+    Not synchronised: one trial's probe-capable calls are strictly sequential
+    (``ToolCallingLoop._run_turn`` runs the agent's ``generate``, then the
+    simulator's ``reply``), so there is never more than one in flight per
+    instance. Concurrency *across* trials is safe because each trial owns its
+    own instance.
+
+    Stays all-zero unless rate-limit probe mode is enabled.
+    """
+
+    bucket_width_s: int = DEFAULT_PROBE_BUCKET_WIDTH_S
+    """Width of one ``by_bucket`` window. See :meth:`bucket_start`."""
+
+    max_buckets: int = DEFAULT_PROBE_MAX_BUCKETS
+    """Cap on ``len(by_bucket)``. See :meth:`bucket_start` for the drop policy."""
+
+    retries: int = 0
+    """429 retries the probe absorbed across every LLM call in the trial."""
+
+    wait_s: float = 0.0
+    """Summed retry sleep the probe scheduled for those retries."""
+
+    first_ts: float | None = None
+    """``time.time()`` of the first 429 seen in this trial."""
+
+    last_ts: float | None = None
+    """``time.time()`` of the most recent 429 seen in this trial."""
+
+    successes: int = 0
+    """Successful LLM calls across every role in the trial."""
+
+    success_duration_s: float = 0.0
+    """Summed client-observed duration of those successful calls."""
+
+    prompt_tokens: int = 0
+    """Prompt tokens the provider reported for those successful calls."""
+
+    completion_tokens: int = 0
+    """Completion tokens the provider reported for those successful calls."""
+
+    by_role_model: dict[tuple[LLMCallRole, str], RateLimitProbeCounters] = field(
+        default_factory=dict
+    )
+    """Cumulative per-``(role, model slug)`` breakdown."""
+
+    by_bucket: dict[tuple[LLMCallRole, str, int], RateLimitProbeCounters] = field(
+        default_factory=dict
+    )
+    """The same breakdown per ``(role, model slug, absolute bucket start)``."""
+
+    dropped_buckets: int = 0
+    """``(role, model, window)`` rows refused because of :attr:`max_buckets`.
+
+    Counted in the same unit as the cap: :attr:`max_buckets` bounds
+    ``len(by_bucket)``, which is a row count, so ``dropped_buckets`` +
+    ``len(by_bucket)`` are commensurable. One window lost on a two-role trial is
+    therefore **2**, because two series lost a row — which is the number a
+    consumer needs, since merge rule 5 filters the series to the role under test
+    and a bare window count would not say which series truncated.
+
+    Never silent: a non-zero value means ``by_bucket`` is a truncated prefix of
+    the trial and the flat / ``by_role_model`` totals are the only complete
+    record. See :meth:`bucket_start`.
+    """
+
+    def __post_init__(self) -> None:
+        # Bookkeeping for ``dropped_buckets``: the last refused window start per
+        # ``(role, model)``, so consecutive refusals inside one window count
+        # once. Bounded by the number of roles (two in practice), and
+        # deliberately not a dataclass field — it is not part of the value.
+        self._dropped_cursor: dict[tuple[LLMCallRole, str], int] = {}
+
+    def bucket_start(self, ts: float) -> int:
+        """The absolute-time window *ts* falls in, as an epoch second.
+
+        **The boundary is derived from the Unix epoch, never from run start.**
+        That is the entire reason ``by_bucket`` exists. The intended
+        measurement runs all seven domain legs SIMULTANEOUSLY, each in its own
+        runner process (one process serves one domain), and sums per-leg
+        throughput into a global number. Summing is only valid if the legs'
+        windows line up, and a run-start-relative boundary would give every
+        leg — and every trial inside a leg — its own grid, making the sum
+        meaningless. Anchoring on the epoch means two processes on two machines
+        with synchronised clocks emit *identical* bucket starts for the same
+        wall-clock instant, so a consumer joins on this value directly.
+
+        :attr:`bucket_width_s` is whole seconds for the same reason: an integer
+        width keeps every boundary an exact integer epoch, so the serialised
+        timestamps match across legs with no float-representation drift.
+
+        **Drop policy.** A recording that lands in an existing bucket is always
+        counted. Once ``len(by_bucket)`` reaches :attr:`max_buckets`, opening a
+        *new* ``(role, model, window)`` bucket is refused and
+        :attr:`dropped_buckets` counts that row; the recording still lands in the
+        flat and ``by_role_model`` totals, so nothing is lost from those.
+        Refusing new buckets rather than evicting old ones keeps the retained
+        series a contiguous prefix in absolute time: a series with a hole in it
+        would let a cross-leg window-by-window sum silently undercount, which is
+        worse than a short series.
+
+        The cap is **global** over ``by_bucket``, not per series, so a high-volume
+        role can consume the whole budget and leave a low-volume role with no
+        rows at all while its ``by_role_model`` row is non-zero.
+        :attr:`dropped_buckets` says how many rows were refused, not which series
+        they belonged to.
+        """
+        return int(ts // self.bucket_width_s) * self.bucket_width_s
+
+    def record_retry(self, *, role: LLMCallRole, model: str, wait_s: float, ts: float) -> None:
+        """Record one absorbed 429 for *role* calling *model*.
+
+        ``role`` and ``model`` are required: every recording site already knows
+        both (the ``before_sleep`` hook has the call's observation and the
+        client's model name), and defaulting them would silently create an
+        unattributable bucket.
+        """
+        self.retries += 1
+        self.wait_s += wait_s
+        if self.first_ts is None:
+            self.first_ts = ts
+        self.last_ts = ts
+        self._role_model(role, model).record_retry(wait_s=wait_s, ts=ts)
+        bucket = self._bucket(role, model, ts)
+        if bucket is not None:
+            bucket.record_retry(wait_s=wait_s, ts=ts)
+
+    def record_success(
+        self,
+        *,
+        role: LLMCallRole,
+        model: str,
+        duration_s: float,
+        prompt_tokens: int,
+        completion_tokens: int,
+        ts: float,
+    ) -> None:
+        """Record one successful call by *role* against *model*.
+
+        *ts* is the call's completion instant, so a call is counted in the
+        window it finished in — goodput is completions per window.
+
+        ``role`` and ``model`` are required for the same reason as in
+        :meth:`record_retry`.
+        """
+        self.successes += 1
+        self.success_duration_s += duration_s
+        self.prompt_tokens += prompt_tokens
+        self.completion_tokens += completion_tokens
+        self._role_model(role, model).record_success(
+            duration_s=duration_s,
+            prompt_tokens=prompt_tokens,
+            completion_tokens=completion_tokens,
+        )
+        bucket = self._bucket(role, model, ts)
+        if bucket is not None:
+            bucket.record_success(
+                duration_s=duration_s,
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+            )
+
+    def _role_model(self, role: LLMCallRole, model: str) -> RateLimitProbeCounters:
+        counters = self.by_role_model.get((role, model))
+        if counters is None:
+            counters = RateLimitProbeCounters()
+            self.by_role_model[(role, model)] = counters
+        return counters
+
+    def _bucket(self, role: LLMCallRole, model: str, ts: float) -> RateLimitProbeCounters | None:
+        """The window counters for this event, or ``None`` when capped."""
+        start = self.bucket_start(ts)
+        key = (role, model, start)
+        counters = self.by_bucket.get(key)
+        if counters is not None:
+            return counters
+        if len(self.by_bucket) >= self.max_buckets:
+            self._note_dropped(role, model, start)
+            return None
+        counters = RateLimitProbeCounters()
+        self.by_bucket[key] = counters
+        return counters
+
+    def _note_dropped(self, role: LLMCallRole, model: str, start: int) -> None:
+        if self._dropped_cursor.get((role, model)) == start:
+            return
+        self._dropped_cursor[(role, model)] = start
+        self.dropped_buckets += 1
+
+
 @dataclass(frozen=True)
 class LLMCallObservation:
     """Per-call context threaded from a trial into ``LLMClient.generate``.
@@ -362,11 +688,15 @@ class LLMCallObservation:
     :data:`LLMCallRole`; the LLM client, agent loop, and user simulator
     already import from this module, preserving a one-way dependency
     graph.
+
+    ``probe_stats`` is the trial's shared :class:`RateLimitProbeStats`
+    accumulator when rate-limit probe mode is on, ``None`` otherwise.
     """
 
     events: RunDisplayEvents
     trial_id: str
     role: LLMCallRole
+    probe_stats: RateLimitProbeStats | None = None
 
 
 class _NullRunDisplayEvents:
@@ -399,12 +729,16 @@ _NULL_EVENTS: RunDisplayEvents = _NullRunDisplayEvents()
 
 
 __all__ = [
+    "DEFAULT_PROBE_BUCKET_WIDTH_S",
+    "DEFAULT_PROBE_MAX_BUCKETS",
     "ComponentKind",
     "ComponentPhase",
     "ComponentSnapshot",
     "ContainerSnapshot",
     "LLMCallObservation",
     "LLMCallRole",
+    "RateLimitProbeCounters",
+    "RateLimitProbeStats",
     "RunDisplayEvents",
     "ServiceSnapshot",
     "_NULL_EVENTS",

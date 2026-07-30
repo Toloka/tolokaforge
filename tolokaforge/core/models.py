@@ -23,6 +23,14 @@ from tolokaforge.core.deprecations import (
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
+# The probe's bucketing defaults live next to the accumulator that applies them
+# (``run_display_events`` has no ``core.models`` dependency, so this direction
+# is the only one that does not create a cycle).
+from tolokaforge.core.run_display_events import (
+    DEFAULT_PROBE_BUCKET_WIDTH_S,
+    DEFAULT_PROBE_MAX_BUCKETS,
+)
+
 # Rubric / Criterion / LLMJudgeConfig have a single canonical home in
 # tolokaforge.runner.models — they cross both the YAML grading block and the
 # gRPC wire (serialized inside TrialSpec). Re-exported here so existing
@@ -137,6 +145,113 @@ class ToolUsage(BaseModel):
     total_duration_s: float = 0.0
 
 
+class RateLimitProbeRoleMetrics(BaseModel):
+    """One ``(role, model)`` row of a trial's rate-limit probe accounting.
+
+    A trial's roles are different *models* in a real arena config — the agent
+    is the model under test and the user simulator is a fixed, unrelated one —
+    so their counters must never be shared. ``role`` + ``model`` is the key;
+    the flat ``Metrics.rate_limit_*`` / ``Metrics.probe_*`` scalars are the sum
+    across these rows.
+
+    Both censuses live on the row: the FAILURE side (``retries`` / ``wait_s``)
+    and the SUCCESS side (``successful_calls`` / ``success_duration_s`` and the
+    token counts). The pair is the point — the 429 census is schedule-dependent
+    and, for some providers, silent: a provider can throttle by slowing calls
+    down rather than rejecting them, which only goodput and latency catch. See
+    ``docs/OUTPUT_FORMAT.md`` § Field observations for the measurements.
+
+    ``Metrics.usage`` cannot answer the same question: ``usage.calls`` holds
+    agent calls only and carries no role field, so per-model goodput and latency
+    are not computable from it. These rows are the role-attributed record.
+
+    ``model`` is the raw provider-qualified slug the client called
+    (``openrouter/anthropic/claude-sonnet-4.6``). The engine deliberately does
+    *not* map it to an upstream-provider taxonomy: that grouping lives in the
+    consumer, and attributing a 429 to the OpenRouter upstream that actually
+    served the request needs wire data the engine does not capture.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    role: str
+    model: str
+    retries: int = 0
+    wait_s: float = 0.0
+    first_ts: datetime | None = None
+    """UTC timestamp of the first 429 on this row — the 429 window, not the
+    first call. Successful calls deliberately do not move it."""
+
+    last_ts: datetime | None = None
+    """UTC timestamp of the most recent 429 on this row."""
+
+    successful_calls: int = 0
+    """LLM calls that returned a result for this ``(role, model)``.
+
+    Counts successful ``LLMClient.generate`` returns, so it is ``>=`` the number
+    of ``usage.calls`` rows this role contributed: a call whose provider
+    returned no usage block still succeeded but adds no usage row."""
+
+    success_duration_s: float = 0.0
+    """Summed client-observed duration of those successful calls.
+
+    ``success_duration_s / wall_seconds`` is the Little's-law in-flight
+    concurrency the provider actually served. Computed on successes only, which
+    is what makes it schedule-independent — unlike the 429 census, it does not
+    depend on how often a blocked client chose to poll."""
+
+    prompt_tokens: int = 0
+    """Prompt tokens the provider reported for those successful calls.
+
+    Tokens, not calls, are what sums across run legs: measured token profiles
+    differ several-fold between domains, so a call in one leg is not the same
+    unit of work as a call in another (see ``docs/OUTPUT_FORMAT.md`` § Field
+    observations)."""
+
+    completion_tokens: int = 0
+    """Completion tokens the provider reported for those successful calls."""
+
+
+class RateLimitProbeBucketMetrics(BaseModel):
+    """One fixed-width absolute-time window of one ``(role, model)``'s throughput.
+
+    **The window boundary is anchored on the Unix epoch, not on run start.**
+    That is the whole reason this row exists. The intended measurement runs all
+    seven domain legs simultaneously, each in its own runner process, and sums
+    per-leg throughput into a global number; the sum is only valid if the legs'
+    windows can be aligned in absolute time. ``bucket_start_ts`` is
+    ``floor(epoch_seconds / bucket_width_s) * bucket_width_s`` rendered as UTC,
+    so two processes on two machines with synchronised clocks emit the *same*
+    value for the same instant and a consumer joins on it directly.
+
+    Cumulative totals cannot replace these rows: measured goodput is
+    non-stationary at CONSTANT offered concurrency, and one blended average
+    reports neither end of the decay (``docs/OUTPUT_FORMAT.md`` § Field
+    observations).
+
+    A call is counted in the window it *finished* in — goodput is completions
+    per window. ``retries`` / ``wait_s`` are the 429s scheduled inside the same
+    window, so the served and rejected sides of one interval sit side by side.
+
+    No ``first_ts`` / ``last_ts``, unlike :class:`RateLimitProbeRoleMetrics`:
+    ``bucket_start_ts`` plus ``Metrics.probe_bucket_width_s`` already bound every
+    event in the row, and a sub-window position is not a quantity a cross-leg sum
+    can use.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    bucket_start_ts: datetime
+    role: str
+    model: str
+    successful_calls: int = 0
+    success_duration_s: float = 0.0
+    prompt_tokens: int = 0
+    completion_tokens: int = 0
+    retries: int = 0
+    wait_s: float = 0.0
+
+
 _VALID_COST_SOURCES: frozenset[str] = frozenset(get_args(CostSource))
 
 
@@ -184,6 +299,32 @@ class Metrics(BaseModel):
     walk ``usage.calls`` to find which calls were litellm- vs locally-priced
     (each :class:`ProviderRawCall` carries its own ``cost_source``). The
     earlier ``cost_usd_est`` / ``cost_usd_provider`` split is gone.
+
+    The ``rate_limit_*`` and ``probe_*`` counters are populated only while
+    :class:`RateLimitProbeConfig` is enabled; on every other run they stay at
+    their zero / ``None`` / empty defaults. Two prefixes, two censuses of the
+    same mode: ``rate_limit_*`` is the FAILURE side (429 retries and the sleep
+    they cost) and ``probe_*`` is the SUCCESS side (goodput, served
+    concurrency, tokens). Both are needed — the 429 census is
+    schedule-dependent and, for some providers, silent, while goodput and
+    latency are not.
+
+    ``latency_total_s`` is trial wall time and therefore *includes* the probe's
+    429 sleep — a non-zero ``rate_limit_wait_s`` is the mechanical marker that
+    this trial's latency figures are not comparable with a normal run's.
+
+    The flat counters of both censuses are the sum across
+    ``rate_limit_by_role_model``, whose rows keep the agent's and the
+    simulator's numbers apart (they are different models). ``probe_buckets``
+    resolves the same rows into fixed-width absolute-time windows, because a
+    cumulative total hides non-stationarity — measured goodput decays at CONSTANT
+    offered concurrency (``docs/OUTPUT_FORMAT.md`` § Field observations).
+
+    A single trial's goodput *ratio* is meaningless — goodput is a run-level
+    quantity. Every field here is therefore an additive count over an
+    absolute-time window, never a rate: a consumer sums the counts across
+    trials and legs first, and forms the ratio last. See
+    ``docs/OUTPUT_FORMAT.md`` § ``probe_*`` for the arithmetic.
     """
 
     model_config = {"extra": "forbid"}
@@ -197,6 +338,42 @@ class Metrics(BaseModel):
     tool_success_rate: float = 0.0
     stuck_detected: bool = False
     tool_usage: list[ToolUsage] = Field(default_factory=list)
+    rate_limit_retries: int = 0
+    rate_limit_wait_s: float = 0.0
+    rate_limit_first_ts: datetime | None = None
+    rate_limit_last_ts: datetime | None = None
+    rate_limit_by_role_model: list[RateLimitProbeRoleMetrics] = Field(default_factory=list)
+    probe_successful_calls: int = 0
+    """Successful LLM calls across every role in the trial (probe mode only)."""
+
+    probe_success_duration_s: float = 0.0
+    """Summed client-observed duration of those successful calls."""
+
+    probe_prompt_tokens: int = 0
+    """Prompt tokens the provider reported for those successful calls."""
+
+    probe_completion_tokens: int = 0
+    """Completion tokens the provider reported for those successful calls."""
+
+    probe_bucket_width_s: int = 0
+    """Width of a ``probe_buckets`` window, seconds. ``0`` when not probing.
+
+    Emitted so a consumer never has to assume the width the run was configured
+    with; it is the denominator of every per-window rate."""
+
+    probe_dropped_buckets: int = 0
+    """``(role, model, window)`` rows refused by ``RateLimitProbeConfig.max_buckets``.
+
+    Rows, not windows — the same unit as the cap, which bounds the number of
+    ``probe_buckets`` rows. One window lost on a two-role trial counts **2**,
+    because two series each lost a row.
+
+    Non-zero means ``probe_buckets`` is a truncated *prefix* of the trial and
+    only the flat / per-``(role, model)`` totals are complete. Never silent."""
+
+    probe_buckets: list[RateLimitProbeBucketMetrics] = Field(default_factory=list)
+    """Per-``(role, model, absolute window)`` throughput, sorted by window then
+    role then model. See :class:`RateLimitProbeBucketMetrics`."""
 
     @field_validator("usage", mode="before")
     @classmethod
@@ -525,6 +702,261 @@ class TimeoutConfig(BaseModel):
     episode_s: int = 1800
 
 
+RATE_LIMIT_PROBE_MIN_EPISODE_S = 3600
+"""Smallest run-level episode budget a rate-limit probe run may declare.
+
+A probe absorbs 429s by sleeping, and episode wall-time counts that sleep, so
+a probe on the default 1800 s budget dies on the episode timeout instead of
+measuring the provider. One hour is the floor below which the mode cannot do
+its job."""
+
+
+RATE_LIMIT_PROBE_ATTEMPT_CEILING_S = 737.0
+"""Nominal worst-case wall time of ONE upstream attempt, seconds.
+
+``(DEFAULT_API_TIMEOUT_RETRIES + 1) x DEFAULT_API_CALL_TIMEOUT_S`` plus the inner
+``wait_exponential(multiplier=1, min=1, max=5)`` backoff between those six
+attempts (1 + 2 + 4 + 5 + 5 s) — i.e. ``6 x 120 + 17`` — exactly as
+``LLMClient._call_completion_with_timeout_retry`` documents. Restated here
+instead of imported because ``core/llm/client.py`` imports this module;
+``tests/unit/llm/test_rate_limit_probe_retry.py`` locks the two together so
+drift fails CI.
+
+Nominal, not hard, and deliberately so: ``DEFAULT_API_CALL_WALL_TIMEOUT_S`` is
+``None`` by default and the per-call ``timeout`` is a per-read httpx timeout that
+a slowly streamed response keeps resetting, so a single attempt has no true
+ceiling until a preset sets ``api_call_wall_timeout_s``. A preset raising
+``api_call_timeout_s`` above the default likewise raises the real ceiling. Both
+are pre-existing engine properties that a probe-off run shares;
+:func:`validate_rate_limit_probe_budget` uses the nominal value so that the
+probe's *own* knobs are bounded against a stated reference rather than against
+zero."""
+
+
+class RateLimitProbeConfig(BaseModel):
+    """Rate-limit probe mode: 429s retry at a FIXED interval until a generous
+    per-call wall-clock budget is spent, so a probe run's goodput measures the
+    provider's served throughput instead of dying on 429s.
+
+    OFF unless ``enabled`` is True; when off, every retry controller in the
+    engine keeps its default bounded-exponential behaviour.
+
+    The fixed interval is the point: a blocked client polls
+    ``1 / retry_interval_s`` times per second, so blocked client-time is
+    recoverable from the 429 count. Exponential backoff hides a different
+    wait behind every retry and makes that arithmetic non-invertible.
+    ``jitter_fraction`` decorrelates blocked clients without disturbing that
+    arithmetic — it is symmetric, so the mean interval is unchanged.
+
+    A probe run's latency metrics are structurally invalid —
+    ``Metrics.latency_total_s`` is trial wall time, which includes 429 sleep —
+    so a probe run must never produce a leaderboard number.
+    """
+
+    model_config = {"extra": "ignore"}
+
+    enabled: bool = False
+    retry_interval_s: float = Field(default=15.0, gt=0.0)
+
+    jitter_fraction: float = Field(default=0.2, ge=0.0, lt=1.0)
+    """Symmetric jitter applied to ``retry_interval_s``, as a fraction of it.
+
+    Every client blocked at the cap would otherwise retry in lockstep — burst,
+    all rejected, wait, burst — which biases the very throughput the mode
+    measures and is harsher on the provider than steady polling. The jitter is
+    ``interval x (1 +/- jitter_fraction)``, so the *mean* interval is still
+    exactly ``retry_interval_s`` and the ``1 / retry_interval_s`` poll-rate
+    arithmetic survives in expectation, which is what the estimator consumes.
+    ``0.0`` restores the exact fixed interval."""
+
+    per_call_budget_s: float = Field(default=3600.0, gt=0.0)
+    """Wall-clock budget for one *agent* call's 429 retries.
+
+    A floor, not a ceiling: ``stop`` is evaluated on an attempt's outcome, so a
+    call overshoots by :attr:`call_overshoot_s`.
+    :func:`validate_rate_limit_probe_budget` folds that overshoot into the
+    invariant rather than assuming the slack absorbs it."""
+
+    simulator_per_call_budget_s: float = Field(default=600.0, gt=0.0)
+    """Per-call 429 budget for the user-simulator client.
+
+    Shorter than the agent's on purpose. The simulator shares the agent's
+    provider quota, so it has to absorb 429s or a simulator 429 kills the trial
+    the agent-side probe was keeping alive — but the simulator's throughput is
+    not what the probe measures, so paying agent-sized wall time for it only
+    eats the trial's lease headroom. It is part of the budget invariant because
+    one turn issues one call of each (see
+    :func:`validate_rate_limit_probe_budget`)."""
+
+    bucket_width_s: int = Field(default=DEFAULT_PROBE_BUCKET_WIDTH_S, gt=0)
+    """Width of one goodput-measurement window, in whole seconds.
+
+    The probe records throughput into fixed-width windows anchored on the Unix
+    epoch, not on run start, so windows produced by simultaneous run legs on
+    different machines line up and can be summed window by window — see
+    :meth:`~tolokaforge.core.run_display_events.RateLimitProbeStats.bucket_start`.
+    Whole seconds keep every boundary an exact integer epoch, so the serialised
+    timestamps match across legs with no float drift.
+
+    Cumulative totals are not a substitute: measured goodput decays at a
+    *constant* offered concurrency while the rejection rate climbs, and a single
+    average hides both (``docs/OUTPUT_FORMAT.md`` § Field observations)."""
+
+    max_buckets: int = Field(default=DEFAULT_PROBE_MAX_BUCKETS, gt=0)
+    """Cap on how many ``(role, model, window)`` rows one trial may open, so
+    memory stays bounded.
+
+    Rows, not windows: a two-role trial consumes two rows per window. At the 30 s
+    default width, 4096 rows is ~34 h for a single ``(role, model)`` series and
+    ~17 h for the two-role default — either way far past any episode budget the
+    invariant permits. Once the cap is reached a recording still lands in the flat
+    and per-``(role, model)`` totals but cannot open a new row, and
+    ``Metrics.probe_dropped_buckets`` counts the refused rows so the truncation is
+    never silent. The cap is global rather than per series, so a high-volume role
+    can consume the whole budget."""
+
+    def for_simulator(self) -> "RateLimitProbeConfig":
+        """This mode with the *simulator's* per-call budget in force.
+
+        The client only reads ``per_call_budget_s``, so the simulator's shorter
+        budget is applied by handing its client a block whose per-call budget
+        *is* the simulator budget. Idempotent — re-deriving from the result
+        yields the same block.
+
+        ``bucket_width_s`` / ``max_buckets`` are carried for block fidelity and
+        are inert on this copy: the accumulator is built once per trial from the
+        *agent* block (``conductor._build_probe_stats``) precisely so both roles
+        share one window grid. Dropping them here would make the copy lossy and
+        break the idempotence above."""
+        return RateLimitProbeConfig(
+            enabled=self.enabled,
+            retry_interval_s=self.retry_interval_s,
+            jitter_fraction=self.jitter_fraction,
+            per_call_budget_s=self.simulator_per_call_budget_s,
+            simulator_per_call_budget_s=self.simulator_per_call_budget_s,
+            bucket_width_s=self.bucket_width_s,
+            max_buckets=self.max_buckets,
+        )
+
+    @property
+    def turn_budget_s(self) -> float:
+        """Worst-case 429 wall time one *uninterrupted turn* can spend.
+
+        A turn issues one probe-capable call per role — the agent's
+        ``generate`` and then the user simulator's ``reply``
+        (``ToolCallingLoop._run_turn`` -> ``_advance_user_turn``) — and the
+        episode timeout is only evaluated *between* turns, so both budgets can
+        be spent back to back with nothing able to interrupt them."""
+        return self.per_call_budget_s + self.simulator_per_call_budget_s
+
+    @property
+    def call_overshoot_s(self) -> float:
+        """How far past ``per_call_budget_s`` one call can run, seconds.
+
+        ``stop`` is evaluated on an attempt's *outcome*, so a call whose elapsed
+        time is a hair under its budget still gets one more wait and one more
+        attempt. The wait is ``retry_interval_s`` at its jitter maximum
+        (``1 + jitter_fraction``; the jitter is symmetric, so the *upper* edge is
+        what bounds the worst case) and the attempt costs up to
+        :data:`RATE_LIMIT_PROBE_ATTEMPT_CEILING_S`.
+
+        Both jitter knobs are read here on purpose: ``retry_interval_s`` has no
+        upper field bound, so an invariant that ignores it can be defeated by
+        that knob alone while every other budget stays at its documented
+        default."""
+        jitter_max_wait_s = self.retry_interval_s * (1.0 + self.jitter_fraction)
+        return jitter_max_wait_s + RATE_LIMIT_PROBE_ATTEMPT_CEILING_S
+
+    @property
+    def turn_overshoot_s(self) -> float:
+        """The per-turn overshoot: :attr:`call_overshoot_s` for both calls.
+
+        One turn issues one probe-capable call per role and neither can be
+        interrupted, so both overshoots land inside the same turn."""
+        return 2.0 * self.call_overshoot_s
+
+    @property
+    def turn_wall_ceiling_s(self) -> float:
+        """Worst-case wall time one uninterrupted turn spends on 429 handling.
+
+        ``turn_budget_s + turn_overshoot_s`` — the quantity
+        :func:`validate_rate_limit_probe_budget` holds strictly below the
+        effective episode budget."""
+        return self.turn_budget_s + self.turn_overshoot_s
+
+
+def validate_rate_limit_probe_budget(
+    probe: RateLimitProbeConfig | None,
+    episode_timeout_s: float,
+    *,
+    source: str,
+) -> None:
+    """Raise when a probe's per-turn 429 handling cannot fit inside the episode budget.
+
+    A call already blocked in 429 backoff is not interrupted mid-flight — the
+    episode timeout is only evaluated between turns — and one turn issues *two*
+    probe-capable calls (the agent's, then the user simulator's). The episode
+    check can pass with elapsed time a hair under ``episode_timeout_s``, so the
+    worst-case trial wall time is ``episode_timeout_s`` plus one whole turn of
+    429 handling::
+
+        turn_wall_ceiling_s = turn_budget_s        # both per-call budgets
+                            + turn_overshoot_s    # both calls' overshoot
+
+    A call's overshoot is one jitter-maximum retry interval plus one attempt's
+    own ceiling (:data:`RATE_LIMIT_PROBE_ATTEMPT_CEILING_S`), because ``stop`` is
+    evaluated on an attempt's *outcome* rather than pre-empting it.
+
+    Holding ``turn_wall_ceiling_s`` strictly below ``episode_timeout_s`` bounds
+    the probe-attributable wall time at ``2 x episode_timeout_s``, which is
+    exactly the queue-lease horizon (``max(300, episode_s * 2)``). Every knob
+    that can stretch a turn's 429 handling is read: both per-call budgets,
+    ``retry_interval_s`` and ``jitter_fraction``. ``retry_interval_s`` has no
+    upper field bound, and an invariant that ignores it is defeatable by that one
+    knob while every other budget sits at its documented default.
+
+    **What this bounds and what it does not.** It bounds what the *probe* adds.
+    It does not bound tool execution, grading, or a runaway upstream stream: the
+    loop has no per-turn timeout, and an attempt's ``timeout`` is a per-read
+    httpx timeout unless a preset sets ``api_call_wall_timeout_s`` (see
+    :data:`RATE_LIMIT_PROBE_ATTEMPT_CEILING_S`). Those components are identical
+    on a probe-off run, so the guarantee is "enabling the mode cannot be the
+    thing that pushes a trial past its lease", not "a trial can never outlive
+    its lease".
+
+    ``episode_timeout_s`` must be the *effective* budget — the value after the
+    task-pack ``min()`` clamp — not the configured run-level value, or a pack
+    declaring ``trial_seconds`` would silently shrink the ceiling this
+    invariant is checked against. ``source`` names the config site for the
+    error message.
+    """
+    if probe is None or not probe.enabled:
+        return
+    if episode_timeout_s <= RATE_LIMIT_PROBE_MIN_EPISODE_S:
+        raise ValueError(
+            f"{source}: rate_limit_probe.enabled requires an episode budget "
+            f"above {RATE_LIMIT_PROBE_MIN_EPISODE_S}s (hours, not minutes); "
+            f"effective episode budget is {episode_timeout_s}s. Raise "
+            "orchestrator.timeouts.episode_s."
+        )
+    if probe.turn_wall_ceiling_s >= episode_timeout_s:
+        raise ValueError(
+            f"{source}: rate_limit_probe worst-case per-turn 429 wall time "
+            f"({probe.turn_wall_ceiling_s}s = per_call_budget_s "
+            f"{probe.per_call_budget_s}s + simulator_per_call_budget_s "
+            f"{probe.simulator_per_call_budget_s}s + {probe.turn_overshoot_s}s "
+            f"of overshoot for the two calls, at retry_interval_s "
+            f"{probe.retry_interval_s}s and jitter_fraction "
+            f"{probe.jitter_fraction}) must be strictly below the effective "
+            f"episode budget ({episode_timeout_s}s). One turn issues both calls "
+            "back to back, the episode timeout is only checked between turns, "
+            "and stop is evaluated on an attempt's outcome — so a larger budget "
+            "lets the trial outlive its queue lease and be re-run by another "
+            "worker. Lower per_call_budget_s / simulator_per_call_budget_s / "
+            "retry_interval_s, or raise orchestrator.timeouts.episode_s."
+        )
+
+
 class StuckHeuristics(BaseModel):
     """Stuck detection configuration"""
 
@@ -597,6 +1029,11 @@ class OrchestratorConfig(BaseModel):
     operator-side clamp. Unset means the task-scoped value governs.
     Field-name migration to ``TimeoutDefaults`` (``trial_seconds`` /
     ``tool_call_seconds``) lands with the cleanup milestone."""
+
+    rate_limit_probe: RateLimitProbeConfig = Field(default_factory=RateLimitProbeConfig)
+    """Rate-limit probe mode. Disabled by default; see
+    :class:`RateLimitProbeConfig`. A probe run measures provider-served
+    throughput and must not produce a leaderboard number."""
 
     max_turns: int = 50
     """Run-level cap on per-trial ``max_turns`` — an always-on operator
@@ -691,6 +1128,22 @@ class OrchestratorConfig(BaseModel):
                     stacklevel=2,
                 )
         return values
+
+    @model_validator(mode="after")
+    def _check_rate_limit_probe_budget(self) -> Self:
+        """Reject a probe config whose budgets cannot fit at load time.
+
+        This checks the *configured* run-level episode budget so an
+        unrunnable YAML fails before any provisioning. The conductor
+        re-checks against the per-task *effective* budget, which is the
+        authoritative value once the task-pack clamp is applied.
+        """
+        validate_rate_limit_probe_budget(
+            self.rate_limit_probe,
+            self.timeouts.episode_s,
+            source="orchestrator",
+        )
+        return self
 
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
 

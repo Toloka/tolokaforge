@@ -18,12 +18,19 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    RateLimitProbeBucketMetrics,
+    RateLimitProbeRoleMetrics,
     TerminationReason,
     Trajectory,
     TrialStatus,
 )
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
-from tolokaforge.core.run_display_events import _NULL_EVENTS, LLMCallObservation, RunDisplayEvents
+from tolokaforge.core.run_display_events import (
+    _NULL_EVENTS,
+    LLMCallObservation,
+    RateLimitProbeStats,
+    RunDisplayEvents,
+)
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.tools.registry import ToolExecutor
 
@@ -32,6 +39,13 @@ try:
     from tolokaforge.tools.user_tools import UserToolExecutor
 except ImportError:
     UserToolExecutor = None
+
+
+def _as_utc(ts: float | None) -> datetime | None:
+    """``time.time()`` epoch seconds as an aware UTC datetime, ``None`` passthrough."""
+    if ts is None:
+        return None
+    return datetime.fromtimestamp(ts, tz=timezone.utc)
 
 
 class TrialRunner:
@@ -54,6 +68,7 @@ class TrialRunner:
         verbose: bool = False,
         strict: bool = False,
         events: RunDisplayEvents = _NULL_EVENTS,
+        probe_stats: RateLimitProbeStats | None = None,
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -70,6 +85,10 @@ class TrialRunner:
         self.verbose = verbose
         self.strict = strict
         self._events = events
+        # Non-``None`` only under rate-limit probe mode. Shared by the agent and
+        # user observations so both roles' 429s land in one per-trial total, and
+        # copied onto ``Metrics`` when the trial finalises.
+        self._probe_stats = probe_stats
 
         self.messages: list[Message] = []
         self.metrics = Metrics()
@@ -117,6 +136,15 @@ class TrialRunner:
         a simulator turn.
         """
         return self._user_system_prompt_captured
+
+    @property
+    def _rate_limit_probe_active(self) -> bool:
+        """True when rate-limit probe mode is on for this trial.
+
+        The stats accumulator exists exactly when the mode is enabled — the
+        conductor builds one only in that case — so it doubles as the flag.
+        """
+        return self._probe_stats is not None
 
     @staticmethod
     def _is_rate_limit_error(exc: Exception) -> bool:
@@ -208,7 +236,10 @@ class TrialRunner:
             # shared across concurrent trials — the identity must ride the call,
             # not the client.
             self._user_observation = LLMCallObservation(
-                events=self._events, trial_id=trial_id, role="user"
+                events=self._events,
+                trial_id=trial_id,
+                role="user",
+                probe_stats=self._probe_stats,
             )
 
             try:
@@ -233,7 +264,10 @@ class TrialRunner:
                     normalize_tool_arguments=self._normalize_tool_arguments,
                     logger=self.logger,
                     call_observation=LLMCallObservation(
-                        events=self._events, trial_id=trial_id, role="agent"
+                        events=self._events,
+                        trial_id=trial_id,
+                        role="agent",
+                        probe_stats=self._probe_stats,
                     ),
                 ).run(system_prompt, self.messages, self.start_time)
 
@@ -265,6 +299,7 @@ class TrialRunner:
             end_ts = datetime.now(tz=timezone.utc)
             self.metrics.latency_total_s = time.time() - self.start_time
             self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
+            self._apply_probe_stats()
 
             # Calculate tool success rate (combine agent and user tool logs)
             tool_logs = self.tool_executor.get_logs()
@@ -319,6 +354,83 @@ class TrialRunner:
 
             return trajectory
 
+    def _apply_probe_stats(self) -> None:
+        """Copy the trial's rate-limit probe accounting onto :class:`Metrics`.
+
+        No-op outside probe mode, which leaves every counter at its default so a
+        normal run's ``metrics.yaml`` carries zeros rather than a signal that
+        does not exist.
+
+        Both censuses are copied: the 429 side into ``rate_limit_*`` and the
+        success side into ``probe_*``. The per-``(role, model)`` rows carry both
+        and are emitted in sorted key order; ``probe_buckets`` is sorted
+        window-first so the series reads as a timeline.
+        """
+        stats = self._probe_stats
+        if stats is None:
+            return
+        self.metrics.rate_limit_retries = stats.retries
+        self.metrics.rate_limit_wait_s = stats.wait_s
+        self.metrics.rate_limit_first_ts = _as_utc(stats.first_ts)
+        self.metrics.rate_limit_last_ts = _as_utc(stats.last_ts)
+        self.metrics.rate_limit_by_role_model = [
+            RateLimitProbeRoleMetrics(
+                role=role,
+                model=model,
+                retries=counters.retries,
+                wait_s=counters.wait_s,
+                first_ts=_as_utc(counters.first_ts),
+                last_ts=_as_utc(counters.last_ts),
+                successful_calls=counters.successes,
+                success_duration_s=counters.success_duration_s,
+                prompt_tokens=counters.prompt_tokens,
+                completion_tokens=counters.completion_tokens,
+            )
+            for (role, model), counters in sorted(stats.by_role_model.items())
+        ]
+        self.metrics.probe_successful_calls = stats.successes
+        self.metrics.probe_success_duration_s = stats.success_duration_s
+        self.metrics.probe_prompt_tokens = stats.prompt_tokens
+        self.metrics.probe_completion_tokens = stats.completion_tokens
+        self.metrics.probe_bucket_width_s = stats.bucket_width_s
+        self.metrics.probe_dropped_buckets = stats.dropped_buckets
+        self.metrics.probe_buckets = [
+            RateLimitProbeBucketMetrics(
+                # ``bucket_start`` is already an exact integer epoch second, so
+                # this render is lossless and identical across run legs.
+                bucket_start_ts=datetime.fromtimestamp(start, tz=timezone.utc),
+                role=role,
+                model=model,
+                successful_calls=counters.successes,
+                success_duration_s=counters.success_duration_s,
+                prompt_tokens=counters.prompt_tokens,
+                completion_tokens=counters.completion_tokens,
+                retries=counters.retries,
+                wait_s=counters.wait_s,
+            )
+            for (start, role, model), counters in sorted(
+                ((start, role, model), counters)
+                for (role, model, start), counters in stats.by_bucket.items()
+            )
+        ]
+        if stats.dropped_buckets:
+            self.logger.warning(
+                "Rate-limit probe dropped throughput buckets at the cap",
+                probe_dropped_buckets=stats.dropped_buckets,
+                probe_max_buckets=stats.max_buckets,
+                probe_bucket_width_s=stats.bucket_width_s,
+            )
+        if stats.retries:
+            self.logger.warning(
+                "Rate-limit probe absorbed 429s",
+                rate_limit_retries=stats.retries,
+                rate_limit_wait_s=round(stats.wait_s, 3),
+                by_role_model={
+                    f"{role}/{model}": counters.retries
+                    for (role, model), counters in sorted(stats.by_role_model.items())
+                },
+            )
+
     def _is_done(self, text: str) -> bool:
         """Check if agent signals completion"""
         done_markers = [
@@ -332,8 +444,14 @@ class TrialRunner:
 
         If ``initial_user_message`` is provided, use it directly (tool-use / Tau
         style). Otherwise generate it via the user simulator (legacy behaviour),
-        retrying on rate limits. The task instruction lives in the simulator's
-        backstory and is NOT sent to the agent.
+        retrying on rate limits — and *only* on rate limits: any other error is
+        re-raised on the first attempt. The task instruction lives in the
+        simulator's backstory and is NOT sent to the agent.
+
+        This runs before the loop, so no episode-timeout check can interrupt it
+        mid-flight, but its wall time is *consumed from* the episode budget
+        rather than added to it: ``run()`` sets ``self.start_time`` before
+        calling this and hands that same ``start_time`` to the loop.
         """
         if initial_user_message.strip():
             first_user_text = initial_user_message
@@ -347,7 +465,18 @@ class TrialRunner:
                 )
             ]
             first_user_result = None
-            init_attempts = 4
+            # Probe mode collapses this to one attempt. This loop only ever
+            # retries 429s (see the ``is_rate_limit and`` guard below), and under
+            # probe mode the simulator's own client already polls 429s at a fixed
+            # interval for up to its per-call budget — strictly more tolerant
+            # than 4 attempts of 2/4/8 s backoff — so the outer attempts are
+            # redundant. Dropping them also keeps this step's worst case at one
+            # simulator budget instead of ``init_attempts`` of them, which is
+            # what makes the budget invariant alone sufficient to bound the trial
+            # under its ``max(300, episode_s * 2)`` queue lease. Non-429 errors
+            # are unaffected: they were never retried here, and the client's own
+            # five-attempt exponential path still covers them under probe mode.
+            init_attempts = 1 if self._rate_limit_probe_active else 4
             for attempt in range(1, init_attempts + 1):
                 try:
                     first_user_result = self.user_simulator.reply(

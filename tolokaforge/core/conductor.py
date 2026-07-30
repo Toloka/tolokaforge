@@ -43,15 +43,18 @@ from tolokaforge.core.models import (
     GradeComponents,
     Metrics,
     ModelConfig,
+    RateLimitProbeConfig,
     RunConfig,
     TaskConfig,
     Trajectory,
     TrialStatus,
+    validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.output.artifacts import TrialArtifactWriter
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
+    RateLimitProbeStats,
     RunDisplayEvents,
     _NullRunDisplayEvents,
 )
@@ -174,11 +177,83 @@ class Conductor(Protocol):
       format ``spec.task`` is the runner-side projection; the conductor
       needs both surfaces because the per-trial execution path uses
       orchestrator-side detail the wire format doesn't carry.
+
+    **Optional capability:** ``supports_rate_limit_probe: bool``. Rate-limit
+    probe mode is armed by the orchestrator (it owns the agent client) but the
+    simulator-side probe, the per-task effective-budget re-check and the
+    per-trial telemetry accumulator are the *conductor's* to wire — see
+    :data:`SUPPORTS_RATE_LIMIT_PROBE_ATTR`. A conductor that wires all three
+    declares the attribute ``True``; anything else (including a conductor
+    written before the mode existed) is treated as unsupported and
+    :meth:`Orchestrator._build_conductor` refuses to start such a run rather
+    than emitting artifacts that read all-default while the run really did
+    absorb 429s. Deliberately *not* a declared Protocol member: the Protocol is
+    ``@runtime_checkable`` and adding a data member would break ``isinstance``
+    for every implementation that predates it.
     """
 
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         """Execute one trial end-to-end."""
         ...
+
+
+SUPPORTS_RATE_LIMIT_PROBE_ATTR = "supports_rate_limit_probe"
+"""Name of the optional :class:`Conductor` capability flag for probe mode.
+
+Read with a ``False`` default, so a conductor that never heard of the mode fails
+closed instead of silently producing a run whose ``metrics.yaml`` proves nothing.
+See :class:`Conductor` and :meth:`InProcessConductor.supports_rate_limit_probe`.
+"""
+
+
+def conductor_supports_rate_limit_probe(conductor: object) -> bool:
+    """Whether *conductor* wires every part of rate-limit probe mode.
+
+    Fails closed: an implementation that does not declare
+    :data:`SUPPORTS_RATE_LIMIT_PROBE_ATTR` is unsupported. Arming the mode on
+    such a conductor produces an agent client that really does absorb 429s for up
+    to ``per_call_budget_s`` per call while the artifacts carry every
+    ``rate_limit_*`` / ``probe_*`` field at its default — a run that is
+    indistinguishable from a normal one in its own output.
+    """
+    return getattr(conductor, SUPPORTS_RATE_LIMIT_PROBE_ATTR, False) is True
+
+
+def require_rate_limit_probe_support(
+    conductor: object,
+    probe: RateLimitProbeConfig,
+    *,
+    source: str,
+) -> None:
+    """Raise unless *conductor* can support an enabled rate-limit probe *probe*.
+
+    No-op while the mode is off. Called from every site that resolves a conductor
+    while holding an already-armed agent client — ``Orchestrator._build_conductor``
+    and :func:`tolokaforge.core.run_trial.run_trial` — because arming and wiring
+    live at different layers: the orchestrator owns the agent client, the
+    conductor owns the simulator probe, the per-task effective-budget re-check
+    and the per-trial telemetry accumulator.
+
+    Fail-fast rather than degrade: without those three the mode still arms, so
+    the run genuinely absorbs 429s and its latency figures are genuinely inflated
+    while ``metrics.yaml`` carries every counter at its default. Nothing
+    downstream could tell that run apart from a normal one, which is exactly the
+    artifacts-prove-nothing failure the mode's design is meant to exclude.
+
+    ``source`` names the call site for the message.
+    """
+    if not probe.enabled or conductor_supports_rate_limit_probe(conductor):
+        return
+    raise ValueError(
+        f"{source}: rate_limit_probe.enabled requires a conductor that supports "
+        f"the mode, but {type(conductor).__name__} does not declare "
+        f"{SUPPORTS_RATE_LIMIT_PROBE_ATTR}=True. Only such a conductor wires the "
+        "user-simulator probe, the per-task episode-budget re-check and the "
+        "per-trial probe telemetry, so this run would absorb 429s while writing "
+        "all-default rate_limit_* / probe_* metrics. Run the probe on the "
+        f"in_process conductor, or set {SUPPORTS_RATE_LIMIT_PROBE_ATTR} = True on "
+        "your conductor once it wires all three."
+    )
 
 
 ConductorFactory = Callable[[ConductorContext], Conductor]
@@ -224,6 +299,24 @@ class ConductorCallLog:
     """
 
     runs: list[dict[str, Any]] = field(default_factory=list)
+
+
+def _build_probe_stats(probe: RateLimitProbeConfig) -> RateLimitProbeStats | None:
+    """The trial's probe accumulator, or ``None`` when the mode is off.
+
+    ``None`` is what keeps a normal run's ``Metrics`` at its defaults: the
+    runner treats the accumulator's presence as the mode flag, and every
+    recording site is gated on it. The bucketing knobs come from the same config
+    block that armed the mode, so a run leg's window grid is declared in one
+    place — which matters because simultaneous legs must share it to be summable
+    (see :meth:`RateLimitProbeStats.bucket_start`).
+    """
+    if not probe.enabled:
+        return None
+    return RateLimitProbeStats(
+        bucket_width_s=probe.bucket_width_s,
+        max_buckets=probe.max_buckets,
+    )
 
 
 def _default_success_trajectory(task_id: str, trial_idx: int) -> Trajectory:
@@ -304,6 +397,16 @@ class InProcessConductor:
     docker runtime, output directory, request limiter) at construction
     time. :meth:`run` drives one trial end-to-end: environment setup,
     runner registration, agent loop, grading, artifact write.
+    """
+
+    supports_rate_limit_probe = True
+    """This conductor wires every part of rate-limit probe mode.
+
+    All three: the simulator-side probe (``for_simulator()`` onto the
+    ``UserSimulator``), the per-task effective-budget re-check after the
+    ``min(task trial_seconds, run episode_s)`` clamp, and the per-trial
+    :class:`RateLimitProbeStats` accumulator. See :class:`Conductor` for why the
+    flag is an opt-in read by name rather than a Protocol member.
     """
 
     def __init__(
@@ -542,6 +645,12 @@ class InProcessConductor:
 
         sim = task.resolve_user_simulator()
         user_llm_config = user_config if sim.mode == "llm" else None
+        # The simulator hits the same provider quota as the agent, so a probe
+        # run has to cover it too — otherwise a simulator 429 kills the trial
+        # the agent-side probe was keeping alive. It gets the shorter
+        # simulator-scoped per-call budget: its throughput is not what the probe
+        # measures, and both budgets are spent inside one uninterruptible turn.
+        rate_limit_probe = self.config.orchestrator.rate_limit_probe
         user_simulator = UserSimulator(
             mode=sim.mode,
             llm_config=user_llm_config,
@@ -549,6 +658,7 @@ class InProcessConductor:
             backstory=sim.backstory,
             scripted_flow=sim.scripted_flow,
             tool_schemas=user_tool_schemas if user_tool_executor else None,
+            rate_limit_probe=rate_limit_probe.for_simulator(),
         )
 
         # Task-scope stuck_heuristics is canonical (populated by the M2
@@ -597,6 +707,14 @@ class InProcessConductor:
             turn_timeout_s = run_turn_s
             episode_timeout_s = run_episode_s
 
+        # Checked against the post-clamp value: a pack declaring trial_seconds
+        # shrinks the ceiling the probe's per-call budget has to fit inside.
+        validate_rate_limit_probe_budget(
+            rate_limit_probe,
+            episode_timeout_s,
+            source=f"task {task.task_id}",
+        )
+
         runner = TrialRunner(
             task_id=task.task_id,
             trial_index=setup.trial_idx,
@@ -613,6 +731,7 @@ class InProcessConductor:
             verbose=self.verbose,
             strict=self.strict,
             events=self.events,
+            probe_stats=_build_probe_stats(rate_limit_probe),
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).

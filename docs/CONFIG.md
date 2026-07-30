@@ -51,6 +51,8 @@ orchestrator:
   timeouts:
     turn_s: 60
     episode_s: 1200
+  rate_limit_probe:            # off by default — see below
+    enabled: false
   stuck_heuristics:
     max_repeated_tool_calls: 5
     max_idle_turns: 8
@@ -98,6 +100,115 @@ Notes:
   `tolokaforge worker --config examples/native/coding/run_configs/dev.yaml --run-dir <run_dir>`
 - For multi-runner distributed execution (e.g., GitHub Actions matrix), use
   `queue_backend: postgres` with a shared `queue_postgres_dsn`.
+
+### `rate_limit_probe:` — measure a provider's served throughput
+
+Off by default. When enabled, 429s retry at a **fixed** interval until a
+generous per-call wall-clock budget is spent, instead of riding the standard
+five-attempt exponential backoff. Everything that is not a 429 keeps the
+standard bounded path, so a dead upstream cannot inherit the long budget.
+
+The mode also records the **goodput** telemetry the measurement is actually made
+from — successful calls, their duration and their tokens, per `(role, model)` and
+per fixed-width absolute-time window. See
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `probe_*` for the arithmetic and the
+cross-leg summing rule.
+
+```yaml
+orchestrator:
+  timeouts:
+    episode_s: 14400              # 4 h — a probe absorbs 429s by sleeping
+  rate_limit_probe:
+    enabled: true
+    retry_interval_s: 15          # the mean poll interval
+    jitter_fraction: 0.2          # +/- 20 % so clients don't poll in lockstep
+    per_call_budget_s: 3600       # "effectively infinite" per agent call
+    simulator_per_call_budget_s: 600   # shorter: the simulator isn't measured
+    bucket_width_s: 30            # goodput window; MUST match across run legs
+    max_buckets: 4096             # per-trial window cap (memory bound)
+```
+
+| Field | Default | Meaning |
+|---|---|---|
+| `enabled` | `false` | Arms the mode. Nothing changes while it is `false`. |
+| `retry_interval_s` | `15.0` | Mean wait between 429 retries. Constant by design: a blocked client polls `1 / retry_interval_s` times per second, so blocked client-time is recoverable from the 429 count. |
+| `jitter_fraction` | `0.2` | Symmetric jitter as a fraction of the interval (`interval x (1 +/- f)`). Without it, every client blocked at the cap retries in lockstep — burst, all rejected, wait, burst — which biases the measurement and is harsher on the provider. The mean interval is unchanged, so the poll-rate inversion still holds in expectation. `0.0` restores the exact fixed interval. |
+| `per_call_budget_s` | `3600.0` | Wall-clock budget for one **agent** call's 429 retries. Exhausting it reraises the last 429, which surfaces as `termination_reason: rate_limit`. A *floor*, not an exact ceiling: `stop` is evaluated on an attempt's outcome, so a call overshoots by up to one retry interval plus one attempt's own timeout budget. |
+| `simulator_per_call_budget_s` | `600.0` | Same, for the user-simulator client. Deliberately shorter: the simulator shares the agent's quota so it must absorb 429s (otherwise a simulator 429 kills the trial the agent-side probe kept alive), but its throughput is not what the probe measures, so agent-sized wall time here only eats lease headroom. |
+| `bucket_width_s` | `30` | Width of one goodput window, **whole seconds**. Windows are anchored on the Unix epoch, not on run start, so simultaneous run legs emit the same boundaries and can be summed window by window. **Every leg of one measurement must use the same width** or the series do not align. Whole seconds keep every boundary an exact integer epoch, so the timestamps match byte-for-byte across legs. |
+| `max_buckets` | `4096` | Per-trial cap on how many `(role, model, window)` **rows** may be opened, so memory is bounded. A two-role trial consumes two rows per window, so at 30 s this is ~34 h for a single `(role, model)` series and ~17 h for the two-role default. Past the cap a recording still lands in the flat and per-`(role, model)` totals but cannot open a new row; `Metrics.probe_dropped_buckets` counts the refused rows (also rows, not windows), so truncation is never silent. Refusing *new* rows rather than evicting old ones keeps the retained series a contiguous prefix — a series with a hole would let a cross-leg sum silently undercount. The cap is global rather than per series, so a high-volume role can consume all of it. |
+
+Cumulative totals alone are not sufficient, which is why the windows exist:
+measured goodput decays at a **constant** offered concurrency while the rejection
+rate climbs, and a single average reports neither end. Figures in
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § Field observations.
+
+Two invariants are enforced by raising — at config load against
+`orchestrator.timeouts.episode_s`, and again per task against the *effective*
+episode budget after the `min(task trial_seconds, run episode_s)` clamp:
+
+- `episode_s > 3600` — a probe on a minutes-long episode budget dies on the
+  episode timeout instead of measuring anything.
+- the whole **per-turn 429 ceiling** must be strictly below `episode_s`:
+
+  ```
+  turn_wall_ceiling_s = per_call_budget_s + simulator_per_call_budget_s
+                      + 2 x (retry_interval_s x (1 + jitter_fraction) + 737)
+  ```
+
+  The episode timeout is only evaluated *between* turns, one turn issues **two**
+  probe-capable calls (the agent's `generate`, then the simulator's `reply`), and
+  `stop` is evaluated on an attempt's *outcome* — so each call can overrun its
+  budget by one jitter-maximum retry interval plus one attempt's own ceiling
+  (`737 s` = the client's `6 x 120 s` timeout budget plus its inner backoff).
+  Worst-case trial wall time is therefore `episode_s + turn_wall_ceiling_s`, and
+  holding the ceiling below `episode_s` bounds it under the
+  `max(300, episode_s * 2)` queue lease. At the defaults the ceiling is
+  `4200 + 1510 = 5710 s` against a 14400 s budget.
+
+  `retry_interval_s` and `jitter_fraction` are part of the invariant on purpose:
+  the defaults plus a large `retry_interval_s` alone can blow the lease.
+
+This bounds what the *probe* adds. It does not bound tool execution, grading, or
+a runaway upstream stream — the loop has no per-turn timeout, and an attempt's
+`timeout` is a per-read httpx timeout unless a model preset sets
+`api_call_wall_timeout_s`. Those components behave identically on a probe-off
+run, so the guarantee is "enabling the mode cannot be what pushes a trial past
+its lease", not "a trial can never outlive its lease".
+
+`episode_s` is the only ceiling that has to move: the queue lease is derived
+from it.
+
+The mode reaches the agent client, the user-simulator client, and the
+per-trial counters (both censuses). It deliberately does **not** reach the rubric
+judge (grading must not probe) or a `--fallback-models` chain — a chain plus
+`enabled: true` is rejected, because switching models mid-probe attributes one
+model's 429s to another. There is no env override: the config block is the only
+activation channel, so a client built without one never probes regardless of the
+environment.
+
+**A probe run must never produce a leaderboard number.**
+`Metrics.latency_total_s` is trial wall time, so every latency figure on a
+probe run is inflated by 429 sleep; `metrics.yaml` records
+`rate_limit_retries` / `rate_limit_wait_s` and the per-`(role, model)`
+`rate_limit_by_role_model` breakdown as the mechanical marker (see
+[OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § `metrics.yaml`).
+
+**What the artifacts do and do not prove.** A non-zero `rate_limit_wait_s`
+proves the mode was on. The converse does not hold: a probe run that found
+headroom and hit no 429s leaves every 429 counter at zero, which is
+indistinguishable from a normal run *on the 429 census alone* — the `probe_*`
+goodput census is populated either way and does distinguish them, but it is not a
+gate. The engine does not archive the resolved run config into the output bundle,
+so a mode-consistency gate has to compare against the config it dispatched — that
+gate belongs to whatever dispatches the run, not here.
+
+**Do not trust the 429 census on its own.** It is schedule-dependent (it counts
+how often *your* clients chose to poll) and, for some providers, silent — a
+provider can throttle by slowing calls down instead of rejecting them, and then
+only goodput and latency show the ceiling. That is why the success census is
+recorded. Measured figures: [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md:1) § Field
+observations.
 
 ### `reasoning:` — declarative thinking configuration
 

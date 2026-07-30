@@ -23,6 +23,7 @@ from tolokaforge.core.conductor import (
     Conductor,
     ConductorContext,
     ConductorFactory,
+    require_rate_limit_probe_support,
 )
 from tolokaforge.core.engine_run_state import (
     read_persisted_run_id,
@@ -583,6 +584,14 @@ class Orchestrator:
         rate limiter) is resolved. Raises ``RuntimeError`` if ``self.adapter``
         is unset — surfaces a clear failure rather than propagating ``None``
         into the Conductor's body (where it would crash deep in ``run()``).
+
+        Also the single choke point where rate-limit probe mode's two halves
+        meet: the orchestrator arms the agent client, but the simulator probe,
+        the per-task budget re-check and the telemetry accumulator belong to the
+        conductor. A conductor that does not declare support gets a raise here,
+        because the alternative is a run that really absorbs 429s while its
+        artifacts read all-default — see
+        :func:`~tolokaforge.core.conductor.require_rate_limit_probe_support`.
         """
         if self.adapter is None:
             raise RuntimeError(
@@ -608,7 +617,16 @@ class Orchestrator:
             events=self._events,
         )
         factory = self._conductor_factory or load_conductor("in_process")
-        return factory(ctx)
+        conductor = factory(ctx)
+        # Conductors are a plugin group, so the resolved implementation may be
+        # anything a downstream package registered — and the agent client handed
+        # in above is already armed.
+        require_rate_limit_probe_support(
+            conductor,
+            self.config.orchestrator.rate_limit_probe,
+            source="orchestrator",
+        )
+        return conductor
 
     def _build_trial_spec(
         self,
@@ -1246,6 +1264,30 @@ class Orchestrator:
             )
         return None
 
+    def _build_agent_client(self, agent_config: ModelConfig) -> LLMClient:
+        """Build the agent-side wire client for this run.
+
+        The factory seam routes through :class:`FallbackLLMClient` when the CLI
+        wired ``--fallback-models``; otherwise the bare client ships, carrying
+        the run's rate-limit probe config.
+
+        A fallback chain and probe mode are mutually exclusive: a chain that
+        switches models mid-probe would attribute one model's 429s to another
+        and corrupt the measurement the probe exists to produce. The
+        combination is rejected here rather than silently dropping either side.
+        """
+        probe = self.config.orchestrator.rate_limit_probe
+        if self._agent_client_factory is not None:
+            if probe.enabled:
+                raise ValueError(
+                    "orchestrator.rate_limit_probe.enabled is incompatible with a "
+                    "fallback model chain (--fallback-models): switching models "
+                    "mid-probe corrupts the served-throughput measurement. Run the "
+                    "probe against a single model."
+                )
+            return self._agent_client_factory(agent_config)
+        return LLMClient(agent_config, rate_limit_probe=probe)
+
     def run(
         self,
         *,
@@ -1355,14 +1397,7 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        # Instantiate agent client in orchestrator process. The factory
-        # seam routes through :class:`FallbackLLMClient` when the CLI
-        # wired ``--fallback-models``; otherwise the bare client ships.
-        agent_client = (
-            self._agent_client_factory(agent_config)
-            if self._agent_client_factory is not None
-            else LLMClient(agent_config)
-        )
+        agent_client = self._build_agent_client(agent_config)
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)
@@ -1924,11 +1959,7 @@ class Orchestrator:
             judge_model=(f"{judge_config.provider}/{judge_config.name}" if judge_config else None),
         )
 
-        agent_client = (
-            self._agent_client_factory(agent_config)
-            if self._agent_client_factory is not None
-            else LLMClient(agent_config)
-        )
+        agent_client = self._build_agent_client(agent_config)
         request_limiter: GlobalRateLimiter | None = None
         if self.config.effective_max_requests_per_second is not None:
             request_limiter = GlobalRateLimiter(self.config.effective_max_requests_per_second)

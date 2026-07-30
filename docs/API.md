@@ -35,6 +35,7 @@ def run_trial(
     conductor: str = "in_process",
     output_dir: Path | str | None = None,
     trial_index: int = 0,
+    rate_limit_probe: RateLimitProbeConfig | None = None,
 ) -> TrialResult: ...
 ```
 
@@ -50,11 +51,21 @@ def run_trial(
   `tolokaforge.trial_graders`, `tolokaforge.conductors`).
 - **`output_dir=None`** — writes no artifacts to disk; pass a directory
   to persist them.
+- **`rate_limit_probe=None`** — runs the standard bounded-exponential
+  retry path. Pass a `RateLimitProbeConfig` (`tolokaforge.core.models`)
+  to enable rate-limit probe mode for the agent and simulator clients.
+  Enabling it raises the composed run config's episode budget to twice
+  the probe's per-*turn* 429 wall ceiling (a probe absorbs 429s by
+  sleeping, and episode wall-time counts that sleep), and `conductor`
+  must name an implementation that supports the mode.
 
 Errors:
 
 - **`pydantic.ValidationError`** — `models` is missing `agent` or carries
   a malformed / unexpected value, or the composed run config is invalid.
+- **`ValueError`** — `rate_limit_probe` is enabled with budgets that
+  cannot fit inside the episode budget, or with a `conductor` that does
+  not support the mode.
 - **`UnknownImplementationError`** (`tolokaforge.core.plugin_registry`) —
   a `runtime` / `grader` / `conductor` name is not registered; the
   message lists the known names.
@@ -120,7 +131,8 @@ stderr.
 ```
 
 - `task` and `models` mirror the `run_trial` arguments (`models.agent` is
-  required).
+  required). `rate_limit_probe` is deliberately not part of the wire —
+  the subprocess entry always runs the default retry path.
 - `runtime` / `grader` / `conductor` are registered implementation names
   (`tolokaforge.runtime_backends` / `tolokaforge.trial_graders` /
   `tolokaforge.conductors`); omitted fields default to
