@@ -162,9 +162,8 @@ class TestMcpLessBundleAndPropagate:
         assert td.grading.custom_checks == cc_config
 
     def test_disabled_ships_no_artifacts_and_no_config(self, tmp_path: Path) -> None:
-        # Regression lock: the empty-tool_artifacts baseline for MCP-less
-        # packs must survive the Stage 3 un-gate. Only ``custom_checks.enabled``
-        # should flip bundling on.
+        # Regression lock: an MCP-less pack with no custom_checks block ships an
+        # empty tool_artifacts bundle. Only ``custom_checks.enabled`` flips bundling on.
         adapter = _mcp_less_pack(tmp_path, custom_checks=None)
         td = adapter.to_task_description("cc_pack")
 

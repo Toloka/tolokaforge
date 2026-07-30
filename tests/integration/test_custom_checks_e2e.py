@@ -4,31 +4,41 @@ Drives the `examples/native/custom_checks` reference pack through the
 Docker runner: `NativeAdapter` builds the `TaskDescription` (bundling
 `checks.py` into `tool_artifacts`), the runner registers the trial (which
 extracts the artifacts and validates `interface_version`), and
-`GradeTrial` runs the executor against synthetic transcript evidence + the
-initial DB state.
+`GradeTrial` runs the executor against synthetic transcript evidence +
+the DB state the executed tool calls leave behind.
+
+The pack's `initial_state.json` seeds `customers[0].balance = 500` (the
+unreconciled opening balance). Only an agent (or the test acting as the
+agent) that issues the correct `db_update` call raises the balance to
+`700` (= `500 + 260 - 60`). This makes every graded dimension gate on
+real agent behaviour — no dimension trivially passes on the initial
+state.
 
 Two cases lock the seam:
 
-- **Positive** — transcript enumerates every credit transaction id and
-  contains a `db_query` call; both checks pass, `custom_checks == 1.0`,
-  and the declared `custom_checks: 0.6` weight combined with
-  `state_checks: 0.4` yields `final_score == 1.0` (`binary_pass`).
+- **Positive** — the test drives one `db_update` tool call to reconcile
+  `balance` to `700`, then grades with a transcript enumerating every
+  credit transaction id and a `db_query` call. State-check `equals 700`
+  passes, both custom checks pass: `custom_checks == 1.0`. Combined with
+  `state_checks: 0.4` * 1.0 + `custom_checks: 0.6` * 1.0 == 1.0
+  (`binary_pass`).
 
-- **Negative** — same registered trial pack with an empty transcript
-  (no tool calls, no content). The arithmetic balance check still passes
-  because the DB balance equals the reconciled total, but the
-  transcript-enumeration check fails: `custom_checks == 0.5`. With
-  `state_checks: 0.4` * 1.0 + `custom_checks: 0.6` * 0.5 == 0.7, the
-  weighted score drops below `pass_threshold: 0.8` and `binary_pass` is
-  False. This pins that the declared `custom_checks` weight is applied
-  to the final score, not silently dropped.
+- **Negative** — no `db_update`, no transcript enumeration. The DB
+  balance stays at `500`, so the JSONPath `equals 700` fails
+  (`state_checks == 0.0`), `balance_matches_transaction_net` fails
+  (500 != 500 + 260 - 60 = 700), and
+  `transcript_enumerates_credit_transactions` fails
+  (`custom_checks == 0.0`). The weighted final is 0.0 — well below
+  `pass_threshold: 0.8` — and `binary_pass` is False. This pins that
+  the declared `custom_checks` weight is applied to the final score,
+  not silently dropped.
 
 Deterministic and network-free: the test drives `register_trial` +
-`grade_trial` directly (like `test_docker_grading_jsonpath.py`) rather
-than running an agent loop, so no LLM provider key is required. The
-runner's `db_client.get_state` output feeds the shared
-`build_check_context` helper — this is the sole real-shape check on
-that path, and any regression in it fails
+`execute_tool` + `grade_trial` directly (like
+`test_docker_grading_jsonpath.py`) rather than running an agent loop,
+so no LLM provider key is required. The runner's `db_client.get_state`
+output feeds the shared `build_check_context` helper — this is the
+sole real-shape check on that path, and any regression in it fails
 `balance_matches_transaction_net`.
 """
 
@@ -147,10 +157,30 @@ def _register_and_grade(
     trial_id: str,
     trial_spec_json: str,
     llm_messages: list[dict[str, Any]],
+    *,
+    reconcile_balance: bool,
 ) -> dict[str, Any]:
+    """Register the trial, optionally reconcile the DB, then grade.
+
+    ``reconcile_balance=True`` drives a single ``db_update`` tool call to
+    raise ``customers[0].balance`` from the seeded 500 to the reconciled
+    700 — the transformation an agent would perform. Skipping it leaves
+    the DB at the seeded value so the grade dimensions reflect a no-op.
+    """
     registered = runner_client.register_trial(trial_id=trial_id, trial_spec_json=trial_spec_json)
     assert registered["success"] is True, registered["error"]
     try:
+        if reconcile_balance:
+            tool_result = runner_client.execute_tool(
+                trial_id=trial_id,
+                tool_name="db_update",
+                arguments={
+                    "ops": [
+                        {"op": "replace", "path": "/customers/0/balance", "value": 700},
+                    ]
+                },
+            )
+            assert tool_result.success is True, tool_result.error
         result = runner_client.grade_trial(
             trial_id=trial_id, llm_messages_json=json.dumps(llm_messages)
         )
@@ -168,13 +198,14 @@ class TestCustomChecksE2E:
         runner_client: GrpcRunnerClient,
         task_description,
     ) -> None:
-        """Both checks pass — custom_checks = 1.0; weighted final = 1.0; pass."""
+        """Reconcile the DB + enumerate credits → both dimensions pass."""
         trial_id = f"{_TASK_ID}_pos:0"
         grade = _register_and_grade(
             runner_client,
             trial_id,
             _trial_spec_json(task_description, trial_id),
             _synthetic_llm_messages_positive(),
+            reconcile_balance=True,
         )
 
         assert grade["components"]["custom_checks"] == pytest.approx(1.0)
@@ -192,28 +223,30 @@ class TestCustomChecksE2E:
             assert entry["status"] == "passed", f"{name}: {entry}"
             assert entry["score"] == pytest.approx(1.0), f"{name}: {entry}"
 
-    def test_negative_case_failing_check_drags_weighted_score_below_threshold(
+    def test_negative_case_failing_checks_drag_weighted_score_below_threshold(
         self,
         runner_client: GrpcRunnerClient,
         task_description,
     ) -> None:
-        """Transcript-enumeration fails; weighted score drops below pass_threshold."""
+        """No reconciliation, no transcript enumeration — every dimension fails."""
         trial_id = f"{_TASK_ID}_neg:0"
         grade = _register_and_grade(
             runner_client,
             trial_id,
             _trial_spec_json(task_description, trial_id),
             _synthetic_llm_messages_negative(),
+            reconcile_balance=False,
         )
 
-        # state_checks JSONPath still passes (initial DB balance == 700).
-        assert grade["components"]["state_checks"] == pytest.approx(1.0)
-        # custom_checks aggregate: 1 pass + 1 fail = 0.5.
-        assert grade["components"]["custom_checks"] == pytest.approx(0.5)
-        # Weighted final: 0.4*1.0 + 0.6*0.5 = 0.7, below pass_threshold 0.8.
-        assert grade["score"] == pytest.approx(0.7)
+        # DB stayed at balance=500 → JSONPath `equals 700` fails.
+        assert grade["components"]["state_checks"] == pytest.approx(0.0)
+        # Both custom checks fail: balance != reconciled total AND transcript
+        # lacks a db_query call / credit-txn enumeration.
+        assert grade["components"]["custom_checks"] == pytest.approx(0.0)
+        # Weighted final: 0.4*0.0 + 0.6*0.0 = 0.0, below pass_threshold 0.8.
+        assert grade["score"] == pytest.approx(0.0)
         assert grade["binary_pass"] is False
 
         by_name = {c["check_name"]: c for c in grade["custom_checks"]}
-        assert by_name["balance_matches_transaction_net"]["status"] == "passed"
+        assert by_name["balance_matches_transaction_net"]["status"] == "failed"
         assert by_name["transcript_enumerates_credit_transactions"]["status"] == "failed"

@@ -10,7 +10,7 @@ The grading system has been verified to work correctly for:
 - ✅ Results saved correctly to grade.yaml and trajectory.yaml
 - ⚠️ LLM judge (placeholder - not implemented)
 - ⚠️ Transcript rules (implemented but rarely used)
-- ⚠️ Custom checks (implemented but rarely used)
+- ✅ Custom checks (live in the runner grading path — see §C)
 
 ---
 

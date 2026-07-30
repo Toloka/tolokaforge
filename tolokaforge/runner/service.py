@@ -660,6 +660,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id, task_description, artifacts_dir
         )
         if custom_checks_error is not None:
+            # Extraction ran before validation, so a failing config leaves the
+            # tmp dir on disk + on ``sys.path``. Clean up before returning so a
+            # client-side retry does not compound the leak (or shadow later
+            # imports of the same relative path from an unrelated trial).
+            self._cleanup_trial_artifacts(trial_id)
             return pb2.RegisterTrialResponse(success=False, error=custom_checks_error)
 
         # Initialise mcp_core TypeSense registry so search_policy tools work.

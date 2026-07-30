@@ -156,7 +156,7 @@ Two consequences follow:
   checks share the runner container's filesystem + Python process.
   Author checks defensively (no monkey-patching, no shared mutable
   globals across checks). True per-check sandboxing is tracked in
-  [#673](https://github.com/tolokasoft1/tolokaforge/issues/673); a
+  [#673](https://github.com/Toloka/tolokaforge/issues/673); a
   subprocess-isolated `CheckExecutor` lands as a new implementation of
   the ADR-0012 Protocol without touching any caller.
 
@@ -216,5 +216,5 @@ unit tier is for the framework, not the pack's grader.
 - [`examples/native/custom_checks/`](../examples/native/custom_checks/)
   — runnable reference pack (ledger reconciliation).
 - [ADR-0012 — the `CheckExecutor` Protocol seam](adr/0012-custom-checks-extension.md).
-- [ADR-0018 — network policy (`no_internet` invariant)](adr/0018-network-policy.md).
+- [ADR-0018 — network policy (`no_internet` invariant)](adr/0018-multi-container-under-shared-runtime.md).
 - [GRADING.md — the four-component grade](GRADING.md#custom-checks).

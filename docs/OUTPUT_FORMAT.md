@@ -846,6 +846,60 @@ layers.
   reads `true` under the default. See
   [`docs/GRADING.md`](GRADING.md#gating-the-agents-policy-out-of-the-judges-evidence).
 
+### Custom-checks fields
+
+`components.custom_checks` and `custom_checks_details` are populated only when
+the pack sets `grading.custom_checks.enabled: true` and delivers a `checks.py`
+alongside the task. See [`docs/GRADING.md`](GRADING.md#custom-checks) for how
+the aggregate combines with the other three components and
+[`docs/custom_checks.md`](custom_checks.md) for the `@init` + `@check`
+authoring API.
+
+* `components.custom_checks` — aggregate score over every `@check` the pack
+  emitted, in `[0.0, 1.0]`. `null` when the pack has no `custom_checks` block
+  (or set `enabled: false`); when the executor errored under `fail_on_error:
+  false` the component is also excluded from the weighted combine. See
+  [`docs/custom_checks.md`](custom_checks.md#grade-output) for the scoring
+  rules.
+* `custom_checks_details` — one `CustomCheckDetail` entry per `@check` the
+  pack emitted. `null` when no custom checks ran; `[]` is distinct (the
+  executor ran but produced no per-check results). Each entry carries:
+    * `check_name` — the `@check` function name; the reserved sentinel
+      `__executor__` marks a top-level executor failure (module load error,
+      timeout, crash) so the audit survives even when no per-check ran.
+    * `status` — `"passed"` | `"failed"` | `"skipped"` | `"error"`.
+    * `score` — `[0.0, 1.0]`; `skipped` checks are excluded from the
+      aggregate.
+    * `message` — human-readable one-liner from the check's return value.
+    * `details` — optional dict of arbitrary structured detail the check
+      attached (decoded from the wire `details_json`); `null` when empty.
+
+Populated sample:
+
+```yaml
+components:
+  state_checks: 1.0
+  transcript_rules: null
+  llm_judge: null
+  custom_checks: 1.0
+custom_checks_details:
+  - check_name: balance_matches_transaction_net
+    status: passed
+    score: 1.0
+    message: "balance 700 == opening 500 + credits 260 - debits 60"
+    details:
+      actual: 700
+      expected: 700
+      opening_balance: 500
+      credits: 260
+      debits: 60
+  - check_name: transcript_enumerates_credit_transactions
+    status: passed
+    score: 1.0
+    message: "all credit transaction ids enumerated: ['T-1', 'T-3', 'T-5']"
+    details: null
+```
+
 ## `trials/{task_id}/{trial_index}/judge_trajectory.yaml`
 
 The rubric judge's own message transcript — written **only** when an LLM

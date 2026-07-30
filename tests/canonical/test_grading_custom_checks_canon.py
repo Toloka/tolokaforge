@@ -287,6 +287,10 @@ class TestRegisterTrialValidatesCustomChecksInterfaceVersion:
         assert "9.9" in response.error
         assert str(SUPPORTED_VERSIONS) in response.error
         assert trial_id not in runner_service.trials
+        # Extraction ran before validation, so a rejected trial must release
+        # the tmp dir + drop it from ``sys.path``. A retry from the client
+        # would otherwise leak a fresh tmp dir per attempt.
+        assert trial_id not in runner_service._artifact_dirs
 
     def test_supported_version_registers_cleanly(self, runner_service, mock_grpc_context) -> None:
         trial_id = "custom_checks_supported:0"

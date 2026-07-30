@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
@@ -50,6 +51,16 @@ from tolokaforge.core.grading.checks_interface import (
     reset_registry,
 )
 from tolokaforge.core.logging import get_logger
+
+# The check registry in ``checks_interface`` (``_check_registry``, ``_init_func``,
+# ``_interface_version``) is module-global — it must be, because the decorators
+# ``@check`` and ``@init`` fire at import time and have no way to reach a
+# runner instance. The gRPC handler pool serves concurrent trials; two of them
+# calling ``load_checks_module`` in parallel would interleave
+# ``reset_registry() → exec_module() → get_registered_checks()`` and hand each
+# caller a merged/partial registry. This lock serialises the sequence
+# per-process so every caller sees only its own module's checks.
+_CHECKS_MODULE_LOAD_LOCK = threading.Lock()
 
 
 @runtime_checkable
@@ -218,64 +229,69 @@ class CheckRunner:
         if not checks_file.exists():
             raise ValueError(f"Checks file not found: {checks_file}")
 
-        # Reset the registry before loading to ensure clean state
-        reset_registry()
+        # The ``reset → exec_module → get_registered_checks`` sequence walks
+        # module-level state in ``checks_interface`` (see
+        # ``_CHECKS_MODULE_LOAD_LOCK``); serialise the whole sequence so
+        # concurrent callers never observe a merged registry.
+        with _CHECKS_MODULE_LOAD_LOCK:
+            # Reset the registry before loading to ensure clean state
+            reset_registry()
 
-        # Clear potentially stale cached modules that might conflict
-        # (e.g., check_helpers from a different project)
-        self._clear_cached_modules(["check_helpers", "task_helpers", "helpers"])
+            # Clear potentially stale cached modules that might conflict
+            # (e.g., check_helpers from a different project)
+            self._clear_cached_modules(["check_helpers", "task_helpers", "helpers"])
 
-        # Add import paths
-        added_paths = self._add_import_paths(task_dir, relative_imports)
+            # Add import paths
+            added_paths = self._add_import_paths(task_dir, relative_imports)
 
-        try:
-            # Load module dynamically
-            spec = importlib.util.spec_from_file_location("task_checks", checks_file)
-            if not spec or not spec.loader:
-                raise ValueError(f"Could not create module spec for: {checks_file}")
-
-            module: ModuleType = importlib.util.module_from_spec(spec)
-
-            # Add to sys.modules temporarily so relative imports work
-            sys.modules["task_checks"] = module
             try:
-                spec.loader.exec_module(module)
+                # Load module dynamically
+                spec = importlib.util.spec_from_file_location("task_checks", checks_file)
+                if not spec or not spec.loader:
+                    raise ValueError(f"Could not create module spec for: {checks_file}")
+
+                module: ModuleType = importlib.util.module_from_spec(spec)
+
+                # Add to sys.modules temporarily so relative imports work
+                sys.modules["task_checks"] = module
+                try:
+                    spec.loader.exec_module(module)
+                finally:
+                    # Remove from sys.modules to avoid pollution
+                    if "task_checks" in sys.modules:
+                        del sys.modules["task_checks"]
+
+                # Get registered functions from decorators
+                init_func = get_init_func()
+                checks = get_registered_checks()
+                version = get_interface_version()
+
+                self.logger.debug(
+                    "Loaded checks module",
+                    file=str(checks_file),
+                    init_found=init_func is not None,
+                    check_count=len(checks),
+                    version=version,
+                )
+
+                # Validate version
+                if version not in SUPPORTED_VERSIONS:
+                    raise ValueError(
+                        f"Unsupported interface version: {version}. Supported: {SUPPORTED_VERSIONS}"
+                    )
+
+                if expected_version != version:
+                    self.logger.warning(
+                        "Version mismatch between config and module",
+                        expected=expected_version,
+                        actual=version,
+                    )
+
+                return init_func, checks, version
+
             finally:
-                # Remove from sys.modules to avoid pollution
-                if "task_checks" in sys.modules:
-                    del sys.modules["task_checks"]
-
-            # Get registered functions from decorators
-            init_func = get_init_func()
-            checks = get_registered_checks()
-            version = get_interface_version()
-
-            self.logger.debug(
-                "Loaded checks module",
-                file=str(checks_file),
-                init_found=init_func is not None,
-                check_count=len(checks),
-                version=version,
-            )
-
-            # Validate version
-            if version not in SUPPORTED_VERSIONS:
-                raise ValueError(
-                    f"Unsupported interface version: {version}. Supported: {SUPPORTED_VERSIONS}"
-                )
-
-            if expected_version != version:
-                self.logger.warning(
-                    "Version mismatch between config and module",
-                    expected=expected_version,
-                    actual=version,
-                )
-
-            return init_func, checks, version
-
-        finally:
-            # Clean up import paths even if error occurred
-            self._remove_import_paths(added_paths)
+                # Clean up import paths even if error occurred
+                self._remove_import_paths(added_paths)
 
     def _execute_checks(
         self,
