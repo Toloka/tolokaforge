@@ -43,6 +43,8 @@ try:
 except ImportError:
     UserToolExecutor = None
 
+_AGENT_DONE_MARKERS: tuple[str, ...] = ("###STOP###",)
+
 
 def _as_utc(ts: float | None) -> datetime | None:
     """``time.time()`` epoch seconds as an aware UTC datetime, ``None`` passthrough."""
@@ -479,12 +481,13 @@ class TrialRunner:
             )
 
     def _is_done(self, text: str) -> bool:
-        """Check if agent signals completion"""
-        done_markers = [
-            "###STOP###",
-        ]
-        text_lower = text.lower()
-        return any(marker in text_lower for marker in done_markers)
+        """Whether the agent's text carries a completion marker.
+
+        Both operands are folded by the same call at the point of comparison,
+        so the match cannot be made case-blind on one side only.
+        """
+        folded = text.casefold()
+        return any(marker.casefold() in folded for marker in _AGENT_DONE_MARKERS)
 
     def _seed_first_user_message(self, initial_user_message: str) -> None:
         """Determine and append the first user message before the loop runs.

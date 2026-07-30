@@ -1,11 +1,15 @@
-"""The tool-call id and the protocol version cross real gRPC to a real runner.
+"""The tool-call id, the protocol version and the termination reason cross real
+gRPC to a real runner.
 
 What the in-process handler tests in ``tests/unit/test_runner_pipeline.py`` cannot
-show is that the two new fields survive serialisation to a runner built from a
-separate image. The discriminating assertions are the two refusals: a runner that
-never deserialises ``call_id`` cannot notice an empty one, and a runner with no
-``engine_protocol_version`` gate accepts an unversioned engine. Both were confirmed
-to fail against a pre-change runner image.
+show is that the fields survive serialisation to a runner built from a separate
+image. The discriminating assertions are the refusals: a runner that never
+deserialises ``call_id`` cannot notice an empty one, a runner with no
+``engine_protocol_version`` gate accepts an unversioned engine, and a runner
+that ignores ``termination_reason`` grades a request naming a reason that does
+not exist. Every accepting assertion here would pass against a pre-change image,
+because proto3 discards a field its descriptor does not know — so the refusals
+are the only half that proves the image is built from this tree.
 
 Whether a *non-empty* id is recorded is not observable here — Stage 1 exposes no
 wire read path onto the runner's recorded history — so that half is locked in
@@ -185,3 +189,47 @@ class TestProtocolVersionGateOverGrpc:
             assert registered["success"] is True, registered["error"]
         finally:
             runner_client.cleanup_trial(trial_id=trial_id)
+
+
+class TestTerminationReasonOverGrpc:
+    def test_a_reason_the_enum_does_not_name_is_refused(
+        self, runner_client: GrpcRunnerClient
+    ) -> None:
+        """A runner that deserialises the reason refuses one it cannot parse; a
+        runner that never sees the field grades the trial normally. So this is the
+        assertion that tells the two images apart."""
+        trial_id = "call_id_e2e:4"
+        registered = runner_client.register_trial(
+            trial_id=trial_id, trial_spec_json=_trial_spec_json(trial_id)
+        )
+        assert registered["success"] is True, registered["error"]
+        try:
+            result = runner_client.grade_trial(trial_id=trial_id, termination_reason="not_a_reason")
+        finally:
+            runner_client.cleanup_trial(trial_id=trial_id)
+
+        assert result["success"] is False
+        assert "not_a_reason" in result["error"]
+
+    def test_a_real_reason_grades_normally(self, runner_client: GrpcRunnerClient) -> None:
+        """The mirror case: carrying the reason costs the production grading path
+        nothing, and the trial's verdict is the one it would have had without it."""
+        trial_id = "call_id_e2e:5"
+        registered = runner_client.register_trial(
+            trial_id=trial_id, trial_spec_json=_trial_spec_json(trial_id)
+        )
+        assert registered["success"] is True, registered["error"]
+        try:
+            executed = runner_client.execute_tool(
+                trial_id=trial_id,
+                tool_name=_CALCULATOR,
+                arguments={"expression": "2 + 2"},
+                call_id="toolu_C",
+            )
+            assert executed.success is True, executed.error
+            result = runner_client.grade_trial(trial_id=trial_id, termination_reason="agent_done")
+        finally:
+            runner_client.cleanup_trial(trial_id=trial_id)
+
+        assert result["success"] is True, result["error"]
+        assert result["grade"]["binary_pass"] is True

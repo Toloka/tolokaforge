@@ -155,6 +155,7 @@ class RunnerClient(Protocol):
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict: ...
 
     def get_state(
@@ -501,6 +502,7 @@ class GrpcRunnerClient:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict:
         """
         Grade a completed trial
@@ -509,6 +511,8 @@ class GrpcRunnerClient:
             trial_id: Trial ID
             llm_messages_json: Optional LLM messages for transcript rules grading
             grading_components: Which components to compute (empty = all)
+            termination_reason: TerminationReason value naming how the trial
+                ended; empty on the wire when the caller reports none
 
         Returns:
             dict with keys:
@@ -524,6 +528,7 @@ class GrpcRunnerClient:
                 trial_id=trial_id,
                 llm_messages_json=llm_messages_json or "",
                 grading_components=grading_components or [],
+                termination_reason=termination_reason or "",
             )
 
             response = self.stub.GradeTrial(request)
@@ -1274,11 +1279,13 @@ class SharedStackRuntimeBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict:
         return self.runner_client.grade_trial(
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
+            termination_reason=termination_reason,
         )
 
     def get_state(

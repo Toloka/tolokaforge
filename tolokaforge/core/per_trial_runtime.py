@@ -448,11 +448,13 @@ class PerTrialRuntimeBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         return self._client_for(trial_id).grade_trial(
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
+            termination_reason=termination_reason,
         )
 
     def get_state(

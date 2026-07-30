@@ -143,7 +143,11 @@ class RunnerRPCTrialGrader:
 
         llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
         grade_result = self.runtime_backend.grade_trial(
-            trial_id=spec.trial_id, llm_messages_json=llm_messages_json
+            trial_id=spec.trial_id,
+            llm_messages_json=llm_messages_json,
+            termination_reason=(
+                trajectory.termination_reason.value if trajectory.termination_reason else None
+            ),
         )
 
         if not (grade_result["success"] and grade_result["grade"]):

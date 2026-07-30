@@ -261,34 +261,32 @@ class TestNormalizeToolArguments:
 
 @pytest.mark.unit
 class TestIsDone:
-    """Tests for agent completion signal detection.
+    """The completion marker is matched whatever case the agent emitted it in."""
 
-    Note: The current implementation lowercases the text but compares
-    against uppercase marker '###STOP###', so the marker never matches
-    in the lowered text. Tests reflect actual behavior.
-    """
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Here is the result. ###STOP###",
+            "###STOP###",
+            "###stop###",
+            "###Stop###",
+            "###STOP### and some trailing chatter",
+        ],
+    )
+    def test_marker_present_in_any_case(self, text: str) -> None:
+        assert _make_runner()._is_done(text) is True
 
-    def test_stop_marker_case_mismatch(self) -> None:
-        runner = _make_runner()
-        # done_markers=["###STOP###"], text.lower()="...###stop###"
-        # "###STOP###" not in "...###stop###" → False
-        assert runner._is_done("Here is the result. ###STOP###") is False
-
-    def test_lowercase_input(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("###stop###") is False
-
-    def test_no_marker(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("Task is complete, all done.") is False
-
-    def test_empty_text(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("") is False
-
-    def test_partial_marker(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("###STOP") is False
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Task is complete, all done.",
+            "",
+            "###STOP",
+            "##STOP##",
+        ],
+    )
+    def test_no_marker(self, text: str) -> None:
+        assert _make_runner()._is_done(text) is False
 
 
 # ===================================================================
@@ -301,11 +299,7 @@ class TestTrialRunnerRun:
     """Tests for the main run() method."""
 
     def test_agent_response_then_user_stop(self) -> None:
-        """Agent responds, user sends ###STOP### → USER_STOP termination.
-
-        Note: _is_done never fires due to case mismatch in done_markers,
-        so the flow always reaches the user simulator.
-        """
+        """Agent responds without a completion marker, user sends ###STOP###."""
         agent = _make_agent_client(
             [
                 GenerationResult(

@@ -228,13 +228,17 @@ class RuntimeBackend(Protocol):
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         """Compute the grade for a completed trial.
 
         ``llm_messages_json`` is the transcript for transcript-rule /
         rubric-judge grading (``None`` when neither component is
         configured). ``grading_components`` narrows the components to
-        compute (``None`` / empty = all).
+        compute (``None`` / empty = all). ``termination_reason`` is a
+        :class:`~tolokaforge.core.models.TerminationReason` value naming how the
+        trial ended, so grading can tell a deliberate finish from an exhausted
+        budget; ``None`` when the caller reports none.
 
         Returns
         ``{"success": bool, "error": str | None, "grade": dict | None}``;
@@ -576,6 +580,7 @@ class InMemoryRuntimeBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.grade_trial is not implemented. "

@@ -66,6 +66,7 @@ class _StubRunnerClient:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict:
         return {"success": True, "error": None, "grade": None}
 

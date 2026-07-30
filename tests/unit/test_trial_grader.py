@@ -43,12 +43,14 @@ class _StubBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         self.calls.append(
             {
                 "trial_id": trial_id,
                 "llm_messages_json": llm_messages_json,
                 "grading_components": grading_components,
+                "termination_reason": termination_reason,
             }
         )
         return self._grade_result
@@ -230,6 +232,31 @@ class TestRunnerRPCBranch:
         grade = grader.grade(make_trial_spec(), traj, "sysprompt")
 
         assert grade.state_diff is None
+
+
+class TestTerminationReasonForwarding:
+    """The grader hands the runner the trial's own termination reason, as its
+    wire value, so grading can tell a deliberate finish from a spent budget."""
+
+    def test_reason_crosses_as_its_wire_value(self) -> None:
+        backend = _StubBackend()
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(
+            status=TrialStatus.COMPLETED, termination_reason=TerminationReason.AGENT_DONE
+        )
+
+        grader.grade(make_trial_spec(), traj, "sysprompt")
+
+        assert backend.calls[0]["termination_reason"] == "agent_done"
+
+    def test_trajectory_without_a_reason_forwards_none(self) -> None:
+        backend = _StubBackend()
+        grader, _ = _make_grader(backend)
+        traj = make_trajectory(status=TrialStatus.COMPLETED, termination_reason=None)
+
+        grader.grade(make_trial_spec(), traj, "sysprompt")
+
+        assert backend.calls[0]["termination_reason"] is None
 
 
 class TestJudgeMessagesJson:

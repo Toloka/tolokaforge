@@ -288,6 +288,13 @@ message GradeTrialRequest {
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading
   repeated string grading_components = 4;  // "state_checks", "transcript_rules"
+
+  // How the trial ended, as a tolokaforge.core.models.TerminationReason value
+  // ("agent_done", "user_stop", "max_turns", ...); empty when the engine
+  // reported none. Grading input, never author-matchable: it tells a deliberate
+  // finish apart from an exhausted turn budget. A value outside the enum fails
+  // the RPC rather than parsing to "none", which would mislabel trial health.
+  string termination_reason = 5;
 }
 
 message GradeTrialResponse {
@@ -627,6 +634,21 @@ The Runner's own ordered tool-call record is a **separate** input it already
 holds — one `RecordedToolCall` per call, carrying `call_id`, `sequence`,
 `tool_name`, `arguments`, `executor`, `status`, `output` (untruncated),
 `latency_seconds` and `timestamp` — and never rides on this request.
+
+`termination_reason` carries how the trial ended, as a `TerminationReason`
+value. It is typed for the whole enum, and the Runner parses it back to the enum
+or fails the RPC naming the accepted set — an unrecognised value is never
+coerced to "not reported", which would make a skewed engine look like a healthy
+trial. An empty value means the engine reported no reason, which is valid.
+
+Only three reasons reach this RPC — `agent_done`, `user_stop` and `max_turns`.
+Each names a trial the agent drove to an end the harness planned for, and task
+grading is meaningful for exactly those. The host grader answers every other
+trial itself, without an RPC: a task grade describes how the agent performed the
+task, and a trial that never completed has no such performance to describe.
+`tests/canonical/test_termination_reason_reachability.py` locks both halves —
+that every reason is produced by some real termination path, and that only those
+three reach `GradeTrial`.
 
 ### Grading Algorithm
 

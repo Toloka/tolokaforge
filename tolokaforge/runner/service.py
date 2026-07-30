@@ -106,7 +106,11 @@ from tolokaforge.runner.models import (
     ToolExecutorIdentity,
     TranscriptEvaluationResult,
 )
-from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION, recorded_status
+from tolokaforge.runner.protocol import (
+    ENGINE_PROTOCOL_VERSION,
+    parse_termination_reason,
+    recorded_status,
+)
 from tolokaforge.runner.rag_client import (
     RAGServiceClient,
     RAGServiceError,
@@ -1215,7 +1219,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         7. Compare hashes and compute score
 
         Args:
-            request: GradeTrialRequest with trial_id and optional llm_messages_json
+            request: GradeTrialRequest with trial_id, optional llm_messages_json
+                and optional termination_reason
             context: gRPC context
 
         Returns:
@@ -1259,6 +1264,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         trial_id = request.trial_id
         trial_context = self.trials[trial_id]
+
+        try:
+            termination_reason = parse_termination_reason(request.termination_reason)
+        except ValueError as e:
+            logger.error(f"GradeTrial: {trial_id} - {e}")
+            return pb2.GradeTrialResponse(success=False, error=str(e))
 
         grading_config = trial_context.grading_config
 
@@ -1524,7 +1535,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             errors_str = "; ".join(hash_result.golden_action_errors)
             reasons += f" | GOLDEN REPLAY ERRORS: {errors_str}"
 
-        logger.info(f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}")
+        logger.info(
+            f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
+            f"termination_reason={termination_reason.value if termination_reason else 'none'}"
+        )
 
         if components.db_probe_score >= 0:
             state_checks_component = components.db_probe_score

@@ -204,6 +204,13 @@ message GradeTrialRequest {
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading
   repeated string grading_components = 4;  // "state_checks", "transcript_rules"
+
+  // How the trial ended, as a tolokaforge.core.models.TerminationReason value
+  // ("agent_done", "user_stop", "max_turns", ...); empty when the engine
+  // reported none. Grading input, never author-matchable: it tells a deliberate
+  // finish apart from an exhausted turn budget. A value outside the enum fails
+  // the RPC rather than parsing to "none", which would mislabel trial health.
+  string termination_reason = 5;
 }
 
 message GradeTrialResponse {

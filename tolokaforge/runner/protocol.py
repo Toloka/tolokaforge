@@ -1,4 +1,4 @@
-"""Engine/runner wire-protocol version and its recorded-status vocabulary.
+"""Engine/runner wire-protocol version and the vocabularies both ends translate.
 
 The engine declares :data:`ENGINE_PROTOCOL_VERSION` on every
 ``RegisterTrialRequest``; the runner refuses to register a trial from an engine
@@ -16,8 +16,13 @@ the recorded vocabulary. It lives here because both ends of the wire read it:
 the runner stamps a status onto the call it just executed, and the engine
 carries the response's status onto the :class:`ToolResult` it returns so the
 production path records the full vocabulary instead of a bool.
+
+:func:`parse_termination_reason` is the same kind of translation for
+``GradeTrialRequest.termination_reason``: the engine writes
+:attr:`TerminationReason.value`, the runner reads it back as the enum.
 """
 
+from tolokaforge.core.models import TerminationReason
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.tools.registry import ToolExecutionStatus
 
@@ -48,3 +53,22 @@ def recorded_status(status: int) -> ToolExecutionStatus:
             "call it describes could not be recorded."
         )
     return recorded
+
+
+def parse_termination_reason(raw: str) -> TerminationReason | None:
+    """How the trial ended, as carried on ``GradeTrialRequest``.
+
+    Empty means the engine reported no reason. Raises on an unrecognised
+    non-empty value: coercing it would record the trial as having ended for no
+    stated reason, which reads as a healthy trial rather than an unknown one.
+    """
+    if not raw:
+        return None
+    try:
+        return TerminationReason(raw)
+    except ValueError:
+        accepted = sorted(reason.value for reason in TerminationReason)
+        raise ValueError(
+            f"termination_reason {raw!r} is not a known termination reason; "
+            f"accepted values are {accepted}"
+        ) from None

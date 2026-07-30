@@ -176,6 +176,27 @@ value no run produces.
 substrates**, because no code path constructs a user-side tool executor (#688).
 An unreachable-everywhere value is a scope limit, not substrate drift.
 
+### How the trial ended
+
+Both substrates give grading the trial's `TerminationReason`: the core substrate
+reads `Trajectory.termination_reason`, and the host sends the same value on
+`GradeTrialRequest.termination_reason`. It exists so grading can tell a
+deliberate finish (`agent_done`) from an exhausted turn budget (`max_turns`) —
+the same score means something different in each case.
+
+**It is grading input, not an author-matchable key.** There is no `grading.yaml`
+field for it and no key-manifest entry, so no task can score itself on it. That
+is deliberate: a task's score must depend on what the agent did, not on how the
+harness or the provider happened to stop the run, and a matcher on the
+termination reason would let a task pass or fail on infrastructure weather.
+
+Only `agent_done`, `user_stop` and `max_turns` reach the runner. Every other
+reason describes a trial the host grader resolves itself, without an RPC — see
+[`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrialrequest).
+[`tests/canonical/test_termination_reason_reachability.py`](../tests/canonical/test_termination_reason_reachability.py)
+drives a real termination path for every member of the enum, so a reason that no
+run can produce cannot be introduced, and pins which of them reach `GradeTrial`.
+
 ---
 
 ## Hash-Based Grading (Tau-Bench Compatible)

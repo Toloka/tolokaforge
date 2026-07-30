@@ -175,12 +175,14 @@ class _FakeRunnerClient:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         return self._record(
             "grade_trial",
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
+            termination_reason=termination_reason,
         )
 
     def get_state(
@@ -716,10 +718,11 @@ class TestPerTrialRpcDelegation:
     def test_grade_trial_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
-        patched_backend.grade_trial(trial_id=spec.trial_id)
+        patched_backend.grade_trial(trial_id=spec.trial_id, termination_reason="agent_done")
         client = patched_backend._clients[spec.trial_id]
         assert isinstance(client, _FakeRunnerClient)
         assert client.calls[-1][0] == "grade_trial"
+        assert client.calls[-1][2]["termination_reason"] == "agent_done"
 
     def test_get_state_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")

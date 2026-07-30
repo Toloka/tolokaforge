@@ -11,6 +11,7 @@ This validates that the trial-lifecycle components work together correctly.
 """
 
 import json
+import logging
 from typing import Any
 
 import pytest
@@ -19,6 +20,7 @@ pytestmark = pytest.mark.unit
 
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tests.utils.runner_requests import simple_task_description as simple_task_description_dict
+from tolokaforge.core.models import TerminationReason
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
@@ -601,6 +603,68 @@ class TestRegisterTrialVersionGate:
 
         assert response.success is True, response.error
         assert trial_id in runner_service.trials
+
+
+class TestGradeTrialTerminationReason:
+    """The trial's termination reason crosses to GradeTrial, typed."""
+
+    @pytest.fixture
+    def graded_trial(
+        self, runner_service, mock_grpc_context, simple_task_description, request
+    ) -> str:
+        trial_id = f"{request.node.name}:0"
+        registered = runner_service.RegisterTrial(
+            register_request(
+                trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+            ),
+            mock_grpc_context,
+        )
+        assert registered.success is True, registered.error
+        return trial_id
+
+    @pytest.mark.parametrize("reason", [r.value for r in TerminationReason])
+    def test_every_reason_crosses_the_wire_and_parses_back(
+        self, runner_service, mock_grpc_context, graded_trial, reason: str, caplog
+    ):
+        """The field is typed for the whole enum, not the subset the host
+        currently routes to the RPC, and the runner reads back the value it was
+        sent rather than some other member of the enum."""
+        with caplog.at_level(logging.INFO, logger="tolokaforge.runner.service"):
+            response = runner_service.GradeTrial(
+                pb2.GradeTrialRequest(trial_id=graded_trial, termination_reason=reason),
+                mock_grpc_context,
+            )
+
+        assert response.success is True, response.error
+        assert response.grade is not None
+        assert f"termination_reason={reason}" in caplog.text
+
+    def test_absent_reason_is_accepted(
+        self, runner_service, mock_grpc_context, graded_trial, caplog
+    ):
+        """An engine that reports no reason sends an empty string, which is a
+        valid state rather than a skew."""
+        with caplog.at_level(logging.INFO, logger="tolokaforge.runner.service"):
+            response = runner_service.GradeTrial(
+                pb2.GradeTrialRequest(trial_id=graded_trial),
+                mock_grpc_context,
+            )
+
+        assert response.success is True, response.error
+        assert "termination_reason=none" in caplog.text
+
+    def test_unknown_reason_fails_the_rpc_naming_the_accepted_set(
+        self, runner_service, mock_grpc_context, graded_trial
+    ):
+        response = runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=graded_trial, termination_reason="not_a_reason"),
+            mock_grpc_context,
+        )
+
+        assert response.success is False
+        assert "not_a_reason" in response.error
+        for reason in TerminationReason:
+            assert reason.value in response.error
 
 
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py
