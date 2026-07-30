@@ -434,13 +434,13 @@ class NativeAdapter(BaseAdapter):
         from tolokaforge.runner.models import (
             AdapterType,
             DbProbe,
-            EnvAssertion,
             GoldenAction,
             InitializationAction,
             InvocationStyle,
             RequiredAction,
             StateChecksConfig,
             TaskDescription,
+            ToolExpectations,
             ToolSchema,
             ToolSource,
             TranscriptRulesConfig,
@@ -649,19 +649,6 @@ class NativeAdapter(BaseAdapter):
                             )
                         )
 
-                # Extract env assertions
-                env_assertions: list[EnvAssertion] = []
-                for assertion in state_checks_data.get("env_assertions", []):
-                    env_assertions.append(
-                        EnvAssertion(
-                            env_type=assertion.get("env_type", "user"),
-                            func_name=assertion.get("tool_name", ""),
-                            arguments=assertion.get("arguments", {}),
-                            assert_value=assertion.get("assert_value", True),
-                            message=assertion.get("message"),
-                        )
-                    )
-
                 db_probes = [DbProbe(**probe) for probe in state_checks_data.get("db_probes", [])]
 
                 id_fields_declared = dict(state_checks_data.get("id_fields", {}))
@@ -680,7 +667,6 @@ class NativeAdapter(BaseAdapter):
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
-                    env_assertions=env_assertions,
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
                     id_fields=id_fields_declared,
@@ -702,10 +688,16 @@ class NativeAdapter(BaseAdapter):
                         )
                     )
 
+                tool_expectations_data = transcript_data.get("tool_expectations")
                 transcript_rules = TranscriptRulesConfig(
                     must_contain=transcript_data.get("must_contain", []),
                     disallow_regex=transcript_data.get("disallow_regex", []),
                     max_turns=transcript_data.get("max_turns"),
+                    tool_expectations=(
+                        ToolExpectations(**tool_expectations_data)
+                        if tool_expectations_data
+                        else None
+                    ),
                     required_actions=required_actions,
                     communicate_info=transcript_data.get("communicate_info", []),
                 )

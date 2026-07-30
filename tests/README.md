@@ -89,6 +89,7 @@ tests/
 │   └── docker/              # Docker foundation layer tests
 ├── data/                    # Test data
 │   ├── tasks/               # Task fixtures (calc_basic, browser_basic, calc_custom_checks)
+│   ├── grading_parity/      # Substrate-parity packs; own glob, outside tasks/**
 │   ├── projects/            # Full project snapshots (food_delivery_2, tau_retail_mini)
 │   └── configs/             # Config fixtures
 └── utils/                   # Shared test utilities
@@ -107,6 +108,9 @@ tests/
 Pure logic tests with no external dependencies. Mock everything.
 
 - Grading checks: hash computation, JSONPath assertions, transcript rules
+- Grading key ledger (`grading/test_grading_ledger.py`) — a failure means either a
+  populated scored `grading.yaml` key reaches `GradeTrial` with no evaluator and no
+  recorded skip, or the ledger rejects a config that grades correctly
 - Tool registry: schema conversion, tool invocation
 - Adapter output: task bundle generation, conversion logic
 - CLI commands: status, validation paths
@@ -119,6 +123,12 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Grading pipeline results
 - Custom checks with real project data (food_delivery_2)
 - Golden-set hash grading verification
+- Grading substrate parity (`test_grading_substrate_parity.py`) — a failure means a
+  `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
+  it, no longer survives adapter translation, or names a `runner_field` the runtime
+  ledger cannot resolve. Fix the manifest entry in
+  `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
+  frozen exemption set in the test module is the deliberate last resort.
 
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 
@@ -130,6 +140,12 @@ Require Docker daemon, API keys, or both. Auto-skipped when prerequisites are mi
 - End-to-end runner pipeline (tau, tlk_mcp_core, native)
 - LLM-judged grading with real providers
 - Security: container isolation, network segmentation
+
+A test that exercises a runner-side wire field needs `make docker-build-core`
+first, because the field ships inside the image. Only a *missing* image skips: a
+**stale** `tolokaforge-runner:latest` fails at `RegisterTrial` with a pydantic
+extra-forbid error naming the field (the runner config models are
+`extra="forbid"`), which points at the test rather than at the image.
 
 Two members of this tier are **Docker-free and keyless** (they need only the `uv`
 CLI): `test_plugin_discovery.py` and `test_external_harness_e2e.py`. Both install

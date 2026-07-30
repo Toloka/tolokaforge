@@ -31,12 +31,15 @@ from tolokaforge.core.run_display_events import (
     DEFAULT_PROBE_MAX_BUCKETS,
 )
 
-# Rubric / Criterion / LLMJudgeConfig have a single canonical home in
-# tolokaforge.runner.models — they cross both the YAML grading block and the
-# gRPC wire (serialized inside TrialSpec). Re-exported here so existing
+# Rubric / Criterion / LLMJudgeConfig / ToolExpectations have a single canonical
+# home in tolokaforge.runner.models — they cross both the YAML grading block and
+# the gRPC wire (serialized inside TrialSpec). Re-exported here so existing
 # ``core.models`` references (e.g. GradingConfig.llm_judge) resolve without a
 # second, drifting definition. CriterionResult is the judge's per-criterion
 # output and is consumed by the host-side Grade model below.
+#
+# The direction is forced: this import is top-of-file, so declaring any of these
+# core-side and importing it runner-side raises on a partially-initialised module.
 from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
@@ -49,6 +52,7 @@ from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
 from tolokaforge.runner.models import ServiceNetworkAccess as ServiceNetworkAccess
 from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
+from tolokaforge.runner.models import ToolExpectations as ToolExpectations
 
 
 class MessageRole(str, Enum):
@@ -1866,18 +1870,6 @@ class TaskConfig(BaseModel):
 # Grading Configuration Models
 
 
-class EnvAssertion(BaseModel):
-    """Environment assertion - runs a check function on agent or user environment"""
-
-    model_config = {"extra": "ignore"}
-
-    env_type: Literal["assistant", "user"]  # which environment to check
-    func_name: str  # assertion function name
-    arguments: dict[str, Any] = Field(default_factory=dict)  # function arguments
-    assert_value: bool = True  # expected return value
-    message: str | None = None  # error message if assertion fails
-
-
 class RequiredAction(BaseModel):
     """Required tool call that must appear in trajectory"""
 
@@ -1897,8 +1889,6 @@ class StateChecksConfig(BaseModel):
 
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
     hash: dict[str, Any] | None = None
-    env_assertions: list[EnvAssertion] = Field(default_factory=list)  # NEW
-    db_hash_check: bool = False  # NEW - compare final DB hash
     db_probes: list[dict[str, Any]] = Field(default_factory=list)
     # Opt-in, per-field: record field names whose numeric-looking STRING values
     # fold ("130.00" == "130.0") when hashing state. Mirrors the runner-side
@@ -1916,6 +1906,53 @@ class StateChecksConfig(BaseModel):
     # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
     # New tasks should fix typos or add the table, not enable this.
     relaxed_validation: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _reject_removed_state_check_keys(cls, data: Any) -> Any:
+        """Fail loud with a migration message on the removed state-check keys.
+
+        ``env_assertions`` and ``db_hash_check`` never produced grading signal on
+        either substrate. Because this model is ``extra="ignore"``, a populated
+        removed key would otherwise be dropped in silence — the exact failure this
+        rejection exists to convert into an error naming the replacement.
+
+        An inert declaration (``env_assertions: []`` / ``db_hash_check: false``)
+        requests nothing and is ignored, so recorded trial bundles serialized
+        against the old schema still load.
+        """
+        if not isinstance(data, dict):
+            return data
+        if data.get("env_assertions"):
+            raise ValueError(
+                "state_checks.env_assertions has been removed — it never produced "
+                "grading signal on either substrate. Replace it with the check that "
+                "matches what you are asserting:\n"
+                "  state_checks:\n"
+                "    jsonpaths:                     # per-record state assertions\n"
+                "      - path: $.db.orders[0].status\n"
+                "        equals: shipped\n"
+                "    hash:                          # whole-state comparison\n"
+                "      enabled: true\n"
+                "    db_probes:                     # substrate SQL assertions\n"
+                "      - name: order_shipped\n"
+                "        dsn: postgresql://...\n"
+                "        query: SELECT status FROM orders WHERE id = 1\n"
+                "        expect:\n"
+                "          - path: $.rows[0].status\n"
+                "            equals: shipped"
+            )
+        if data.get("db_hash_check"):
+            raise ValueError(
+                "state_checks.db_hash_check has been removed — it never produced "
+                "grading signal on either substrate, and silently passed when enabled "
+                "with no expected hash. Use hash grading instead:\n"
+                "  state_checks:\n"
+                "    hash:\n"
+                "      enabled: true\n"
+                "      golden_actions: [...]        # or expected_state_hash"
+            )
+        return data
 
     @field_validator("id_fields")
     @classmethod
@@ -1948,7 +1985,7 @@ class TranscriptRulesConfig(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
-    tool_expectations: dict[str, list[str]] | None = None
+    tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
 

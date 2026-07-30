@@ -318,7 +318,7 @@ message CriterionResult {
 }
 
 message GradeComponents {
-  // State checks score (hash comparison, JSONPath assertions, env assertions)
+  // State checks score (hash comparison, JSONPath assertions, DB probes)
   // -1.0 means not evaluated
   double state_checks = 1;
 

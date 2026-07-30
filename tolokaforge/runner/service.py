@@ -79,6 +79,18 @@ from tolokaforge.runner.grading import (
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
 )
+from tolokaforge.runner.grading_ledger import (
+    DB_PROBES_KEY,
+    EVALUATED,
+    HASH_DISABLED_SKIP,
+    JSONPATHS_KEY,
+    LLM_JUDGE_KEY,
+    NO_JUDGE_MESSAGES_SKIP,
+    NO_TRANSCRIPT_INPUT_SKIP,
+    audit_accounted_keys,
+    hash_family_accounting,
+    transcript_rules_author_keys,
+)
 from tolokaforge.runner.id_resolution import (
     check_id_fields_reference_known_tables,
     compute_diff_ops,
@@ -87,6 +99,7 @@ from tolokaforge.runner.models import (
     GoldenAction,
     GradeComponents,
     HashGradingResult,
+    KeyAccountingRecord,
     StateDiff,
     TaskDescription,
     ToolCallRecord,
@@ -1169,7 +1182,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Implements the grading algorithm from docs/GRPC_PROTOCOL.md:
         A) Hash-based grading (if golden_actions exist)
         B) Transcript rules grading (if transcript_rules exist)
-        C) Combine scores
+        C) Accounted-keys ledger — fail loud on a populated scored key nothing read
+        D) Combine scores
         """
         trial_id = request.trial_id
         trial_context = self.trials[trial_id]
@@ -1187,6 +1201,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         state_diff: StateDiff | None = None
         transcript_result: TranscriptEvaluationResult | None = None
         hash_result: HashGradingResult | None = None
+        # Author key -> what became of it, filled in below at the points an
+        # evaluator is invoked or deliberately skipped. audit_accounted_keys
+        # subtracts it from what the config populated.
+        accounted_keys: dict[str, KeyAccountingRecord] = {}
 
         # Edge case: No grading config at all → pass by default
         if grading_config is None:
@@ -1231,6 +1249,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
                 state_diff = hash_result.state_diff
+                accounted_keys.update(hash_family_accounting(EVALUATED))
             except Exception as e:
                 logger.error(f"GradeTrial: Hash grading failed: {e}")
                 logger.error(traceback.format_exc())
@@ -1239,6 +1258,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     success=False,
                     error=f"Hash grading failed: {type(e).__name__}: {str(e)}",
                 )
+        elif state_checks_config:
+            # `hash:` keys still arrive populated with no evaluator to consume
+            # them — the adapter fills golden_actions whether or not
+            # `enabled: true` is set.
+            accounted_keys.update(hash_family_accounting(HASH_DISABLED_SKIP))
 
         # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
         if state_checks_config and state_checks_config.jsonpath_checks:
@@ -1264,6 +1288,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             components.jsonpath_score = jsonpath_score
             components.jsonpath_reasons = jsonpath_reasons
+            accounted_keys[JSONPATHS_KEY] = EVALUATED
             logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
 
         # A.3) DB PROBES (substrate SQL assertions) — the sole state source for
@@ -1278,6 +1303,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             db_probe_score, db_probe_reasons = await evaluate_db_probes(probes)
             components.db_probe_score = db_probe_score
             components.db_probe_reasons = db_probe_reasons
+            accounted_keys[DB_PROBES_KEY] = EVALUATED
             logger.info(f"GradeTrial: {trial_id} - DB probes: score={db_probe_score:.2f}")
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
@@ -1308,9 +1334,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
+                accounted_keys.update(transcript_result.accounted_keys)
             else:
                 logger.info(
                     f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool history)"
+                )
+                accounted_keys.update(
+                    dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
                 )
 
         # B.2) LLM JUDGE GRADING (if llm_judge configured) — runner-side read-only
@@ -1329,6 +1359,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 judge_result = await self._grade_llm_judge(
                     trial_id, llm_judge_config, llm_messages, trial_context
                 )
+                accounted_keys[LLM_JUDGE_KEY] = EVALUATED
                 judge_reasons = judge_result.reasons
                 criterion_results = list(judge_result.criterion_results)
                 # Cross the judge's own usage + audit transcript to the host. Built
@@ -1370,6 +1401,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     )
             else:
                 logger.info(f"GradeTrial: {trial_id} - Skipping LLM judge (no transcript messages)")
+                accounted_keys[LLM_JUDGE_KEY] = NO_JUDGE_MESSAGES_SKIP
 
         # B.3) CUSTOM PYTHON CHECKS — the pack's ``checks.py`` executes runner-side
         # when ``grading.custom_checks.enabled``; the aggregate score fills
@@ -1380,7 +1412,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
         components.custom_checks_score = custom_checks_score
 
-        # C) COMBINE SCORES
+        # C) LEDGER — a scored key the config populated that no evaluator consumed
+        # and no skip site claimed would score nothing while the trial still got a
+        # grade. Fail the RPC naming it; never fold it in as 0.0.
+        audit = audit_accounted_keys(grading_config, accounted_keys)
+        if audit.error:
+            logger.error(f"GradeTrial: {trial_id} - {audit.error}")
+            return pb2.GradeTrialResponse(success=False, error=audit.error)
+
+        # D) COMBINE SCORES
         components_dict = components.model_dump()
         grading_config_dict = grading_config.model_dump()
         score, binary_pass = combine_grade_components(components_dict, grading_config_dict)
@@ -1401,6 +1441,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"
+
+        # A populated key whose evaluator was skipped scored nothing; say so on the
+        # grade rather than letting the trial look fully evaluated.
+        if audit.skip_notes:
+            reasons += " | " + "; ".join(audit.skip_notes)
 
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:

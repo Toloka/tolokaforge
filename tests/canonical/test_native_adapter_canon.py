@@ -65,6 +65,19 @@ class TestNativeAdapterCanon:
         actual = grading.model_dump(mode="json")
         snap.assert_match(actual, "grading_config.json")
 
+    def test_browser_basic_task_description_carries_tool_expectations(self, native_adapter):
+        """``transcript_rules.tool_expectations`` survives to the runner config.
+
+        The grading.yaml key reaches the runner only through this translation, so
+        a dropped key here is a grading rule that silently scores nothing in
+        production while still grading on the core substrate.
+        """
+        td = native_adapter.to_task_description("browser_basic")
+        expectations = td.grading.transcript_rules.tool_expectations
+        assert expectations is not None
+        assert expectations.required_tools == ["browser", "write_file"]
+        assert expectations.disallowed_tools == []
+
 
 class TestWidgetsIdFieldsCanon:
     """Canonical coverage for a table keyed by a non-``id`` column.

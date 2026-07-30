@@ -4,13 +4,11 @@ import pytest
 
 from tolokaforge.core.evaluators.action_evaluator import ActionEvaluator
 from tolokaforge.core.evaluators.communicate_evaluator import CommunicateEvaluator
-from tolokaforge.core.evaluators.environment_evaluator import EnvironmentEvaluator
 from tolokaforge.core.models import (
     CommunicateInfo,
     Message,
     MessageRole,
     RequiredAction,
-    StateChecksConfig,
     ToolCall,
 )
 
@@ -228,39 +226,6 @@ class TestCommunicateEvaluator:
         result = evaluator.evaluate_communication(messages, [info])
 
         assert result.score == 0.0  # Assistant didn't communicate it
-
-
-@pytest.mark.unit
-class TestEnvironmentEvaluator:
-    """Test environment evaluator - DB hash checks only (no external assertions)"""
-
-    def test_db_hash_match(self):
-        """Test DB hash match when enabled"""
-        evaluator = EnvironmentEvaluator()
-
-        config = StateChecksConfig(
-            db_hash_check=True,
-            hash={"expected_state_hash": None},  # Will be computed
-        )
-
-        final_state = {"agent": {"db": {"users": [1, 2, 3]}}, "user": {}}
-
-        # Without expected hash, should pass (no check configured)
-        result = evaluator.evaluate_state_checks(final_state, config)
-
-        assert result.score == 1.0  # No expected hash to check against
-
-    def test_no_checks_configured(self):
-        """Test when no checks are configured"""
-        evaluator = EnvironmentEvaluator()
-
-        config = StateChecksConfig(env_assertions=[], db_hash_check=False)
-
-        final_state = {"agent": {}, "user": {}}
-
-        result = evaluator.evaluate_state_checks(final_state, config)
-
-        assert result.score == 1.0
 
 
 @pytest.mark.unit

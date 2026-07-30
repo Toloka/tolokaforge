@@ -18,7 +18,17 @@ from typing import Any
 from jsonpath_ng.ext import parse
 
 from tolokaforge.core.hash import canonical_number
+from tolokaforge.runner.grading_ledger import (
+    COMMUNICATE_INFO_KEY,
+    DISALLOW_REGEX_KEY,
+    EVALUATED,
+    MAX_TURNS_KEY,
+    MUST_CONTAIN_KEY,
+    REQUIRED_ACTIONS_KEY,
+    TOOL_EXPECTATIONS_KEY,
+)
 from tolokaforge.runner.models import (
+    KeyAccountingRecord,
     StateDiff,
     TableDiff,
     TranscriptEvaluationResult,
@@ -221,6 +231,10 @@ def evaluate_transcript_rules(
       assistant message → one sub-check per regex.
     - ``max_turns`` (int | None): the number of assistant turns must be within
       the limit → one sub-check when set.
+    - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
+      per declared tool. A required tool must have been called *successfully*; a
+      disallowed tool must not appear in the history at **any** status, because
+      an attempted forbidden call is itself the violation.
     - ``required_actions`` (list[RequiredAction]): each declared tool call must
       appear in the tool history, matched by ``tool_name`` + ``requestor`` and
       by the argument subset named in ``compare_args`` (``None`` = compare all
@@ -245,45 +259,70 @@ def evaluate_transcript_rules(
         rules: A single ``TranscriptRulesConfig.model_dump()`` dict
 
     Returns:
-        TranscriptEvaluationResult with passed, score, and per-sub-check details
+        TranscriptEvaluationResult with passed, score, per-sub-check details, and
+        the author keys this call decomposed
     """
     details: list[TranscriptRuleResult] = []
+    accounted_keys: dict[str, KeyAccountingRecord] = {}
 
     must_contain: list[str] = rules.get("must_contain", []) or []
     disallow_regex: list[str] = rules.get("disallow_regex", []) or []
     max_turns: int | None = rules.get("max_turns")
+    tool_expectations: dict[str, Any] = rules.get("tool_expectations") or {}
+    required_tools: list[str] = tool_expectations.get("required_tools") or []
+    disallowed_tools: list[str] = tool_expectations.get("disallowed_tools") or []
     required_actions: list[dict[str, Any]] = rules.get("required_actions", []) or []
     communicate_info: list[dict[str, Any]] = rules.get("communicate_info", []) or []
 
     assistant_messages = _assistant_message_texts(messages)
 
-    for text in must_contain:
-        details.append(_check_must_contain(text, assistant_messages))
+    if must_contain:
+        accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
+        for text in must_contain:
+            details.append(_check_must_contain(text, assistant_messages))
 
-    for pattern in disallow_regex:
-        details.append(_check_disallow_regex(pattern, assistant_messages))
+    if disallow_regex:
+        accounted_keys[DISALLOW_REGEX_KEY] = EVALUATED
+        for pattern in disallow_regex:
+            details.append(_check_disallow_regex(pattern, assistant_messages))
 
     if max_turns is not None:
+        accounted_keys[MAX_TURNS_KEY] = EVALUATED
         details.append(_check_max_turns(max_turns, messages))
 
-    for action in required_actions:
-        details.append(_check_required_action(action, tool_history))
+    if required_tools or disallowed_tools:
+        accounted_keys[TOOL_EXPECTATIONS_KEY] = EVALUATED
+        for tool_name in required_tools:
+            details.append(_check_required_tool(tool_name, tool_history))
+        for tool_name in disallowed_tools:
+            details.append(_check_disallowed_tool(tool_name, tool_history))
 
-    for info in communicate_info:
-        check = _check_communicate_info(info, assistant_messages)
-        if check is not None:
-            details.append(check)
+    if required_actions:
+        accounted_keys[REQUIRED_ACTIONS_KEY] = EVALUATED
+        for action in required_actions:
+            details.append(_check_required_action(action, tool_history))
+
+    if communicate_info:
+        accounted_keys[COMMUNICATE_INFO_KEY] = EVALUATED
+        for info in communicate_info:
+            check = _check_communicate_info(info, assistant_messages)
+            if check is not None:
+                details.append(check)
 
     if not details:
         # No rules configured — nothing can be violated.
-        return TranscriptEvaluationResult(passed=True, score=1.0, details=[])
+        return TranscriptEvaluationResult(
+            passed=True, score=1.0, details=[], accounted_keys=accounted_keys
+        )
 
     passed_count = sum(1 for d in details if d.passed)
     total_count = len(details)
     score = passed_count / total_count
     all_passed = passed_count == total_count
 
-    return TranscriptEvaluationResult(passed=all_passed, score=score, details=details)
+    return TranscriptEvaluationResult(
+        passed=all_passed, score=score, details=details, accounted_keys=accounted_keys
+    )
 
 
 # Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
@@ -384,6 +423,55 @@ def _check_max_turns(max_turns: int, messages: list[dict[str, Any]]) -> Transcri
             if within
             else f"Assistant turn count {turn_count} exceeds limit of {max_turns}"
         ),
+    )
+
+
+def _check_required_tool(
+    tool_name: str, tool_history: list[dict[str, Any]]
+) -> TranscriptRuleResult:
+    """A required tool must have been called successfully at least once.
+
+    Same "a failed call did not happen" rule ``_check_required_action`` applies:
+    an errored call did not accomplish the work the author required.
+    """
+    called = any(
+        call.get("tool_name") == tool_name and call.get("status") == "success"
+        for call in tool_history
+    )
+    return TranscriptRuleResult(
+        rule_type="required_tool",
+        rule={"required_tool": tool_name},
+        passed=called,
+        message=(
+            f"Required tool {tool_name!r} was called successfully"
+            if called
+            else f"Required tool {tool_name!r} was never called successfully"
+        ),
+    )
+
+
+def _check_disallowed_tool(
+    tool_name: str, tool_history: list[dict[str, Any]]
+) -> TranscriptRuleResult:
+    """A disallowed tool must not appear in the history at any status.
+
+    Status-insensitive on purpose: attempting a forbidden call is the violation,
+    so an errored attempt fails the check just like a successful one.
+    """
+    offending = [call for call in tool_history if call.get("tool_name") == tool_name]
+    if not offending:
+        message = f"Disallowed tool {tool_name!r} was never called"
+    else:
+        statuses = ", ".join(sorted({str(call.get("status")) for call in offending}))
+        message = (
+            f"Disallowed tool {tool_name!r} was called {len(offending)} "
+            f"time(s) (statuses: {statuses})"
+        )
+    return TranscriptRuleResult(
+        rule_type="disallowed_tool",
+        rule={"disallowed_tool": tool_name},
+        passed=not offending,
+        message=message,
     )
 
 
@@ -983,13 +1071,20 @@ def build_grade_reasons(
     transcript_score = components.get("transcript_score", -1.0)
     if transcript_score >= 0:
         if transcript_result:
-            passed = sum(1 for d in transcript_result.get("details", []) if d.get("passed"))
-            total = len(transcript_result.get("details", []))
-            if passed == total:
+            details = transcript_result.get("details", [])
+            failures = [d for d in details if not d.get("passed")]
+            total = len(details)
+            if not failures:
                 reasons.append(f"Transcript: all {total} rules passed")
             else:
-                failed = total - passed
-                reasons.append(f"Transcript: {failed} of {total} rules failed")
+                # Name every failing sub-check: "2 of 5 failed" alone leaves the
+                # author guessing which rule and why.
+                failure_text = "; ".join(
+                    str(d.get("message", d.get("rule_type"))) for d in failures
+                )
+                reasons.append(
+                    f"Transcript: {len(failures)} of {total} rules failed — {failure_text}"
+                )
         else:
             if components.get("transcript_pass", False):
                 reasons.append("Transcript: passed")

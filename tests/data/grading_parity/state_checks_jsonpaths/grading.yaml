@@ -1,0 +1,11 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+  pass_threshold: 0.8
+
+state_checks:
+  jsonpaths:
+    - path: "$.db.orders[0].status"
+      equals: shipped
+      description: order O1 is shipped

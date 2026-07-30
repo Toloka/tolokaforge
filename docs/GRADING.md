@@ -14,6 +14,120 @@ Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENC
 
 ---
 
+## Substrate Parity
+
+Two substrates grade a trial. The **core** substrate is the in-process
+`GradingEngine` (`tolokaforge/core/grading/combine.py`) used by `validate`, the
+`NativeAdapter` helpers and the test suite. The **runner** substrate is the gRPC
+`GradeTrial` path (`tolokaforge/runner/service.py`), which is what production
+runs use. A key an author writes in `grading.yaml` reaches the runner only
+through `NativeAdapter.to_task_description`, so a key the translation misses is
+a key that silently scores nothing in production while still grading locally.
+
+[`tolokaforge/core/grading/key_manifest.py`](../tolokaforge/core/grading/key_manifest.py)
+is the single source of truth for which substrate consumes which key. Every
+author-facing key is one `GradingKey` entry declaring three axes:
+
+- **`kind`** — `SCORED_CHECK` (produces a component score), `CONFIG_INPUT`
+  (shapes another check; no score of its own), `AGGREGATION` (combines component
+  scores). Only `SCORED_CHECK` keys have a violating trajectory, so only they can
+  be differentially tested.
+- **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
+  same component score), `BOTH_SIGNAL_PARITY` (both consume it and both
+  discriminate; the magnitudes differ because the two substrates aggregate
+  differently), `CORE_ONLY`, `RUNNER_ONLY`. Anything other than a `BOTH_*` value
+  requires a written `reason`.
+- **`enforcement`** — how strongly the coverage claim is proven.
+  `DIFFERENTIAL_CANONICAL`: a satisfying/violating pair moves both substrates'
+  scores in-process. `DIFFERENTIAL_INTEGRATION`: the differential needs real
+  services, and `enforcing_test` names the integration test that runs it.
+  `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
+
+[`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
+makes the manifest load-bearing. Adding a grading field to either substrate's
+config model without a manifest entry fails that suite naming the field; a scored
+key that claims both substrates at `DIFFERENTIAL_CANONICAL` must move both
+substrates' component scores against
+[`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; every key
+both substrates declare must survive adapter translation non-default; and every key
+the runtime ledger checks must resolve to a field on the runner config **and** be
+claimed by one of the ledger's recording sites, so a key no site records fails the
+suite instead of failing every `GradeTrial` that carries it.
+
+### The runtime ledger
+
+The canonical suite guards the *config models*; the runner guards each individual
+request. Through the component phase `GradeTrial` records, at every point an
+evaluator is invoked or deliberately skipped, which author key that call accounts
+for. Each record is a `KeyAccountingRecord` — an outcome of `EVALUATED` or
+`SKIPPED` plus, for a skip, the `detail` a task author reads. It then subtracts
+those records from the scored keys the request's grading config actually populated
+([`tolokaforge/runner/grading_ledger.py`](../tolokaforge/runner/grading_ledger.py)).
+A non-empty remainder means a key would have scored nothing, so the RPC returns
+`success=False` naming each key and the runner evaluator its manifest entry
+expects — never a grade, and never a `0.0` folded into the combine. A key the
+manifest declares `CORE_ONLY` that nonetheless arrives populated fails the same
+way, quoting that entry's `reason` — unless a recording site claims it as a
+standing skip, per **Every skip is recorded, not silent** below.
+
+Three properties keep the ledger from rejecting configs that grade correctly:
+
+- **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
+  `relaxed_validation`, `numeric_string_fields`) shape another check rather than
+  producing a component, and `AGGREGATION` keys are the combine itself, so neither
+  is ever evaluated in the component phase.
+- **A key counts as populated only when it is non-empty.** An explicitly written
+  `disallowed_tools: []` is indistinguishable from unset, and either way has
+  nothing to evaluate.
+- **Every skip is recorded, not silent.** `transcript_rules` is skipped when a
+  trial has neither messages nor tool history, `llm_judge` when it has no
+  messages, and the `state_checks.hash` members the runner's hash evaluator reads
+  when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
+  standing skip: it is declared `CORE_ONLY` because no runner path reads it (#693),
+  so it is recorded as such whether or not hash grading ran — folding it into the
+  family's outcome would report a silently dead key as scored. Each skip records
+  its reason, which appears in `grade.reasons` whenever the skipped key was
+  populated: a degenerate trial scores badly rather than erroring the RPC, but the
+  reason it scored badly is visible.
+
+`grading_method: test_execution` returns before the component phase, so the ledger
+does not apply to that dispatch mode — recorded as the `grading_method` entry's
+declared `reason`.
+
+### Single-substrate keys
+
+| Key | kind | coverage | enforcement | Why only one substrate | Tracked |
+|---|---|---|---|---|---|
+| `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #692 |
+| `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
+| `state_checks.hash.weight` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | core blends the hash score against the jsonpath score by this weight; the runner multiplies the two and has no weight concept | #686 |
+| `custom_checks` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner reports `custom_checks=-1.0`; running author-supplied Python inside the runner is a sandboxing project | #684 |
+| `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
+| `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
+| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
+
+Architectural entries can never be both substrates and carry no tracking issue.
+Every other row is drift and names the issue that closes it. The exemption sets
+live in the test module, not beside the manifest, so widening one is an edit a
+reviewer sees in the same commit.
+
+The `state_checks.hash` family (`hash`, `hash.enabled`, `hash.golden_actions`)
+claims both substrates at `FIELD_RESOLUTION_ONLY`: the runner's evaluator drives
+db-service over HTTP, so no service-free differential exists (#687). Mocking the
+DB client to make the canonical guard pass would defeat the guard.
+
+### What the guard cannot see
+
+`model_fields` introspection enumerates typed config fields, and all four core
+grading models are `extra="ignore"`. So `state_checks.hash.*`, the
+`state_checks.jsonpaths[*]` operator vocabulary, and `custom_checks.*` internals
+are structurally outside the enumeration — the manifest records nested dict keys
+as **declared data**, verified only to live inside a dict-typed field. And a green
+parity suite proves each key *discriminates*, not that its discrimination is
+*correct*.
+
+---
+
 ## Hash-Based Grading (Tau-Bench Compatible)
 
 Hash grading canonicalizes the final state and the golden state, hashes both
@@ -94,9 +208,9 @@ state_checks:
 
 Only list fields that are genuinely numeric quantities. Do NOT list identifier
 or code fields (`payment_method_last4`, `id`, `organization_id`): folding those
-would treat `"0042"`-style values as numbers. This key is honored identically on
-both grading substrates (the core `GradingEngine`/`to_hashable` path and the
-runner gRPC/`compute_stable_hash` path).
+would treat `"0042"`-style values as numbers. Both substrates consume this key
+with score parity — see [Substrate Parity](#substrate-parity) for what that
+claim covers and how it is enforced.
 
 ### Declaring a table's primary key for non-`id` tables
 
@@ -140,7 +254,9 @@ state_checks:
 
 `relaxed_validation` defaults to `false`; new tasks should fix typos rather than
 enable it. The runner also runs the same check as belt-and-suspenders for engines
-that bypass `NativeAdapter.to_task_description`.
+that bypass `NativeAdapter.to_task_description`. Both keys are consumed at load
+time / `RegisterTrial` on both substrates rather than in the grade-time component
+phase — see [Substrate Parity](#substrate-parity).
 
 **Tables materialized only by `initialization_actions`**: the cross-check reads
 `initial_state.tables` (typically populated from `initial_state.json_db`). A
@@ -152,7 +268,19 @@ if you want the strict check to accept it.
 **Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
 on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
 these keys requires a runner image built from the same release. Old engine + new
-runner is safe (core-side `extra="ignore"`).
+runner is safe **for this key** (core-side `extra="ignore"`).
+
+**Runner-engine version lock (both directions)**: the runner-side
+`StateChecksConfig` is `extra="forbid"` and declares no `env_assertions` field. An
+engine older than this release translates `env_assertions` onto that field for
+**every** pack carrying a non-empty `state_checks:` block, whether or not the pack
+declares the key, and the trial spec crosses the wire as a plain
+`model_dump_json()`. So an old engine against a new runner image is rejected at
+`RegisterTrial` for *every* such trial, not only for packs that used the key —
+`state_checks` requires engine and runner image from the same release in both
+directions. (`db_hash_check` was never declared on the runner config at all, so no
+engine ever emitted it and it is not part of this lock — a populated
+`db_hash_check` is rejected core-side at config load.)
 
 ### Best Practices
 
@@ -163,6 +291,59 @@ runner is safe (core-side `extra="ignore"`).
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
 - Combine with JSONPath assertions using `weight: 0.8` for flexibility
+
+---
+
+## Transcript Rules
+
+`transcript_rules` grades the *process* — what the agent said and which tools it
+reached for — rather than the final state. Both substrates consume every key in
+the block.
+
+### `tool_expectations`
+
+Names the tools the agent must use and the tools it must not touch:
+
+```yaml
+transcript_rules:
+  tool_expectations:
+    required_tools: ["db_update"]        # each must have been called successfully
+    disallowed_tools: ["bash"]           # none may be called, at any status
+```
+
+**One sub-check per declared tool** on the runner path, the same decomposition
+`must_contain` and `disallow_regex` get: the component score is the fraction of
+sub-checks that passed, and every failure is named in `grade.reasons`. A task
+declaring two required and two disallowed tools yields four independent
+sub-checks.
+
+**The two lists treat call status differently, deliberately.** A `required_tools`
+entry is satisfied only by a call with `status == "success"` — an errored call did
+not do the work the author required, the same rule `required_actions` applies. A
+`disallowed_tools` entry fails on a call at **any** status, errors included:
+attempting a forbidden action is itself the violation, so a `delete_customer` call
+that happened to blow up still fails the check.
+
+`extra="forbid"` on the block means a misspelled key (`required_toolz`) fails at
+load rather than grading as an empty list.
+
+**Known limitation — a misspelled *tool name* is not caught here.** Grade-time
+evaluation cannot tell `required_tools: ["db_updat"]` from "the agent never called
+it", and a typo in `disallowed_tools` passes trivially because no call ever matches
+it. Validating tool names against the task's declared tool set belongs at load
+time and is owned by **#679**; do not read a green `tool_expectations` check as
+evidence that the names are spelled correctly.
+
+**Score parity:** signal, not score. Both substrates discriminate, but the core
+`GradingEngine` folds both lists into one of four averaged buckets, so a violation
+that scores `0.0` on the runner scores `0.75` core-side (#685). Core also ignores
+call status. See [Substrate Parity](#substrate-parity).
+
+**Runner-engine version lock**: `tool_expectations` is declared on the runner-side
+`TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
+requires a runner image built from the same release — `RegisterTrial` rejects it
+otherwise. Old engine + new runner is safe **for this key** (core-side
+`extra="ignore"`).
 
 ---
 

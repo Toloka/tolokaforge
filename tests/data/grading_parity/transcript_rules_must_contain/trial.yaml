@@ -1,0 +1,17 @@
+satisfying:
+  messages:
+    - role: user
+      content: "Please refund my order."
+    - role: assistant
+      content: "Refund issued for order O1."
+  tool_calls: []
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Please refund my order."
+    - role: assistant
+      content: "I closed the ticket without taking action."
+  tool_calls: []
+  state: {}

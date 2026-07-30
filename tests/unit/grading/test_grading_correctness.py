@@ -32,7 +32,7 @@ from tolokaforge.runner.grading import (
     compute_state_diff,
     evaluate_transcript_rules,
 )
-from tolokaforge.runner.models import RequiredAction, TranscriptRulesConfig
+from tolokaforge.runner.models import RequiredAction, ToolExpectations, TranscriptRulesConfig
 
 
 class TestGoldenMatchScoresOne:
@@ -583,6 +583,91 @@ class TestTranscriptRulesEvaluation:
         result = evaluate_transcript_rules(messages, [], self._config(max_turns=5))
         assert result.passed is False
         assert result.score == 0.0
+
+    # --- tool_expectations -------------------------------------------------
+
+    @staticmethod
+    def _call(tool_name: str, status: str = "success") -> dict:
+        return {
+            "tool_name": tool_name,
+            "arguments": {},
+            "executor": "agent",
+            "status": status,
+        }
+
+    def test_empty_tool_expectations_contributes_no_sub_checks(self):
+        """An empty block must not add sub-checks, or it would dilute the fraction."""
+        config = self._config(tool_expectations=ToolExpectations())
+        result = evaluate_transcript_rules([], [self._call("anything")], config)
+        assert result.details == []
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_required_tool_called_successfully_passes(self):
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["write_file"]))
+        result = evaluate_transcript_rules([], [self._call("write_file")], config)
+        assert result.passed is True
+        assert result.score == 1.0
+        assert [d.rule_type for d in result.details] == ["required_tool"]
+
+    def test_required_tool_never_called_fails_with_named_sub_check(self):
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["write_file"]))
+        result = evaluate_transcript_rules([], [self._call("read_file")], config)
+        assert result.passed is False
+        assert result.score == 0.0
+        assert len(result.details) == 1
+        detail = result.details[0]
+        assert detail.rule_type == "required_tool"
+        assert "write_file" in detail.message
+        assert detail.passed is False
+
+    def test_required_tool_errored_call_does_not_count(self):
+        """Mirrors required_actions: a failed call did not do the work."""
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["write_file"]))
+        result = evaluate_transcript_rules([], [self._call("write_file", status="error")], config)
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_disallowed_tool_never_called_passes(self):
+        config = self._config(
+            tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
+        )
+        result = evaluate_transcript_rules([], [self._call("read_file")], config)
+        assert result.passed is True
+        assert result.score == 1.0
+        assert [d.rule_type for d in result.details] == ["disallowed_tool"]
+
+    @pytest.mark.parametrize("status", ["success", "error", "timeout"])
+    def test_disallowed_tool_called_at_any_status_fails(self, status):
+        """Attempting a forbidden call IS the violation — status is irrelevant."""
+        config = self._config(
+            tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
+        )
+        result = evaluate_transcript_rules(
+            [], [self._call("delete_customer", status=status)], config
+        )
+        assert result.passed is False
+        assert result.score == 0.0
+        detail = result.details[0]
+        assert detail.rule_type == "disallowed_tool"
+        assert "delete_customer" in detail.message
+        assert status in detail.message
+
+    def test_tool_expectations_decomposes_one_sub_check_per_tool(self):
+        """Each declared tool is scored independently, like must_contain entries."""
+        config = self._config(
+            tool_expectations=ToolExpectations(
+                required_tools=["write_file", "read_file"],
+                disallowed_tools=["delete_customer", "drop_table"],
+            )
+        )
+        tool_history = [self._call("write_file"), self._call("delete_customer")]
+        result = evaluate_transcript_rules([], tool_history, config)
+        # write_file present (pass), read_file absent (fail), delete_customer
+        # called (fail), drop_table untouched (pass).
+        assert len(result.details) == 4
+        assert result.score == 0.5
+        assert result.passed is False
 
     # --- required_actions --------------------------------------------------
 

@@ -255,22 +255,6 @@ class GoldenAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class EnvAssertion(BaseModel):
-    """
-    Assertion on environment state after trial.
-
-    Used by Native adapter for checking device state.
-    """
-
-    env_type: Literal["assistant", "user"]
-    func_name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    assert_value: Any = True
-    message: str | None = None
-
-    model_config = {"extra": "forbid"}
-
-
 class RequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
 
@@ -326,9 +310,6 @@ class StateChecksConfig(BaseModel):
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 
-    # Environment assertions (Native adapter)
-    env_assertions: list[EnvAssertion] = Field(default_factory=list)
-
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
 
@@ -348,12 +329,26 @@ class StateChecksConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ToolExpectations(BaseModel):
+    """Tools the agent must use and tools it must not touch.
+
+    ``extra="forbid"`` inside the ``extra="ignore"`` core parent so a
+    ``required_toolz`` typo fails at load instead of grading as an empty list.
+    """
+
+    required_tools: list[str] = Field(default_factory=list)
+    disallowed_tools: list[str] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class TranscriptRulesConfig(BaseModel):
     """Transcript-based grading configuration."""
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
+    tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)
     communicate_info: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -1795,13 +1790,47 @@ class TranscriptRuleResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class KeyAccounting(str, Enum):
+    """What a recording site in the grading path did with its author key."""
+
+    EVALUATED = "evaluated"
+    SKIPPED = "skipped"
+
+
+class KeyAccountingRecord(BaseModel):
+    """One recording site's outcome for one author-facing ``grading.yaml`` key.
+
+    A skip renders into ``Grade.reasons`` as ``<author_key> skipped: <detail>``,
+    so ``detail`` is what a task author reads to learn why a key they populated
+    contributed nothing.
+    """
+
+    outcome: KeyAccounting
+    detail: str = ""
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @model_validator(mode="after")
+    def _skip_states_a_reason(self) -> KeyAccountingRecord:
+        if self.outcome is KeyAccounting.SKIPPED and not self.detail.strip():
+            raise ValueError("a skipped key must carry the detail rendered into Grade.reasons")
+        return self
+
+
 class TranscriptEvaluationResult(BaseModel):
-    """Result of evaluating all transcript rules."""
+    """Result of evaluating all transcript rules.
+
+    ``accounted_keys`` names the author-facing ``transcript_rules.*`` keys this
+    evaluation decomposed. The runtime ledger (``runner/grading_ledger.py``) reads
+    it rather than re-deriving which fields the evaluator "should have" branched
+    on, so a populated key the evaluator never decomposes stays unaccounted.
+    """
 
     # Use 'passed' as the field name (not 'pass' which is a Python keyword)
     passed: bool = False
     score: float = 0.0
     details: list[TranscriptRuleResult] = Field(default_factory=list)
+    accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 

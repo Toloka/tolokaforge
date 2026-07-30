@@ -1,0 +1,21 @@
+satisfying:
+  messages:
+    - role: user
+      content: "Cancel order O1."
+    - role: assistant
+      content: "Cancelled order O1."
+  tool_calls: []
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Cancel order O1."
+    - role: assistant
+      content: "Let me look that up."
+    - role: assistant
+      content: "Still looking."
+    - role: assistant
+      content: "Cancelled order O1."
+  tool_calls: []
+  state: {}

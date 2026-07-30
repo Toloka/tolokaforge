@@ -1,0 +1,27 @@
+task_id: transcript_rules_communicate_info
+name: "Substrate differential: transcript_rules_communicate_info"
+category: test
+description: |
+  Substrate-parity differential fixture. The grading.yaml declares exactly one
+  author key so a violating trial can only be discriminated by that key.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml
