@@ -1,0 +1,9 @@
+combine:
+  method: weighted
+  weights:
+    custom_checks: 1.0
+  pass_threshold: 0.8
+
+custom_checks:
+  enabled: true
+  file: checks.py

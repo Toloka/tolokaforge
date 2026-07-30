@@ -11,11 +11,13 @@ come from production evaluators, and they pin both directions:
   ``hash:`` without ``enabled: true`` — still grade.
 """
 
+import base64
 import json
 from typing import Any
 
 import pytest
 
+from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.core.grading.key_manifest import (
     Enforcement,
     GradingKey,
@@ -23,8 +25,6 @@ from tolokaforge.core.grading.key_manifest import (
     SubstrateCoverage,
     entry,
 )
-from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
@@ -40,10 +40,8 @@ from tolokaforge.runner.models import (
     KeyAccounting,
     KeyAccountingRecord,
     StateChecksConfig,
-    TaskDescription,
     TranscriptRulesConfig,
 )
-from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
 pytestmark = pytest.mark.unit
 
@@ -54,8 +52,35 @@ _JSONPATH_CHECK = {
 }
 
 
-def _trial_spec_json(trial_id: str, grading: dict[str, Any] | None) -> str:
-    """A registrable ``TrialSpec`` whose task carries ``grading`` verbatim."""
+_CHECKS_PY = """\
+from tolokaforge.core.grading.checks_interface import CheckFailed, CheckPassed, check, init
+
+widgets: list[dict] = []
+
+
+@init(interface_version="1.0")
+def setup(ctx):
+    global widgets
+    widgets = ctx.final_state.data.get("widgets", [])
+
+
+@check
+def widget_was_shipped():
+    if any(w.get("status") == "shipped" for w in widgets):
+        return CheckPassed("widget is shipped")
+    return CheckFailed("widget is not shipped")
+"""
+
+
+def _checks_artifacts() -> dict[str, str]:
+    """``checks.py`` in the base64 ``tool_artifacts`` shape the adapter delivers."""
+    return {"checks.py": base64.b64encode(_CHECKS_PY.encode("utf-8")).decode("ascii")}
+
+
+def _task_dict(
+    grading: dict[str, Any] | None, tool_artifacts: dict[str, str] | None
+) -> dict[str, Any]:
+    """A registrable task carrying ``grading`` verbatim."""
     task: dict[str, Any] = {
         "task_id": "ledger_task",
         "name": "Ledger Task",
@@ -75,19 +100,11 @@ def _trial_spec_json(trial_id: str, grading: dict[str, Any] | None) -> str:
         },
         "agent_tools": [],
         "user_tools": [],
+        "tool_artifacts": tool_artifacts or {},
     }
     if grading is not None:
         task["grading"] = grading
-    return TrialSpec(
-        trial_id=trial_id,
-        run_id="ledger_run",
-        task=TaskDescription.model_validate(task),
-        agent_model_config=ModelConfig(name="test-model", provider="test"),
-        env_endpoints=EnvEndpoints(
-            db_url="http://db.test:8000",
-            runner_url="http://runner.test:50051",
-        ),
-    ).model_dump_json()
+    return task
 
 
 def _grade(
@@ -96,12 +113,12 @@ def _grade(
     trial_id: str,
     grading: dict[str, Any],
     llm_messages: list[dict[str, Any]] | None = None,
+    tool_artifacts: dict[str, str] | None = None,
 ) -> pb2.GradeTrialResponse:
     """Register a trial with ``grading`` and grade it through the real RPC handlers."""
-    register = pb2.RegisterTrialRequest(
+    register = register_request(
+        trial_spec_json(_task_dict(grading, tool_artifacts), trial_id=trial_id),
         trial_id=trial_id,
-        trial_spec_json=_trial_spec_json(trial_id, grading),
-        engine_protocol_version=ENGINE_PROTOCOL_VERSION,
     )
     registered = runner_service.RegisterTrial(register, mock_grpc_context)
     assert registered.success is True, registered.error
@@ -403,6 +420,45 @@ def test_expected_hash_is_reported_as_read_by_nothing_on_the_runner(
         "state_checks.hash.expected_state_hash skipped: core-only — no runner path "
         "reads it (#693)" in response.grade.reasons
     )
+
+
+def test_custom_checks_pack_grades_instead_of_erroring(runner_service, mock_grpc_context):
+    """A pack whose only scored key is `custom_checks` gets a grade, not an audit failure."""
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"custom_checks": 1.0},
+        "pass_threshold": 0.7,
+        "custom_checks": {"enabled": True, "file": "checks.py", "interface_version": "1.0"},
+    }
+
+    response = _grade(
+        runner_service,
+        mock_grpc_context,
+        "ledger_custom_checks:0",
+        grading,
+        tool_artifacts=_checks_artifacts(),
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.custom_checks == pytest.approx(1.0)
+    assert response.grade.score == pytest.approx(1.0)
+
+
+def test_custom_checks_written_but_disabled_records_the_skip(runner_service, mock_grpc_context):
+    """`enabled: false` still populates the key, so the runner says it scored nothing."""
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.7,
+        "state_checks": {"jsonpath_checks": [_JSONPATH_CHECK]},
+        "custom_checks": {"enabled": False, "file": "checks.py"},
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_custom_checks_off:0", grading)
+
+    assert response.success is True, response.error
+    assert response.grade.score == pytest.approx(1.0)
+    assert "custom_checks skipped: custom checks not enabled" in response.grade.reasons
 
 
 def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(

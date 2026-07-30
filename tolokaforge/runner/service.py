@@ -39,7 +39,7 @@ from tolokaforge.core.grading.check_runner import (
     CheckRunner,
     validate_checks_module,
 )
-from tolokaforge.core.grading.checks_helpers import build_check_context
+from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import (
     CheckResult,
     CheckResultSet,
@@ -80,6 +80,8 @@ from tolokaforge.runner.grading import (
     evaluate_transcript_rules,
 )
 from tolokaforge.runner.grading_ledger import (
+    CUSTOM_CHECKS_DISABLED_SKIP,
+    CUSTOM_CHECKS_KEY,
     DB_PROBES_KEY,
     EVALUATED,
     HASH_DISABLED_SKIP,
@@ -595,7 +597,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         grading = task_description.grading
         custom_checks_raw = grading.custom_checks if grading else None
-        if not custom_checks_raw or not custom_checks_raw.get("enabled", False):
+        if not custom_checks_enabled(custom_checks_raw):
             return None
 
         try:
@@ -1494,6 +1496,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id, trial_context, llm_messages
         )
         components.custom_checks_score = custom_checks_score
+        # A pack that wrote the block but left it off never reaches the executor,
+        # so the key is populated with nothing consuming it — the same shape as
+        # `hash:` keys arriving with `hash.enabled` false.
+        accounted_keys[CUSTOM_CHECKS_KEY] = (
+            EVALUATED
+            if custom_checks_enabled(grading_config.custom_checks)
+            else CUSTOM_CHECKS_DISABLED_SKIP
+        )
 
         # C) LEDGER — a scored key the config populated that no evaluator consumed
         # and no skip site claimed would score nothing while the trial still got a
@@ -1722,7 +1732,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
-        if not custom_config_raw or not custom_config_raw.get("enabled", False):
+        if not custom_checks_enabled(custom_config_raw):
             return -1.0, []
 
         config = CustomChecksConfig(**custom_config_raw)

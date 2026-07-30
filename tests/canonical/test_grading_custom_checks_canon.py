@@ -26,13 +26,10 @@ import json
 
 import pytest
 
+from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.core.grading.checks_interface import SUPPORTED_VERSIONS
-from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.core.trial_grader import _parse_grade_result
-from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading import combine_grade_components
-from tolokaforge.runner.models import TaskDescription
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -243,20 +240,6 @@ def _custom_checks_task(
     }
 
 
-def _trial_spec_json(task_dict: dict, trial_id: str) -> str:
-    """Build a valid :class:`TrialSpec` JSON wrapping ``task_dict``."""
-    return TrialSpec(
-        trial_id=trial_id,
-        run_id="canon_run",
-        task=TaskDescription.model_validate(task_dict),
-        agent_model_config=ModelConfig(name="test-model", provider="test"),
-        env_endpoints=EnvEndpoints(
-            db_url="http://db.test:8000",
-            runner_url="http://runner.test:50051",
-        ),
-    ).model_dump_json()
-
-
 class TestRegisterTrialValidatesCustomChecksInterfaceVersion:
     """Fail-loud contract for the pack-authored ``interface_version``.
 
@@ -276,10 +259,7 @@ class TestRegisterTrialValidatesCustomChecksInterfaceVersion:
             interface_version="9.9",
             artifacts=_checks_py_artifact("9.9"),
         )
-        request = pb2.RegisterTrialRequest(
-            trial_id=trial_id,
-            trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
-        )
+        request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
         response = runner_service.RegisterTrial(request, mock_grpc_context)
 
@@ -299,10 +279,7 @@ class TestRegisterTrialValidatesCustomChecksInterfaceVersion:
             interface_version="1.0",
             artifacts=_checks_py_artifact("1.0"),
         )
-        request = pb2.RegisterTrialRequest(
-            trial_id=trial_id,
-            trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
-        )
+        request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
         response = runner_service.RegisterTrial(request, mock_grpc_context)
 
@@ -323,10 +300,7 @@ class TestRegisterTrialValidatesCustomChecksInterfaceVersion:
             interface_version="9.9",
             artifacts=_checks_py_artifact("9.9"),
         )
-        request = pb2.RegisterTrialRequest(
-            trial_id=trial_id,
-            trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
-        )
+        request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
         response = runner_service.RegisterTrial(request, mock_grpc_context)
 
@@ -345,10 +319,7 @@ class TestRegisterTrialValidatesCustomChecksInterfaceVersion:
             interface_version="1.0",
             artifacts=None,
         )
-        request = pb2.RegisterTrialRequest(
-            trial_id=trial_id,
-            trial_spec_json=_trial_spec_json(task, trial_id=trial_id),
-        )
+        request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
         response = runner_service.RegisterTrial(request, mock_grpc_context)
 

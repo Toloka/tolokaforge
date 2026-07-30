@@ -52,6 +52,9 @@ NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
 CORE_ONLY_HASH_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="core-only — no runner path reads it (#693)"
 )
+CUSTOM_CHECKS_DISABLED_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="custom checks not enabled"
+)
 
 
 def _manifest_key(author_key: str) -> str:
@@ -68,6 +71,7 @@ COMMUNICATE_INFO_KEY = _manifest_key("transcript_rules.communicate_info")
 JSONPATHS_KEY = _manifest_key("state_checks.jsonpaths")
 DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
 LLM_JUDGE_KEY = _manifest_key("llm_judge")
+CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
 
 # Every model the runner's GradingConfig reaches, with where its fields sit in
 # ``GradingConfig.model_dump()``.
@@ -196,6 +200,7 @@ def accountable_author_keys() -> frozenset[str]:
             JSONPATHS_KEY,
             DB_PROBES_KEY,
             LLM_JUDGE_KEY,
+            CUSTOM_CHECKS_KEY,
         }
     )
 

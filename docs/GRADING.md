@@ -81,8 +81,9 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   nothing to evaluate.
 - **Every skip is recorded, not silent.** `transcript_rules` is skipped when a
   trial has neither messages nor tool history, `llm_judge` when it has no
-  messages, and the `state_checks.hash` members the runner's hash evaluator reads
-  when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
+  messages, `custom_checks` when the pack wrote the block but left
+  `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
+  reads when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
   standing skip: it is declared `CORE_ONLY` because no runner path reads it (#693),
   so it is recorded as such whether or not hash grading ran — folding it into the
   family's outcome would report a silently dead key as scored. Each skip records
@@ -101,7 +102,6 @@ declared `reason`.
 | `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #692 |
 | `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
 | `state_checks.hash.weight` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | core blends the hash score against the jsonpath score by this weight; the runner multiplies the two and has no weight concept | #686 |
-| `custom_checks` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner reports `custom_checks=-1.0`; running author-supplied Python inside the runner is a sandboxing project | #684 |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
 | `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |

@@ -7,7 +7,7 @@ from typing import Any
 from tolokaforge.core.evaluators.action_evaluator import ActionEvaluator
 from tolokaforge.core.evaluators.communicate_evaluator import CommunicateEvaluator
 from tolokaforge.core.grading.check_runner import CheckRunner
-from tolokaforge.core.grading.checks_helpers import build_check_context
+from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
     CustomChecksConfig,
@@ -213,17 +213,15 @@ class GradingEngine:
         # This engine intentionally leaves ``components.llm_judge`` unset.
 
         # Custom Python Checks
-        if self.config.custom_checks and self.task_dir:
-            custom_config = self.config.custom_checks
-            if custom_config.get("enabled", False):
-                custom_score, custom_reasons, custom_checks_details = self._run_custom_checks(
-                    trajectory=trajectory,
-                    final_env_state=final_env_state,
-                    custom_config=custom_config,
-                )
-                components.custom_checks = custom_score
-                if custom_reasons:
-                    reasons_parts.append(f"Custom: {custom_reasons}")
+        if custom_checks_enabled(self.config.custom_checks) and self.task_dir:
+            custom_score, custom_reasons, custom_checks_details = self._run_custom_checks(
+                trajectory=trajectory,
+                final_env_state=final_env_state,
+                custom_config=self.config.custom_checks,
+            )
+            components.custom_checks = custom_score
+            if custom_reasons:
+                reasons_parts.append(f"Custom: {custom_reasons}")
 
         # Combine scores with weights
         final_score = 0.0

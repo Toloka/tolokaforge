@@ -393,16 +393,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="custom_checks",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="GradingConfig.custom_checks",
-        runner_field=None,
+        runner_field="GradingConfig.custom_checks",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine._run_custom_checks",
-        reason=(
-            "the runner reports custom_checks=-1.0; running author-supplied Python "
-            "inside the runner is a sandboxing project, out of scope"
-        ),
-        tracking_issue=684,
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._grade_custom_checks",
     ),
     GradingKey(
         author_key="grading_method",

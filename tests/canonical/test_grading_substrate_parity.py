@@ -22,6 +22,7 @@ explicit, reviewable edit to one of the frozen constants below.
 """
 
 import importlib
+import shutil
 from dataclasses import dataclass
 from pathlib import Path
 from types import UnionType
@@ -62,6 +63,7 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     runner_dump_path,
 )
+from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
 
 pytestmark = pytest.mark.canonical
 
@@ -89,7 +91,6 @@ _DRIFT_EXEMPTIONS = frozenset(
         "combine.method",
         "state_checks.hash.expected_state_hash",
         "state_checks.hash.weight",
-        "custom_checks",
     }
 )
 
@@ -322,11 +323,31 @@ def _load_case(pack_dir: Path, case: str) -> _TrialCase:
     )
 
 
+class _FixtureStateDBClient:
+    """Serves a table map where a real trial reads it from the DB service.
+
+    ``StateResponse.data`` is the trial's ``table -> rows`` map, which the fixture
+    holds under ``state.db`` — the same level ``build_check_context`` picks for the
+    core engine. Both substrates therefore read one set of rows, so a score
+    difference can only come from the grading path itself.
+    """
+
+    def __init__(self, tables: dict[str, list[dict[str, Any]]]) -> None:
+        self._tables = tables
+
+    async def get_state(self, trial_id: str) -> runner_models.StateResponse:
+        return runner_models.StateResponse(
+            data=self._tables, version=1, full_hash="", stable_hash=""
+        )
+
+
 def _core_verdict(
-    family: str, grading_config: core_models.GradingConfig, case: _TrialCase
+    family: str, grading_config: core_models.GradingConfig, case: _TrialCase, task_dir: Path
 ) -> tuple[float, float]:
     """(component score, combined score) from the core engine's real combine."""
-    grade = GradingEngine(grading_config).grade_trajectory(case.core_trajectory, case.state)
+    grade = GradingEngine(grading_config, task_dir=task_dir).grade_trajectory(
+        case.core_trajectory, case.state
+    )
     component = getattr(grade.components, family, None)
     assert component is not None, (
         f"the core engine produced no {family!r} component — either that family has no "
@@ -335,10 +356,34 @@ def _core_verdict(
     return component, grade.score
 
 
+def _runner_custom_checks_score(
+    task_description: runner_models.TaskDescription, case: _TrialCase
+) -> float:
+    """The runner's ``custom_checks`` component, via its real delivery + executor.
+
+    ``checks.py`` reaches the runner as a base64 ``tool_artifacts`` entry, so the
+    extraction step is part of the path under test: a pack the adapter failed to
+    bundle scores nothing here rather than passing on a directory the test handed
+    over. ``shutdown`` then removes the temp dir extraction created.
+    """
+    servicer = RunnerServiceImpl(db_client=_FixtureStateDBClient(case.state["db"]))
+    try:
+        trial_id = f"{task_description.task_id}:0"
+        servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
+        context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
+        score, _ = servicer._run_async(
+            servicer._grade_custom_checks(trial_id, context, case.runner_messages)
+        )
+        return score
+    finally:
+        servicer.shutdown()
+
+
 def _runner_verdict(
-    family: str, grading: runner_models.GradingConfig, case: _TrialCase
+    family: str, task_description: runner_models.TaskDescription, case: _TrialCase
 ) -> tuple[float, float]:
     """(component score, combined score) from the runner's real evaluators."""
+    grading = task_description.grading
     if family == "state_checks":
         component, _ = evaluate_jsonpath_checks(
             grading.state_checks.jsonpath_checks, state=case.state
@@ -350,6 +395,9 @@ def _runner_verdict(
         )
         component = result.score
         components = {"transcript_score": component}
+    elif family == "custom_checks":
+        component = _runner_custom_checks_score(task_description, case)
+        components = {"custom_checks_score": component}
     else:
         pytest.fail(
             f"no runner differential driver for the {family!r} family — add one rather "
@@ -499,7 +547,7 @@ def test_exemption_sets_are_frozen_and_classified(test_data_dir):
 
 
 @pytest.mark.parametrize("author_key", [item.author_key for item in _differential_entries()])
-def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_data_dir):
+def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_data_dir, tmp_path):
     item = entry(author_key)
     family = author_key.split(".")[0]
     task_id = _task_id_for(author_key)
@@ -513,14 +561,19 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
     )
 
     core_config = adapter.get_grading_config(task_id)
-    runner_grading = adapter.to_task_description(task_id).grading
+    task_description = adapter.to_task_description(task_id)
     satisfying = _load_case(pack, "satisfying")
     violating = _load_case(pack, "violating")
+    # The core engine imports the pack's ``checks.py`` from its task dir, which
+    # writes ``__pycache__`` beside the fixture; grade from a copy so a canonical
+    # run leaves the repo clean.
+    core_task_dir = tmp_path / "core_task_dir"
+    shutil.copytree(pack, core_task_dir)
 
-    core_ok, core_ok_total = _core_verdict(family, core_config, satisfying)
-    core_bad, core_bad_total = _core_verdict(family, core_config, violating)
-    runner_ok, runner_ok_total = _runner_verdict(family, runner_grading, satisfying)
-    runner_bad, runner_bad_total = _runner_verdict(family, runner_grading, violating)
+    core_ok, core_ok_total = _core_verdict(family, core_config, satisfying, core_task_dir)
+    core_bad, core_bad_total = _core_verdict(family, core_config, violating, core_task_dir)
+    runner_ok, runner_ok_total = _runner_verdict(family, task_description, satisfying)
+    runner_bad, runner_bad_total = _runner_verdict(family, task_description, violating)
 
     assert core_ok > core_bad, (
         f"the core substrate does not discriminate {author_key}: satisfying "
