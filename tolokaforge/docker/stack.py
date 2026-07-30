@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from typing import Any
 
@@ -642,10 +643,33 @@ class EngineStack(BaseModel):
         construct a proper HTTP probe for every container port that has
         a ``/health`` endpoint on ``localhost``.
 
+        HTTP probes may also defer the host port explicitly with a
+        ``{port:<container_port>}`` placeholder in their URL (e.g.
+        ``http://localhost:{port:8001}/health``). This lets services with
+        auto-allocated host ports keep a rich probe definition — custom
+        timeouts, paths — instead of falling back to the generic default
+        below, which only understands the DB-service convention.
+
         For existing probes whose URL already contains a concrete port,
         this method returns them unchanged.
         """
         if probe is not None:
+            url = getattr(probe, "url", None)
+            if url is not None:
+                match = re.search(r"\{port:(\d+)\}", url)
+                if match:
+                    host_port = port_map.get(int(match.group(1)))
+                    if host_port is None:
+                        logger.warning(
+                            "Health probe URL %s references container port %s "
+                            "with no resolved host mapping; dropping probe",
+                            url,
+                            match.group(1),
+                        )
+                        return None
+                    return probe.model_copy(
+                        update={"url": url.replace(match.group(0), str(host_port))}
+                    )
             return probe
 
         # No explicit probe — try to build a default HTTP probe for port 8000
