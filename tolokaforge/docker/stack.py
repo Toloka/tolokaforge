@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from tolokaforge.core.run_display_events import build_component_id
 from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus
-from tolokaforge.docker.health import HealthProbe, HealthProbeError
+from tolokaforge.docker.health import HealthProbe, HealthProbeError, HttpHealthProbe
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.logging import LogRouter
 from tolokaforge.docker.mount import Mount
@@ -654,21 +654,21 @@ class EngineStack(BaseModel):
         this method returns them unchanged.
         """
         if probe is not None:
-            url = getattr(probe, "url", None)
-            if url is not None:
-                match = re.search(r"\{port:(\d+)\}", url)
+            if isinstance(probe, HttpHealthProbe):
+                match = re.search(r"\{port:(\d+)\}", probe.url)
                 if match:
                     host_port = port_map.get(int(match.group(1)))
                     if host_port is None:
-                        logger.warning(
-                            "Health probe URL %s references container port %s "
-                            "with no resolved host mapping; dropping probe",
-                            url,
-                            match.group(1),
+                        # A placeholder always comes with a matching
+                        # PortConfig on the same service, so this is a
+                        # programming/allocation error — dropping the probe
+                        # would silently skip the health wait.
+                        raise ValueError(
+                            f"Health probe URL {probe.url!r} references container "
+                            f"port {match.group(1)} with no resolved host mapping"
                         )
-                        return None
                     return probe.model_copy(
-                        update={"url": url.replace(match.group(0), str(host_port))}
+                        update={"url": probe.url.replace(match.group(0), str(host_port))}
                     )
             return probe
 

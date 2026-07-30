@@ -7,8 +7,12 @@ port-8000 fallback — e.g. rag-service's long cold-start timeout, which a
 30s default probe would break on first-run model downloads.
 """
 
+import pytest
+
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.stack import EngineStack
+
+pytestmark = pytest.mark.unit
 
 
 def test_placeholder_resolved_from_port_map():
@@ -19,9 +23,13 @@ def test_placeholder_resolved_from_port_map():
     assert resolved.timeout_s == 300.0  # custom timeout survives resolution
 
 
-def test_placeholder_with_unresolved_port_drops_probe():
+def test_placeholder_with_unresolved_port_raises():
+    # Every service declaring a placeholder also declares the matching
+    # PortConfig, so an unresolvable placeholder is a programming error —
+    # dropping the probe here would silently skip the health wait.
     probe = HealthProbe.http(url="http://localhost:{port:8001}/health")
-    assert EngineStack._resolve_health_probe(probe, {8000: 45678}) is None
+    with pytest.raises(ValueError, match="no resolved host mapping"):
+        EngineStack._resolve_health_probe(probe, {8000: 45678})
 
 
 def test_concrete_url_returned_unchanged():
