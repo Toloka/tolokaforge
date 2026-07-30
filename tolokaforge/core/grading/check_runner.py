@@ -1,16 +1,17 @@
-"""
-CheckRunner - Safely loads and executes custom check modules.
+"""Custom-checks execution seam (Pattern A per ADR-0011; see ADR-0012).
 
-This module provides the CheckRunner class that handles loading checks.py
-files from tasks, managing relative imports, and executing checks with
-timeout protection.
+The seam is: given a task-authored ``checks.py`` and a :class:`CheckContext`
+built from a trial's evidence, run the module's ``@init`` + ``@check`` functions
+and return a :class:`CheckResultSet`. The Protocol is :class:`CheckExecutor`;
+the production impl is :class:`CheckRunner` (in-process ThreadPoolExecutor);
+the deterministic test fixture is :class:`InMemoryCheckExecutor`.
 
 Usage:
     from tolokaforge.core.grading.check_runner import CheckRunner
     from tolokaforge.core.grading.checks_interface import CheckContext, CustomChecksConfig
 
-    runner = CheckRunner()
-    result = runner.run(
+    executor: CheckExecutor = CheckRunner()
+    result = executor.run(
         checks_file=Path("path/to/task/checks.py"),
         task_dir=Path("path/to/task"),
         ctx=check_context,
@@ -22,14 +23,16 @@ from __future__ import annotations
 
 import importlib.util
 import sys
+import threading
 import time
 import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.core.grading.checks_interface import (
     SUPPORTED_VERSIONS,
@@ -48,6 +51,49 @@ from tolokaforge.core.grading.checks_interface import (
     reset_registry,
 )
 from tolokaforge.core.logging import get_logger
+
+# The check registry in ``checks_interface`` (``_check_registry``, ``_init_func``,
+# ``_interface_version``) is module-global — it must be, because the decorators
+# ``@check`` and ``@init`` fire at import time and have no way to reach a
+# runner instance. The gRPC handler pool serves concurrent trials; two of them
+# calling ``load_checks_module`` in parallel would interleave
+# ``reset_registry() → exec_module() → get_registered_checks()`` and hand each
+# caller a merged/partial registry. This lock serialises the sequence
+# per-process so every caller sees only its own module's checks.
+_CHECKS_MODULE_LOAD_LOCK = threading.Lock()
+
+# Sentinel check name used by :mod:`tolokaforge.runner.service` to attach a
+# top-level executor error (module-load failure, timeout, crash) to the wire
+# ``custom_checks`` list. Task-authored ``@check`` functions may not adopt
+# this name; :meth:`CheckRunner.load_checks_module` raises ``ValueError`` on
+# collision so the sentinel remains unambiguous end-to-end.
+_CHECK_EXECUTOR_ERROR_NAME = "__executor__"
+_RESERVED_CHECK_NAMES = frozenset({_CHECK_EXECUTOR_ERROR_NAME})
+
+
+@runtime_checkable
+class CheckExecutor(Protocol):
+    """Run task-authored custom checks against a trial's evidence.
+
+    The per-trial *evidence* surface only. How an executor is built —
+    isolation strategy, worker pool sizing, injected logger — is a
+    construction-time concern of the concrete impl, NOT part of this
+    contract, so a future subprocess/namespace-isolated executor (#673)
+    or offline replay executor need not accept the current
+    ``executor_type``/``max_workers`` knobs.
+
+    ``run()`` never raises for check failures; it captures them into the
+    :class:`CheckResultSet` (per-check ``ERROR``/``FAILED`` results or a
+    top-level ``error`` on module-load failure or timeout).
+    """
+
+    def run(
+        self,
+        checks_file: Path,
+        task_dir: Path,
+        ctx: CheckContext,
+        config: CustomChecksConfig,
+    ) -> CheckResultSet: ...
 
 
 class CheckRunner:
@@ -191,64 +237,77 @@ class CheckRunner:
         if not checks_file.exists():
             raise ValueError(f"Checks file not found: {checks_file}")
 
-        # Reset the registry before loading to ensure clean state
-        reset_registry()
+        # The ``reset → exec_module → get_registered_checks`` sequence walks
+        # module-level state in ``checks_interface`` (see
+        # ``_CHECKS_MODULE_LOAD_LOCK``); serialise the whole sequence so
+        # concurrent callers never observe a merged registry.
+        with _CHECKS_MODULE_LOAD_LOCK:
+            # Reset the registry before loading to ensure clean state
+            reset_registry()
 
-        # Clear potentially stale cached modules that might conflict
-        # (e.g., check_helpers from a different project)
-        self._clear_cached_modules(["check_helpers", "task_helpers", "helpers"])
+            # Clear potentially stale cached modules that might conflict
+            # (e.g., check_helpers from a different project)
+            self._clear_cached_modules(["check_helpers", "task_helpers", "helpers"])
 
-        # Add import paths
-        added_paths = self._add_import_paths(task_dir, relative_imports)
+            # Add import paths
+            added_paths = self._add_import_paths(task_dir, relative_imports)
 
-        try:
-            # Load module dynamically
-            spec = importlib.util.spec_from_file_location("task_checks", checks_file)
-            if not spec or not spec.loader:
-                raise ValueError(f"Could not create module spec for: {checks_file}")
-
-            module: ModuleType = importlib.util.module_from_spec(spec)
-
-            # Add to sys.modules temporarily so relative imports work
-            sys.modules["task_checks"] = module
             try:
-                spec.loader.exec_module(module)
+                # Load module dynamically
+                spec = importlib.util.spec_from_file_location("task_checks", checks_file)
+                if not spec or not spec.loader:
+                    raise ValueError(f"Could not create module spec for: {checks_file}")
+
+                module: ModuleType = importlib.util.module_from_spec(spec)
+
+                # Add to sys.modules temporarily so relative imports work
+                sys.modules["task_checks"] = module
+                try:
+                    spec.loader.exec_module(module)
+                finally:
+                    # Remove from sys.modules to avoid pollution
+                    if "task_checks" in sys.modules:
+                        del sys.modules["task_checks"]
+
+                # Get registered functions from decorators
+                init_func = get_init_func()
+                checks = get_registered_checks()
+                version = get_interface_version()
+
+                self.logger.debug(
+                    "Loaded checks module",
+                    file=str(checks_file),
+                    init_found=init_func is not None,
+                    check_count=len(checks),
+                    version=version,
+                )
+
+                reserved_collisions = sorted(_RESERVED_CHECK_NAMES & checks.keys())
+                if reserved_collisions:
+                    raise ValueError(
+                        f"@check name(s) collide with reserved sentinel(s): "
+                        f"{reserved_collisions}. Reserved names: "
+                        f"{sorted(_RESERVED_CHECK_NAMES)}. Rename the check."
+                    )
+
+                # Validate version
+                if version not in SUPPORTED_VERSIONS:
+                    raise ValueError(
+                        f"Unsupported interface version: {version}. Supported: {SUPPORTED_VERSIONS}"
+                    )
+
+                if expected_version != version:
+                    self.logger.warning(
+                        "Version mismatch between config and module",
+                        expected=expected_version,
+                        actual=version,
+                    )
+
+                return init_func, checks, version
+
             finally:
-                # Remove from sys.modules to avoid pollution
-                if "task_checks" in sys.modules:
-                    del sys.modules["task_checks"]
-
-            # Get registered functions from decorators
-            init_func = get_init_func()
-            checks = get_registered_checks()
-            version = get_interface_version()
-
-            self.logger.debug(
-                "Loaded checks module",
-                file=str(checks_file),
-                init_found=init_func is not None,
-                check_count=len(checks),
-                version=version,
-            )
-
-            # Validate version
-            if version not in SUPPORTED_VERSIONS:
-                raise ValueError(
-                    f"Unsupported interface version: {version}. Supported: {SUPPORTED_VERSIONS}"
-                )
-
-            if expected_version != version:
-                self.logger.warning(
-                    "Version mismatch between config and module",
-                    expected=expected_version,
-                    actual=version,
-                )
-
-            return init_func, checks, version
-
-        finally:
-            # Clean up import paths even if error occurred
-            self._remove_import_paths(added_paths)
+                # Clean up import paths even if error occurred
+                self._remove_import_paths(added_paths)
 
     def _execute_checks(
         self,
@@ -547,6 +606,42 @@ class CheckRunner:
 
 
 # =============================================================================
+# Startup-time validation helper — RegisterTrial calls this to fail-loud on
+# an unsupported ``interface_version`` or a broken ``checks.py`` BEFORE the
+# (expensive) trial runs.
+# =============================================================================
+
+
+def validate_checks_module(
+    *,
+    checks_file: Path,
+    task_dir: Path,
+    config: CustomChecksConfig,
+) -> None:
+    """Load ``checks_file`` far enough to validate its ``@init(interface_version=…)``.
+
+    Raises:
+        ValueError: If the file is missing, the module fails to import
+            (broken/missing ``relative_imports`` targets, syntax error,
+            import error), or the declared ``interface_version`` is not in
+            :data:`~tolokaforge.core.grading.checks_interface.SUPPORTED_VERSIONS`.
+            The message names the declared version and ``SUPPORTED_VERSIONS``
+            for the unsupported-version case.
+    """
+    try:
+        CheckRunner().load_checks_module(
+            checks_file=checks_file,
+            task_dir=task_dir,
+            relative_imports=config.relative_imports,
+            expected_version=config.interface_version,
+        )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Failed to load checks module {checks_file}: {exc}") from exc
+
+
+# =============================================================================
 # Convenience function for simple usage
 # =============================================================================
 
@@ -617,10 +712,109 @@ def run_custom_checks(
 
 
 # =============================================================================
+# InMemoryCheckExecutor — non-executing test fixture (records calls,
+# returns configurable results, exercises failure knobs)
+# =============================================================================
+
+
+@dataclass
+class CheckExecutorCallLog:
+    """Records every :meth:`CheckExecutor.run` call an :class:`InMemoryCheckExecutor` saw.
+
+    Tests assert on this directly instead of mocking the executor. Each entry
+    captures the resolved ``checks_file`` / ``task_dir`` paths, the config's
+    ``interface_version`` + ``timeout_seconds`` + ``fail_on_error``, the
+    context's ``task_id``, and the transcript length + final-state key surface
+    handed in — enough for a caller to assert *what* was submitted to the
+    executor without inspecting a real file.
+    """
+
+    runs: list[dict[str, Any]] = field(default_factory=list)
+
+
+class InMemoryCheckExecutor:
+    """Non-executing :class:`CheckExecutor` fixture — deterministic, no file I/O.
+
+    Records every ``run()`` on :attr:`call_log` and returns a configurable
+    :class:`CheckResultSet`. By default returns an empty result set (no
+    checks defined). Failure knobs cover the two shapes the production
+    impl produces on trouble:
+
+    * ``raise_on_run`` — raise the supplied ``Exception`` from ``run()``.
+      Simulates an executor that itself crashes (never expected of
+      :class:`CheckRunner`, but the Protocol allows it and callers must
+      handle it).
+    * ``return_error`` — return a :class:`CheckResultSet` whose ``error``
+      field carries the given string and whose ``results`` are empty.
+      Simulates module-load failure, timeout, or any top-level error the
+      production runner surfaces via ``CheckResultSet.error``.
+
+    A caller may also pass ``result_set=`` to return an arbitrary
+    pre-built :class:`CheckResultSet`. Production never constructs this —
+    it is a test seam only.
+    """
+
+    def __init__(
+        self,
+        *,
+        result_set: CheckResultSet | None = None,
+        raise_on_run: Exception | None = None,
+        return_error: str | None = None,
+    ) -> None:
+        if raise_on_run is not None and return_error is not None:
+            raise ValueError(
+                "InMemoryCheckExecutor: pass at most one of raise_on_run / return_error."
+            )
+        if raise_on_run is not None and result_set is not None:
+            raise ValueError(
+                "InMemoryCheckExecutor: raise_on_run and result_set are mutually exclusive."
+            )
+        if return_error is not None and result_set is not None:
+            raise ValueError(
+                "InMemoryCheckExecutor: return_error and result_set are mutually exclusive."
+            )
+        self._result_set = result_set
+        self._raise_on_run = raise_on_run
+        self._return_error = return_error
+        self.call_log = CheckExecutorCallLog()
+
+    def run(
+        self,
+        checks_file: Path,
+        task_dir: Path,
+        ctx: CheckContext,
+        config: CustomChecksConfig,
+    ) -> CheckResultSet:
+        self.call_log.runs.append(
+            {
+                "checks_file": checks_file,
+                "task_dir": task_dir,
+                "interface_version": config.interface_version,
+                "timeout_seconds": config.timeout_seconds,
+                "fail_on_error": config.fail_on_error,
+                "task_id": ctx.task.task_id,
+                "transcript_len": len(ctx.transcript.messages),
+                "final_state_keys": tuple(ctx.final_state.data.keys()),
+            }
+        )
+        if self._raise_on_run is not None:
+            raise self._raise_on_run
+        if self._return_error is not None:
+            return CheckResultSet(error=self._return_error, execution_time_ms=0.0)
+        if self._result_set is not None:
+            return self._result_set
+        return CheckResultSet(results=[], execution_time_ms=0.0)
+
+
+# =============================================================================
 # Public API exports
 # =============================================================================
 
 __all__ = [
+    "CheckExecutor",
+    "CheckExecutorCallLog",
     "CheckRunner",
+    "InMemoryCheckExecutor",
     "run_custom_checks",
+    "validate_checks_module",
 ]

@@ -1,11 +1,19 @@
 """
-Generic helper functions for custom checks.
+Shared helpers for custom checks — two distinct audiences.
 
-These are domain-agnostic utilities that can be used by any task's checks.py.
-Domain-specific helpers should be defined at the project level (e.g.,
-tasks/airline/check_helpers.py).
+Author-facing utilities (``check_dict_params``, ``last_tool_name``,
+``text_contains_any``, …) are imported by a task's ``checks.py`` to compare
+dicts, inspect tool-call sequences, and pattern-match text. Domain-specific
+helpers should be defined at the project level (e.g. ``tasks/airline/
+check_helpers.py``).
 
-Usage in checks.py:
+Framework-internal utility (``build_check_context``) is called by BOTH grading
+paths — :class:`~tolokaforge.core.grading.combine.GradingEngine` on the host
+and the runner-side :class:`~tolokaforge.runner.service.RunnerServiceImpl` —
+so the two builders cannot diverge on the ``final_env_state`` shape transform
+custom checks depend on.
+
+Usage in ``checks.py``:
     from tolokaforge.core.grading.checks_helpers import (
         check_dict_params, last_tool_name, text_contains_any
     )
@@ -16,6 +24,68 @@ from __future__ import annotations
 import re
 from collections.abc import Sequence
 from typing import Any
+
+from tolokaforge.core.grading.checks_interface import (
+    CheckContext,
+    EnvironmentState,
+    TaskContext,
+    Transcript,
+)
+
+# =============================================================================
+# Framework-internal: shared CheckContext builder (used by both grading paths)
+# =============================================================================
+
+
+def build_check_context(
+    *,
+    initial_state_json_db: dict[str, Any] | None,
+    final_env_state: dict[str, Any],
+    transcript: Transcript,
+    task: TaskContext,
+) -> CheckContext:
+    """Build a :class:`CheckContext` with the canonical state-shape transform.
+
+    Encodes the single rule both grading paths must apply so that a check
+    written against one path reads identical evidence from the other:
+
+    * ``initial_state.data`` = ``initial_state_json_db`` when it is a dict, else
+      an empty dict. Author-declared initial DB rows only; other init sources
+      (filesystem, mock_web) are not surfaced here.
+    * ``final_state.data`` is picked from ``final_env_state`` by precedence —
+      the ``"agent"`` dict wins over the ``"db"`` dict, and the flat
+      ``final_env_state`` is used if neither key holds a dict. This mirrors the
+      adapter convention that ``final_env_state["agent"]`` carries the mutated
+      state after tool calls.
+    * When ``final_env_state`` supplies a ``"filesystem"`` key and the chosen
+      level lacks one, ``filesystem`` is merged into ``final_state.data`` so a
+      check can read agent-produced files alongside the DB rows it just
+      inspected.
+
+    ``transcript`` and ``task`` are passed through — each grading path owns
+    its own transcript/task construction (rich :class:`Trajectory` on the host,
+    wire message dicts + :class:`~tolokaforge.runner.models.TaskDescription`
+    on the runner).
+    """
+    initial_data = initial_state_json_db if isinstance(initial_state_json_db, dict) else {}
+
+    if isinstance(final_env_state.get("agent"), dict):
+        final_state_data = final_env_state["agent"]
+    elif isinstance(final_env_state.get("db"), dict):
+        final_state_data = final_env_state["db"]
+    else:
+        final_state_data = final_env_state
+
+    if "filesystem" in final_env_state and "filesystem" not in final_state_data:
+        final_state_data = {**final_state_data, "filesystem": final_env_state["filesystem"]}
+
+    return CheckContext(
+        initial_state=EnvironmentState(data=initial_data),
+        final_state=EnvironmentState(data=final_state_data),
+        transcript=transcript,
+        task=task,
+    )
+
 
 # =============================================================================
 # Dictionary / Data Comparison Helpers

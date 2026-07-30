@@ -1,0 +1,16 @@
+{
+  "customers": [
+    {
+      "id": "C-1",
+      "opening_balance": 500,
+      "balance": 500
+    }
+  ],
+  "transactions": [
+    {"id": "T-1", "customer_id": "C-1", "kind": "credit", "amount": 120},
+    {"id": "T-2", "customer_id": "C-1", "kind": "debit",  "amount": 45},
+    {"id": "T-3", "customer_id": "C-1", "kind": "credit", "amount": 60},
+    {"id": "T-4", "customer_id": "C-1", "kind": "debit",  "amount": 15},
+    {"id": "T-5", "customer_id": "C-1", "kind": "credit", "amount": 80}
+  ]
+}

@@ -744,6 +744,7 @@ class NativeAdapter(BaseAdapter):
         effective_combine = resolve_effective_grading_combine(
             self._project_combine_defaults(), combine_data
         )
+        custom_checks_data = grading_data.get("custom_checks") if grading_data else None
         grading_config = RunnerGradingConfig(
             combine_method=effective_combine.method,
             weights=effective_combine.weights,
@@ -751,6 +752,7 @@ class NativeAdapter(BaseAdapter):
             state_checks=state_checks,
             transcript_rules=transcript_rules,
             llm_judge=llm_judge_config,
+            custom_checks=custom_checks_data,
         )
 
         # Build user simulator config
@@ -799,7 +801,13 @@ class NativeAdapter(BaseAdapter):
         # Bundle task directory files as base64 artifacts for Docker Runner.
         # The Runner runs in a separate container without access to the host
         # filesystem, so we transfer all necessary files via gRPC/TaskDescription.
-        tool_artifacts = self._bundle_task_artifacts(task_dir) if mcp_server_ref else {}
+        # Custom checks packs (with or without an MCP server) also need the
+        # bundle so the runner can resolve ``custom_checks.file`` and every
+        # ``relative_imports`` path under the trial's ``artifacts_dir``.
+        custom_checks_enabled = bool(custom_checks_data and custom_checks_data.get("enabled"))
+        tool_artifacts = (
+            self._bundle_task_artifacts(task_dir) if mcp_server_ref or custom_checks_enabled else {}
+        )
 
         # mcp_server.py loads its initial state from ``initial_state.json``
         # next to itself (see ``create_server`` in tools_interface.py). For the

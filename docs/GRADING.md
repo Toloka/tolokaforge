@@ -1,10 +1,14 @@
 # Grading System
 
-Tolokaforge evaluates agent performance across three dimensions:
+Tolokaforge evaluates agent performance across four dimensions:
 
 1. **State Checks** - Final environment state verification (hash-based or JSONPath)
 2. **Transcript Rules** - Process constraints (required phrases, tool usage, turn limits)
 3. **LLM Judge** - Per-criterion rubric grading by a read-only agentic judge
+4. **Custom Checks** - Author-written Python `@check` functions for the
+   deterministic-Python gap the other three don't express (arithmetic
+   over final state, transcript patterns tied to computed values). See
+   [custom_checks.md](custom_checks.md).
 
 Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENCE.md) for `grading.yaml` schema.
 
@@ -424,6 +428,41 @@ scored as it was). See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md).
 
 ---
 
+## Custom Checks
+
+The `custom_checks` component runs author-written Python `@check`
+functions from a pack's `checks.py`. It's the deterministic-Python gap
+the other three components don't express: arithmetic over final DB
+rows, invariants that span multiple tables, transcript patterns tied to
+computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
+`CheckSkipped`; per-check results ride the wire as `CustomCheckResult`
+entries and the aggregate `CheckResultSet.aggregate_score` fills the
+`custom_checks` component.
+
+```yaml
+custom_checks:
+  enabled: true
+  file: "checks.py"
+  interface_version: "1.0"
+  timeout_seconds: 30
+  weight: 1.0
+  fail_on_error: true
+```
+
+The full authoring API (`@init`, `@check`, `CheckContext`), the network
+doctrine (checks may not initiate network — the runner container's
+`no_internet` policy enforces at the container boundary; #673 tracks
+per-check sandboxing), and the delivery mechanics (`checks.py` bundled
+into `TaskDescription.tool_artifacts`) live in
+[custom_checks.md](custom_checks.md). The seam itself is
+[ADR-0012](adr/0012-custom-checks-extension.md).
+[`examples/native/custom_checks/`](../examples/native/custom_checks/)
+is the runnable reference — a ledger-reconciliation task that verifies
+`balance == opening + sum(credits) - sum(debits)` and combines that
+with `state_checks` under `combine.weights.custom_checks`.
+
+---
+
 ## pass@k Metrics
 
 Estimates probability that at least 1 of k attempts succeeds.
@@ -535,8 +574,11 @@ probe passes only for the one the after-hours policy permits.
 Final score formula:
 
 ```
-final_score = (state_score * W_state + transcript_score * W_transcript + judge_score * W_judge)
-              / (W_state + W_transcript + W_judge)
+final_score = (state_score       * W_state
+             + transcript_score  * W_transcript
+             + judge_score       * W_judge
+             + custom_score      * W_custom)
+              / (W_state + W_transcript + W_judge + W_custom)
 
 binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion gated)
 ```
@@ -544,7 +586,9 @@ binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion 
 A component that was not evaluated is **excluded** from both the numerator and
 the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
-as a `0.0`.
+as a `0.0`. A `custom_checks`-only pack whose score comes back absent still
+fails loud (empty active set with a configured `custom_checks` weight ⇒
+`(0.0, False)`, not a silent `(1.0, True)`).
 
 ### Weighting Strategies
 
@@ -560,6 +604,13 @@ combine:
 combine:
   weights: { state_checks: 0.6, transcript_rules: 0.3, llm_judge: 0.1 }
   pass_threshold: 0.75
+```
+
+**Outcome + deterministic-Python check:**
+```yaml
+combine:
+  weights: { state_checks: 0.4, custom_checks: 0.6 }
+  pass_threshold: 0.8
 ```
 
 ### Inheriting `combine` from the project
@@ -641,5 +692,6 @@ state_checks:
 ## See Also
 
 - [REFERENCE.md](REFERENCE.md) - Configuration schemas
-- [CUSTOM_CHECKS.md](CUSTOM_CHECKS.md) - Custom Python validation
+- [custom_checks.md](custom_checks.md) - Custom Python validation
+- [ADR-0012](adr/0012-custom-checks-extension.md) - `CheckExecutor` Protocol seam
 - [TASKS.md](TASKS.md) - Task authoring guide with difficulty design patterns

@@ -8,10 +8,10 @@ from tolokaforge.core.evaluators.action_evaluator import ActionEvaluator
 from tolokaforge.core.evaluators.communicate_evaluator import CommunicateEvaluator
 from tolokaforge.core.evaluators.environment_evaluator import EnvironmentEvaluator
 from tolokaforge.core.grading.check_runner import CheckRunner
+from tolokaforge.core.grading.checks_helpers import build_check_context
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
     CustomChecksConfig,
-    EnvironmentState,
     TaskContext,
     ToolCallStatus,
     Transcript,
@@ -383,17 +383,13 @@ class GradingEngine:
         trajectory: Trajectory,
         final_env_state: dict[str, Any],
     ) -> CheckContext:
-        """
-        Build CheckContext from trajectory and final state.
+        """Build the host-side :class:`CheckContext` from a :class:`Trajectory`.
 
-        Args:
-            trajectory: Trial trajectory
-            final_env_state: Final environment state
-
-        Returns:
-            CheckContext for custom checks
+        Owns the transcript-from-``Trajectory`` transform (rich :class:`Message`
+        objects → author-facing :class:`CheckMessage`); the state-shape rule
+        is delegated to :func:`build_check_context` so the runner path applies
+        the same precedence by construction.
         """
-        # Build transcript with tool calls
         messages: list[CheckMessage] = []
         for msg in trajectory.messages:
             tool_calls = []
@@ -403,7 +399,7 @@ class GradingEngine:
                         CheckToolCall(
                             name=tc.name,
                             arguments=tc.arguments,
-                            result=None,  # We don't have results stored in messages
+                            result=None,
                             status=ToolCallStatus.SUCCESS,
                         )
                     )
@@ -415,35 +411,14 @@ class GradingEngine:
                 )
             )
 
-        transcript = Transcript(messages=messages)
+        initial_json_db: dict[str, Any] | None = None
+        if self.task_initial_state and isinstance(self.task_initial_state.json_db, dict):
+            initial_json_db = self.task_initial_state.json_db
 
-        # Get initial state from task_initial_state if available
-        initial_data = {}
-        if self.task_initial_state and self.task_initial_state.json_db:
-            if isinstance(self.task_initial_state.json_db, dict):
-                initial_data = self.task_initial_state.json_db
-            # If it's a path, we'd need to load it - for now, leave empty
-
-        # Handle nested state structure (agent/user/db) or flat state
-        # Custom checks need flat state data, so extract from appropriate level
-        if "agent" in final_env_state and isinstance(final_env_state.get("agent"), dict):
-            # Use agent state which contains the mutated data from tool calls
-            final_state_data = final_env_state["agent"]
-        elif "db" in final_env_state and isinstance(final_env_state.get("db"), dict):
-            # Fallback to db state
-            final_state_data = final_env_state["db"]
-        else:
-            # Use as-is (flat state)
-            final_state_data = final_env_state
-
-        # Pass filesystem state through so custom checks can access agent-produced files
-        if "filesystem" in final_env_state and "filesystem" not in final_state_data:
-            final_state_data = {**final_state_data, "filesystem": final_env_state["filesystem"]}
-
-        return CheckContext(
-            initial_state=EnvironmentState(data=initial_data),
-            final_state=EnvironmentState(data=final_state_data),
-            transcript=transcript,
+        return build_check_context(
+            initial_state_json_db=initial_json_db,
+            final_env_state=final_env_state,
+            transcript=Transcript(messages=messages),
             task=TaskContext(
                 task_id=trajectory.task_id,
                 task_name=trajectory.task_id,

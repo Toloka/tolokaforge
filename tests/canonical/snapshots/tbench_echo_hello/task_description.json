@@ -50,6 +50,7 @@
   "generated_at": null,
   "grading": {
     "combine_method": "weighted",
+    "custom_checks": null,
     "grading_method": "test_execution",
     "llm_judge": null,
     "pass_threshold": 0.5,
