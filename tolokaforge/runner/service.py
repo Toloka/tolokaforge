@@ -33,7 +33,11 @@ from typing import Any
 import grpc
 from pydantic import ValidationError
 
-from tolokaforge.core.grading.check_runner import CheckExecutor, CheckRunner
+from tolokaforge.core.grading.check_runner import (
+    CheckExecutor,
+    CheckRunner,
+    validate_checks_module,
+)
 from tolokaforge.core.grading.checks_helpers import build_check_context
 from tolokaforge.core.grading.checks_interface import (
     CheckResult,
@@ -542,6 +546,58 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except Exception as e:
             logger.warning(f"Failed to clean up artifact dir {artifact_dir}: {e}")
 
+    def _validate_custom_checks_startup(
+        self,
+        trial_id: str,
+        task_description: "TaskDescription",
+        artifacts_dir: Path | None,
+    ) -> str | None:
+        """Fail-loud validation of ``custom_checks`` before the trial runs.
+
+        Returns ``None`` when the pack has no ``custom_checks`` config, has it
+        disabled, or the config validates and ``checks.py`` loads with a
+        supported ``interface_version``. Returns a human-readable error string
+        naming the offending version and :data:`SUPPORTED_VERSIONS` (or the
+        module-load failure) when the pack claims custom checks but the module
+        cannot be loaded — the caller turns that into a
+        ``RegisterTrialResponse(success=False, error=…)``.
+        """
+        grading = task_description.grading
+        custom_checks_raw = grading.custom_checks if grading else None
+        if not custom_checks_raw or not custom_checks_raw.get("enabled", False):
+            return None
+
+        try:
+            custom_config = CustomChecksConfig(**custom_checks_raw)
+        except ValidationError as exc:
+            logger.error(f"RegisterTrial: {trial_id} - invalid custom_checks config: {exc}")
+            return f"Invalid custom_checks config: {exc}"
+
+        if artifacts_dir is None:
+            error = (
+                f"custom_checks.enabled but no tool_artifacts were delivered "
+                f"(expected `{custom_config.file}` under the trial's artifacts dir)"
+            )
+            logger.error(f"RegisterTrial: {trial_id} - {error}")
+            return error
+
+        checks_file = artifacts_dir / custom_config.file
+        try:
+            validate_checks_module(
+                checks_file=checks_file,
+                task_dir=artifacts_dir,
+                config=custom_config,
+            )
+        except ValueError as exc:
+            logger.error(f"RegisterTrial: {trial_id} - custom_checks validation failed: {exc}")
+            return f"custom_checks validation failed: {exc}"
+
+        logger.info(
+            f"RegisterTrial: {trial_id} - custom_checks validated "
+            f"(interface_version={custom_config.interface_version}, file={custom_config.file})"
+        )
+        return None
+
     # =========================================================================
     # RegisterTrial - Initialize trial with TaskDescription
     # =========================================================================
@@ -595,6 +651,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # relative filename (e.g. "mcp_server.py") so the TaskDescription
             # stays portable across machines; the Runner fixes up the path here.
             self._resolve_mcp_server_scripts(task_description, artifacts_dir)
+
+        # Reject an unsupported ``interface_version`` or a broken ``checks.py``
+        # BEFORE DB init, tool reconstruction, and the agent loop — the load
+        # cost of validation is bounded, the cost of running a trial to grade
+        # time only to reject on version isn't.
+        custom_checks_error = self._validate_custom_checks_startup(
+            trial_id, task_description, artifacts_dir
+        )
+        if custom_checks_error is not None:
+            return pb2.RegisterTrialResponse(success=False, error=custom_checks_error)
 
         # Initialise mcp_core TypeSense registry so search_policy tools work.
         # Documents are already indexed by the host-side adapter; we just

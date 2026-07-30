@@ -574,6 +574,42 @@ class CheckRunner:
 
 
 # =============================================================================
+# Startup-time validation helper — RegisterTrial calls this to fail-loud on
+# an unsupported ``interface_version`` or a broken ``checks.py`` BEFORE the
+# (expensive) trial runs.
+# =============================================================================
+
+
+def validate_checks_module(
+    *,
+    checks_file: Path,
+    task_dir: Path,
+    config: CustomChecksConfig,
+) -> None:
+    """Load ``checks_file`` far enough to validate its ``@init(interface_version=…)``.
+
+    Raises:
+        ValueError: If the file is missing, the module fails to import
+            (broken/missing ``relative_imports`` targets, syntax error,
+            import error), or the declared ``interface_version`` is not in
+            :data:`~tolokaforge.core.grading.checks_interface.SUPPORTED_VERSIONS`.
+            The message names the declared version and ``SUPPORTED_VERSIONS``
+            for the unsupported-version case.
+    """
+    try:
+        CheckRunner().load_checks_module(
+            checks_file=checks_file,
+            task_dir=task_dir,
+            relative_imports=config.relative_imports,
+            expected_version=config.interface_version,
+        )
+    except ValueError:
+        raise
+    except Exception as exc:
+        raise ValueError(f"Failed to load checks module {checks_file}: {exc}") from exc
+
+
+# =============================================================================
 # Convenience function for simple usage
 # =============================================================================
 
@@ -748,4 +784,5 @@ __all__ = [
     "CheckRunner",
     "InMemoryCheckExecutor",
     "run_custom_checks",
+    "validate_checks_module",
 ]
