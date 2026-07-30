@@ -32,6 +32,7 @@ from tolokaforge.runner.grading_ledger import (
     HASH_DISABLED_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
+    reject_hash_members_read_by_another_evaluator,
     runner_dump_path,
 )
 from tolokaforge.runner.models import (
@@ -208,7 +209,11 @@ def test_an_evaluated_key_is_fully_accounted():
 # --------------------------------------------------------------------------
 
 
-def _probe_key(runner_field: str, runner_dict_key: str | None = None) -> GradingKey:
+def _probe_key(
+    runner_field: str,
+    runner_dict_key: str | None = None,
+    runner_evaluator: str | None = None,
+) -> GradingKey:
     return GradingKey(
         author_key="probe.key",
         kind=KeyKind.SCORED_CHECK,
@@ -217,6 +222,7 @@ def _probe_key(runner_field: str, runner_dict_key: str | None = None) -> Grading
         core_field=None,
         runner_field=runner_field,
         runner_dict_key=runner_dict_key,
+        runner_evaluator=runner_evaluator,
         reason="a probe entry built by this test",
     )
 
@@ -234,6 +240,17 @@ def test_runner_field_naming_an_unknown_field_fails_loud():
 def test_runner_dict_key_is_not_resolvable():
     with pytest.raises(ValueError, match="runner_dict_key"):
         runner_dump_path(_probe_key("StateChecksConfig.jsonpath_checks", runner_dict_key="enabled"))
+
+
+def test_a_hash_family_member_another_evaluator_reads_fails_loud():
+    """The family shares one outcome, so a second reader needs its own recording site."""
+    foreign = _probe_key(
+        "StateChecksConfig.golden_actions",
+        runner_evaluator="tolokaforge.runner.grading.evaluate_golden_action_traces",
+    )
+
+    with pytest.raises(ValueError, match="needs its own recording site"):
+        reject_hash_members_read_by_another_evaluator([foreign])
 
 
 # --------------------------------------------------------------------------

@@ -118,7 +118,14 @@ class GradingKey:
 _CORE_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.TranscriptChecker.grade"
 _RUNNER_TRANSCRIPT_EVALUATOR = "tolokaforge.runner.grading.evaluate_transcript_rules"
 _CORE_HASH_EVALUATOR = "tolokaforge.core.grading.state_checks.StateChecker.check_hash"
-_RUNNER_HASH_EVALUATOR = "tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading"
+
+RUNNER_HASH_EVALUATOR = "tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading"
+"""The one runner evaluator that reads the ``state_checks.hash`` family.
+
+The runtime ledger hands a single outcome to the whole family, so a member naming a
+different evaluator needs its own recording site.
+"""
+
 _ID_FIELDS_LOAD_CHECK = "tolokaforge.runner.id_resolution.check_id_fields_reference_known_tables"
 
 _TRANSCRIPT_AGGREGATION_REASON = (
@@ -170,7 +177,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.hash",
         runner_field=None,
         core_evaluator=_CORE_HASH_EVALUATOR,
-        runner_evaluator=_RUNNER_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
         tracking_issue=687,
         family_root=True,
     ),
@@ -183,7 +190,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="StateChecksConfig.hash_enabled",
         core_dict_key="enabled",
         core_evaluator=_CORE_HASH_EVALUATOR,
-        runner_evaluator=_RUNNER_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
         tracking_issue=687,
     ),
     GradingKey(
@@ -195,7 +202,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="StateChecksConfig.golden_actions",
         core_dict_key="golden_actions",
         core_evaluator="tolokaforge.core.grading.state_checks.StateChecker.grade_tau_style",
-        runner_evaluator=_RUNNER_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
         tracking_issue=687,
     ),
     GradingKey(
@@ -249,7 +256,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.numeric_string_fields",
         runner_field="StateChecksConfig.numeric_string_fields",
         core_evaluator="tolokaforge.core.hash.compute_stable_hash",
-        runner_evaluator=_RUNNER_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
         tracking_issue=687,
     ),
     GradingKey(

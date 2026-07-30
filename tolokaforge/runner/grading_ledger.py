@@ -14,7 +14,7 @@ keys are the combine itself, so neither is ever evaluated in the component phase
 and neither belongs in the ledger.
 """
 
-from collections.abc import Mapping
+from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -22,6 +22,7 @@ from pydantic import BaseModel
 
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
+    RUNNER_HASH_EVALUATOR,
     GradingKey,
     KeyKind,
     SubstrateCoverage,
@@ -104,6 +105,28 @@ _CORE_ONLY_HASH_FAMILY = tuple(
 )
 
 
+def reject_hash_members_read_by_another_evaluator(items: Iterable[GradingKey]) -> None:
+    """Raise unless every hash-family member is read by the one hash evaluator.
+
+    :func:`hash_family_accounting` splits the family on ``runner_evaluator is not
+    None``, but the outcome its caller hands in is specifically the hash evaluator's.
+    A member some other runner evaluator reads would silently be reported with the
+    hash evaluator's verdict, and the accounting-site lock would not notice because
+    the key is accountable either way.
+    """
+    for item in items:
+        if item.runner_evaluator not in (None, RUNNER_HASH_EVALUATOR):
+            raise ValueError(
+                f"{item.author_key}: hash-family member declares runner evaluator "
+                f"{item.runner_evaluator!r}, but hash_family_accounting() hands every "
+                f"member the outcome of {RUNNER_HASH_EVALUATOR}. A member another "
+                "evaluator reads needs its own recording site, not this family's outcome"
+            )
+
+
+reject_hash_members_read_by_another_evaluator(_HASH_FAMILY)
+
+
 @dataclass(frozen=True)
 class LedgerAudit:
     """The ledger's verdict on one component phase.
@@ -135,7 +158,12 @@ def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, Key
 
 
 def transcript_rules_author_keys() -> tuple[str, ...]:
-    """Every ledger key under ``transcript_rules``."""
+    """Every ledger key under ``transcript_rules``, for the blanket degenerate skip.
+
+    A trial with neither messages nor tool history runs no per-field sub-check, so
+    the whole subtree is skipped as a unit. A site that did run records the per-key
+    constant instead.
+    """
     return tuple(
         item.author_key for item in LEDGER_KEYS if item.author_key.startswith("transcript_rules.")
     )
@@ -148,12 +176,23 @@ def accountable_author_keys() -> frozenset[str]:
     ledger key with a ``runner_field`` is in here, so a manifest entry no site
     claims fails the canonical suite rather than failing ``GradeTrial`` in
     production for every task that populates it.
+
+    Every member is therefore named per site, or derived from the two hash-family
+    tuples the one hash recording site is handed. Comprehending any member from
+    :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
+    tautological assertion is worse than a missing one, because the next reader
+    trusts its message and stops looking.
     """
     return frozenset(
         {
             *_RUNNER_HASH_FAMILY,
             *_CORE_ONLY_HASH_FAMILY,
-            *transcript_rules_author_keys(),
+            MUST_CONTAIN_KEY,
+            DISALLOW_REGEX_KEY,
+            MAX_TURNS_KEY,
+            REQUIRED_ACTIONS_KEY,
+            TOOL_EXPECTATIONS_KEY,
+            COMMUNICATE_INFO_KEY,
             JSONPATHS_KEY,
             DB_PROBES_KEY,
             LLM_JUDGE_KEY,

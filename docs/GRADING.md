@@ -55,21 +55,23 @@ suite instead of failing every `GradeTrial` that carries it.
 The canonical suite guards the *config models*; the runner guards each individual
 request. Through the component phase `GradeTrial` records, at every point an
 evaluator is invoked or deliberately skipped, which author key that call accounts
-for — `"evaluated"` or `"skipped: <reason>"`. It then subtracts those records from
-the scored keys the request's grading config actually populated
+for. Each record is a `KeyAccountingRecord` — an outcome of `EVALUATED` or
+`SKIPPED` plus, for a skip, the `detail` a task author reads. It then subtracts
+those records from the scored keys the request's grading config actually populated
 ([`tolokaforge/runner/grading_ledger.py`](../tolokaforge/runner/grading_ledger.py)).
 A non-empty remainder means a key would have scored nothing, so the RPC returns
 `success=False` naming each key and the runner evaluator its manifest entry
 expects — never a grade, and never a `0.0` folded into the combine. A key the
 manifest declares `CORE_ONLY` that nonetheless arrives populated fails the same
-way, quoting that entry's `reason`.
+way, quoting that entry's `reason` — unless a recording site claims it as a
+standing skip, per **Every skip is recorded, not silent** below.
 
 Three properties keep the ledger from rejecting configs that grade correctly:
 
 - **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
   `relaxed_validation`, `numeric_string_fields`) shape another check rather than
   producing a component, and `AGGREGATION` keys are the combine itself, so neither
-  is ever "evaluated" in the component phase.
+  is ever evaluated in the component phase.
 - **A key counts as populated only when it is non-empty.** An explicitly written
   `disallowed_tools: []` is indistinguishable from unset, and either way has
   nothing to evaluate.
@@ -265,11 +267,16 @@ these keys requires a runner image built from the same release. Old engine + new
 runner is safe **for this key** (core-side `extra="ignore"`).
 
 **Runner-engine version lock (both directions)**: the runner-side
-`StateChecksConfig` is `extra="forbid"` and declares no `env_assertions` or
-`db_hash_check` field, so for `state_checks` the engine and the runner image must
-come from the same release in *both* directions — an older engine that still emits
-either key is rejected at `RegisterTrial` with a validation error naming the
-field.
+`StateChecksConfig` is `extra="forbid"` and declares no `env_assertions` field. An
+engine older than this release translates `env_assertions` onto that field for
+**every** pack carrying a non-empty `state_checks:` block, whether or not the pack
+declares the key, and the trial spec crosses the wire as a plain
+`model_dump_json()`. So an old engine against a new runner image is rejected at
+`RegisterTrial` for *every* such trial, not only for packs that used the key —
+`state_checks` requires engine and runner image from the same release in both
+directions. (`db_hash_check` was never declared on the runner config at all, so no
+engine ever emitted it and it is not part of this lock — a populated
+`db_hash_check` is rejected core-side at config load.)
 
 ### Best Practices
 
