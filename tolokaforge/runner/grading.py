@@ -31,6 +31,7 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     StateDiff,
     TableDiff,
+    ToolExecutorIdentity,
     TranscriptEvaluationResult,
     TranscriptRuleResult,
 )
@@ -255,7 +256,7 @@ def evaluate_transcript_rules(
 
     Args:
         messages: LLM conversation messages (role, content)
-        tool_history: List of tool call records (ToolCallRecord.model_dump())
+        tool_history: The trial's tool calls (RecordedToolCall.model_dump())
         rules: A single ``TranscriptRulesConfig.model_dump()`` dict
 
     Returns:
@@ -326,9 +327,12 @@ def evaluate_transcript_rules(
 
 
 # Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
-# author-facing role names) onto the ToolCallRecord.executor vocabulary
-# ("agent"/"user", what the runtime records). They name the same actor.
-_REQUESTOR_TO_EXECUTOR = {"assistant": "agent", "user": "user"}
+# author-facing role names) onto the recorded executor identity. They name the
+# same actor.
+_REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
+    "assistant": ToolExecutorIdentity.AGENT,
+    "user": ToolExecutorIdentity.USER,
+}
 
 
 def _assistant_message_texts(messages: list[dict[str, Any]]) -> list[str]:

@@ -30,9 +30,7 @@ pytestmark = pytest.mark.unit
 
 def _make_tool_executor() -> MagicMock:
     """Create a mock ToolExecutor."""
-    executor = MagicMock()
-    executor.get_logs.return_value = []
-    return executor
+    return MagicMock()
 
 
 def _make_user_simulator() -> MagicMock:

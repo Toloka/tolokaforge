@@ -59,7 +59,7 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
-from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION, RECORDED_STATUS_BY_PROTO
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
@@ -467,7 +467,18 @@ class GrpcRunnerClient:
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
 
-            return ToolResult(success=success, output=response.output, error=error)
+            # The fine-grained status the runner reported, carried through rather
+            # than collapsed to ``success`` — it is what makes TIMEOUT /
+            # TOOL_NOT_FOUND / INVALID_ARGUMENTS recordable on the docker path.
+            # ``None`` for a status no trial records (a trial-not-found response
+            # names no tool outcome); the recorder then resolves ERROR, which is
+            # the truth stated less specifically.
+            return ToolResult(
+                success=success,
+                output=response.output,
+                error=error,
+                status=RECORDED_STATUS_BY_PROTO.get(response.status),
+            )
 
         except grpc.RpcError as e:
             logger.error(f"gRPC error in execute_tool: {e}")

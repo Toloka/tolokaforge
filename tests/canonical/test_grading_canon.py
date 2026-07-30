@@ -2,6 +2,7 @@
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.rubric import build_submit_report_tool
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.core.grading.transcript import TranscriptChecker
@@ -82,11 +83,7 @@ class TestTranscriptCheckerCanon:
         ]
 
         tool_log = [
-            {
-                "tool": "write_file",
-                "success": True,
-                "args": {"path": "result.txt", "content": "391"},
-            },
+            recorded_call("write_file", arguments={"path": "result.txt", "content": "391"}),
         ]
 
         score, reasons = checker.grade(

@@ -737,7 +737,7 @@ def get_stable_state(trial_id: str) -> Dict:
 The Host (orchestrator) needs to:
 
 1. **Replace `RegisterTools` with `RegisterTrial`**: Send full TaskDescription instead of just tool definitions
-2. **Update `DockerExecutorAdapter`**: Use new `ExecuteToolResponse` status enum
+2. **Update `DockerRunnerAdapter`**: Use new `ExecuteToolResponse` status enum
 3. **Add `GradeTrial` call**: After trial completion, call `GradeTrial` instead of local grading
 4. **Handle new error statuses**: Map `ExecutionStatus` to appropriate LLM responses
 

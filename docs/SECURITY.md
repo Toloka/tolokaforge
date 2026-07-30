@@ -64,9 +64,20 @@ Multiple timeout layers prevent runaway execution:
 
 `orchestrator.max_budget_usd` sets a hard spend limit. The orchestrator tracks cumulative estimated cost and stops leasing new work when the cap is reached.
 
-### Log Redaction
+### Tool Call Arguments
 
-Tool call arguments are logged with automatic redaction of keys containing `password`, `token`, `secret`, or `api_key`. See `ToolExecutor._redact_sensitive()` in `tolokaforge/tools/registry.py`.
+Tool call arguments are recorded verbatim on `RecordedToolCall.arguments`, on both
+grading substrates. The recorded tool calls are the grader's input: transcript
+rules match declared actions against recorded arguments, so rewriting an argument
+value there changes a grading verdict. A trial whose agent passed a
+`token`-named argument would fail an argument match it should have passed —
+and would fail it on one substrate only, since the runner has never rewritten
+anything.
+
+Redaction belongs at artifact-write time, where the concern actually is —
+discretion protects a written artifact, and must not corrupt what the grader
+reads. That layering is tracked in #694; until it lands, treat a recorded run's
+tool-call arguments as carrying whatever the agent passed.
 
 ## Secret Management
 

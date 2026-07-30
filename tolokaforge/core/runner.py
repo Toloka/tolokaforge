@@ -20,7 +20,10 @@ from tolokaforge.core.models import (
     Metrics,
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
+    RecordedToolCall,
     TerminationReason,
+    ToolExecutionStatus,
+    ToolExecutorIdentity,
     Trajectory,
     TrialStatus,
 )
@@ -32,7 +35,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.tools.registry import ToolExecutor
+from tolokaforge.tools.registry import ToolExecutor, resolve_tool_status
 
 # Import user tools support (optional for dual-control scenarios)
 try:
@@ -46,6 +49,54 @@ def _as_utc(ts: float | None) -> datetime | None:
     if ts is None:
         return None
     return datetime.fromtimestamp(ts, tz=timezone.utc)
+class TrialToolCallRecorder:
+    """The trial's single ordered tool-call record.
+
+    One list and one counter for the whole trial, so ``sequence`` is execution
+    order across every executor. Satisfies
+    :class:`~tolokaforge.core.models.ToolCallRecorder`.
+    """
+
+    def __init__(self) -> None:
+        self._recorded: list[RecordedToolCall] = []
+
+    def record(
+        self,
+        *,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+        status: ToolExecutionStatus,
+        output: str,
+        latency_seconds: float,
+    ) -> None:
+        self._recorded.append(
+            RecordedToolCall(
+                call_id=call_id,
+                sequence=len(self._recorded),
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
+                status=status,
+                output=output,
+                latency_seconds=latency_seconds,
+                timestamp=datetime.now(tz=timezone.utc),
+            )
+        )
+
+    @property
+    def recorded(self) -> tuple[RecordedToolCall, ...]:
+        return tuple(self._recorded)
+
+    def recorded_for(self, executor: ToolExecutorIdentity) -> tuple[RecordedToolCall, ...]:
+        """The calls one executor made, in trial order.
+
+        Stuck detection is a policy over the agent's own repetition, so it must
+        read the agent's stream alone — a user-side call sitting in its last-N
+        window would dilute it.
+        """
+        return tuple(call for call in self._recorded if call.executor is executor)
 
 
 class TrialRunner:
@@ -91,6 +142,7 @@ class TrialRunner:
         self._probe_stats = probe_stats
 
         self.messages: list[Message] = []
+        self.tool_call_recorder = TrialToolCallRecorder()
         self.metrics = Metrics()
         self.start_time: float = 0.0
         self.logger: StructuredLogger | None = None  # Initialized in run()
@@ -260,6 +312,7 @@ class TrialRunner:
                     ),
                     should_terminate=self._agent_termination,
                     user_turn=self._agent_user_turn,
+                    recorder=self.tool_call_recorder,
                     request_limiter=self.request_limiter,
                     normalize_tool_arguments=self._normalize_tool_arguments,
                     logger=self.logger,
@@ -301,19 +354,13 @@ class TrialRunner:
             self.metrics.turns = len([m for m in self.messages if m.role == MessageRole.ASSISTANT])
             self._apply_probe_stats()
 
-            # Calculate tool success rate (combine agent and user tool logs)
-            tool_logs = self.tool_executor.get_logs()
-            user_tool_logs = self.user_tool_executor.get_logs() if self.user_tool_executor else []
-
-            # Combine logs and mark source
-            combined_logs = [{**log, "executor": "agent"} for log in tool_logs] + [
-                {**log, "executor": "user"} for log in user_tool_logs
-            ]
-
-            if combined_logs:
-                success_count = sum(1 for log in combined_logs if log.get("success", False))
-                self.metrics.tool_success_rate = success_count / len(combined_logs)
-                self.metrics.tool_calls = len(combined_logs)
+            recorded_calls = self.tool_call_recorder.recorded
+            if recorded_calls:
+                success_count = sum(
+                    1 for call in recorded_calls if call.status is ToolExecutionStatus.SUCCESS
+                )
+                self.metrics.tool_success_rate = success_count / len(recorded_calls)
+                self.metrics.tool_calls = len(recorded_calls)
 
             self.logger.info(
                 "Trial execution finished",
@@ -349,7 +396,7 @@ class TrialRunner:
                 termination_reason=termination_reason,
                 messages=self.messages,
                 metrics=self.metrics,
-                tool_log=combined_logs,
+                tool_log=list(recorded_calls),
             )
 
             return trajectory
@@ -522,7 +569,7 @@ class TrialRunner:
         original loop.
         """
         if self.stuck_detector and self.stuck_detector.is_stuck(
-            messages, self.tool_executor.get_logs()
+            messages, self.tool_call_recorder.recorded_for(ToolExecutorIdentity.AGENT)
         ):
             self.metrics.stuck_detected = True
             self.logger.warning("Stuck condition detected")
@@ -593,6 +640,18 @@ class TrialRunner:
                 tool_start = time.time()
                 tool_result = self.user_tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
                 tool_duration = time.time() - tool_start
+
+                self.tool_call_recorder.record(
+                    call_id=tc.id,
+                    tool_name=tc.name,
+                    arguments=tc.arguments or {},
+                    executor=ToolExecutorIdentity.USER,
+                    status=resolve_tool_status(tool_result),
+                    output=(
+                        tool_result.output if tool_result.success else (tool_result.error or "")
+                    ),
+                    latency_seconds=tool_duration,
+                )
 
                 self.logger.debug(
                     "User tool executed",

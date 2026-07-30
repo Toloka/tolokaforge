@@ -17,126 +17,15 @@ import pytest
 
 pytestmark = pytest.mark.unit
 
-from tolokaforge.core.models import ModelConfig
-from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
+from tests.utils.runner_requests import simple_task_description as simple_task_description_dict
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.models import TaskDescription
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
-
-
-def _trial_spec_json(task_dict: dict[str, Any], trial_id: str = "test:0") -> str:
-    """Build a valid ``TrialSpec`` JSON wrapping ``task_dict``.
-
-    The runner-side ``RegisterTrial`` handler validates the full ``TrialSpec``
-    (not just ``spec.task``), so tests must construct a complete spec rather
-    than a minimal ``{"task": ...}`` wrapper. This helper keeps the call
-    sites compact: a single function call replaces ``json.dumps(...)``.
-    """
-    return TrialSpec(
-        trial_id=trial_id,
-        run_id="test_run",
-        task=TaskDescription.model_validate(task_dict),
-        agent_model_config=ModelConfig(name="test-model", provider="test"),
-        env_endpoints=EnvEndpoints(
-            db_url="http://db.test:8000",
-            runner_url="http://runner.test:50051",
-        ),
-    ).model_dump_json()
-
-
-def _register_request(
-    trial_spec_json: str,
-    trial_id: str = "test:0",
-    default_tool_timeout_s: float = 0.0,
-    engine_protocol_version: int = ENGINE_PROTOCOL_VERSION,
-) -> pb2.RegisterTrialRequest:
-    """A ``RegisterTrialRequest`` this runner accepts.
-
-    ``engine_protocol_version`` defaults to the version this engine declares so
-    the runner's skew gate passes; the skew tests pass an older value.
-    """
-    return pb2.RegisterTrialRequest(
-        trial_id=trial_id,
-        trial_spec_json=trial_spec_json,
-        default_tool_timeout_s=default_tool_timeout_s,
-        engine_protocol_version=engine_protocol_version,
-    )
-
-
-def _execute_request(
-    trial_id: str,
-    tool_name: str,
-    arguments_json: str = "{}",
-    executor: str = "agent",
-    call_id: str = "call_0",
-) -> pb2.ExecuteToolRequest:
-    """An ``ExecuteToolRequest`` carrying a non-empty ``call_id``, which the
-    runner requires of every call."""
-    return pb2.ExecuteToolRequest(
-        trial_id=trial_id,
-        tool_name=tool_name,
-        arguments_json=arguments_json,
-        executor=executor,
-        call_id=call_id,
-    )
 
 
 @pytest.fixture
 def simple_task_description() -> dict[str, Any]:
-    """
-    Create a simplified TaskDescription for testing.
-
-    This is a minimal version of a TlkMcpCore/Tau task that exercises
-    the full pipeline without requiring external dependencies.
-
-    Note: Tools are not included because they require source config for
-    reconstruction. Tests that need tools inject mock tools directly.
-    """
-    return {
-        "task_id": "test_task_001",
-        "name": "Simple Integration Test",
-        "category": "test",
-        "description": "A simple integration test task",
-        "adapter_type": "tau",
-        "system_prompt": "You are a test assistant.",
-        "initial_state": {
-            "tables": {
-                "users": [
-                    {"id": "u1", "name": "Alice", "balance": 100},
-                    {"id": "u2", "name": "Bob", "balance": 200},
-                ],
-                "orders": [],
-            },
-            "schemas": [
-                {
-                    "table_name": "users",
-                    "fields": {"id": "string", "name": "string", "balance": "integer"},
-                },
-                {
-                    "table_name": "orders",
-                    "fields": {"id": "string", "user_id": "string", "amount": "integer"},
-                },
-            ],
-            "unstable_fields": [
-                {"table_name": "orders", "field_name": "id", "reason": "auto_id"},
-            ],
-        },
-        "agent_tools": [],
-        "user_tools": [],
-        "grading": {
-            "combine_method": "all",
-            "pass_threshold": 1.0,
-            "state_checks": {
-                "hash_enabled": True,
-                "golden_actions": [
-                    {
-                        "tool_name": "create_order",
-                        "arguments": {"user_id": "u1", "amount": 50},
-                    },
-                ],
-            },
-        },
-    }
+    return simple_task_description_dict()
 
 
 class TestRunnerPipeline:
@@ -153,8 +42,8 @@ class TestRunnerPipeline:
         trial_id = "integration_test:0"
 
         # Create request
-        request = _register_request(
-            _trial_spec_json(simple_task_description, trial_id=trial_id),
+        request = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id),
             trial_id=trial_id,
             default_tool_timeout_s=30.0,
         )
@@ -173,7 +62,7 @@ class TestRunnerPipeline:
 
     def test_register_trial_invalid_json(self, runner_service, mock_grpc_context):
         """Test RegisterTrial handles invalid JSON gracefully."""
-        request = _register_request("not valid json {{{", trial_id="invalid_json_test:0")
+        request = register_request("not valid json {{{", trial_id="invalid_json_test:0")
 
         response = runner_service.RegisterTrial(request, mock_grpc_context)
 
@@ -182,7 +71,7 @@ class TestRunnerPipeline:
 
     def test_execute_tool_trial_not_found(self, runner_service, mock_grpc_context):
         """Test ExecuteTool returns error for non-existent trial."""
-        request = _execute_request("nonexistent:0", "some_tool")
+        request = execute_request("nonexistent:0", "some_tool")
 
         response = runner_service.ExecuteTool(request, mock_grpc_context)
 
@@ -196,16 +85,16 @@ class TestRunnerPipeline:
         trial_id = "tool_not_found_test:0"
 
         # First register the trial
-        register_request = _register_request(
-            _trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
         )
-        register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
+        register_response = runner_service.RegisterTrial(registration, mock_grpc_context)
         assert register_response.success is True, f"Registration failed: {register_response.error}"
 
         # Try to execute non-existent tool
-        execute_request = _execute_request(trial_id, "nonexistent_tool")
+        execution = execute_request(trial_id, "nonexistent_tool")
 
-        response = runner_service.ExecuteTool(execute_request, mock_grpc_context)
+        response = runner_service.ExecuteTool(execution, mock_grpc_context)
 
         assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
         assert "not found" in response.error_message.lower()
@@ -217,10 +106,10 @@ class TestRunnerPipeline:
         trial_id = "mock_tool_test:0"
 
         # Register the trial
-        register_request = _register_request(
-            _trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
         )
-        register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
+        register_response = runner_service.RegisterTrial(registration, mock_grpc_context)
         assert register_response.success is True, f"Registration failed: {register_response.error}"
 
         # Inject a mock tool into the trial context
@@ -231,9 +120,9 @@ class TestRunnerPipeline:
         runner_service.trials[trial_id].agent_tools["get_user"] = mock_get_user
 
         # Execute the tool
-        execute_request = _execute_request(trial_id, "get_user", json.dumps({"user_id": "u1"}))
+        execution = execute_request(trial_id, "get_user", json.dumps({"user_id": "u1"}))
 
-        response = runner_service.ExecuteTool(execute_request, mock_grpc_context)
+        response = runner_service.ExecuteTool(execution, mock_grpc_context)
 
         assert response.status == pb2.EXECUTION_STATUS_SUCCESS
         assert response.error_message == ""
@@ -266,10 +155,10 @@ class TestRunnerPipeline:
         }
 
         # Register trial
-        register_request = _register_request(
-            _trial_spec_json(task_description, trial_id=trial_id), trial_id=trial_id
+        registration = register_request(
+            trial_spec_json(task_description, trial_id=trial_id), trial_id=trial_id
         )
-        runner_service.RegisterTrial(register_request, mock_grpc_context)
+        runner_service.RegisterTrial(registration, mock_grpc_context)
 
         # Grade trial
         grade_request = pb2.GradeTrialRequest(trial_id=trial_id)
@@ -297,10 +186,10 @@ class TestRunnerPipeline:
         trial_id = "get_state_test:0"
 
         # Register trial
-        register_request = _register_request(
-            _trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
         )
-        runner_service.RegisterTrial(register_request, mock_grpc_context)
+        runner_service.RegisterTrial(registration, mock_grpc_context)
 
         # Get state
         get_state_request = pb2.GetStateRequest(
@@ -323,10 +212,10 @@ class TestRunnerPipeline:
         trial_id = "reset_test:0"
 
         # Register trial
-        register_request = _register_request(
-            _trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
         )
-        runner_service.RegisterTrial(register_request, mock_grpc_context)
+        runner_service.RegisterTrial(registration, mock_grpc_context)
 
         # Reset trial
         reset_request = pb2.ResetTrialRequest(trial_id=trial_id)
@@ -356,10 +245,10 @@ class TestRunnerPipeline:
         trial_id = "full_lifecycle_test:0"
 
         # 1. Register trial
-        register_request = _register_request(
-            _trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+        registration = register_request(
+            trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
         )
-        register_response = runner_service.RegisterTrial(register_request, mock_grpc_context)
+        register_response = runner_service.RegisterTrial(registration, mock_grpc_context)
 
         assert register_response.success is True
         assert trial_id in runner_service.trials
@@ -381,14 +270,13 @@ class TestRunnerPipeline:
         runner_service.trials[trial_id].agent_tools["create_order"] = mock_create_order
 
         # 3. Execute tool
-        execute_request = _execute_request(
+        execution = execute_request(
             trial_id, "create_order", json.dumps({"user_id": "u1", "amount": 50})
         )
-        execute_response = runner_service.ExecuteTool(execute_request, mock_grpc_context)
+        execute_response = runner_service.ExecuteTool(execution, mock_grpc_context)
 
         assert execute_response.status == pb2.EXECUTION_STATUS_SUCCESS
 
-        # Verify tool call was recorded in history - ToolCallRecord is a Pydantic model
         trial_context = runner_service.trials[trial_id]
         assert len(trial_context.tool_call_history) == 1
         assert trial_context.tool_call_history[0].tool_name == "create_order"
@@ -475,9 +363,7 @@ class TestRegisterTrialSearchPlanes:
                     "domain_name": "external_retail_v3",
                 }
             )
-            request = _register_request(
-                _trial_spec_json(task, trial_id=trial_id), trial_id=trial_id
-            )
+            request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
             response = service.RegisterTrial(request, mock_grpc_context)
 
@@ -504,9 +390,7 @@ class TestRegisterTrialSearchPlanes:
                     "domain_name": "external_retail_v3",
                 }
             )
-            request = _register_request(
-                _trial_spec_json(task, trial_id=trial_id), trial_id=trial_id
-            )
+            request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
             response = service.RegisterTrial(request, mock_grpc_context)
 
@@ -531,9 +415,7 @@ class TestRegisterTrialSearchPlanes:
                     "domain_name": "external_retail_v3",
                 }
             )
-            request = _register_request(
-                _trial_spec_json(task, trial_id=trial_id), trial_id=trial_id
-            )
+            request = register_request(trial_spec_json(task, trial_id=trial_id), trial_id=trial_id)
 
             response = service.RegisterTrial(request, mock_grpc_context)
 
@@ -560,8 +442,8 @@ class TestCallIdCrossesTheWire:
         """
         trial_id = f"{request.node.name}:0"
         registered = runner_service.RegisterTrial(
-            _register_request(
-                _trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
+            register_request(
+                trial_spec_json(simple_task_description, trial_id=trial_id), trial_id=trial_id
             ),
             mock_grpc_context,
         )
@@ -577,7 +459,7 @@ class TestCallIdCrossesTheWire:
         self, runner_service, mock_grpc_context, echo_trial
     ):
         response = runner_service.ExecuteTool(
-            _execute_request(echo_trial, "echo", json.dumps({"x": 1}), call_id="toolu_abc"),
+            execute_request(echo_trial, "echo", json.dumps({"x": 1}), call_id="toolu_abc"),
             mock_grpc_context,
         )
         assert response.status == pb2.EXECUTION_STATUS_SUCCESS
@@ -592,7 +474,7 @@ class TestCallIdCrossesTheWire:
         arguments = json.dumps({"payment_id": "PAY-1"})
         for call_id in ("toolu_A", "toolu_B"):
             response = runner_service.ExecuteTool(
-                _execute_request(echo_trial, "echo", arguments, call_id=call_id),
+                execute_request(echo_trial, "echo", arguments, call_id=call_id),
                 mock_grpc_context,
             )
             assert response.status == pb2.EXECUTION_STATUS_SUCCESS
@@ -610,7 +492,7 @@ class TestCallIdCrossesTheWire:
         tool error and retry until the turn budget was gone."""
         with pytest.raises(ValueError, match="carries no call_id"):
             runner_service.ExecuteTool(
-                _execute_request(echo_trial, "echo", call_id=""), mock_grpc_context
+                execute_request(echo_trial, "echo", call_id=""), mock_grpc_context
             )
 
     def test_unknown_tool_is_recorded_not_only_reported(
@@ -619,7 +501,7 @@ class TestCallIdCrossesTheWire:
         """The host appends a ``role: tool`` error for a rejected call, so a record
         that omits it reads as a call that was never attempted."""
         response = runner_service.ExecuteTool(
-            _execute_request(echo_trial, "no_such_tool", call_id="toolu_missing"),
+            execute_request(echo_trial, "no_such_tool", call_id="toolu_missing"),
             mock_grpc_context,
         )
         assert response.status == pb2.EXECUTION_STATUS_TOOL_NOT_FOUND
@@ -634,7 +516,7 @@ class TestCallIdCrossesTheWire:
         self, runner_service, mock_grpc_context, echo_trial
     ):
         response = runner_service.ExecuteTool(
-            _execute_request(echo_trial, "echo", "{not json", call_id="toolu_bad_args"),
+            execute_request(echo_trial, "echo", "{not json", call_id="toolu_bad_args"),
             mock_grpc_context,
         )
         assert response.status == pb2.EXECUTION_STATUS_INVALID_ARGUMENTS
@@ -650,10 +532,10 @@ class TestCallIdCrossesTheWire:
         """Rejections occupy sequence slots, so the index stays the trial-wide
         attempt order rather than the order of the calls that happened to run."""
         runner_service.ExecuteTool(
-            _execute_request(echo_trial, "no_such_tool", call_id="toolu_0"), mock_grpc_context
+            execute_request(echo_trial, "no_such_tool", call_id="toolu_0"), mock_grpc_context
         )
         runner_service.ExecuteTool(
-            _execute_request(echo_trial, "echo", json.dumps({"x": 1}), call_id="toolu_1"),
+            execute_request(echo_trial, "echo", json.dumps({"x": 1}), call_id="toolu_1"),
             mock_grpc_context,
         )
 
@@ -672,8 +554,8 @@ class TestRegisterTrialVersionGate:
     ):
         trial_id = "skewed_engine:0"
         response = runner_service.RegisterTrial(
-            _register_request(
-                _trial_spec_json(simple_task_description, trial_id=trial_id),
+            register_request(
+                trial_spec_json(simple_task_description, trial_id=trial_id),
                 trial_id=trial_id,
                 engine_protocol_version=ENGINE_PROTOCOL_VERSION - 1,
             ),
@@ -693,7 +575,7 @@ class TestRegisterTrialVersionGate:
         response = runner_service.RegisterTrial(
             pb2.RegisterTrialRequest(
                 trial_id=trial_id,
-                trial_spec_json=_trial_spec_json(simple_task_description, trial_id=trial_id),
+                trial_spec_json=trial_spec_json(simple_task_description, trial_id=trial_id),
             ),
             mock_grpc_context,
         )
@@ -709,8 +591,8 @@ class TestRegisterTrialVersionGate:
         refusing it would be a version lock this runner does not need."""
         trial_id = "newer_engine:0"
         response = runner_service.RegisterTrial(
-            _register_request(
-                _trial_spec_json(simple_task_description, trial_id=trial_id),
+            register_request(
+                trial_spec_json(simple_task_description, trial_id=trial_id),
                 trial_id=trial_id,
                 engine_protocol_version=ENGINE_PROTOCOL_VERSION + 1,
             ),

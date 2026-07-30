@@ -6,7 +6,12 @@ import re
 from collections import Counter
 from typing import Any
 
-from tolokaforge.core.models import TerminationReason, Trajectory, TrialStatus
+from tolokaforge.core.models import (
+    TerminationReason,
+    ToolExecutionStatus,
+    Trajectory,
+    TrialStatus,
+)
 
 DETERMINISTIC_CLASSES = {
     "tool_arguments",
@@ -66,15 +71,15 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
             }
         )
     else:
-        for idx, log in enumerate(trajectory.tool_log):
-            if log.get("success") is True:
+        for idx, call in enumerate(trajectory.tool_log):
+            if call.status is ToolExecutionStatus.SUCCESS:
                 continue
-            err_text = str(log.get("error") or "")
-            tool_name = str(log.get("tool") or "unknown")
+            # A failed call records its failure text as the call's output.
+            err_text = call.output
             evidence.append(
                 {
                     "kind": "tool_log",
-                    "tool": tool_name,
+                    "tool": call.tool_name,
                     "index": idx,
                     "error": err_text,
                 }
@@ -136,7 +141,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
 
         # Detect missing required tool calls (grading expects files but tool was never called)
         if trajectory.grade and isinstance(trajectory.grade.reasons, str):
-            tools_used = {log.get("tool") for log in trajectory.tool_log}
+            tools_used = {call.tool_name for call in trajectory.tool_log}
             if "No files match" in trajectory.grade.reasons and "write_file" not in tools_used:
                 evidence.append(
                     {

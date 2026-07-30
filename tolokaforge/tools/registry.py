@@ -160,6 +160,22 @@ class ToolCategory(str, Enum):
     COMPUTE = "compute"
 
 
+class ToolExecutionStatus(str, Enum):
+    """How a tool call ended, as stamped on the trial's tool-call record.
+
+    The closed vocabulary a recorded tool call can carry. Every member is
+    reachable from at least one recording path on at least one substrate —
+    ``tests/canonical/test_tool_execution_status_reachability.py`` asserts it —
+    so a ``status`` matcher can never name an outcome no run produces.
+    """
+
+    SUCCESS = "success"
+    ERROR = "error"
+    TIMEOUT = "timeout"
+    TOOL_NOT_FOUND = "tool_not_found"
+    INVALID_ARGUMENTS = "invalid_arguments"
+
+
 class ToolPolicy(BaseModel):
     """Policy configuration for a tool"""
 
@@ -179,6 +195,22 @@ class ToolResult(BaseModel):
     duration_s: float = 0.0
     metadata: dict[str, Any] = {}
     content_blocks: list[dict[str, Any]] | None = None  # Multimodal content (screenshots)
+    # Set by whichever layer knows the fine-grained outcome; ``None`` where only
+    # ``success`` is known. :func:`resolve_tool_status` turns either into the
+    # status a recorder stamps.
+    status: ToolExecutionStatus | None = None
+
+
+def resolve_tool_status(result: ToolResult) -> ToolExecutionStatus:
+    """The :class:`ToolExecutionStatus` a recorder stamps for ``result``.
+
+    A ``result`` that names its own status keeps it. Otherwise the boolean is
+    the whole truth available, and ``ERROR`` is that truth stated less
+    specifically — never a guess derived from ``error`` text.
+    """
+    if result.status is not None:
+        return result.status
+    return ToolExecutionStatus.SUCCESS if result.success else ToolExecutionStatus.ERROR
 
 
 class Tool(ABC):
@@ -248,12 +280,17 @@ class ToolRegistry:
 
 
 class ToolExecutor:
-    """Executor for running tools with validation and logging"""
+    """Executor for running tools with validation.
+
+    A leaf: ``execute`` validates, runs and returns. It keeps no history —
+    the caller that knows the provider's ``call_id`` and which side of the
+    dialogue is acting records the call, so every outcome including the
+    rejections below reaches the record.
+    """
 
     def __init__(self, registry: ToolRegistry, env_client: Any | None = None):
         self.registry = registry
         self.env_client = env_client
-        self.tool_logs: list[dict[str, Any]] = []
 
     def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
         """
@@ -262,8 +299,9 @@ class ToolExecutor:
         Args:
             tool_name: Name of the tool to execute
             arguments: Tool arguments
-            call_id: Provider tool-call id, logged so the call can be joined to
-                the tool result it produced
+            call_id: Provider tool-call id, carried by the caller onto the
+                trial's tool-call record so the call can be joined to the
+                tool result it produced
 
         Returns:
             ToolResult with output and metadata
@@ -278,6 +316,7 @@ class ToolExecutor:
                 output="",
                 error=f"Tool '{tool_name}' not found",
                 duration_s=time.time() - start_time,
+                status=ToolExecutionStatus.TOOL_NOT_FOUND,
             )
 
         # Validate arguments against schema
@@ -327,6 +366,7 @@ class ToolExecutor:
                         output="",
                         error=f"Tool '{tool_name}' takes no arguments but received: {unwrapped}",
                         duration_s=time.time() - start_time,
+                        status=ToolExecutionStatus.INVALID_ARGUMENTS,
                     )
                 arguments = {}  # Ensure empty dict for consistency
             else:
@@ -340,6 +380,7 @@ class ToolExecutor:
                 output="",
                 error=f"Invalid arguments: {e}",
                 duration_s=time.time() - start_time,
+                status=ToolExecutionStatus.INVALID_ARGUMENTS,
             )
 
         # Check rate limit
@@ -351,6 +392,7 @@ class ToolExecutor:
                     output="",
                     error=f"Rate limit exceeded for tool '{tool_name}'",
                     duration_s=time.time() - start_time,
+                    status=ToolExecutionStatus.ERROR,
                 )
 
         # Execute tool with timeout
@@ -363,42 +405,13 @@ class ToolExecutor:
                 output="",
                 error=f"Tool execution failed: {e}",
                 duration_s=time.time() - start_time,
+                status=ToolExecutionStatus.ERROR,
             )
-
-        # Log tool call
-        self.tool_logs.append(
-            {
-                "call_id": call_id,
-                "tool": tool_name,
-                "arguments": self._redact_sensitive(arguments),
-                "success": result.success,
-                "duration_s": result.duration_s,
-                "error": result.error,
-                "timestamp": time.time(),
-            }
-        )
 
         return result
 
-    def _redact_sensitive(self, data: dict[str, Any]) -> dict[str, Any]:
-        """Redact sensitive information from logs"""
-        # Simple redaction - can be expanded
-        redacted = {}
-        sensitive_keys = ["password", "token", "secret", "api_key"]
-        for key, value in data.items():
-            if any(sk in key.lower() for sk in sensitive_keys):
-                redacted[key] = "***REDACTED***"
-            else:
-                redacted[key] = value
-        return redacted
-
-    def get_logs(self) -> list[dict[str, Any]]:
-        """Get tool execution logs"""
-        return self.tool_logs
-
     def reset(self) -> None:
-        """Reset executor state"""
-        self.tool_logs = []
+        """Reset per-trial call counts"""
         self.registry.reset_counts()
 
 

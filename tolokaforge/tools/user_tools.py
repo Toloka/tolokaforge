@@ -8,7 +8,12 @@ that the agent cannot directly perform.
 from typing import Any
 
 from tolokaforge.core.env_state import EnvironmentState
-from tolokaforge.tools.registry import Tool, ToolResult, sanitize_tool_schema
+from tolokaforge.tools.registry import (
+    Tool,
+    ToolExecutionStatus,
+    ToolResult,
+    sanitize_tool_schema,
+)
 
 
 class CheckDeviceLightsTool(Tool):
@@ -286,7 +291,6 @@ class UserToolExecutor:
         """
         self.env_state = env_state
         self.tools: dict[str, Tool] = {}
-        self.tool_logs: list[dict[str, Any]] = []
 
         if use_default_tools and env_state:
             self._register_default_tools()
@@ -332,50 +336,30 @@ class UserToolExecutor:
         Args:
             tool_name: Name of the tool to execute
             arguments: Tool parameters as dict
-            call_id: Provider tool-call id, logged so the call can be joined to
-                the tool result it produced
+            call_id: Provider tool-call id, carried by the caller onto the
+                trial's tool-call record so the call can be joined to the
+                tool result it produced
 
         Returns:
             ToolResult with success status and output/error
         """
-        import time
-
-        start_time = time.time()
-
         if tool_name not in self.tools:
-            result = ToolResult(
-                success=False, output="", error=f"User tool '{tool_name}' not found"
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"User tool '{tool_name}' not found",
+                status=ToolExecutionStatus.TOOL_NOT_FOUND,
             )
-        else:
-            try:
-                result = self.tools[tool_name].execute(**arguments)
-            except Exception as e:
-                result = ToolResult(
-                    success=False, output="", error=f"User tool execution failed: {str(e)}"
-                )
 
-        # Log the tool call
-        self.tool_logs.append(
-            {
-                "call_id": call_id,
-                "tool": tool_name,
-                "arguments": arguments,
-                "success": result.success,
-                "duration_s": time.time() - start_time,
-                "error": result.error,
-                "timestamp": time.time(),
-            }
-        )
-
-        return result
-
-    def get_logs(self) -> list[dict[str, Any]]:
-        """Get tool execution logs"""
-        return self.tool_logs
-
-    def reset(self):
-        """Reset tool logs"""
-        self.tool_logs = []
+        try:
+            return self.tools[tool_name].execute(**arguments)
+        except Exception as e:
+            return ToolResult(
+                success=False,
+                output="",
+                error=f"User tool execution failed: {str(e)}",
+                status=ToolExecutionStatus.ERROR,
+            )
 
     def has_tool(self, tool_name: str) -> bool:
         """Check if a user tool is available"""

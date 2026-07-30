@@ -2,6 +2,7 @@
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import Message, MessageRole
 
@@ -124,9 +125,9 @@ class TestToolExpectations:
     @pytest.fixture
     def tool_log(self):
         return [
-            {"tool": "db_query", "success": True},
-            {"tool": "db_update", "success": True},
-            {"tool": "search_kb", "success": True},
+            recorded_call("db_query", sequence=0),
+            recorded_call("db_update", sequence=1),
+            recorded_call("search_kb", sequence=2),
         ]
 
     def test_all_required_tools_used(self, checker, tool_log):
@@ -173,8 +174,8 @@ class TestTranscriptGrading:
     @pytest.fixture
     def good_tool_log(self):
         return [
-            {"tool": "db_query", "success": True},
-            {"tool": "db_update", "success": True},
+            recorded_call("db_query", sequence=0),
+            recorded_call("db_update", sequence=1),
         ]
 
     def test_all_rules_pass(self, checker, good_messages, good_tool_log):
@@ -248,7 +249,11 @@ class TestToolExpectationsReasonsAreDeterministic:
 
     def test_violations_reason_is_sorted(self, checker):
         """Reason text lists disallowed-tool violations in alphabetical order."""
-        tool_log = [{"tool": "zeta"}, {"tool": "alpha"}, {"tool": "mike"}]
+        tool_log = [
+            recorded_call("zeta", sequence=0),
+            recorded_call("alpha", sequence=1),
+            recorded_call("mike", sequence=2),
+        ]
         score, reasons = checker.check_tool_expectations(
             tool_log=tool_log,
             required_tools=None,

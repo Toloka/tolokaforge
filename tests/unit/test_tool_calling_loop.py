@@ -50,14 +50,10 @@ class _RecordingExecutor:
 
     def __init__(self) -> None:
         self.executed: list[tuple[str, dict, str]] = []
-        self.logs: list[dict] = []
 
     def execute(self, tool_name, arguments, *, call_id):
         self.executed.append((tool_name, arguments, call_id))
         return ToolResult(success=True, output=f"ran {tool_name}")
-
-    def get_logs(self):
-        return self.logs
 
 
 class _CountingSink(MetricsSink):

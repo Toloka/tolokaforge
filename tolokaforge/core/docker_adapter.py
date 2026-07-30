@@ -3,8 +3,11 @@
 
 :class:`DockerRunnerAdapter` binds a ``trial_id`` and an executor identity
 (``"agent"`` / ``"user"``) to a runtime backend, exposing the
-``ToolExecutor`` protocol (``execute()`` + ``tool_logs`` bookkeeping) that
-:class:`TrialRunner` speaks to.
+``ToolExecutor`` protocol (``execute()``) that :class:`TrialRunner` speaks
+to. The runner service records the call on its side of the wire; the host
+records it against the trial's
+:class:`~tolokaforge.core.runner.TrialToolCallRecorder`. The adapter keeps
+no history of its own.
 
 Every non-tool-execution RPC (``register_trial``, ``grade_trial``,
 ``get_state``, ``reset_trial``, ``cleanup_trial``) lives on
@@ -34,9 +37,7 @@ class DockerRunnerAdapter:
     Binds ``trial_id`` and executor identity (``"agent"`` / ``"user"``)
     to a runtime backend so :class:`TrialRunner` can call
     ``.execute(tool_name, arguments)`` without threading trial identity
-    through every call. Records every tool execution on :attr:`tool_logs`
-    so the metrics pipeline and the stuck-detector can read the per-trial
-    tool history back via :meth:`get_logs`.
+    through every call.
 
     All other per-trial RPCs are on :class:`RuntimeBackend` — see ADR-0013.
     """
@@ -54,7 +55,6 @@ class DockerRunnerAdapter:
         self.runtime = runtime
         self.trial_id = trial_id
         self.executor = executor
-        self.tool_logs: list[dict[str, Any]] = []
         logger.info(f"DockerRunnerAdapter initialized for trial {trial_id} (executor={executor})")
 
     def execute(
@@ -67,8 +67,7 @@ class DockerRunnerAdapter:
         **kwargs,
     ) -> ToolResult:
         """Execute a tool via the runtime backend under the bound
-        ``trial_id`` / ``executor`` and record the call on
-        :attr:`tool_logs`.
+        ``trial_id`` / ``executor``.
 
         Matches the :class:`~tolokaforge.tools.registry.ToolExecutor.execute`
         contract :class:`~tolokaforge.core.runner.TrialRunner` calls.
@@ -81,7 +80,7 @@ class DockerRunnerAdapter:
             arguments = {}
         arguments.update(kwargs)
 
-        result = self.runtime.execute_tool(
+        return self.runtime.execute_tool(
             trial_id=self.trial_id,
             tool_name=tool_name,
             arguments=arguments,
@@ -89,30 +88,3 @@ class DockerRunnerAdapter:
             executor=self.executor,
             call_id=call_id,
         )
-
-        self.tool_logs.append(
-            {
-                "call_id": call_id,
-                "tool_name": tool_name,
-                "tool": tool_name,
-                "arguments": arguments,
-                "executor": self.executor,
-                "success": result.success,
-                "output": result.output if result.success else None,
-                "error": result.error if not result.success else None,
-            }
-        )
-
-        return result
-
-    def get_logs(self) -> list[dict[str, Any]]:
-        """Return the per-trial tool execution history."""
-        return self.tool_logs
-
-    def clear_logs(self):
-        """Reset the per-trial tool execution history."""
-        self.tool_logs = []
-
-
-# Backward compatibility alias
-DockerExecutorAdapter = DockerRunnerAdapter

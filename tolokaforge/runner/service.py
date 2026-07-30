@@ -100,12 +100,13 @@ from tolokaforge.runner.models import (
     GradeComponents,
     HashGradingResult,
     KeyAccountingRecord,
+    RecordedToolCall,
     StateDiff,
     TaskDescription,
-    ToolCallRecord,
+    ToolExecutorIdentity,
     TranscriptEvaluationResult,
 )
-from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION, recorded_status
 from tolokaforge.runner.rag_client import (
     RAGServiceClient,
     RAGServiceError,
@@ -119,6 +120,7 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
     ToolReconstructionError,
 )
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -233,7 +235,7 @@ class TrialContextRuntime:
         task_description: Parsed TaskDescription model from RegisterTrial
         agent_tools: Map of tool name -> tool callable for agent tools
         user_tools: Map of tool name -> tool callable for user-side tools
-        tool_call_history: List of tool call records for transcript grading
+        tool_call_history: The trial's ordered tool-call record
         default_timeout: Default timeout for tool execution in seconds
     """
 
@@ -248,7 +250,7 @@ class TrialContextRuntime:
         self.task_description = task_description
         self.agent_tools: dict[str, Callable] = {}
         self.user_tools: dict[str, Callable] = {}
-        self.tool_call_history: list[ToolCallRecord] = []
+        self.tool_call_history: list[RecordedToolCall] = []
         self.default_timeout = default_timeout
         # Run-level LLM config for the read-only rubric judge, carried from the
         # TrialSpec. None when no selected task uses an llm_judge component; the
@@ -279,55 +281,67 @@ class TrialContextRuntime:
         """Get grading config from task description."""
         return self.task_description.grading
 
-    def get_tool(self, tool_name: str, executor: str = "agent") -> Callable | None:
+    def get_tool(
+        self, tool_name: str, executor: ToolExecutorIdentity = ToolExecutorIdentity.AGENT
+    ) -> Callable | None:
         """
         Get a tool callable by name and executor type.
 
         Args:
             tool_name: Name of the tool
-            executor: "agent" or "user"
+            executor: Which side of the dialogue is calling
 
         Returns:
             Tool callable or None if not found
         """
-        if executor == "user":
+        if executor is ToolExecutorIdentity.USER:
             return self.user_tools.get(tool_name)
         return self.agent_tools.get(tool_name)
 
-    def record_tool_call(
+    def record(
         self,
+        *,
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+        status: ToolExecutionStatus,
         output: str,
-        status: str,
-        executor: str,
         latency_seconds: float,
     ) -> None:
         """
-        Record a tool call in the history for transcript grading.
+        Record a tool call in the trial's ordered history.
+
+        Satisfies :class:`~tolokaforge.runner.models.ToolCallRecorder`.
+        ``sequence`` is stamped here, so no caller can supply a wrong index.
 
         Args:
             call_id: Provider tool-call id joining this call to its result
             tool_name: Name of the tool called
-            arguments: Tool arguments
-            output: Tool output or error message
-            status: Execution status ("success", "error", "timeout", "tool_not_found", "invalid_arguments")
-            executor: "agent" or "user"
+            arguments: Tool arguments, verbatim
+            executor: Which side of the dialogue made the call
+            status: How the call ended
+            output: Tool output, or the rejection/failure text
             latency_seconds: Execution time
         """
-        record = ToolCallRecord(
-            call_id=call_id,
-            sequence=len(self.tool_call_history),
-            tool_name=tool_name,
-            arguments=arguments,
-            executor=executor,
-            output=output,
-            status=status,
-            latency_seconds=latency_seconds,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+        self.tool_call_history.append(
+            RecordedToolCall(
+                call_id=call_id,
+                sequence=len(self.tool_call_history),
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
+                output=output,
+                status=status,
+                latency_seconds=latency_seconds,
+                timestamp=datetime.now(timezone.utc),
+            )
         )
-        self.tool_call_history.append(record)
+
+    @property
+    def recorded(self) -> tuple[RecordedToolCall, ...]:
+        """The trial's tool calls, in execution order."""
+        return tuple(self.tool_call_history)
 
     def clear_history(self) -> None:
         """Clear tool call history (used on reset)."""
@@ -965,10 +979,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         trial_id = request.trial_id
         tool_name = request.tool_name
-        executor = request.executor or "agent"
+        executor = ToolExecutorIdentity(request.executor or ToolExecutorIdentity.AGENT.value)
         call_id = request.call_id
 
-        logger.debug(f"ExecuteTool: {trial_id} - {tool_name} ({executor}) call_id={call_id}")
+        logger.debug(f"ExecuteTool: {trial_id} - {tool_name} ({executor.value}) call_id={call_id}")
 
         if not call_id:
             raise ValueError(
@@ -1008,7 +1022,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Look up tool in the appropriate tool set
         tool = trial_context.get_tool(tool_name, executor)
         if tool is None:
-            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor})")
+            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
             return self._reject_tool_call(
                 trial_context=trial_context,
                 call_id=call_id,
@@ -1016,7 +1030,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 arguments=arguments,
                 executor=executor,
                 status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                error_message=f"Tool '{tool_name}' not found in {executor} tools",
+                error_message=f"Tool '{tool_name}' not found in {executor.value} tools",
             )
 
         # Determine timeout
@@ -1056,17 +1070,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        executor: str,
+        executor: ToolExecutorIdentity,
         status: int,
         error_message: str,
     ) -> pb2.ExecuteToolResponse:
         """Record a call the runner refused before execution and return its response."""
-        trial_context.record_tool_call(
+        trial_context.record(
             call_id=call_id,
             tool_name=tool_name,
             arguments=arguments,
             output=error_message,
-            status=self._status_to_string(status),
+            status=recorded_status(status),
             executor=executor,
             latency_seconds=0.0,
         )
@@ -1084,7 +1098,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        executor: str,
+        executor: ToolExecutorIdentity,
         timeout_seconds: float,
     ) -> pb2.ExecuteToolResponse:
         """
@@ -1157,13 +1171,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         latency_seconds = time.time() - start_time
 
         # Record tool call in history
-        status_str = self._status_to_string(status)
-        trial_context.record_tool_call(
+        trial_context.record(
             call_id=call_id,
             tool_name=tool_name,
             arguments=arguments,
             output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
-            status=status_str,
+            status=recorded_status(status),
             executor=executor,
             latency_seconds=latency_seconds,
         )
@@ -1179,18 +1192,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 state_mutations=0,  # TODO: Track state mutations if needed
             ),
         )
-
-    def _status_to_string(self, status: int) -> str:
-        """Convert ExecutionStatus enum to string for history recording."""
-        status_map = {
-            pb2.EXECUTION_STATUS_SUCCESS: "success",
-            pb2.EXECUTION_STATUS_ERROR: "error",
-            pb2.EXECUTION_STATUS_TIMEOUT: "timeout",
-            pb2.EXECUTION_STATUS_TOOL_NOT_FOUND: "tool_not_found",
-            pb2.EXECUTION_STATUS_INVALID_ARGUMENTS: "invalid_arguments",
-            pb2.EXECUTION_STATUS_TRIAL_NOT_FOUND: "trial_not_found",
-        }
-        return status_map.get(status, "unknown")
 
     # =========================================================================
     # GradeTrial - Compute grade for completed trial

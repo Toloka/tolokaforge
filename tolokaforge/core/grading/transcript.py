@@ -1,9 +1,9 @@
 """Transcript-based grading rules"""
 
 import re
-from typing import Any
+from collections.abc import Sequence
 
-from tolokaforge.core.models import Message, MessageRole
+from tolokaforge.core.models import Message, MessageRole, RecordedToolCall
 
 
 class TranscriptChecker:
@@ -66,7 +66,7 @@ class TranscriptChecker:
 
     def check_tool_expectations(
         self,
-        tool_log: list[dict[str, Any]],
+        tool_log: Sequence[RecordedToolCall],
         required_tools: list[str] | None,
         disallowed_tools: list[str] | None,
     ) -> tuple[float, list[str]]:
@@ -74,7 +74,7 @@ class TranscriptChecker:
         reasons = []
         score = 1.0
 
-        tools_used = {log.get("tool") for log in tool_log}
+        tools_used = {call.tool_name for call in tool_log}
 
         if required_tools:
             missing = set(required_tools) - tools_used
@@ -96,7 +96,7 @@ class TranscriptChecker:
     def grade(
         self,
         messages: list[Message],
-        tool_log: list[dict[str, Any]],
+        tool_log: Sequence[RecordedToolCall],
         must_contain: list[str] | None = None,
         disallow_regex: list[str] | None = None,
         max_turns: int | None = None,

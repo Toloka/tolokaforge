@@ -10,7 +10,7 @@ from typing import Any
 import yaml
 
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import Grade, Trajectory
+from tolokaforge.core.models import Grade, ToolExecutionStatus, Trajectory
 
 
 def _represent_multiline_str(dumper, data):
@@ -134,25 +134,21 @@ class OutputWriter:
         # error_count, total_duration_s — so analysis tooling can model_validate()
         # the metrics.yaml round-trip.
         tool_usage: dict[str, dict[str, float | int]] = {}
-        for log in trajectory.tool_log:
-            tool_name = log.get("tool")
-            if not tool_name:
-                continue
-
-            if tool_name not in tool_usage:
-                tool_usage[tool_name] = {
+        for call in trajectory.tool_log:
+            if call.tool_name not in tool_usage:
+                tool_usage[call.tool_name] = {
                     "call_count": 0,
                     "success_count": 0,
                     "error_count": 0,
                     "total_duration_s": 0.0,
                 }
 
-            tool_usage[tool_name]["call_count"] += 1
-            tool_usage[tool_name]["total_duration_s"] += log.get("duration_s", 0.0)
-            if log.get("success"):
-                tool_usage[tool_name]["success_count"] += 1
+            tool_usage[call.tool_name]["call_count"] += 1
+            tool_usage[call.tool_name]["total_duration_s"] += call.latency_seconds
+            if call.status is ToolExecutionStatus.SUCCESS:
+                tool_usage[call.tool_name]["success_count"] += 1
             else:
-                tool_usage[tool_name]["error_count"] += 1
+                tool_usage[call.tool_name]["error_count"] += 1
 
         # Convert to sorted list matching ToolUsage schema
         metrics_data["tool_usage"] = [

@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.failure_attribution import (
     attribute_failure,
     is_failed_trajectory,
@@ -18,6 +19,7 @@ from tolokaforge.core.models import (
     MessageRole,
     Metrics,
     TerminationReason,
+    ToolExecutionStatus,
     Trajectory,
     TrialStatus,
 )
@@ -72,11 +74,11 @@ def test_provision_error_classification():
 def test_tool_argument_classification():
     traj = _base_trajectory()
     traj.tool_log = [
-        {
-            "tool": "db_query",
-            "success": False,
-            "error": "Invalid arguments: 'id' is required",
-        }
+        recorded_call(
+            "db_query",
+            status=ToolExecutionStatus.INVALID_ARGUMENTS,
+            output="Invalid arguments: 'id' is required",
+        )
     ]
     attribution = attribute_failure(traj)
     assert attribution["failure_class"] == "tool_arguments"
@@ -152,7 +154,7 @@ def test_missing_write_file_tool_when_grading_expected_files():
     traj = _base_trajectory()
     assert traj.grade is not None
     traj.grade.reasons = "Files: FAIL: No files match /env/fs/agent-visible/submissions/*"
-    traj.tool_log = [{"tool": "browser", "success": True}]
+    traj.tool_log = [recorded_call("browser")]
     attribution = attribute_failure(traj)
     missing_tool_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "missing_tool"]
     assert len(missing_tool_evidence) == 1

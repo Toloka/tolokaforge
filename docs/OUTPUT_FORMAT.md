@@ -408,7 +408,31 @@ probe_completion_tokens: 0
 probe_bucket_width_s: 0
 probe_dropped_buckets: 0
 probe_buckets: []
+  - tool_name: "create_order"
+    call_count: 2
+    success_count: 2
+    error_count: 0
+    total_duration_s: 1.84
+  - tool_name: "get_user_details"
+    call_count: 2
+    success_count: 2
+    error_count: 0
+    total_duration_s: 0.42
 ```
+
+`tool_usage` rolls up the trial's recorded tool calls by tool name, sorted by
+name, and its field names match the
+[`ToolUsage`](../tolokaforge/core/models.py) model so a consumer can
+`model_validate()` the round-trip. `success_count` counts calls whose recorded
+status is `success`; every other status — including a call the executor refused
+before it reached the tool — counts as an error. `total_duration_s` sums the wall
+time measured around each call, failures included.
+
+`tool_log`, the trial's ordered `RecordedToolCall` list, is **not** written to any
+artifact. It lives on the in-process `Trajectory` and feeds grading; a bundle read
+back from disk carries the message trace but no per-call `output`, `status`,
+`latency_seconds` or `executor`. Persisting it is a stated prerequisite of #682
+(replay).
 
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing

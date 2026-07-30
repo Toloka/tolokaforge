@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.failure_attribution import (
     attribute_failure,
     summarize_failure_attributions,
@@ -41,7 +42,9 @@ from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     Metrics,
+    RecordedToolCall,
     TerminationReason,
+    ToolExecutionStatus,
     Trajectory,
     TrialStatus,
     Usage,
@@ -75,7 +78,7 @@ def _make_trajectory(
     cost_usd: float | None = 0.021,
     status: TrialStatus = TrialStatus.COMPLETED,
     termination_reason: TerminationReason | None = None,
-    tool_log: list[dict[str, Any]] | None = None,
+    tool_log: list[RecordedToolCall] | None = None,
 ) -> Trajectory:
     """Build a Trajectory populated on every field the aggregate path reads.
 
@@ -137,7 +140,11 @@ def _make_tool_execution_failure() -> Trajectory:
         status=TrialStatus.FAILED,
         termination_reason=None,
         tool_log=[
-            {"tool": "run_python", "success": False, "error": "SyntaxError: unexpected EOF"},
+            recorded_call(
+                "run_python",
+                status=ToolExecutionStatus.ERROR,
+                output="SyntaxError: unexpected EOF",
+            ),
         ],
     )
 

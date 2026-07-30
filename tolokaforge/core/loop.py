@@ -23,6 +23,9 @@ optional user turn, error classification, max-turns), and delegates every
 * :class:`MetricsSink` — accumulates per-call usage/cost/tool counts. The agent
   threads its trial :class:`~tolokaforge.core.models.Metrics`; the judge will
   thread its own.
+* :class:`~tolokaforge.core.models.ToolCallRecorder` — OPTIONAL. The trial's
+  ordered tool-call record. The agent threads the trial's recorder; the judge
+  threads none, so its own tool calls stay out of the graded record.
 * :data:`ErrorClassifier` — maps a raised exception to a terminal reason +
   message. :func:`classify_loop_error` reproduces the agent's exact
   classification and is the default both paths use.
@@ -44,10 +47,12 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     TerminationReason,
+    ToolCallRecorder,
+    ToolExecutorIdentity,
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
-from tolokaforge.tools.registry import ToolExecutor
+from tolokaforge.tools.registry import ToolExecutor, resolve_tool_status
 
 
 class LoopLLMClient(Protocol):
@@ -220,6 +225,10 @@ class ToolCallingLoop:
     should_terminate: TerminationPolicy
     logger: StructuredLogger
     user_turn: UserTurn | None = None
+    # The trial's ordered tool-call record. Injected rather than owned: the
+    # rubric judge runs this same loop over its own read-only tools, and a
+    # grading-time tool call must never enter the trial's record.
+    recorder: ToolCallRecorder | None = None
     request_limiter: Any | None = None
     normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
         None
@@ -348,6 +357,19 @@ class ToolCallingLoop:
             tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
             tool_duration = time.time() - tool_start
             self.metrics.record_tool_call()
+
+            if self.recorder is not None:
+                self.recorder.record(
+                    call_id=tc.id,
+                    tool_name=tc.name,
+                    arguments=tc.arguments or {},
+                    executor=ToolExecutorIdentity.AGENT,
+                    status=resolve_tool_status(tool_result),
+                    output=(
+                        tool_result.output if tool_result.success else (tool_result.error or "")
+                    ),
+                    latency_seconds=tool_duration,
+                )
 
             if tool_result.success:
                 self.logger.debug(

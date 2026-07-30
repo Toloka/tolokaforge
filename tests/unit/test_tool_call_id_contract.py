@@ -6,7 +6,8 @@ twice with byte-identical arguments — so the id is required at construction *a
 at load, and every executor the engine drives is handed it explicitly.
 
 The runner-side half (the id on the wire and in the runner's recorded history)
-is locked in ``tests/unit/test_runner_pipeline.py``.
+is locked in ``tests/unit/test_runner_pipeline.py``; what the id lands on
+core-side is locked in ``tests/unit/test_tool_call_recording.py``.
 """
 
 from __future__ import annotations
@@ -142,14 +143,6 @@ class TestDockerRunnerAdapterCallId:
 
         assert runtime.calls[0]["arguments"] == {"payload": "hi"}
 
-    def test_recorded_adapter_log_carries_the_call_id(self) -> None:
-        runtime = _RecordingRuntime()
-        adapter = DockerRunnerAdapter(runtime, trial_id="t:0")
-
-        adapter.execute("echo", {"payload": "hi"}, call_id="toolu_A")
-
-        assert adapter.get_logs()[0]["call_id"] == "toolu_A"
-
     def test_the_recording_runtime_matches_the_backend_calling_contract(self) -> None:
         """Proof the spy is not looser than production: it accepts exactly the
         parameters :class:`RuntimeBackend.execute_tool` declares, so a ``call_id``
@@ -163,12 +156,15 @@ class TestDockerRunnerAdapterCallId:
 
 
 class TestInProcessExecutorCallId:
-    def test_two_identical_calls_are_distinguishable_in_the_log(self) -> None:
+    def test_the_executor_accepts_the_id_as_an_explicit_keyword(self) -> None:
+        """The in-process executor is a leaf that keeps no history, so the id it
+        takes is proved here by signature and exercised through the recording
+        caller in ``tests/unit/test_tool_call_recording.py``."""
         registry = ToolRegistry()
         registry.register(_Echo())
-        executor = ToolExecutor(registry)
 
-        executor.execute("echo", {"payload": "hi"}, call_id="toolu_A")
-        executor.execute("echo", {"payload": "hi"}, call_id="toolu_B")
+        parameter = inspect.signature(ToolExecutor.execute).parameters["call_id"]
 
-        assert [log["call_id"] for log in executor.get_logs()] == ["toolu_A", "toolu_B"]
+        assert parameter.kind is inspect.Parameter.KEYWORD_ONLY
+        assert parameter.default is inspect.Parameter.empty
+        assert ToolExecutor(registry).execute("echo", {"payload": "hi"}, call_id="toolu_A").success

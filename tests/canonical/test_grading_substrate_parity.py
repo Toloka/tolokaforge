@@ -43,7 +43,14 @@ from tolokaforge.core.grading.key_manifest import (
     author_keys,
     entry,
 )
-from tolokaforge.core.models import Message, ToolCall, Trajectory
+from tolokaforge.core.models import (
+    Message,
+    RecordedToolCall,
+    ToolCall,
+    ToolExecutionStatus,
+    ToolExecutorIdentity,
+    Trajectory,
+)
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner.grading import (
     combine_grade_components,
@@ -55,7 +62,6 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     runner_dump_path,
 )
-from tolokaforge.runner.models import ToolCallRecord
 
 pytestmark = pytest.mark.canonical
 
@@ -281,42 +287,37 @@ def _load_case(pack_dir: Path, case: str) -> _TrialCase:
         messages.append(
             Message(role=raw["role"], content=raw["content"], tool_calls=tool_calls or None)
         )
-    calls = fixture["tool_calls"]
     now = "2026-01-01T00:00:00+00:00"
+    # One recorded-tool-call list feeds both substrates: the core engine holds it
+    # on the Trajectory, the runner's evaluators read its dump. A per-substrate
+    # fixture could disagree with itself, which is the divergence this suite exists
+    # to catch.
+    recorded = [
+        RecordedToolCall(
+            call_id=f"call_{index}",
+            sequence=index,
+            tool_name=call["tool_name"],
+            arguments=call["arguments"],
+            executor=ToolExecutorIdentity(call["executor"]),
+            output="",
+            status=ToolExecutionStatus(call["status"]),
+            latency_seconds=0.0,
+            timestamp=now,
+        )
+        for index, call in enumerate(fixture["tool_calls"])
+    ]
     trajectory = Trajectory(
         task_id=pack_dir.name,
         trial_index=0,
         start_ts=now,
         end_ts=now,
         messages=messages,
-        tool_log=[
-            {
-                "tool": call["tool_name"],
-                "arguments": call["arguments"],
-                "success": call["status"] == "success",
-                "executor": call["executor"],
-            }
-            for call in calls
-        ],
+        tool_log=recorded,
     )
-    tool_history = [
-        ToolCallRecord(
-            call_id=f"call_{index}",
-            sequence=index,
-            tool_name=call["tool_name"],
-            arguments=call["arguments"],
-            executor=call["executor"],
-            output="",
-            status=call["status"],
-            latency_seconds=0.0,
-            timestamp=now,
-        ).model_dump()
-        for index, call in enumerate(calls)
-    ]
     return _TrialCase(
         core_trajectory=trajectory,
         runner_messages=fixture["messages"],
-        runner_tool_history=tool_history,
+        runner_tool_history=[call.model_dump() for call in recorded],
         state=fixture["state"],
     )
 

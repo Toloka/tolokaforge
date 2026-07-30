@@ -126,6 +126,56 @@ as **declared data**, verified only to live inside a dict-typed field. And a gre
 parity suite proves each key *discriminates*, not that its discrimination is
 *correct*.
 
+### The recorded tool calls both substrates read
+
+Both substrates record every tool call as a `RecordedToolCall`
+(`tolokaforge/runner/models.py`, re-exported from `tolokaforge.core.models`), so a
+check over tool calls sees the same fields whichever substrate grades it:
+
+| Field | Meaning |
+| --- | --- |
+| `call_id` | the provider's tool-call id — the only key that joins a call to its result |
+| `sequence` | trial-wide, 0-based, execution order across **every** executor |
+| `tool_name` | the tool the call named |
+| `arguments` | the arguments the caller passed, verbatim |
+| `executor` | `agent` or `user` (`ToolExecutorIdentity`) |
+| `status` | how the call ended (`ToolExecutionStatus`) |
+| `output` | the tool's output, untruncated — or the failure text on a failed call |
+| `latency_seconds` | wall time measured by the recording caller |
+| `timestamp` | when the call was recorded |
+
+One recorder per trial owns the list and stamps `sequence` at append time, so
+interleaved order across executors is correct by construction rather than
+reconstructed afterwards. Calls the executor **refuses** — an unknown tool name,
+a schema-violating or unparseable argument — are recorded too, carrying the
+rejection's own status: the transcript gets a `role: tool` error message for them
+either way, so a record that omitted them would read as a call the agent never
+attempted.
+
+Two properties are worth reading carefully:
+
+- **`output` on a failed call is the executing layer's failure text, not the
+  tool's.** It is also not the text the `role: tool` message carries — the
+  message view and the record view word a failure differently. A `result` matcher
+  combined with `status != success` is matching harness text.
+- **`arguments` are never rewritten.** They are the grader's input; see
+  [`docs/SECURITY.md`](SECURITY.md#tool-call-arguments).
+
+**One status value is not producible on every path.** `SUCCESS`, `ERROR`,
+`TOOL_NOT_FOUND` and `INVALID_ARGUMENTS` come from four distinct branches of the
+in-process executor and are recorded on both substrates. `TIMEOUT` is produced
+only on the runner substrate, because the pure in-process executor implements no
+timeout at all — `ToolPolicy.timeout_s` is declared and never read (#691). That is
+a missing *feature*, not a recording gap: there is no behaviour to record, so no
+check loses signal it would otherwise have had.
+[`tests/canonical/test_tool_execution_status_reachability.py`](../tests/canonical/test_tool_execution_status_reachability.py)
+drives a real recording path for every member, so the vocabulary cannot grow a
+value no run produces.
+
+`executor: user` is unreachable in every run today, **equally on both
+substrates**, because no code path constructs a user-side tool executor (#688).
+An unreachable-everywhere value is a scope limit, not substrate drift.
+
 ---
 
 ## Hash-Based Grading (Tau-Bench Compatible)
