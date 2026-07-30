@@ -181,10 +181,20 @@ message GradeTrialRequest {
   // Trial identifier
   string trial_id = 1;
 
-  // Optional: LLM messages for transcript rules grading
-  // Only needed if grading config includes transcript_rules (must_contain, required_actions, etc.)
-  // For hash-only grading (TlkMcpCore, Tau), this can be omitted - Runner has tool call history
-  // Contains: messages array with role, content (assistant/user text only, not tool results)
+  // The trial's full interleaved message trace, encoded by
+  // tolokaforge.core.grading.transcript_wire.encode_transcript_wire: a JSON array
+  // of {role, content} objects in execution order, covering every role — a tool
+  // result crosses as role "tool" carrying its tool_call_id.
+  // An assistant or user turn that called tools also carries
+  // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
+  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
+  // the only key joining a call to its result — parallel calls to one tool with
+  // identical arguments are otherwise indistinguishable — and
+  // decode_transcript_wire rejects a payload whose tool_calls carry none.
+  // The leading "system" message is the agent's policy, lifted out by
+  // split_leading_system_message rather than replayed as a conversational turn.
+  // Needed for transcript_rules and llm_judge grading; for hash-only grading
+  // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
   // Optional: Skip golden path execution if expected hash is pre-computed

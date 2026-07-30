@@ -30,6 +30,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
     CustomCheckDetail,
@@ -140,7 +141,7 @@ class RunnerRPCTrialGrader:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
 
-        llm_messages_json = _build_judge_messages_json(trajectory, agent_system_prompt)
+        llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
         grade_result = self.runtime_backend.grade_trial(
             trial_id=spec.trial_id, llm_messages_json=llm_messages_json
         )
@@ -175,56 +176,6 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
     task_id, idx_s = trial_id.rsplit(":", 1)
     return task_id, int(idx_s)
-
-
-def _build_judge_messages_json(
-    trajectory: Trajectory,
-    agent_system_prompt: str,
-) -> str | None:
-    """Serialise the transcript + agent policy for the runner-side grading.
-
-    The runner decides whether to actually run the rubric judge based on
-    its own grading config; this always serialises the transcript when
-    there is one and returns ``None`` for an empty trace.
-    """
-    if not trajectory.messages and not agent_system_prompt:
-        return None
-
-    messages: list[dict[str, Any]] = []
-    if agent_system_prompt:
-        messages.append({"role": "system", "content": agent_system_prompt})
-    for msg in trajectory.messages:
-        entry: dict[str, Any] = {
-            "role": msg.role.value,
-            "content": msg.content or "",
-        }
-        if msg.tool_calls:
-            entry["tool_calls"] = [
-                {"function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
-                for tc in msg.tool_calls
-            ]
-        if msg.tool_call_id:
-            entry["tool_call_id"] = msg.tool_call_id
-        messages.append(entry)
-    return json.dumps(messages)
-
-
-def split_leading_system_message(
-    messages: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]]]:
-    """Split the judge wire messages into ``(agent_system_prompt, transcript)``.
-
-    Inverse of the leading-system-message prepend in
-    :func:`_build_judge_messages_json`: the agent's policy is the transcript's
-    leading ``system`` message, lifted out so it is injected as the judge's
-    view of the agent policy rather than replayed as a conversational turn.
-    Returns ``("", messages)`` unchanged when there is no leading system
-    message. Shared by the runner's grading path and the offline judge replay
-    so both reconstruct the judge's ``run()`` inputs identically.
-    """
-    if messages and str(messages[0].get("role", "")).lower() == "system":
-        return str(messages[0].get("content", "") or ""), list(messages[1:])
-    return "", list(messages)
 
 
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:

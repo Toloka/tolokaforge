@@ -57,7 +57,7 @@ sequenceDiagram
         R-->>H: ToolOutput - output string or error
     end
 
-    H->>R: GradeTrial - trajectory_json
+    H->>R: GradeTrial - llm_messages_json
     R->>DB: Snapshot current state
     R->>DB: Reset to initial state
     R->>R: Execute golden path
@@ -265,10 +265,20 @@ message GradeTrialRequest {
   // Trial identifier
   string trial_id = 1;
 
-  // Optional: LLM messages for transcript rules grading
-  // Only needed if grading config includes transcript_rules (must_contain, required_actions, etc.)
-  // For hash-only grading (TlkMcpCore, Tau), this can be omitted - Runner has tool call history
-  // Contains: messages array with role, content (assistant/user text only, not tool results)
+  // The trial's full interleaved message trace, encoded by
+  // tolokaforge.core.grading.transcript_wire.encode_transcript_wire: a JSON array
+  // of {role, content} objects in execution order, covering every role — a tool
+  // result crosses as role "tool" carrying its tool_call_id.
+  // An assistant or user turn that called tools also carries
+  // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
+  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
+  // the only key joining a call to its result — parallel calls to one tool with
+  // identical arguments are otherwise indistinguishable — and
+  // decode_transcript_wire rejects a payload whose tool_calls carry none.
+  // The leading "system" message is the agent's policy, lifted out by
+  // split_leading_system_message rather than replayed as a conversational turn.
+  // Needed for transcript_rules and llm_judge grading; for hash-only grading
+  // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
   // Optional: Skip golden path execution if expected hash is pre-computed
@@ -581,35 +591,49 @@ A call the runner refuses before execution is still recorded, because the host a
 
 ### GradeTrialRequest
 
-The `trajectory_json` contains the full conversation history:
+`llm_messages_json` is a JSON **array** of messages — the trial's full interleaved
+trace in execution order, not a trajectory object:
 
 ```json
-{
-  "task_id": "airline_task_001",
-  "trial_index": 0,
-  "start_ts": "2024-01-15T10:00:00Z",
-  "end_ts": "2024-01-15T10:05:00Z",
-  "status": "completed",
-  "messages": [
-    {"role": "user", "content": "I want to book a flight to Seattle"},
-    {"role": "assistant", "content": "", "tool_calls": [
-      {"id": "call_123", "name": "book_reservation", "arguments": {"user_id": "mia_li_3668", "origin": "JFK", "destination": "SEA"}}
-    ]},
-    {"role": "tool", "content": "Reservation confirmed: RES-456", "tool_call_id": "call_123"},
-    {"role": "assistant", "content": "I've booked your flight to Seattle."}
-  ],
-  "tool_log": [
-    {"tool_name": "book_reservation", "success": true, "output": "Reservation confirmed: RES-456"}
-  ]
-}
+[
+  {"role": "system", "content": "You are a booking agent. Follow the refund policy."},
+  {"role": "user", "content": "I want to book a flight to Seattle"},
+  {"role": "assistant", "content": "", "tool_calls": [
+    {"id": "call_123", "function": {"name": "book_reservation", "arguments": "{\"user_id\": \"mia_li_3668\", \"origin\": \"JFK\", \"destination\": \"SEA\"}"}}
+  ]},
+  {"role": "tool", "content": "Reservation confirmed: RES-456", "tool_call_id": "call_123"},
+  {"role": "assistant", "content": "I've booked your flight to Seattle."}
+]
 ```
+
+Three properties a consumer can rely on:
+
+- **Tool results are on the wire.** A result is a `role: tool` message carrying the
+  `tool_call_id` of the call that produced it, positioned where it happened.
+- **Calls are joined to results by `id`, never by position.** Every `tool_calls`
+  entry carries the provider's tool-call id; `arguments` is a JSON-encoded string.
+  Parallel calls to one tool with identical arguments are distinguishable only by
+  that id, so a payload whose `tool_calls` carry none is rejected rather than
+  degraded — see `tolokaforge.core.grading.transcript_wire`.
+- **The leading `system` message is the agent's policy**, lifted out of the
+  transcript and injected as policy for rubric evaluation rather than replayed as
+  a conversational turn.
+
+`tool_calls` appears on `role: user` turns too, for a simulated user that calls
+tools. `content_blocks` (multimodal), reasoning blocks and per-message timestamps
+are not represented: a screenshot-only assistant turn crosses as `content: ""`.
+
+The Runner's own ordered tool-call record is a **separate** input it already
+holds — one `RecordedToolCall` per call, carrying `call_id`, `sequence`,
+`tool_name`, `arguments`, `executor`, `status`, `output` (untruncated),
+`latency_seconds` and `timestamp` — and never rides on this request.
 
 ### Grading Algorithm
 
 The Runner executes this grading algorithm:
 
 ```python
-def grade_trial(trial_id: str, trajectory: Trajectory) -> Grade:
+def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     # 1. Get current trial state from DB Service
     trial_state = db_service.get_state(trial_id)
     
@@ -637,7 +661,7 @@ def grade_trial(trial_id: str, trajectory: Trajectory) -> Grade:
         state_diff = compute_diff(golden_state, trial_state)
     
     # 6. Evaluate transcript rules
-    transcript_score = evaluate_transcript(trajectory, grading_config.transcript_rules)
+    transcript_score = evaluate_transcript(llm_messages, tool_history, grading_config.transcript_rules)
     
     # 7. Combine scores
     final_score = weighted_combine(state_score, transcript_score, ...)
