@@ -42,6 +42,7 @@ Day-to-day implementation choices that don't affect the system shape do *not* ne
 | [0009](0009-environment-manifest.md) | `EnvironmentManifest` — typed schema for per-trial multicontainer environments | Accepted |
 | [0010](0010-runtime-backend-provisioning-contract.md) | `RuntimeBackend` provisioning contract — `provision` / `await_ready` / `endpoints` / `teardown` | Accepted |
 | [0011](0011-seam-and-declaration-conventions.md) | Seam-definition and data-declaration conventions for new components | Accepted |
+| [0012](0012-custom-checks-extension.md) | `CheckExecutor` Protocol — the custom-checks extension seam | Accepted |
 | [0013](0013-runtime-backend-per-trial-rpc-methods.md) | `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter` | Accepted |
 | [0014](0014-trial-grader-protocol.md) | `TrialGrader` Protocol — swappable trial-grading strategy | Accepted |
 | [0015](0015-trial-executor-protocol.md) | `TrialExecutor` Protocol — per-trial substrate-lifecycle seam | Accepted |

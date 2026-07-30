@@ -1,16 +1,17 @@
-"""
-CheckRunner - Safely loads and executes custom check modules.
+"""Custom-checks execution seam (Pattern A per ADR-0011; see ADR-0012).
 
-This module provides the CheckRunner class that handles loading checks.py
-files from tasks, managing relative imports, and executing checks with
-timeout protection.
+The seam is: given a task-authored ``checks.py`` and a :class:`CheckContext`
+built from a trial's evidence, run the module's ``@init`` + ``@check`` functions
+and return a :class:`CheckResultSet`. The Protocol is :class:`CheckExecutor`;
+the production impl is :class:`CheckRunner` (in-process ThreadPoolExecutor);
+the deterministic test fixture is :class:`InMemoryCheckExecutor`.
 
 Usage:
     from tolokaforge.core.grading.check_runner import CheckRunner
     from tolokaforge.core.grading.checks_interface import CheckContext, CustomChecksConfig
 
-    runner = CheckRunner()
-    result = runner.run(
+    executor: CheckExecutor = CheckRunner()
+    result = executor.run(
         checks_file=Path("path/to/task/checks.py"),
         task_dir=Path("path/to/task"),
         ctx=check_context,
@@ -27,9 +28,10 @@ import traceback
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
+from dataclasses import dataclass, field
 from pathlib import Path
 from types import ModuleType
-from typing import Any
+from typing import Any, Protocol, runtime_checkable
 
 from tolokaforge.core.grading.checks_interface import (
     SUPPORTED_VERSIONS,
@@ -48,6 +50,31 @@ from tolokaforge.core.grading.checks_interface import (
     reset_registry,
 )
 from tolokaforge.core.logging import get_logger
+
+
+@runtime_checkable
+class CheckExecutor(Protocol):
+    """Run task-authored custom checks against a trial's evidence.
+
+    The per-trial *evidence* surface only. How an executor is built —
+    isolation strategy, worker pool sizing, injected logger — is a
+    construction-time concern of the concrete impl, NOT part of this
+    contract, so a future subprocess/namespace-isolated executor (#673)
+    or offline replay executor need not accept the current
+    ``executor_type``/``max_workers`` knobs.
+
+    ``run()`` never raises for check failures; it captures them into the
+    :class:`CheckResultSet` (per-check ``ERROR``/``FAILED`` results or a
+    top-level ``error`` on module-load failure or timeout).
+    """
+
+    def run(
+        self,
+        checks_file: Path,
+        task_dir: Path,
+        ctx: CheckContext,
+        config: CustomChecksConfig,
+    ) -> CheckResultSet: ...
 
 
 class CheckRunner:
@@ -617,10 +644,108 @@ def run_custom_checks(
 
 
 # =============================================================================
+# InMemoryCheckExecutor — non-executing test fixture (records calls,
+# returns configurable results, exercises failure knobs)
+# =============================================================================
+
+
+@dataclass
+class CheckExecutorCallLog:
+    """Records every :meth:`CheckExecutor.run` call an :class:`InMemoryCheckExecutor` saw.
+
+    Tests assert on this directly instead of mocking the executor. Each entry
+    captures the resolved ``checks_file`` / ``task_dir`` paths, the config's
+    ``interface_version`` + ``timeout_seconds`` + ``fail_on_error``, the
+    context's ``task_id``, and the transcript length + final-state key surface
+    handed in — enough for a caller to assert *what* was submitted to the
+    executor without inspecting a real file.
+    """
+
+    runs: list[dict[str, Any]] = field(default_factory=list)
+
+
+class InMemoryCheckExecutor:
+    """Non-executing :class:`CheckExecutor` fixture — deterministic, no file I/O.
+
+    Records every ``run()`` on :attr:`call_log` and returns a configurable
+    :class:`CheckResultSet`. By default returns an empty result set (no
+    checks defined). Failure knobs cover the two shapes the production
+    impl produces on trouble:
+
+    * ``raise_on_run`` — raise the supplied ``Exception`` from ``run()``.
+      Simulates an executor that itself crashes (never expected of
+      :class:`CheckRunner`, but the Protocol allows it and callers must
+      handle it).
+    * ``return_error`` — return a :class:`CheckResultSet` whose ``error``
+      field carries the given string and whose ``results`` are empty.
+      Simulates module-load failure, timeout, or any top-level error the
+      production runner surfaces via ``CheckResultSet.error``.
+
+    A caller may also pass ``result_set=`` to return an arbitrary
+    pre-built :class:`CheckResultSet`. Production never constructs this —
+    it is a test seam only.
+    """
+
+    def __init__(
+        self,
+        *,
+        result_set: CheckResultSet | None = None,
+        raise_on_run: Exception | None = None,
+        return_error: str | None = None,
+    ) -> None:
+        if raise_on_run is not None and return_error is not None:
+            raise ValueError(
+                "InMemoryCheckExecutor: pass at most one of raise_on_run / return_error."
+            )
+        if raise_on_run is not None and result_set is not None:
+            raise ValueError(
+                "InMemoryCheckExecutor: raise_on_run and result_set are mutually exclusive."
+            )
+        if return_error is not None and result_set is not None:
+            raise ValueError(
+                "InMemoryCheckExecutor: return_error and result_set are mutually exclusive."
+            )
+        self._result_set = result_set
+        self._raise_on_run = raise_on_run
+        self._return_error = return_error
+        self.call_log = CheckExecutorCallLog()
+
+    def run(
+        self,
+        checks_file: Path,
+        task_dir: Path,
+        ctx: CheckContext,
+        config: CustomChecksConfig,
+    ) -> CheckResultSet:
+        self.call_log.runs.append(
+            {
+                "checks_file": checks_file,
+                "task_dir": task_dir,
+                "interface_version": config.interface_version,
+                "timeout_seconds": config.timeout_seconds,
+                "fail_on_error": config.fail_on_error,
+                "task_id": ctx.task.task_id,
+                "transcript_len": len(ctx.transcript.messages),
+                "final_state_keys": tuple(ctx.final_state.data.keys()),
+            }
+        )
+        if self._raise_on_run is not None:
+            raise self._raise_on_run
+        if self._return_error is not None:
+            return CheckResultSet(error=self._return_error, execution_time_ms=0.0)
+        if self._result_set is not None:
+            return self._result_set
+        return CheckResultSet(results=[], execution_time_ms=0.0)
+
+
+# =============================================================================
 # Public API exports
 # =============================================================================
 
 __all__ = [
+    "CheckExecutor",
+    "CheckExecutorCallLog",
     "CheckRunner",
+    "InMemoryCheckExecutor",
     "run_custom_checks",
 ]
