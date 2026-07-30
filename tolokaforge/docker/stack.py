@@ -29,6 +29,7 @@ Example:
 from __future__ import annotations
 
 import logging
+import re
 import shutil
 from typing import Any
 
@@ -37,7 +38,7 @@ from pydantic import BaseModel, Field, PrivateAttr
 from tolokaforge.core.run_display_events import build_component_id
 from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.container import Container, ContainerStatus
-from tolokaforge.docker.health import HealthProbe, HealthProbeError
+from tolokaforge.docker.health import HealthProbe, HealthProbeError, HttpHealthProbe
 from tolokaforge.docker.image import Image
 from tolokaforge.docker.logging import LogRouter
 from tolokaforge.docker.mount import Mount
@@ -642,10 +643,33 @@ class EngineStack(BaseModel):
         construct a proper HTTP probe for every container port that has
         a ``/health`` endpoint on ``localhost``.
 
+        HTTP probes may also defer the host port explicitly with a
+        ``{port:<container_port>}`` placeholder in their URL (e.g.
+        ``http://localhost:{port:8001}/health``). This lets services with
+        auto-allocated host ports keep a rich probe definition — custom
+        timeouts, paths — instead of falling back to the generic default
+        below, which only understands the DB-service convention.
+
         For existing probes whose URL already contains a concrete port,
         this method returns them unchanged.
         """
         if probe is not None:
+            if isinstance(probe, HttpHealthProbe):
+                match = re.search(r"\{port:(\d+)\}", probe.url)
+                if match:
+                    host_port = port_map.get(int(match.group(1)))
+                    if host_port is None:
+                        # A placeholder always comes with a matching
+                        # PortConfig on the same service, so this is a
+                        # programming/allocation error — dropping the probe
+                        # would silently skip the health wait.
+                        raise ValueError(
+                            f"Health probe URL {probe.url!r} references container "
+                            f"port {match.group(1)} with no resolved host mapping"
+                        )
+                    return probe.model_copy(
+                        update={"url": probe.url.replace(match.group(0), str(host_port))}
+                    )
             return probe
 
         # No explicit probe — try to build a default HTTP probe for port 8000
