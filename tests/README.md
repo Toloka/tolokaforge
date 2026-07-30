@@ -108,6 +108,9 @@ tests/
 Pure logic tests with no external dependencies. Mock everything.
 
 - Grading checks: hash computation, JSONPath assertions, transcript rules
+- Grading key ledger (`grading/test_grading_ledger.py`) — a failure means either a
+  populated scored `grading.yaml` key reaches `GradeTrial` with no evaluator and no
+  recorded skip, or the ledger rejects a config that grades correctly
 - Tool registry: schema conversion, tool invocation
 - Adapter output: task bundle generation, conversion logic
 - CLI commands: status, validation paths
@@ -122,7 +125,8 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Golden-set hash grading verification
 - Grading substrate parity (`test_grading_substrate_parity.py`) — a failure means a
   `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
-  it, or no longer survives adapter translation. Fix the manifest entry in
+  it, no longer survives adapter translation, or names a `runner_field` the runtime
+  ledger cannot resolve. Fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
 

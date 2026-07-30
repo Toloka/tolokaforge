@@ -44,8 +44,43 @@ makes the manifest load-bearing. Adding a grading field to either substrate's
 config model without a manifest entry fails that suite naming the field; a scored
 key that claims both substrates at `DIFFERENTIAL_CANONICAL` must move both
 substrates' component scores against
-[`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; and every
-key both substrates declare must survive adapter translation non-default.
+[`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; every key
+both substrates declare must survive adapter translation non-default; and every key
+the runtime ledger checks must resolve to a field on the runner config.
+
+### The runtime ledger
+
+The canonical suite guards the *config models*; the runner guards each individual
+request. Through the component phase `GradeTrial` records, at every point an
+evaluator is invoked or deliberately skipped, which author key that call accounts
+for — `"evaluated"` or `"skipped: <reason>"`. It then subtracts those records from
+the scored keys the request's grading config actually populated
+([`tolokaforge/runner/grading_ledger.py`](../tolokaforge/runner/grading_ledger.py)).
+A non-empty remainder means a key would have scored nothing, so the RPC returns
+`success=False` naming each key and the runner evaluator its manifest entry
+expects — never a grade, and never a `0.0` folded into the combine. A key the
+manifest declares `CORE_ONLY` that nonetheless arrives populated fails the same
+way, quoting that entry's `reason`.
+
+Three properties keep the ledger from rejecting configs that grade correctly:
+
+- **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
+  `relaxed_validation`, `numeric_string_fields`) shape another check rather than
+  producing a component, and `AGGREGATION` keys are the combine itself, so neither
+  is ever "evaluated" in the component phase.
+- **A key counts as populated only when it is non-empty.** An explicitly written
+  `disallowed_tools: []` is indistinguishable from unset, and either way has
+  nothing to evaluate.
+- **The three skips are recorded, not silent.** `transcript_rules` is skipped when
+  a trial has neither messages nor tool history, `llm_judge` when it has no
+  messages, and the whole `state_checks.hash` family when `hash.enabled` is not
+  set. Each records its reason, which appears in `grade.reasons` whenever the
+  skipped key was populated: a degenerate trial scores badly rather than erroring
+  the RPC, but the reason it scored badly is visible.
+
+`grading_method: test_execution` returns before the component phase, so the ledger
+does not apply to that dispatch mode — recorded as the `grading_method` entry's
+declared `reason`.
 
 ### Single-substrate keys
 

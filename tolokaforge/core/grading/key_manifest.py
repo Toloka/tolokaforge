@@ -391,8 +391,9 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         reason=(
             "a runner-side dispatch selector with no grading.yaml counterpart, set by "
             "adapters (the terminal-bench adapter emits grading_method=test_execution). "
-            "The dispatch returns before the component phase, so it bypasses key-level "
-            "evaluation entirely"
+            "The test_execution dispatch returns before the component phase, so it "
+            "bypasses key-level evaluation entirely — the declared reason the runtime "
+            "accounted-keys ledger does not apply to that dispatch mode"
         ),
     ),
 )
@@ -417,9 +418,10 @@ def entry(author_key: str) -> GradingKey:
 def scored_keys_claiming_runner() -> tuple[GradingKey, ...]:
     """Scored-check entries the runner is claimed to evaluate.
 
-    The set the runtime accounted-keys ledger iterates: a populated key here that
-    reaches ``GradeTrial`` with neither an evaluator result nor a recorded skip is
-    a silent no-op.
+    The base of the runtime accounted-keys ledger
+    (``tolokaforge/runner/grading_ledger.py``): a populated key here that reaches
+    ``GradeTrial`` with neither an evaluator result nor a recorded skip is a silent
+    no-op and fails the RPC.
     """
     return tuple(
         item

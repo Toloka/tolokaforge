@@ -1,6 +1,6 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Four locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Five locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
@@ -10,7 +10,10 @@ Four locks over :mod:`tolokaforge.core.grading.key_manifest`:
 3. every key claiming both substrates at ``DIFFERENTIAL_CANONICAL`` demonstrably
    moves both substrates' component scores, through each substrate's real
    production evaluator and its real combine;
-4. every key both substrates declare survives adapter translation.
+4. every key both substrates declare survives adapter translation;
+5. every ledger key's ``runner_field`` resolves to a place in the runner
+   ``GradingConfig`` dump, so a malformed entry fails here rather than at grade
+   time in production.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -46,6 +49,7 @@ from tolokaforge.runner.grading import (
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
 )
+from tolokaforge.runner.grading_ledger import LEDGER_KEYS, runner_dump_path
 from tolokaforge.runner.models import ToolCallRecord
 
 pytestmark = pytest.mark.canonical
@@ -565,4 +569,33 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
             f"{item.author_key} is declared in {pack.name}/grading.yaml but arrives at "
             f"the runner as the default {default!r} — NativeAdapter.to_task_description "
             f"drops it on the floor"
+        )
+
+
+# --------------------------------------------------------------------------
+# 5. Every ledger key resolves to a place in the runner GradingConfig dump
+# --------------------------------------------------------------------------
+
+
+def test_every_ledger_key_resolves_in_the_runner_config_dump():
+    runner_dump = runner_models.GradingConfig(
+        state_checks=runner_models.StateChecksConfig(),
+        transcript_rules=runner_models.TranscriptRulesConfig(),
+    ).model_dump()
+
+    resolvable = [item for item in LEDGER_KEYS if item.runner_field is not None]
+    assert resolvable, (
+        "no ledger key names a runner field, so the runtime accounted-keys ledger "
+        "would let every populated scored key through unchecked"
+    )
+
+    for item in resolvable:
+        path = runner_dump_path(item)
+        node: Any = runner_dump
+        for segment in path[:-1]:
+            node = node[segment]
+        assert path[-1] in node, (
+            f"{item.author_key}: runner_field {item.runner_field!r} resolves to "
+            f"{'.'.join(path)}, which the runner GradingConfig dump does not contain — "
+            "the ledger would never see the key as populated"
         )

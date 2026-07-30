@@ -337,7 +337,7 @@ message JudgeReport {
 }
 
 message GradeComponents {
-  // State checks score (hash comparison, JSONPath assertions, env assertions)
+  // State checks score (hash comparison, JSONPath assertions, DB probes)
   // -1.0 means not evaluated
   double state_checks = 1;
 
@@ -637,6 +637,48 @@ return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
 All components (DB Service, adapters, grading engine) MUST use this exact algorithm for hash comparison to work correctly.
+
+### GradeTrial Error Semantics
+
+`GradeTrialResponse.success = false` leaves `grade` unset — an unusable grade is
+never approximated with a score.
+
+| `error` | Cause |
+|---|---|
+| `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
+| `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
+| `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
+| `Grading error: …` | Any other exception escaping the grading path |
+
+**The accounted-keys ledger.** Through the component phase the Runner records,
+at every point an evaluator runs or is deliberately skipped, which author-facing
+`grading.yaml` key that call accounts for. After the phase it subtracts those
+records from the scored keys the request's `TaskDescription.grading` actually
+populated (non-empty, not merely present). Any remainder is a key that would have
+contributed nothing to the score while the trial still received a grade, so the
+RPC fails naming each key and the runner evaluator its manifest entry expects. A
+key the manifest declares core-only that nonetheless arrives populated fails the
+same way, quoting the reason it is core-only. Scope is scored checks only:
+`state_checks.id_fields`, `state_checks.relaxed_validation` and
+`state_checks.numeric_string_fields` shape other checks instead of producing a
+component score, and `combine.*` is the aggregation itself. See
+[`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
+
+**The three recorded skips.** A trial can legitimately reach `GradeTrial` with a
+populated key whose evaluator cannot run. Each such site records a skip rather
+than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
+
+| Skip | Condition | Keys covered |
+|---|---|---|
+| `skipped: no transcript messages or tool history` | `llm_messages_json` is empty **and** the trial recorded no tool calls | every `transcript_rules.*` key |
+| `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
+| `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the whole `state_checks.hash` family, including `expected_hash` and `golden_actions`, which the adapter fills regardless of `hash.enabled` |
+
+A degenerate trial therefore **scores badly rather than erroring** — the skip
+suppresses the component, and the recorded reason says why.
+
+`grading_method = "test_execution"` dispatches before the component phase and the
+ledger does not apply to it.
 
 ## Unstable Fields Handling
 

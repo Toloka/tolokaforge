@@ -1782,12 +1782,19 @@ class TranscriptRuleResult(BaseModel):
 
 
 class TranscriptEvaluationResult(BaseModel):
-    """Result of evaluating all transcript rules."""
+    """Result of evaluating all transcript rules.
+
+    ``accounted_keys`` names the author-facing ``transcript_rules.*`` keys this
+    evaluation decomposed. The runtime ledger (``runner/grading_ledger.py``) reads
+    it rather than re-deriving which fields the evaluator "should have" branched
+    on, so a populated key the evaluator never decomposes stays unaccounted.
+    """
 
     # Use 'passed' as the field name (not 'pass' which is a Python keyword)
     passed: bool = False
     score: float = 0.0
     details: list[TranscriptRuleResult] = Field(default_factory=list)
+    accounted_keys: dict[str, str] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 

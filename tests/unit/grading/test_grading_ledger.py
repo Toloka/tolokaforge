@@ -1,0 +1,381 @@
+"""Runtime accounted-keys ledger — the guard against a scored key that no-ops.
+
+``GradeTrial`` records which author-facing ``grading.yaml`` key each evaluator
+call accounts for, then subtracts those records from the keys the config actually
+populated. The ``GradeTrial`` tests here drive the real ``RunnerServiceImpl`` over
+the real in-process DB service (the ``runner_service`` fixture), so the grades
+come from production evaluators, and they pin both directions:
+
+* a populated scored key with no record fails the RPC naming the key;
+* the config shapes shipping today — ``id_fields`` packs, degenerate trials,
+  ``hash:`` without ``enabled: true`` — still grade.
+"""
+
+import json
+from typing import Any
+
+import pytest
+
+from tolokaforge.core.grading.key_manifest import (
+    Enforcement,
+    GradingKey,
+    KeyKind,
+    SubstrateCoverage,
+    entry,
+)
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.trial import EnvEndpoints, TrialSpec
+from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.grading_ledger import EVALUATED, audit_accounted_keys, runner_dump_path
+from tolokaforge.runner.models import (
+    GradingConfig,
+    StateChecksConfig,
+    TaskDescription,
+    TranscriptRulesConfig,
+)
+
+pytestmark = pytest.mark.unit
+
+_JSONPATH_CHECK = {
+    "path": "$.db.widgets[0].status",
+    "equals": "shipped",
+    "description": "widget shipped",
+}
+
+
+def _trial_spec_json(trial_id: str, grading: dict[str, Any] | None) -> str:
+    """A registrable ``TrialSpec`` whose task carries ``grading`` verbatim."""
+    task: dict[str, Any] = {
+        "task_id": "ledger_task",
+        "name": "Ledger Task",
+        "category": "test",
+        "description": "Drives the accounted-keys ledger through GradeTrial",
+        "adapter_type": "native",
+        "system_prompt": "You are a test assistant.",
+        "initial_state": {
+            "tables": {"widgets": [{"widget_id": "w1", "status": "shipped"}]},
+            "schemas": [
+                {
+                    "table_name": "widgets",
+                    "fields": {"widget_id": "string", "status": "string"},
+                    "primary_key": "widget_id",
+                }
+            ],
+        },
+        "agent_tools": [],
+        "user_tools": [],
+    }
+    if grading is not None:
+        task["grading"] = grading
+    return TrialSpec(
+        trial_id=trial_id,
+        run_id="ledger_run",
+        task=TaskDescription.model_validate(task),
+        agent_model_config=ModelConfig(name="test-model", provider="test"),
+        env_endpoints=EnvEndpoints(
+            db_url="http://db.test:8000",
+            runner_url="http://runner.test:50051",
+        ),
+    ).model_dump_json()
+
+
+def _grade(
+    runner_service: Any,
+    mock_grpc_context: Any,
+    trial_id: str,
+    grading: dict[str, Any],
+    llm_messages: list[dict[str, Any]] | None = None,
+) -> pb2.GradeTrialResponse:
+    """Register a trial with ``grading`` and grade it through the real RPC handlers."""
+    register = pb2.RegisterTrialRequest(
+        trial_id=trial_id,
+        trial_spec_json=_trial_spec_json(trial_id, grading),
+    )
+    registered = runner_service.RegisterTrial(register, mock_grpc_context)
+    assert registered.success is True, registered.error
+    request = pb2.GradeTrialRequest(
+        trial_id=trial_id,
+        llm_messages_json=json.dumps(llm_messages) if llm_messages else "",
+    )
+    return runner_service.GradeTrial(request, mock_grpc_context)
+
+
+# --------------------------------------------------------------------------
+# The audit itself — a populated key with no record is never a score
+# --------------------------------------------------------------------------
+
+
+def test_populated_scored_key_with_no_record_names_the_expected_evaluator():
+    config = GradingConfig(state_checks=StateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK]))
+
+    audit = audit_accounted_keys(config, {})
+
+    assert audit.error is not None
+    assert "state_checks.jsonpaths" in audit.error
+    assert entry("state_checks.jsonpaths").runner_evaluator in audit.error
+
+
+def test_core_only_key_arriving_populated_quotes_its_manifest_reason():
+    item = entry("state_checks.hash.expected_state_hash")
+    config = GradingConfig(state_checks=StateChecksConfig(expected_hash="deadbeef"))
+
+    audit = audit_accounted_keys(config, {})
+
+    assert audit.error is not None
+    assert item.author_key in audit.error
+    assert item.reason in audit.error
+
+
+def test_an_explicitly_empty_check_is_not_populated():
+    """``disallowed_tools: []`` written out is indistinguishable from unset."""
+    config = GradingConfig(
+        transcript_rules=TranscriptRulesConfig(
+            tool_expectations={"required_tools": [], "disallowed_tools": []}
+        )
+    )
+
+    assert audit_accounted_keys(config, {}).error is None
+
+
+def test_config_inputs_are_outside_the_ledger_by_kind():
+    """``numeric_string_fields`` reaches only hash grading, so it is never evaluated."""
+    config = GradingConfig(
+        state_checks=StateChecksConfig(
+            numeric_string_fields=["amount"],
+            id_fields={"widgets": "widget_id"},
+            relaxed_validation=True,
+        )
+    )
+
+    assert audit_accounted_keys(config, {}).error is None
+
+
+def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
+    config = GradingConfig(state_checks=StateChecksConfig(expected_hash="deadbeef"))
+
+    audit = audit_accounted_keys(
+        config, {"state_checks.hash.expected_state_hash": "skipped: hash grading not enabled"}
+    )
+
+    assert audit.error is None
+    assert audit.skip_notes == (
+        "state_checks.hash.expected_state_hash skipped: hash grading not enabled",
+    )
+
+
+def test_an_evaluated_key_is_fully_accounted():
+    config = GradingConfig(state_checks=StateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK]))
+
+    audit = audit_accounted_keys(config, {"state_checks.jsonpaths": EVALUATED})
+
+    assert audit.error is None
+    assert audit.skip_notes == ()
+
+
+# --------------------------------------------------------------------------
+# runner_field resolution — a malformed manifest entry fails loud
+# --------------------------------------------------------------------------
+
+
+def _probe_key(runner_field: str, runner_dict_key: str | None = None) -> GradingKey:
+    return GradingKey(
+        author_key="probe.key",
+        kind=KeyKind.SCORED_CHECK,
+        coverage=SubstrateCoverage.RUNNER_ONLY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field=None,
+        runner_field=runner_field,
+        runner_dict_key=runner_dict_key,
+        reason="a probe entry built by this test",
+    )
+
+
+def test_runner_field_naming_an_unknown_model_fails_loud():
+    with pytest.raises(ValueError, match="not part of the runner grading config"):
+        runner_dump_path(_probe_key("GradingCombineConfig.method"))
+
+
+def test_runner_field_naming_an_unknown_field_fails_loud():
+    with pytest.raises(ValueError, match="has no field 'jsonpath_chekcs'"):
+        runner_dump_path(_probe_key("StateChecksConfig.jsonpath_chekcs"))
+
+
+def test_runner_dict_key_is_not_resolvable():
+    with pytest.raises(ValueError, match="runner_dict_key"):
+        runner_dump_path(_probe_key("StateChecksConfig.jsonpath_checks", runner_dict_key="enabled"))
+
+
+# --------------------------------------------------------------------------
+# GradeTrial: the config shapes shipping today still grade
+# --------------------------------------------------------------------------
+
+
+def test_id_fields_shaped_config_grades_instead_of_erroring(runner_service, mock_grpc_context):
+    """The config-input false-positive class: every `id_fields` pack shipping today."""
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0, "transcript_rules": 1.0},
+        "pass_threshold": 0.7,
+        "state_checks": {
+            "numeric_string_fields": ["amount"],
+            "id_fields": {"widgets": "widget_id"},
+            "relaxed_validation": True,
+            "jsonpath_checks": [_JSONPATH_CHECK],
+        },
+        "transcript_rules": {"must_contain": ["done"]},
+    }
+
+    response = _grade(
+        runner_service,
+        mock_grpc_context,
+        "ledger_id_fields:0",
+        grading,
+        llm_messages=[{"role": "assistant", "content": "All done"}],
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.score == pytest.approx(1.0)
+    assert response.grade.binary_pass is True
+
+
+def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, mock_grpc_context):
+    """A config populating every runner-graded scored key still produces a grade.
+
+    Pins each author key the evaluators record: a typo in one of them would leave
+    that key unaccounted and fail the RPC instead of grading.
+    """
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0, "transcript_rules": 1.0},
+        "pass_threshold": 0.7,
+        "state_checks": {"jsonpath_checks": [_JSONPATH_CHECK]},
+        "transcript_rules": {
+            "must_contain": ["shipped"],
+            "disallow_regex": ["password"],
+            "max_turns": 5,
+            "tool_expectations": {"required_tools": [], "disallowed_tools": ["delete_widget"]},
+            "required_actions": [
+                {
+                    "action_id": "a1",
+                    "requestor": "assistant",
+                    "tool_name": "ship_widget",
+                    "arguments": {"widget_id": "w1"},
+                }
+            ],
+            "communicate_info": [{"info": "shipped", "required": True}],
+        },
+    }
+
+    response = _grade(
+        runner_service,
+        mock_grpc_context,
+        "ledger_all_keys:0",
+        grading,
+        llm_messages=[{"role": "assistant", "content": "The widget was shipped"}],
+    )
+
+    assert response.success is True, response.error
+    # required_actions fails (no tool ran); the other five sub-checks pass.
+    assert response.grade.components.transcript_rules == pytest.approx(5 / 6)
+    assert response.grade.components.state_checks == pytest.approx(1.0)
+
+
+def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service, mock_grpc_context):
+    """No messages and no tool history: score badly, never error the RPC (#677)."""
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"transcript_rules": 1.0},
+        "pass_threshold": 0.7,
+        "transcript_rules": {"must_contain": ["done"]},
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_degenerate:0", grading)
+
+    assert response.success is True, response.error
+    assert response.grade.binary_pass is False
+    assert response.grade.score == pytest.approx(0.0)
+    assert (
+        "transcript_rules.must_contain skipped: no transcript messages or tool history"
+        in response.grade.reasons
+    )
+
+
+def test_expected_hash_without_hash_enabled_records_the_hash_skip(
+    runner_service, mock_grpc_context
+):
+    """The adapter fills expected_hash whether or not `hash.enabled` is set."""
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.7,
+        "state_checks": {
+            "hash_enabled": False,
+            "expected_hash": "deadbeef",
+            "jsonpath_checks": [_JSONPATH_CHECK],
+        },
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_hash_off:0", grading)
+
+    assert response.success is True, response.error
+    assert response.grade.score == pytest.approx(1.0)
+    assert "skipped: hash grading not enabled" in response.grade.reasons
+
+
+def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
+    runner_service, mock_grpc_context, monkeypatch
+):
+    """Fault injection: the drift the ledger exists to catch, end to end.
+
+    The real evaluator still runs and still scores; only its per-author-key
+    accounting is dropped — what a future ``TranscriptRulesConfig`` key that
+    nothing decomposes would look like on the wire.
+    """
+    from tolokaforge.runner import service as service_module
+
+    real = service_module.evaluate_transcript_rules
+
+    def drifted(*args: Any, **kwargs: Any) -> Any:
+        return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
+
+    monkeypatch.setattr(service_module, "evaluate_transcript_rules", drifted)
+
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"transcript_rules": 1.0},
+        "pass_threshold": 0.7,
+        "transcript_rules": {"must_contain": ["done"]},
+    }
+
+    response = _grade(
+        runner_service,
+        mock_grpc_context,
+        "ledger_drift:0",
+        grading,
+        llm_messages=[{"role": "assistant", "content": "All done"}],
+    )
+
+    assert response.success is False
+    assert "transcript_rules.must_contain" in response.error
+    assert entry("transcript_rules.must_contain").runner_evaluator in response.error
+    assert response.grade.score == 0.0
+    assert response.grade.binary_pass is False
+
+
+def test_test_execution_dispatch_is_exempt_from_the_ledger(runner_service, mock_grpc_context):
+    """`grading_method: test_execution` returns before the component phase.
+
+    The manifest's ``grading_method`` entry declares that exemption; this pins that
+    such a request fails on its missing exec tool, not on the ledger.
+    """
+    grading = {
+        "grading_method": "test_execution",
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "state_checks": {"jsonpath_checks": [_JSONPATH_CHECK]},
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_test_exec:0", grading)
+
+    assert response.success is False
+    assert "neither evaluated nor recorded a skip" not in response.error

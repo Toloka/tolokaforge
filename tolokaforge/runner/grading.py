@@ -18,6 +18,15 @@ from typing import Any
 from jsonpath_ng.ext import parse
 
 from tolokaforge.core.hash import canonical_number
+from tolokaforge.runner.grading_ledger import (
+    COMMUNICATE_INFO_KEY,
+    DISALLOW_REGEX_KEY,
+    EVALUATED,
+    MAX_TURNS_KEY,
+    MUST_CONTAIN_KEY,
+    REQUIRED_ACTIONS_KEY,
+    TOOL_EXPECTATIONS_KEY,
+)
 from tolokaforge.runner.models import (
     StateDiff,
     TableDiff,
@@ -249,52 +258,70 @@ def evaluate_transcript_rules(
         rules: A single ``TranscriptRulesConfig.model_dump()`` dict
 
     Returns:
-        TranscriptEvaluationResult with passed, score, and per-sub-check details
+        TranscriptEvaluationResult with passed, score, per-sub-check details, and
+        the author keys this call decomposed
     """
     details: list[TranscriptRuleResult] = []
+    accounted_keys: dict[str, str] = {}
 
     must_contain: list[str] = rules.get("must_contain", []) or []
     disallow_regex: list[str] = rules.get("disallow_regex", []) or []
     max_turns: int | None = rules.get("max_turns")
     tool_expectations: dict[str, Any] = rules.get("tool_expectations") or {}
+    required_tools: list[str] = tool_expectations.get("required_tools") or []
+    disallowed_tools: list[str] = tool_expectations.get("disallowed_tools") or []
     required_actions: list[dict[str, Any]] = rules.get("required_actions", []) or []
     communicate_info: list[dict[str, Any]] = rules.get("communicate_info", []) or []
 
     assistant_messages = _assistant_message_texts(messages)
 
-    for text in must_contain:
-        details.append(_check_must_contain(text, assistant_messages))
+    if must_contain:
+        accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
+        for text in must_contain:
+            details.append(_check_must_contain(text, assistant_messages))
 
-    for pattern in disallow_regex:
-        details.append(_check_disallow_regex(pattern, assistant_messages))
+    if disallow_regex:
+        accounted_keys[DISALLOW_REGEX_KEY] = EVALUATED
+        for pattern in disallow_regex:
+            details.append(_check_disallow_regex(pattern, assistant_messages))
 
     if max_turns is not None:
+        accounted_keys[MAX_TURNS_KEY] = EVALUATED
         details.append(_check_max_turns(max_turns, messages))
 
-    for tool_name in tool_expectations.get("required_tools") or []:
-        details.append(_check_required_tool(tool_name, tool_history))
+    if required_tools or disallowed_tools:
+        accounted_keys[TOOL_EXPECTATIONS_KEY] = EVALUATED
+        for tool_name in required_tools:
+            details.append(_check_required_tool(tool_name, tool_history))
+        for tool_name in disallowed_tools:
+            details.append(_check_disallowed_tool(tool_name, tool_history))
 
-    for tool_name in tool_expectations.get("disallowed_tools") or []:
-        details.append(_check_disallowed_tool(tool_name, tool_history))
+    if required_actions:
+        accounted_keys[REQUIRED_ACTIONS_KEY] = EVALUATED
+        for action in required_actions:
+            details.append(_check_required_action(action, tool_history))
 
-    for action in required_actions:
-        details.append(_check_required_action(action, tool_history))
-
-    for info in communicate_info:
-        check = _check_communicate_info(info, assistant_messages)
-        if check is not None:
-            details.append(check)
+    if communicate_info:
+        accounted_keys[COMMUNICATE_INFO_KEY] = EVALUATED
+        for info in communicate_info:
+            check = _check_communicate_info(info, assistant_messages)
+            if check is not None:
+                details.append(check)
 
     if not details:
         # No rules configured — nothing can be violated.
-        return TranscriptEvaluationResult(passed=True, score=1.0, details=[])
+        return TranscriptEvaluationResult(
+            passed=True, score=1.0, details=[], accounted_keys=accounted_keys
+        )
 
     passed_count = sum(1 for d in details if d.passed)
     total_count = len(details)
     score = passed_count / total_count
     all_passed = passed_count == total_count
 
-    return TranscriptEvaluationResult(passed=all_passed, score=score, details=details)
+    return TranscriptEvaluationResult(
+        passed=all_passed, score=score, details=details, accounted_keys=accounted_keys
+    )
 
 
 # Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
