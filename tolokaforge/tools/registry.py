@@ -255,13 +255,15 @@ class ToolExecutor:
         self.env_client = env_client
         self.tool_logs: list[dict[str, Any]] = []
 
-    def execute(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
         """
         Execute a tool with validation
 
         Args:
             tool_name: Name of the tool to execute
             arguments: Tool arguments
+            call_id: Provider tool-call id, logged so the call can be joined to
+                the tool result it produced
 
         Returns:
             ToolResult with output and metadata
@@ -366,6 +368,7 @@ class ToolExecutor:
         # Log tool call
         self.tool_logs.append(
             {
+                "call_id": call_id,
                 "tool": tool_name,
                 "arguments": self._redact_sensitive(arguments),
                 "success": result.success,

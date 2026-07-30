@@ -129,6 +129,12 @@ message RegisterTrialRequest {
 
   // Optional: Override timeout for tool execution (seconds)
   double default_tool_timeout_s = 3;
+
+  // Wire-protocol version the calling engine speaks. See
+  // tolokaforge/runner/protocol.py for the current value and what it carries.
+  // RegisterTrial fails when it is below the version the runner requires, so
+  // an engine/image skew aborts the trial before any tokens are spent.
+  int32 engine_protocol_version = 4;
 }
 
 message RegisterTrialResponse {
@@ -184,6 +190,12 @@ message ExecuteToolRequest {
   // Which environment is making the call
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
+
+  // The provider's tool-call id (ToolCall.id) — the key that joins this call
+  // to the tool-result message it produced. Required: the runner rejects an
+  // empty value, because two calls to the same tool with identical arguments
+  // are otherwise indistinguishable in the recorded history.
+  string call_id = 6;
 }
 
 message ExecuteToolResponse {
@@ -485,6 +497,12 @@ message HealthCheckResponse {
 
 ### RegisterTrialRequest
 
+**Version lock.** `engine_protocol_version` declares the wire protocol the calling engine speaks; `ENGINE_PROTOCOL_VERSION` in [`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py) is the single source of that number, and the engine sets it on every registration. The runner refuses to register a trial from an engine below its own version and names the skew in `RegisterTrialResponse.error`, which the orchestrator already treats as fatal — so a skewed pair fails before any tokens are spent, rather than burning a turn budget on rejected tool calls and reporting a completed trial that scored ~0.
+
+Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that predates the field sends nothing, which arrives as `0` and is refused. Rebuild the runner image from the engine you are running (`make docker-build-core`) or pin an image tag that matches it.
+
+The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
+
 The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](docs/TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
 
 ```json
@@ -536,25 +554,30 @@ The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/c
 
 The tool execution flow:
 
-1. Host receives tool call from LLM: `{"name": "book_reservation", "arguments": {"user_id": "mia_li_3668"}}`
-2. Host sends `ExecuteToolRequest` with `arguments_json = '{"user_id": "mia_li_3668"}'`
+1. Host receives tool call from LLM: `{"id": "call_123", "name": "book_reservation", "arguments": {"user_id": "mia_li_3668"}}`
+2. Host sends `ExecuteToolRequest` with `arguments_json = '{"user_id": "mia_li_3668"}'` and `call_id = "call_123"`
 3. Runner:
    - Looks up tool by name in registered tools
    - Reconstructs tool from `ToolSource` (module_path, class_name, invocation_style)
    - Executes tool with arguments
    - State mutations are persisted to DB Service
+   - Records the call in the trial's history under `call_id`, stamped with a trial-wide 0-based `sequence`
 4. Runner returns `ExecuteToolResponse` with output string
+
+**`call_id` is required.** It is the provider's `ToolCall.id`, and it is the only key that joins a recorded call to the `role: tool` message carrying its result — position does not resolve the same tool called twice with identical arguments. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
 
 **Error Handling:**
 
-| Status | Meaning | Host Action |
-|--------|---------|-------------|
-| `SUCCESS` | Tool executed successfully | Return output to LLM |
-| `ERROR` | Tool raised exception | Return error message to LLM |
-| `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM |
-| `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial |
-| `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM |
-| `TRIAL_NOT_FOUND` | Trial ID not registered | Log error, fail trial |
+| Status | Meaning | Host Action | Recorded in trial history |
+|--------|---------|-------------|---------------------------|
+| `SUCCESS` | Tool executed successfully | Return output to LLM | yes |
+| `ERROR` | Tool raised exception | Return error message to LLM | yes |
+| `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
+| `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
+| `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM | yes, with empty `arguments` |
+| `TRIAL_NOT_FOUND` | Trial ID not registered | Log error, fail trial | no — there is no trial context to record into |
+
+A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted.
 
 ### GradeTrialRequest
 

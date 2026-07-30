@@ -301,6 +301,8 @@ def _load_case(pack_dir: Path, case: str) -> _TrialCase:
     )
     tool_history = [
         ToolCallRecord(
+            call_id=f"call_{index}",
+            sequence=index,
             tool_name=call["tool_name"],
             arguments=call["arguments"],
             executor=call["executor"],
@@ -309,7 +311,7 @@ def _load_case(pack_dir: Path, case: str) -> _TrialCase:
             latency_seconds=0.0,
             timestamp=now,
         ).model_dump()
-        for call in calls
+        for index, call in enumerate(calls)
     ]
     return _TrialCase(
         core_trajectory=trajectory,

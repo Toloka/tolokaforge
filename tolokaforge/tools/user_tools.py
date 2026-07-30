@@ -326,12 +326,14 @@ class UserToolExecutor:
             schemas = [sanitize_tool_schema(s) for s in schemas]
         return schemas
 
-    def execute(self, tool_name: str, arguments: dict[str, Any]) -> ToolResult:
+    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
         """Execute a user tool
 
         Args:
             tool_name: Name of the tool to execute
             arguments: Tool parameters as dict
+            call_id: Provider tool-call id, logged so the call can be joined to
+                the tool result it produced
 
         Returns:
             ToolResult with success status and output/error
@@ -355,6 +357,7 @@ class UserToolExecutor:
         # Log the tool call
         self.tool_logs.append(
             {
+                "call_id": call_id,
                 "tool": tool_name,
                 "arguments": arguments,
                 "success": result.success,

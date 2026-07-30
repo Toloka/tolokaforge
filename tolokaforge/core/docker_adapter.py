@@ -62,6 +62,8 @@ class DockerRunnerAdapter:
         tool_name: str,
         arguments: dict[str, Any] | None = None,
         timeout_seconds: float = 30.0,
+        *,
+        call_id: str,
         **kwargs,
     ) -> ToolResult:
         """Execute a tool via the runtime backend under the bound
@@ -70,6 +72,10 @@ class DockerRunnerAdapter:
 
         Matches the :class:`~tolokaforge.tools.registry.ToolExecutor.execute`
         contract :class:`~tolokaforge.core.runner.TrialRunner` calls.
+
+        ``call_id`` is named explicitly rather than left to ``**kwargs``: this
+        method folds ``kwargs`` into the tool's own arguments, so an id arriving
+        that way would be sent to the tool as a parameter.
         """
         if arguments is None:
             arguments = {}
@@ -81,10 +87,12 @@ class DockerRunnerAdapter:
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             executor=self.executor,
+            call_id=call_id,
         )
 
         self.tool_logs.append(
             {
+                "call_id": call_id,
                 "tool_name": tool_name,
                 "tool": tool_name,
                 "arguments": arguments,

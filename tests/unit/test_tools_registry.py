@@ -147,6 +147,7 @@ class TestToolExecutorValidation:
                 "required_field": "value",
                 "nullable_field": None,
             },
+            call_id="call_0",
         )
         assert result.success, f"Expected success but got error: {result.error}"
 
@@ -157,6 +158,7 @@ class TestToolExecutorValidation:
                 "required_field": "value",
                 "nullable_field": "optional_value",
             },
+            call_id="call_1",
         )
         assert result.success, f"Expected success but got error: {result.error}"
 
@@ -166,5 +168,6 @@ class TestToolExecutorValidation:
             {
                 "required_field": "value",
             },
+            call_id="call_2",
         )
         assert result.success, f"Expected success but got error: {result.error}"

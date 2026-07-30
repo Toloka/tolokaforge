@@ -29,7 +29,7 @@ The seam question is: **which of the two established seams should own these five
 The five RPC methods land on `RuntimeBackend`:
 
 - `register_trial(trial_id, trial_spec_json, default_tool_timeout_s) -> dict`
-- `execute_tool(trial_id, tool_name, arguments, timeout_seconds, executor) -> ToolResult`
+- `execute_tool(trial_id, tool_name, arguments, timeout_seconds, executor, *, call_id) -> ToolResult`
 - `grade_trial(trial_id, llm_messages_json, grading_components) -> dict`
 - `get_state(trial_id, include_unstable, tables) -> dict`
 - `reset_trial(trial_id, execute_init_actions) -> dict`

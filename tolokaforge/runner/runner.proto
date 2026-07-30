@@ -65,6 +65,12 @@ message RegisterTrialRequest {
   // so the runner doesn't have to parse the spec to apply the default before
   // tool reconstruction.
   double default_tool_timeout_s = 3;
+
+  // Wire-protocol version the calling engine speaks. See
+  // tolokaforge/runner/protocol.py for the current value and what it carries.
+  // RegisterTrial fails when it is below the version the runner requires, so
+  // an engine/image skew aborts the trial before any tokens are spent.
+  int32 engine_protocol_version = 4;
 }
 
 message RegisterTrialResponse {
@@ -120,6 +126,12 @@ message ExecuteToolRequest {
   // Which environment is making the call
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
+
+  // The provider's tool-call id (ToolCall.id) — the key that joins this call
+  // to the tool-result message it produced. Required: the runner rejects an
+  // empty value, because two calls to the same tool with identical arguments
+  // are otherwise indistinguishable in the recorded history.
+  string call_id = 6;
 }
 
 message ExecuteToolResponse {

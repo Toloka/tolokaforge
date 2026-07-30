@@ -111,6 +111,7 @@ def _register_call_and_grade(
             trial_id=trial_id,
             tool_name=_CALCULATOR,
             arguments={"expression": "2 + 2"},
+            call_id="toolu_calculator_0",
         )
         assert executed.success is True, executed.error
         assert "4" in executed.output, executed.output

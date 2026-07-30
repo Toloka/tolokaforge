@@ -3,7 +3,6 @@ Pydantic Models for Runner Service
 
 This module contains all Pydantic models used by the Runner service:
 - TaskDescription and related models (from TASK_DESCRIPTION_SCHEMA.md)
-- TrialContext for per-trial runtime state
 - ToolCallRecord for tool execution history
 - DB client response models
 - Grading result models
@@ -1520,6 +1519,11 @@ class TaskDescription(BaseModel):
 class ToolCallRecord(BaseModel):
     """Record of a single tool call for transcript grading."""
 
+    # The provider's tool-call id, carried on ExecuteToolRequest. Two calls to
+    # the same tool with identical arguments differ only here and in ``sequence``.
+    call_id: str
+    # Trial-wide, 0-based, stamped by the recorder at append time.
+    sequence: int
     tool_name: str
     arguments: dict[str, Any]
     executor: str  # "agent" or "user"
@@ -1543,78 +1547,6 @@ class ReconstructedTools(BaseModel):
     user_tool_names: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
-
-
-# =============================================================================
-# Trial Context (per-trial runtime state)
-# =============================================================================
-
-
-class TrialContext(BaseModel):
-    """
-    Per-trial runtime state in the Runner.
-
-    This holds all the information needed to execute tools and grade a trial,
-    including the parsed task description, reconstructed tools, and execution history.
-
-    Note: agent_tools and user_tools are stored as Dict[str, Any] because
-    Pydantic cannot serialize callables. The actual ToolWrapper objects are
-    stored in a separate non-Pydantic dict in the service.
-    """
-
-    trial_id: str
-    task_description: TaskDescription
-    tool_call_history: list[ToolCallRecord] = Field(default_factory=list)
-    default_timeout: float = 30.0
-
-    # Note: We can't store callables in Pydantic, so tools are managed separately
-    # in the service layer. These fields track which tools are available.
-    agent_tool_names: list[str] = Field(default_factory=list)
-    user_tool_names: list[str] = Field(default_factory=list)
-
-    model_config = {"extra": "forbid", "arbitrary_types_allowed": True}
-
-    @property
-    def grading_config(self) -> GradingConfig:
-        """Get grading config from task description."""
-        return self.task_description.grading
-
-    def record_tool_call(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        output: str,
-        status: str,
-        executor: str,
-        latency_seconds: float,
-    ) -> None:
-        """
-        Record a tool call in the history for transcript grading.
-
-        Args:
-            tool_name: Name of the tool called
-            arguments: Tool arguments
-            output: Tool output or error message
-            status: Execution status
-            executor: "agent" or "user"
-            latency_seconds: Execution time
-        """
-        from datetime import timezone
-
-        record = ToolCallRecord(
-            tool_name=tool_name,
-            arguments=arguments,
-            executor=executor,
-            output=output,
-            status=status,
-            latency_seconds=latency_seconds,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-        self.tool_call_history.append(record)
-
-    def clear_history(self) -> None:
-        """Clear tool call history (used on reset)."""
-        self.tool_call_history.clear()
 
 
 # =============================================================================

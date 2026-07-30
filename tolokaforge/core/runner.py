@@ -591,7 +591,7 @@ class TrialRunner:
             tool_results_text = []
             for tc in user_result.tool_calls:
                 tool_start = time.time()
-                tool_result = self.user_tool_executor.execute(tc.name, tc.arguments)
+                tool_result = self.user_tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
                 tool_duration = time.time() - tool_start
 
                 self.logger.debug(

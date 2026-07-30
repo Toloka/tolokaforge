@@ -431,6 +431,8 @@ class PerTrialRuntimeBackend:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         return self._client_for(trial_id).execute_tool(
             trial_id=trial_id,
@@ -438,6 +440,7 @@ class PerTrialRuntimeBackend:
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             executor=executor,
+            call_id=call_id,
         )
 
     def grade_trial(

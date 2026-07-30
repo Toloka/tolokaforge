@@ -56,6 +56,8 @@ class _StubRunnerClient:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         return ToolResult(success=True, output="", error=None)
 

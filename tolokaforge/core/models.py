@@ -95,6 +95,16 @@ class ToolCall(BaseModel):
     name: str
     arguments: dict[str, Any]
 
+    @model_validator(mode="after")
+    def _require_id(self) -> Self:
+        if not self.id:
+            raise ValueError(
+                f"tool call for {self.name!r} carries an empty id. The id is the only key "
+                "that joins a call to the tool result it produced, so a call without one "
+                "is not gradeable."
+            )
+        return self
+
 
 class Message(BaseModel):
     """Conversation message"""

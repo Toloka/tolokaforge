@@ -59,6 +59,7 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
@@ -145,6 +146,8 @@ class RunnerClient(Protocol):
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult: ...
 
     def grade_trial(
@@ -370,6 +373,7 @@ class GrpcRunnerClient:
                 trial_id=trial_id,
                 trial_spec_json=trial_spec_json,
                 default_tool_timeout_s=default_tool_timeout_s,
+                engine_protocol_version=ENGINE_PROTOCOL_VERSION,
             )
 
             response = self.stub.RegisterTrial(request)
@@ -425,6 +429,8 @@ class GrpcRunnerClient:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         """
         Execute a tool call
@@ -435,6 +441,7 @@ class GrpcRunnerClient:
             arguments: Tool arguments as dict
             timeout_seconds: Execution timeout
             executor: Which environment is making the call ("agent" or "user")
+            call_id: Provider tool-call id the runner records with the call
 
         Returns:
             ToolResult with execution results
@@ -449,6 +456,7 @@ class GrpcRunnerClient:
                 arguments_json=json.dumps(arguments),
                 timeout_seconds=timeout_seconds,
                 executor=executor,
+                call_id=call_id,
             )
 
             response = self.stub.ExecuteTool(request)
@@ -1238,6 +1246,8 @@ class SharedStackRuntimeBackend:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         return self.runner_client.execute_tool(
             trial_id=trial_id,
@@ -1245,6 +1255,7 @@ class SharedStackRuntimeBackend:
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             executor=executor,
+            call_id=call_id,
         )
 
     def grade_trial(

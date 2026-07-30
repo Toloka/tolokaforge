@@ -58,7 +58,9 @@ class TestParallelExecution:
             futures = []
             for _i in range(10):
                 executor_instance = ToolExecutor(registry)
-                future = executor.submit(executor_instance.execute, "slow_tool", {})
+                future = executor.submit(
+                    executor_instance.execute, "slow_tool", {}, call_id=f"call_{_i}"
+                )
                 futures.append(future)
 
             results = [f.result() for f in as_completed(futures)]

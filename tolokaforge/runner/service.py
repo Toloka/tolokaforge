@@ -105,6 +105,7 @@ from tolokaforge.runner.models import (
     ToolCallRecord,
     TranscriptEvaluationResult,
 )
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 from tolokaforge.runner.rag_client import (
     RAGServiceClient,
     RAGServiceError,
@@ -225,8 +226,7 @@ class TrialContextRuntime:
     including the parsed task description, reconstructed tools, and execution history.
 
     Note: This is a runtime class (not Pydantic) because it holds callable objects
-    that cannot be serialized. The Pydantic TrialContext model is used for
-    serialization/validation of the data portions.
+    that cannot be serialized.
 
     Attributes:
         trial_id: Unique trial identifier (e.g., "airline_task_001:0")
@@ -296,6 +296,7 @@ class TrialContextRuntime:
 
     def record_tool_call(
         self,
+        call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
         output: str,
@@ -307,6 +308,7 @@ class TrialContextRuntime:
         Record a tool call in the history for transcript grading.
 
         Args:
+            call_id: Provider tool-call id joining this call to its result
             tool_name: Name of the tool called
             arguments: Tool arguments
             output: Tool output or error message
@@ -315,6 +317,8 @@ class TrialContextRuntime:
             latency_seconds: Execution time
         """
         record = ToolCallRecord(
+            call_id=call_id,
+            sequence=len(self.tool_call_history),
             tool_name=tool_name,
             arguments=arguments,
             executor=executor,
@@ -621,10 +625,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Host sends TrialSpec JSON; the Runner reads ``spec.task`` and
         initialises the environment:
-        1. Validate the full TrialSpec into a Pydantic model (fail fast on invalid)
-        2. Initialize DB Service with initial_state, schemas, unstable_fields (fail fast)
-        3. Reconstruct tools from ToolSource definitions (fail fast)
-        4. Return tool schemas for LLM configuration
+        1. Reject an engine whose wire-protocol version this runner cannot serve
+        2. Validate the full TrialSpec into a Pydantic model (fail fast on invalid)
+        3. Initialize DB Service with initial_state, schemas, unstable_fields (fail fast)
+        4. Reconstruct tools from ToolSource definitions (fail fast)
+        5. Return tool schemas for LLM configuration
 
         Args:
             request: RegisterTrialRequest with trial_id and trial_spec_json
@@ -635,6 +640,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
+
+        if request.engine_protocol_version < ENGINE_PROTOCOL_VERSION:
+            error = (
+                f"engine declares wire-protocol version {request.engine_protocol_version}, "
+                f"this runner image requires at least {ENGINE_PROTOCOL_VERSION}: the engine "
+                "and the runner image are version-skewed. Rebuild the runner image from this "
+                "engine (make docker-build-core) or pin an image tag that matches it."
+            )
+            logger.error(f"RegisterTrial: {trial_id} - {error}")
+            return pb2.RegisterTrialResponse(success=False, error=error)
 
         try:
             trial_spec = TrialSpec.model_validate_json(request.trial_spec_json)
@@ -930,20 +945,40 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         4. Record tool call in history
         5. Return output or error
 
+        A call the runner refuses before execution — unparseable arguments, an
+        unknown tool name — is still recorded, because the host appends a
+        ``role: tool`` error message for it either way and a rejected call the
+        record omits reads as a call that was never attempted.
+
         Args:
             request: ExecuteToolRequest with trial_id, tool_name, arguments_json
             context: gRPC context
 
         Returns:
             ExecuteToolResponse with status, output, and metrics
+
+        Raises:
+            ValueError: ``call_id`` is empty. Registered engines declare a
+                protocol version that carries it, so this is a harness bug
+                rather than version skew, and it must not reach the agent as a
+                survivable tool error.
         """
         trial_id = request.trial_id
         tool_name = request.tool_name
         executor = request.executor or "agent"
+        call_id = request.call_id
 
-        logger.debug(f"ExecuteTool: {trial_id} - {tool_name} ({executor})")
+        logger.debug(f"ExecuteTool: {trial_id} - {tool_name} ({executor}) call_id={call_id}")
 
-        # Check if trial exists
+        if not call_id:
+            raise ValueError(
+                f"ExecuteTool for tool {tool_name!r} on trial {trial_id!r} carries no call_id. "
+                "The id joins the call to the tool result it produced; without it two calls "
+                "to the same tool with identical arguments are indistinguishable."
+            )
+
+        # Check if trial exists. Unrecordable by construction — there is no
+        # trial context to record into — so this stays message-only.
         if trial_id not in self.trials:
             logger.warning(f"ExecuteTool: Trial not found: {trial_id}")
             return pb2.ExecuteToolResponse(
@@ -960,22 +995,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             arguments = json.loads(request.arguments_json) if request.arguments_json else {}
         except json.JSONDecodeError as e:
             logger.warning(f"ExecuteTool: Invalid arguments JSON: {e}")
-            return pb2.ExecuteToolResponse(
+            return self._reject_tool_call(
+                trial_context=trial_context,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments={},
+                executor=executor,
                 status=pb2.EXECUTION_STATUS_INVALID_ARGUMENTS,
-                output="",
                 error_message=f"Invalid arguments JSON: {e}",
-                metrics=pb2.ToolMetrics(),
             )
 
         # Look up tool in the appropriate tool set
         tool = trial_context.get_tool(tool_name, executor)
         if tool is None:
             logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor})")
-            return pb2.ExecuteToolResponse(
+            return self._reject_tool_call(
+                trial_context=trial_context,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
                 status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                output="",
                 error_message=f"Tool '{tool_name}' not found in {executor} tools",
-                metrics=pb2.ToolMetrics(),
             )
 
         # Determine timeout
@@ -990,6 +1031,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 self._execute_tool_async(
                     trial_context=trial_context,
                     tool=tool,
+                    call_id=call_id,
                     tool_name=tool_name,
                     arguments=arguments,
                     executor=executor,
@@ -1008,10 +1050,38 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 metrics=pb2.ToolMetrics(),
             )
 
+    def _reject_tool_call(
+        self,
+        trial_context: TrialContextRuntime,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: str,
+        status: int,
+        error_message: str,
+    ) -> pb2.ExecuteToolResponse:
+        """Record a call the runner refused before execution and return its response."""
+        trial_context.record_tool_call(
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            output=error_message,
+            status=self._status_to_string(status),
+            executor=executor,
+            latency_seconds=0.0,
+        )
+        return pb2.ExecuteToolResponse(
+            status=status,
+            output="",
+            error_message=error_message,
+            metrics=pb2.ToolMetrics(),
+        )
+
     async def _execute_tool_async(
         self,
         trial_context: TrialContextRuntime,
         tool: Any,
+        call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
         executor: str,
@@ -1089,6 +1159,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Record tool call in history
         status_str = self._status_to_string(status)
         trial_context.record_tool_call(
+            call_id=call_id,
             tool_name=tool_name,
             arguments=arguments,
             output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,

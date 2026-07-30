@@ -210,12 +210,16 @@ class RuntimeBackend(Protocol):
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         """Execute a tool call registered for ``trial_id``.
 
         ``executor`` names the caller environment (``"agent"`` or
         ``"user"``); the runtime routes the call to the matching tool
-        registry inside the runner service.
+        registry inside the runner service. ``call_id`` is the provider's
+        tool-call id, which the runner records so the call can be joined to
+        the tool result it produced.
         """
         ...
 
@@ -558,6 +562,8 @@ class InMemoryRuntimeBackend:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> Any:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.execute_tool is not implemented. "

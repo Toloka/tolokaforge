@@ -43,6 +43,7 @@ from tolokaforge.runner.models import (
     TaskDescription,
     TranscriptRulesConfig,
 )
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
 pytestmark = pytest.mark.unit
 
@@ -100,6 +101,7 @@ def _grade(
     register = pb2.RegisterTrialRequest(
         trial_id=trial_id,
         trial_spec_json=_trial_spec_json(trial_id, grading),
+        engine_protocol_version=ENGINE_PROTOCOL_VERSION,
     )
     registered = runner_service.RegisterTrial(register, mock_grpc_context)
     assert registered.success is True, registered.error

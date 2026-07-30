@@ -576,7 +576,7 @@ class TestTrialRunnerRun:
         assert traj.termination_reason == TerminationReason.USER_STOP
         assert traj.metrics.api_calls == 2
         assert traj.metrics.tool_calls >= 1
-        tool_exec.execute.assert_called_once_with("search", {"q": "test"})
+        tool_exec.execute.assert_called_once_with("search", {"q": "test"}, call_id="tc1")
 
     def test_stuck_detection(self) -> None:
         """StuckDetector triggers → terminates with STUCK."""

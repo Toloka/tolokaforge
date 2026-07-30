@@ -345,7 +345,7 @@ class ToolCallingLoop:
         for tc in result.tool_calls:
             self._maybe_recover_arguments(tc, result.text)
             tool_start = time.time()
-            tool_result = self.tool_executor.execute(tc.name, tc.arguments)
+            tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
             tool_duration = time.time() - tool_start
             self.metrics.record_tool_call()
 
