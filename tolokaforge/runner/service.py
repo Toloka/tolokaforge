@@ -67,7 +67,7 @@ from tolokaforge.runner.grading_ledger import (
     NO_JUDGE_MESSAGES_SKIP,
     NO_TRANSCRIPT_INPUT_SKIP,
     audit_accounted_keys,
-    hash_family_author_keys,
+    hash_family_accounting,
     transcript_rules_author_keys,
 )
 from tolokaforge.runner.id_resolution import (
@@ -78,6 +78,7 @@ from tolokaforge.runner.models import (
     GoldenAction,
     GradeComponents,
     HashGradingResult,
+    KeyAccountingRecord,
     StateDiff,
     TaskDescription,
     ToolCallRecord,
@@ -1032,10 +1033,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         state_diff: StateDiff | None = None
         transcript_result: TranscriptEvaluationResult | None = None
         hash_result: HashGradingResult | None = None
-        # Author key -> "evaluated" | "skipped: <reason>", filled in below at the
-        # points an evaluator is invoked or deliberately skipped. audit_accounted_keys
+        # Author key -> what became of it, filled in below at the points an
+        # evaluator is invoked or deliberately skipped. audit_accounted_keys
         # subtracts it from what the config populated.
-        accounted_keys: dict[str, str] = {}
+        accounted_keys: dict[str, KeyAccountingRecord] = {}
 
         # Edge case: No grading config at all → pass by default
         if grading_config is None:
@@ -1080,7 +1081,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
                 state_diff = hash_result.state_diff
-                accounted_keys.update(dict.fromkeys(hash_family_author_keys(), EVALUATED))
+                accounted_keys.update(hash_family_accounting(EVALUATED))
             except Exception as e:
                 logger.error(f"GradeTrial: Hash grading failed: {e}")
                 logger.error(traceback.format_exc())
@@ -1090,11 +1091,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     error=f"Hash grading failed: {type(e).__name__}: {str(e)}",
                 )
         elif state_checks_config:
-            # The adapter fills expected_hash and golden_actions from `hash:`
-            # whether or not `enabled: true` is set, so those keys can arrive
-            # populated with no evaluator to consume them. Account the family
-            # atomically — leaf-by-leaf accounting leaves a populated leaf out.
-            accounted_keys.update(dict.fromkeys(hash_family_author_keys(), HASH_DISABLED_SKIP))
+            # `hash:` keys still arrive populated with no evaluator to consume
+            # them — the adapter fills golden_actions whether or not
+            # `enabled: true` is set.
+            accounted_keys.update(hash_family_accounting(HASH_DISABLED_SKIP))
 
         # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
         if state_checks_config and state_checks_config.jsonpath_checks:

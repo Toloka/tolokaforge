@@ -26,15 +26,31 @@ from tolokaforge.core.grading.key_manifest import (
     KeyKind,
     SubstrateCoverage,
     entry,
+    family_author_keys,
     scored_keys_claiming_runner,
 )
-from tolokaforge.runner.models import GradingConfig, StateChecksConfig, TranscriptRulesConfig
+from tolokaforge.runner.models import (
+    GradingConfig,
+    KeyAccounting,
+    KeyAccountingRecord,
+    StateChecksConfig,
+    TranscriptRulesConfig,
+)
 
-EVALUATED = "evaluated"
+EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
 
-HASH_DISABLED_SKIP = "skipped: hash grading not enabled"
-NO_TRANSCRIPT_INPUT_SKIP = "skipped: no transcript messages or tool history"
-NO_JUDGE_MESSAGES_SKIP = "skipped: no transcript messages"
+HASH_DISABLED_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="hash grading not enabled"
+)
+NO_TRANSCRIPT_INPUT_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="no transcript messages or tool history"
+)
+NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="no transcript messages"
+)
+CORE_ONLY_HASH_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="core-only — no runner path reads it (#693)"
+)
 
 
 def _manifest_key(author_key: str) -> str:
@@ -51,8 +67,6 @@ COMMUNICATE_INFO_KEY = _manifest_key("transcript_rules.communicate_info")
 JSONPATHS_KEY = _manifest_key("state_checks.jsonpaths")
 DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
 LLM_JUDGE_KEY = _manifest_key("llm_judge")
-
-_HASH_FAMILY_ROOT = "state_checks.hash"
 
 # Every model the runner's GradingConfig reaches, with where its fields sit in
 # ``GradingConfig.model_dump()``.
@@ -77,6 +91,19 @@ LEDGER_KEYS: tuple[GradingKey, ...] = (
 )
 
 
+_HASH_FAMILY_KEYS = frozenset(family_author_keys("state_checks.hash"))
+_HASH_FAMILY = tuple(item for item in LEDGER_KEYS if item.author_key in _HASH_FAMILY_KEYS)
+# The hash family splits by who consumes each member: the runner's hash evaluator
+# shares one outcome across the members it reads, while a member the manifest
+# gives no runner evaluator is dead on this substrate however hash grading went.
+_RUNNER_HASH_FAMILY = tuple(
+    item.author_key for item in _HASH_FAMILY if item.runner_evaluator is not None
+)
+_CORE_ONLY_HASH_FAMILY = tuple(
+    item.author_key for item in _HASH_FAMILY if item.runner_evaluator is None
+)
+
+
 @dataclass(frozen=True)
 class LedgerAudit:
     """The ledger's verdict on one component phase.
@@ -91,26 +118,46 @@ class LedgerAudit:
     skip_notes: tuple[str, ...]
 
 
-def hash_family_author_keys() -> tuple[str, ...]:
-    """Every ledger key under ``state_checks.hash``.
+def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, KeyAccountingRecord]:
+    """The whole ``state_checks.hash`` family's accounting for one component phase.
 
-    The adapter populates ``expected_hash`` and ``golden_actions`` regardless of
-    ``hash.enabled``, so the family shares one accounting outcome; accounting it
-    leaf by leaf would leave a populated leaf unaccounted whenever hash grading is
-    off.
+    ``runner_outcome`` covers the members the runner's hash evaluator reads: the
+    adapter populates ``expected_hash`` and ``golden_actions`` regardless of
+    ``hash.enabled``, so those members share one outcome rather than being
+    accounted leaf by leaf, which would leave a populated leaf out whenever hash
+    grading is off. A member the manifest declares core-only is a skip either way
+    — recording it as evaluated would report a silently dead key as scored.
     """
-    return tuple(
-        item.author_key
-        for item in LEDGER_KEYS
-        if item.author_key == _HASH_FAMILY_ROOT
-        or item.author_key.startswith(f"{_HASH_FAMILY_ROOT}.")
-    )
+    return {
+        **dict.fromkeys(_RUNNER_HASH_FAMILY, runner_outcome),
+        **dict.fromkeys(_CORE_ONLY_HASH_FAMILY, CORE_ONLY_HASH_SKIP),
+    }
 
 
 def transcript_rules_author_keys() -> tuple[str, ...]:
     """Every ledger key under ``transcript_rules``."""
     return tuple(
         item.author_key for item in LEDGER_KEYS if item.author_key.startswith("transcript_rules.")
+    )
+
+
+def accountable_author_keys() -> frozenset[str]:
+    """Every author key some recording site in the grading path can record.
+
+    Lock 5 of ``tests/canonical/test_grading_substrate_parity.py`` asserts every
+    ledger key with a ``runner_field`` is in here, so a manifest entry no site
+    claims fails the canonical suite rather than failing ``GradeTrial`` in
+    production for every task that populates it.
+    """
+    return frozenset(
+        {
+            *_RUNNER_HASH_FAMILY,
+            *_CORE_ONLY_HASH_FAMILY,
+            *transcript_rules_author_keys(),
+            JSONPATHS_KEY,
+            DB_PROBES_KEY,
+            LLM_JUDGE_KEY,
+        }
     )
 
 
@@ -145,7 +192,7 @@ def runner_dump_path(item: GradingKey) -> tuple[str, ...]:
 
 
 def audit_accounted_keys(
-    grading_config: GradingConfig, accounted_keys: Mapping[str, str]
+    grading_config: GradingConfig, accounted_keys: Mapping[str, KeyAccountingRecord]
 ) -> LedgerAudit:
     """Subtract ``accounted_keys`` from the scored keys ``grading_config`` populates.
 
@@ -163,8 +210,8 @@ def audit_accounted_keys(
         record = accounted_keys.get(item.author_key)
         if record is None:
             unaccounted.append(_unaccounted_detail(item))
-        elif record != EVALUATED:
-            skip_notes.append(f"{item.author_key} {record}")
+        elif record.outcome is not KeyAccounting.EVALUATED:
+            skip_notes.append(f"{item.author_key} skipped: {record.detail}")
     error = None
     if unaccounted:
         error = (

@@ -28,6 +28,7 @@ from tolokaforge.runner.grading_ledger import (
     TOOL_EXPECTATIONS_KEY,
 )
 from tolokaforge.runner.models import (
+    KeyAccountingRecord,
     StateDiff,
     TableDiff,
     TranscriptEvaluationResult,
@@ -262,7 +263,7 @@ def evaluate_transcript_rules(
         the author keys this call decomposed
     """
     details: list[TranscriptRuleResult] = []
-    accounted_keys: dict[str, str] = {}
+    accounted_keys: dict[str, KeyAccountingRecord] = {}
 
     must_contain: list[str] = rules.get("must_contain", []) or []
     disallow_regex: list[str] = rules.get("disallow_regex", []) or []

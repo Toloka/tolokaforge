@@ -141,6 +141,12 @@ Require Docker daemon, API keys, or both. Auto-skipped when prerequisites are mi
 - LLM-judged grading with real providers
 - Security: container isolation, network segmentation
 
+A test that exercises a runner-side wire field needs `make docker-build-core`
+first, because the field ships inside the image. Only a *missing* image skips: a
+**stale** `tolokaforge-runner:latest` fails at `RegisterTrial` with a pydantic
+extra-forbid error naming the field (the runner config models are
+`extra="forbid"`), which points at the test rather than at the image.
+
 Two members of this tier are **Docker-free and keyless** (they need only the `uv`
 CLI): `test_plugin_discovery.py` and `test_external_harness_e2e.py`. Both install
 the out-of-tree `tests/fixtures/tolokaforge_plugin_fixture` package into an

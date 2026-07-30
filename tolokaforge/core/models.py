@@ -30,8 +30,8 @@ from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 # second, drifting definition. CriterionResult is the judge's per-criterion
 # output and is consumed by the host-side Grade model below.
 #
-# The direction is forced: this import is top-of-file, so a runner-side import of
-# ``core.models`` would deadlock on a partially-initialised module.
+# The direction is forced: this import is top-of-file, so declaring any of these
+# core-side and importing it runner-side raises on a partially-initialised module.
 from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest

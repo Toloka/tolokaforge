@@ -70,6 +70,11 @@ class GradingKey:
     declare the key at all. When the author key lives inside an untyped dict
     field, ``*_field`` names the dict field and ``*_dict_key`` the key inside it
     — the dict half is declared data, not introspection-verified.
+
+    ``family_root`` marks an entry that stands for a whole subtree of leaf
+    entries: one substrate may flatten the subtree into per-leaf fields, so the
+    root itself need not declare a field on both sides. :func:`family_author_keys`
+    reads it, and the runtime ledger accounts for a family as a unit.
     """
 
     author_key: str
@@ -85,6 +90,7 @@ class GradingKey:
     enforcing_test: str | None = None
     reason: str = ""
     tracking_issue: int | None = None
+    family_root: bool = False
 
     def __post_init__(self) -> None:
         if not self.coverage.startswith("BOTH") and not self.reason.strip():
@@ -97,6 +103,16 @@ class GradingKey:
                 f"{self.author_key}: enforcement DIFFERENTIAL_INTEGRATION needs an "
                 "enforcing_test naming the integration test that proves the differential"
             )
+        if (
+            self.coverage.startswith("BOTH")
+            and not self.family_root
+            and (self.core_field is None or self.runner_field is None)
+        ):
+            raise ValueError(
+                f"{self.author_key}: coverage {self.coverage.value} claims both substrates, "
+                "so core_field and runner_field must both name a declared field. Only a "
+                "family_root entry, whose leaves carry the fields, is exempt"
+            )
 
 
 _CORE_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.TranscriptChecker.grade"
@@ -107,7 +123,7 @@ _ID_FIELDS_LOAD_CHECK = "tolokaforge.runner.id_resolution.check_id_fields_refere
 
 _TRANSCRIPT_AGGREGATION_REASON = (
     "core averages four fixed buckets while the runner scores one sub-check per "
-    "declared entry, so the two component scores differ in magnitude (#685)"
+    "declared entry, so the two component scores differ in magnitude"
 )
 
 GRADING_KEYS: tuple[GradingKey, ...] = (
@@ -156,6 +172,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=_RUNNER_HASH_EVALUATOR,
         tracking_issue=687,
+        family_root=True,
     ),
     GradingKey(
         author_key="state_checks.hash.enabled",
@@ -210,7 +227,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         reason=(
             "core blends the hash score against the jsonpath score by this weight; "
             "the runner multiplies the two and has no weight concept, so the same "
-            "trial gets opposite verdicts (#686)"
+            "trial gets opposite verdicts"
         ),
         tracking_issue=686,
     ),
@@ -347,7 +364,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         reason=(
             "core folds both tool lists into one of four averaged buckets and ignores call "
             "status; the runner scores one sub-check per declared tool and requires a "
-            "required tool's call to have succeeded (#685)"
+            "required tool's call to have succeeded"
         ),
         tracking_issue=685,
     ),
@@ -413,6 +430,24 @@ def author_keys() -> frozenset[str]:
 def entry(author_key: str) -> GradingKey:
     """The manifest entry for ``author_key``, raising ``KeyError`` when absent."""
     return _BY_AUTHOR_KEY[author_key]
+
+
+def family_author_keys(root_author_key: str) -> tuple[str, ...]:
+    """A declared family root together with the leaf entries carrying its fields.
+
+    Raises ``ValueError`` when the entry is not declared ``family_root``, so a
+    caller cannot invent a family the manifest does not declare.
+    """
+    root = entry(root_author_key)
+    if not root.family_root:
+        raise ValueError(
+            f"{root_author_key}: not declared family_root, so the manifest gives it no family"
+        )
+    prefix = f"{root_author_key}."
+    return (
+        root.author_key,
+        *(item.author_key for item in GRADING_KEYS if item.author_key.startswith(prefix)),
+    )
 
 
 def scored_keys_claiming_runner() -> tuple[GradingKey, ...]:

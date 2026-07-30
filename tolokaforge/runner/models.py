@@ -1781,6 +1781,33 @@ class TranscriptRuleResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class KeyAccounting(str, Enum):
+    """What a recording site in the grading path did with its author key."""
+
+    EVALUATED = "evaluated"
+    SKIPPED = "skipped"
+
+
+class KeyAccountingRecord(BaseModel):
+    """One recording site's outcome for one author-facing ``grading.yaml`` key.
+
+    A skip renders into ``Grade.reasons`` as ``<author_key> skipped: <detail>``,
+    so ``detail`` is what a task author reads to learn why a key they populated
+    contributed nothing.
+    """
+
+    outcome: KeyAccounting
+    detail: str = ""
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @model_validator(mode="after")
+    def _skip_states_a_reason(self) -> KeyAccountingRecord:
+        if self.outcome is KeyAccounting.SKIPPED and not self.detail.strip():
+            raise ValueError("a skipped key must carry the detail rendered into Grade.reasons")
+        return self
+
+
 class TranscriptEvaluationResult(BaseModel):
     """Result of evaluating all transcript rules.
 
@@ -1794,7 +1821,7 @@ class TranscriptEvaluationResult(BaseModel):
     passed: bool = False
     score: float = 0.0
     details: list[TranscriptRuleResult] = Field(default_factory=list)
-    accounted_keys: dict[str, str] = Field(default_factory=dict)
+    accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 

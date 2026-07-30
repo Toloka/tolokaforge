@@ -12,8 +12,9 @@ Five locks over :mod:`tolokaforge.core.grading.key_manifest`:
    production evaluator and its real combine;
 4. every key both substrates declare survives adapter translation;
 5. every ledger key's ``runner_field`` resolves to a place in the runner
-   ``GradingConfig`` dump, so a malformed entry fails here rather than at grade
-   time in production.
+   ``GradingConfig`` dump *and* some recording site in the grading path claims
+   it, so a malformed or unclaimed entry fails here rather than at grade time in
+   production.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -49,7 +50,11 @@ from tolokaforge.runner.grading import (
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
 )
-from tolokaforge.runner.grading_ledger import LEDGER_KEYS, runner_dump_path
+from tolokaforge.runner.grading_ledger import (
+    LEDGER_KEYS,
+    accountable_author_keys,
+    runner_dump_path,
+)
 from tolokaforge.runner.models import ToolCallRecord
 
 pytestmark = pytest.mark.canonical
@@ -573,7 +578,7 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
 
 
 # --------------------------------------------------------------------------
-# 5. Every ledger key resolves to a place in the runner GradingConfig dump
+# 5. Every ledger key resolves in the runner config dump and has a recording site
 # --------------------------------------------------------------------------
 
 
@@ -589,6 +594,7 @@ def test_every_ledger_key_resolves_in_the_runner_config_dump():
         "would let every populated scored key through unchecked"
     )
 
+    accountable = accountable_author_keys()
     for item in resolvable:
         path = runner_dump_path(item)
         node: Any = runner_dump
@@ -598,4 +604,10 @@ def test_every_ledger_key_resolves_in_the_runner_config_dump():
             f"{item.author_key}: runner_field {item.runner_field!r} resolves to "
             f"{'.'.join(path)}, which the runner GradingConfig dump does not contain — "
             "the ledger would never see the key as populated"
+        )
+        assert item.author_key in accountable, (
+            f"{item.author_key} reaches the runner but no recording site in the grading "
+            "path claims it, so every task populating it would fail GradeTrial. Add an "
+            "evaluate-or-skip site in _grade_trial_async (or the evaluator it calls) and "
+            "list the key in grading_ledger.accountable_author_keys"
         )

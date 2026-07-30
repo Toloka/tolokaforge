@@ -46,7 +46,9 @@ key that claims both substrates at `DIFFERENTIAL_CANONICAL` must move both
 substrates' component scores against
 [`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; every key
 both substrates declare must survive adapter translation non-default; and every key
-the runtime ledger checks must resolve to a field on the runner config.
+the runtime ledger checks must resolve to a field on the runner config **and** be
+claimed by one of the ledger's recording sites, so a key no site records fails the
+suite instead of failing every `GradeTrial` that carries it.
 
 ### The runtime ledger
 
@@ -71,12 +73,16 @@ Three properties keep the ledger from rejecting configs that grade correctly:
 - **A key counts as populated only when it is non-empty.** An explicitly written
   `disallowed_tools: []` is indistinguishable from unset, and either way has
   nothing to evaluate.
-- **The three skips are recorded, not silent.** `transcript_rules` is skipped when
-  a trial has neither messages nor tool history, `llm_judge` when it has no
-  messages, and the whole `state_checks.hash` family when `hash.enabled` is not
-  set. Each records its reason, which appears in `grade.reasons` whenever the
-  skipped key was populated: a degenerate trial scores badly rather than erroring
-  the RPC, but the reason it scored badly is visible.
+- **Every skip is recorded, not silent.** `transcript_rules` is skipped when a
+  trial has neither messages nor tool history, `llm_judge` when it has no
+  messages, and the `state_checks.hash` members the runner's hash evaluator reads
+  when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
+  standing skip: it is declared `CORE_ONLY` because no runner path reads it (#693),
+  so it is recorded as such whether or not hash grading ran — folding it into the
+  family's outcome would report a silently dead key as scored. Each skip records
+  its reason, which appears in `grade.reasons` whenever the skipped key was
+  populated: a degenerate trial scores badly rather than erroring the RPC, but the
+  reason it scored badly is visible.
 
 `grading_method: test_execution` returns before the component phase, so the ledger
 does not apply to that dispatch mode — recorded as the `grading_method` entry's
@@ -256,7 +262,14 @@ if you want the strict check to accept it.
 **Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
 on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
 these keys requires a runner image built from the same release. Old engine + new
-runner is safe (core-side `extra="ignore"`).
+runner is safe **for this key** (core-side `extra="ignore"`).
+
+**Runner-engine version lock (both directions)**: the runner-side
+`StateChecksConfig` is `extra="forbid"` and declares no `env_assertions` or
+`db_hash_check` field, so for `state_checks` the engine and the runner image must
+come from the same release in *both* directions — an older engine that still emits
+either key is rejected at `RegisterTrial` with a validation error naming the
+field.
 
 ### Best Practices
 
@@ -318,7 +331,8 @@ call status. See [Substrate Parity](#substrate-parity).
 **Runner-engine version lock**: `tool_expectations` is declared on the runner-side
 `TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
 requires a runner image built from the same release — `RegisterTrial` rejects it
-otherwise. Old engine + new runner is safe (core-side `extra="ignore"`).
+otherwise. Old engine + new runner is safe **for this key** (core-side
+`extra="ignore"`).
 
 ---
 

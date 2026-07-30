@@ -26,9 +26,18 @@ from tolokaforge.core.grading.key_manifest import (
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.grading_ledger import EVALUATED, audit_accounted_keys, runner_dump_path
+from tolokaforge.runner.grading_ledger import (
+    CORE_ONLY_HASH_SKIP,
+    EVALUATED,
+    HASH_DISABLED_SKIP,
+    audit_accounted_keys,
+    hash_family_accounting,
+    runner_dump_path,
+)
 from tolokaforge.runner.models import (
     GradingConfig,
+    KeyAccounting,
+    KeyAccountingRecord,
     StateChecksConfig,
     TaskDescription,
     TranscriptRulesConfig,
@@ -154,13 +163,35 @@ def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
     config = GradingConfig(state_checks=StateChecksConfig(expected_hash="deadbeef"))
 
     audit = audit_accounted_keys(
-        config, {"state_checks.hash.expected_state_hash": "skipped: hash grading not enabled"}
+        config, {"state_checks.hash.expected_state_hash": HASH_DISABLED_SKIP}
     )
 
     assert audit.error is None
     assert audit.skip_notes == (
         "state_checks.hash.expected_state_hash skipped: hash grading not enabled",
     )
+
+
+def test_a_skipped_record_must_say_why():
+    """The detail is what a task author reads, so an empty one is not a skip."""
+    with pytest.raises(ValueError, match="detail rendered into Grade.reasons"):
+        KeyAccountingRecord(outcome=KeyAccounting.SKIPPED)
+
+
+@pytest.mark.parametrize(
+    "runner_outcome", [EVALUATED, HASH_DISABLED_SKIP], ids=["hash_ran", "hash_disabled"]
+)
+def test_the_core_only_hash_key_is_a_skip_whichever_way_hash_grading_went(runner_outcome):
+    """`expected_state_hash` has no runner reader, so hash grading running is irrelevant.
+
+    Sharing the family's outcome would report a populated, silently dead scored
+    key as fully evaluated in `grade.reasons`.
+    """
+    records = hash_family_accounting(runner_outcome)
+
+    assert records["state_checks.hash.expected_state_hash"] == CORE_ONLY_HASH_SKIP
+    assert records["state_checks.hash.enabled"] == runner_outcome
+    assert records["state_checks.hash.golden_actions"] == runner_outcome
 
 
 def test_an_evaluated_key_is_fully_accounted():
@@ -281,7 +312,7 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
 
 
 def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service, mock_grpc_context):
-    """No messages and no tool history: score badly, never error the RPC (#677)."""
+    """No messages and no tool history: score badly, never error the RPC."""
     grading = {
         "combine_method": "weighted",
         "weights": {"transcript_rules": 1.0},
@@ -300,10 +331,40 @@ def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service,
     )
 
 
-def test_expected_hash_without_hash_enabled_records_the_hash_skip(
+def test_golden_actions_without_hash_enabled_records_the_hash_skip(
     runner_service, mock_grpc_context
 ):
-    """The adapter fills expected_hash whether or not `hash.enabled` is set."""
+    """The adapter fills golden_actions whether or not `hash.enabled` is set."""
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.7,
+        "state_checks": {
+            "hash_enabled": False,
+            "golden_actions": [{"tool_name": "ship_widget", "arguments": {"widget_id": "w1"}}],
+            "jsonpath_checks": [_JSONPATH_CHECK],
+        },
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_hash_off:0", grading)
+
+    assert response.success is True, response.error
+    assert response.grade.score == pytest.approx(1.0)
+    assert (
+        "state_checks.hash.golden_actions skipped: hash grading not enabled"
+        in response.grade.reasons
+    )
+
+
+def test_expected_hash_is_reported_as_read_by_nothing_on_the_runner(
+    runner_service, mock_grpc_context
+):
+    """A populated key the manifest declares core-only never reads as evaluated.
+
+    The adapter fills `expected_hash` from `hash.expected_state_hash` and no runner
+    path reads it, so the author is told that in `grade.reasons` rather than being
+    shown a key that looks scored.
+    """
     grading = {
         "combine_method": "weighted",
         "weights": {"state_checks": 1.0},
@@ -315,11 +376,14 @@ def test_expected_hash_without_hash_enabled_records_the_hash_skip(
         },
     }
 
-    response = _grade(runner_service, mock_grpc_context, "ledger_hash_off:0", grading)
+    response = _grade(runner_service, mock_grpc_context, "ledger_core_only_hash:0", grading)
 
     assert response.success is True, response.error
     assert response.grade.score == pytest.approx(1.0)
-    assert "skipped: hash grading not enabled" in response.grade.reasons
+    assert (
+        "state_checks.hash.expected_state_hash skipped: core-only — no runner path "
+        "reads it (#693)" in response.grade.reasons
+    )
 
 
 def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
@@ -358,8 +422,7 @@ def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
     assert response.success is False
     assert "transcript_rules.must_contain" in response.error
     assert entry("transcript_rules.must_contain").runner_evaluator in response.error
-    assert response.grade.score == 0.0
-    assert response.grade.binary_pass is False
+    assert not response.HasField("grade")
 
 
 def test_test_execution_dispatch_is_exempt_from_the_ledger(runner_service, mock_grpc_context):

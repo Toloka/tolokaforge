@@ -664,7 +664,7 @@ same way, quoting the reason it is core-only. Scope is scored checks only:
 component score, and `combine.*` is the aggregation itself. See
 [`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
 
-**The three recorded skips.** A trial can legitimately reach `GradeTrial` with a
+**The recorded skips.** A trial can legitimately reach `GradeTrial` with a
 populated key whose evaluator cannot run. Each such site records a skip rather
 than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 
@@ -672,7 +672,8 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 |---|---|---|
 | `skipped: no transcript messages or tool history` | `llm_messages_json` is empty **and** the trial recorded no tool calls | every `transcript_rules.*` key |
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
-| `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the whole `state_checks.hash` family, including `expected_hash` and `golden_actions`, which the adapter fills regardless of `hash.enabled` |
+| `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
+| `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
 
 A degenerate trial therefore **scores badly rather than erroring** — the skip
 suppresses the component, and the recorded reason says why.
