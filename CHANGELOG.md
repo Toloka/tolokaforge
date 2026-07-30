@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.13.0 (2026-07-30)
+
+### Feat
+
+- rate-limit probe mode (fixed-interval 429 retry, hours-long budgets) (#665)
+
 ## v0.12.0 (2026-07-29)
 
 ### Feat
