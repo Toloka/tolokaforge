@@ -73,7 +73,7 @@ class TestConcurrentModuleLoad:
         def _run(pack: Path, expected_check: str) -> list[str]:
             runner = CheckRunner()
             observed: list[str] = []
-            for _ in range(10):
+            for _ in range(50):
                 result = runner.run(pack, pack.parent, ctx, config)
                 if result.error is not None:
                     raise AssertionError(f"unexpected executor error: {result.error}")

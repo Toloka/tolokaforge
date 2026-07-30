@@ -861,6 +861,13 @@ authoring API.
   false` the component is also excluded from the weighted combine. See
   [`docs/custom_checks.md`](custom_checks.md#grade-output) for the scoring
   rules.
+
+  **Field-overload note**: tasks graded via the alternate test-execution
+  reward path (a `test.sh` grader, not `custom_checks.enabled: true`) also
+  write to `components.custom_checks` — carrying the reward score in the
+  same float. Unambiguous within a single grading mode: only one of the two
+  paths writes the field per grade, and `custom_checks_details` is `null`
+  under the reward path.
 * `custom_checks_details` — one `CustomCheckDetail` entry per `@check` the
   pack emitted. `null` when no custom checks ran; `[]` is distinct (the
   executor ran but produced no per-check results). Each entry carries:

@@ -190,3 +190,72 @@ class TestGradeCustomChecksExecutorErrors:
             assert len(executor.call_log.runs) == 1
         finally:
             servicer.shutdown()
+
+    def test_executor_raises_fail_on_error_true_emits_zero_sentinel(self, tmp_path: Path) -> None:
+        # An executor that raises rather than capturing the error into
+        # :class:`CheckResultSet` is a contract violation; the seam converts
+        # the exception to the sentinel-entry shape so the audit survives
+        # and does not escape to the outer trial handler.
+        boom = RuntimeError("boom: executor crashed mid-run")
+        executor = InMemoryCheckExecutor(raise_on_run=boom)
+        servicer = _build_servicer(check_executor=executor)
+        try:
+            trial_id = "reconcile:0"
+            servicer._artifact_dirs[trial_id] = tmp_path
+            trial_context = _trial_context(
+                custom_checks={
+                    "enabled": True,
+                    "file": "checks.py",
+                    "interface_version": "1.0",
+                    "fail_on_error": True,
+                },
+            )
+
+            score, wire = _await(
+                servicer,
+                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+            )
+
+            assert score == 0.0
+            assert len(wire) == 1
+            entry = wire[0]
+            assert entry.check_name == "__executor__"
+            assert entry.status == "error"
+            assert "boom: executor crashed mid-run" in entry.message
+            # Dispatch happened; the call is recorded even though it raised.
+            assert len(executor.call_log.runs) == 1
+        finally:
+            servicer.shutdown()
+
+    def test_executor_raises_fail_on_error_false_emits_negative_sentinel(
+        self, tmp_path: Path
+    ) -> None:
+        boom = RuntimeError("boom: executor crashed mid-run")
+        executor = InMemoryCheckExecutor(raise_on_run=boom)
+        servicer = _build_servicer(check_executor=executor)
+        try:
+            trial_id = "reconcile:0"
+            servicer._artifact_dirs[trial_id] = tmp_path
+            trial_context = _trial_context(
+                custom_checks={
+                    "enabled": True,
+                    "file": "checks.py",
+                    "interface_version": "1.0",
+                    "fail_on_error": False,
+                },
+            )
+
+            score, wire = _await(
+                servicer,
+                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+            )
+
+            assert score == -1.0
+            assert len(wire) == 1
+            entry = wire[0]
+            assert entry.check_name == "__executor__"
+            assert entry.status == "error"
+            assert "boom: executor crashed mid-run" in entry.message
+            assert len(executor.call_log.runs) == 1
+        finally:
+            servicer.shutdown()

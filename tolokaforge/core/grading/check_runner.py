@@ -62,6 +62,14 @@ from tolokaforge.core.logging import get_logger
 # per-process so every caller sees only its own module's checks.
 _CHECKS_MODULE_LOAD_LOCK = threading.Lock()
 
+# Sentinel check name used by :mod:`tolokaforge.runner.service` to attach a
+# top-level executor error (module-load failure, timeout, crash) to the wire
+# ``custom_checks`` list. Task-authored ``@check`` functions may not adopt
+# this name; :meth:`CheckRunner.load_checks_module` raises ``ValueError`` on
+# collision so the sentinel remains unambiguous end-to-end.
+_CHECK_EXECUTOR_ERROR_NAME = "__executor__"
+_RESERVED_CHECK_NAMES = frozenset({_CHECK_EXECUTOR_ERROR_NAME})
+
 
 @runtime_checkable
 class CheckExecutor(Protocol):
@@ -273,6 +281,14 @@ class CheckRunner:
                     check_count=len(checks),
                     version=version,
                 )
+
+                reserved_collisions = sorted(_RESERVED_CHECK_NAMES & checks.keys())
+                if reserved_collisions:
+                    raise ValueError(
+                        f"@check name(s) collide with reserved sentinel(s): "
+                        f"{reserved_collisions}. Reserved names: "
+                        f"{sorted(_RESERVED_CHECK_NAMES)}. Rename the check."
+                    )
 
                 # Validate version
                 if version not in SUPPORTED_VERSIONS:

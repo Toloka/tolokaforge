@@ -34,6 +34,7 @@ import grpc
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.check_runner import (
+    _CHECK_EXECUTOR_ERROR_NAME,
     CheckExecutor,
     CheckRunner,
     validate_checks_module,
@@ -121,11 +122,6 @@ AGENT_WORK_DIR = "/work"
 # judge's "harness-owned allowlist" rule (no generic MCP-tool passthrough — we
 # cannot classify arbitrary MCP tools' read-only-ness).
 _SEARCH_POLICY_TOOL_NAME = "search_policy"
-
-# Sentinel check name for a top-level :class:`CheckResultSet` error (module
-# load failure, timeout, executor crash). The host surfaces it in the wire
-# ``custom_checks`` list so the audit is preserved end-to-end.
-_CHECK_EXECUTOR_ERROR_NAME = "__executor__"
 
 
 def _build_runner_check_transcript(
@@ -1633,15 +1629,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         )
 
         logger.info(f"GradeTrial: {trial_id} - Running custom checks from {checks_file}")
-        result: CheckResultSet = await self._loop.run_in_executor(
-            None,
-            lambda: self.check_executor.run(
-                checks_file=checks_file,
-                task_dir=artifacts_dir,
-                ctx=ctx,
-                config=config,
-            ),
-        )
+        try:
+            result: CheckResultSet = await self._loop.run_in_executor(
+                None,
+                lambda: self.check_executor.run(
+                    checks_file=checks_file,
+                    task_dir=artifacts_dir,
+                    ctx=ctx,
+                    config=config,
+                ),
+            )
+        except Exception as exc:
+            # An executor that raises rather than capturing into
+            # :class:`CheckResultSet` is a contract violation; convert it to
+            # the same sentinel-entry shape as ``result.error`` so the audit
+            # survives and the whole trial's grade is not lost to the outer
+            # handler.
+            logger.exception(
+                "GradeTrial: %s - custom checks executor raised",
+                trial_id,
+            )
+            score = 0.0 if config.fail_on_error else -1.0
+            return score, [_executor_error_to_wire(str(exc))]
 
         wire_results = [_check_result_to_wire(r) for r in result.results]
 
