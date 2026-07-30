@@ -608,6 +608,14 @@ class GradingConfig(BaseModel):
     transcript_rules: TranscriptRulesConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
 
+    # Custom Python checks (``@init`` + ``@check`` in a pack's ``checks.py``).
+    # Loose ``dict[str, Any]`` here — the runner validates it into
+    # :class:`~tolokaforge.core.grading.checks_interface.CustomChecksConfig` at
+    # ``GradeTrial`` time (and, once Stage 4 lands, at ``RegisterTrial`` too);
+    # mirrors the host-side :class:`~tolokaforge.core.models.GradingConfig`
+    # so an unchanged ``task.yaml`` round-trips through both.
+    custom_checks: dict[str, Any] | None = None
+
     model_config = {"extra": "forbid"}
 
 
@@ -1810,6 +1818,7 @@ class GradeComponents(BaseModel):
     transcript_score: float = -1.0
     llm_judge_score: float = -1.0  # -1.0 means not evaluated
     llm_judge_reasons: str = ""
+    custom_checks_score: float = -1.0  # -1.0 means not evaluated
 
     model_config = {"extra": "forbid"}
 

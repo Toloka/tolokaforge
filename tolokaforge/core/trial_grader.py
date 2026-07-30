@@ -32,6 +32,7 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.models import (
     CriterionResult,
+    CustomCheckDetail,
     Grade,
     GradeComponents,
     JudgeInputs,
@@ -246,6 +247,35 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     if raw_criterion_results:
         criterion_results = [CriterionResult(**cr) for cr in raw_criterion_results]
 
+    # Per-check custom-checks breakdown. The wire carries the ``details``
+    # payload JSON-encoded (proto ``string details_json``) so it can hold
+    # arbitrary check-defined data; decode back to a dict, or leave ``None``
+    # when the check emitted none. Malformed JSON is dropped to ``None``
+    # rather than failing the whole grade parse.
+    custom_checks_details: list[CustomCheckDetail] | None = None
+    raw_custom_checks = raw_grade.get("custom_checks")
+    if raw_custom_checks:
+        custom_checks_details = []
+        for entry in raw_custom_checks:
+            details_payload: dict[str, Any] | None = None
+            raw_details_json = entry.get("details_json") or ""
+            if raw_details_json:
+                try:
+                    parsed_details = json.loads(raw_details_json)
+                except (json.JSONDecodeError, TypeError):
+                    parsed_details = None
+                if isinstance(parsed_details, dict):
+                    details_payload = parsed_details
+            custom_checks_details.append(
+                CustomCheckDetail(
+                    check_name=entry.get("check_name", ""),
+                    status=entry.get("status", ""),
+                    score=float(entry.get("score", 0.0)),
+                    message=entry.get("message", ""),
+                    details=details_payload,
+                )
+            )
+
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
     judge_kb_gating: JudgeKbGating | None = None
@@ -298,6 +328,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
+        custom_checks_details=custom_checks_details,
         criterion_results=criterion_results,
         judge_status=JudgeStatus.from_proto(raw_grade.get("judge_status", 0)),
         judge_usage=judge_usage,
