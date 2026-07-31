@@ -6,11 +6,13 @@ the logic stays unit-testable and the GitHub Actions workflow is a thin caller.
 from __future__ import annotations
 
 import json
+import os
 
 import typer
 
 from automation import (
     cert,
+    gateway_catalog,
     greencheck,
     model_resolver,
     observe,
@@ -147,10 +149,17 @@ def resolve_models(
         ..., help="free-text integrate request, e.g. 'integrate Grok 4.5 and GPT 5.6'"
     ),
 ) -> None:
-    """Deterministically resolve the model phrases in a Slack request to OpenRouter slugs.
-    Prints a JSON list of {query, status, slug, candidates} for the poller to act on."""
+    """Deterministically resolve the model phrases in a Slack request to model slugs.
+    Prints a JSON list of {query, status, slug, candidates, source} for the poller to act on.
+
+    Searches the same two catalogs as the poller - OpenRouter, then the gateway from
+    ``LLM_PROXY_BASE_URL`` / ``LLM_PROXY_API_KEY`` - so debugging a request by hand cannot
+    disagree with what the poll actually did."""
     catalog = model_resolver.fetch_openrouter_catalog()
-    resolutions = model_resolver.resolve_all(request, catalog)
+    gateway_entries = gateway_catalog.fetch_gateway_catalog(
+        os.environ.get("LLM_PROXY_BASE_URL"), os.environ.get("LLM_PROXY_API_KEY")
+    )
+    resolutions = model_resolver.resolve_all(request, catalog, gateway_entries=gateway_entries)
     typer.echo(json.dumps([model_resolver.as_dict(r) for r in resolutions], indent=2))
 
 

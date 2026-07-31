@@ -2,12 +2,14 @@
 
 from __future__ import annotations
 
+import ast
 import json
 import re
 from pathlib import Path
 
 import automation.icons as icons
 import pytest
+from automation import gateway_catalog
 
 pytestmark = pytest.mark.unit
 
@@ -86,8 +88,47 @@ class TestResolution:
         assert icons.prefix("", "already led") == "already led"
 
 
+#: Every module that can put text into a Slack message. `icons.py` is excluded: it is the
+#: registry, so the defaults live there by definition.
+SOURCES = Path(icons.__file__).parent
+SOURCE_FILES = sorted(p for p in SOURCES.glob("*.py") if p.name != "icons.py")
+
+#: A Slack emoji shortcode. `::error::` / `::warning::` are GitHub Actions annotations printed
+#: to stdout, not Slack emoji, so a colon-pair on either side is excluded.
+_EMOJI_LITERAL_RE = re.compile(r"(?<!:):([a-z0-9_+-]+):(?!:)")
+
+
+def _emoji_in_code(path: Path) -> list[str]:
+    """Emoji shortcodes in the STRING LITERALS of *path*, docstrings excluded.
+
+    An AST walk rather than a line scan, because docstrings are full of Sphinx cross-reference
+    roles (``:func:``, ``:data:``) that look exactly like a shortcode and can never reach Slack.
+    What CAN reach Slack is a literal in executable code, including the constant parts of an
+    f-string, which is what this collects.
+    """
+    tree = ast.parse(path.read_text())
+    scopes = (ast.Module, ast.ClassDef, ast.FunctionDef, ast.AsyncFunctionDef)
+    docstrings = set()
+    for node in ast.walk(tree):
+        if isinstance(node, scopes) and node.body:
+            first = node.body[0]
+            if isinstance(first, ast.Expr) and isinstance(
+                getattr(first, "value", None), ast.Constant
+            ):
+                docstrings.add(id(first.value))
+    found = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Constant) or not isinstance(node.value, str):
+            continue
+        if id(node) in docstrings:
+            continue
+        for match in _EMOJI_LITERAL_RE.finditer(node.value):
+            found.append(f"{path.name}:{node.lineno}: {match.group(0)}")
+    return found
+
+
 class TestTheWorkflowsAndTheRegistryAgree:
-    """Every role the workflows name must exist, and every declared role should be
+    """Every role a caller names must exist, and every declared role should be
     reachable - a role nothing uses is either a typo or dead weight."""
 
     @staticmethod
@@ -97,21 +138,43 @@ class TestTheWorkflowsAndTheRegistryAgree:
             text = (WORKFLOWS / name).read_text()
             used |= set(re.findall(r"--icon ([a-z_]+)", text))
             used |= set(re.findall(r"ICON_ROLE=([a-z_]+)", text))
+        # Roles named in Python too: a message built in code (the poller's reply to a request)
+        # names its role at the call site, not through a CLI flag.
+        for source in SOURCE_FILES:
+            used |= set(
+                re.findall(
+                    r"""icons\.(?:icon|prefix)\(\s*["']([a-z0-9_]+)["']""", source.read_text()
+                )
+            )
         return used
 
-    def test_no_workflow_names_an_unknown_role(self):
+    def test_no_caller_names_an_unknown_role(self):
         assert self._used() - set(icons.DEFAULT_ICONS) == set()
 
     def test_every_declared_role_is_used(self):
         assert set(icons.DEFAULT_ICONS) - self._used() == set()
 
-    def test_no_message_still_hardcodes_an_emoji(self):
+    def test_no_workflow_message_still_hardcodes_an_emoji(self):
         """The emoji left the text when the role arrived; a leftover would be an
         icon no override can reach."""
         for name in ("slack-integrate.yml", "integrate-model.yml"):
             text = (WORKFLOWS / name).read_text()
             assert not re.search(r"""--text ['"]:[a-z_]+:""", text), name
             assert not re.search(r"""(MSG|SLACK)=['"]?:[a-z_]+:""", text), name
+
+    def test_no_python_built_message_still_hardcodes_an_emoji(self):
+        """The same guard over the SOURCES, which is where four icons hid.
+
+        The workflow-only sweep above passed while the poller's whole reply - resolved,
+        ambiguous, unknown, route-downgraded - carried literal shortcodes, so a workspace with
+        the full override JSON still saw stock emoji on the first message the flow ever sends.
+        Any emoji in a source file must come from the registry.
+        """
+        offenders = [item for source in SOURCE_FILES for item in _emoji_in_code(source)]
+        assert offenders == [], (
+            "hardcoded Slack emoji found; give each one a role in icons.DEFAULT_ICONS and emit "
+            f"it with icons.icon(role, overrides): {offenders}"
+        )
 
 
 class TestTheReplyPathAppliesTheRole:
@@ -211,3 +274,78 @@ class TestEveryIconCallSiteReachesACommandThatAcceptsIt:
         )
         assert result.exit_code == 0
         assert sent["text"] == ":tf-pr: Opened PR #42"
+
+
+class TestAnUnknownRoleDoesNotCostTheMessage:
+    """A role typo is a bug in this codebase, but losing the notification is a worse one.
+
+    `icon()` raises, and the CLI wrappers catch everything and exit 0 - so before this, a bad
+    role meant no message at all on a green step (and, in `reply`, a thread root with nothing
+    under it).
+    """
+
+    def test_the_message_still_goes_out_unstyled(self, monkeypatch):
+        import automation.slack as slack
+
+        noted: list[str] = []
+        monkeypatch.setattr(slack, "_note_failure", noted.append)
+        assert slack._prefixed("not_a_role", "Observe started") == "Observe started"
+        assert len(noted) == 1
+        assert "not_a_role" in noted[0]
+
+    def test_a_good_role_is_untouched(self):
+        import automation.slack as slack
+
+        assert slack._prefixed("observe_started", "Observe started") == (
+            ":arrow_forward: Observe started"
+        )
+
+
+class TestAFullOverrideRestylesEveryMessage:
+    """The requirement in one assertion: with the full role map set, NO stock emoji survives.
+
+    Built over the poller's request reply because that is where the coverage gap was - it is the
+    first message the flow ever sends, it carries all three intake outcomes plus a route warning,
+    and every one of those icons used to be a literal.
+    """
+
+    CATALOG = ["x-ai/grok-4.5", "openai/gpt-5.6-sol", "openai/gpt-5.6-terra"]
+
+    @staticmethod
+    def _full_override() -> str:
+        return json.dumps(
+            {role: f":arena-{role.replace('_', '-')}:" for role in icons.DEFAULT_ICONS}
+        )
+
+    def _reply_with_every_outcome(self) -> str:
+        import automation.model_resolver as mr
+        import automation.poller as poller
+
+        # resolved + ambiguous + unknown in one message, so all three intake icons appear.
+        resolutions = mr.resolve_all(
+            "<@U1> integrate x-ai/grok-4.5, gpt 5.6 and nope/nothing-9", self.CATALOG
+        )
+        availability = {
+            r.slug: gateway_catalog.lookup(r.slug, [])  # catalog read, nothing in it
+            for r in resolutions
+            if r.status == "resolved" and r.slug
+        }
+        plan = poller.route_plan(resolutions, availability, gateway_catalog.ROUTE_GATEWAY)
+        reply = mr.format_resolution_reply(
+            "U1", resolutions, availability, plan.requested_route, gateway_searched=True
+        )
+        assert plan.warnings, "expected a route warning to be part of the message under test"
+        return "\n\n".join([reply, *plan.warnings])
+
+    def test_stock_glyphs_are_present_without_an_override(self, monkeypatch):
+        monkeypatch.delenv(icons.ICON_OVERRIDES_ENV, raising=False)
+        found = set(_EMOJI_LITERAL_RE.findall(self._reply_with_every_outcome()))
+        # The unset case must be unchanged: today's glyphs, in all three intake states.
+        assert {"white_check_mark", "warning", "x"} <= found
+
+    def test_no_stock_glyph_survives_the_full_override(self, monkeypatch):
+        monkeypatch.setenv(icons.ICON_OVERRIDES_ENV, self._full_override())
+        text = self._reply_with_every_outcome()
+        found = sorted(set(_EMOJI_LITERAL_RE.findall(text)))
+        assert found, "the message under test must contain icons"
+        assert [name for name in found if not name.startswith("arena-")] == [], text

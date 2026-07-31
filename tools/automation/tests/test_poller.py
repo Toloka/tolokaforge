@@ -12,6 +12,7 @@ from __future__ import annotations
 import automation.model_resolver as mr
 import automation.poller as poller
 import pytest
+from automation import gateway_catalog
 
 pytestmark = pytest.mark.unit
 
@@ -183,3 +184,82 @@ class TestResolvedSlugsPlan:
         assert poller.demote_unsafe_slug(amb) is amb
         # A demoted variant is excluded from the plan (status != resolved).
         assert poller.resolved_slugs([out]) == []
+
+
+class TestRoutePlan:
+    """The route is decided PER MODEL, and a directive that cannot be honoured is stated.
+
+    The two sides of one request can disagree: a gateway-only model can run nowhere but the
+    gateway, while an OpenRouter model must keep the calibrated default, because moving a model's
+    serving path is a leaderboard-comparability decision.
+    """
+
+    GATEWAY_ONLY = "azure_ai/cohere-command-a-plus-05-2026"
+
+    def _resolutions(self, text, gateway_entries=None):
+        return mr.resolve_all(text, CATALOG, gateway_entries=gateway_entries)
+
+    def _availability(self, resolutions, catalog):
+        return {
+            r.slug: gateway_catalog.lookup(r.slug, catalog)
+            for r in resolutions
+            if r.status == "resolved" and r.slug
+        }
+
+    def test_mixed_request_routes_each_model_where_it_can_run(self):
+        entries = [self.GATEWAY_ONLY]
+        resolutions = self._resolutions(
+            f"<@{BOT}> integrate grok 4.5 and {self.GATEWAY_ONLY}", gateway_entries=entries
+        )
+        plan = poller.route_plan(resolutions, self._availability(resolutions, entries), None)
+        assert plan.routes == {
+            "x-ai/grok-4.5": gateway_catalog.ROUTE_OPENROUTER,
+            self.GATEWAY_ONLY: gateway_catalog.ROUTE_GATEWAY,
+        }
+        assert plan.warnings == ()
+
+    def test_via_openrouter_cannot_be_honoured_for_a_gateway_only_model(self):
+        entries = [self.GATEWAY_ONLY]
+        resolutions = self._resolutions(
+            f"<@{BOT}> integrate {self.GATEWAY_ONLY}", gateway_entries=entries
+        )
+        plan = poller.route_plan(
+            resolutions,
+            self._availability(resolutions, entries),
+            gateway_catalog.ROUTE_OPENROUTER,
+        )
+        assert plan.routes == {self.GATEWAY_ONLY: gateway_catalog.ROUTE_GATEWAY}
+        assert len(plan.warnings) == 1
+        assert "cannot be honoured" in plan.warnings[0]
+        assert self.GATEWAY_ONLY in plan.warnings[0]
+
+    def test_via_litellm_is_downgraded_when_the_gateway_lacks_the_model(self):
+        resolutions = self._resolutions(f"<@{BOT}> integrate grok 4.5")
+        plan = poller.route_plan(
+            resolutions,
+            self._availability(resolutions, []),  # catalog read, model absent
+            gateway_catalog.ROUTE_GATEWAY,
+        )
+        assert plan.routes == {"x-ai/grok-4.5": gateway_catalog.ROUTE_OPENROUTER}
+        assert plan.requested_route is None  # the reply must report the route actually used
+        assert "could not confirm the gateway serves every model" in plan.warnings[0]
+
+    def test_a_gateway_only_model_does_not_trigger_the_downgrade(self):
+        # It came OUT of the gateway catalog, so it is not evidence against the gateway; a
+        # downgrade here would have reported OpenRouter for a model OpenRouter does not carry.
+        entries = [self.GATEWAY_ONLY]
+        resolutions = self._resolutions(
+            f"<@{BOT}> integrate {self.GATEWAY_ONLY} via litellm", gateway_entries=entries
+        )
+        plan = poller.route_plan(
+            resolutions,
+            self._availability(resolutions, entries),
+            gateway_catalog.ROUTE_GATEWAY,
+        )
+        assert plan.routes == {self.GATEWAY_ONLY: gateway_catalog.ROUTE_GATEWAY}
+        assert plan.warnings == ()
+
+    def test_unresolved_phrases_never_reach_the_plan(self):
+        resolutions = self._resolutions(f"<@{BOT}> integrate nope/nothing-9 and grok 4.5")
+        plan = poller.route_plan(resolutions, self._availability(resolutions, None), None)
+        assert plan.routes == {"x-ai/grok-4.5": gateway_catalog.ROUTE_OPENROUTER}

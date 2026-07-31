@@ -55,6 +55,16 @@ DEFAULT_ICONS: dict[str, str] = {
     "needs_human_agent": ":raising_hand:",
     "pipeline_error": ":rotating_light:",
     "dispatch_failed": ":x:",
+    # Request intake: the poller's in-thread reply to an "@bot integrate ..." message. These
+    # address the REQUESTER, before any PR exists, which is why none of them reuses a
+    # pipeline-stage role that happens to share a glyph today - `dispatch_failed` (:x:) is an
+    # infra failure AFTER resolution succeeded, while `request_unresolved` is a name that matched
+    # nothing, and a workspace will want to tell those apart.
+    "request_resolved": ":white_check_mark:",
+    "request_ambiguous": ":warning:",
+    "request_unresolved": ":x:",
+    # A `via <route>` directive that could not be honoured.
+    "route_downgraded": ":warning:",
 }
 
 # Slack emoji names are lowercase letters, digits, and - _ +. Anything else
