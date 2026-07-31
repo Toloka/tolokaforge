@@ -252,7 +252,7 @@ For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](
 | **Adapter** | Plugin that maps a benchmark format to the harness contract (`BaseAdapter`). |
 | **Task pack** | A directory tree of tasks resolved by an adapter (`task.yaml` for native; format varies per adapter). |
 | **Trial** | One attempt at one task with one model configuration. A run produces `N_tasks × repeats` trials. |
-| **Trajectory** | The full message + tool-call log for one trial, written as `trajectory.yaml`. |
+| **Trajectory** | One trial's in-process record: its message trace plus `tool_log`, the ordered `RecordedToolCall` list. Only the message trace is written to `trajectory.yaml`; `tool_log` is not persisted, so a bundle read back from disk carries no per-call `status` / `output` / `executor` / `latency_seconds` (`docs/GRADING.md` G6b). |
 | **TrialRunner** | The in-process Python class (`tolokaforge/core/runner.py`) that owns one trial's agent–user loop and dispatches every tool call to the Runner Service over gRPC. |
 | **Runner Service** | The gRPC service (`tolokaforge/runner/service.py`) that owns tool execution, environment state, and grading. Runs in a Docker container; always required. Distinct from `TrialRunner`. |
 | **Preset** | Per-provider capability bundle (schema sanitizer, reasoning codec, params policy, cache policy, tool-content policy). |

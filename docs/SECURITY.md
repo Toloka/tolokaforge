@@ -107,7 +107,6 @@ The agent never sees grading criteria or expected outputs:
 | Task-declared services reaching external internet | `network_policy: no_internet` (the default) attaches them to an injected `internal: true` network via `enforce_network_policy` (Case B/C) |
 | Untrusted sibling service reaching first-party sibling services (db-service, runner) via the shared injected network | `network_access: restricted` on the untrusted service excludes it from the injected shared internal network; the compose file's task-declared networks scope which siblings it can reach. |
 | Runner privilege escalation (Docker mode) | `cap_drop: ALL`, `cap_add: NET_BIND_SERVICE`, `no-new-privileges` |
-| Sensitive data in logs | Automatic key redaction in tool call logging |
 
 ### Not Addressed
 
@@ -119,6 +118,7 @@ The agent never sees grading criteria or expected outputs:
 | Supply chain attacks in task code | Task authors are assumed trusted |
 | Side-channel attacks | Not mitigated |
 | Agent exfiltrating data via LLM output | The orchestrator relays model output; no content filtering |
+| Sensitive data in recorded tool-call arguments | Recorded verbatim on both substrates — see § Tool Call Arguments for why the grader's input must not be rewritten. Redaction belongs at artifact-write time; tracked in #694 |
 
 
 ## Testing

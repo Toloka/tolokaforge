@@ -60,7 +60,13 @@ Per-trial / per-task files:
 - `env.yaml` - ~230KB backend state. DO NOT read in bulk.
 
 ## Metrics (the board `(c/n)^k` metric is computed in the arena FRONTEND, not this engine)
-For each task, c = passing reps, n = total reps.
+For each task, c = passing reps, n = **measured** reps — `measured_trials` in
+`per_task_metrics.json`, NOT `total_trials`. A rep the infrastructure aborted (provider rate
+limit, LLM API timeout, provisioning failure) produced no grade and is out of every
+denominator; the gap `total_trials - measured_trials` is exactly
+`sum(infrastructure_aborts.values())`. Report `measured_trials` and
+`infrastructure_aborts` alongside any rate, so a `null` pass@k reads as lost coverage
+rather than as a missing task.
 - pass@1 = mean over tasks of `c/n`. The per-task `c/n` is `success_rate` in
   `per_task_metrics.json` (per-task rows live there, NOT in `aggregate.json`).
 - pass@5 (ceiling, any-of-k) = mean over tasks of `1 - C(n-c,5)/C(n,5)`, tasks with n>=5.

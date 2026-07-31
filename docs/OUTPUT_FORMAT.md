@@ -25,7 +25,7 @@ bumped and this document is updated in the same commit.
             ├── trajectory.yaml             ← message trace + status + metrics
             ├── env.yaml
             ├── metrics.yaml
-            ├── grade.yaml
+            ├── grade.yaml                  ← only when the trial produced a grade
             ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
             ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
             ├── logs.yaml
@@ -391,14 +391,16 @@ tool_calls: 7
 tool_success_rate: 1.0
 stuck_detected: false
 tool_usage:
-  - tool: "get_user_details"
-    count: 2
-    success: 2
-    fail: 0
-  - tool: "create_order"
-    count: 2
-    success: 2
-    fail: 0
+  - tool_name: "create_order"
+    call_count: 2
+    success_count: 2
+    error_count: 0
+    total_duration_s: 1.84
+  - tool_name: "get_user_details"
+    call_count: 2
+    success_count: 2
+    error_count: 0
+    total_duration_s: 0.42
 rate_limit_retries: 0
 rate_limit_wait_s: 0.0
 rate_limit_first_ts: null
@@ -411,16 +413,6 @@ probe_completion_tokens: 0
 probe_bucket_width_s: 0
 probe_dropped_buckets: 0
 probe_buckets: []
-  - tool_name: "create_order"
-    call_count: 2
-    success_count: 2
-    error_count: 0
-    total_duration_s: 1.84
-  - tool_name: "get_user_details"
-    call_count: 2
-    success_count: 2
-    error_count: 0
-    total_duration_s: 0.42
 ```
 
 `tool_usage` rolls up the trial's recorded tool calls by tool name, sorted by

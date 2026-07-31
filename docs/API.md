@@ -59,6 +59,22 @@ def run_trial(
   sleeping, and episode wall-time counts that sleep), and `conductor`
   must name an implementation that supports the mode.
 
+Reading the result:
+
+- **`result.trajectory.grade` is `Grade | None`.** It is `None` for a trial the
+  infrastructure aborted — a provider rate limit, an LLM API timeout, a
+  provisioning failure — because the agent never ran and any score would describe
+  work that never happened. The `print` above therefore prints `None` on a
+  rate-limited trial, and a consumer that reads `.score` without branching raises
+  `AttributeError` rather than reading a fabricated zero. See
+  [ANALYTICS.md](ANALYTICS.md) § The denominator: measured trials.
+- **`result.trajectory.tool_log` is `list[RecordedToolCall]`**, one entry per
+  attempted call in trial-wide execution order, carrying `call_id`, `sequence`,
+  `tool_name`, `arguments`, `executor`, `status`, untruncated `output`,
+  `latency_seconds` and `timestamp`. Read `call.tool_name` (not `log["tool"]`) and
+  `call.status is ToolExecutionStatus.SUCCESS` (not `log["success"]`). It is not
+  written to any artifact — it lives only on the in-process `Trajectory`.
+
 Errors:
 
 - **`pydantic.ValidationError`** — `models` is missing `agent` or carries

@@ -257,7 +257,7 @@ Output files are written by [`tolokaforge/core/output_writer.py`](../tolokaforge
 - `must_contain` - Check an assistant message contains text
 - `disallow_regex` - Check no assistant message matches a regex
 - `max_turns` - Verify conversation under turn limit
-- `required_actions` - Check a tool call appears in the tool history with matching arguments
+- `required_actions` - Check a tool call appears on the trial's event timeline with matching arguments
 - `communicate_info` - Check a required info string appears in an assistant message
 - `tool_expectations` - Check the required tools were called successfully and the disallowed tools never were
 

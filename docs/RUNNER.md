@@ -97,6 +97,27 @@ build toolchain never ships.
   `tolokaforge-runner:local` is built with exactly what a run requires and stays
   slim otherwise.
 
+### Engine / image version lock
+
+The image and the engine that drives it speak one wire protocol, and the pairing
+is enforced. `ENGINE_PROTOCOL_VERSION` in
+[`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py) is the single
+source of that number; the engine declares it on every `RegisterTrial`, and the
+runner **refuses to register a trial from an engine below its own version**,
+naming the skew in `RegisterTrialResponse.error`. The orchestrator already treats a
+registration failure as fatal, so a skewed pair fails before any tokens are spent.
+
+The bound is one-sided: a **newer** engine against an older image still registers,
+because the runner only rejects what is below its own version. An **older** engine
+against a newer image fails every trial at registration.
+
+That is what an engine upgrade needs: rebuild the image from the same tree
+(`make docker-build-core`) or pin an image tag that matches. The gate sits at
+registration rather than per call deliberately — an old engine sends no `call_id`,
+and rejecting each `ExecuteTool` would reach the agent as an ordinary tool failure,
+so it would retry until its turn budget was gone and report a completed trial
+scoring near zero, with the skew visible only inside the transcript.
+
 ## Tool Lifecycle
 
 Some tools own per-trial resources — a compose stack, a long-lived
@@ -269,7 +290,9 @@ Queue state + per-attempt artifacts are written under `run_dir`:
 - `run_queue.sqlite` (sqlite backend only)
 - `trials/<task_id>/<trial>/trajectory.yaml`
 - `trials/<task_id>/<trial>/metrics.yaml`
-- `trials/<task_id>/<trial>/grade.yaml`
+- `trials/<task_id>/<trial>/grade.yaml` — **only when the trial produced a
+  grade.** A trial the infrastructure aborted has no verdict to write, so a reader
+  must not assume the file is there
 - `aggregate.json`
 - `per_task_metrics.json`
 - `metadata_slices.json`

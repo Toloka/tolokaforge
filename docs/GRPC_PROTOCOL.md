@@ -722,6 +722,12 @@ never approximated with a score. The two views of the trial are joined into its
 so an unreadable or self-contradictory payload fails the RPC before golden replay
 touches the trial's state.
 
+The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
+`GradingFailedError` on any `success = false`, so the trial is published with no
+score rather than with one the runner never computed. See
+[`GRADING.md`](GRADING.md#trial-event-timeline) for what that costs the run's
+counts.
+
 | `error` | Cause |
 |---|---|
 | `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
@@ -755,6 +761,7 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
 | `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
 | `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
+| `skipped: custom checks not enabled` | The pack wrote a `custom_checks` block but left `enabled` false, so the executor never runs | `custom_checks` |
 
 A degenerate trial therefore **scores badly rather than erroring** — the skip
 suppresses the component, and the recorded reason says why.

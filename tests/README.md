@@ -98,6 +98,10 @@ tests/
     ├── mock_clients.py       # MockAsyncClient — canonical source
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
+    ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
+    ├── recorded_calls.py     # RecordedToolCall builders
+    ├── runner_requests.py    # gRPC request + TaskDescription builders
+    ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 

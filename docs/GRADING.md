@@ -79,8 +79,8 @@ Three properties keep the ledger from rejecting configs that grade correctly:
 - **A key counts as populated only when it is non-empty.** An explicitly written
   `disallowed_tools: []` is indistinguishable from unset, and either way has
   nothing to evaluate.
-- **Every skip is recorded, not silent.** `transcript_rules` is skipped when a
-  trial has neither messages nor tool history, `llm_judge` when it has no
+- **Every skip is recorded, not silent.** `transcript_rules` is skipped when the
+  trial's timeline carries no events, `llm_judge` when it has no
   messages, `custom_checks` when the pack wrote the block but left
   `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
   reads when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
@@ -90,6 +90,12 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   its reason, which appears in `grade.reasons` whenever the skipped key was
   populated: a degenerate trial scores badly rather than erroring the RPC, but the
   reason it scored badly is visible.
+
+  "No events" is narrower than "no messages": `role: system` messages are harness
+  annotations and never become events (N3), so a trial whose only messages are a
+  termination notice and which made no tool call is skipped despite having
+  messages. That is the point — grading a rule against harness text would let a
+  task score itself on strings the harness wrote.
 
 `grading_method: test_execution` returns before the component phase, so the ledger
 does not apply to that dispatch mode — recorded as the `grading_method` entry's
@@ -245,12 +251,25 @@ join and the assistant-turn view are shared accessors on the timeline module
 (`attempted_calls`, `assistant_texts`), so the two substrates cannot drift into
 reading one timeline differently.
 
-**A reconciliation failure fails the RPC.** `TimelineInconsistencyError` from
-either builder call is never folded into a score. Runner-side `GradeTrial`
-returns `success = False` with the offending `call_id` in the error and no
-`Grade` at all; core-side the exception propagates. A trial whose transcript and
-tool-call record disagree would otherwise grade as though the calls it made never
-happened — a `0.0` reported against evidence that was never read.
+**A reconciliation failure fails the RPC, and the host does not substitute a
+verdict.** `TimelineInconsistencyError` from either builder call is never folded
+into a score. Runner-side `GradeTrial` returns `success = False` with the offending
+`call_id` in the error and no `Grade` at all; core-side the exception propagates.
+On the host, `RunnerRPCTrialGrader.grade` raises `GradingFailedError` for **any**
+`GradeTrial` that returns no verdict — reconciliation failure, an undecodable
+payload, or an unaccounted scored key. A stand-in `score=0.0` would be worse than
+what it replaced: a normally-terminated trial classifies `MEASURED`, so the zero
+would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
+failure reported against evidence that was never read.
+
+The consequence is that such a trial appears in **no** published number. The
+exception propagates out of the conductor's grading phase, so the trial's bundle is
+not written and the trajectory never reaches the run's results — `total_trials`
+does not count it. It is loud where it happens: the failure is logged, the
+orchestrator retries the attempt and then records it in `run_state.json`, and a
+`trial_failed` event fires. Whether an ungradeable trial should instead be counted
+as a `HARNESS_ERROR` is an open published-numbers question, not something this
+behaviour decides.
 
 **One key is still evaluated from different sources.** The core engine evaluates
 `transcript_rules.required_actions` and `transcript_rules.communicate_info`

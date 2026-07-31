@@ -36,7 +36,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 
 | Flag | Meaning |
 |---|---|
-| `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `grade.yaml` + `task.yaml`. |
+| `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. A directory is a trial bundle iff it directly contains `grade.yaml` + `task.yaml`, so a trial that produced no grade is not a bundle and is **not discovered** — see below. |
 | `--trial` | Re-judge a single bundle dir instead of the whole `--source`. |
 | `--judge-model` | Override the judge model as `<provider>/<model>` (e.g. `openrouter/openai/gpt-4.1-mini`), temperature 0. Default: the recorded `model_config.judge`. |
 | `--grading` | Override the rubric — and, when the file carries them, the judge's custom prompt (`llm_judge.customization.system_prompt`) and agent-policy gating (`llm_judge.customization.include_agent_system_prompt`) — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric, prompt, and gating. |
@@ -67,13 +67,23 @@ Each recorded trial is classified:
 A judge-eligible trial that cannot be reconstructed (a judge ran, but the bundle
 records no rubric and no `--grading` was given; or no transcript; or no
 `prompts.yaml` agent policy; or no judge model and no `--judge-model`) is reported
-as a **named per-trial failure** — the batch continues, and no eligible trial is
-ever silently skipped. The same applies to a bundle whose `grade.yaml` is missing
-or unreadable (it cannot even be classified) and to recorded inputs that fail
+as a **named per-trial failure** — the batch continues, and no discovered trial is
+ever silently skipped. The same applies to a bundle whose `grade.yaml` is present
+but unreadable (it cannot be classified) and to recorded inputs that fail
 validation (a corrupt `trajectory.yaml`, rubric, or model config). When any trial
 fails, `rejudge` still writes the comparison report for the replayed subset and
 then **exits non-zero**, so a scripted caller never reads a partially-failed
 replay as clean.
+
+**A trial that produced no grade is outside the batch entirely.** Discovery keys on
+`grade.yaml`, and a trial the infrastructure aborted has no verdict to write
+(`docs/GRADING.md` § Infrastructure aborts produce no grade), so its directory is
+never recognised as a bundle and never appears in the report — not as a failure,
+not as a skip. Nothing was lost: there is no judge stage to replay. What is lost is
+**legibility of the batch's size**: a run that hit provider throttling yields a
+smaller eligible count than the same suite on a clean run, with nothing in the
+replay report saying why. Read `per_task_metrics.json`'s `infrastructure_aborts`
+alongside the replay report to account for the difference.
 
 ## Offline read tools
 
