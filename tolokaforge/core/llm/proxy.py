@@ -1,14 +1,27 @@
-"""Generic OpenAI-compatible LLM gateway (proxy) transport.
+"""LLM gateway (proxy) transport, configured entirely from the environment.
 
 Some deployments do not let the engine talk to model providers directly.
-Instead every call goes through an OpenAI-compatible gateway (LiteLLM proxy,
-Portkey, an internal API-management layer, ...) that owns the upstream
+Instead every call goes through a gateway — a `LiteLLM proxy
+<https://docs.litellm.ai/docs/simple_proxy>`_ is the reference target, and any
+gateway presenting the same surface works — which owns the upstream
 credentials, enforces per-team budgets, and attributes spend.
 
 This module resolves that transport from the environment. It is deliberately
-**vendor-neutral**: nothing here knows about any particular organisation. A
-deployment supplies its own base URL, key, and whatever attribution headers
-its gateway requires.
+**deployment-neutral**: nothing here knows about any particular organisation or
+gateway product. A deployment supplies its own base URL, key, and whatever
+attribution headers its gateway requires.
+
+What "the same surface" means, precisely
+----------------------------------------
+
+Not "the gateway is OpenAI-compatible" — the narrower and more accurate
+contract is: *for each routed provider, the gateway serves the route that
+litellm's transport for that provider targets.* This module only overrides the
+base URL; **litellm decides the path, the auth header, and the body shape**, and
+that decision is per-provider. See the routing table below and
+:data:`DEFAULT_ROUTED_PROVIDERS`, whose membership is pinned against the
+installed litellm by
+``tests/canonical/test_llm_gateway_envelope_contract.py``.
 
 Environment contract
 --------------------
@@ -49,8 +62,8 @@ Which providers can actually be routed
 --------------------------------------
 
 **Setting ``api_base`` does not make litellm speak OpenAI to that URL — it
-makes litellm speak that provider's native protocol to that URL.** Verified
-against litellm 1.87.0 by capturing the wire:
+makes litellm speak that provider's native protocol to that URL.** Verified by
+capturing the wire (litellm 1.87.0):
 
 ===================  ==========================================================
 provider             request litellm sends to the gateway
@@ -68,6 +81,12 @@ serves this provider's native route" — true for a LiteLLM proxy's
 ``/v1/messages`` passthrough, false for a plain OpenAI-compatible gateway.
 :data:`UNROUTABLE_PROVIDERS` cannot be opted in at all and are rejected
 loudly, because no gateway can serve them (see that constant).
+
+Widening the default to *every* provider would need this module to force the
+OpenAI envelope (``custom_llm_provider="openai"`` on routed calls, as the Nova
+path already does) rather than only swapping the base URL. That is a larger
+change than a transport swap — it collides with the ``custom_llm_provider`` the
+OpenRouter branch sets — and is deliberately not attempted here.
 
 Why the model name is left alone
 --------------------------------
@@ -98,8 +117,14 @@ ENV_PROVIDERS = "LLM_PROXY_PROVIDERS"
 #:
 #: Deliberately an allow-list, not an exclusion list: these are the providers
 #: whose litellm transport emits an OpenAI-envelope ``POST
-#: {base}/chat/completions``, which is what an OpenAI-compatible gateway
-#: serves. See the module docstring for the wire capture behind this.
+#: {base}/chat/completions``, which is what a LiteLLM proxy and comparable
+#: gateways serve. See the module docstring for the wire capture behind this.
+#:
+#: This set is a claim about the *installed litellm*, not about gateways in
+#: general, so it is pinned by
+#: ``tests/canonical/test_llm_gateway_envelope_contract.py``. A litellm upgrade
+#: that changes a provider's transport fails that test rather than silently
+#: posting to a route the gateway does not serve.
 DEFAULT_ROUTED_PROVIDERS = frozenset({"openrouter", "openai"})
 
 #: Providers that can never be routed, even explicitly.

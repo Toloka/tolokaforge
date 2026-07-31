@@ -23,7 +23,7 @@ for the design rationale and the canonical litellm surface.
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
-| [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional OpenAI-compatible gateway transport (`ProxyConfig`), configured entirely by env |
+| [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
 
 ## `reasoning`
@@ -390,17 +390,28 @@ Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
 
-## `proxy` — routing every call through an OpenAI-compatible gateway
+## `proxy` — routing calls through an LLM gateway
 
-Some deployments forbid direct provider access: calls must go through an
-OpenAI-compatible gateway (LiteLLM proxy, Portkey, an internal API-management
-layer) that holds the upstream keys, enforces budgets, and attributes spend.
+Some deployments forbid direct provider access: calls must go through a gateway
+that holds the upstream keys, enforces budgets, and attributes spend. A
+[LiteLLM proxy](https://docs.litellm.ai/docs/simple_proxy) is the reference
+target; any gateway presenting the same surface works.
 
 [`tolokaforge/core/llm/proxy.py`](../tolokaforge/core/llm/proxy.py) resolves
-that transport from the environment. It is vendor-neutral — the module knows
-nothing about any specific gateway or organisation. Everything
+that transport from the environment. It is deployment-neutral — the module knows
+nothing about any specific gateway product or organisation. Everything
 deployment-specific, including the attribution headers a given gateway
 demands, is supplied as configuration.
+
+**"The same surface" is a narrower contract than "OpenAI-compatible".** What is
+actually required is: *for each routed provider, the gateway serves the route
+that litellm's transport for that provider targets.* This layer only overrides
+the base URL — litellm decides the path, the auth header, and the body shape,
+per provider. That is why routing is an allow-list rather than a blanket
+redirect, and why the allow-list is pinned against the installed litellm by
+[`tests/canonical/test_llm_gateway_envelope_contract.py`](../tests/canonical/test_llm_gateway_envelope_contract.py):
+a dependency bump that changes a provider's transport fails there instead of
+posting to a route the gateway does not serve.
 
 | Variable | Meaning |
 |---|---|
