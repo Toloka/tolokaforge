@@ -128,3 +128,86 @@ class TestTheReplyPathAppliesTheRole:
         )
         slack.cmd_reply("C1", 42, "Integrated: preset committed.", "m", False, role="integrated")
         assert sent["t"].startswith(":tf-done: Integrated:")
+
+
+class TestEveryIconCallSiteReachesACommandThatAcceptsIt:
+    """A role string that matches the registry proves nothing about the command
+    receiving it.
+
+    `post-thread` was wired with `--icon pr_opened` and `--icon dispatch_failed`
+    while only `reply` declared the option, so Click rejected the flag with a
+    usage error and the call site's `|| true` swallowed it: two notifications
+    silently stopped posting, one of them the failure report. The registry-
+    agreement test passed the whole time, because it compares strings.
+    """
+
+    @staticmethod
+    def _call_sites() -> set[tuple[str, str]]:
+        """(subcommand, role) for every `--icon` in the workflows.
+
+        Backslash-continued commands are reassembled, since the subcommand and
+        the flag routinely sit on different lines.
+        """
+        found: set[tuple[str, str]] = set()
+        for name in ("slack-integrate.yml", "integrate-model.yml"):
+            lines = (WORKFLOWS / name).read_text().splitlines()
+            for index, line in enumerate(lines):
+                if "automation slack " not in line:
+                    continue
+                subcommand = line.split("automation slack ")[1].split()[0]
+                cursor, block = index, [line]
+                while lines[cursor].rstrip().endswith("\\") and cursor + 1 < len(lines):
+                    cursor += 1
+                    block.append(lines[cursor])
+                for role in re.findall(r"--icon ([a-z_]+)", "\n".join(block)):
+                    found.add((subcommand, role))
+        return found
+
+    def test_the_workflows_do_use_the_flag(self):
+        """Guards the guard: an empty set would make the next test vacuous."""
+        assert self._call_sites()
+
+    def test_each_receiving_command_declares_icon(self):
+        import automation.slack as slack
+        import typer.main
+
+        commands = typer.main.get_command(slack.app).commands
+        offenders = []
+        for subcommand, role in sorted(self._call_sites()):
+            command = commands.get(subcommand)
+            if command is None:
+                offenders.append(f"{subcommand} (no such subcommand) for role {role}")
+                continue
+            if not any("--icon" in (param.opts or []) for param in command.params):
+                offenders.append(f"{subcommand} does not declare --icon (role {role})")
+        assert not offenders, offenders
+
+    def test_post_thread_actually_applies_the_role(self, monkeypatch):
+        """The end-to-end half: the flag is accepted AND the icon reaches the body."""
+        import automation.slack as slack
+        from typer.testing import CliRunner
+
+        monkeypatch.setenv(icons.ICON_OVERRIDES_ENV, '{"pr_opened": ":tf-pr:"}')
+        monkeypatch.setattr(slack, "_ready", lambda channel: "xoxb-test")
+        sent: dict = {}
+        monkeypatch.setattr(
+            slack,
+            "_post_message",
+            lambda ch, text, tok, thread_ts=None: sent.setdefault("text", text),
+        )
+        result = CliRunner().invoke(
+            slack.app,
+            [
+                "post-thread",
+                "--channel",
+                "C1",
+                "--thread-ts",
+                "1.0",
+                "--text",
+                "Opened PR #42",
+                "--icon",
+                "pr_opened",
+            ],
+        )
+        assert result.exit_code == 0
+        assert sent["text"] == ":tf-pr: Opened PR #42"

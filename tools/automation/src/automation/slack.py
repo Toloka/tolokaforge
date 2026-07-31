@@ -286,12 +286,20 @@ def post_thread(
     channel: str = typer.Option(..., "--channel"),
     thread_ts: str = typer.Option(..., "--thread-ts", help="parent message ts to reply under"),
     text: str = typer.Option(..., "--text"),
+    icon: str = typer.Option(
+        "",
+        "--icon",
+        help="Icon ROLE to prefix, e.g. pr_opened. The role's emoji comes from "
+        "`icons.DEFAULT_ICONS` unless ARENA_AUTOMATION_SLACK_ICON_OVERRIDE "
+        "overrides it. Empty = no icon.",
+    ),
 ) -> None:
     """Post a plain threaded reply under an arbitrary message ts. The poller workflow uses this to
     confirm a specific Slack request IN ITS OWN THREAD after the PR opens (with the PR link) or to
     report that starting it failed - the PR-keyed ``reply`` above threads on a different root."""
     try:
         token = _ready(channel)
+        text = icons.prefix(icon, text)
         if token and not _post_message(channel, text, token, thread_ts=thread_ts):
             _note_failure("could not post the threaded follow-up")
     except Exception as exc:  # a notification must never fail the job
