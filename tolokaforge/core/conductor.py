@@ -829,6 +829,12 @@ class InProcessConductor:
 
         An ungraded trial scores nothing: no ``judgment_scored`` event
         fires, because there is no judgment to report.
+
+        A :class:`~tolokaforge.core.trial_grader.GradingFailedError` is not
+        caught here, so it also skips :meth:`_write_artifacts` and leaves the
+        trial out of the run's results entirely. That is deliberate: a trial
+        whose verdict could not be computed has no score to publish, and the
+        orchestrator's per-trial handler records the failure.
         """
         agent_system_prompt = runner.effective_system_prompt or system_prompt
         grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)

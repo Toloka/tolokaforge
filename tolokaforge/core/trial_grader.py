@@ -22,7 +22,9 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
      even if the state hash happens to match the golden.
   4. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
-     is parsed into :class:`Grade`.
+     is parsed into :class:`Grade`. A grading run that could not produce a
+     verdict raises :class:`GradingFailedError`; the verdict is the runner's
+     to compute, so the host has none to substitute.
 
 The Protocol is deliberately narrow. A future :class:`TrialGrader`
 implementation may live inside the runner sandbox (per §6.4), speak to a
@@ -58,9 +60,21 @@ if TYPE_CHECKING:
     from tolokaforge.core.plugin_registry import TrialGraderContext
 
 __all__ = [
+    "GradingFailedError",
     "RunnerRPCTrialGrader",
     "TrialGrader",
 ]
+
+
+class GradingFailedError(Exception):
+    """Grading ran and could not produce a verdict.
+
+    The trial was measured, so its verdict exists to be computed and only the
+    grading substrate can compute it. A host-side stand-in would land in
+    ``success_rate``, ``avg_score``, ``pass@k`` and ``binary_pass`` as an agent
+    failure that no measurement supports, so the failure is raised instead:
+    every published number omits the trial rather than describing it wrongly.
+    """
 
 
 @runtime_checkable
@@ -97,6 +111,11 @@ class TrialGrader(Protocol):
         ``None`` is the answer for a trial the agent never got to run —
         the absence is not representable as a score, so a caller that
         forgets to branch fails instead of reading a fabricated zero.
+
+        Raises:
+            GradingFailedError: the trial was measured but grading could
+                not produce a verdict. Distinct from ``None``: there is a
+                verdict to compute and computing it failed.
         """
         ...
 
@@ -105,8 +124,9 @@ class RunnerRPCTrialGrader:
     """Production :class:`TrialGrader`. Dispatches to the runner's
     ``grade_trial`` gRPC for real grading, short-circuits with an
     auto-fail :class:`Grade` when the trajectory shape rules out a
-    meaningful judge result, and returns ``None`` for a trial that never
-    ran.
+    meaningful judge result, returns ``None`` for a trial that never
+    ran, and raises :class:`GradingFailedError` when the RPC could not
+    produce a verdict.
 
     Instantiated per-run with a bound ``runtime_backend`` and the
     per-run :class:`StructuredLogger`. The orchestrator constructs one
@@ -182,12 +202,7 @@ class RunnerRPCTrialGrader:
                 trial_index=trial_idx,
                 error=error_msg,
             )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(state_checks=0.0),
-                reasons=f"Grading RPC failed: {error_msg}",
-            )
+            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
 
         grade = _parse_grade_result(grade_result["grade"])
         self.logger.info(

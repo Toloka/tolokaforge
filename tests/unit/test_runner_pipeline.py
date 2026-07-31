@@ -13,14 +13,18 @@ This validates that the trial-lifecycle components work together correctly.
 import json
 import logging
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
+from tests.canonical._factories import make_trajectory, make_trial_spec
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tests.utils.runner_requests import simple_task_description as simple_task_description_dict
-from tolokaforge.core.models import TerminationReason
+from tolokaforge.core.models import Message, MessageRole, TerminationReason, ToolCall, TrialStatus
+from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
@@ -822,6 +826,113 @@ class TestGradeTrialTimelineReconciliation:
         assert response.success is False
         assert expected in response.error
         assert not response.HasField("grade")
+
+
+class _ServicerStub:
+    """A gRPC stub over the in-process servicer.
+
+    Lets the real ``GrpcRunnerClient.grade_trial`` proto→dict mapping run against
+    a real ``GradeTrial``, so the host grader sees the dict production builds.
+    """
+
+    def __init__(self, service: Any, context: Any) -> None:
+        self._service = service
+        self._context = context
+
+    def GradeTrial(self, request):  # noqa: N802 — matches the gRPC stub method name
+        return self._service.GradeTrial(request, self._context)
+
+
+class _ServicerBackend:
+    """``RuntimeBackend.grade_trial`` backed by the in-process servicer."""
+
+    def __init__(self, service: Any, context: Any) -> None:
+        self._client = GrpcRunnerClient(runner_address="unused:0")
+        self._client.stub = _ServicerStub(service, context)
+
+    def grade_trial(
+        self,
+        trial_id: str,
+        llm_messages_json: str | None = None,
+        grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
+    ) -> dict[str, Any]:
+        return self._client.grade_trial(
+            trial_id=trial_id,
+            llm_messages_json=llm_messages_json,
+            grading_components=grading_components,
+            termination_reason=termination_reason,
+        )
+
+
+class TestDuplicateCallIdPublishesNoScore:
+    """A duplicate ``call_id`` runs the runner and the host together.
+
+    Nothing rejects a duplicate at record time, so a provider or litellm
+    id-synthesis collision reaches grade time and the timeline cannot join a call
+    to its result. Both layers have to answer correctly for no number to be
+    published: the servicer must refuse to grade, and the host must refuse to
+    invent the verdict the servicer did not return.
+    """
+
+    _TRIAL_ID = "duplicate_call_id:0"
+
+    @pytest.fixture
+    def collided_trial(self, runner_service, mock_grpc_context, simple_task_description):
+        """A trial whose record carries ``toolu_dup`` twice, from two real calls."""
+        registered = runner_service.RegisterTrial(
+            register_request(
+                trial_spec_json(simple_task_description, trial_id=self._TRIAL_ID),
+                trial_id=self._TRIAL_ID,
+            ),
+            mock_grpc_context,
+        )
+        assert registered.success is True, registered.error
+
+        async def echo(args):
+            return json.dumps(args)
+
+        runner_service.trials[self._TRIAL_ID].agent_tools["echo"] = echo
+        for _ in range(2):
+            executed = runner_service.ExecuteTool(
+                execute_request(self._TRIAL_ID, "echo", json.dumps({"x": 1}), call_id="toolu_dup"),
+                mock_grpc_context,
+            )
+            assert executed.status == pb2.EXECUTION_STATUS_SUCCESS
+
+        history = runner_service.trials[self._TRIAL_ID].tool_call_history
+        assert [record.call_id for record in history] == ["toolu_dup", "toolu_dup"]
+        return self._TRIAL_ID
+
+    def test_the_host_raises_rather_than_publishing_a_zero(
+        self, runner_service, mock_grpc_context, collided_trial
+    ):
+        grader = RunnerRPCTrialGrader(
+            runtime_backend=_ServicerBackend(runner_service, mock_grpc_context),
+            logger=MagicMock(),
+        )
+        trajectory = make_trajectory(
+            status=TrialStatus.COMPLETED,
+            termination_reason=TerminationReason.AGENT_DONE,
+            messages=[
+                Message(role=MessageRole.USER, content="echo x"),
+                Message(
+                    role=MessageRole.ASSISTANT,
+                    content="Echoing.",
+                    tool_calls=[ToolCall(id="toolu_dup", name="echo", arguments={"x": 1})],
+                ),
+            ],
+        )
+
+        with pytest.raises(GradingFailedError) as excinfo:
+            grader.grade(
+                make_trial_spec(trial_id=collided_trial, task_id="duplicate_call_id"),
+                trajectory,
+                "You are a test assistant.",
+            )
+
+        assert "toolu_dup" in str(excinfo.value)
+        assert trajectory.grade is None
 
 
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py

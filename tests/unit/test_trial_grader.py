@@ -15,7 +15,7 @@ from tests.canonical._factories import make_trajectory, make_trial_spec
 from tests.unit.test_failure_attribution import outcome_cells
 from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.models import Grade, JudgeStatus, TerminationReason, TrialStatus
-from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
+from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 
 pytestmark = pytest.mark.unit
 
@@ -178,32 +178,35 @@ class TestRunnerRPCBranch:
         logger.info.assert_called_once()
         assert logger.info.call_args.args[0] == "Grading via Runner RPC"
 
-    def test_grpc_failure_logs_error_and_returns_fail_grade(self) -> None:
+    def test_grpc_failure_raises_instead_of_scoring_the_trial_zero(self) -> None:
+        """A failed grading run publishes no verdict at all.
+
+        A normally-terminated trial classifies ``MEASURED``, so a host-side
+        ``score=0.0`` would enter ``success_rate`` / ``avg_score`` / ``pass@k``
+        as an agent failure that grading never established.
+        """
         backend = _StubBackend(
             grade_result={"success": False, "grade": None, "error": "runner exploded"}
         )
         grader, logger = _make_grader(backend)
         traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
+        with pytest.raises(GradingFailedError) as excinfo:
+            grader.grade(make_trial_spec(), traj, "sysprompt")
 
-        assert grade.binary_pass is False
-        assert grade.score == 0.0
-        assert "Grading RPC failed" in grade.reasons
-        assert "runner exploded" in grade.reasons
+        assert "runner exploded" in str(excinfo.value)
+        assert "task-1:0" in str(excinfo.value)
         logger.error.assert_called_once()
         assert logger.error.call_args.args[0] == "Grading RPC failed"
         assert logger.error.call_args.kwargs["error"] == "runner exploded"
 
-    def test_missing_grade_dict_falls_through_to_fail_grade(self) -> None:
+    def test_a_successful_rpc_carrying_no_grade_also_raises(self) -> None:
         backend = _StubBackend(grade_result={"success": True, "grade": None})
         grader, _ = _make_grader(backend)
         traj = make_trajectory(status=TrialStatus.COMPLETED)
 
-        grade = grader.grade(make_trial_spec(), traj, "sysprompt")
-
-        assert grade.binary_pass is False
-        assert grade.score == 0.0
+        with pytest.raises(GradingFailedError):
+            grader.grade(make_trial_spec(), traj, "sysprompt")
 
     def test_judge_report_populates_judge_usage(self) -> None:
         backend = _StubBackend(
