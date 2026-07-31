@@ -185,7 +185,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="state_checks.hash",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="StateChecksConfig.hash",
         runner_field=None,
@@ -197,7 +197,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="state_checks.hash.enabled",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.hash_enabled",
@@ -209,7 +209,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="state_checks.hash.golden_actions",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.golden_actions",
@@ -241,13 +241,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         author_key="state_checks.hash.weight",
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.hash_weight",
         core_dict_key="weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
         runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
-        tracking_issue=686,
     ),
     GradingKey(
         author_key="state_checks.jsonpaths",

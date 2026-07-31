@@ -117,14 +117,33 @@ live in the test module, not beside the manifest, so widening one is an edit a
 reviewer sees in the same commit.
 
 The `state_checks.hash` family (`hash`, `hash.enabled`, `hash.golden_actions`)
-claims both substrates at `FIELD_RESOLUTION_ONLY`: the runner's evaluator drives
-db-service over HTTP, so no service-free differential exists (#687). Mocking the
-DB client to make the canonical guard pass would defeat the guard.
+claims `BOTH_SCORE_PARITY` at `FIELD_RESOLUTION_ONLY`: both substrates fold the hash
+verdict by the same rule, so the component scores agree, but the runner's evaluator
+drives db-service over HTTP, so no service-free differential exists (#687). Mocking
+the DB client to make the canonical guard pass would defeat the guard.
 
-`state_checks.hash.weight` claims both at the same enforcement for a different
-reason: both substrates read it through one shared composer, so the fold cannot
-differ by construction, and the cross-substrate differential that would demonstrate
-that rather than argue it is tracked on #686.
+`state_checks.hash.weight` is proven at `DIFFERENTIAL_CANONICAL` by a composition
+sweep in the same suite: a fixture pack configuring both state sources — a
+pre-computed `expected_state_hash` and two `$.db.…` assertions of which one holds —
+is graded on both substrates at four weights spanning `(0, 1)`, and each composite
+is pinned to `jsonpath_score * (1 - weight) + hash_score * weight` computed by the
+test rather than compared only against the other substrate. Cross-substrate equality
+alone would prove nothing: both substrates call one composer, so they agree by
+construction even if that composer ignored its arguments.
+
+That differential is a `CONFIG_INPUT` key, and the lock that runs the
+`DIFFERENTIAL_CANONICAL` fixtures selects `SCORED_CHECK` keys only, so the claim
+would otherwise be reached by no lock at all. A frozen set in the test module
+enumerates every `DIFFERENTIAL_CANONICAL` entry outside that lock's reach, and
+asserts that the sweep still spans two weights strictly inside `(0, 1)` — the
+weights at which a fold that merely *selects* the dominant source is
+distinguishable from one that mixes them. Both halves are what stop the enforcement
+level from resting on a citation.
+
+The hash verdict either substrate produces is `0.0` or `1.0`, which is what lets the
+canonical sweep hand the runner's fold a hash score directly instead of standing up
+db-service. The same suite audits every hash-verdict producer for it, so a partial
+hash score cannot land without the sweep's premise being re-examined.
 
 ### What the guard cannot see
 
