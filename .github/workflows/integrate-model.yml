@@ -41,6 +41,14 @@ on:
         required: false
         default: manual
 
+# Optional workspace restyling: a JSON map from standard Slack shortcode to a
+# workspace-custom emoji, e.g. {"white_check_mark":"tf_pass"}. Unset means every
+# message keeps the standard emoji, which is the default and needs no variable.
+# Declared workflow-level so it reaches every notifier step without each one
+# repeating it.
+env:
+  TOLOKAFORGE_SLACK_EMOJI_OVERRIDES: ${{ vars.TOLOKAFORGE_SLACK_EMOJI_OVERRIDES }}
+
 permissions:
   contents: write
   pull-requests: write
