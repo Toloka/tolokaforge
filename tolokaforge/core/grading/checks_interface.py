@@ -30,7 +30,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Union
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 # =============================================================================
 # Version Constants
@@ -463,7 +463,14 @@ class CustomChecksConfig(BaseModel):
           fail_on_error: true
           relative_imports:
             - "../.."
+
+    An unknown key is rejected. ``enabled`` defaults to ``False`` and
+    ``custom_checks`` is a scored key on both substrates, so a mistyped
+    ``enable: true`` would otherwise disable the whole component silently — the
+    trial would grade, and nothing in its output would say the block was ignored.
     """
+
+    model_config = ConfigDict(extra="forbid")
 
     enabled: bool = Field(default=False, description="Whether custom checks are enabled")
     file: str = Field(default="checks.py", description="Path to checks file (relative to task dir)")

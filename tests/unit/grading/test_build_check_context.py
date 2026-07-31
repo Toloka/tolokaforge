@@ -1,10 +1,11 @@
-"""Lock the shared :func:`build_check_context` state-shape transform.
+"""Lock the two framework-internal custom-checks helpers.
 
 Both grading paths — host
 :class:`~tolokaforge.core.grading.combine.GradingEngine` and runner
-:class:`~tolokaforge.runner.service.RunnerServiceImpl` — build their
-:class:`CheckContext` through this one helper so a check reads identical
-evidence from either. These parametrised cases pin the precedence rule
+:class:`~tolokaforge.runner.service.RunnerServiceImpl` — ask
+:func:`custom_checks_enabled` whether checks run at all and build their
+:class:`CheckContext` through :func:`build_check_context`, so a check reads
+identical evidence from either. These parametrised cases pin the precedence rule
 verbatim from ``combine.py``:
 
 * ``initial_state.data`` = the initial ``json_db`` dict when it is one,
@@ -18,9 +19,14 @@ verbatim from ``combine.py``:
 from __future__ import annotations
 
 import pytest
+from pydantic import ValidationError
 
-from tolokaforge.core.grading.checks_helpers import build_check_context
-from tolokaforge.core.grading.checks_interface import TaskContext, Transcript
+from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
+from tolokaforge.core.grading.checks_interface import (
+    CustomChecksConfig,
+    TaskContext,
+    Transcript,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -187,3 +193,29 @@ class TestTranscriptAndTaskArePassedThrough:
 
         assert ctx.transcript is transcript
         assert ctx.task is task
+
+
+class TestCustomChecksGate:
+    """``custom_checks_enabled`` validates before it reads.
+
+    It is the one gate every substrate, the adapter's ``checks.py`` delivery
+    decision and the runner's accounted-keys ledger ask, and ``custom_checks`` is a
+    scored key on both substrates. A mistyped key that fell through to ``enabled``'s
+    ``False`` default would disable the whole component with nothing in the trial's
+    output saying the block was ignored.
+    """
+
+    def test_an_enabled_block_opts_in(self) -> None:
+        assert custom_checks_enabled({"enabled": True, "file": "checks.py"}) is True
+
+    @pytest.mark.parametrize("block", [None, {}, {"enabled": False}])
+    def test_an_absent_or_disabled_block_opts_out(self, block: dict | None) -> None:
+        assert custom_checks_enabled(block) is False
+
+    def test_a_mistyped_key_is_rejected_rather_than_read_as_disabled(self) -> None:
+        with pytest.raises(ValidationError, match="enable"):
+            custom_checks_enabled({"enable": True, "file": "checks.py"})
+
+    def test_the_config_itself_forbids_unknown_keys(self) -> None:
+        with pytest.raises(ValidationError):
+            CustomChecksConfig(enabled=True, timout_seconds=30)

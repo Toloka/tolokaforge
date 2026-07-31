@@ -470,3 +470,21 @@ def test_fields_are_none_exactly_when_they_do_not_apply_to_the_kind() -> None:
         },
     }
     assert _of_kind(timeline, TraceEventKind.ASSISTANT_MESSAGE)[0].text == ""
+
+
+def test_no_event_is_hashable_whatever_its_kind() -> None:
+    """``arguments`` is a dict on every ``TOOL_CALL``, so a generated hash would
+    raise for that kind and succeed for the others: ``set()`` over results would
+    work while the same code over calls raised. Failing uniformly at the first use
+    is the only shape a check author can rely on."""
+    messages, records = _refund_trial()
+    events = build_trial_timeline(messages, records, None).events
+
+    # "Uniformly" is the claim, so every kind has to be in the sample.
+    assert {event.kind for event in events} == set(TraceEventKind)
+    for event in events:
+        with pytest.raises(TypeError, match="unhashable type: 'TraceEvent'"):
+            hash(event)
+
+    # Equality is untouched — only hashing is withdrawn.
+    assert events[0] == events[0]

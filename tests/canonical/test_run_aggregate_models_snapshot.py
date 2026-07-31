@@ -28,9 +28,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.failure_attribution import (
+    TrialOutcomeClass,
     attribute_failure,
     summarize_failure_attributions,
 )
@@ -201,6 +203,69 @@ def test_per_task_metrics_round_trip_from_real_metric_calc() -> None:
     payload = _augment_task_metrics(payload, task_id="task-1")
 
     _round_trip(PerTaskMetrics, payload)
+
+
+def test_per_task_metrics_round_trip_with_every_outcome_class() -> None:
+    """``infrastructure_aborts`` keys and ``outcomes_by_reason`` classes are typed as
+    the enums that produce them, so the round trip has to carry a non-empty abort
+    count and a row of each class — an all-``measured`` payload would exercise
+    neither vocabulary."""
+    trajectories = [
+        _make_trajectory(trial_index=0, termination_reason=TerminationReason.AGENT_DONE),
+        _make_trajectory(
+            trial_index=1,
+            binary_pass=False,
+            score=0.0,
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.ERROR,
+        ),
+        _make_trajectory(
+            trial_index=2,
+            binary_pass=False,
+            score=0.0,
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.RATE_LIMIT,
+        ),
+    ]
+    payload = calculate_task_metrics(trajectories)
+    payload = _augment_task_metrics(payload, task_id="task-outcomes")
+
+    assert payload["infrastructure_aborts"]["rate_limit"] == 1
+    assert {row["class"] for row in payload["outcomes_by_reason"].values()} == {
+        "measured",
+        "harness_error",
+        "infrastructure_abort",
+    }
+    _round_trip(PerTaskMetrics, payload)
+    _round_trip(AggregateMetrics, calculate_aggregate_metrics([payload], weighted=True))
+
+    # The round trip above holds with both fields typed ``str``, so it locks the
+    # wire shape and not the vocabulary. These do the typing's own work.
+    model = PerTaskMetrics.model_validate(payload)
+    assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 3
+    assert [type(row.outcome_class) for row in model.outcomes_by_reason.values()] == [
+        TrialOutcomeClass
+    ] * 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("infrastructure_aborts", {"not_a_reason": 1}),
+        ("outcomes_by_reason", {"agent_done": {"class": "not_a_class", "count": 1}}),
+    ],
+)
+def test_an_outcome_vocabulary_the_classifier_cannot_produce_is_rejected(
+    field: str, value: dict[str, Any]
+) -> None:
+    """A reason or class outside the enum is a writer or hand-edit defect, and it
+    would otherwise reach a consumer that branches on the value."""
+    payload = _augment_task_metrics(
+        calculate_task_metrics([_make_trajectory(trial_index=0)]), task_id="task-vocab"
+    )
+
+    with pytest.raises(ValidationError):
+        PerTaskMetrics.model_validate({**payload, field: value})
 
 
 def test_per_task_metrics_round_trip_with_none_cost() -> None:

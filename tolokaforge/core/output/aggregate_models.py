@@ -62,6 +62,9 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass
+from tolokaforge.core.models import TerminationReason
+
 __all__ = [
     "AGGREGATE_SCHEMA_VERSION",
     "AggregateMetrics",
@@ -96,7 +99,7 @@ class OutcomeReasonCount(BaseModel):
 
     model_config = ConfigDict(extra="forbid", populate_by_name=True)
 
-    outcome_class: str = Field(alias="class")
+    outcome_class: TrialOutcomeClass = Field(alias="class")
     count: int
 
 
@@ -131,7 +134,7 @@ class PerTaskMetrics(BaseModel):
     total_trials: int
     measured_trials: int
     scored_trials: int
-    infrastructure_aborts: dict[str, int] = Field(default_factory=dict)
+    infrastructure_aborts: dict[TerminationReason, int] = Field(default_factory=dict)
     harness_errors: int = 0
     outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
     successful_trials: int
@@ -212,7 +215,7 @@ class AggregateMetrics(BaseModel):
     # without the denominator that produced it in the same object.
     measured_trials: int
     scored_trials: int
-    infrastructure_aborts: dict[str, int] = Field(default_factory=dict)
+    infrastructure_aborts: dict[TerminationReason, int] = Field(default_factory=dict)
     harness_errors: int = 0
     outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
 
@@ -401,7 +404,7 @@ class FailureRecord(BaseModel):
     trial_index: int
     status: str
     termination_reason: str | None = None
-    outcome_class: str
+    outcome_class: TrialOutcomeClass
     failure_class: str
     deterministic: bool
     confidence: float
@@ -422,6 +425,9 @@ class FailureSummary(BaseModel):
     total_failed_attempts: int
     deterministic_attribution_coverage: float | None = None
     by_failure_class: dict[str, int] = Field(default_factory=dict)
+    # ``str`` keys, not :class:`TrialOutcomeClass`: this counter's ``"unknown"``
+    # bucket holds the attributions that carry no ``outcome_class`` at all, which
+    # is not a class the classifier can ever return.
     by_outcome_class: dict[str, int] = Field(default_factory=dict)
     by_tool: dict[str, int] = Field(default_factory=dict)
 

@@ -58,8 +58,9 @@ class TraceEventKind(str, Enum):
 class TraceEvent:
     """One event in a trial, in one flat shape whatever its kind.
 
-    A field is ``None`` exactly when it does not apply to the kind, so a
-    predicate over a ``None`` field is unmatched — never vacuously true.
+    ``None`` means the field is either inapplicable to the kind or unrecorded, so a
+    predicate over it is unmatched — never vacuously true. See ``docs/GRADING.md``
+    G4 and G6b for when a field that does apply is nonetheless ``None``.
 
     ``executor``, ``status``, ``result`` and ``latency_seconds`` come from the
     trial's tool-call record, which is authoritative: the record's failure text
@@ -79,6 +80,13 @@ class TraceEvent:
     status: ToolExecutionStatus | None
     result: str | None
     latency_seconds: float | None
+
+    __hash__ = None
+    """Unhashable, uniformly. ``arguments`` is a dict on every ``TOOL_CALL`` — even
+    an empty one — so the frozen dataclass's generated hash raises for that kind and
+    succeeds for the others. ``set()`` / ``Counter()`` over results would work while
+    the same code over calls raised, which is the worst shape for the checks written
+    against this contract. Use ``position`` or ``call_id`` as the key instead."""
 
 
 @dataclass(frozen=True)

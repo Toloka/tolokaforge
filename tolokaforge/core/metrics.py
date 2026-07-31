@@ -9,6 +9,7 @@ denominator produced them. Spend (cost, token counters) covers every attempted
 trial — those tokens were really bought.
 """
 
+from collections import Counter
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from math import comb
@@ -23,6 +24,25 @@ from tolokaforge.core.models import Trajectory
 
 
 @dataclass(frozen=True)
+class OutcomeCount:
+    """One ``outcomes_by_reason`` row: how many trials an outcome key covered.
+
+    The wire row is a closed two-field shape, so it has one definition here and
+    one serialisation site. Spelling it as a dict literal at the handoff instead
+    left the field names defined twice — here and on
+    :class:`~tolokaforge.core.output.aggregate_models.OutcomeReasonCount` — where
+    renaming either side type-checks clean.
+    """
+
+    outcome_class: TrialOutcomeClass
+    count: int
+
+    def as_wire_row(self) -> dict[str, Any]:
+        """The row shape ``per_task_metrics.json`` / ``aggregate.json`` carry."""
+        return {"class": self.outcome_class.value, "count": self.count}
+
+
+@dataclass(frozen=True)
 class TrialOutcomePartition:
     """A task's trajectories split by :func:`classify_trial_outcome`.
 
@@ -34,7 +54,7 @@ class TrialOutcomePartition:
 
     total_trials: int
     measured: tuple[Trajectory, ...]
-    outcomes_by_reason: dict[str, dict[str, Any]]
+    outcomes_by_reason: dict[str, OutcomeCount]
     infrastructure_aborts: dict[str, int]
     harness_errors: int
 
@@ -65,15 +85,17 @@ def partition_trial_outcomes(trajectories: Sequence[Trajectory]) -> TrialOutcome
     every downstream denominator silently agree with the filter.
     """
     measured: list[Trajectory] = []
-    outcomes_by_reason: dict[str, dict[str, Any]] = {}
+    # ``_outcome_key`` maps a key to exactly one outcome class, so the class per
+    # key is a fact about the key rather than about the trial that first set it.
+    counts: Counter[str] = Counter()
+    classes: dict[str, TrialOutcomeClass] = {}
     harness_errors = 0
 
     for trajectory in trajectories:
         outcome = classify_trial_outcome(trajectory)
-        row = outcomes_by_reason.setdefault(
-            _outcome_key(trajectory), {"class": outcome.value, "count": 0}
-        )
-        row["count"] += 1
+        key = _outcome_key(trajectory)
+        counts[key] += 1
+        classes[key] = outcome
         if outcome is TrialOutcomeClass.HARNESS_ERROR:
             harness_errors += 1
         if outcome is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
@@ -82,14 +104,17 @@ def partition_trial_outcomes(trajectories: Sequence[Trajectory]) -> TrialOutcome
     # Every excluded reason is reported, present or not: a zero is a fact about
     # the run, while a missing key is only a fact about the writer.
     infrastructure_aborts = {
-        reason.value: outcomes_by_reason.get(reason.value, {}).get("count", 0)
+        reason.value: counts[reason.value]
         for reason in sorted(EXCLUDED_TYPED_REASONS, key=lambda r: r.value)
     }
 
     return TrialOutcomePartition(
         total_trials=len(trajectories),
         measured=tuple(measured),
-        outcomes_by_reason=outcomes_by_reason,
+        outcomes_by_reason={
+            key: OutcomeCount(outcome_class=classes[key], count=count)
+            for key, count in counts.items()
+        },
         infrastructure_aborts=infrastructure_aborts,
         harness_errors=harness_errors,
     )
@@ -333,7 +358,9 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
         "measured_trials": partition.measured_trials,
         "infrastructure_aborts": partition.infrastructure_aborts,
         "harness_errors": partition.harness_errors,
-        "outcomes_by_reason": partition.outcomes_by_reason,
+        "outcomes_by_reason": {
+            key: row.as_wire_row() for key, row in partition.outcomes_by_reason.items()
+        },
         "successful_trials": n_success,
         "success_rate": (n_success / partition.measured_trials) if measured else None,
     }
@@ -368,12 +395,16 @@ def _merge_outcomes_by_reason(task_metrics: list[dict[str, Any]]) -> dict[str, d
     alone: the counts needed to recompute the other convention are all present
     without re-reading a single ``trajectory.yaml``.
     """
-    merged: dict[str, dict[str, Any]] = {}
+    counts: Counter[str] = Counter()
+    classes: dict[str, TrialOutcomeClass] = {}
     for task in task_metrics:
         for key, row in task["outcomes_by_reason"].items():
-            entry = merged.setdefault(key, {"class": row["class"], "count": 0})
-            entry["count"] += row["count"]
-    return merged
+            counts[key] += row["count"]
+            classes[key] = TrialOutcomeClass(row["class"])
+    return {
+        key: OutcomeCount(outcome_class=classes[key], count=count).as_wire_row()
+        for key, count in counts.items()
+    }
 
 
 def calculate_aggregate_metrics(

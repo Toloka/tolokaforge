@@ -27,6 +27,7 @@ from typing import Any, TypeGuard
 
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
+    CustomChecksConfig,
     EnvironmentState,
     TaskContext,
     Transcript,
@@ -46,8 +47,19 @@ def custom_checks_enabled(
     and the runner's accounted-keys ledger ask. A delivery gate that disagreed
     with an execution gate is precisely the shape that produces a pack claiming
     custom checks whose ``checks.py`` never arrives.
+
+    Validates before reading, so a mistyped key raises here rather than reading
+    ``enabled`` as its default and disabling a scored component silently. The
+    trial's registration is the loud end of that: ``RegisterTrial`` turns the
+    ``ValidationError`` into a refusal naming the offending config.
+
+    Raises:
+        ValidationError: the block is non-empty and is not a valid
+            :class:`~tolokaforge.core.grading.checks_interface.CustomChecksConfig`.
     """
-    return bool(custom_checks) and bool(custom_checks.get("enabled", False))
+    if not custom_checks:
+        return False
+    return CustomChecksConfig(**custom_checks).enabled
 
 
 def build_check_context(

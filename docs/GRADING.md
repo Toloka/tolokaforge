@@ -265,9 +265,16 @@ differs, and the manifest freezes config keys, not evaluation sources. Closing
 
 One flat `TraceEvent` type carries all four kinds — `assistant_message`,
 `user_message`, `tool_call`, `tool_result` — so a matcher is a conjunction of
-field predicates with uniform field access. **A field is `None` exactly when it
-does not apply, and a predicate over a `None` field is unmatched, never vacuously
-true.**
+field predicates with uniform field access. **`None` means the field is either
+inapplicable to the kind or unrecorded, and a predicate over a `None` field is
+unmatched, never vacuously true.**
+
+Unrecorded is the second case and it is not rare: `executor`, `status`, `result`
+and `latency_seconds` are `None` on every event of a bundle-sourced timeline
+(G6b), and on any call that never ran (G4). So `status != success` matches nothing
+at all on such a timeline rather than matching everything — read `records_present`
+before trusting either answer. Per-field detail is in the table below; G4 and G6b
+say when each field goes missing on a kind it does apply to.
 
 | Field | Kinds it applies to | Meaning |
 | --- | --- | --- |
@@ -377,6 +384,12 @@ declared call (G7): the message view alone proves that tool never ran.
   every recorded call on both substrates.
 - **N6 — the timeline says what happened, not whether it was correct.** A green
   timeline is not a correctness proof; that is each task's grading config's job.
+- **N7 — `TraceEvent` is not hashable.** `arguments` is a dict on every
+  `tool_call`, even an empty one, so a generated hash would raise for that kind and
+  succeed for the others — `set()` / `Counter()` over results working while the
+  same code over calls raised. `__hash__` is `None` so it fails uniformly at the
+  first use. Key on `position` (unique per event) or `call_id` (unique per call).
+  Equality is unaffected.
 
 [`tests/canonical/test_trace_timeline_substrate_parity.py`](../tests/canonical/test_trace_timeline_substrate_parity.py)
 drives one scripted tool-call sequence through each substrate's real recording

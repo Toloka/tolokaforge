@@ -610,10 +610,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         grading = task_description.grading
         custom_checks_raw = grading.custom_checks if grading else None
-        if not custom_checks_enabled(custom_checks_raw):
-            return None
-
         try:
+            if not custom_checks_enabled(custom_checks_raw):
+                return None
             custom_config = CustomChecksConfig(**custom_checks_raw)
         except ValidationError as exc:
             logger.error(f"RegisterTrial: {trial_id} - invalid custom_checks config: {exc}")
