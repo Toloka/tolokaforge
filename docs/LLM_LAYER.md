@@ -23,6 +23,7 @@ for the design rationale and the canonical litellm surface.
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
+| [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional OpenAI-compatible gateway transport (`ProxyConfig`), configured entirely by env |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
 
 ## `reasoning`
@@ -388,6 +389,101 @@ unchanged — litellm's native `_remove_additional_properties` only runs for
 Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
+
+## `proxy` — routing every call through an OpenAI-compatible gateway
+
+Some deployments forbid direct provider access: calls must go through an
+OpenAI-compatible gateway (LiteLLM proxy, Portkey, an internal API-management
+layer) that holds the upstream keys, enforces budgets, and attributes spend.
+
+[`tolokaforge/core/llm/proxy.py`](../tolokaforge/core/llm/proxy.py) resolves
+that transport from the environment. It is vendor-neutral — the module knows
+nothing about any specific gateway or organisation. Everything
+deployment-specific, including the attribution headers a given gateway
+demands, is supplied as configuration.
+
+| Variable | Meaning |
+|---|---|
+| `LLM_PROXY_BASE_URL` | Gateway base URL. **Setting this enables the transport**; everything else is optional. |
+| `LLM_PROXY_API_KEY` | Credential presented to the gateway. Omit only for gateways that authenticate by network position — litellm then falls through to its provider-env lookup and forwards the *provider's* key to the gateway host instead. |
+| `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. |
+| `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
+| `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
+
+All five resolve through `SecretManager`, so `.env`, the process environment,
+and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
+A malformed value raises `ProxyConfigError` at the first `LLMClient`
+construction rather than running a whole evaluation with unattributed spend.
+Setting any companion variable while `LLM_PROXY_BASE_URL` is empty also raises,
+so a typo in the base-URL name cannot silently fall back to direct provider
+access.
+
+### Which providers can be routed
+
+**Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
+litellm speak that provider's native protocol to that URL.** Captured against
+litellm 1.87.0:
+
+| provider | request litellm sends to the gateway |
+|---|---|
+| `openrouter/…` | `POST {base}/chat/completions`, bearer auth |
+| `openai/…` | `POST {base}/chat/completions`, bearer auth |
+| `anthropic/…` | `POST {base}/v1/messages`, `x-api-key` |
+| `gemini/…` | `POST {base}/models/<m>:generateContent`, `x-goog-api-key` |
+
+Only the first two are an OpenAI-envelope request, so `DEFAULT_ROUTED_PROVIDERS`
+is exactly `{openrouter, openai}`. Naming another provider in
+`LLM_PROXY_PROVIDERS` is allowed and means "my gateway also serves that
+provider's native route" — true of a LiteLLM proxy's `/v1/messages`
+passthrough, false of a plain OpenAI-compatible gateway.
+
+`mock` and `nova` are in `UNROUTABLE_PROVIDERS` and are rejected even when
+named explicitly. `mock` never reaches the wire. `nova` depends on
+`_call_with_key_rotation` rewriting its bare model name into `openai/<name>`
+next to its own hardcoded base URL; a gateway replaces the base URL but not the
+rewrite, so litellm would get a provider-less model string and raise
+`BadRequestError` before sending anything.
+
+**This is a transport swap and nothing else.** `_build_kwargs` sets `api_base`,
+`api_key`, and `extra_headers`; the litellm model string keeps its original
+`<provider>/<name>` shape. That invariant is load-bearing in two places:
+
+- Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
+  overlay off `ModelConfig.provider` (see [`presets`](#presets)). Re-prefixing
+  the model, or renaming the provider to something gateway-specific, silently
+  drops the matched preset and the `reasoning_via_extra_body` overlay — the
+  reported `effective_preset` would not change, but the reasoning wire format
+  would.
+- [`normalize_model_name`](../tolokaforge/core/pricing.py) strips exactly one
+  leading `openrouter/` and then returns any remaining slash-bearing name
+  verbatim. A second prefix guarantees a pricing-table miss, degrading
+  `cost_source` to `"unknown"` and tripping `Capability.COST_USD_POPULATED`.
+
+Because the provider string is untouched, provider-specific request shaping
+still applies on top of the gateway: OpenRouter's `HTTP-Referer` / `X-Title`
+headers and its `extra_body.provider` upstream pinning both survive. On a
+header-name collision the gateway's configured header wins, since that is
+explicit operator configuration and the other is an engine default.
+
+### Key rotation under a gateway
+
+Rotation stays bound to the provider key chain (`OPENROUTER_API_KEYS` and
+friends), and whether it still applies depends on **one** thing: is a gateway
+key pinned?
+
+- **`LLM_PROXY_API_KEY` set** — rotation is skipped. `_rotate_key` republishes
+  `OPENROUTER_API_KEY` into the environment, but the pinned `api_key` kwarg
+  takes precedence in litellm, so rotating would resend byte-identical requests
+  and then report an exhausted key chain that was never in play. A gateway
+  quota or authorization rejection raises an error naming the gateway URL
+  instead.
+- **`LLM_PROXY_API_KEY` unset** (gateway authenticates by network position) —
+  rotation works and is left alone, because litellm reads the provider env var
+  that `_rotate_key` rewrites. Suppressing it here would abort a trial with
+  unused keys still in the chain.
+
+The guard mirrors exactly the condition under which `_build_kwargs` pins the
+key, so the two can't drift.
 
 ## `cache_policy`
 
