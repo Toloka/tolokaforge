@@ -520,6 +520,29 @@ headers and its `extra_body.provider` upstream pinning both survive. On a
 header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
+### Verifying a gateway from CI
+
+[`tests/integration/llm/test_gateway_live.py`](../tests/integration/llm/test_gateway_live.py)
+answers what unit tests structurally cannot: whether a real gateway accepts what
+this engine sends it. The unit suite stops at the kwargs dict, and the two
+failure modes that matter most — a gateway resolving our model name to a route we
+did not intend, and a gateway rejecting a request shape litellm produced — both
+live past that boundary.
+
+It runs in the normal `tests/integration/` lane and **skips unless its own
+credential is present**, so a checkout without the secret is quiet:
+
+| Variable | Meaning |
+|---|---|
+| `LLM_PROXY_INT_TEST_API_KEY` | *Required.* Gateway credential dedicated to integration testing. The fixture overrides `LLM_PROXY_API_KEY` with it for the test's duration, so CI spend stays on its own budget and a local `.env` cannot charge the production key. |
+| `LLM_PROXY_INT_TEST_MODEL` | *Required.* The model name **as the gateway routes it**. Required rather than defaulted: a wrong guess would exercise the gateway's fallback behaviour instead of this transport. |
+| `LLM_PROXY_INT_TEST_BASE_URL` | Optional; falls back to `LLM_PROXY_BASE_URL`. |
+| `LLM_PROXY_INT_TEST_PROVIDER` | Optional, default `openai` — see the model-naming section above. |
+
+Three tests: one asserts the transport is applied and billed to the test key
+without spending, two make one small call each (a completion and a tool call,
+capped at 256 output tokens).
+
 ### Key rotation under a gateway
 
 Rotation stays bound to the provider key chain (`OPENROUTER_API_KEYS` and
