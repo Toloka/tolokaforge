@@ -58,8 +58,21 @@ from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
-from tolokaforge.core.grading.transcript_wire import split_leading_system_message
-from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
+from tolokaforge.core.grading.trace_timeline import (
+    TimelineInconsistencyError,
+    TrialTimeline,
+    build_trial_timeline,
+)
+from tolokaforge.core.grading.transcript_wire import (
+    decode_transcript_wire,
+    split_leading_system_message,
+)
+from tolokaforge.core.models import (
+    CriterionResult,
+    LLMJudgeConfig,
+    ModelConfig,
+    TerminationReason,
+)
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
@@ -1311,6 +1324,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 ),
             )
 
+        # The trial's two views of itself, joined before any component runs: a
+        # payload that cannot be reconciled with the tool-call record fails the
+        # RPC rather than being graded around.
+        try:
+            llm_messages, timeline = self._grade_time_views(
+                request, trial_context, termination_reason
+            )
+        except (ValueError, TimelineInconsistencyError) as exc:
+            logger.error(f"GradeTrial: {trial_id} - {type(exc).__name__}: {exc}")
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
+            )
+
         # Get state_checks config (may contain golden_actions)
         state_checks_config = grading_config.state_checks
         golden_actions: list[GoldenAction] = []
@@ -1393,36 +1420,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
-        # Decode the trajectory once — both transcript-rules and llm-judge use it.
-        llm_messages: list[dict[str, Any]] = []
-        if request.llm_messages_json:
-            try:
-                llm_messages = json.loads(request.llm_messages_json)
-            except json.JSONDecodeError as e:
-                logger.warning(f"GradeTrial: Invalid llm_messages_json: {e}")
-                # Continue with empty messages - tool history may still be useful
-
         if transcript_rules_config:
-            # Convert tool call history to dicts for grading
-            tool_history = [r.model_dump() for r in trial_context.tool_call_history]
-
-            # Skip transcript grading if no messages and rules require them
-            if llm_messages or tool_history:
+            # A timeline with no events is a trial that left no trace of itself:
+            # neither a conversational turn nor a tool call. Every rule would
+            # score 0.0 against evidence we do not have, so the keys are recorded
+            # as skipped and the component is left out of the combine.
+            if timeline.events:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
                 # Pass the author-facing TranscriptRulesConfig as a dict; the
                 # grader decomposes its fields (must_contain / disallow_regex /
                 # max_turns / required_actions / communicate_info) into per-field
                 # sub-checks.
                 rules_dict = transcript_rules_config.model_dump()
-                transcript_result = evaluate_transcript_rules(
-                    llm_messages, tool_history, rules_dict
-                )
+                transcript_result = evaluate_transcript_rules(timeline, rules_dict)
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
                 accounted_keys.update(transcript_result.accounted_keys)
             else:
                 logger.info(
-                    f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool history)"
+                    f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
                 )
                 accounted_keys.update(
                     dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
@@ -1583,6 +1599,32 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 judge_status=judge_status,
                 judge_report=judge_report,
             ),
+        )
+
+    def _grade_time_views(
+        self,
+        request: pb2.GradeTrialRequest,
+        trial_context: TrialContextRuntime,
+        termination_reason: TerminationReason | None,
+    ) -> tuple[list[dict[str, Any]], TrialTimeline]:
+        """The trial's grade-time views: the wire messages and the event timeline.
+
+        The agent policy is split off before the timeline is built. A hash-only
+        trial's payload is that policy and nothing else, and handing it over whole
+        would present one harness annotation as a message view — making every
+        recorded call unlinkable and failing an entirely legitimate trial.
+
+        Raises:
+            ValueError: the payload does not decode into a transcript.
+            TimelineInconsistencyError: the two views cannot be joined.
+        """
+        if not request.llm_messages_json:
+            return [], build_trial_timeline([], trial_context.recorded, termination_reason)
+
+        llm_messages: list[dict[str, Any]] = json.loads(request.llm_messages_json)
+        _, transcript = split_leading_system_message(llm_messages)
+        return llm_messages, build_trial_timeline(
+            decode_transcript_wire(transcript), trial_context.recorded, termination_reason
         )
 
     async def _grade_llm_judge(

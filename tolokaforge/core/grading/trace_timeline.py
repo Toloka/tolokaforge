@@ -34,10 +34,13 @@ from tolokaforge.core.models import (
 )
 
 __all__ = [
+    "AttemptedCall",
     "TimelineInconsistencyError",
     "TraceEvent",
     "TraceEventKind",
     "TrialTimeline",
+    "assistant_texts",
+    "attempted_calls",
     "build_trial_timeline",
 ]
 
@@ -96,6 +99,23 @@ class TrialTimeline:
     records_present: bool
 
 
+@dataclass(frozen=True)
+class AttemptedCall:
+    """One tool call the agent asked for, folded together with its outcome.
+
+    ``status`` and ``executor`` are ``None`` when nothing recorded the call — it
+    either never ran or the timeline carries no records at all. A check that
+    requires a successful call therefore fails on absent evidence instead of
+    passing on it.
+    """
+
+    call_id: str
+    tool_name: str
+    arguments: dict[str, Any]
+    executor: ToolExecutorIdentity | None
+    status: ToolExecutionStatus | None
+
+
 class TimelineInconsistencyError(Exception):
     """The trial's two views cannot be joined into one timeline.
 
@@ -146,6 +166,39 @@ def build_trial_timeline(
         termination_reason=termination_reason,
         message_view_present=bool(turns),
         records_present=bool(recorded_calls),
+    )
+
+
+def assistant_texts(timeline: TrialTimeline) -> tuple[str, ...]:
+    """One entry per assistant generation, in order — its text, ``""`` when it had none.
+
+    The length is the trial's assistant turn count, so a turn that produced only
+    tool calls still counts as a turn.
+    """
+    return tuple(
+        event.text or ""
+        for event in timeline.events
+        if event.kind is TraceEventKind.ASSISTANT_MESSAGE
+    )
+
+
+def attempted_calls(timeline: TrialTimeline) -> tuple[AttemptedCall, ...]:
+    """Every tool call on the timeline, each joined to its result by ``call_id``."""
+    statuses = {
+        event.call_id: event.status
+        for event in timeline.events
+        if event.kind is TraceEventKind.TOOL_RESULT
+    }
+    return tuple(
+        AttemptedCall(
+            call_id=event.call_id or "",
+            tool_name=event.tool_name or "",
+            arguments=event.arguments or {},
+            executor=event.executor,
+            status=statuses.get(event.call_id),
+        )
+        for event in timeline.events
+        if event.kind is TraceEventKind.TOOL_CALL
     )
 
 

@@ -32,6 +32,7 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
+from tests.utils.timelines import declare_calls
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
@@ -44,10 +45,10 @@ from tolokaforge.core.grading.key_manifest import (
     author_keys,
     entry,
 )
+from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
 from tolokaforge.core.models import (
     Message,
     RecordedToolCall,
-    ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
@@ -248,7 +249,7 @@ class _TrialCase:
 
     core_trajectory: Trajectory
     runner_messages: list[dict[str, Any]]
-    runner_tool_history: list[dict[str, Any]]
+    runner_timeline: TrialTimeline
     state: dict[str, Any]
 
 
@@ -279,15 +280,7 @@ def _declared_author_keys(grading_yaml: dict[str, Any]) -> set[str]:
 
 def _load_case(pack_dir: Path, case: str) -> _TrialCase:
     fixture = yaml.safe_load((pack_dir / "trial.yaml").read_text())[case]
-    messages: list[Message] = []
-    for index, raw in enumerate(fixture["messages"]):
-        tool_calls = [
-            ToolCall(id=f"call_{index}_{position}", name=call["name"], arguments=call["arguments"])
-            for position, call in enumerate(raw.get("tool_calls", []))
-        ]
-        messages.append(
-            Message(role=raw["role"], content=raw["content"], tool_calls=tool_calls or None)
-        )
+    messages = [Message(role=raw["role"], content=raw["content"]) for raw in fixture["messages"]]
     now = "2026-01-01T00:00:00+00:00"
     # One recorded-tool-call list feeds both substrates: the core engine holds it
     # on the Trajectory, the runner's evaluators read its dump. A per-substrate
@@ -307,18 +300,21 @@ def _load_case(pack_dir: Path, case: str) -> _TrialCase:
         )
         for index, call in enumerate(fixture["tool_calls"])
     ]
+    # The assistant turn that made the calls must declare them, or the trial's two
+    # views of itself disagree and neither substrate will grade it.
+    view = declare_calls(messages, recorded)
     trajectory = Trajectory(
         task_id=pack_dir.name,
         trial_index=0,
         start_ts=now,
         end_ts=now,
-        messages=messages,
+        messages=view,
         tool_log=recorded,
     )
     return _TrialCase(
         core_trajectory=trajectory,
         runner_messages=fixture["messages"],
-        runner_tool_history=[call.model_dump() for call in recorded],
+        runner_timeline=build_trial_timeline(view, recorded, None),
         state=fixture["state"],
     )
 
@@ -391,7 +387,7 @@ def _runner_verdict(
         components = {"jsonpath_score": component}
     elif family == "transcript_rules":
         result = evaluate_transcript_rules(
-            case.runner_messages, case.runner_tool_history, grading.transcript_rules.model_dump()
+            case.runner_timeline, grading.transcript_rules.model_dump()
         )
         component = result.score
         components = {"transcript_score": component}

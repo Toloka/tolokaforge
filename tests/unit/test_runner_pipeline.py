@@ -295,7 +295,22 @@ class TestRunnerPipeline:
             llm_messages_json=json.dumps(
                 [
                     {"role": "user", "content": "Create an order for Alice"},
-                    {"role": "assistant", "content": "I'll create an order for Alice."},
+                    {
+                        "role": "assistant",
+                        "content": "I'll create an order for Alice.",
+                        # The turn that asked for the call executed in step 3. A
+                        # transcript that omits it disagrees with the tool-call
+                        # record, which grading refuses to reconcile.
+                        "tool_calls": [
+                            {
+                                "id": "call_0",
+                                "function": {
+                                    "name": "create_order",
+                                    "arguments": json.dumps({"user_id": "u1", "amount": 50}),
+                                },
+                            }
+                        ],
+                    },
                 ]
             ),
         )

@@ -12,11 +12,18 @@ See docs/GRPC_PROTOCOL.md for grading algorithm specification.
 import glob
 import logging
 import re
+from collections.abc import Sequence
 from pathlib import Path
 from typing import Any
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.trace_timeline import (
+    AttemptedCall,
+    TrialTimeline,
+    assistant_texts,
+    attempted_calls,
+)
 from tolokaforge.core.hash import canonical_number
 from tolokaforge.runner.grading_ledger import (
     COMMUNICATE_INFO_KEY,
@@ -31,6 +38,7 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     StateDiff,
     TableDiff,
+    ToolExecutionStatus,
     ToolExecutorIdentity,
     TranscriptEvaluationResult,
     TranscriptRuleResult,
@@ -214,8 +222,7 @@ def _get_field_diffs(expected: dict[str, Any], actual: dict[str, Any]) -> list[d
 
 
 def evaluate_transcript_rules(
-    messages: list[dict[str, Any]],
-    tool_history: list[dict[str, Any]],
+    timeline: TrialTimeline,
     rules: dict[str, Any],
 ) -> TranscriptEvaluationResult:
     """
@@ -234,10 +241,10 @@ def evaluate_transcript_rules(
       the limit → one sub-check when set.
     - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
       per declared tool. A required tool must have been called *successfully*; a
-      disallowed tool must not appear in the history at **any** status, because
-      an attempted forbidden call is itself the violation.
+      disallowed tool must not have run at **any** status, because an attempted
+      forbidden call is itself the violation.
     - ``required_actions`` (list[RequiredAction]): each declared tool call must
-      appear in the tool history, matched by ``tool_name`` + ``requestor`` and
+      appear on the timeline, matched by ``tool_name`` + ``requestor`` and
       by the argument subset named in ``compare_args`` (``None`` = compare all
       declared args, ``[]`` = compare none) → one sub-check per action.
     - ``communicate_info`` (list[{info, required}]): each ``required`` info
@@ -255,8 +262,8 @@ def evaluate_transcript_rules(
     passed (AGENTS.md: surface failures explicitly).
 
     Args:
-        messages: LLM conversation messages (role, content)
-        tool_history: The trial's tool calls (RecordedToolCall.model_dump())
+        timeline: The trial's event timeline, built by
+            :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline`
         rules: A single ``TranscriptRulesConfig.model_dump()`` dict
 
     Returns:
@@ -275,7 +282,8 @@ def evaluate_transcript_rules(
     required_actions: list[dict[str, Any]] = rules.get("required_actions", []) or []
     communicate_info: list[dict[str, Any]] = rules.get("communicate_info", []) or []
 
-    assistant_messages = _assistant_message_texts(messages)
+    assistant_messages = list(assistant_texts(timeline))
+    calls = attempted_calls(timeline)
 
     if must_contain:
         accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
@@ -289,19 +297,19 @@ def evaluate_transcript_rules(
 
     if max_turns is not None:
         accounted_keys[MAX_TURNS_KEY] = EVALUATED
-        details.append(_check_max_turns(max_turns, messages))
+        details.append(_check_max_turns(max_turns, len(assistant_messages)))
 
     if required_tools or disallowed_tools:
         accounted_keys[TOOL_EXPECTATIONS_KEY] = EVALUATED
         for tool_name in required_tools:
-            details.append(_check_required_tool(tool_name, tool_history))
+            details.append(_check_required_tool(tool_name, calls))
         for tool_name in disallowed_tools:
-            details.append(_check_disallowed_tool(tool_name, tool_history))
+            details.append(_check_disallowed_tool(tool_name, calls))
 
     if required_actions:
         accounted_keys[REQUIRED_ACTIONS_KEY] = EVALUATED
         for action in required_actions:
-            details.append(_check_required_action(action, tool_history))
+            details.append(_check_required_action(action, calls))
 
     if communicate_info:
         accounted_keys[COMMUNICATE_INFO_KEY] = EVALUATED
@@ -335,30 +343,9 @@ _REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
 }
 
 
-def _assistant_message_texts(messages: list[dict[str, Any]]) -> list[str]:
-    """Extract assistant message text content as a list of strings.
-
-    Content may be a plain string or the structured-content list shape
-    (``[{"type": "text", "text": ...}, ...]``); both are flattened to text so
-    text rules work regardless of how the trajectory was serialized.
-    """
-    texts: list[str] = []
-    for m in messages:
-        if m.get("role") != "assistant":
-            continue
-        content = m.get("content")
-        if content is None:
-            continue
-        if isinstance(content, str):
-            texts.append(content)
-        elif isinstance(content, list):
-            parts = [
-                block.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            texts.append("".join(parts))
-    return texts
+def _executed(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
+    """The calls to ``tool_name`` that actually ran, so carry an outcome."""
+    return [call for call in calls if call.tool_name == tool_name and call.status is not None]
 
 
 def _check_must_contain(text: str, assistant_messages: list[str]) -> TranscriptRuleResult:
@@ -409,14 +396,13 @@ def _check_disallow_regex(pattern: str, assistant_messages: list[str]) -> Transc
     )
 
 
-def _check_max_turns(max_turns: int, messages: list[dict[str, Any]]) -> TranscriptRuleResult:
+def _check_max_turns(max_turns: int, turn_count: int) -> TranscriptRuleResult:
     """Assistant turn count must be within the limit.
 
-    A "turn" is one assistant message (one model response). This counts the
-    agent's responses rather than user messages so the limit caps the agent's
-    activity, which is what authors intend to bound.
+    A "turn" is one assistant generation. This counts the agent's responses
+    rather than user messages so the limit caps the agent's activity, which is
+    what authors intend to bound.
     """
-    turn_count = sum(1 for m in messages if m.get("role") == "assistant")
     within = turn_count <= max_turns
     return TranscriptRuleResult(
         rule_type="max_turns",
@@ -430,18 +416,13 @@ def _check_max_turns(max_turns: int, messages: list[dict[str, Any]]) -> Transcri
     )
 
 
-def _check_required_tool(
-    tool_name: str, tool_history: list[dict[str, Any]]
-) -> TranscriptRuleResult:
+def _check_required_tool(tool_name: str, calls: Sequence[AttemptedCall]) -> TranscriptRuleResult:
     """A required tool must have been called successfully at least once.
 
     Same "a failed call did not happen" rule ``_check_required_action`` applies:
     an errored call did not accomplish the work the author required.
     """
-    called = any(
-        call.get("tool_name") == tool_name and call.get("status") == "success"
-        for call in tool_history
-    )
+    called = any(call.status is ToolExecutionStatus.SUCCESS for call in _executed(calls, tool_name))
     return TranscriptRuleResult(
         rule_type="required_tool",
         rule={"required_tool": tool_name},
@@ -454,19 +435,19 @@ def _check_required_tool(
     )
 
 
-def _check_disallowed_tool(
-    tool_name: str, tool_history: list[dict[str, Any]]
-) -> TranscriptRuleResult:
-    """A disallowed tool must not appear in the history at any status.
+def _check_disallowed_tool(tool_name: str, calls: Sequence[AttemptedCall]) -> TranscriptRuleResult:
+    """A disallowed tool must not have run, at any status.
 
     Status-insensitive on purpose: attempting a forbidden call is the violation,
-    so an errored attempt fails the check just like a successful one.
+    so an errored attempt fails the check just like a successful one. A call the
+    agent declared on a terminating turn never reached the substrate and is not
+    counted; naming intent as a violation is a matcher question, tracked on #678.
     """
-    offending = [call for call in tool_history if call.get("tool_name") == tool_name]
+    offending = _executed(calls, tool_name)
     if not offending:
         message = f"Disallowed tool {tool_name!r} was never called"
     else:
-        statuses = ", ".join(sorted({str(call.get("status")) for call in offending}))
+        statuses = ", ".join(sorted({call.status.value for call in offending if call.status}))
         message = (
             f"Disallowed tool {tool_name!r} was called {len(offending)} "
             f"time(s) (statuses: {statuses})"
@@ -480,9 +461,9 @@ def _check_disallowed_tool(
 
 
 def _check_required_action(
-    action: dict[str, Any], tool_history: list[dict[str, Any]]
+    action: dict[str, Any], calls: Sequence[AttemptedCall]
 ) -> TranscriptRuleResult:
-    """A declared tool call must appear in the tool history.
+    """A declared tool call must appear on the timeline.
 
     Matching:
     - ``tool_name`` must match exactly;
@@ -516,15 +497,14 @@ def _check_required_action(
             message=f"{label}: no tool_name declared",
         )
 
-    for call in tool_history:
-        if call.get("tool_name") != tool_name:
+    for call in calls:
+        if call.tool_name != tool_name:
             continue
-        if expected_executor is not None and call.get("executor") != expected_executor:
+        if expected_executor is not None and call.executor is not expected_executor:
             continue
-        if call.get("status") != "success":
+        if call.status is not ToolExecutionStatus.SUCCESS:
             continue
-        call_args = call.get("arguments", {}) or {}
-        if all(call_args.get(k) == declared_args.get(k) for k in keys_to_compare):
+        if all(call.arguments.get(k) == declared_args.get(k) for k in keys_to_compare):
             return TranscriptRuleResult(
                 rule_type="required_action",
                 rule=action,

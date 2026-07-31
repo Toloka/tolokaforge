@@ -1,26 +1,44 @@
 """Transcript-based grading rules"""
 
 import re
-from collections.abc import Sequence
 
-from tolokaforge.core.models import Message, MessageRole, RecordedToolCall
+from tolokaforge.core.grading.trace_timeline import (
+    TraceEventKind,
+    TrialTimeline,
+    assistant_texts,
+    attempted_calls,
+)
+
+# What a phrase rule searches: the trial's own text. ``role: system`` harness
+# annotations are not timeline events, so a required phrase can never be
+# satisfied by a termination notice the harness wrote.
+_SEARCHABLE_KINDS = (
+    TraceEventKind.USER_MESSAGE,
+    TraceEventKind.ASSISTANT_MESSAGE,
+    TraceEventKind.TOOL_RESULT,
+)
+
+
+def _searchable_text(timeline: TrialTimeline) -> str:
+    """Everything said or returned during the trial, as one string."""
+    return " ".join(
+        (event.text if event.kind is not TraceEventKind.TOOL_RESULT else event.result) or ""
+        for event in timeline.events
+        if event.kind in _SEARCHABLE_KINDS
+    )
 
 
 class TranscriptChecker:
     """Check conversation transcript against rules"""
 
-    def __init__(self):
-        pass
-
     def check_must_contain(
-        self, messages: list[Message], phrases: list[str]
+        self, timeline: TrialTimeline, phrases: list[str]
     ) -> tuple[float, list[str]]:
         """Check if transcript contains required phrases"""
         if not phrases:
             return 1.0, []
 
-        # Combine all message content
-        full_transcript = " ".join(msg.content for msg in messages)
+        full_transcript = _searchable_text(timeline)
 
         found = 0
         reasons = []
@@ -35,13 +53,13 @@ class TranscriptChecker:
         return score, reasons
 
     def check_disallowed_regex(
-        self, messages: list[Message], patterns: list[str]
+        self, timeline: TrialTimeline, patterns: list[str]
     ) -> tuple[float, list[str]]:
         """Check if transcript contains disallowed patterns"""
         if not patterns:
             return 1.0, []
 
-        full_transcript = " ".join(msg.content for msg in messages)
+        full_transcript = _searchable_text(timeline)
 
         violations = []
         for pattern in patterns:
@@ -52,12 +70,12 @@ class TranscriptChecker:
         score = 0.0 if violations else 1.0
         return score, violations
 
-    def check_max_turns(self, messages: list[Message], max_turns: int | None) -> tuple[float, str]:
+    def check_max_turns(self, timeline: TrialTimeline, max_turns: int | None) -> tuple[float, str]:
         """Check if conversation stayed within turn limit"""
         if max_turns is None:
             return 1.0, ""
 
-        actual_turns = len([m for m in messages if m.role == MessageRole.ASSISTANT])
+        actual_turns = len(assistant_texts(timeline))
 
         if actual_turns <= max_turns:
             return 1.0, ""
@@ -66,7 +84,7 @@ class TranscriptChecker:
 
     def check_tool_expectations(
         self,
-        tool_log: Sequence[RecordedToolCall],
+        timeline: TrialTimeline,
         required_tools: list[str] | None,
         disallowed_tools: list[str] | None,
     ) -> tuple[float, list[str]]:
@@ -74,7 +92,9 @@ class TranscriptChecker:
         reasons = []
         score = 1.0
 
-        tools_used = {call.tool_name for call in tool_log}
+        tools_used = {
+            call.tool_name for call in attempted_calls(timeline) if call.status is not None
+        }
 
         if required_tools:
             missing = set(required_tools) - tools_used
@@ -95,8 +115,7 @@ class TranscriptChecker:
 
     def grade(
         self,
-        messages: list[Message],
-        tool_log: Sequence[RecordedToolCall],
+        timeline: TrialTimeline,
         must_contain: list[str] | None = None,
         disallow_regex: list[str] | None = None,
         max_turns: int | None = None,
@@ -112,18 +131,18 @@ class TranscriptChecker:
         all_reasons = []
 
         # Check each rule
-        contain_score, contain_reasons = self.check_must_contain(messages, must_contain or [])
+        contain_score, contain_reasons = self.check_must_contain(timeline, must_contain or [])
         all_reasons.extend(contain_reasons)
 
-        regex_score, regex_reasons = self.check_disallowed_regex(messages, disallow_regex or [])
+        regex_score, regex_reasons = self.check_disallowed_regex(timeline, disallow_regex or [])
         all_reasons.extend(regex_reasons)
 
-        turns_score, turns_reason = self.check_max_turns(messages, max_turns)
+        turns_score, turns_reason = self.check_max_turns(timeline, max_turns)
         if turns_reason:
             all_reasons.append(turns_reason)
 
         tools_score, tools_reasons = self.check_tool_expectations(
-            tool_log, required_tools, disallowed_tools
+            timeline, required_tools, disallowed_tools
         )
         all_reasons.extend(tools_reasons)
 

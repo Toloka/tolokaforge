@@ -2,10 +2,6 @@ satisfying:
   messages:
     - role: assistant
       content: "Cancelling order O1."
-      tool_calls:
-        - name: cancel_order
-          arguments:
-            order_id: O1
   tool_calls:
     - tool_name: cancel_order
       executor: agent
@@ -18,10 +14,6 @@ violating:
   messages:
     - role: assistant
       content: "Cancelling order O9."
-      tool_calls:
-        - name: cancel_order
-          arguments:
-            order_id: O9
   tool_calls:
     - tool_name: cancel_order
       executor: agent

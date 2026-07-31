@@ -22,6 +22,7 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.state_checks import StateChecker
+from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import (
     CustomCheckDetail,
@@ -83,6 +84,10 @@ class GradingEngine:
         reasons_parts = []
         state_diff_result = None  # Will store diff if state check fails
         custom_checks_details = None  # Will store detailed custom check results
+
+        timeline = build_trial_timeline(
+            trajectory.messages, trajectory.tool_log, trajectory.termination_reason
+        )
 
         # State checks
         if self.config.state_checks:
@@ -185,8 +190,7 @@ class GradingEngine:
 
             # Use legacy transcript checker for other rules
             legacy_score, transcript_reasons = self.transcript_checker.grade(
-                messages=trajectory.messages,
-                tool_log=trajectory.tool_log,
+                timeline=timeline,
                 must_contain=self.config.transcript_rules.must_contain,
                 disallow_regex=self.config.transcript_rules.disallow_regex,
                 max_turns=self.config.transcript_rules.max_turns,
