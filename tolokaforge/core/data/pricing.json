@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Model pricing in USD per 1M tokens. Source: OpenRouter API.",
     "source_url": "https://openrouter.ai/api/v1/models",
-    "updated_at": "2026-07-27T07:44:16.819534+00:00",
+    "updated_at": "2026-07-31T11:38:48.800029+00:00",
     "notes": "Run `uv run pricing-updater update` to refresh from OpenRouter API."
   },
   "models": {
@@ -1694,6 +1694,11 @@
     "thedrummer/unslopnemo-12b": {
       "input": 0.4,
       "output": 0.4
+    },
+    "thinkingmachines/inkling": {
+      "input": 1.0,
+      "output": 4.05,
+      "cache_read": 0.17
     },
     "tngtech/deepseek-r1t2-chimera": {
       "input": 0.3,
