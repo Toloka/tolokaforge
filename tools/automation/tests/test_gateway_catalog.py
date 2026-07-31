@@ -16,6 +16,8 @@ import json
 import pytest
 from automation import gateway_catalog, model_resolver, poller, slack
 
+pytestmark = pytest.mark.unit
+
 _CATALOG = [
     "anthropic/claude-sonnet-4-5",
     "azure_ai/cohere-command-a-plus-05-2026",
