@@ -129,6 +129,11 @@ Compare output against committed golden snapshots in `snapshots/`.
   ledger cannot resolve. Fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
+- Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one
+  scripted tool-call sequence driven through each substrate's real recording path
+  must build the same events. A failure means one substrate's recording drifted,
+  so a trace check would mean different things depending on which substrate graded
+  the trial.
 
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 

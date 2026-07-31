@@ -199,6 +199,153 @@ run can produce cannot be introduced, and pins which of them reach `GradeTrial`.
 
 ---
 
+## Trial event timeline
+
+A trial leaves two records of itself, and neither alone is gradeable. The
+**message view** — assistant and user turns, each tool call carried on the
+message that requested it — says what the agent asked for but knows no status,
+latency or executor identity. The **tool-call record** says what happened when
+each call ran but has no conversation.
+
+[`build_trial_timeline`](../tolokaforge/core/grading/trace_timeline.py) joins them
+into one ordered tuple of `TraceEvent`:
+
+```python
+def build_trial_timeline(
+    messages: Sequence[Message],
+    recorded_calls: Sequence[RecordedToolCall],
+    termination_reason: TerminationReason | None,
+) -> TrialTimeline
+```
+
+It is a pure function — no services, no I/O — over three inputs both grading
+substrates already hold, which is what makes a check over the timeline mean the
+same thing whichever substrate grades the trial:
+
+| Argument | Runner substrate | Core substrate |
+| --- | --- | --- |
+| `messages` | `decode_transcript_wire(llm_messages_json)` | `trajectory.messages` |
+| `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
+| `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
+
+### The event
+
+One flat `TraceEvent` type carries all four kinds — `assistant_message`,
+`user_message`, `tool_call`, `tool_result` — so a matcher is a conjunction of
+field predicates with uniform field access. **A field is `None` exactly when it
+does not apply, and a predicate over a `None` field is unmatched, never vacuously
+true.**
+
+| Field | Kinds it applies to | Meaning |
+| --- | --- | --- |
+| `position` | all | dense, 0-based index into `events` |
+| `turn_index` | all | 0-based index of the assistant generation the event belongs to |
+| `kind` | all | `TraceEventKind` |
+| `text` | `*_message` | the message text as the wire carries it |
+| `call_id` | `tool_call` / `tool_result` | the provider's tool-call id — the join key |
+| `tool_name` | `tool_call` / `tool_result` | the tool the call named |
+| `executor` | `tool_call` / `tool_result` | `ToolExecutorIdentity`, from the record |
+| `arguments` | `tool_call` | the arguments the caller passed, verbatim |
+| `status` | `tool_result` | `ToolExecutionStatus`, from the record |
+| `result` | `tool_result` | the recorded output, untruncated |
+| `latency_seconds` | `tool_result` | wall time measured by the recording caller |
+
+`turn_index` is the assistant *generation* an event belongs to. Every event one
+assistant message emits — the message, the tool calls it requested, the results
+they produced, and the user message that answered it — carries that generation's
+index, so "in the same turn" means "in the same assistant generation". The
+initial user prompt precedes the first assistant message and carries index 0.
+
+### Guarantees
+
+- **G1 — message order is authoritative.** Event order follows `messages` order,
+  and `position` is dense: `events[i].position == i`.
+- **G2 — `turn_index` counts assistant generations**, per the paragraph above.
+- **G3 — a call and its result are joined by id, and uniqueness is enforced.**
+  Each `tool_call` has at most one `tool_result` with the same `call_id`, at a
+  later `position`. A `call_id` occurring twice raises
+  `TimelineInconsistencyError` naming both positions rather than picking a
+  winner: two calls to one tool with identical arguments differ only in the id, so
+  a collision makes the join ambiguous, and an ambiguous join is a broken
+  invariant rather than task data.
+- **G4 — an attempted call is always an event, and "attempted" is not
+  "executed".** A `tool_call` is **never** dropped, because dropping one makes an
+  `absent` or `count` constraint wrong in the agent's favour. Three states:
+  - *Never attempted.* Termination is decided before a turn's calls execute, so a
+    terminating turn's calls reach the message view and never run. Emitted as a
+    `tool_call` with no `tool_result` and `status = None`.
+  - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
+    recorded, so the call emits a normal pair carrying `tool_not_found` /
+    `invalid_arguments` and a `status` matcher counts it.
+  - *`trial_not_found`.* Unrecordable — there is no trial context to record into —
+    so it emits a `tool_call` with no `tool_result`, indistinguishable from the
+    never-attempted case. Declared rather than implied; it is a harness fault for
+    which no grading verdict is meaningful.
+- **G5 — `result` and `status` come from the record, not the message.** The two
+  views word the same failure differently: the `role: tool` message carries
+  `Error: <error>`, while the record carries the executing layer's own text,
+  untruncated. The record wins. The two substrates also word an executor-level
+  failure differently from each other, so a `result` predicate combined with
+  `status != success` is matching harness text and is not substrate-portable;
+  match on `status` instead.
+- **G6 — records-only is a declared input state.** Hash-only grading legitimately
+  omits the transcript, and `role: system` messages are not events (N3), so an
+  input carrying no assistant or user turn is built from the records alone:
+  `tool_call` + `tool_result` pairs in `sequence` order, all at `turn_index` 0,
+  `message_view_present = False`.
+- **G6b — messages-only is the normal state for a recorded bundle.** `tool_log` is
+  not written to `trajectory.yaml`, so a timeline rebuilt from a bundle has no
+  records: `records_present = False`, every `tool_call` is unpaired, and
+  `executor` / `status` / `result` / `latency_seconds` are `None` throughout.
+- **G7 — reconciliation failure is loud.** When a message view is present, every
+  record must be linkable by `call_id` to a call in it. An unlinkable record
+  raises `TimelineInconsistencyError` naming its `call_id`, `sequence` and
+  `tool_name`: the two views disagreeing about one trial is a harness bug, and
+  grading around it would be exactly the silent degradation
+  [AGENTS.md](../AGENTS.md) core rule 1 forbids.
+- **G8 — within a turn, executed calls follow recorded execution order.** The
+  `tool_call`s of one assistant message are emitted in ascending
+  `RecordedToolCall.sequence` — execution order, since `sequence` is stamped at
+  execution time — with calls that never executed after them in declaration
+  order. So an "immediately before" or "nothing between" constraint rests on a
+  guarantee rather than on a coincidence.
+
+Both degenerate states are reported on the timeline, never inferred: a constraint
+that reads a field the missing view supplies must become a **named failing
+sub-check, not a silent pass.**
+
+### Non-guarantees
+
+- **N2 — no user-executed tool events occur today.** The builder emits
+  `executor: user` whenever a record carries it, but no code path constructs a
+  user-side tool executor (#688), so the vocabulary is defined and unreachable.
+  A user-simulator call also emits no `role: tool` message — the result is inlined
+  into the user message text — so such a call pairs with a `tool_result` built
+  from the record and never from the message view.
+- **N3 — `role: system` messages are not events.** The loop appends termination
+  and max-turns notices as system messages, and the transcript wire prepends the
+  agent's policy as one. They are harness text, not agent or user behaviour;
+  making them matchable would let a task grade itself on harness strings.
+  `TrialTimeline.termination_reason` is the typed channel for the same
+  information.
+- **N4 — message text is the wire text.** `content_blocks` (screenshots),
+  `reasoning` and per-message timestamps are not on the timeline. A
+  screenshot-only turn carries `text = ""`.
+- **N5 — `timeout` is unproducible on the pure in-process path**, because that
+  executor implements no timeout at all (#691). `status` itself is present on
+  every recorded call on both substrates.
+- **N6 — the timeline says what happened, not whether it was correct.** A green
+  timeline is not a correctness proof; that is each task's grading config's job.
+
+[`tests/canonical/test_trace_timeline_substrate_parity.py`](../tests/canonical/test_trace_timeline_substrate_parity.py)
+drives one scripted tool-call sequence through each substrate's real recording
+path and compares the resulting events field by field, so a divergence in either
+substrate's recording fails there. `latency_seconds` is excluded from that
+equality — two substrates cannot measure the same wall time — and is instead
+asserted to be a positive float on both.
+
+---
+
 ## Hash-Based Grading (Tau-Bench Compatible)
 
 Hash grading canonicalizes the final state and the golden state, hashes both
