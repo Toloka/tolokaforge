@@ -176,28 +176,36 @@ cleanly, and a Slack failure never fails the job.
 | `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id (both the notifier's thread root and the poller's scan target) |
 | `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention; empty -> no mention |
 | `ARENA_AUTOMATION_SLACK_ALLOWED_USERS` | variable | (poller) comma-separated Slack user-ids allowed to trigger an integration; empty -> anyone in the channel (channel membership is the authz gate, since GitHub only ever sees the bot) |
-| `TOLOKAFORGE_SLACK_EMOJI_OVERRIDES` | variable | OPTIONAL. JSON map from standard Slack shortcode to a workspace-custom emoji, e.g. `{"white_check_mark":"tf_pass","rotating_light":"tf_needs_human"}`. Unset (the default) leaves every message with the standard emoji |
+| `TOLOKAFORGE_SLACK_ICONS` | variable | OPTIONAL. JSON map from icon ROLE to the emoji the workspace uploaded, e.g. `{"observe_started":":tf-observe-started:","needs_human":":tf-needs-human:"}`. Unset (the default) leaves every message with its default icon |
 
-### Custom emoji
+### Custom icons
 
-`TOLOKAFORGE_SLACK_EMOJI_OVERRIDES` restyles every notification without touching
-a call site. The rewrite happens at the posting boundary, which is deliberate:
-most message text is assembled in workflow `run:` blocks and reaches the notifier
-through `--text`, so rewriting where messages are *built* would miss most of them.
+`TOLOKAFORGE_SLACK_ICONS` restyles the notifications without a code change. It is
+keyed on the icon ROLE, not on the standard emoji the role defaults to, and that
+is the point: four messages share `:warning:` today and three share
+`:white_check_mark:`, so a map keyed on the standard name could not give any of
+those pairs separate icons - one entry would restyle them all.
+`automation.icons.DEFAULT_ICONS` is the registry, and its defaults reproduce
+exactly what the flow sends today, so an unset variable changes nothing.
 
-Keys and values may be written with or without colons and in any case, so
-`":White_Check_Mark:"` and `"white_check_mark"` are the same key. Only mapped
-shortcodes change; anything unmapped is left exactly as it was, so a partial map
-is safe.
+Every message site names its role (`slack reply --icon <role>`), so the emoji is
+no longer in the message text.
 
-Parsing is fail-soft and per-entry: unparseable JSON logs a warning and applies
-no overrides, and a single unusable entry is dropped by name while the rest still
-apply. A notification must never fail the job it reports on, and one typo'd emoji
-name is not a reason to send every message unstyled.
+Four behaviours worth knowing:
 
-**Upload the custom emoji to the workspace first.** Slack renders an emoji it
-does not have as the literal `:name:` text, so an override pointing at a
-not-yet-uploaded name degrades to visible raw text rather than an error.
+- A partial map is safe: roles you do not list keep their defaults.
+- An UNKNOWN role is reported loudly, with the known roles listed. It is the one
+  error detectable here - whether the icon exists in the workspace is not - and a
+  silently-ignored role looks exactly like a working override that did nothing.
+- Parsing is otherwise fail-soft per entry: unparseable JSON applies nothing, one
+  unusable entry is dropped by name and the rest still apply.
+- **Upload the icons to the workspace first.** Slack renders a name it does not
+  have as literal `:name:` text, so an override pointing at a missing icon
+  degrades to visible raw text rather than an error. Nothing is committed for
+  them: the automation only ever needs the names.
+
+This does not extend to reactions: `reactions.add` fails with `invalid_name` on
+an emoji the workspace lacks, so a reaction vocabulary has to stay standard.
 
 Messages are emoji-prefixed and carry the run URL. `mention` = the `SLACK_MENTIONS` users are
 pinged (terminal / attention states only):

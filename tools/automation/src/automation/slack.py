@@ -38,6 +38,8 @@ import urllib.request
 
 import typer
 
+from . import icons
+
 _API = "https://slack.com/api/"
 _TIMEOUT = 15
 _HISTORY_SCAN = 500  # bounded scan cap: newest N top-level messages (headroom for the 48h window)
@@ -45,96 +47,6 @@ _HISTORY_SCAN = 500  # bounded scan cap: newest N top-level messages (headroom f
 
 def _log(message: str) -> None:
     print(f"[slack_notify] {message}", file=sys.stderr)
-
-
-# --- custom emoji overrides ----------------------------------------------------
-
-# A JSON object mapping a standard Slack shortcode to a workspace-custom one:
-#
-#   TOLOKAFORGE_SLACK_EMOJI_OVERRIDES='{"white_check_mark":"tf_pass",
-#                                       "rotating_light":"tf_needs_human"}'
-#
-# Why an env var rather than a config file: the notifier is driven from workflow
-# YAML, where the emoji actually live (most message text is assembled in `run:`
-# blocks and passed as `--text`), and a workflow already has a natural place for
-# repo-level values. One variable therefore restyles every message without
-# touching a single call site.
-EMOJI_OVERRIDES_ENV = "TOLOKAFORGE_SLACK_EMOJI_OVERRIDES"
-
-# Slack emoji names are lowercase letters, digits, and - _ +. Anything else
-# cannot name an emoji, so an entry carrying it is dropped rather than sent: the
-# result would render as literal `:not a name:` text in the message.
-_EMOJI_NAME_RE = re.compile(r"^[a-z0-9_+-]+$")
-
-# A shortcode inside message text. The lookarounds are load-bearing: they stop
-# `::warning::` - a GitHub Actions workflow command, which does appear in text
-# these workflows handle - from being read as `:warning:` and rewritten into
-# `::tf_warning::`, which would neither annotate nor render.
-_SHORTCODE_RE = re.compile(r"(?<!:):([a-z0-9_+-]+):(?!:)")
-
-
-def load_emoji_overrides(raw: str | None = None) -> dict[str, str]:
-    """Parse the shortcode override map. Never raises.
-
-    *raw* defaults to the ``TOLOKAFORGE_SLACK_EMOJI_OVERRIDES`` environment
-    variable. Keys and values are accepted with or without surrounding colons
-    and are case-folded, so ``":White_Check_Mark:"`` and ``"white_check_mark"``
-    are the same key.
-
-    Fail-soft, and deliberately per-entry: malformed JSON yields an empty map
-    and a warning, while a single unusable entry is dropped by name and the rest
-    still apply. A notification must never fail the job it reports on, and a
-    typo in one emoji name is not a reason to send every message unstyled.
-    """
-    payload = os.environ.get(EMOJI_OVERRIDES_ENV, "") if raw is None else raw
-    payload = (payload or "").strip()
-    if not payload:
-        return {}
-    try:
-        parsed = json.loads(payload)
-    except ValueError as exc:
-        _log(f"emoji overrides: ignoring unparseable {EMOJI_OVERRIDES_ENV} ({exc})")
-        return {}
-    if not isinstance(parsed, dict):
-        _log(
-            f"emoji overrides: {EMOJI_OVERRIDES_ENV} must be a JSON object, got {type(parsed).__name__}"
-        )
-        return {}
-
-    overrides: dict[str, str] = {}
-    for raw_key, raw_value in parsed.items():
-        key = str(raw_key).strip().strip(":").casefold()
-        value = str(raw_value).strip().strip(":").casefold()
-        if not _EMOJI_NAME_RE.match(key) or not _EMOJI_NAME_RE.match(value):
-            _log(f"emoji overrides: dropping unusable entry {raw_key!r} -> {raw_value!r}")
-            continue
-        if key.isdigit():
-            # `12:34:56` contains `:34:`, which is indistinguishable from a
-            # shortcode, so a digit-only key would rewrite the middle of any
-            # timestamp in a message. Slack does ship digit-named emoji, but
-            # mapping one is vanishingly rare next to corrupting a time.
-            _log(f"emoji overrides: refusing digit-only key {raw_key!r} (it would match times)")
-            continue
-        overrides[key] = value
-    return overrides
-
-
-def apply_emoji_overrides(text: str, overrides: dict[str, str] | None = None) -> str:
-    """Rewrite every mapped ``:shortcode:`` in *text*. Pure.
-
-    ONE pass with a lookup, never a sequence of replacements: chaining
-    ``a -> b`` and then ``b -> c`` would silently turn an ``a`` into a ``c``,
-    so a map that renames two emoji to each other's names would corrupt both.
-
-    An unmapped shortcode is left exactly as it was, so a partial map is safe.
-    """
-    if overrides is None:
-        overrides = load_emoji_overrides()
-    if not overrides or not text:
-        return text
-    return _SHORTCODE_RE.sub(
-        lambda match: f":{overrides.get(match.group(1).casefold(), match.group(1))}:", text
-    )
 
 
 # --- pure helpers (unit-tested) ------------------------------------------------
@@ -251,10 +163,7 @@ def _get(method: str, token: str, params: dict) -> dict | None:
 
 
 def _post_message(channel: str, text: str, token: str, thread_ts: str | None = None) -> str | None:
-    # The single posting path, which is why the override is applied here and not
-    # at the call sites: most message text is assembled in workflow `run:` blocks
-    # and arrives through `--text`, so a call-site rewrite would miss it.
-    body = {"channel": channel, "text": apply_emoji_overrides(text)}
+    body = {"channel": channel, "text": text}
     if thread_ts:
         body["thread_ts"] = thread_ts
     result = _post("chat.postMessage", token, body)
@@ -330,6 +239,7 @@ def cmd_reply(
     pr_comment: str = "",
     pr_url: str = "",
     run_url: str = "",
+    role: str = "",
 ) -> None:
     token = _ready(channel)
     if not token:
@@ -339,7 +249,9 @@ def cmd_reply(
         _log("no thread root and root post failed - dropping reply")
         _note_failure("could not post the thread reply (no root)")
         return
-    body = append_footer(text, pr_comment=pr_comment, pr_url=pr_url, run_url=run_url)
+    body = append_footer(
+        icons.prefix(role, text), pr_comment=pr_comment, pr_url=pr_url, run_url=run_url
+    )
     if mention:
         body += build_mention_suffix(os.environ.get("SLACK_MENTIONS"))
     if not _post_message(channel, body, token, thread_ts=thread_ts):
@@ -403,6 +315,13 @@ def reply(
     run_url: str = typer.Option(
         "", "--run-url", help="Actions run URL, rendered as a Run log link"
     ),
+    icon: str = typer.Option(
+        "",
+        "--icon",
+        help="Icon ROLE to prefix, e.g. observe_started. The role's emoji comes "
+        "from `icons.DEFAULT_ICONS` unless TOLOKAFORGE_SLACK_ICONS overrides it. "
+        "Empty = no icon, for text that already carries its own lead.",
+    ),
 ) -> None:
     """Reply into the PR thread (create root if missing)."""
     try:
@@ -415,6 +334,7 @@ def reply(
             pr_comment=pr_comment,
             pr_url=pr_url,
             run_url=run_url,
+            role=icon,
         )
     except Exception as exc:  # a notification must never fail the job
         _log(f"unexpected error (ignored): {exc}")

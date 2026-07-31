@@ -33,13 +33,13 @@ on:
     - cron: "*/30 * * * 0,6" # all weekend (Sat/Sun) -> every 30 min
   workflow_dispatch: {}
 
-# Optional workspace restyling: a JSON map from standard Slack shortcode to a
-# workspace-custom emoji, e.g. {"white_check_mark":"tf_pass"}. Unset means every
-# message keeps the standard emoji, which is the default and needs no variable.
-# Declared workflow-level so it reaches every notifier step without each one
-# repeating it.
+# Optional workspace restyling: a JSON map from icon ROLE to the emoji the
+# workspace uploaded, e.g. {"observe_started":":tf-observe-started:"}. Keyed on
+# the role, so icons that share a default today stay separately settable. Unset
+# means every message keeps its default. Declared workflow-level so it reaches
+# every notifier step without each one repeating it.
 env:
-  TOLOKAFORGE_SLACK_EMOJI_OVERRIDES: ${{ vars.TOLOKAFORGE_SLACK_EMOJI_OVERRIDES }}
+  TOLOKAFORGE_SLACK_ICONS: ${{ vars.TOLOKAFORGE_SLACK_ICONS }}
 
 permissions:
   contents: write # push the seed branch
@@ -132,7 +132,7 @@ jobs:
             # Confirm in the requester's own thread, WITH the PR link (the poll-step reply was
             # posted before the PR existed; the engine's progress thread is a separate root).
             uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
-              --text ":rocket: Opened <${PR_URL}|PR #${PR_NUM}> for ${SLUG} - the integration run has started." || true
+              --icon pr_opened --text "Opened <${PR_URL}|PR #${PR_NUM}> for ${SLUG} - the integration run has started." || true
           }
 
           mapfile -t ROWS < <(jq -c '.[]' plan.json)
@@ -148,7 +148,7 @@ jobs:
               # requester in-thread that it did NOT, and to re-request (the reply marker means it
               # will not auto-retry).
               uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
-                --text ":x: I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
+                --icon dispatch_failed --text "I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
               FAIL=1
             fi
           done
