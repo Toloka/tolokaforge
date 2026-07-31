@@ -319,7 +319,8 @@ def reply(
         "",
         "--icon",
         help="Icon ROLE to prefix, e.g. observe_started. The role's emoji comes "
-        "from `icons.DEFAULT_ICONS` unless TOLOKAFORGE_SLACK_ICONS overrides it. "
+        "from `icons.DEFAULT_ICONS` unless ARENA_AUTOMATION_SLACK_ICON_OVERRIDE "
+        "overrides it. "
         "Empty = no icon, for text that already carries its own lead.",
     ),
 ) -> None:

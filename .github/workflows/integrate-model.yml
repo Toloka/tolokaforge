@@ -47,7 +47,7 @@ on:
 # means every message keeps its default. Declared workflow-level so it reaches
 # every notifier step without each one repeating it.
 env:
-  TOLOKAFORGE_SLACK_ICONS: ${{ vars.TOLOKAFORGE_SLACK_ICONS }}
+  ARENA_AUTOMATION_SLACK_ICON_OVERRIDE: ${{ vars.ARENA_AUTOMATION_SLACK_ICON_OVERRIDE }}
 
 permissions:
   contents: write

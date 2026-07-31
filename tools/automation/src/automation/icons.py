@@ -3,7 +3,7 @@
 Every emoji the notifier puts in front of a message has a role name here, and
 one JSON variable maps roles to whatever the workspace uploaded::
 
-    TOLOKAFORGE_SLACK_ICONS='{"observe_started": ":tf-observe-started:",
+    ARENA_AUTOMATION_SLACK_ICON_OVERRIDE='{"observe_started": ":tf-observe-started:",
                               "integrated":      ":tf-integrated:"}'
 
 Keyed on the ROLE, not on the standard emoji it defaults to, and that is the
@@ -25,11 +25,12 @@ import os
 import re
 import sys
 
-# One JSON object, role -> icon. The same variable name the tasks repo's
-# eval-orchestrator notifier reads, so a single organisation-level value styles
-# both flows; each side validates against its own role registry, so a role that
-# only exists in the other one is reported where it was set.
-ICON_OVERRIDES_ENV = "TOLOKAFORGE_SLACK_ICONS"
+# One JSON object, role -> icon. Named for the ARENA_AUTOMATION_SLACK_* family it
+# joins (bot token, channel, mentions), and the SAME name the tasks repo's
+# eval-orchestrator notifier reads, so one value styles both flows; each side
+# validates against its own role registry, so a role that only exists in the
+# other one is reported where it was set.
+ICON_OVERRIDES_ENV = "ARENA_AUTOMATION_SLACK_ICON_OVERRIDE"
 
 # role -> the standard Slack shortcode used when nothing overrides it.
 #
@@ -74,7 +75,7 @@ def known_roles() -> list[str]:
 def load_icon_overrides(raw: str | None = None) -> dict[str, str]:
     """Parse the role -> icon map. Never raises.
 
-    *raw* defaults to ``TOLOKAFORGE_SLACK_ICONS``. Icon values are accepted with
+    *raw* defaults to ``ARENA_AUTOMATION_SLACK_ICON_OVERRIDE``. Icon values are accepted with
     or without surrounding colons, so ``":tf-pass:"`` and ``"tf-pass"`` are the
     same value.
 

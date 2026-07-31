@@ -176,11 +176,11 @@ cleanly, and a Slack failure never fails the job.
 | `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id (both the notifier's thread root and the poller's scan target) |
 | `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention; empty -> no mention |
 | `ARENA_AUTOMATION_SLACK_ALLOWED_USERS` | variable | (poller) comma-separated Slack user-ids allowed to trigger an integration; empty -> anyone in the channel (channel membership is the authz gate, since GitHub only ever sees the bot) |
-| `TOLOKAFORGE_SLACK_ICONS` | variable | OPTIONAL. JSON map from icon ROLE to the emoji the workspace uploaded, e.g. `{"observe_started":":tf-observe-started:","needs_human":":tf-needs-human:"}`. Unset (the default) leaves every message with its default icon |
+| `ARENA_AUTOMATION_SLACK_ICON_OVERRIDE` | variable | OPTIONAL. JSON map from icon ROLE to the emoji the workspace uploaded, e.g. `{"observe_started":":tf-observe-started:","needs_human":":tf-needs-human:"}`. Unset (the default) leaves every message with its default icon |
 
 ### Custom icons
 
-`TOLOKAFORGE_SLACK_ICONS` restyles the notifications without a code change. It is
+`ARENA_AUTOMATION_SLACK_ICON_OVERRIDE` restyles the notifications without a code change. It is
 keyed on the icon ROLE, not on the standard emoji the role defaults to, and that
 is the point: four messages share `:warning:` today and three share
 `:white_check_mark:`, so a map keyed on the standard name could not give any of
