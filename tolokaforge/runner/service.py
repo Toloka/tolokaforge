@@ -1609,10 +1609,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> tuple[list[dict[str, Any]], TrialTimeline]:
         """The trial's grade-time views: the wire messages and the event timeline.
 
-        The agent policy is split off before the timeline is built. A hash-only
-        trial's payload is that policy and nothing else, and handing it over whole
-        would present one harness annotation as a message view — making every
-        recorded call unlinkable and failing an entirely legitimate trial.
+        The agent policy is the payload's leading ``system`` message and is split
+        off first, so the timeline is built from the transcript alone. That matters
+        for a hash-only trial, whose payload is the policy and nothing else: it has
+        to read as a records-only trial rather than as a message view whose every
+        recorded call is unlinkable.
 
         Raises:
             ValueError: the payload does not decode into a transcript.

@@ -282,7 +282,7 @@ def evaluate_transcript_rules(
     required_actions: list[dict[str, Any]] = rules.get("required_actions", []) or []
     communicate_info: list[dict[str, Any]] = rules.get("communicate_info", []) or []
 
-    assistant_messages = list(assistant_texts(timeline))
+    assistant_messages = assistant_texts(timeline)
     calls = attempted_calls(timeline)
 
     if must_contain:
@@ -348,7 +348,7 @@ def _executed(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedC
     return [call for call in calls if call.tool_name == tool_name and call.status is not None]
 
 
-def _check_must_contain(text: str, assistant_messages: list[str]) -> TranscriptRuleResult:
+def _check_must_contain(text: str, assistant_messages: Sequence[str]) -> TranscriptRuleResult:
     """Each required string must appear (case-insensitive) in some assistant message."""
     needle = text.lower()
     found = any(needle in content.lower() for content in assistant_messages)
@@ -364,7 +364,7 @@ def _check_must_contain(text: str, assistant_messages: list[str]) -> TranscriptR
     )
 
 
-def _check_disallow_regex(pattern: str, assistant_messages: list[str]) -> TranscriptRuleResult:
+def _check_disallow_regex(pattern: str, assistant_messages: Sequence[str]) -> TranscriptRuleResult:
     """No assistant message may match the disallowed regex.
 
     An invalid regex is an author error — surface it as a FAIL rather than
@@ -524,7 +524,7 @@ def _check_required_action(
 
 
 def _check_communicate_info(
-    info: dict[str, Any], assistant_messages: list[str]
+    info: dict[str, Any], assistant_messages: Sequence[str]
 ) -> TranscriptRuleResult | None:
     """A required info string must appear in an assistant message.
 

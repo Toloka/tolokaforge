@@ -3,6 +3,7 @@
 import re
 
 from tolokaforge.core.grading.trace_timeline import (
+    TraceEvent,
     TraceEventKind,
     TrialTimeline,
     assistant_texts,
@@ -19,12 +20,17 @@ _SEARCHABLE_KINDS = (
 )
 
 
+def _event_text(event: TraceEvent) -> str:
+    """A turn's text, or a tool result's recorded output."""
+    if event.kind is TraceEventKind.TOOL_RESULT:
+        return event.result or ""
+    return event.text or ""
+
+
 def _searchable_text(timeline: TrialTimeline) -> str:
     """Everything said or returned during the trial, as one string."""
     return " ".join(
-        (event.text if event.kind is not TraceEventKind.TOOL_RESULT else event.result) or ""
-        for event in timeline.events
-        if event.kind in _SEARCHABLE_KINDS
+        _event_text(event) for event in timeline.events if event.kind in _SEARCHABLE_KINDS
     )
 
 
