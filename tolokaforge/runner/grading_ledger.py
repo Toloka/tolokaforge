@@ -44,7 +44,7 @@ HASH_DISABLED_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="hash grading not enabled"
 )
 NO_TRANSCRIPT_INPUT_SKIP = KeyAccountingRecord(
-    outcome=KeyAccounting.SKIPPED, detail="no transcript messages or tool history"
+    outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="no transcript messages"

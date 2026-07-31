@@ -656,6 +656,13 @@ The Runner executes this grading algorithm:
 
 ```python
 def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
+    # 0. Join the transcript and the tool-call record into the trial's timeline.
+    #    Raises TimelineInconsistencyError -> success=false, before any component.
+    _, transcript = split_leading_system_message(llm_messages)
+    timeline = build_trial_timeline(
+        decode_transcript_wire(transcript), trial_context.tool_call_history, termination_reason
+    )
+
     # 1. Get current trial state from DB Service
     trial_state = db_service.get_state(trial_id)
     
@@ -682,8 +689,8 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
         state_score = 0.0
         state_diff = compute_diff(golden_state, trial_state)
     
-    # 6. Evaluate transcript rules
-    transcript_score = evaluate_transcript(llm_messages, tool_history, grading_config.transcript_rules)
+    # 6. Evaluate transcript rules off the timeline
+    transcript_score = evaluate_transcript_rules(timeline, grading_config.transcript_rules)
     
     # 7. Combine scores
     final_score = weighted_combine(state_score, transcript_score, ...)
@@ -710,11 +717,16 @@ All components (DB Service, adapters, grading engine) MUST use this exact algori
 ### GradeTrial Error Semantics
 
 `GradeTrialResponse.success = false` leaves `grade` unset — an unusable grade is
-never approximated with a score.
+never approximated with a score. The two views of the trial are joined into its
+[event timeline](GRADING.md#trial-event-timeline) **before** any component runs,
+so an unreadable or self-contradictory payload fails the RPC before golden replay
+touches the trial's state.
 
 | `error` | Cause |
 |---|---|
 | `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
+| `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
+| `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, or a `tool_calls` entry carrying no `id` |
 | `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
 | `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
 | `Grading error: …` | Any other exception escaping the grading path |
@@ -739,7 +751,7 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 
 | Skip | Condition | Keys covered |
 |---|---|---|
-| `skipped: no transcript messages or tool history` | `llm_messages_json` is empty **and** the trial recorded no tool calls | every `transcript_rules.*` key |
+| `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so every rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key |
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
 | `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
 | `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |

@@ -126,6 +126,12 @@ as **declared data**, verified only to live inside a dict-typed field. And a gre
 parity suite proves each key *discriminates*, not that its discrimination is
 *correct*.
 
+It also cannot see a key the two substrates read from **different evidence**. The
+manifest freezes config keys and field paths, not evaluation sources, so
+`transcript_rules.required_actions` passes every lock while core evaluates it from
+`trajectory.messages` and the runner evaluates it from the tool-call record — see
+[Both substrates consume it](#both-substrates-consume-it).
+
 ### The recorded tool calls both substrates read
 
 Both substrates record every tool call as a `RecordedToolCall`
@@ -227,6 +233,33 @@ same thing whichever substrate grades the trial:
 | `messages` | `decode_transcript_wire(llm_messages_json)` | `trajectory.messages` |
 | `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
 | `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
+
+### Both substrates consume it
+
+Every transcript rule is evaluated off the timeline on both substrates. The
+runner builds it once in `GradeTrial`, before any grading component runs, and
+`evaluate_transcript_rules(timeline, rules)` decomposes the author's config
+against it. The core `GradingEngine` builds it from the trajectory and
+`TranscriptChecker.grade(timeline, …)` reads the same events. The call/result
+join and the assistant-turn view are shared accessors on the timeline module
+(`attempted_calls`, `assistant_texts`), so the two substrates cannot drift into
+reading one timeline differently.
+
+**A reconciliation failure fails the RPC.** `TimelineInconsistencyError` from
+either builder call is never folded into a score. Runner-side `GradeTrial`
+returns `success = False` with the offending `call_id` in the error and no
+`Grade` at all; core-side the exception propagates. A trial whose transcript and
+tool-call record disagree would otherwise grade as though the calls it made never
+happened — a `0.0` reported against evidence that was never read.
+
+**One key is still evaluated from different sources.** The core engine evaluates
+`transcript_rules.required_actions` and `transcript_rules.communicate_info`
+through `ActionEvaluator` / `CommunicateEvaluator` over `trajectory.messages`,
+outside `TranscriptChecker` and therefore off the timeline; the runner evaluates
+`required_actions` from the timeline's records. Both substrates read the key and
+both discriminate it, so the manifest's parity claim holds — but the *evidence*
+differs, and the manifest freezes config keys, not evaluation sources. Closing
+#685 should unify the source as well as the averaging.
 
 ### The event
 
@@ -516,7 +549,16 @@ engine ever emitted it and it is not part of this lock — a populated
 
 `transcript_rules` grades the *process* — what the agent said and which tools it
 reached for — rather than the final state. Both substrates consume every key in
-the block.
+the block, and both read it off the
+[trial event timeline](#trial-event-timeline).
+
+**What a rule can see.** A tool rule sees the calls that reached the substrate: a
+call the agent declared on a terminating turn never ran, so it satisfies no
+`required_tools` entry and violates no `disallowed_tools` entry. A phrase rule
+(`must_contain`, `disallow_regex`, `communicate_info`) sees the agent's own text
+runner-side; core-side it also sees the user's turns and the untruncated text
+tools returned. Neither substrate can see the harness's `role: system`
+annotations — a termination notice cannot satisfy a required phrase (N3).
 
 ### `tool_expectations`
 

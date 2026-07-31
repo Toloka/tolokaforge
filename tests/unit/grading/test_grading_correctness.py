@@ -628,6 +628,22 @@ class TestTranscriptRulesEvaluation:
         assert "delete_customer" in detail.message
         assert status in detail.message
 
+    def test_disallowed_tool_declared_but_never_run_passes(self):
+        """A call the agent declared on a terminating turn never reached the
+        substrate, so there is no forbidden execution to report. Naming intent as
+        the violation is a matcher question, tracked on #678."""
+        config = self._config(
+            tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
+        )
+        timeline = build_timeline(
+            [("assistant", "I will remove the customer next.")],
+            unexecuted=[ToolCall(id="never_ran", name="delete_customer", arguments={})],
+        )
+        result = evaluate_transcript_rules(timeline, config)
+        assert result.passed is True
+        assert result.score == 1.0
+        assert result.details[0].message == "Disallowed tool 'delete_customer' was never called"
+
     def test_tool_expectations_decomposes_one_sub_check_per_tool(self):
         """Each declared tool is scored independently, like must_contain entries."""
         config = self._config(

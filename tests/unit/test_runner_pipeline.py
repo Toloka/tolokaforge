@@ -682,6 +682,148 @@ class TestGradeTrialTerminationReason:
             assert reason.value in response.error
 
 
+class TestGradeTrialTimelineReconciliation:
+    """GradeTrial joins the transcript to the tool-call record before it scores.
+
+    The trial here is graded *only* on having called ``echo`` successfully, so the
+    verdict can come from nowhere but the timeline's records — a substrate that
+    dropped them would score 0.0 here rather than pass on some other component.
+    """
+
+    @staticmethod
+    def _task(simple_task_description: dict[str, Any]) -> dict[str, Any]:
+        task = dict(simple_task_description)
+        task["grading"] = {
+            "combine_method": "all",
+            "pass_threshold": 1.0,
+            "weights": {"transcript_rules": 1.0},
+            "transcript_rules": {"tool_expectations": {"required_tools": ["echo"]}},
+        }
+        return task
+
+    _CALLED_ECHO = {
+        "role": "assistant",
+        "content": "Echoing.",
+        "tool_calls": [{"id": "toolu_echo", "function": {"name": "echo", "arguments": '{"x": 1}'}}],
+    }
+
+    @pytest.fixture
+    def echoed_trial(self, request, runner_service, mock_grpc_context, simple_task_description):
+        """A registered trial that has called ``echo`` once, as ``toolu_echo``."""
+        trial_id = f"{request.node.name}:0"
+        registered = runner_service.RegisterTrial(
+            register_request(
+                trial_spec_json(self._task(simple_task_description), trial_id=trial_id),
+                trial_id=trial_id,
+            ),
+            mock_grpc_context,
+        )
+        assert registered.success is True, registered.error
+
+        async def echo(args):
+            return json.dumps(args)
+
+        runner_service.trials[trial_id].agent_tools["echo"] = echo
+        executed = runner_service.ExecuteTool(
+            execute_request(trial_id, "echo", json.dumps({"x": 1}), call_id="toolu_echo"),
+            mock_grpc_context,
+        )
+        assert executed.status == pb2.EXECUTION_STATUS_SUCCESS
+        return trial_id
+
+    @staticmethod
+    def _grade(runner_service, mock_grpc_context, trial_id: str, payload: str):
+        return runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=trial_id, llm_messages_json=payload),
+            mock_grpc_context,
+        )
+
+    def test_a_transcript_that_declares_the_call_grades_off_the_record(
+        self, runner_service, mock_grpc_context, echoed_trial
+    ):
+        response = self._grade(
+            runner_service,
+            mock_grpc_context,
+            echoed_trial,
+            json.dumps([{"role": "user", "content": "echo x"}, self._CALLED_ECHO]),
+        )
+
+        assert response.success is True, response.error
+        assert response.grade.components.transcript_rules == pytest.approx(1.0)
+        assert response.grade.binary_pass is True
+
+    def test_a_record_the_transcript_omits_fails_the_rpc_naming_the_call_id(
+        self, runner_service, mock_grpc_context, echoed_trial
+    ):
+        """The two views disagree about what the trial did, which is a harness bug.
+        Scoring around it is the silent degradation the record exists to remove."""
+        response = self._grade(
+            runner_service,
+            mock_grpc_context,
+            echoed_trial,
+            json.dumps(
+                [
+                    {"role": "user", "content": "echo x"},
+                    {"role": "assistant", "content": "Echoing."},
+                ]
+            ),
+        )
+
+        assert response.success is False
+        assert "TimelineInconsistencyError" in response.error
+        assert "toolu_echo" in response.error
+        assert not response.HasField("grade")
+
+    def test_a_policy_only_payload_is_a_hash_only_trial_not_a_message_view(
+        self, runner_service, mock_grpc_context, echoed_trial
+    ):
+        """A TlkMcpCore / Tau trial graded on state alone sends the agent policy and
+        no transcript. Reading that one harness message as a message view would make
+        every recorded call unlinkable and fail an entirely legitimate trial."""
+        response = self._grade(
+            runner_service,
+            mock_grpc_context,
+            echoed_trial,
+            json.dumps([{"role": "system", "content": "You are a test assistant."}]),
+        )
+
+        assert response.success is True, response.error
+        assert response.grade.components.transcript_rules == pytest.approx(1.0)
+        assert response.grade.binary_pass is True
+
+    def test_an_absent_payload_grades_off_the_records_alone(
+        self, runner_service, mock_grpc_context, echoed_trial
+    ):
+        response = self._grade(runner_service, mock_grpc_context, echoed_trial, "")
+
+        assert response.success is True, response.error
+        assert response.grade.components.transcript_rules == pytest.approx(1.0)
+        assert response.grade.binary_pass is True
+
+    @pytest.mark.parametrize(
+        ("payload", "expected"),
+        [
+            ("{not json", "JSONDecodeError"),
+            ('[{"role": "assistant"}]', "has no 'content'"),
+            (
+                '[{"role": "assistant", "content": "", "tool_calls": '
+                '[{"function": {"name": "echo", "arguments": "{}"}}]}]',
+                "carries no 'id'",
+            ),
+        ],
+    )
+    def test_an_undecodable_payload_fails_the_rpc(
+        self, runner_service, mock_grpc_context, echoed_trial, payload: str, expected: str
+    ):
+        """Grading an empty transcript because the real one would not parse reports a
+        verdict on evidence that was never read."""
+        response = self._grade(runner_service, mock_grpc_context, echoed_trial, payload)
+
+        assert response.success is False
+        assert expected in response.error
+        assert not response.HasField("grade")
+
+
 # NOTE: TestDBClientWithTestClient has been moved to tests/test_db_client.py
 # to avoid duplication. See TestDBServiceClientLifecycle for comprehensive
 # DB client tests against real json_db_service.

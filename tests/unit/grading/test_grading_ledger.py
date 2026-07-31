@@ -362,7 +362,7 @@ def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service,
     assert response.grade.binary_pass is False
     assert response.grade.score == pytest.approx(0.0)
     assert (
-        "transcript_rules.must_contain skipped: no transcript messages or tool history"
+        "transcript_rules.must_contain skipped: the trial's timeline carries no events"
         in response.grade.reasons
     )
 
