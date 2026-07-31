@@ -40,6 +40,18 @@ on:
         description: "what triggered it (e.g. slack); informational only"
         required: false
         default: manual
+      route:
+        description: >-
+          transport for EVERY openrouter/openai call this run makes -- the candidate's probes
+          AND the wire-probes' user simulator (openrouter/anthropic/claude-sonnet-4.6). "litellm"
+          needs the ARENA_AUTOMATION_LLM_PROXY_* secrets AND a gateway that serves both models;
+          without the secrets the run falls back to OpenRouter rather than failing.
+        required: false
+        default: openrouter
+        type: choice
+        options:
+          - openrouter
+          - litellm
 
 permissions:
   contents: write
@@ -187,7 +199,27 @@ jobs:
         # metacharacters can never be command-substituted.
         env:
           ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
-        run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+          ROUTE: ${{ inputs.route || 'openrouter' }}
+          PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
+          PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
+        # OPENROUTER_API_KEY is always written: it is what the non-gateway route uses, and the
+        # OpenRouter pricing/catalog HTTP calls need it on either route. LLM_PROXY_* is added
+        # only when the gateway route was requested AND configured -- writing a base URL without
+        # a key would silently forward the OpenRouter key to the gateway host (see
+        # docs/LLM_LAYER.md § proxy). Note this is job-wide, not per-role: it routes the user
+        # simulator too, so the gateway must serve BOTH models.
+        run: |
+          set -euo pipefail
+          printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+          if [ "$ROUTE" = "litellm" ]; then
+            if [ -n "$PROXY_BASE_URL" ] && [ -n "$PROXY_API_KEY" ]; then
+              printf '%s\n' "LLM_PROXY_BASE_URL=$PROXY_BASE_URL" >> .env
+              printf '%s\n' "LLM_PROXY_API_KEY=$PROXY_API_KEY" >> .env
+              echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
+            else
+              echo "::warning title=Gateway route unavailable::route=litellm was requested but ARENA_AUTOMATION_LLM_PROXY_BASE_URL / _API_KEY are not set; probing over OpenRouter instead"
+            fi
+          fi
 
       - name: Resolve candidate model_id slug
         id: slug

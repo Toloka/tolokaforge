@@ -112,6 +112,14 @@ Both the AGENT and the CANDIDATE run on the OpenRouter budget (`ARENA_AUTOMATION
 | `RESOLVE_WIRE_K` | 10 | reserved for the final wire-verification pass (not yet wired) |
 | `ARENA_AUTOMATION_AUTO_MERGE_ENABLED` | (unset = off) | When `true` (case-insensitive), squash-merge the integration PR on a clean success. Never merges a `test/*` de-integration branch; a data-scope needs-human path never merges; any merge error (branch protection, draft, perms, conflict) leaves the PR open. `false` / missing / error => nothing merges. |
 
+Two **secrets** gate the optional gateway route (both, or neither — a base URL without a key
+would forward the OpenRouter key to the gateway host):
+
+| Secret | Meaning |
+|---|---|
+| `ARENA_AUTOMATION_LLM_PROXY_BASE_URL` | Gateway base URL, including the path its OpenAI-compatible route lives under (commonly `/v1`). A secret rather than a variable because the hostname is usually internal and this repo is public. |
+| `ARENA_AUTOMATION_LLM_PROXY_API_KEY` | Gateway credential. |
+
 ## Labels (the state machine)
 
 `automation:integrate-model` (trigger) -> `automation:integrate-running` (observe) ->
@@ -126,6 +134,8 @@ Instead of opening the PR by hand, tag the bot in the automation channel:
 
 ```
 @delivery-tech-bot integrate <model>       e.g. "integrate Grok 4.5 and GPT 5.6"
+@delivery-tech-bot integrate <model> via litellm      route the probes through the gateway
+@delivery-tech-bot integrate <model> via openrouter   the default, stated explicitly
 ```
 
 A scheduled workflow (`.github/workflows/slack-integrate.yml`) polls the channel and, per
@@ -138,6 +148,53 @@ request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTI
   `integrate-model.yml` on it via `workflow_dispatch`, then replies in-thread with the PR link;
 - **ambiguous** (several slugs match) -> replies in-thread with the exact slugs to choose from;
 - **unknown** (no catalog match) -> replies that it could not find the model.
+
+### Integration route (OpenRouter vs the LLM gateway)
+
+**OpenRouter is the default and stays it.** The leaderboard is calibrated on the OpenRouter
+serving path, so a request that does not name a route must never change it.
+
+When the gateway secrets are configured (`ARENA_AUTOMATION_LLM_PROXY_BASE_URL` +
+`ARENA_AUTOMATION_LLM_PROXY_API_KEY`), the poller additionally reports, per resolved model,
+whether that model is **also** reachable through the gateway — see
+[`automation/gateway_catalog.py`](../tools/automation/src/automation/gateway_catalog.py). It is
+advisory on purpose: a gateway route may be backed by a *different upstream* for the same model
+name, which is a comparability decision for a human, not a transport detail the automaton should
+take on itself.
+
+The name looked up is the one that actually reaches the gateway: litellm strips exactly one
+provider prefix, so this run's `provider: openrouter` + `name: <slug>` config puts the **bare
+slug** on the wire. An `openrouter/<slug>` (or `openrouter/*`) catalog entry is therefore *not*
+evidence for this run — reaching a prefixed route needs the gateway-named config in
+[`docs/LLM_LAYER.md` § the model name must be the gateway's route name](LLM_LAYER.md#the-model-name-must-be-the-gateways-route-name),
+which this workflow does not use.
+
+The report distinguishes two strengths, because they are not equally trustworthy:
+
+| Reply says | Means |
+|---|---|
+| `also on the gateway as <route>` | an explicit catalog entry for the bare slug — someone configured this model |
+| `probably reachable … (matched a passthrough)` | only a wildcard over the slug's own namespace (`x-ai/*`, or a bare `*`) covers it; a live call is the real proof |
+| `not on the gateway` | the catalog was read and does not cover it |
+
+A requester can choose the route with `via litellm` / `via openrouter` (also `through the
+gateway`, `using the proxy`, `via OR`). The directive is stripped before model-phrase parsing,
+so `integrate Grok 4.5 via litellm` still resolves the model as `Grok 4.5`. The chosen route
+travels in `plan.json` and is passed to `integrate-model.yml` as its `route` input; on the
+gateway route that workflow adds `LLM_PROXY_*` to the candidate's `.env`. That is **job-wide,
+not per-role**: `proxy.py` routes every `openrouter`/`openai` call, so the wire probes' user
+simulator (`openrouter/anthropic/claude-sonnet-4.6`) is proxied too and the gateway must serve
+it as well — otherwise observe goes infra-dirty in the user simulator, not in the candidate
+(see [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway)).
+
+Everything here degrades to the previous behaviour when the gateway is not configured: the
+availability lookup returns "unknown", nothing is reported, and `route` stays `openrouter`.
+A `via litellm` request the poller cannot confirm (availability `unknown` or `not on the
+gateway`, for *any* model in the message) is **downgraded to `openrouter` with a warning in the
+reply** rather than dispatched — a run over a gateway that does not serve the model would fail
+every probe and read as a model failure. On a manual `workflow_dispatch` with `route: litellm`
+but no secrets, `integrate-model.yml` logs a workflow warning and probes over OpenRouter rather
+than failing the run.
 
 It runs entirely on the `github-actions[bot]` `GITHUB_TOKEN` (no PAT, no GitHub App): a bot
 token cannot be reached from outside GitHub, so the initiative comes from INSIDE (the workflow

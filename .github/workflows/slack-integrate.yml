@@ -58,6 +58,11 @@ jobs:
       # Optional comma-separated Slack user-id allowlist. Empty => anyone in the channel may
       # trigger (channel membership is the authz gate; GitHub only ever sees github-actions[bot]).
       ALLOWED_USERS: ${{ vars.ARENA_AUTOMATION_SLACK_ALLOWED_USERS }}
+      # LLM gateway, both optional. Present => the poller reports whether each resolved model
+      # is ALSO reachable there, and honours an explicit "via litellm" in the request. Absent
+      # => availability is "unknown" and every request integrates over OpenRouter as before.
+      LLM_PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
+      LLM_PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +78,8 @@ jobs:
 
       - name: Poll the channel and resolve requests
         # Reads history, resolves each @bot integrate request, posts one threaded reply per
-        # request, and writes plan.json = [{slug, requester, message_ts}] for the resolved models.
+        # request, and writes plan.json = [{slug, requester, message_ts, route, gateway}] for the
+        # resolved models. `route` is the requested integration route (default openrouter).
         run: |
           uv run automation slack-poll \
             --channel "$SLACK_CHANNEL" \
@@ -119,7 +125,8 @@ jobs:
             [ -n "$PR_NUM" ] || { echo "could not parse PR number from '$PR_URL'"; return 1; }
             echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"
             gh workflow run integrate-model.yml -R "$REPO" --ref "$BASE_REF" \
-              -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack || return 1
+              -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack \
+              -f route="$ROUTE" || return 1
             echo "dispatched integrate-model.yml for PR #${PR_NUM} (${SLUG})"
             # Confirm in the requester's own thread, WITH the PR link (the poll-step reply was
             # posted before the PR existed; the engine's progress thread is a separate root).
@@ -133,6 +140,9 @@ jobs:
             SLUG="$(printf '%s' "$row" | jq -r '.slug')"
             REQUESTER="$(printf '%s' "$row" | jq -r '.requester')"
             TS="$(printf '%s' "$row" | jq -r '.message_ts')"
+            # Default in the reader too, so a plan written by an older poller still dispatches.
+            ROUTE="$(printf '%s' "$row" | jq -r '.route // "openrouter"')"
+            case "$ROUTE" in openrouter|litellm) ;; *) ROUTE=openrouter ;; esac
             git checkout -q "$BASE_REF" 2>/dev/null || git checkout -q -B "$BASE_REF" "origin/${BASE_REF}"
             if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
               echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"
