@@ -2,10 +2,11 @@
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
+from tests.utils.timelines import build_timeline
 from tolokaforge.core.grading.rubric import build_submit_report_tool
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.core.grading.transcript import TranscriptChecker
-from tolokaforge.core.models import Message, MessageRole
 from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.canonical
@@ -66,32 +67,17 @@ class TestTranscriptCheckerCanon:
         """TranscriptChecker grades a passing transcript for minimal_calculation."""
         checker = TranscriptChecker()
 
-        messages = [
-            Message(
-                role=MessageRole.USER,
-                content="Please calculate 17 times 23 and save the answer to result.txt.",
-            ),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content="I'll calculate 17 × 23 = 391 and save it.",
-            ),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content="Done! The result 391 has been saved to result.txt.",
-            ),
-        ]
-
-        tool_log = [
-            {
-                "tool": "write_file",
-                "success": True,
-                "args": {"path": "result.txt", "content": "391"},
-            },
-        ]
+        timeline = build_timeline(
+            [
+                ("user", "Please calculate 17 times 23 and save the answer to result.txt."),
+                ("assistant", "I'll calculate 17 × 23 = 391 and save it."),
+                ("assistant", "Done! The result 391 has been saved to result.txt."),
+            ],
+            [recorded_call("write_file", arguments={"path": "result.txt", "content": "391"})],
+        )
 
         score, reasons = checker.grade(
-            messages=messages,
-            tool_log=tool_log,
+            timeline=timeline,
             must_contain=["391"],
             disallow_regex=[],
             max_turns=10,
@@ -106,22 +92,15 @@ class TestTranscriptCheckerCanon:
         """TranscriptChecker grades a failing transcript — missing required tool."""
         checker = TranscriptChecker()
 
-        messages = [
-            Message(
-                role=MessageRole.USER,
-                content="Please calculate 17 times 23 and save the answer to result.txt.",
-            ),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content="The answer is 391.",
-            ),
-        ]
-
-        tool_log = []  # No tool calls
+        timeline = build_timeline(
+            [
+                ("user", "Please calculate 17 times 23 and save the answer to result.txt."),
+                ("assistant", "The answer is 391."),
+            ],
+        )  # No tool calls
 
         score, reasons = checker.grade(
-            messages=messages,
-            tool_log=tool_log,
+            timeline=timeline,
             must_contain=["391"],
             disallow_regex=[],
             max_turns=10,

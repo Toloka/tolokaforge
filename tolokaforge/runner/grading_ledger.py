@@ -44,13 +44,16 @@ HASH_DISABLED_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="hash grading not enabled"
 )
 NO_TRANSCRIPT_INPUT_SKIP = KeyAccountingRecord(
-    outcome=KeyAccounting.SKIPPED, detail="no transcript messages or tool history"
+    outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="no transcript messages"
 )
 CORE_ONLY_HASH_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="core-only — no runner path reads it (#693)"
+)
+CUSTOM_CHECKS_DISABLED_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="custom checks not enabled"
 )
 
 
@@ -68,6 +71,7 @@ COMMUNICATE_INFO_KEY = _manifest_key("transcript_rules.communicate_info")
 JSONPATHS_KEY = _manifest_key("state_checks.jsonpaths")
 DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
 LLM_JUDGE_KEY = _manifest_key("llm_judge")
+CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
 
 # Every model the runner's GradingConfig reaches, with where its fields sit in
 # ``GradingConfig.model_dump()``.
@@ -160,8 +164,8 @@ def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, Key
 def transcript_rules_author_keys() -> tuple[str, ...]:
     """Every ledger key under ``transcript_rules``, for the blanket degenerate skip.
 
-    A trial with neither messages nor tool history runs no per-field sub-check, so
-    the whole subtree is skipped as a unit. A site that did run records the per-key
+    A trial whose timeline carries no events runs no per-field sub-check, so the
+    whole subtree is skipped as a unit. A site that did run records the per-key
     constant instead.
     """
     return tuple(
@@ -196,6 +200,7 @@ def accountable_author_keys() -> frozenset[str]:
             JSONPATHS_KEY,
             DB_PROBES_KEY,
             LLM_JUDGE_KEY,
+            CUSTOM_CHECKS_KEY,
         }
     )
 

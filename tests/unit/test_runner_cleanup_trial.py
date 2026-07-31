@@ -17,6 +17,7 @@ from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.trial import EnvEndpoints, TrialSpec
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.models import TaskDescription
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION
 
 
 @pytest.fixture
@@ -61,6 +62,7 @@ def _register(runner_service, mock_grpc_context, trial_id: str, td: dict[str, An
         trial_id=trial_id,
         trial_spec_json=spec.model_dump_json(),
         default_tool_timeout_s=30.0,
+        engine_protocol_version=ENGINE_PROTOCOL_VERSION,
     )
     return runner_service.RegisterTrial(request, mock_grpc_context)
 

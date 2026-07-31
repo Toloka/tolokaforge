@@ -179,6 +179,7 @@ def _register_and_grade(
                         {"op": "replace", "path": "/customers/0/balance", "value": 700},
                     ]
                 },
+                call_id="call_reconcile_balance",
             )
             assert tool_result.success is True, tool_result.error
         result = runner_client.grade_trial(

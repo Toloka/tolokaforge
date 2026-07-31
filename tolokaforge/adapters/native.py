@@ -10,6 +10,7 @@ import yaml
 
 from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
+from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -796,10 +797,8 @@ class NativeAdapter(BaseAdapter):
         # Custom checks packs (with or without an MCP server) also need the
         # bundle so the runner can resolve ``custom_checks.file`` and every
         # ``relative_imports`` path under the trial's ``artifacts_dir``.
-        custom_checks_enabled = bool(custom_checks_data and custom_checks_data.get("enabled"))
-        tool_artifacts = (
-            self._bundle_task_artifacts(task_dir) if mcp_server_ref or custom_checks_enabled else {}
-        )
+        needs_bundle = mcp_server_ref or custom_checks_enabled(custom_checks_data)
+        tool_artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
 
         # mcp_server.py loads its initial state from ``initial_state.json``
         # next to itself (see ``create_server`` in tools_interface.py). For the

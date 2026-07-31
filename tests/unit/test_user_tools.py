@@ -121,7 +121,7 @@ class TestUserToolExecutor:
 
         executor = UserToolExecutor(env_state)
         result = executor.execute(
-            "user_press_button", {"device_id": "modem", "button_name": "power"}
+            "user_press_button", {"device_id": "modem", "button_name": "power"}, call_id="call_0"
         )
 
         assert result.success is True
@@ -132,7 +132,7 @@ class TestUserToolExecutor:
         env_state = mock_env_state
         executor = UserToolExecutor(env_state)
 
-        result = executor.execute("nonexistent_tool", {"device_id": "modem"})
+        result = executor.execute("nonexistent_tool", {"device_id": "modem"}, call_id="call_0")
 
         assert result.success is False
         assert "not found" in result.error

@@ -27,15 +27,11 @@ def simple_dockerfile(tmp_path):
     context_dir.mkdir()
 
     dockerfile = context_dir / "Dockerfile"
-    dockerfile.write_text(
-        textwrap.dedent(
-            """\
+    dockerfile.write_text(textwrap.dedent("""\
         FROM python:3.12-alpine
         RUN echo "healthy" > /health.txt
         CMD ["python", "-m", "http.server", "8080"]
-        """
-        )
-    )
+        """))
 
     return context_dir, dockerfile
 
@@ -227,9 +223,7 @@ class TestDockerStack:
         dockerfile = context_dir / "Dockerfile"
         # Write the server script as a separate file to COPY into the image
         server_py = context_dir / "server.py"
-        server_py.write_text(
-            textwrap.dedent(
-                """\
+        server_py.write_text(textwrap.dedent("""\
             from http.server import HTTPServer, BaseHTTPRequestHandler
             class H(BaseHTTPRequestHandler):
                 def do_GET(self):
@@ -238,18 +232,12 @@ class TestDockerStack:
                     self.wfile.write(b"ok")
                 def log_message(self, *a): pass
             HTTPServer(('', 8080), H).serve_forever()
-            """
-            )
-        )
-        dockerfile.write_text(
-            textwrap.dedent(
-                """\
+            """))
+        dockerfile.write_text(textwrap.dedent("""\
             FROM python:3.12-alpine
             COPY server.py /server.py
             CMD ["python", "/server.py"]
-            """
-            )
-        )
+            """))
 
         _prefix = f"test-health-{uuid.uuid4().hex[:6]}"
         # Use fixed host port so health probe URL can reference it directly

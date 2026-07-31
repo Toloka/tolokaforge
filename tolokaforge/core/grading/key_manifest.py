@@ -133,6 +133,19 @@ _TRANSCRIPT_AGGREGATION_REASON = (
     "declared entry, so the two component scores differ in magnitude"
 )
 
+_TRANSCRIPT_PHRASE_REASON = (
+    "two independent divergences, and the second one flips the verdict rather than "
+    "scaling it. Aggregation: core averages four fixed buckets while the runner scores "
+    "one sub-check per declared entry, so the magnitudes differ. Evidence set: core "
+    "searches user turns, assistant turns and tool results, while the runner searches "
+    "assistant turns alone — so a phrase that appears only in a tool result is FOUND "
+    "core-side and MISSING runner-side for the same trial. Measured on a records-present "
+    "timeline: must_contain(['refunds allowed']) against a tool result carrying it returns "
+    "1.0 on core and 0.0 on the runner. Both predate #676; the runner's narrower set is "
+    "pinned by test_must_contain_only_searches_assistant_turns, so it is deliberate rather "
+    "than an oversight, and #685 must reconcile the evidence sets and not only the averaging"
+)
+
 GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="combine.method",
@@ -303,7 +316,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.must_contain",
         core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
+        reason=_TRANSCRIPT_PHRASE_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -315,7 +328,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.disallow_regex",
         core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
+        reason=_TRANSCRIPT_PHRASE_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -393,16 +406,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="custom_checks",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="GradingConfig.custom_checks",
-        runner_field=None,
+        runner_field="GradingConfig.custom_checks",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine._run_custom_checks",
-        reason=(
-            "the runner reports custom_checks=-1.0; running author-supplied Python "
-            "inside the runner is a sandboxing project, out of scope"
-        ),
-        tracking_issue=684,
+        runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._grade_custom_checks",
     ),
     GradingKey(
         author_key="grading_method",

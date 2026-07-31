@@ -23,7 +23,7 @@ class TestToolAllowlisting:
         executor = ToolExecutor(registry)
 
         # Try to execute unregistered tool
-        result = executor.execute(tool_name="nonexistent_tool", arguments={})
+        result = executor.execute(tool_name="nonexistent_tool", arguments={}, call_id="c0")
 
         assert not result.success
         assert result.error and "not found" in result.error.lower()
@@ -59,16 +59,18 @@ class TestToolAllowlisting:
         executor = ToolExecutor(registry)
 
         # Missing required parameter should fail
-        result = executor.execute("test_tool", {})
+        result = executor.execute("test_tool", {}, call_id="c0")
         assert not result.success
         assert result.error and "Invalid arguments" in result.error
 
         # Extra parameter should fail
-        result = executor.execute("test_tool", {"required_param": "value", "extra_param": "value"})
+        result = executor.execute(
+            "test_tool", {"required_param": "value", "extra_param": "value"}, call_id="c1"
+        )
         assert not result.success
 
         # Valid call should succeed
-        result = executor.execute("test_tool", {"required_param": "value"})
+        result = executor.execute("test_tool", {"required_param": "value"}, call_id="c2")
         assert result.success
 
     def test_tool_rate_limiting(self):
@@ -109,11 +111,11 @@ class TestToolAllowlisting:
 
         # First 3 calls should succeed
         for i in range(3):
-            result = executor.execute("rate_limited", {})
+            result = executor.execute("rate_limited", {}, call_id=f"call_{i}")
             assert result.success, f"Call {i + 1} failed"
 
         # 4th call should fail (rate limit exceeded)
-        result = executor.execute("rate_limited", {})
+        result = executor.execute("rate_limited", {}, call_id="call_3")
         assert not result.success
         assert result.error and "rate limit" in result.error.lower()
 

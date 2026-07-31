@@ -16,6 +16,7 @@ import yaml
 from tolokaforge.core.models import (
     ActorSpec,
     InitialStateConfig,
+    Message,
     Metrics,
     ModelConfig,
     TaskConfig,
@@ -113,6 +114,7 @@ def make_trajectory(
     status: TrialStatus = TrialStatus.COMPLETED,
     termination_reason: TerminationReason | None = None,
     metrics: Metrics | None = None,
+    messages: list[Message] | None = None,
 ) -> Trajectory:
     now = datetime.now(UTC)
     return Trajectory(
@@ -122,6 +124,6 @@ def make_trajectory(
         end_ts=now,
         status=status,
         termination_reason=termination_reason,
-        messages=[],
+        messages=messages or [],
         metrics=metrics or Metrics(),
     )

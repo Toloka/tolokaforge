@@ -3,6 +3,7 @@
 import pytest
 import yaml
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
@@ -10,10 +11,11 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     Metrics,
+    ToolExecutionStatus,
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.output_writer import OutputWriter
+from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION, OutputWriter
 
 pytestmark = pytest.mark.unit
 
@@ -37,9 +39,14 @@ def sample_trajectory():
         messages=messages,
         metrics=Metrics(latency_total_s=300.0, turns=2, tool_calls=3),
         tool_log=[
-            {"tool": "get_user", "success": True},
-            {"tool": "create_order", "success": True},
-            {"tool": "create_order", "success": False},
+            recorded_call("get_user", sequence=0, latency_seconds=0.25),
+            recorded_call("create_order", sequence=1, latency_seconds=1.5),
+            recorded_call(
+                "create_order",
+                sequence=2,
+                status=ToolExecutionStatus.ERROR,
+                latency_seconds=0.75,
+            ),
         ],
     )
 
@@ -91,7 +98,7 @@ def test_write_metrics(tmp_path, sample_trajectory):
     assert data["latency_total_s"] == 300.0
     assert data["turns"] == 2
     assert data["tool_calls"] == 3
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == TRIAL_BUNDLE_SCHEMA_VERSION
 
     assert "tool_usage" in data
     tool_usage = data["tool_usage"]
@@ -101,8 +108,8 @@ def test_write_metrics(tmp_path, sample_trajectory):
     assert create_order_stats["call_count"] == 2
     assert create_order_stats["success_count"] == 1
     assert create_order_stats["error_count"] == 1
-    # total_duration_s is summed from log entries' duration_s; tests have 0 by default.
-    assert create_order_stats["total_duration_s"] == 0.0
+    # Summed from each recorded call's measured wall time, failures included.
+    assert create_order_stats["total_duration_s"] == pytest.approx(2.25)
 
 
 def test_write_grade(tmp_path, sample_grade):

@@ -175,7 +175,7 @@ class TestInMemoryBackendSemantics:
         "method_call",
         [
             lambda b: b.register_trial("t:0", "{}"),
-            lambda b: b.execute_tool("t:0", "noop", {}),
+            lambda b: b.execute_tool("t:0", "noop", {}, call_id="c0"),
             lambda b: b.grade_trial("t:0"),
             lambda b: b.get_state("t:0"),
             lambda b: b.reset_trial("t:0"),

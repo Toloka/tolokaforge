@@ -1,10 +1,10 @@
 """Stuck detection heuristics"""
 
 from collections import Counter
-from typing import Any
+from collections.abc import Sequence
 
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.models import Message, MessageRole
+from tolokaforge.core.models import Message, MessageRole, RecordedToolCall
 
 
 class StuckDetector:
@@ -19,20 +19,20 @@ class StuckDetector:
         self.max_idle_turns = max_idle_turns
         self.logger = get_logger("stuck_detector")
 
-    def is_stuck(self, messages: list[Message], tool_logs: list[dict[str, Any]]) -> bool:
+    def is_stuck(self, messages: list[Message], tool_calls: Sequence[RecordedToolCall]) -> bool:
         """
         Check if agent appears to be stuck
 
         Args:
             messages: Conversation history
-            tool_logs: Tool execution logs
+            tool_calls: The agent's own recorded tool calls, in trial order
 
         Returns:
             True if agent appears stuck
         """
         # Check repeated tool calls
-        if self._has_repeated_tool_calls(tool_logs):
-            self.logger.debug("Stuck detected - repeated tool calls", logs_count=len(tool_logs))
+        if self._has_repeated_tool_calls(tool_calls):
+            self.logger.debug("Stuck detected - repeated tool calls", logs_count=len(tool_calls))
             return True
 
         # Check idle turns (no tool calls for extended period)
@@ -47,18 +47,18 @@ class StuckDetector:
 
         return False
 
-    def _has_repeated_tool_calls(self, tool_logs: list[dict[str, Any]]) -> bool:
+    def _has_repeated_tool_calls(self, tool_calls: Sequence[RecordedToolCall]) -> bool:
         """Check for repeated identical tool calls"""
-        if len(tool_logs) < self.max_repeated_tool_calls:
+        if len(tool_calls) < self.max_repeated_tool_calls:
             return False
 
         # Look at last N tool calls
-        recent_calls = tool_logs[-self.max_repeated_tool_calls :]
+        recent_calls = tool_calls[-self.max_repeated_tool_calls :]
 
         # Create signature for each call (tool + args)
         signatures = []
-        for log in recent_calls:
-            sig = f"{log.get('tool')}:{str(log.get('arguments', {}))}"
+        for call in recent_calls:
+            sig = f"{call.tool_name}:{str(call.arguments)}"
             signatures.append(sig)
 
         # Check if same signature appears too many times

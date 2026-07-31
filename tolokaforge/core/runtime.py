@@ -210,12 +210,16 @@ class RuntimeBackend(Protocol):
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         """Execute a tool call registered for ``trial_id``.
 
         ``executor`` names the caller environment (``"agent"`` or
         ``"user"``); the runtime routes the call to the matching tool
-        registry inside the runner service.
+        registry inside the runner service. ``call_id`` is the provider's
+        tool-call id, which the runner records so the call can be joined to
+        the tool result it produced.
         """
         ...
 
@@ -224,13 +228,17 @@ class RuntimeBackend(Protocol):
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         """Compute the grade for a completed trial.
 
         ``llm_messages_json`` is the transcript for transcript-rule /
         rubric-judge grading (``None`` when neither component is
         configured). ``grading_components`` narrows the components to
-        compute (``None`` / empty = all).
+        compute (``None`` / empty = all). ``termination_reason`` is a
+        :class:`~tolokaforge.core.models.TerminationReason` value naming how the
+        trial ended, so grading can tell a deliberate finish from an exhausted
+        budget; ``None`` when the caller reports none.
 
         Returns
         ``{"success": bool, "error": str | None, "grade": dict | None}``;
@@ -558,6 +566,8 @@ class InMemoryRuntimeBackend:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> Any:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.execute_tool is not implemented. "
@@ -570,6 +580,7 @@ class InMemoryRuntimeBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         raise NotImplementedError(
             "InMemoryRuntimeBackend.grade_trial is not implemented. "

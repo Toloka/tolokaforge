@@ -64,9 +64,20 @@ Multiple timeout layers prevent runaway execution:
 
 `orchestrator.max_budget_usd` sets a hard spend limit. The orchestrator tracks cumulative estimated cost and stops leasing new work when the cap is reached.
 
-### Log Redaction
+### Tool Call Arguments
 
-Tool call arguments are logged with automatic redaction of keys containing `password`, `token`, `secret`, or `api_key`. See `ToolExecutor._redact_sensitive()` in `tolokaforge/tools/registry.py`.
+Tool call arguments are recorded verbatim on `RecordedToolCall.arguments`, on both
+grading substrates. The recorded tool calls are the grader's input: transcript
+rules match declared actions against recorded arguments, so rewriting an argument
+value there changes a grading verdict. A trial whose agent passed a
+`token`-named argument would fail an argument match it should have passed —
+and would fail it on one substrate only, since the runner has never rewritten
+anything.
+
+Redaction belongs at artifact-write time, where the concern actually is —
+discretion protects a written artifact, and must not corrupt what the grader
+reads. That layering is tracked in #694; until it lands, treat a recorded run's
+tool-call arguments as carrying whatever the agent passed.
 
 ## Secret Management
 
@@ -96,7 +107,6 @@ The agent never sees grading criteria or expected outputs:
 | Task-declared services reaching external internet | `network_policy: no_internet` (the default) attaches them to an injected `internal: true` network via `enforce_network_policy` (Case B/C) |
 | Untrusted sibling service reaching first-party sibling services (db-service, runner) via the shared injected network | `network_access: restricted` on the untrusted service excludes it from the injected shared internal network; the compose file's task-declared networks scope which siblings it can reach. |
 | Runner privilege escalation (Docker mode) | `cap_drop: ALL`, `cap_add: NET_BIND_SERVICE`, `no-new-privileges` |
-| Sensitive data in logs | Automatic key redaction in tool call logging |
 
 ### Not Addressed
 
@@ -108,6 +118,7 @@ The agent never sees grading criteria or expected outputs:
 | Supply chain attacks in task code | Task authors are assumed trusted |
 | Side-channel attacks | Not mitigated |
 | Agent exfiltrating data via LLM output | The orchestrator relays model output; no content filtering |
+| Sensitive data in recorded tool-call arguments | Recorded verbatim on both substrates — see § Tool Call Arguments for why the grader's input must not be rewritten. Redaction belongs at artifact-write time; tracked in #694 |
 
 
 ## Testing

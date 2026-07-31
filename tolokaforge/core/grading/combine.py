@@ -7,7 +7,7 @@ from typing import Any
 from tolokaforge.core.evaluators.action_evaluator import ActionEvaluator
 from tolokaforge.core.evaluators.communicate_evaluator import CommunicateEvaluator
 from tolokaforge.core.grading.check_runner import CheckRunner
-from tolokaforge.core.grading.checks_helpers import build_check_context
+from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
     CustomChecksConfig,
@@ -22,6 +22,7 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.state_checks import StateChecker
+from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import (
     CustomCheckDetail,
@@ -83,6 +84,10 @@ class GradingEngine:
         reasons_parts = []
         state_diff_result = None  # Will store diff if state check fails
         custom_checks_details = None  # Will store detailed custom check results
+
+        timeline = build_trial_timeline(
+            trajectory.messages, trajectory.tool_log, trajectory.termination_reason
+        )
 
         # State checks
         if self.config.state_checks:
@@ -185,8 +190,7 @@ class GradingEngine:
 
             # Use legacy transcript checker for other rules
             legacy_score, transcript_reasons = self.transcript_checker.grade(
-                messages=trajectory.messages,
-                tool_log=trajectory.tool_log,
+                timeline=timeline,
                 must_contain=self.config.transcript_rules.must_contain,
                 disallow_regex=self.config.transcript_rules.disallow_regex,
                 max_turns=self.config.transcript_rules.max_turns,
@@ -213,17 +217,15 @@ class GradingEngine:
         # This engine intentionally leaves ``components.llm_judge`` unset.
 
         # Custom Python Checks
-        if self.config.custom_checks and self.task_dir:
-            custom_config = self.config.custom_checks
-            if custom_config.get("enabled", False):
-                custom_score, custom_reasons, custom_checks_details = self._run_custom_checks(
-                    trajectory=trajectory,
-                    final_env_state=final_env_state,
-                    custom_config=custom_config,
-                )
-                components.custom_checks = custom_score
-                if custom_reasons:
-                    reasons_parts.append(f"Custom: {custom_reasons}")
+        if custom_checks_enabled(self.config.custom_checks) and self.task_dir:
+            custom_score, custom_reasons, custom_checks_details = self._run_custom_checks(
+                trajectory=trajectory,
+                final_env_state=final_env_state,
+                custom_config=self.config.custom_checks,
+            )
+            components.custom_checks = custom_score
+            if custom_reasons:
+                reasons_parts.append(f"Custom: {custom_reasons}")
 
         # Combine scores with weights
         final_score = 0.0

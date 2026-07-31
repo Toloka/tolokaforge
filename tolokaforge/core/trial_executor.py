@@ -30,8 +30,6 @@ from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 import yaml
 
 from tolokaforge.core.models import (
-    Grade,
-    GradeComponents,
     Metrics,
     TaskConfig,
     TerminationReason,
@@ -332,10 +330,12 @@ def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError)
     never came up.
 
     Materialises a :class:`Trajectory` with
-    :attr:`TerminationReason.PROVISION_ERROR` and a fail-:class:`Grade`
-    that carries the exception's ``reason`` so downstream analytics
-    (failure attribution, dashboards) can distinguish substrate failures
-    from tool / grader / model-reasoning failures. Provisioning failures
+    :attr:`TerminationReason.PROVISION_ERROR` and **no grade**: the trial body
+    never ran, so there is no performance to score, and a ``0.0`` would count as
+    a task the model failed. The exception's stage and reason reach the durable
+    record through ``metrics.yaml`` (see :meth:`_write_provision_failure_bundle`),
+    which is what failure attribution and dashboards read to tell substrate
+    failures from tool / grader / model-reasoning failures. Provisioning failures
     are deterministic, so
     :meth:`~tolokaforge.core.orchestrator.Orchestrator._is_retryable_trajectory`
     classifies ``PROVISION_ERROR`` as non-retryable and fails fast rather
@@ -352,12 +352,6 @@ def _synthesize_provision_failure_result(spec: TrialSpec, error: ProvisionError)
         termination_reason=TerminationReason.PROVISION_ERROR,
         messages=[],
         metrics=Metrics(),
-        grade=Grade(
-            binary_pass=False,
-            score=0.0,
-            components=GradeComponents(state_checks=0.0),
-            reasons=f"Provisioning failed at {error.stage}: {error.reason}",
-        ),
     )
     return TrialResult.from_trajectory(
         trial_id=spec.trial_id, trajectory=trajectory, worker_id=spec.worker_id

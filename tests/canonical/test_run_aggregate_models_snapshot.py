@@ -28,8 +28,11 @@ from datetime import UTC, datetime
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.failure_attribution import (
+    TrialOutcomeClass,
     attribute_failure,
     summarize_failure_attributions,
 )
@@ -41,12 +44,15 @@ from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     Metrics,
+    RecordedToolCall,
     TerminationReason,
+    ToolExecutionStatus,
     Trajectory,
     TrialStatus,
     Usage,
 )
 from tolokaforge.core.output.aggregate_models import (
+    AGGREGATE_SCHEMA_VERSION,
     AggregateMetrics,
     CapturedServiceLogsRollup,
     FailureAttribution,
@@ -75,7 +81,7 @@ def _make_trajectory(
     cost_usd: float | None = 0.021,
     status: TrialStatus = TrialStatus.COMPLETED,
     termination_reason: TerminationReason | None = None,
-    tool_log: list[dict[str, Any]] | None = None,
+    tool_log: list[RecordedToolCall] | None = None,
 ) -> Trajectory:
     """Build a Trajectory populated on every field the aggregate path reads.
 
@@ -137,7 +143,11 @@ def _make_tool_execution_failure() -> Trajectory:
         status=TrialStatus.FAILED,
         termination_reason=None,
         tool_log=[
-            {"tool": "run_python", "success": False, "error": "SyntaxError: unexpected EOF"},
+            recorded_call(
+                "run_python",
+                status=ToolExecutionStatus.ERROR,
+                output="SyntaxError: unexpected EOF",
+            ),
         ],
     )
 
@@ -195,6 +205,69 @@ def test_per_task_metrics_round_trip_from_real_metric_calc() -> None:
     _round_trip(PerTaskMetrics, payload)
 
 
+def test_per_task_metrics_round_trip_with_every_outcome_class() -> None:
+    """``infrastructure_aborts`` keys and ``outcomes_by_reason`` classes are typed as
+    the enums that produce them, so the round trip has to carry a non-empty abort
+    count and a row of each class — an all-``measured`` payload would exercise
+    neither vocabulary."""
+    trajectories = [
+        _make_trajectory(trial_index=0, termination_reason=TerminationReason.AGENT_DONE),
+        _make_trajectory(
+            trial_index=1,
+            binary_pass=False,
+            score=0.0,
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.ERROR,
+        ),
+        _make_trajectory(
+            trial_index=2,
+            binary_pass=False,
+            score=0.0,
+            status=TrialStatus.ERROR,
+            termination_reason=TerminationReason.RATE_LIMIT,
+        ),
+    ]
+    payload = calculate_task_metrics(trajectories)
+    payload = _augment_task_metrics(payload, task_id="task-outcomes")
+
+    assert payload["infrastructure_aborts"]["rate_limit"] == 1
+    assert {row["class"] for row in payload["outcomes_by_reason"].values()} == {
+        "measured",
+        "harness_error",
+        "infrastructure_abort",
+    }
+    _round_trip(PerTaskMetrics, payload)
+    _round_trip(AggregateMetrics, calculate_aggregate_metrics([payload], weighted=True))
+
+    # The round trip above holds with both fields typed ``str``, so it locks the
+    # wire shape and not the vocabulary. These do the typing's own work.
+    model = PerTaskMetrics.model_validate(payload)
+    assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 3
+    assert [type(row.outcome_class) for row in model.outcomes_by_reason.values()] == [
+        TrialOutcomeClass
+    ] * 3
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    [
+        ("infrastructure_aborts", {"not_a_reason": 1}),
+        ("outcomes_by_reason", {"agent_done": {"class": "not_a_class", "count": 1}}),
+    ],
+)
+def test_an_outcome_vocabulary_the_classifier_cannot_produce_is_rejected(
+    field: str, value: dict[str, Any]
+) -> None:
+    """A reason or class outside the enum is a writer or hand-edit defect, and it
+    would otherwise reach a consumer that branches on the value."""
+    payload = _augment_task_metrics(
+        calculate_task_metrics([_make_trajectory(trial_index=0)]), task_id="task-vocab"
+    )
+
+    with pytest.raises(ValidationError):
+        PerTaskMetrics.model_validate({**payload, field: value})
+
+
 def test_per_task_metrics_round_trip_with_none_cost() -> None:
     """When no trial reported a cost, ``total_cost_usd`` / ``avg_cost_usd``
     are ``None``. The model must preserve ``None`` (not collapse to 0)."""
@@ -250,7 +323,7 @@ def test_run_aggregate_round_trip_with_schema_version() -> None:
     """``RunAggregate`` = ``AggregateMetrics`` + the ``schema_version``
     envelope the orchestrator stamps before writing ``aggregate.json``."""
     payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
-    payload["schema_version"] = 1
+    payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
 
     _round_trip(RunAggregate, payload)
 
@@ -317,7 +390,7 @@ def test_run_aggregate_round_trip_with_captured_service_logs() -> None:
     trial-body entry (``capture_reason`` ``None``) — round-trips
     byte-identically."""
     payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
-    payload["schema_version"] = 1
+    payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
     payload["captured_service_logs"] = _captured_service_logs_payload()
 
     _round_trip(RunAggregate, payload)
@@ -329,7 +402,7 @@ def test_run_aggregate_round_trip_omitting_captured_service_logs() -> None:
     pre-feature ``aggregate.json`` (no key) is distinguishable from a
     clean-run zero roll-up (key present, ``captures: 0``)."""
     payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
-    payload["schema_version"] = 1
+    payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
     assert "captured_service_logs" not in payload
 
     model = RunAggregate.model_validate(payload)
@@ -495,15 +568,16 @@ def test_schema_version_survives_exclude_unset() -> None:
         "schema_version must survive exclude_unset=True on RunAggregate — "
         f"got dumped keys: {sorted(dumped.keys())}"
     )
-    assert (
-        dumped["schema_version"] == 1
-    ), f"schema_version default drifted; expected 1, got {dumped['schema_version']!r}"
+    assert dumped["schema_version"] == AGGREGATE_SCHEMA_VERSION, (
+        f"schema_version default drifted; expected {AGGREGATE_SCHEMA_VERSION}, "
+        f"got {dumped['schema_version']!r}"
+    )
 
     # And it survives a JSON round-trip too.
     reloaded = RunAggregate.model_validate_json(
         model.model_dump_json(by_alias=True, exclude_unset=True)
     )
-    assert reloaded.schema_version == 1
+    assert reloaded.schema_version == AGGREGATE_SCHEMA_VERSION
 
 
 def test_int_valued_numeric_fields_preserve_int_type() -> None:
@@ -531,6 +605,8 @@ def test_int_valued_numeric_fields_preserve_int_type() -> None:
         "tags": [],
         "expected_failure_modes": [],
         "total_trials": 1,
+        "measured_trials": 1,
+        "scored_trials": 1,
         "successful_trials": 1,
         "success_rate": 1.0,  # rate — stays float
         "avg_score": 1.0,  # rate — stays float
@@ -602,6 +678,8 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
     agg_payload: dict[str, Any] = {
         "total_tasks": 2,
         "total_trials": 5,
+        "measured_trials": 5,
+        "scored_trials": 5,
         "success_rate_micro": 1.0,  # rate — stays float
         "avg_score_micro": 1.0,  # rate — stays float
         "avg_latency_s": 5,  # int — widened
@@ -635,10 +713,8 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
         "latency_p50_s_macro",
     ):
         value = getattr(model, field)
-        assert isinstance(value, int) and not isinstance(value, bool), (
-            f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. "
-            f"Got {value!r}."
-        )
+        stayed_int = isinstance(value, int) and not isinstance(value, bool)
+        assert stayed_int, f"AggregateMetrics.{field} coerced {value!r} to {type(value).__name__}"
 
     # And rate fields DID stay narrow float — a regression that widens them
     # would be caught by mypy at consumer sites, but a runtime guard here

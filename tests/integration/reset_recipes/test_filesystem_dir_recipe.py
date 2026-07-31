@@ -22,8 +22,7 @@ from tolokaforge.runtime.reset_recipes import RECIPE_REGISTRY
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
-COMPOSE = textwrap.dedent(
-    """
+COMPOSE = textwrap.dedent("""
     services:
       workspace:
         image: "alpine:3.20"
@@ -33,8 +32,7 @@ COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
 def _cat(compose: DockerCompose, path: str) -> str:

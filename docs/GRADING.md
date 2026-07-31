@@ -79,16 +79,23 @@ Three properties keep the ledger from rejecting configs that grade correctly:
 - **A key counts as populated only when it is non-empty.** An explicitly written
   `disallowed_tools: []` is indistinguishable from unset, and either way has
   nothing to evaluate.
-- **Every skip is recorded, not silent.** `transcript_rules` is skipped when a
-  trial has neither messages nor tool history, `llm_judge` when it has no
-  messages, and the `state_checks.hash` members the runner's hash evaluator reads
-  when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
+- **Every skip is recorded, not silent.** `transcript_rules` is skipped when the
+  trial's timeline carries no events, `llm_judge` when it has no
+  messages, `custom_checks` when the pack wrote the block but left
+  `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
+  reads when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
   standing skip: it is declared `CORE_ONLY` because no runner path reads it (#693),
   so it is recorded as such whether or not hash grading ran — folding it into the
   family's outcome would report a silently dead key as scored. Each skip records
   its reason, which appears in `grade.reasons` whenever the skipped key was
   populated: a degenerate trial scores badly rather than erroring the RPC, but the
   reason it scored badly is visible.
+
+  "No events" is narrower than "no messages": `role: system` messages are harness
+  annotations and never become events (N3), so a trial whose only messages are a
+  termination notice and which made no tool call is skipped despite having
+  messages. That is the point — grading a rule against harness text would let a
+  task score itself on strings the harness wrote.
 
 `grading_method: test_execution` returns before the component phase, so the ledger
 does not apply to that dispatch mode — recorded as the `grading_method` entry's
@@ -101,7 +108,6 @@ declared `reason`.
 | `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #692 |
 | `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
 | `state_checks.hash.weight` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | core blends the hash score against the jsonpath score by this weight; the runner multiplies the two and has no weight concept | #686 |
-| `custom_checks` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | the runner reports `custom_checks=-1.0`; running author-supplied Python inside the runner is a sandboxing project | #684 |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
 | `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
@@ -125,6 +131,317 @@ are structurally outside the enumeration — the manifest records nested dict ke
 as **declared data**, verified only to live inside a dict-typed field. And a green
 parity suite proves each key *discriminates*, not that its discrimination is
 *correct*.
+
+It also cannot see a key the two substrates read from **different evidence**. The
+manifest freezes config keys and field paths, not evaluation sources, so
+`transcript_rules.required_actions` passes every lock while core evaluates it from
+`trajectory.messages` and the runner evaluates it from the tool-call record — see
+[Both substrates consume it](#both-substrates-consume-it).
+
+### The recorded tool calls both substrates read
+
+Both substrates record every tool call as a `RecordedToolCall`
+(`tolokaforge/runner/models.py`, re-exported from `tolokaforge.core.models`), so a
+check over tool calls sees the same fields whichever substrate grades it:
+
+| Field | Meaning |
+| --- | --- |
+| `call_id` | the provider's tool-call id — the only key that joins a call to its result |
+| `sequence` | trial-wide, 0-based, execution order across **every** executor |
+| `tool_name` | the tool the call named |
+| `arguments` | the arguments the caller passed, verbatim |
+| `executor` | `agent` or `user` (`ToolExecutorIdentity`) |
+| `status` | how the call ended (`ToolExecutionStatus`) |
+| `output` | the tool's output, untruncated — or the failure text on a failed call |
+| `latency_seconds` | wall time measured by the recording caller |
+| `timestamp` | when the call was recorded |
+
+One recorder per trial owns the list and stamps `sequence` at append time, so
+interleaved order across executors is correct by construction rather than
+reconstructed afterwards. Calls the executor **refuses** — an unknown tool name,
+a schema-violating or unparseable argument — are recorded too, carrying the
+rejection's own status: the transcript gets a `role: tool` error message for them
+either way, so a record that omitted them would read as a call the agent never
+attempted.
+
+Two properties are worth reading carefully:
+
+- **`output` on a failed call is the executing layer's failure text, not the
+  tool's.** It is also not the text the `role: tool` message carries — the
+  message view and the record view word a failure differently. A `result` matcher
+  combined with `status != success` is matching harness text.
+- **`arguments` are never rewritten.** They are the grader's input; see
+  [`docs/SECURITY.md`](SECURITY.md#tool-call-arguments).
+
+**One status value is not producible on every path.** `SUCCESS`, `ERROR`,
+`TOOL_NOT_FOUND` and `INVALID_ARGUMENTS` come from four distinct branches of the
+in-process executor and are recorded on both substrates. `TIMEOUT` is produced
+only on the runner substrate, because the pure in-process executor implements no
+timeout at all — `ToolPolicy.timeout_s` is declared and never read (#691). That is
+a missing *feature*, not a recording gap: there is no behaviour to record, so no
+check loses signal it would otherwise have had.
+[`tests/canonical/test_tool_execution_status_reachability.py`](../tests/canonical/test_tool_execution_status_reachability.py)
+drives a real recording path for every member, so the vocabulary cannot grow a
+value no run produces.
+
+`executor: user` is unreachable in every run today, **equally on both
+substrates**, because no code path constructs a user-side tool executor (#688).
+An unreachable-everywhere value is a scope limit, not substrate drift.
+
+### How the trial ended
+
+Both substrates give grading the trial's `TerminationReason`: the core substrate
+reads `Trajectory.termination_reason`, and the host sends the same value on
+`GradeTrialRequest.termination_reason`. It exists so grading can tell a
+deliberate finish (`agent_done`) from an exhausted turn budget (`max_turns`) —
+the same score means something different in each case.
+
+**It is grading input, not an author-matchable key.** There is no `grading.yaml`
+field for it and no key-manifest entry, so no task can score itself on it. That
+is deliberate: a task's score must depend on what the agent did, not on how the
+harness or the provider happened to stop the run, and a matcher on the
+termination reason would let a task pass or fail on infrastructure weather.
+
+Only `agent_done`, `user_stop` and `max_turns` reach the runner. Every other
+reason describes a trial the host grader resolves itself, without an RPC — see
+[`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrialrequest).
+[`tests/canonical/test_termination_reason_reachability.py`](../tests/canonical/test_termination_reason_reachability.py)
+drives a real termination path for every member of the enum, so a reason that no
+run can produce cannot be introduced, and pins which of them reach `GradeTrial`.
+
+---
+
+## Trial event timeline
+
+A trial leaves two records of itself, and neither alone is gradeable. The
+**message view** — assistant and user turns, each tool call carried on the
+message that requested it — says what the agent asked for but knows no status,
+latency or executor identity. The **tool-call record** says what happened when
+each call ran but has no conversation.
+
+[`build_trial_timeline`](../tolokaforge/core/grading/trace_timeline.py) joins them
+into one ordered tuple of `TraceEvent`:
+
+```python
+def build_trial_timeline(
+    messages: Sequence[Message],
+    recorded_calls: Sequence[RecordedToolCall],
+    termination_reason: TerminationReason | None,
+) -> TrialTimeline
+```
+
+It is a pure function — no services, no I/O — over three inputs both grading
+substrates already hold, which is what makes a check over the timeline mean the
+same thing whichever substrate grades the trial:
+
+| Argument | Runner substrate | Core substrate |
+| --- | --- | --- |
+| `messages` | `decode_transcript_wire(llm_messages_json)` | `trajectory.messages` |
+| `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
+| `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
+
+### Both substrates consume it
+
+Every transcript rule is evaluated off the timeline on both substrates. The
+runner builds it once in `GradeTrial`, before any grading component runs, and
+`evaluate_transcript_rules(timeline, rules)` decomposes the author's config
+against it. The core `GradingEngine` builds it from the trajectory and
+`TranscriptChecker.grade(timeline, …)` reads the same events. The call/result
+join and the assistant-turn view are shared accessors on the timeline module
+(`attempted_calls`, `assistant_texts`), so the two substrates cannot drift into
+reading one timeline differently.
+
+**A reconciliation failure fails the RPC, and the host does not substitute a
+verdict.** `TimelineInconsistencyError` from either builder call is never folded
+into a score. Runner-side `GradeTrial` returns `success = False` with the offending
+`call_id` in the error and no `Grade` at all; core-side the exception propagates.
+On the host, `RunnerRPCTrialGrader.grade` raises `GradingFailedError` for **any**
+`GradeTrial` that returns no verdict — reconciliation failure, an undecodable
+payload, or an unaccounted scored key. A stand-in `score=0.0` would be worse than
+what it replaced: a normally-terminated trial classifies `MEASURED`, so the zero
+would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
+failure reported against evidence that was never read.
+
+The consequence is that such a trial appears in **no** published number. The
+exception propagates out of the conductor's grading phase, so the trial's bundle is
+not written and the trajectory never reaches the run's results — `total_trials`
+does not count it. It is loud where it happens: the failure is logged, the
+orchestrator retries the attempt and then records it in `run_state.json`, and a
+`trial_failed` event fires. Whether an ungradeable trial should instead be counted
+as a `HARNESS_ERROR` is an open published-numbers question, not something this
+behaviour decides.
+
+**One key is still evaluated from different sources.** The core engine evaluates
+`transcript_rules.required_actions` and `transcript_rules.communicate_info`
+through `ActionEvaluator` / `CommunicateEvaluator` over `trajectory.messages`,
+outside `TranscriptChecker` and therefore off the timeline; the runner evaluates
+`required_actions` from the timeline's records. Both substrates read the key and
+both discriminate it, so the manifest's parity claim holds — but the *evidence*
+differs, and the manifest freezes config keys, not evaluation sources. Closing
+#685 should unify the source as well as the averaging.
+
+### The event
+
+One flat `TraceEvent` type carries all four kinds — `assistant_message`,
+`user_message`, `tool_call`, `tool_result` — so a matcher is a conjunction of
+field predicates with uniform field access. **`None` means the field is either
+inapplicable to the kind or unrecorded, and a predicate over a `None` field is
+unmatched, never vacuously true.**
+
+Unrecorded is the second case and it is not rare: `executor`, `status` and
+`latency_seconds` are `None` on every event of a bundle-sourced timeline (G6b),
+and on any call that never ran (G4). So `status != success` matches nothing at all
+on such a timeline rather than matching everything — read `records_present` before
+trusting either answer. `result` is the exception: a bundle keeps the `role: tool`
+messages, so a bundle-sourced timeline still says what each tool returned (G6b).
+Per-field detail is in the table below; G4 and G6b say when each field goes
+missing on a kind it does apply to.
+
+| Field | Kinds it applies to | Meaning |
+| --- | --- | --- |
+| `position` | all | dense, 0-based index into `events` |
+| `turn_index` | all | 0-based index of the assistant generation the event belongs to |
+| `kind` | all | `TraceEventKind` |
+| `text` | `*_message` | the message text as the wire carries it |
+| `call_id` | `tool_call` / `tool_result` | the provider's tool-call id — the join key |
+| `tool_name` | `tool_call` / `tool_result` | the tool the call named |
+| `executor` | `tool_call` / `tool_result` | `ToolExecutorIdentity`, from the record |
+| `arguments` | `tool_call` | the arguments the caller passed, verbatim |
+| `status` | `tool_result` | `ToolExecutionStatus`, from the record |
+| `result` | `tool_result` | what the tool returned: the record's untruncated output, or the answering `role: tool` message's text when there are no records |
+| `latency_seconds` | `tool_result` | wall time measured by the recording caller |
+
+`turn_index` is the assistant *generation* an event belongs to. Every event one
+assistant message emits — the message, the tool calls it requested, the results
+they produced, and the user message that answered it — carries that generation's
+index, so "in the same turn" means "in the same assistant generation". The
+initial user prompt precedes the first assistant message and carries index 0.
+
+### Guarantees
+
+- **G1 — message order is authoritative.** Event order follows `messages` order,
+  and `position` is dense: `events[i].position == i`.
+- **G2 — `turn_index` counts assistant generations**, per the paragraph above.
+- **G3 — a call and its result are joined by id, and uniqueness is enforced.**
+  Each `tool_call` has at most one `tool_result` with the same `call_id`, at a
+  later `position`. A `call_id` occurring twice raises
+  `TimelineInconsistencyError` naming both positions rather than picking a
+  winner: two calls to one tool with identical arguments differ only in the id, so
+  a collision makes the join ambiguous, and an ambiguous join is a broken
+  invariant rather than task data.
+- **G4 — an attempted call is always an event, and "attempted" is not
+  "executed".** A `tool_call` is **never** dropped, because dropping one makes an
+  `absent` or `count` constraint wrong in the agent's favour. Three states:
+  - *Never attempted.* Termination is decided before a turn's calls execute, so a
+    terminating turn's calls reach the message view and never run. Emitted as a
+    `tool_call` with no `tool_result` and `status = None`.
+  - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
+    recorded, so the call emits a normal pair carrying `tool_not_found` /
+    `invalid_arguments` and a `status` matcher counts it.
+  - *`trial_not_found`.* The two substrates differ, and the difference is declared
+    rather than implied. The runner's own trial-context recorder has no trial to
+    record into, so runner-side the call emits a `tool_call` with no `tool_result`,
+    indistinguishable from the never-attempted case. **Core-side it is recorded.**
+    Since the caller records, `GrpcRunnerClient` builds a `ToolResult` whose status
+    the proto does not map (`RECORDED_STATUS_BY_PROTO` has no entry for
+    `TRIAL_NOT_FOUND`), and `resolve_tool_status` then resolves a failed result to
+    `error` — so the call emits a normal pair and a `status` matcher sees `error`.
+    Either way it is a harness fault for which no grading verdict is meaningful, so
+    a constraint should not depend on which shape it takes. Whether `error` is the
+    right status for a call that never reached a tool is #727.
+- **G5 — where both views describe one call, the record wins.** The two views word
+  the same failure differently: the `role: tool` message carries `Error: <error>`,
+  while the record carries the executing layer's own text, untruncated. So `result`
+  and `status` are read from the record wherever a record exists. This is a rule
+  about precedence between two present views, not about what exists when only one
+  of them is — G6b covers that. The two substrates also word an executor-level
+  failure differently from each other, so a `result` predicate combined with
+  `status != success` is matching harness text and is not substrate-portable;
+  match on `status` instead.
+- **G6 — records-only is a declared input state.** Hash-only grading legitimately
+  omits the transcript, and `role: system` messages are not events (N3), so an
+  input carrying no assistant or user turn is built from the records alone:
+  `tool_call` + `tool_result` pairs in `sequence` order, all at `turn_index` 0,
+  `message_view_present = False`.
+- **G6b — messages-only is the normal state for a recorded bundle, and its results
+  come from the message view.** `tool_log` is not written to `trajectory.yaml`, so
+  a timeline rebuilt from a bundle has no records: `records_present = False` and
+  `executor` / `status` / `latency_seconds` are `None` throughout. The tool output
+  is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
+  its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
+  that message's text, joined by id and never by position. A failed call's text is
+  then the agent-facing rendering (`Error: <error>`) rather than the executing
+  layer's own, which is one more reason a `result` predicate is not portable (G5).
+  `records_present` therefore means "a record view was supplied", not "results
+  exist": a constraint reading `status`, `executor` or `latency_seconds` is still a
+  **named failing sub-check** and never a silent pass, while a phrase rule still
+  reads what the tools returned. A `role: tool` message answering a call the
+  message view does not declare raises `TimelineInconsistencyError` naming its
+  index, symmetrically with G7 — that text is the only surviving evidence of what
+  the call returned, so it can be neither joined nor dropped. Where records *are*
+  present those messages are the shadowed view: neither read nor validated, because
+  extending the join's loudness to evidence nothing reads would fail a live grading
+  run over a discrepancy no verdict depends on.
+- **G7 — reconciliation failure is loud.** When a message view is present, every
+  record must be linkable by `call_id` to a call in it. An unlinkable record
+  raises `TimelineInconsistencyError` naming its `call_id`, `sequence` and
+  `tool_name`: the two views disagreeing about one trial is a harness bug, and
+  grading around it would be exactly the silent degradation
+  [AGENTS.md](../AGENTS.md) core rule 1 forbids.
+- **G8 — within a turn, executed calls follow recorded execution order.** The
+  `tool_call`s of one assistant message are emitted in ascending
+  `RecordedToolCall.sequence` — execution order, since `sequence` is stamped at
+  execution time — with calls that never executed after them in declaration
+  order. So an "immediately before" or "nothing between" constraint rests on a
+  guarantee rather than on a coincidence.
+
+Both degenerate states are reported on the timeline, never inferred: a constraint
+that reads a field only the missing view supplies must become a **named failing
+sub-check, not a silent pass.**
+
+The tool-expectation checks on both substrates honour that by gating on
+`records_present`, not on `status is None`. Those two are indistinguishable per
+call — a terminating turn's declared call and a bundle-sourced call both carry no
+status — so the flag is the only thing that says whether "no record" is a fact or
+an absent view. A tool the message view never declared still passes a
+`disallowed_tools` check with no records present, because a record can only name a
+declared call (G7): the message view alone proves that tool never ran.
+
+### Non-guarantees
+
+- **N2 — no user-executed tool events occur today.** The builder emits
+  `executor: user` whenever a record carries it, but no code path constructs a
+  user-side tool executor (#688), so the vocabulary is defined and unreachable.
+  A user-simulator call also emits no `role: tool` message — the result is inlined
+  into the user message text — so such a call pairs with a `tool_result` built
+  from the record and never from the message view.
+- **N3 — `role: system` messages are not events.** The loop appends termination
+  and max-turns notices as system messages, and the transcript wire prepends the
+  agent's policy as one. They are harness text, not agent or user behaviour;
+  making them matchable would let a task grade itself on harness strings.
+  `TrialTimeline.termination_reason` is the typed channel for the same
+  information.
+- **N4 — message text is the wire text.** `content_blocks` (screenshots),
+  `reasoning` and per-message timestamps are not on the timeline. A
+  screenshot-only turn carries `text = ""`.
+- **N5 — `timeout` is unproducible on the pure in-process path**, because that
+  executor implements no timeout at all (#691). `status` itself is present on
+  every recorded call on both substrates.
+- **N6 — the timeline says what happened, not whether it was correct.** A green
+  timeline is not a correctness proof; that is each task's grading config's job.
+- **N7 — `TraceEvent` is not hashable.** `arguments` is a dict on every
+  `tool_call`, even an empty one, so a generated hash would raise for that kind and
+  succeed for the others — `set()` / `Counter()` over results working while the
+  same code over calls raised. `__hash__` is `None` so it fails uniformly at the
+  first use. Key on `position` (unique per event) or `call_id` (unique per call).
+  Equality is unaffected.
+
+[`tests/canonical/test_trace_timeline_substrate_parity.py`](../tests/canonical/test_trace_timeline_substrate_parity.py)
+drives one scripted tool-call sequence through each substrate's real recording
+path and compares the resulting events field by field, so a divergence in either
+substrate's recording fails there. `latency_seconds` is excluded from that
+equality — two substrates cannot measure the same wall time — and is instead
+asserted to be a positive float on both.
 
 ---
 
@@ -298,7 +615,18 @@ engine ever emitted it and it is not part of this lock — a populated
 
 `transcript_rules` grades the *process* — what the agent said and which tools it
 reached for — rather than the final state. Both substrates consume every key in
-the block.
+the block, and both read it off the
+[trial event timeline](#trial-event-timeline).
+
+**What a rule can see.** A tool rule sees the calls that reached the substrate: a
+call the agent declared on a terminating turn never ran, so it satisfies no
+`required_tools` entry and violates no `disallowed_tools` entry. A phrase rule
+(`must_contain`, `disallow_regex`, `communicate_info`) sees the agent's own text
+runner-side; core-side it also sees the user's turns and the text tools returned —
+from the record while the trial carries one and from the `role: tool` messages
+otherwise (G6b), so re-grading a recorded bundle still reads tool output. Neither
+substrate can see the harness's `role: system` annotations — a termination notice
+cannot satisfy a required phrase (N3).
 
 ### `tool_expectations`
 
@@ -644,19 +972,76 @@ with `state_checks` under `combine.weights.custom_checks`.
 
 ---
 
+## Infrastructure aborts produce no grade
+
+A trial the provider or the substrate killed before the agent could work is not a
+task the model failed. It produces **no `Grade` at all** — not a zero, not a
+status field — and it is excluded from every rate in `per_task_metrics.json` and
+`aggregate.json`.
+
+This is the same rule as the errored judge one level up. An errored `llm_judge`
+component is left unscored and dropped from the weighted combine rather than read
+as `0.0` (see § Fail-loud: the ERRORED status); a trial that never ran is left
+ungraded and dropped from the denominator for exactly the same reason. `Grade.score`
+is a required `[0, 1]` float, so a grade for such a trial would have to carry a
+number describing work nobody did, and every consumer that reads `.score` without
+branching would read that number as a model failure. `Trajectory.grade` is
+`Grade | None`: absence is unrepresentable as zero, and a consumer that forgets to
+branch fails loudly.
+
+### Which trials are aborts
+
+Exclusion is earned by **typed** evidence. Exactly three termination reasons
+qualify, and each is produced from an exception type or an HTTP status rather than
+from matching prose against an exception message:
+
+| Reason | Evidence |
+|---|---|
+| `rate_limit` | `openai.RateLimitError` (which `litellm.RateLimitError` subclasses, so one check covers every provider litellm routes) or `status_code == 429`, found on the exception or on its `__cause__` chain |
+| `api_timeout` | `LLMApiTimeoutError` |
+| `provision_error` | `ProvisionError` raised by the runtime backend's `provision` / `await_ready` |
+
+Everything else is **counted**, including the cases that look like
+infrastructure:
+
+| Reason | Class | Why it counts |
+|---|---|---|
+| `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
+| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
+| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal |
+| `stuck_detected` | measured | The agent repeated itself without progress. It auto-fails with `score: 0.0`, and that verdict is correct |
+
+The asymmetry decides every borderline case: misclassifying an agent failure as
+infrastructure raises every published number with nothing in the output to show
+it, while misclassifying infrastructure as an agent failure lowers them by a
+bounded amount that `infrastructure_aborts` makes visible. So an unrecognised
+termination reason is counted, and a rate-limit-shaped message with no typed
+exception behind it terminates as `error` rather than buying its way out of the
+benchmark.
+
+`outcomes_by_reason` records every observed reason with the class it was counted
+as, so any of these judgements can be recomputed from a finished run's aggregate
+without a rerun. See [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § Run-level
+metric denominators and [`docs/ANALYTICS.md`](ANALYTICS.md:1) § The denominator:
+measured trials.
+
 ## pass@k Metrics
 
 Estimates probability that at least 1 of k attempts succeeds.
 
 ### Formula
 
-Given `n` trials with `c` successes:
+Given `n` **measured** trials with `c` successes:
 
 ```
 pass@k = 1 - C(n - c, k) / C(n, k)
 ```
 
-Where `C(a, b)` is binomial coefficient "a choose b".
+Where `C(a, b)` is binomial coefficient "a choose b". `n` counts the trials that
+measured the agent, so an infrastructure abort neither counts as a failure nor
+props up the sample size — and one lost trial can therefore turn `pass@5` into
+`null`, since five samples are needed to estimate it and four cannot. The run
+logs a warning naming each task whose coverage was reduced that way.
 
 ### Example
 

@@ -290,8 +290,7 @@ class BrowserTool(Tool):
         if grid_y <= 999:
             # First try to find and click an element at this position
             # This handles fixed-position modals better
-            element = await self.page.evaluate(
-                f"""
+            element = await self.page.evaluate(f"""
                 () => {{
                     const elem = document.elementFromPoint({pixel_x}, {pixel_y});
                     const stack = document.elementsFromPoint({pixel_x}, {pixel_y});
@@ -337,8 +336,7 @@ class BrowserTool(Tool):
                     }}
                     return 'not_found';
                 }}
-            """
-            )
+            """)
 
             # If JavaScript click didn't work, fall back to mouse click
             if element != "clicked":
@@ -360,8 +358,7 @@ class BrowserTool(Tool):
         pixel_y = (remainder_y / self.GRID_SIZE) * self.viewport_height
 
         # Try JavaScript click first for better modal handling
-        element = await self.page.evaluate(
-            f"""
+        element = await self.page.evaluate(f"""
             () => {{
                 const elem = document.elementFromPoint({pixel_x}, {pixel_y});
                 if (elem) {{
@@ -383,8 +380,7 @@ class BrowserTool(Tool):
                 }}
                 return 'not_found';
             }}
-        """
-        )
+        """)
 
         if element != "clicked":
             await self.page.mouse.click(pixel_x, pixel_y)
@@ -471,8 +467,7 @@ class BrowserTool(Tool):
             title = await self.page.title()
 
             # Get visible text content
-            text_content = await self.page.evaluate(
-                """() => {
+            text_content = await self.page.evaluate("""() => {
                 // Extract visible text from body
                 const body = document.body;
                 if (!body) return '';
@@ -538,12 +533,10 @@ class BrowserTool(Tool):
                 }
 
                 return texts.join('\\n');
-            }"""
-            )
+            }""")
 
             # Get interactive elements (links, buttons, inputs, elements with onclick)
-            interactive = await self.page.evaluate(
-                """() => {
+            interactive = await self.page.evaluate("""() => {
                 const elements = [];
                 const seen = new Set();  // Track unique elements by coordinates
 
@@ -636,8 +629,7 @@ class BrowserTool(Tool):
                 }
 
                 return elements;
-            }"""
-            )
+            }""")
 
             # Format output
             result = f"Page: {title}\n\n"

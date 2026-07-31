@@ -98,6 +98,10 @@ tests/
     ├── mock_clients.py       # MockAsyncClient — canonical source
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
+    ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
+    ├── recorded_calls.py     # RecordedToolCall builders
+    ├── runner_requests.py    # gRPC request + TaskDescription builders
+    ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 
@@ -129,6 +133,15 @@ Compare output against committed golden snapshots in `snapshots/`.
   ledger cannot resolve. Fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
+- Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one
+  scripted tool-call sequence driven through each substrate's real recording path
+  must build the same events. A failure means one substrate's recording drifted,
+  so a trace check would mean different things depending on which substrate graded
+  the trial. Both substrates then *grade* off that timeline, so a failure here also
+  means both substrates' transcript rules are reading a trial the two views no
+  longer agree on. Build a coherent message-view/record pair for a grading fixture
+  with `tests/utils/timelines.py`; a record naming a call no message asked for is a
+  reconciliation failure, not a shortcut.
 
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 

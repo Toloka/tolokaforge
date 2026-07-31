@@ -39,7 +39,7 @@ from tolokaforge.core.grading.check_runner import (
     CheckRunner,
     validate_checks_module,
 )
-from tolokaforge.core.grading.checks_helpers import build_check_context
+from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import (
     CheckResult,
     CheckResultSet,
@@ -58,9 +58,22 @@ from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
-from tolokaforge.core.models import CriterionResult, LLMJudgeConfig, ModelConfig
+from tolokaforge.core.grading.trace_timeline import (
+    TimelineInconsistencyError,
+    TrialTimeline,
+    build_trial_timeline,
+)
+from tolokaforge.core.grading.transcript_wire import (
+    decode_transcript_wire,
+    split_leading_system_message,
+)
+from tolokaforge.core.models import (
+    CriterionResult,
+    LLMJudgeConfig,
+    ModelConfig,
+    TerminationReason,
+)
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialSpec
-from tolokaforge.core.trial_grader import split_leading_system_message
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import runner_pb2_grpc
 from tolokaforge.runner.capabilities import BUILTIN_ADAPTERS
@@ -80,6 +93,8 @@ from tolokaforge.runner.grading import (
     evaluate_transcript_rules,
 )
 from tolokaforge.runner.grading_ledger import (
+    CUSTOM_CHECKS_DISABLED_SKIP,
+    CUSTOM_CHECKS_KEY,
     DB_PROBES_KEY,
     EVALUATED,
     HASH_DISABLED_SKIP,
@@ -100,10 +115,16 @@ from tolokaforge.runner.models import (
     GradeComponents,
     HashGradingResult,
     KeyAccountingRecord,
+    RecordedToolCall,
     StateDiff,
     TaskDescription,
-    ToolCallRecord,
+    ToolExecutorIdentity,
     TranscriptEvaluationResult,
+)
+from tolokaforge.runner.protocol import (
+    ENGINE_PROTOCOL_VERSION,
+    parse_termination_reason,
+    recorded_status,
 )
 from tolokaforge.runner.rag_client import (
     RAGServiceClient,
@@ -118,6 +139,7 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
     ToolReconstructionError,
 )
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 logger = logging.getLogger(__name__)
 
@@ -225,15 +247,14 @@ class TrialContextRuntime:
     including the parsed task description, reconstructed tools, and execution history.
 
     Note: This is a runtime class (not Pydantic) because it holds callable objects
-    that cannot be serialized. The Pydantic TrialContext model is used for
-    serialization/validation of the data portions.
+    that cannot be serialized.
 
     Attributes:
         trial_id: Unique trial identifier (e.g., "airline_task_001:0")
         task_description: Parsed TaskDescription model from RegisterTrial
         agent_tools: Map of tool name -> tool callable for agent tools
         user_tools: Map of tool name -> tool callable for user-side tools
-        tool_call_history: List of tool call records for transcript grading
+        tool_call_history: The trial's ordered tool-call record
         default_timeout: Default timeout for tool execution in seconds
     """
 
@@ -248,7 +269,7 @@ class TrialContextRuntime:
         self.task_description = task_description
         self.agent_tools: dict[str, Callable] = {}
         self.user_tools: dict[str, Callable] = {}
-        self.tool_call_history: list[ToolCallRecord] = []
+        self.tool_call_history: list[RecordedToolCall] = []
         self.default_timeout = default_timeout
         # Run-level LLM config for the read-only rubric judge, carried from the
         # TrialSpec. None when no selected task uses an llm_judge component; the
@@ -279,51 +300,67 @@ class TrialContextRuntime:
         """Get grading config from task description."""
         return self.task_description.grading
 
-    def get_tool(self, tool_name: str, executor: str = "agent") -> Callable | None:
+    def get_tool(
+        self, tool_name: str, executor: ToolExecutorIdentity = ToolExecutorIdentity.AGENT
+    ) -> Callable | None:
         """
         Get a tool callable by name and executor type.
 
         Args:
             tool_name: Name of the tool
-            executor: "agent" or "user"
+            executor: Which side of the dialogue is calling
 
         Returns:
             Tool callable or None if not found
         """
-        if executor == "user":
+        if executor is ToolExecutorIdentity.USER:
             return self.user_tools.get(tool_name)
         return self.agent_tools.get(tool_name)
 
-    def record_tool_call(
+    def record(
         self,
+        *,
+        call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+        status: ToolExecutionStatus,
         output: str,
-        status: str,
-        executor: str,
         latency_seconds: float,
     ) -> None:
         """
-        Record a tool call in the history for transcript grading.
+        Record a tool call in the trial's ordered history.
+
+        Satisfies :class:`~tolokaforge.runner.models.ToolCallRecorder`.
+        ``sequence`` is stamped here, so no caller can supply a wrong index.
 
         Args:
+            call_id: Provider tool-call id joining this call to its result
             tool_name: Name of the tool called
-            arguments: Tool arguments
-            output: Tool output or error message
-            status: Execution status ("success", "error", "timeout", "tool_not_found", "invalid_arguments")
-            executor: "agent" or "user"
+            arguments: Tool arguments, verbatim
+            executor: Which side of the dialogue made the call
+            status: How the call ended
+            output: Tool output, or the rejection/failure text
             latency_seconds: Execution time
         """
-        record = ToolCallRecord(
-            tool_name=tool_name,
-            arguments=arguments,
-            executor=executor,
-            output=output,
-            status=status,
-            latency_seconds=latency_seconds,
-            timestamp=datetime.now(timezone.utc).isoformat(),
+        self.tool_call_history.append(
+            RecordedToolCall(
+                call_id=call_id,
+                sequence=len(self.tool_call_history),
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
+                output=output,
+                status=status,
+                latency_seconds=latency_seconds,
+                timestamp=datetime.now(timezone.utc),
+            )
         )
-        self.tool_call_history.append(record)
+
+    @property
+    def recorded(self) -> tuple[RecordedToolCall, ...]:
+        """The trial's tool calls, in execution order."""
+        return tuple(self.tool_call_history)
 
     def clear_history(self) -> None:
         """Clear tool call history (used on reset)."""
@@ -573,10 +610,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         grading = task_description.grading
         custom_checks_raw = grading.custom_checks if grading else None
-        if not custom_checks_raw or not custom_checks_raw.get("enabled", False):
-            return None
-
         try:
+            if not custom_checks_enabled(custom_checks_raw):
+                return None
             custom_config = CustomChecksConfig(**custom_checks_raw)
         except ValidationError as exc:
             logger.error(f"RegisterTrial: {trial_id} - invalid custom_checks config: {exc}")
@@ -621,10 +657,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Host sends TrialSpec JSON; the Runner reads ``spec.task`` and
         initialises the environment:
-        1. Validate the full TrialSpec into a Pydantic model (fail fast on invalid)
-        2. Initialize DB Service with initial_state, schemas, unstable_fields (fail fast)
-        3. Reconstruct tools from ToolSource definitions (fail fast)
-        4. Return tool schemas for LLM configuration
+        1. Reject an engine whose wire-protocol version this runner cannot serve
+        2. Validate the full TrialSpec into a Pydantic model (fail fast on invalid)
+        3. Initialize DB Service with initial_state, schemas, unstable_fields (fail fast)
+        4. Reconstruct tools from ToolSource definitions (fail fast)
+        5. Return tool schemas for LLM configuration
 
         Args:
             request: RegisterTrialRequest with trial_id and trial_spec_json
@@ -635,6 +672,16 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         trial_id = request.trial_id
         logger.info(f"RegisterTrial: {trial_id}")
+
+        if request.engine_protocol_version < ENGINE_PROTOCOL_VERSION:
+            error = (
+                f"engine declares wire-protocol version {request.engine_protocol_version}, "
+                f"this runner image requires at least {ENGINE_PROTOCOL_VERSION}: the engine "
+                "and the runner image are version-skewed. Rebuild the runner image from this "
+                "engine (make docker-build-core) or pin an image tag that matches it."
+            )
+            logger.error(f"RegisterTrial: {trial_id} - {error}")
+            return pb2.RegisterTrialResponse(success=False, error=error)
 
         try:
             trial_spec = TrialSpec.model_validate_json(request.trial_spec_json)
@@ -930,20 +977,46 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         4. Record tool call in history
         5. Return output or error
 
+        A call the runner refuses before execution — unparseable arguments, an
+        unknown tool name — is still recorded, because the host appends a
+        ``role: tool`` error message for it either way and a rejected call the
+        record omits reads as a call that was never attempted.
+
         Args:
             request: ExecuteToolRequest with trial_id, tool_name, arguments_json
             context: gRPC context
 
         Returns:
             ExecuteToolResponse with status, output, and metrics
+
+        Raises:
+            ValueError: ``call_id`` is empty. Registered engines declare a
+                protocol version that carries it and ``ToolCall.id`` rejects an
+                empty id at message construction, so this is a harness bug rather
+                than version skew. Aborting the RPC keeps it out of the
+                non-success statuses, where it would be indistinguishable from
+                the model emitting malformed arguments. It does still reach the
+                agent as a tool failure: the host's
+                ``GrpcRunnerClient.execute_tool`` turns any ``grpc.RpcError``
+                into a failed ``ToolResult``. What the raise buys is the cause,
+                named in the runner log.
         """
         trial_id = request.trial_id
         tool_name = request.tool_name
-        executor = request.executor or "agent"
+        executor = ToolExecutorIdentity(request.executor or ToolExecutorIdentity.AGENT.value)
+        call_id = request.call_id
 
-        logger.debug(f"ExecuteTool: {trial_id} - {tool_name} ({executor})")
+        logger.debug(f"ExecuteTool: {trial_id} - {tool_name} ({executor.value}) call_id={call_id}")
 
-        # Check if trial exists
+        if not call_id:
+            raise ValueError(
+                f"ExecuteTool for tool {tool_name!r} on trial {trial_id!r} carries no call_id. "
+                "The id joins the call to the tool result it produced; without it two calls "
+                "to the same tool with identical arguments are indistinguishable."
+            )
+
+        # Check if trial exists. Unrecordable by construction — there is no
+        # trial context to record into — so this stays message-only.
         if trial_id not in self.trials:
             logger.warning(f"ExecuteTool: Trial not found: {trial_id}")
             return pb2.ExecuteToolResponse(
@@ -960,22 +1033,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             arguments = json.loads(request.arguments_json) if request.arguments_json else {}
         except json.JSONDecodeError as e:
             logger.warning(f"ExecuteTool: Invalid arguments JSON: {e}")
-            return pb2.ExecuteToolResponse(
+            return self._reject_tool_call(
+                trial_context=trial_context,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments={},
+                executor=executor,
                 status=pb2.EXECUTION_STATUS_INVALID_ARGUMENTS,
-                output="",
                 error_message=f"Invalid arguments JSON: {e}",
-                metrics=pb2.ToolMetrics(),
             )
 
         # Look up tool in the appropriate tool set
         tool = trial_context.get_tool(tool_name, executor)
         if tool is None:
-            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor})")
-            return pb2.ExecuteToolResponse(
+            logger.warning(f"ExecuteTool: Tool not found: {tool_name} ({executor.value})")
+            return self._reject_tool_call(
+                trial_context=trial_context,
+                call_id=call_id,
+                tool_name=tool_name,
+                arguments=arguments,
+                executor=executor,
                 status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                output="",
-                error_message=f"Tool '{tool_name}' not found in {executor} tools",
-                metrics=pb2.ToolMetrics(),
+                error_message=f"Tool '{tool_name}' not found in {executor.value} tools",
             )
 
         # Determine timeout
@@ -990,6 +1069,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 self._execute_tool_async(
                     trial_context=trial_context,
                     tool=tool,
+                    call_id=call_id,
                     tool_name=tool_name,
                     arguments=arguments,
                     executor=executor,
@@ -1008,13 +1088,41 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 metrics=pb2.ToolMetrics(),
             )
 
+    def _reject_tool_call(
+        self,
+        trial_context: TrialContextRuntime,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+        status: int,
+        error_message: str,
+    ) -> pb2.ExecuteToolResponse:
+        """Record a call the runner refused before execution and return its response."""
+        trial_context.record(
+            call_id=call_id,
+            tool_name=tool_name,
+            arguments=arguments,
+            output=error_message,
+            status=recorded_status(status),
+            executor=executor,
+            latency_seconds=0.0,
+        )
+        return pb2.ExecuteToolResponse(
+            status=status,
+            output="",
+            error_message=error_message,
+            metrics=pb2.ToolMetrics(),
+        )
+
     async def _execute_tool_async(
         self,
         trial_context: TrialContextRuntime,
         tool: Any,
+        call_id: str,
         tool_name: str,
         arguments: dict[str, Any],
-        executor: str,
+        executor: ToolExecutorIdentity,
         timeout_seconds: float,
     ) -> pb2.ExecuteToolResponse:
         """
@@ -1087,12 +1195,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         latency_seconds = time.time() - start_time
 
         # Record tool call in history
-        status_str = self._status_to_string(status)
-        trial_context.record_tool_call(
+        trial_context.record(
+            call_id=call_id,
             tool_name=tool_name,
             arguments=arguments,
             output=output if status == pb2.EXECUTION_STATUS_SUCCESS else error_message,
-            status=status_str,
+            status=recorded_status(status),
             executor=executor,
             latency_seconds=latency_seconds,
         )
@@ -1108,18 +1216,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 state_mutations=0,  # TODO: Track state mutations if needed
             ),
         )
-
-    def _status_to_string(self, status: int) -> str:
-        """Convert ExecutionStatus enum to string for history recording."""
-        status_map = {
-            pb2.EXECUTION_STATUS_SUCCESS: "success",
-            pb2.EXECUTION_STATUS_ERROR: "error",
-            pb2.EXECUTION_STATUS_TIMEOUT: "timeout",
-            pb2.EXECUTION_STATUS_TOOL_NOT_FOUND: "tool_not_found",
-            pb2.EXECUTION_STATUS_INVALID_ARGUMENTS: "invalid_arguments",
-            pb2.EXECUTION_STATUS_TRIAL_NOT_FOUND: "trial_not_found",
-        }
-        return status_map.get(status, "unknown")
 
     # =========================================================================
     # GradeTrial - Compute grade for completed trial
@@ -1143,7 +1239,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         7. Compare hashes and compute score
 
         Args:
-            request: GradeTrialRequest with trial_id and optional llm_messages_json
+            request: GradeTrialRequest with trial_id, optional llm_messages_json
+                and optional termination_reason
             context: gRPC context
 
         Returns:
@@ -1188,6 +1285,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id = request.trial_id
         trial_context = self.trials[trial_id]
 
+        try:
+            termination_reason = parse_termination_reason(request.termination_reason)
+        except ValueError as e:
+            logger.error(f"GradeTrial: {trial_id} - {e}")
+            return pb2.GradeTrialResponse(success=False, error=str(e))
+
         grading_config = trial_context.grading_config
 
         # Declarative grading-method dispatch (no adapter identity): a task can request
@@ -1224,6 +1327,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     reasons="No grading config - passed by default",
                     state_diff_json="",
                 ),
+            )
+
+        # The trial's two views of itself, joined before any component runs: a
+        # payload that cannot be reconciled with the tool-call record fails the
+        # RPC rather than being graded around.
+        try:
+            llm_messages, timeline = self._grade_time_views(
+                request, trial_context, termination_reason
+            )
+        except (ValueError, TimelineInconsistencyError) as exc:
+            logger.error(f"GradeTrial: {trial_id} - {type(exc).__name__}: {exc}")
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
 
         # Get state_checks config (may contain golden_actions)
@@ -1308,36 +1425,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
-        # Decode the trajectory once — both transcript-rules and llm-judge use it.
-        llm_messages: list[dict[str, Any]] = []
-        if request.llm_messages_json:
-            try:
-                llm_messages = json.loads(request.llm_messages_json)
-            except json.JSONDecodeError as e:
-                logger.warning(f"GradeTrial: Invalid llm_messages_json: {e}")
-                # Continue with empty messages - tool history may still be useful
-
         if transcript_rules_config:
-            # Convert tool call history to dicts for grading
-            tool_history = [r.model_dump() for r in trial_context.tool_call_history]
-
-            # Skip transcript grading if no messages and rules require them
-            if llm_messages or tool_history:
+            # A timeline with no events is a trial that left no trace of itself:
+            # neither a conversational turn nor a tool call. Every rule would
+            # score 0.0 against evidence we do not have, so the keys are recorded
+            # as skipped and the component is left out of the combine.
+            if timeline.events:
                 logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
                 # Pass the author-facing TranscriptRulesConfig as a dict; the
                 # grader decomposes its fields (must_contain / disallow_regex /
                 # max_turns / required_actions / communicate_info) into per-field
                 # sub-checks.
                 rules_dict = transcript_rules_config.model_dump()
-                transcript_result = evaluate_transcript_rules(
-                    llm_messages, tool_history, rules_dict
-                )
+                transcript_result = evaluate_transcript_rules(timeline, rules_dict)
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
                 accounted_keys.update(transcript_result.accounted_keys)
             else:
                 logger.info(
-                    f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool history)"
+                    f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
                 )
                 accounted_keys.update(
                     dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
@@ -1411,6 +1517,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             trial_id, trial_context, llm_messages
         )
         components.custom_checks_score = custom_checks_score
+        # A pack that wrote the block but left it off never reaches the executor,
+        # so the key is populated with nothing consuming it — the same shape as
+        # `hash:` keys arriving with `hash.enabled` false.
+        accounted_keys[CUSTOM_CHECKS_KEY] = (
+            EVALUATED
+            if custom_checks_enabled(grading_config.custom_checks)
+            else CUSTOM_CHECKS_DISABLED_SKIP
+        )
 
         # C) LEDGER — a scored key the config populated that no evaluator consumed
         # and no skip site claimed would score nothing while the trial still got a
@@ -1452,7 +1566,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             errors_str = "; ".join(hash_result.golden_action_errors)
             reasons += f" | GOLDEN REPLAY ERRORS: {errors_str}"
 
-        logger.info(f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}")
+        logger.info(
+            f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
+            f"termination_reason={termination_reason.value if termination_reason else 'none'}"
+        )
 
         if components.db_probe_score >= 0:
             state_checks_component = components.db_probe_score
@@ -1487,6 +1604,40 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 judge_status=judge_status,
                 judge_report=judge_report,
             ),
+        )
+
+    def _grade_time_views(
+        self,
+        request: pb2.GradeTrialRequest,
+        trial_context: TrialContextRuntime,
+        termination_reason: TerminationReason | None,
+    ) -> tuple[list[dict[str, Any]], TrialTimeline]:
+        """The trial's grade-time views: the wire messages and the event timeline.
+
+        The agent policy is the payload's leading ``system`` message and is split
+        off first: the judge needs it separately, and the timeline is built from the
+        transcript alone.
+
+        The split is *not* what makes a hash-only trial work — whose payload is the
+        policy and nothing else, and which must read as a records-only trial rather
+        than as a message view whose every recorded call is unlinkable. That is
+        guaranteed one layer down, by the builder counting only assistant and user
+        turns as a message view (non-guarantee N3). Measured: removing this split
+        leaves ``message_view_present`` ``False`` either way. Keep the split for the
+        judge, but do not move the hash-only guarantee up here — the lock that
+        protects it is ``test_a_view_of_only_harness_text_is_not_a_message_view``.
+
+        Raises:
+            ValueError: the payload does not decode into a transcript.
+            TimelineInconsistencyError: the two views cannot be joined.
+        """
+        if not request.llm_messages_json:
+            return [], build_trial_timeline([], trial_context.recorded, termination_reason)
+
+        llm_messages: list[dict[str, Any]] = json.loads(request.llm_messages_json)
+        _, transcript = split_leading_system_message(llm_messages)
+        return llm_messages, build_trial_timeline(
+            decode_transcript_wire(transcript), trial_context.recorded, termination_reason
         )
 
     async def _grade_llm_judge(
@@ -1636,7 +1787,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
-        if not custom_config_raw or not custom_config_raw.get("enabled", False):
+        if not custom_checks_enabled(custom_config_raw):
             return -1.0, []
 
         config = CustomChecksConfig(**custom_config_raw)

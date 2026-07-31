@@ -507,8 +507,7 @@ class TestCheckRunner:
     def test_run_simple_checks(self, sample_context: CheckContext, tmp_path: Path):
         """Test running a simple checks.py"""
         checks_file = tmp_path / "checks.py"
-        checks_file.write_text(
-            """
+        checks_file.write_text("""
 from tolokaforge.core.grading.checks_interface import (
     CheckContext, CheckPassed, CheckFailed, init, check
 )
@@ -527,8 +526,7 @@ def order_was_created():
 @check
 def always_passes():
     return CheckPassed("This always passes")
-"""
-        )
+""")
 
         config = CustomChecksConfig(enabled=True, timeout_seconds=30)
         runner = CheckRunner()
@@ -542,8 +540,7 @@ def always_passes():
     def test_run_with_failures(self, sample_context: CheckContext, tmp_path: Path):
         """Test running checks with some failures"""
         checks_file = tmp_path / "checks.py"
-        checks_file.write_text(
-            """
+        checks_file.write_text("""
 from tolokaforge.core.grading.checks_interface import (
     CheckContext, CheckPassed, CheckFailed, init, check
 )
@@ -555,8 +552,7 @@ def passing_check():
 @check
 def failing_check():
     return CheckFailed("not ok")
-"""
-        )
+""")
 
         config = CustomChecksConfig(enabled=True)
         runner = CheckRunner()
@@ -569,8 +565,7 @@ def failing_check():
     def test_run_with_exception(self, sample_context: CheckContext, tmp_path: Path):
         """Test handling of exceptions in checks"""
         checks_file = tmp_path / "checks.py"
-        checks_file.write_text(
-            """
+        checks_file.write_text("""
 from tolokaforge.core.grading.checks_interface import (
     CheckContext, CheckPassed, CheckFailed, init, check
 )
@@ -578,8 +573,7 @@ from tolokaforge.core.grading.checks_interface import (
 @check
 def raises_exception():
     raise ValueError("Something went wrong")
-"""
-        )
+""")
 
         config = CustomChecksConfig(enabled=True)
         runner = CheckRunner()
@@ -593,8 +587,7 @@ def raises_exception():
     def test_run_with_skip(self, sample_context: CheckContext, tmp_path: Path):
         """Test skipped checks"""
         checks_file = tmp_path / "checks.py"
-        checks_file.write_text(
-            """
+        checks_file.write_text("""
 from tolokaforge.core.grading.checks_interface import (
     CheckContext, CheckPassed, CheckFailed, CheckSkipped, init, check
 )
@@ -606,8 +599,7 @@ def skipped_check():
 @check
 def passing_check():
     return CheckPassed("ok")
-"""
-        )
+""")
 
         config = CustomChecksConfig(enabled=True)
         runner = CheckRunner()
@@ -630,13 +622,11 @@ def passing_check():
     def test_run_no_checks(self, sample_context: CheckContext, tmp_path: Path):
         """Test handling of checks.py with no @check functions"""
         checks_file = tmp_path / "checks.py"
-        checks_file.write_text(
-            """
+        checks_file.write_text("""
 # Empty checks file with no decorators
 def not_a_check():
     pass
-"""
-        )
+""")
 
         config = CustomChecksConfig(enabled=True)
         runner = CheckRunner()
@@ -651,19 +641,16 @@ def not_a_check():
         project_dir.mkdir()
 
         helpers_file = project_dir / "check_helpers.py"
-        helpers_file.write_text(
-            """
+        helpers_file.write_text("""
 def get_magic_number():
     return 42
-"""
-        )
+""")
 
         task_dir = project_dir / "tasks" / "task_001"
         task_dir.mkdir(parents=True)
 
         checks_file = task_dir / "checks.py"
-        checks_file.write_text(
-            """
+        checks_file.write_text("""
 from tolokaforge.core.grading.checks_interface import (
     CheckContext, CheckPassed, CheckFailed, init, check
 )
@@ -674,8 +661,7 @@ def test_import():
     if get_magic_number() == 42:
         return CheckPassed("Import worked!")
     return CheckFailed("Import broken")
-"""
-        )
+""")
 
         config = CustomChecksConfig(
             enabled=True,

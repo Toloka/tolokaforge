@@ -22,6 +22,22 @@ host-mapped port `docker status` reports (e.g.
 convention is: `db-service` on 8000, `mock-web` on 8080,
 `rag-service` on 8001.
 
+## Every Trial Fails at Registration
+
+A `RegisterTrial` failure naming an engine protocol version means the runner image
+is newer than the engine driving it. `ENGINE_PROTOCOL_VERSION`
+([`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py)) is declared
+on every registration and the runner refuses anything below its own, so no trial
+starts and no tokens are spent. Rebuild the image from the tree you are running:
+
+```bash
+make docker-build-core
+```
+
+Or pin an image tag built from a matching engine. The bound is one-sided — a newer
+engine against an older image registers fine — so this only appears when the image
+is ahead. See [RUNNER.md](RUNNER.md) § Engine / image version lock.
+
 ## Browser Tool Errors
 
 - Ensure Playwright is installed:

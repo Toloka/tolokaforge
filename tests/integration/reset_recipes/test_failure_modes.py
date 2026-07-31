@@ -35,8 +35,7 @@ from tolokaforge.runtime.reset_recipes import RECIPE_REGISTRY, redis_dump
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
-POSTGRES_COMPOSE = textwrap.dedent(
-    """
+POSTGRES_COMPOSE = textwrap.dedent("""
     services:
       postgres:
         image: "postgres:16-alpine"
@@ -49,12 +48,10 @@ POSTGRES_COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
-REDIS_COMPOSE = textwrap.dedent(
-    """
+REDIS_COMPOSE = textwrap.dedent("""
     services:
       redis:
         image: "redis:7-alpine"
@@ -64,12 +61,10 @@ REDIS_COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
-ALPINE_COMPOSE = textwrap.dedent(
-    """
+ALPINE_COMPOSE = textwrap.dedent("""
     services:
       workspace:
         image: "alpine:3.20"
@@ -79,8 +74,7 @@ ALPINE_COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
 BROKEN_SQL = "CREATE TABLE widgets (id INT PRIMARY KEY;\nTHIS IS NOT VALID SQL;\n"

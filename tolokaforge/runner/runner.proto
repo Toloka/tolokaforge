@@ -65,6 +65,12 @@ message RegisterTrialRequest {
   // so the runner doesn't have to parse the spec to apply the default before
   // tool reconstruction.
   double default_tool_timeout_s = 3;
+
+  // Wire-protocol version the calling engine speaks. See
+  // tolokaforge/runner/protocol.py for the current value and what it carries.
+  // RegisterTrial fails when it is below the version the runner requires, so
+  // an engine/image skew aborts the trial before any tokens are spent.
+  int32 engine_protocol_version = 4;
 }
 
 message RegisterTrialResponse {
@@ -120,6 +126,12 @@ message ExecuteToolRequest {
   // Which environment is making the call
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
+
+  // The provider's tool-call id (ToolCall.id) — the key that joins this call
+  // to the tool-result message it produced. Required: the runner rejects an
+  // empty value, because two calls to the same tool with identical arguments
+  // are otherwise indistinguishable in the recorded history.
+  string call_id = 6;
 }
 
 message ExecuteToolResponse {
@@ -169,10 +181,20 @@ message GradeTrialRequest {
   // Trial identifier
   string trial_id = 1;
 
-  // Optional: LLM messages for transcript rules grading
-  // Only needed if grading config includes transcript_rules (must_contain, required_actions, etc.)
-  // For hash-only grading (TlkMcpCore, Tau), this can be omitted - Runner has tool call history
-  // Contains: messages array with role, content (assistant/user text only, not tool results)
+  // The trial's full interleaved message trace, encoded by
+  // tolokaforge.core.grading.transcript_wire.encode_transcript_wire: a JSON array
+  // of {role, content} objects in execution order, covering every role — a tool
+  // result crosses as role "tool" carrying its tool_call_id.
+  // An assistant or user turn that called tools also carries
+  // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
+  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
+  // the only key joining a call to its result — parallel calls to one tool with
+  // identical arguments are otherwise indistinguishable — and
+  // decode_transcript_wire rejects a payload whose tool_calls carry none.
+  // The leading "system" message is the agent's policy, lifted out by
+  // split_leading_system_message rather than replayed as a conversational turn.
+  // Needed for transcript_rules and llm_judge grading; for hash-only grading
+  // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
   // Optional: Skip golden path execution if expected hash is pre-computed
@@ -182,6 +204,13 @@ message GradeTrialRequest {
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading
   repeated string grading_components = 4;  // "state_checks", "transcript_rules"
+
+  // How the trial ended, as a tolokaforge.core.models.TerminationReason value
+  // ("agent_done", "user_stop", "max_turns", ...); empty when the engine
+  // reported none. Grading input, never author-matchable: it tells a deliberate
+  // finish apart from an exhausted turn budget. A value outside the enum fails
+  // the RPC rather than parsing to "none", which would mislabel trial health.
+  string termination_reason = 5;
 }
 
 message GradeTrialResponse {

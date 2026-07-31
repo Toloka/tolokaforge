@@ -97,6 +97,34 @@ build toolchain never ships.
   `tolokaforge-runner:local` is built with exactly what a run requires and stays
   slim otherwise.
 
+### Engine / image version lock
+
+The image and the engine that drives it speak one wire protocol, and the pairing
+is enforced. `ENGINE_PROTOCOL_VERSION` in
+[`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py) is the single
+source of that number; the engine declares it on every `RegisterTrial`, and the
+runner **refuses to register a trial from an engine below its own version**,
+naming the skew in `RegisterTrialResponse.error`. The orchestrator already treats a
+registration failure as fatal, so a skewed pair fails before any tokens are spent.
+
+The bound is one-sided, and the unprotected direction is the quieter one. An
+**older** engine against a newer image fails every trial at registration, loudly.
+A **newer** engine against an older image still registers — the older runner does
+not know the `engine_protocol_version` field, and proto3 drops unknown fields
+rather than erroring — so the skew surfaces later and less clearly: that engine
+sends a `call_id` on every `ExecuteTool` which the older runner also ignores, so
+calls are recorded without the id grading joins on.
+
+**So the order matters: rebuild the image before rolling the engine.** Upgrading
+the engine first leaves you inside the one window the gate cannot close.
+
+That is what an engine upgrade needs: rebuild the image from the same tree
+(`make docker-build-core`) or pin an image tag that matches. The gate sits at
+registration rather than per call deliberately — an old engine sends no `call_id`,
+and rejecting each `ExecuteTool` would reach the agent as an ordinary tool failure,
+so it would retry until its turn budget was gone and report a completed trial
+scoring near zero, with the skew visible only inside the transcript.
+
 ## Tool Lifecycle
 
 Some tools own per-trial resources — a compose stack, a long-lived
@@ -210,6 +238,30 @@ Practical guidance:
 - Keep `max_attempt_retries` small (`1-2`) to avoid infinite churn on invalid tasks.
 - Always set `max_budget_usd` for long runs.
 
+### Retryability and countability are two questions
+
+One classification of a finished trial answers both, and the answers are
+independent by design:
+
+- **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
+  Anything transient — a rate limit, an API error, a timeout, a bare error — is
+  requeued until `max_attempt_retries` is spent. A deterministic fault
+  (`provision_error`, an auth-shaped `api_error`) is not: the next attempt fails
+  the same way.
+- **Did the attempt measure the agent?** `classify_trial_outcome`. Only a trial
+  killed by a *typed* infrastructure condition — `rate_limit`, `api_timeout`,
+  `provision_error` — leaves the rate denominators.
+
+They disagree, and the disagreements are the point. A wall-clock `timeout`, an
+`api_error` and a bare `error` are all retried *and* counted: repeating them may
+help, and the agent whose behaviour produced them was measured doing so. Deriving
+either answer from the other would silently either stop retrying transient
+failures or start excusing agent failures from the benchmark.
+
+Retries are exhausted before any of this is recorded, so a trial that eventually
+succeeded contributes one measured result, not one per attempt. See
+[`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
+
 ## Programmatic Queue Access
 
 ```python
@@ -245,7 +297,9 @@ Queue state + per-attempt artifacts are written under `run_dir`:
 - `run_queue.sqlite` (sqlite backend only)
 - `trials/<task_id>/<trial>/trajectory.yaml`
 - `trials/<task_id>/<trial>/metrics.yaml`
-- `trials/<task_id>/<trial>/grade.yaml`
+- `trials/<task_id>/<trial>/grade.yaml` — **only when the trial produced a
+  grade.** A trial the infrastructure aborted has no verdict to write, so a reader
+  must not assume the file is there
 - `aggregate.json`
 - `per_task_metrics.json`
 - `metadata_slices.json`

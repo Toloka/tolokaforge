@@ -35,6 +35,10 @@ from tolokaforge.core.grading.judge import (
 )
 from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
+from tolokaforge.core.grading.transcript_wire import (
+    encode_transcript_wire,
+    split_leading_system_message,
+)
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.models import (
     CriterionResult,
@@ -48,7 +52,6 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
-from tolokaforge.core.trial_grader import _build_judge_messages_json, split_leading_system_message
 from tolokaforge.runner.models import LLMJudgeConfig, Rubric
 from tolokaforge.tools.registry import Tool, ToolCategory, ToolPolicy, ToolResult
 
@@ -503,7 +506,7 @@ def read_replay_inputs(
     """Reconstruct the ``LLMJudge.run()`` inputs for one judge-eligible trial.
 
     Rebuilds the judge's transcript through the same
-    :func:`_build_judge_messages_json` + :func:`split_leading_system_message` the
+    :func:`encode_transcript_wire` + :func:`split_leading_system_message` the
     runner uses, so the reconstructed transcript is byte-identical to the live
     grading path. Read tools are offline shims matching the recorded surface.
 
@@ -539,7 +542,7 @@ def read_replay_inputs(
 
     trajectory = Trajectory.model_validate(trajectory_raw)
     recorded_agent_prompt = prompts.get("system_prompt") or ""
-    wire = _build_judge_messages_json(trajectory, recorded_agent_prompt)
+    wire = encode_transcript_wire(trajectory, recorded_agent_prompt)
     if wire is None:
         raise MissingReplayInputError(
             f"no transcript: {trial_dir / 'trajectory.yaml'} has no messages and no agent prompt"

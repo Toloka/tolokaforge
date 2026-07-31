@@ -1,7 +1,10 @@
 # 0013. `RuntimeBackend` owns per-trial RPC methods — collapse `DockerRunnerAdapter`
 
-- **Status:** Accepted
+- **Status:** Accepted (amended)
 - **Date:** 2026-07-02
+- **Amended:** 2026-07-30 — the tool-executor carve-out keeps `execute()` and
+  drops the history: a per-trial `ToolCallRecorder` is injected and the
+  executors own no `tool_logs` (#676).
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -29,8 +32,8 @@ The seam question is: **which of the two established seams should own these five
 The five RPC methods land on `RuntimeBackend`:
 
 - `register_trial(trial_id, trial_spec_json, default_tool_timeout_s) -> dict`
-- `execute_tool(trial_id, tool_name, arguments, timeout_seconds, executor) -> ToolResult`
-- `grade_trial(trial_id, llm_messages_json, grading_components) -> dict`
+- `execute_tool(trial_id, tool_name, arguments, timeout_seconds, executor, *, call_id) -> ToolResult`
+- `grade_trial(trial_id, llm_messages_json, grading_components, termination_reason) -> dict`
 - `get_state(trial_id, include_unstable, tables) -> dict`
 - `reset_trial(trial_id, execute_init_actions) -> dict`
 
@@ -72,6 +75,42 @@ The `ToolExecutor` surface is already established (`tolokaforge.tools.registry`,
 - **`RuntimeBackend.executor_client` is removed.** No production caller reads it after this PR — `DockerRunnerAdapter` routes tool execution through `RuntimeBackend.execute_tool` — so the field, the `_UnusableExecutorClient` stub in `runtime.py`, and the `SharedStackRuntimeBackend.executor_client` alias are all deleted. The two tests that asserted on the stub's `NotImplementedError` shape go with them; the equivalent guarantee is now pinned by `test_per_trial_rpc_methods_raise_not_implemented` on `InMemoryRuntimeBackend` directly.
 - **`Conductor.run()` bodies get simpler.** Instead of `DockerRunnerAdapter(runner_client=runtime.executor_client, trial_id=…).register_trial(spec_json)`, the body reads `runtime.register_trial(trial_id, spec_json)`. One less object; the seam is visible at the call site.
 - **Contract tests widen.** `tests/canonical/test_runtime_backend_contract.py` pins the five new methods; `tests/canonical/test_runner_client_contract.py` (from ADR-0011 landing) still pins the `RunnerClient` seven-method surface — the two Protocols are now genuinely different.
+
+## Amendment — 2026-07-30: the executors carry no history (#676)
+
+The decision above stands: the five per-trial RPC methods live on
+`RuntimeBackend`, and `DockerRunnerAdapter` survives as a per-trial
+`ToolExecutor`. What changed is the carve-out's *content*.
+
+The carve-out was justified by two things `execute()` does beyond delegating:
+binding the `executor` identity, and appending to a per-trial `tool_logs` list.
+Only the first survives.
+
+Three executors — `ToolExecutor`, `UserToolExecutor`, `DockerRunnerAdapter` —
+each owned a list, in three different shapes, with no shared clock. `TrialRunner`
+read them back through `get_logs()` and concatenated the agent's list with the
+user's, so a trial's recorded order was agent-calls-then-user-calls rather than
+execution order. Three lists cannot be merged back into one order after the fact.
+
+So the current design is:
+
+- **One `ToolCallRecorder` per trial, injected.** `TrialToolCallRecorder` owns one
+  list and one counter; `RecordedToolCall.sequence` is stamped at append time, so
+  execution order across every executor is correct by construction. The runner
+  substrate's `TrialContextRuntime` satisfies the same contract.
+- **The executors keep no history.** `tool_logs`, `get_logs()` and `clear_logs()`
+  are gone from all three. `execute()` validates, runs, and returns a
+  `ToolResult`; the caller that knows the provider's `call_id` and which side of
+  the dialogue is acting does the recording.
+- **`RuntimeBackend` still grows no per-trial state**, which is what the original
+  carve-out was protecting. The recorder is the per-trial object now, and it is
+  the trial's, not an executor's.
+
+The recording site moving to the caller is also what puts every outcome in the
+record: `ToolExecutor.execute` returns early at its not-found, invalid-argument
+and rate-limit checks, all of which sat before the old log append, so a rejected
+call recorded nothing while the loop still appended a `role: tool` error. A caller
+that records whatever `ToolResult` comes back cannot be bypassed that way.
 
 ## Follow-ups
 

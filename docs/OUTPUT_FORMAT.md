@@ -25,7 +25,7 @@ bumped and this document is updated in the same commit.
             ├── trajectory.yaml             ← message trace + status + metrics
             ├── env.yaml
             ├── metrics.yaml
-            ├── grade.yaml
+            ├── grade.yaml                  ← only when the trial produced a grade
             ├── judge_trajectory.yaml       ← rubric-judge transcript (only when an LLM judge ran)
             ├── judge_inputs.yaml           ← rubric-judge structured inputs for replay (only when an LLM judge ran)
             ├── logs.yaml
@@ -359,7 +359,10 @@ included for forensics. Each LLM API call is also recorded in
 `latency_s` — the trial-level `cost_usd` is the sum of those entries.
 
 To help analytics consumers detect schema evolution, every trial-level
-metrics file includes a root-level `schema_version: 1` marker.
+metrics file includes a root-level `schema_version: 2` marker. Generation 2
+bundles carry no `grade.yaml` when the trial was aborted by infrastructure — the
+agent never ran, so there is no verdict to write — so a reader must not assume
+the file is there.
 
 ```yaml
 latency_total_s: 174.14
@@ -388,14 +391,16 @@ tool_calls: 7
 tool_success_rate: 1.0
 stuck_detected: false
 tool_usage:
-  - tool: "get_user_details"
-    count: 2
-    success: 2
-    fail: 0
-  - tool: "create_order"
-    count: 2
-    success: 2
-    fail: 0
+  - tool_name: "create_order"
+    call_count: 2
+    success_count: 2
+    error_count: 0
+    total_duration_s: 1.84
+  - tool_name: "get_user_details"
+    call_count: 2
+    success_count: 2
+    error_count: 0
+    total_duration_s: 0.42
 rate_limit_retries: 0
 rate_limit_wait_s: 0.0
 rate_limit_first_ts: null
@@ -409,6 +414,20 @@ probe_bucket_width_s: 0
 probe_dropped_buckets: 0
 probe_buckets: []
 ```
+
+`tool_usage` rolls up the trial's recorded tool calls by tool name, sorted by
+name, and its field names match the
+[`ToolUsage`](../tolokaforge/core/models.py) model so a consumer can
+`model_validate()` the round-trip. `success_count` counts calls whose recorded
+status is `success`; every other status — including a call the executor refused
+before it reached the tool — counts as an error. `total_duration_s` sums the wall
+time measured around each call, failures included.
+
+`tool_log`, the trial's ordered `RecordedToolCall` list, is **not** written to any
+artifact. It lives on the in-process `Trajectory` and feeds grading; a bundle read
+back from disk carries the message trace but no per-call `output`, `status`,
+`latency_seconds` or `executor`. Persisting it is a stated prerequisite of #682
+(replay).
 
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing
@@ -658,8 +677,8 @@ conductor body. Omitted from the provision-failure `metrics.yaml` (see
 
 When a trial fails during substrate provisioning (`provision` / `reset_recipe`
 raises, or `await_ready` times out), the conductor body never runs, so the
-executor writes the trial directory itself. Only three files land —
-`trajectory.yaml`, `metrics.yaml`, and `grade.yaml` — plus the
+executor writes the trial directory itself. Only two files land —
+`trajectory.yaml` and `metrics.yaml` — plus the
 [`services/`](#trialstask_idtrial_indexservices) bundle when per-service capture
 fired inside `provision`. `task.yaml`, `env.yaml`, and `logs.yaml` are **not**
 written (no resolved model config, no environment state, no per-trial logger for
@@ -668,7 +687,7 @@ a run that never happened).
 * `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
   empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 1`, empty `tool_usage`) plus two top-level failure-signal
+  `schema_version: 2`, empty `tool_usage`) plus two top-level failure-signal
   keys:
 
   ```yaml
@@ -680,8 +699,11 @@ a run that never happened).
   vocabulary matches `trajectory.yaml`'s `termination_reason`; `error_reason`
   carries the underlying `ProvisionError` reason string. `provisioning_duration_s`
   and `captured_service_logs` are absent on this path.
-* `grade.yaml` — `binary_pass: false`, `score: 0.0`, `reasons` carrying the
-  provisioning failure stage and reason.
+* `grade.yaml` — **not written**. The trial body never ran, so there is no
+  performance to score; a `0.0` would be indistinguishable from a task the model
+  failed. The stage and reason live in `metrics.yaml`'s `error` / `error_reason`
+  above, and the trial is excluded from every rate in
+  `per_task_metrics.json` (see § Run-level metric denominators).
 
 Writing this bundle is best-effort: an I/O failure while writing it is logged
 and does not change the trial's failed result.
@@ -1154,11 +1176,44 @@ tolokaforge run --config config.yaml --strict
 
 First ERROR log raises `RuntimeError` and stops execution.
 
+## Run-level metric denominators
+
+`per_task_metrics.json` rows and `aggregate.json` carry both counts a rate needs
+to be readable:
+
+| Key | Meaning |
+|---|---|
+| `total_trials` | Every attempt the run made |
+| `measured_trials` | The attempts that measured the agent — the denominator of every rate in the row except `avg_score` |
+| `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
+| `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
+| `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
+| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}` |
+
+`measured_trials + sum(infrastructure_aborts.values()) == total_trials`,
+`0 <= scored_trials <= measured_trials`, and
+`0 <= harness_errors <= measured_trials`.
+
+`success_rate`, `avg_latency_s`, `avg_turns`, `avg_tool_calls`, `stuck_rate`,
+`pass@k` and `pass_hat@k` — and their `_micro` / `_macro` aggregates — are over
+`measured_trials`; `avg_score` and `avg_score_micro` are over `scored_trials`,
+because a measured trial can still carry no grade. All of them are `null` when
+their denominator is `0`, and a task that measured nothing is excluded from the
+run's macro averages. Cost fields, `total_<usage-field>` / `avg_<usage-field>` token
+counters and the latency percentiles cover **every** attempt: an aborted trial
+really did buy its tokens.
+
+A trial leaves the denominator only when its termination reason was produced from
+an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
+[`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
+
 ## Schema Version Stamps
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
+| `metrics.yaml` | `schema_version` | `2` | The per-trial bundle's file set or field semantics change |
+| `aggregate.json` | `schema_version` | `2` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |

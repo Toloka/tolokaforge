@@ -62,18 +62,45 @@ from typing import Any
 
 from pydantic import BaseModel, ConfigDict, Field, model_serializer
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass
+from tolokaforge.core.models import TerminationReason
+
 __all__ = [
+    "AGGREGATE_SCHEMA_VERSION",
     "AggregateMetrics",
     "CapturedServiceLogsRollup",
     "FailureAttribution",
     "FailureRecord",
     "FailureSummary",
     "MetadataSlices",
+    "OutcomeReasonCount",
     "PerTaskMetrics",
     "RunAggregate",
     "ServiceLogCaptureEntry",
     "ServiceLogCaptureSource",
 ]
+
+AGGREGATE_SCHEMA_VERSION = 2
+"""The ``aggregate.json`` wire generation.
+
+Version 2 rates are over ``measured_trials`` — the trials that measured the
+agent — so a consumer reading a file can tell which denominator produced
+``success_rate_micro``, ``avg_score_micro`` and ``pass@k_macro`` without
+inspecting the run that wrote it.
+"""
+
+
+class OutcomeReasonCount(BaseModel):
+    """One ``outcomes_by_reason`` row: how a termination reason was counted.
+
+    ``class`` is a Python keyword, so the field is aliased; dump with
+    ``by_alias=True`` to produce the wire shape.
+    """
+
+    model_config = ConfigDict(extra="forbid", populate_by_name=True)
+
+    outcome_class: TrialOutcomeClass = Field(alias="class")
+    count: int
 
 
 class PerTaskMetrics(BaseModel):
@@ -95,13 +122,26 @@ class PerTaskMetrics(BaseModel):
     tags: list[str] = Field(default_factory=list)
     expected_failure_modes: list[str] = Field(default_factory=list)
 
-    # Trial counts + basic success signal.
+    # Trial counts + basic success signal. ``total_trials`` counts every
+    # attempt; ``measured_trials`` counts the ones that measured the agent and
+    # is the denominator of every rate in this row except ``avg_score``, whose
+    # denominator is ``scored_trials`` — the measured trials that produced a
+    # grade at all. ``harness_errors`` overlaps ``measured_trials`` (our own
+    # defects are counted, and their count is a run-health signal);
+    # ``infrastructure_aborts`` does not — it is the rest of ``total_trials``,
+    # broken down per reason so provider throttling and a harness regression can
+    # never read the same.
     total_trials: int
+    measured_trials: int
+    scored_trials: int
+    infrastructure_aborts: dict[TerminationReason, int] = Field(default_factory=dict)
+    harness_errors: int = 0
+    outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
     successful_trials: int
-    success_rate: float
+    success_rate: float | None
 
-    # pass@k / pass_hat@k for k in [1, 5, 10]. ``None`` when the run has
-    # fewer trials than k — mirrors ``calculate_pass_k``.
+    # pass@k / pass_hat@k for k in [1, 5, 10]. ``None`` when the task has
+    # fewer *measured* trials than k — mirrors ``calculate_pass_k``.
     pass_at_1: float | None = Field(default=None, alias="pass@1")
     pass_at_5: float | None = Field(default=None, alias="pass@5")
     pass_at_10: float | None = Field(default=None, alias="pass@10")
@@ -109,17 +149,19 @@ class PerTaskMetrics(BaseModel):
     pass_hat_at_5: float | None = Field(default=None, alias="pass_hat@5")
     pass_hat_at_10: float | None = Field(default=None, alias="pass_hat@10")
 
-    # Averages across trials. Typed as ``int | float`` unions so the
+    # Averages over the measured trials. Typed as ``int | float`` unions so the
     # model preserves the numeric type the producer emitted: e.g.
     # ``sum([]) == 0`` (``int``) for empty aggregates, ``float``
     # otherwise. Pydantic's smart-union picks the more specific type on
     # validation, so a source ``0`` round-trips to ``0`` (not ``0.0``)
     # in the JSON dump — pinning the wire format against the current
     # dict-based writer path. See :class:`RunAggregateWriter` docstring.
-    avg_score: int | float
-    avg_latency_s: int | float
-    avg_turns: int | float
-    avg_tool_calls: int | float
+    # ``None`` when the task measured nothing: no trial ran, so there is no
+    # average, and a ``0.0`` would read as a measured zero.
+    avg_score: int | float | None
+    avg_latency_s: int | float | None
+    avg_turns: int | float | None
+    avg_tool_calls: int | float | None
 
     # Per-usage-field averages (Metrics.usage — six fields).
     avg_prompt_tokens: int | float = 0
@@ -150,7 +192,7 @@ class PerTaskMetrics(BaseModel):
     api_call_latency_p90_s: int | float = 0
     api_call_latency_p99_s: int | float = 0
 
-    stuck_rate: int | float = 0
+    stuck_rate: int | float | None = 0
 
 
 class AggregateMetrics(BaseModel):
@@ -169,10 +211,21 @@ class AggregateMetrics(BaseModel):
     total_tasks: int
     total_trials: int
 
+    # The run-level halves of the per-task counts, so a rate is never read
+    # without the denominator that produced it in the same object.
+    measured_trials: int
+    scored_trials: int
+    infrastructure_aborts: dict[TerminationReason, int] = Field(default_factory=dict)
+    harness_errors: int = 0
+    outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
+
     # Weighted (micro) averages — set when ``weighted=True``. Rate-shaped
     # ([0, 1] scalar from ``sum(...) / n``): always ``float`` at the
     # producer. Stays narrow — no ``int`` widening — matching the
-    # ``PerTaskMetrics.success_rate`` / ``avg_score`` siblings.
+    # ``PerTaskMetrics.success_rate`` / ``avg_score`` siblings. ``None`` when
+    # the run measured nothing at all. Each weighs by the denominator of the
+    # per-task figure it averages: ``success_rate_micro`` by ``measured_trials``,
+    # ``avg_score_micro`` by ``scored_trials``.
     success_rate_micro: float | None = None
     avg_score_micro: float | None = None
 
@@ -190,11 +243,11 @@ class AggregateMetrics(BaseModel):
     pass_hat_at_5_macro: float | None = Field(default=None, alias="pass_hat@5_macro")
     pass_hat_at_10_macro: float | None = Field(default=None, alias="pass_hat@10_macro")
 
-    # Simple cross-task averages.
-    avg_latency_s: int | float = 0
-    avg_turns: int | float = 0
-    avg_tool_calls: int | float = 0
-    stuck_rate: int | float = 0
+    # Simple cross-task averages, over the tasks that measured anything.
+    avg_latency_s: int | float | None = 0
+    avg_turns: int | float | None = 0
+    avg_tool_calls: int | float | None = 0
+    stuck_rate: int | float | None = 0
 
     # Per-usage-field totals + macro averages.
     total_prompt_tokens: int | float = 0
@@ -295,7 +348,7 @@ class RunAggregate(AggregateMetrics):
     guarantees the field is present regardless of dump options.
     """
 
-    schema_version: int = 1
+    schema_version: int = AGGREGATE_SCHEMA_VERSION
 
     captured_service_logs: CapturedServiceLogsRollup | None = None
 
@@ -351,6 +404,7 @@ class FailureRecord(BaseModel):
     trial_index: int
     status: str
     termination_reason: str | None = None
+    outcome_class: TrialOutcomeClass
     failure_class: str
     deterministic: bool
     confidence: float
@@ -371,6 +425,10 @@ class FailureSummary(BaseModel):
     total_failed_attempts: int
     deterministic_attribution_coverage: float | None = None
     by_failure_class: dict[str, int] = Field(default_factory=dict)
+    # ``str`` keys, not :class:`TrialOutcomeClass`: this counter's ``"unknown"``
+    # bucket holds the attributions that carry no ``outcome_class`` at all, which
+    # is not a class the classifier can ever return.
+    by_outcome_class: dict[str, int] = Field(default_factory=dict)
     by_tool: dict[str, int] = Field(default_factory=dict)
 
 

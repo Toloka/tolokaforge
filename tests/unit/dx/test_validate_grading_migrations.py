@@ -32,8 +32,7 @@ from tolokaforge.dx.cli.main import cli
 pytestmark = pytest.mark.unit
 
 
-_TASK_YAML = textwrap.dedent(
-    """
+_TASK_YAML = textwrap.dedent("""
     task_id: rubric_migration_probe
     name: "Rubric migration probe"
     category: test
@@ -51,8 +50,7 @@ _TASK_YAML = textwrap.dedent(
         - role: "user"
           content: "hi"
     grading: "grading.yaml"
-    """
-).strip()
+    """).strip()
 
 
 def _write_task(task_dir: Path, grading_yaml: str) -> Path:
@@ -247,9 +245,7 @@ def test_validate_accepts_customization_block(tmp_path: Path):
 def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
     """The output_schema field is gone; its presence is a loud migration error."""
     grading = tmp_path / "grading.yaml"
-    grading.write_text(
-        textwrap.dedent(
-            """
+    grading.write_text(textwrap.dedent("""
             llm_judge:
               rubric:
                 criteria:
@@ -257,9 +253,7 @@ def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
                     description: d
               output_schema:
                 type: object
-            """
-        ).strip()
-    )
+            """).strip())
 
     with pytest.raises(ValueError, match="output_schema has been removed"):
         validate_grading_yaml(grading)
@@ -320,15 +314,11 @@ def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path
     so a malformed customization is NOT caught here — the reason the rejection
     fixtures above must carry a valid rubric to avoid a false green."""
     grading = tmp_path / "grading.yaml"
-    grading.write_text(
-        textwrap.dedent(
-            """
+    grading.write_text(textwrap.dedent("""
             llm_judge:
               customization:
                 disable_knowledge_search: sometimes
-            """
-        ).strip()
-    )
+            """).strip())
 
     validate_grading_yaml(grading)  # no rubric/model_ref → no validation, no raise
 

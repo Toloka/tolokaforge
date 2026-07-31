@@ -46,13 +46,21 @@ from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
 from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import RecordedToolCall as RecordedToolCall
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
 from tolokaforge.runner.models import ServiceIsolation as ServiceIsolation
 from tolokaforge.runner.models import ServiceNetworkAccess as ServiceNetworkAccess
 from tolokaforge.runner.models import ServiceSpec as ServiceSpec
 from tolokaforge.runner.models import StackPatch as StackPatch
+from tolokaforge.runner.models import ToolCallRecorder as ToolCallRecorder
+from tolokaforge.runner.models import ToolExecutorIdentity as ToolExecutorIdentity
 from tolokaforge.runner.models import ToolExpectations as ToolExpectations
+
+# Declared in the ``tolokaforge.tools.registry`` leaf beside ``ToolResult``;
+# re-exported here so core-side callers reach one module for the whole
+# recorded-tool-call vocabulary.
+from tolokaforge.tools.registry import ToolExecutionStatus as ToolExecutionStatus
 
 
 class MessageRole(str, Enum):
@@ -94,6 +102,16 @@ class ToolCall(BaseModel):
     id: str
     name: str
     arguments: dict[str, Any]
+
+    @model_validator(mode="after")
+    def _require_id(self) -> Self:
+        if not self.id:
+            raise ValueError(
+                f"tool call for {self.name!r} carries an empty id. The id is the only key "
+                "that joins a call to the tool result it produced, so a call without one "
+                "is not gradeable."
+            )
+        return self
 
 
 class Message(BaseModel):
@@ -616,7 +634,9 @@ class Trajectory(BaseModel):
     messages: list[Message]
     final_env_state: dict[str, Any] = Field(default_factory=dict)
     metrics: Metrics = Field(default_factory=Metrics)
-    tool_log: list[dict[str, Any]] = Field(default_factory=list)
+    # The trial's ordered tool-call record, one entry per call across every
+    # executor. Not written to ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
+    tool_log: list[RecordedToolCall] = Field(default_factory=list)
     grade: Grade | None = None
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape is revised so that downstream analytics can gate

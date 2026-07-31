@@ -1,6 +1,6 @@
 """Import-boundary lock for the ``tolokaforge.runner`` surface.
 
-Three locks enforce that the runner sits *below* the orchestration / adapter /
+Four locks enforce that the runner sits *below* the orchestration / adapter /
 CLI / docker-build surfaces and never drags them (or their deps) into the
 runner image, inverting the dependency direction.
 
@@ -42,7 +42,15 @@ is reported with the first-party import chain that pulled it.
    form only, never to import statements. Calls whose argument is a variable or
    f-string are out of static reach and are never flagged.
 
-All three consume one ``FORBIDDEN_PREFIXES`` definition: locks 1/2 receive it as
+4. **Shared-model tier layering.** Three clean-subprocess probes freeze the
+   three-tier stack a *shared* model type is placed against:
+   ``tolokaforge.tools.registry`` is a true leaf (zero first-party imports), and
+   ``tolokaforge.runner.models`` does not reach ``tolokaforge.core.models``. A
+   type declared in the wrong tier closes a cycle — and because ``core.models``
+   is a permitted runner surface, locks 1-3 would not catch it; it would fail at
+   runtime on a partially-initialised module, inside the runner container.
+
+Locks 1-3 consume one ``FORBIDDEN_PREFIXES`` definition: locks 1/2 receive it as
 a literal in the subprocess source, lock 3 imports it directly.
 """
 
@@ -416,3 +424,70 @@ def test_forbidden_import_detector_flags_deferred_imports() -> None:
         )
         == []
     )
+
+
+# ---------------------------------------------------------------------------
+# 4. Shared-model tier layering
+# ---------------------------------------------------------------------------
+
+_TIER_PROBE = """
+import importlib
+import sys
+
+importlib.import_module(sys.argv[1])
+first_party = sorted(m for m in sys.modules if m.split(".")[0] == "tolokaforge")
+print("\\n".join(first_party))
+"""
+
+
+def _first_party_footprint(module: str) -> set[str]:
+    """First-party modules present after importing *module* in a clean interpreter.
+
+    A clean subprocess is the only honest measurement: pytest has already
+    imported most of the tree, so an in-process footprint proves nothing.
+    """
+    result = subprocess.run(
+        [sys.executable, "-c", _TIER_PROBE, module],
+        capture_output=True,
+        text=True,
+    )
+    assert result.returncode == 0, (
+        f"importing {module} in a clean subprocess failed (exit {result.returncode}):\n"
+        f"{result.stderr}"
+    )
+    return set(result.stdout.split())
+
+
+def test_tools_registry_is_a_leaf() -> None:
+    """``tolokaforge.tools.registry`` holds the shared ``ToolResult`` /
+    ``ToolExecutionStatus`` vocabulary that both substrates and both model
+    modules import. Nothing declared there can close a cycle only while it stays
+    a leaf: its footprint is itself and its parent packages, nothing else."""
+    footprint = _first_party_footprint("tolokaforge.tools.registry")
+
+    assert footprint == {"tolokaforge", "tolokaforge.tools", "tolokaforge.tools.registry"}, (
+        "tolokaforge.tools.registry gained a first-party import. It is the tier every "
+        f"other layer imports, so it must stay a leaf; footprint was {sorted(footprint)}"
+    )
+
+
+def test_runner_models_does_not_reach_core_models() -> None:
+    """``core.models`` re-exports *from* ``runner.models`` at module top level,
+    so the edge only runs one way. Declaring a shared type core-side and
+    importing it runner-side reverses it and raises on a partially-initialised
+    module at runtime."""
+    footprint = _first_party_footprint("tolokaforge.runner.models")
+
+    assert "tolokaforge.core.models" not in footprint, (
+        "tolokaforge.runner.models now reaches tolokaforge.core.models, which "
+        "re-exports from it — the cycle fails at runtime, not here. Declare the "
+        "shared type in runner.models (or below) and re-export it upward."
+    )
+
+
+def test_core_models_reaches_both_lower_tiers() -> None:
+    """The top of the stack, asserted so the layering is pinned in both
+    directions: a re-export that quietly moved would show up here."""
+    footprint = _first_party_footprint("tolokaforge.core.models")
+
+    assert {"tolokaforge.runner.models", "tolokaforge.tools.registry"} <= footprint
