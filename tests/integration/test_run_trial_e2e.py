@@ -87,14 +87,9 @@ def _models(provider: str, model: str) -> dict[str, dict[str, Any]]:
     }
 
 
-def _run_orchestrator_baseline(
-    provider: str, model: str, output_dir: Path, env: dict[str, str]
-) -> dict[str, Any]:
-    """Drive ``tolokaforge run`` for the same task and read the persisted trial.
-
-    Returns ``{"status", "binary_pass", "score", "env"}`` from the on-disk
-    ``trajectory.yaml`` / ``grade.yaml`` / ``env.yaml``.
-    """
+def _write_orchestrator_config(provider: str, model: str, output_dir: Path) -> Path:
+    """Write the baseline run config: cheap setup, kept ahead of the paid legs
+    so a configuration or filesystem error cannot cost provider budget."""
     cfg = {
         "models": _models(provider, model),
         "orchestrator": {
@@ -112,8 +107,20 @@ def _run_orchestrator_baseline(
         },
     }
     cfg_path = output_dir.parent / "run.yaml"
+    cfg_path.parent.mkdir(parents=True, exist_ok=True)
     cfg_path.write_text(yaml.safe_dump(cfg))
+    return cfg_path
 
+
+def _run_orchestrator_baseline(
+    provider: str, model: str, output_dir: Path, env: dict[str, str]
+) -> dict[str, Any]:
+    """Drive ``tolokaforge run`` for the same task and read the persisted trial.
+
+    Returns ``{"status", "binary_pass", "score", "env"}`` from the on-disk
+    ``trajectory.yaml`` / ``grade.yaml`` / ``env.yaml``.
+    """
+    cfg_path = _write_orchestrator_config(provider, model, output_dir)
     proc = subprocess.run(
         ["uv", "run", "tolokaforge", "run", "--config", str(cfg_path)],
         cwd=str(_REPO_ROOT),
@@ -153,6 +160,8 @@ def test_run_trial_matches_orchestrator_real_agent_loop(tmp_path: Path) -> None:
 
     provider, model = _pick_provider()  # type: ignore[misc]
     task, _task_dir = load_task_yaml(_TASK_YAML)
+    # Surface configuration and filesystem errors before the paid agent loop.
+    _write_orchestrator_config(provider, model, tmp_path / "orch" / "results")
 
     result = run_trial(
         task=task,
