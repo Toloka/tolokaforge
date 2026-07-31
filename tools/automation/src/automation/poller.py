@@ -259,9 +259,11 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
                     "requester": requester,
                     "message_ts": ts,
                     "route": route,
-                    "gateway": gateway_catalog.as_dict(availability[slug])
-                    if slug in availability
-                    else None,
+                    "gateway": (
+                        gateway_catalog.as_dict(availability[slug])
+                        if slug in availability
+                        else None
+                    ),
                 }
             )
 

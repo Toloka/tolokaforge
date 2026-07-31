@@ -178,9 +178,9 @@ class TestPlanRows:
             "requester": "U1",
             "message_ts": "1.0",
             "route": route,
-            "gateway": gateway_catalog.as_dict(availability[slug])
-            if slug in availability
-            else None,
+            "gateway": (
+                gateway_catalog.as_dict(availability[slug]) if slug in availability else None
+            ),
         }
 
     def test_unstated_route_defaults_to_openrouter(self) -> None:
