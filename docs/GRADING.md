@@ -488,8 +488,8 @@ it cannot masquerade as a number.
 > **Hash-algorithm change (recompute stored hashes).** `to_hashable` now applies
 > `canonical_number`, so it produces different digests than the pre-canonicalization
 > version for any numeric-bearing state. Because grading recomputes the golden
-> hash live (golden-action replay via `compute_tau_style_expected_hash`), this is
-> symmetric and safe. But any **externally pre-computed** `expected_state_hash`
+> hash live (golden-action replay via
+> `StateChecker.check_hash_against_golden_replay`), this is symmetric and safe. But any **externally pre-computed** `expected_state_hash`
 > stored from before this change is stale and will false-fail — recompute it.
 > (Scanned at time of writing: `0` task-pack grading configs store a hash literal,
 > so there is nothing to migrate in-tree.)
@@ -599,6 +599,40 @@ directions. (`db_hash_check` was never declared on the runner config at all, so 
 engine ever emitted it and it is not part of this lock — a populated
 `db_hash_check` is rejected core-side at config load.)
 
+### Folding the hash verdict with `jsonpaths`
+
+`state_checks` has two possible sources — the state hash and the JSONPath
+assertions — and one component score. Each source reads a different level of the
+trial's final state, and both levels are fixed:
+
+| source | evaluated against |
+|---|---|
+| `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
+| `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
+
+A source nobody configured contributes nothing rather than a score:
+
+- **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
+  hash verdict, at every `weight`. An empty assertion list is not a pass.
+- **`jsonpaths` only** (no hash source): the component is the assertion score.
+- **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
+
+`hash.weight` is consulted only in the third case, and it has **no default**:
+every candidate value there silently discards something the author asked for. A
+pack that configures both sources without a weight fails grading with a message
+naming the three meaningful choices — `1.0` lets the hash decide, `0.0` lets the
+jsonpaths decide, `0.5` gives them equal shares. The value must lie within
+`[0.0, 1.0]`; outside that range the component leaves `[0, 1]` altogether. This
+fold is the core engine's; `state_checks.hash.weight` is core-only, per
+[Single-substrate keys](#single-substrate-keys).
+
+Hash grading that was configured but could not run — `hash.enabled` with neither
+source declared, or `golden_actions` with no task directory, `initial_state` or
+`mcp_server` to replay them against — yields **no** hash verdict and names the
+skipped check in `grade.reasons`, rather than a `0.0` that reads as a state the
+agent got wrong (#729). A golden replay that fails to *execute* is a grading
+error rather than a verdict: it raises, and the trial is left unscored.
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
@@ -607,7 +641,9 @@ engine ever emitted it and it is not part of this lock — a populated
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
-- Combine with JSONPath assertions using `weight: 0.8` for flexibility
+- Combining the hash with JSONPath assertions requires an explicit `weight` —
+  decide which source carries the verdict, per
+  [Folding the hash verdict with `jsonpaths`](#folding-the-hash-verdict-with-jsonpaths)
 
 ---
 

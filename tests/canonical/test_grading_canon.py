@@ -29,13 +29,10 @@ class TestStateCheckerCanon:
 
         final_state = {"counter": 5, "operations": ["add_5"]}
 
-        score, reasons = checker.grade(
-            state=final_state,
-            jsonpath_assertions=jsonpath_assertions,
-        )
+        score, reasons = checker.check_jsonpaths(final_state, jsonpath_assertions)
 
         snap = canon_snapshot("grading_state_calc")
-        snap.assert_match({"score": score, "reasons": reasons}, "pass_result.json")
+        snap.assert_match({"score": score, "reasons": "; ".join(reasons)}, "pass_result.json")
 
     def test_minimal_calculation_state_fail(self, canon_snapshot):
         """StateChecker grades a failing state for minimal_calculation."""
@@ -51,13 +48,10 @@ class TestStateCheckerCanon:
 
         final_state = {"counter": 0, "operations": []}
 
-        score, reasons = checker.grade(
-            state=final_state,
-            jsonpath_assertions=jsonpath_assertions,
-        )
+        score, reasons = checker.check_jsonpaths(final_state, jsonpath_assertions)
 
         snap = canon_snapshot("grading_state_calc")
-        snap.assert_match({"score": score, "reasons": reasons}, "fail_result.json")
+        snap.assert_match({"score": score, "reasons": "; ".join(reasons)}, "fail_result.json")
 
 
 class TestTranscriptCheckerCanon:

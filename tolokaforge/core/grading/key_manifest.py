@@ -214,7 +214,9 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.golden_actions",
         core_dict_key="golden_actions",
-        core_evaluator="tolokaforge.core.grading.state_checks.StateChecker.grade_tau_style",
+        core_evaluator=(
+            "tolokaforge.core.grading.state_checks.StateChecker.check_hash_against_golden_replay"
+        ),
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         tracking_issue=687,
     ),
@@ -243,7 +245,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.hash",
         runner_field=None,
         core_dict_key="weight",
-        core_evaluator="tolokaforge.core.grading.state_checks.StateChecker.grade",
+        core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
         reason=(
             "core blends the hash score against the jsonpath score by this weight; "
             "the runner multiplies the two and has no weight concept, so the same "

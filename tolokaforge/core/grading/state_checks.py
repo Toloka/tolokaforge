@@ -76,6 +76,27 @@ def consistent_hash(value: Hashable) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
+class GoldenReplayError(Exception):
+    """A golden-action replay could not be executed.
+
+    There is no expected state to compare against, so the trial has no
+    state-hash verdict — not a failing one.
+    """
+
+
+def extract_db_state(final_env_state: dict[str, Any]) -> dict[str, Any]:
+    """Return the level of a final environment state that a hash is computed over.
+
+    A final environment state is wrapped — ``{"agent": …, "user": …, "db": …}`` —
+    while the golden state comes from the task's initial-state JSON, which holds
+    the raw database. Both the tau-bench hash and the runner's
+    ``compute_stable_hash`` therefore describe the unwrapped level this returns.
+    JSONPath assertions read the wrapped state instead, so ``$.db.<table>`` is
+    what an author writes.
+    """
+    return final_env_state.get("db", final_env_state.get("agent", final_env_state))
+
+
 class StateChecker:
     """Check final environment state against expectations"""
 
@@ -314,44 +335,6 @@ class StateChecker:
         except Exception as e:
             return 0.0, f"Error computing hash: {str(e)}"
 
-    def grade(
-        self,
-        state: dict[str, Any],
-        jsonpath_assertions: list[dict[str, Any]],
-        expected_hash: str | None = None,
-        hash_weight: float = 0.5,
-        *,
-        numeric_string_fields: list[str] | None = None,
-    ) -> tuple[float, str]:
-        """
-        Grade state with combination of JSONPath and hash checks
-
-        Args:
-            state: Final environment state
-            jsonpath_assertions: JSONPath assertions
-            expected_hash: Optional expected state hash
-            hash_weight: Weight for hash check vs JSONPath
-            numeric_string_fields: Record field names whose numeric-looking
-                string values fold when hashing (per-field opt-in).
-
-        Returns:
-            (score 0-1, reasons)
-        """
-        jsonpath_score, jsonpath_reasons = self.check_jsonpaths(state, jsonpath_assertions)
-
-        if expected_hash:
-            hash_score, hash_reason = self.check_hash(
-                state, expected_hash, numeric_string_fields=numeric_string_fields
-            )
-            # Weighted combination
-            final_score = (jsonpath_score * (1 - hash_weight)) + (hash_score * hash_weight)
-            reasons = jsonpath_reasons + [hash_reason]
-        else:
-            final_score = jsonpath_score
-            reasons = jsonpath_reasons
-
-        return final_score, "; ".join(reasons)
-
     def _execute_golden_actions(
         self,
         golden_actions: list[dict[str, Any]],
@@ -469,55 +452,44 @@ class StateChecker:
         string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
         return consistent_hash(to_hashable(data, string_fields))
 
-    def grade_tau_style(
+    def check_hash_against_golden_replay(
         self,
-        state: dict[str, Any],
-        jsonpath_assertions: list[dict[str, Any]],
+        db_state: dict[str, Any],
         golden_actions: list[dict[str, Any]],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,
         task_domain: str,
-        hash_weight: float = 1.0,
         *,
         numeric_string_fields: list[str] | None = None,
     ) -> tuple[float, str, dict[str, Any] | None]:
         """
-        Grade state using tau-bench style with diff calculation.
-
-        Executes golden actions to get expected state, compares with actual state,
-        and returns detailed diff if they don't match.
+        Check state against the state a golden-action replay produces (tau-bench style).
 
         Args:
-            state: Final environment state
-            jsonpath_assertions: JSONPath assertions
+            db_state: Unwrapped database state (see :func:`extract_db_state`)
             golden_actions: List of golden actions to execute
             task_dir: Task directory
             initial_state_path: Path to initial state JSON (relative to task_dir)
             mcp_server_path: Path to MCP server module (relative to task_dir)
             task_domain: Domain name (e.g., "airline")
-            hash_weight: Weight for hash check vs JSONPath
+            numeric_string_fields: Record field names whose numeric-looking
+                string values fold when hashing (per-field opt-in).
 
         Returns:
-            (score 0-1, reasons, diff_result dict or None)
-        """
-        jsonpath_score, jsonpath_reasons = self.check_jsonpaths(state, jsonpath_assertions)
+            (score 0 or 1, reason, diff_result dict or None)
 
-        # Execute golden actions to get expected state
+        Raises:
+            GoldenReplayError: the replay could not be executed, so there is no
+                expected state to compare against and therefore no verdict.
+        """
         try:
             expected_state = self._execute_golden_actions(
                 golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
             )
         except Exception as e:
-            error_msg = f"Error executing golden actions: {str(e)}"
             self.logger.error("Failed to execute golden actions", error=str(e))
-            return 0.0, error_msg, None
-
-        # Extract database state from final state structure
-        # Final state has structure: {"agent": {...}, "user": {...}, "db": {...}, ...}
-        # For airline/retail tasks, we want to hash the "db" key (legacy format) or "agent" key
-        # The initial state JSON file contains the raw database state
-        db_state = state.get("db", state.get("agent", state))
+            raise GoldenReplayError(f"Error executing golden actions: {e}") from e
 
         # Compute hashes
         string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
@@ -551,8 +523,4 @@ class StateChecker:
                 "State hash matches", expected_hash=expected_hash[:16], actual_hash=actual_hash[:16]
             )
 
-        # Weighted combination
-        final_score = (jsonpath_score * (1 - hash_weight)) + (hash_score * hash_weight)
-        reasons = jsonpath_reasons + [hash_reason]
-
-        return final_score, "; ".join(reasons), diff_result
+        return hash_score, hash_reason, diff_result

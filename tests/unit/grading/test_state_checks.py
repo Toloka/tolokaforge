@@ -8,6 +8,7 @@ from tolokaforge.core.grading.state_checks import (
     consistent_hash,
     to_hashable,
 )
+from tolokaforge.core.grading.state_composition import compose_state_checks_score
 
 pytestmark = pytest.mark.unit
 
@@ -287,7 +288,13 @@ class TestHashGrading:
 
 @pytest.mark.unit
 class TestCombinedGrading:
-    """Test combined JSONPath and hash grading"""
+    """Test the two state-check sources folding into one score.
+
+    The checker reports each source independently and
+    :func:`compose_state_checks_score` folds them, so these cases pin the two
+    together the way a grading path drives them. ``None`` is *not evaluated*: a
+    source nobody configured contributes nothing rather than a vacuous ``1.0``.
+    """
 
     @pytest.fixture
     def checker(self):
@@ -298,45 +305,39 @@ class TestCombinedGrading:
         return {"lines": [{"id": 1, "enabled": True}], "count": 1}
 
     def test_hash_only(self, checker, state):
-        """Test hash-only grading"""
-        expected_hash = consistent_hash(to_hashable(state))
-        score, reasons = checker.grade(
-            state=state,
-            jsonpath_assertions=[],
-            expected_hash=expected_hash,
-            hash_weight=1.0,
+        """A hash verdict with no assertions is the score, at any weight"""
+        hash_score, _ = checker.check_hash(state, consistent_hash(to_hashable(state)))
+        score = compose_state_checks_score(
+            hash_score=hash_score, jsonpath_score=None, hash_weight=1.0
         )
         assert score == 1.0
 
     def test_jsonpath_only(self, checker, state):
-        """Test JSONPath-only grading"""
+        """A JSONPath score with no hash configured is the score"""
         assertions = [{"path": "$.lines[0].enabled", "equals": True, "description": "Enabled"}]
-        score, reasons = checker.grade(
-            state=state, jsonpath_assertions=assertions, expected_hash=None, hash_weight=0.5
+        jsonpath_score, _ = checker.check_jsonpaths(state, assertions)
+        score = compose_state_checks_score(
+            hash_score=None, jsonpath_score=jsonpath_score, hash_weight=None
         )
         assert score == 1.0
 
     def test_combined_both_pass(self, checker, state):
-        """Test combined grading where both pass"""
-        expected_hash = consistent_hash(to_hashable(state))
+        """Both sources satisfied score 1.0 whatever the weight splits"""
         assertions = [{"path": "$.count", "equals": 1, "description": "Count is 1"}]
-        score, reasons = checker.grade(
-            state=state,
-            jsonpath_assertions=assertions,
-            expected_hash=expected_hash,
-            hash_weight=0.5,
+        hash_score, _ = checker.check_hash(state, consistent_hash(to_hashable(state)))
+        jsonpath_score, _ = checker.check_jsonpaths(state, assertions)
+        score = compose_state_checks_score(
+            hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=0.5
         )
         assert score == 1.0
 
     def test_combined_hash_fail_jsonpath_pass(self, checker, state):
-        """Test combined grading where hash fails but JSONPath passes"""
-        wrong_hash = "0" * 64
+        """A failed hash keeps only the jsonpaths' share of the credit"""
         assertions = [{"path": "$.count", "equals": 1, "description": "Count is 1"}]
-        score, reasons = checker.grade(
-            state=state,
-            jsonpath_assertions=assertions,
-            expected_hash=wrong_hash,
-            hash_weight=0.5,
+        hash_score, _ = checker.check_hash(state, "0" * 64)
+        jsonpath_score, _ = checker.check_jsonpaths(state, assertions)
+        score = compose_state_checks_score(
+            hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=0.5
         )
         assert score == pytest.approx(0.5)
 

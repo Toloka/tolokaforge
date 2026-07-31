@@ -21,7 +21,15 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
-from tolokaforge.core.grading.state_checks import StateChecker
+from tolokaforge.core.grading.state_checks import (
+    GoldenReplayError,
+    StateChecker,
+    extract_db_state,
+)
+from tolokaforge.core.grading.state_composition import (
+    compose_state_checks_score,
+    validate_hash_weight,
+)
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import (
@@ -34,6 +42,16 @@ from tolokaforge.core.models import (
 )
 
 logger = logging.getLogger(__name__)
+
+_HASH_NOT_CHECKED_NO_SOURCE = (
+    "state_checks.hash is enabled but declares neither expected_state_hash nor "
+    "golden_actions, so the state hash was not checked"
+)
+_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT = (
+    "state_checks.hash.golden_actions needs the task's directory, initial_state and "
+    "mcp_server to replay, and this grading engine has none, so the state hash was "
+    "not checked"
+)
 
 
 class GradingEngine:
@@ -91,72 +109,9 @@ class GradingEngine:
 
         # State checks
         if self.config.state_checks:
-            hash_config = self.config.state_checks.hash
-            expected_hash = None
-            hash_weight = 0.5
-            golden_actions = None
-
-            if hash_config and hash_config.get("enabled", False):
-                # Check for pre-computed hash from adapter first (preferred for Tau)
-                expected_hash = hash_config.get("expected_state_hash")
-
-                # Check for tau-bench style golden actions (fallback if no pre-computed hash)
-                if not expected_hash and "golden_actions" in hash_config:
-                    golden_actions = hash_config["golden_actions"]
-
-                hash_weight = hash_config.get(
-                    "weight", 1.0
-                )  # Default to 1.0 for tau-bench compatibility
-
-            # If we have pre-computed hash from adapter, use simple hash comparison
-            if expected_hash:
-                # For adapter-based tasks, compare db state (which is adapter_env.data)
-                # The final_env_state has structure like {"agent": {}, "user": {}, "db": {...}}
-                db_state = final_env_state.get("db", final_env_state.get("agent", final_env_state))
-
-                state_score, state_reasons = self.state_checker.grade(
-                    state=db_state,
-                    jsonpath_assertions=self.config.state_checks.jsonpaths,
-                    expected_hash=expected_hash,
-                    hash_weight=hash_weight,
-                    numeric_string_fields=self.config.state_checks.numeric_string_fields,
-                )
-            # Use tau-style grading if golden_actions are present and MCP context available
-            elif (
-                golden_actions
-                and self.task_dir
-                and self.task_initial_state
-                and self.task_mcp_server
-            ):
-                if not self.task_initial_state.json_db:
-                    state_score = 0.0
-                    state_reasons = (
-                        "Cannot use tau-style grading: no initial_state.json_db specified"
-                    )
-                else:
-                    state_score, state_reasons, state_diff_result = (
-                        self.state_checker.grade_tau_style(
-                            state=final_env_state,
-                            jsonpath_assertions=self.config.state_checks.jsonpaths,
-                            golden_actions=golden_actions,
-                            task_dir=self.task_dir,
-                            initial_state_path=self.task_initial_state.json_db,
-                            mcp_server_path=self.task_mcp_server,
-                            task_domain=self.task_domain,
-                            hash_weight=hash_weight,
-                            numeric_string_fields=self.config.state_checks.numeric_string_fields,
-                        )
-                    )
-            else:
-                # Use standard grading with no hash
-                state_score, state_reasons = self.state_checker.grade(
-                    state=final_env_state,
-                    jsonpath_assertions=self.config.state_checks.jsonpaths,
-                    expected_hash=None,
-                    hash_weight=hash_weight,
-                    numeric_string_fields=self.config.state_checks.numeric_string_fields,
-                )
-
+            state_score, state_reasons, state_diff_result = self._grade_state_checks(
+                final_env_state
+            )
             if state_reasons:
                 reasons_parts.append(f"State: {state_reasons}")
 
@@ -263,6 +218,89 @@ class GradingEngine:
             state_diff=state_diff_result,
             custom_checks_details=custom_checks_details,
         )
+
+    def _grade_state_checks(
+        self, final_env_state: dict[str, Any]
+    ) -> tuple[float | None, str, dict[str, Any] | None]:
+        """Fold the configured state-check sources into one ``state_checks`` score.
+
+        The two sources read two levels of ``final_env_state``: JSONPath assertions
+        read it whole, so an author writes ``$.db.<table>``, and the hash reads the
+        unwrapped database inside it (:func:`extract_db_state`).
+        """
+        checks = self.config.state_checks
+        hash_score, hash_reasons, diff_result = self._check_state_hash(final_env_state)
+        jsonpath_score, jsonpath_reasons = self.state_checker.check_jsonpaths(
+            final_env_state, checks.jsonpaths
+        )
+        if hash_score is not None and not checks.jsonpaths:
+            # An empty assertion list scores a vacuous 1.0, which must not blend
+            # against a real hash verdict — a hash-failing tau-style pack would
+            # collect jsonpath credit for assertions it never made.
+            jsonpath_score = None
+
+        score = compose_state_checks_score(
+            hash_score=hash_score,
+            jsonpath_score=jsonpath_score,
+            hash_weight=self._declared_hash_weight(),
+        )
+        return score, "; ".join(jsonpath_reasons + hash_reasons), diff_result
+
+    def _declared_hash_weight(self) -> float | None:
+        """Return the author's ``state_checks.hash.weight``, or ``None`` if unset.
+
+        There is no default: a weight is meaningful only when a hash verdict and a
+        JSONPath score are both real, and every candidate value there silently
+        discards one of them.
+        """
+        hash_config = self.config.state_checks.hash or {}
+        declared = hash_config.get("weight")
+        if declared is None:
+            return None
+        return validate_hash_weight(declared, context="grading.yaml state_checks.hash.weight")
+
+    def _check_state_hash(
+        self, final_env_state: dict[str, Any]
+    ) -> tuple[float | None, list[str], dict[str, Any] | None]:
+        """Return the state-hash verdict, its reasons, and the state diff.
+
+        ``None`` is *no verdict*: hash grading is off, or it is on and could not
+        run — which is reported rather than scored as a failed hash check.
+        """
+        checks = self.config.state_checks
+        hash_config = checks.hash or {}
+        if not hash_config.get("enabled", False):
+            return None, [], None
+
+        db_state = extract_db_state(final_env_state)
+        expected_hash = hash_config.get("expected_state_hash")
+        if expected_hash:
+            score, reason = self.state_checker.check_hash(
+                db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
+            )
+            return score, [reason], None
+
+        golden_actions = hash_config.get("golden_actions")
+        if not golden_actions:
+            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None
+        if not (self.task_dir and self.task_initial_state and self.task_mcp_server):
+            return None, [_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT], None
+        if not self.task_initial_state.json_db:
+            raise GoldenReplayError(
+                "state_checks.hash.golden_actions must replay against the task's "
+                "initial_state.json_db, and this task declares none"
+            )
+
+        score, reason, diff_result = self.state_checker.check_hash_against_golden_replay(
+            db_state=db_state,
+            golden_actions=golden_actions,
+            task_dir=self.task_dir,
+            initial_state_path=self.task_initial_state.json_db,
+            mcp_server_path=self.task_mcp_server,
+            task_domain=self.task_domain,
+            numeric_string_fields=checks.numeric_string_fields,
+        )
+        return score, [reason], diff_result
 
     def _run_custom_checks(
         self,
