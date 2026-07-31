@@ -11,18 +11,22 @@ may be backed by a different upstream than OpenRouter for the same model name.
 That changes the serving path, which is a leaderboard-comparability decision, not
 a transport detail. The automaton surfaces the option; a human picks it.
 
-Route-name convention
----------------------
+Which name reaches the gateway
+------------------------------
 
-A gateway that fronts OpenRouter typically exposes the slug under an
-``openrouter/`` prefix (``openrouter/x-ai/grok-4.5``), because that is how the
-underlying library namespaces it. Some gateways also register a wildcard
-passthrough (``openrouter/*``) that covers every slug without listing it.
+The name that reaches the gateway is **not** the engine's litellm model string.
+litellm strips exactly one provider prefix, so the integration's ``provider:
+openrouter`` + ``name: x-ai/grok-4.5`` sends the bare ``x-ai/grok-4.5`` — an
+``openrouter/x-ai/grok-4.5`` entry is a route this run cannot reach without the
+gateway-named config in ``docs/LLM_LAYER.md`` § "The model name must be the
+gateway's route name". So the lookup is keyed on the bare slug, and the wildcard
+that counts is one covering the slug's own namespace (``x-ai/*``), not
+``openrouter/*``.
 
-Those two are **not** equally strong evidence, so they are reported separately:
-an exact entry means someone configured this model; a wildcard means the gateway
-will *probably* accept it, and only a live call proves it. Nothing here calls the
-model — availability is a catalog lookup.
+An exact entry and a wildcard are **not** equally strong evidence, so they are
+reported separately: an exact entry means someone configured this model; a
+wildcard means the gateway will *probably* accept it, and only a live call proves
+it. Nothing here calls the model — availability is a catalog lookup.
 
 Requires no credentials to be useful: with no gateway configured, every lookup
 returns ``unknown`` and the flow is unchanged.
@@ -101,20 +105,23 @@ def fetch_gateway_catalog(
 def lookup(slug: str, catalog: list[str] | None) -> Availability:
     """Classify how (or whether) ``slug`` is reachable on the gateway.
 
-    Checks, in descending strength: the prefixed route, the bare slug, then a
-    prefix wildcard.
+    The name checked is the one that actually reaches the gateway. litellm strips
+    exactly one provider prefix, so the integration's ``provider: openrouter`` +
+    ``name: <slug>`` config puts the BARE ``<slug>`` on the wire -- an
+    ``openrouter/<slug>`` catalog entry is NOT evidence for this run. Reaching a
+    prefixed route needs the gateway-named config in ``docs/LLM_LAYER.md`` under
+    "The model name must be the gateway's route name", which the integration
+    workflow does not use.
     """
     if catalog is None:
         return Availability(slug=slug, status=STATUS_UNKNOWN)
 
     entries = set(catalog)
-    prefixed = f"{ROUTE_OPENROUTER}/{slug}"
-    if prefixed in entries:
-        return Availability(slug=slug, status=STATUS_EXACT, route=prefixed)
     if slug in entries:
         return Availability(slug=slug, status=STATUS_EXACT, route=slug)
-    if f"{ROUTE_OPENROUTER}/*" in entries:
-        return Availability(slug=slug, status=STATUS_WILDCARD, route=prefixed)
+    namespace = slug.split("/", 1)[0]
+    if f"{namespace}/*" in entries or "*" in entries:
+        return Availability(slug=slug, status=STATUS_WILDCARD, route=slug)
     return Availability(slug=slug, status=STATUS_ABSENT)
 
 

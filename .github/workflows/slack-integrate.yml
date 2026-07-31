@@ -142,6 +142,7 @@ jobs:
             TS="$(printf '%s' "$row" | jq -r '.message_ts')"
             # Default in the reader too, so a plan written by an older poller still dispatches.
             ROUTE="$(printf '%s' "$row" | jq -r '.route // "openrouter"')"
+            case "$ROUTE" in openrouter|litellm) ;; *) ROUTE=openrouter ;; esac
             git checkout -q "$BASE_REF" 2>/dev/null || git checkout -q -B "$BASE_REF" "origin/${BASE_REF}"
             if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
               echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"

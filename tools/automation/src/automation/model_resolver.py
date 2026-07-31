@@ -45,17 +45,15 @@ _INTEGRATE_RE = re.compile(r"\bintegrate\b", re.IGNORECASE)
 # whichever they think in.
 _ROUTE_RE = re.compile(
     r"\b(?:via|through|over|using)\s+(?:the\s+)?"
-    r"(?P<route>litellm(?:\s+proxy)?|gateway|proxy|openrouter|or)\b",
+    r"(?P<route>litellm(?:[\s-]+(?:proxy|gateway))?"
+    r"|(?:litellm[\s-]+)?(?:gateway|proxy)"
+    r"|openrouter|or)\b",
     re.IGNORECASE,
 )
-_ROUTE_ALIASES = {
-    "litellm": gateway_catalog.ROUTE_GATEWAY,
-    "litellm proxy": gateway_catalog.ROUTE_GATEWAY,
-    "gateway": gateway_catalog.ROUTE_GATEWAY,
-    "proxy": gateway_catalog.ROUTE_GATEWAY,
-    "openrouter": gateway_catalog.ROUTE_OPENROUTER,
-    "or": gateway_catalog.ROUTE_OPENROUTER,
-}
+# Any of these words in the matched phrase means the gateway. Word-based rather than an
+# exact-string table so widening the regex cannot silently stop mapping a form it matches.
+_GATEWAY_WORDS = frozenset({"litellm", "gateway", "proxy"})
+_OPENROUTER_WORDS = frozenset({"openrouter", "or"})
 
 
 @dataclasses.dataclass(frozen=True)
@@ -102,12 +100,24 @@ def parse_route(text: str) -> str | None:
 
     ``None`` deliberately differs from :data:`gateway_catalog.DEFAULT_ROUTE`: the
     caller needs to know whether a human chose OpenRouter or merely did not ask,
-    because only the first justifies overriding a gateway-only model.
+    because only the first justifies overriding a gateway-only model. Several
+    directives that DISAGREE in one message also return ``None`` ("not stated"):
+    one message-level route cannot honour both, so the default applies.
     """
-    match = _ROUTE_RE.search(_MENTION_RE.sub(" ", text))
-    if not match:
+    routes: set[str] = set()
+    for match in _ROUTE_RE.finditer(_MENTION_RE.sub(" ", text)):
+        words = set(match.group("route").lower().replace("-", " ").split())
+        if words & _GATEWAY_WORDS:
+            routes.add(gateway_catalog.ROUTE_GATEWAY)
+        elif words & _OPENROUTER_WORDS:
+            routes.add(gateway_catalog.ROUTE_OPENROUTER)
+    if len(routes) != 1:
+        # Nothing asked, or several directives disagreeing in one message. One message-level
+        # route cannot honour both, and guessing could move a model whose route was stated as
+        # (or left at) OpenRouter onto the gateway -- so treat it as "not stated" and let the
+        # calibrated default apply.
         return None
-    return _ROUTE_ALIASES.get(" ".join(match.group("route").lower().split()))
+    return next(iter(routes))
 
 
 def parse_command(text: str) -> list[str]:
@@ -202,8 +212,7 @@ def format_resolution_reply(
                 f":x: *{r.query}*: no matching model on OpenRouter. Check the name and version."
             )
     if requested_route is None and availability:
-        reachable = [s for s, a in availability.items() if a.reachable]
-        if reachable:
+        if any(a.reachable for a in availability.values()):
             lines += [
                 "",
                 f"_Default route is *{gateway_catalog.DEFAULT_ROUTE}*. To use the gateway "

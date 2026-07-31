@@ -11,25 +11,27 @@ Two behaviours carry real risk and are pinned hardest:
 
 from __future__ import annotations
 
+import json
+
 import pytest
-from automation import gateway_catalog, model_resolver
+from automation import gateway_catalog, model_resolver, poller, slack
 
 _CATALOG = [
     "anthropic/claude-sonnet-4-5",
     "azure_ai/cohere-command-a-plus-05-2026",
-    "openrouter/*",
+    "x-ai/*",
     "openrouter/anthropic/claude-opus-4.7",
 ]
 
 
 class TestLookup:
-    def test_exact_prefixed_entry_wins(self) -> None:
+    def test_prefixed_entry_is_not_evidence_for_this_run(self) -> None:
+        """litellm strips `openrouter/`, so the run asks for the BARE slug (LLM_LAYER.md)."""
         found = gateway_catalog.lookup("anthropic/claude-opus-4.7", _CATALOG)
-        assert found.status == gateway_catalog.STATUS_EXACT
-        assert found.route == "openrouter/anthropic/claude-opus-4.7"
-        assert found.reachable
+        assert found.status == gateway_catalog.STATUS_ABSENT
+        assert not found.reachable
 
-    def test_bare_slug_entry_also_counts_as_exact(self) -> None:
+    def test_bare_slug_entry_is_the_exact_match(self) -> None:
         found = gateway_catalog.lookup("azure_ai/cohere-command-a-plus-05-2026", _CATALOG)
         assert found.status == gateway_catalog.STATUS_EXACT
         assert found.route == "azure_ai/cohere-command-a-plus-05-2026"
@@ -38,7 +40,7 @@ class TestLookup:
         """A passthrough means 'probably', and the reply must not overstate it."""
         found = gateway_catalog.lookup("x-ai/grok-4.5", _CATALOG)
         assert found.status == gateway_catalog.STATUS_WILDCARD
-        assert found.route == "openrouter/x-ai/grok-4.5"
+        assert found.route == "x-ai/grok-4.5"
         assert found.reachable
         assert "passthrough" in gateway_catalog.describe(found)
 
@@ -61,12 +63,60 @@ class TestFetchDegradesQuietly:
         assert gateway_catalog.fetch_gateway_catalog(None, "sk-x") is None
         assert gateway_catalog.fetch_gateway_catalog("   ", "sk-x") is None
 
-    def test_unreachable_gateway_returns_none_rather_than_raising(self) -> None:
-        """A notification path must never break the poll."""
-        assert (
-            gateway_catalog.fetch_gateway_catalog("http://127.0.0.1:9/v1", "sk-x", timeout=1)
-            is None
+    def test_unreachable_gateway_returns_none_rather_than_raising(self, monkeypatch) -> None:
+        """A notification path must never break the poll (no real socket: stub the transport)."""
+
+        def fake_urlopen(request, timeout=None):
+            raise gateway_catalog.urllib.error.URLError("boom")
+
+        monkeypatch.setattr(gateway_catalog.urllib.request, "urlopen", fake_urlopen)
+        assert gateway_catalog.fetch_gateway_catalog("http://gw.invalid/v1", "sk-x") is None
+
+    def test_catalog_is_parsed_and_sorted_from_the_models_route(self, monkeypatch) -> None:
+        seen = {}
+
+        class _Resp:
+            def read(self):
+                return json.dumps(
+                    {"data": [{"id": "x-ai/grok-4.5"}, {"id": "x-ai/*"}, {}, {"id": None}]}
+                ).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        def fake_urlopen(request, timeout=None):
+            seen["url"] = request.full_url
+            seen["auth"] = request.headers.get("Authorization")
+            return _Resp()
+
+        monkeypatch.setattr(gateway_catalog.urllib.request, "urlopen", fake_urlopen)
+        assert gateway_catalog.fetch_gateway_catalog("https://gw.invalid/v1/", "sk-x") == [
+            "x-ai/*",
+            "x-ai/grok-4.5",
+        ]
+        assert seen["url"] == "https://gw.invalid/v1/models"
+        assert seen["auth"] == "Bearer sk-x"
+
+    def test_non_list_data_is_no_information_not_an_empty_catalog(self, monkeypatch) -> None:
+        """An empty list would read as 'the gateway serves nothing'; None reads as 'unknown'."""
+
+        class _Resp:
+            def read(self):
+                return json.dumps({"data": {"x-ai/grok-4.5": {}}}).encode()
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *a):
+                return False
+
+        monkeypatch.setattr(
+            gateway_catalog.urllib.request, "urlopen", lambda request, timeout=None: _Resp()
         )
+        assert gateway_catalog.fetch_gateway_catalog("https://gw.invalid/v1", "sk-x") is None
 
 
 class TestRouteDirective:
@@ -120,13 +170,32 @@ class TestRouteDirective:
             "openrouter/x-ai/grok-4.5"
         ]
 
+    def test_conflicting_directives_fall_back_to_the_default(self) -> None:
+        """One message, two routes: guessing could put an OpenRouter ask on the gateway."""
+        assert (
+            model_resolver.parse_route("<@U1> integrate Grok 4.5 via litellm and GPT 5.6 via OR")
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "<@U1> integrate Grok 4.5 through the LiteLLM gateway",
+            "<@U1> integrate Grok 4.5 via litellm-proxy",
+        ],
+    )
+    def test_route_noun_is_fully_absorbed(self, text: str) -> None:
+        """A leftover 'gateway'/'proxy' token makes the model resolve to nothing."""
+        assert model_resolver.parse_route(text) == gateway_catalog.ROUTE_GATEWAY
+        assert model_resolver.parse_command(text) == ["Grok 4.5"]
+
 
 class TestReply:
     def _resolved(self, slug: str) -> model_resolver.Resolution:
         return model_resolver.Resolution(query=slug, status="resolved", slug=slug)
 
     def test_reply_names_the_effective_route_and_the_gateway_note(self) -> None:
-        slug = "anthropic/claude-opus-4.7"
+        slug = "azure_ai/cohere-command-a-plus-05-2026"
         reply = model_resolver.format_resolution_reply(
             "U1",
             [self._resolved(slug)],
@@ -134,7 +203,7 @@ class TestReply:
             None,
         )
         assert "via *openrouter*" in reply
-        assert "openrouter/anthropic/claude-opus-4.7" in reply
+        assert "azure_ai/cohere-command-a-plus-05-2026" in reply
         # Unrequested-but-available => tell the requester how to ask for it.
         assert "via litellm" in reply
 
@@ -158,48 +227,130 @@ class TestReply:
 
 
 class TestPlanRows:
-    """The plan is the contract with the workflow, so its new fields need pinning."""
+    """The plan is the contract with the workflow, so its new fields need pinning.
 
-    def _row(self, text: str, gateway: list[str] | None) -> dict:
-        """Reproduce the poller's per-request plan row without Slack or the network."""
-        from automation import poller
+    These drive the REAL :func:`poller.run`, not a reproduction of its body: a
+    reproduction keeps passing while the poller writes something else.
+    """
 
-        catalog = ["x-ai/grok-4.5"]
-        resolutions = model_resolver.resolve_all(text, catalog, poller.ALIASES)
-        route = model_resolver.parse_route(text) or gateway_catalog.DEFAULT_ROUTE
-        availability = {
-            r.slug: gateway_catalog.lookup(r.slug, gateway)
-            for r in resolutions
-            if r.status == "resolved" and r.slug
-        }
-        slug = poller.resolved_slugs(resolutions)[0]
-        return {
-            "slug": slug,
+    def _plan(
+        self, monkeypatch, tmp_path, text: str, gateway: list[str] | None
+    ) -> tuple[list[dict], list[str]]:
+        fetches = {"gateway": 0}
+        posted: list[str] = []
+
+        def fake_gateway(base_url, api_key, timeout=15):
+            fetches["gateway"] += 1
+            return gateway
+
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        monkeypatch.setenv("LLM_PROXY_BASE_URL", "https://gateway.invalid/v1")
+        monkeypatch.setenv("LLM_PROXY_API_KEY", "sk-test")
+        monkeypatch.setattr(poller, "_auth_test", lambda token: "B1")
+        monkeypatch.setattr(poller, "_already_handled", lambda *a, **k: False)
+        monkeypatch.setattr(
+            slack,
+            "_history",
+            lambda channel, token, oldest=None: [
+                {"ts": "1.0", "user": "U1", "text": text},
+                {"ts": "2.0", "user": "U1", "text": text},
+            ],
+        )
+        monkeypatch.setattr(
+            slack,
+            "_post_message",
+            lambda channel, text, token, thread_ts=None: (posted.append(text), True)[1],
+        )
+        monkeypatch.setattr(model_resolver, "fetch_openrouter_catalog", lambda: ["x-ai/grok-4.5"])
+        monkeypatch.setattr(gateway_catalog, "fetch_gateway_catalog", fake_gateway)
+
+        out = tmp_path / "plan.json"
+        assert poller.run("C1", None, str(out)) == 0
+        # The gateway catalog is fetched once for the whole poll, not once per request:
+        # an unreachable gateway must not re-time-out for every message in the window.
+        assert fetches["gateway"] == 1
+        return json.loads(out.read_text()), posted
+
+    def test_unstated_route_defaults_to_openrouter(self, monkeypatch, tmp_path) -> None:
+        """The leaderboard is calibrated on OpenRouter: silence must never mean the gateway."""
+        plan, posted = self._plan(monkeypatch, tmp_path, "<@B1> integrate Grok 4.5", ["x-ai/*"])
+        assert [row["route"] for row in plan] == ["openrouter", "openrouter"]
+        assert "via *openrouter*" in posted[0]
+
+    def test_explicit_gateway_route_reaches_the_plan(self, monkeypatch, tmp_path) -> None:
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", ["x-ai/*"]
+        )
+        assert [row["route"] for row in plan] == ["litellm", "litellm"]
+        # The reply must state the route it actually queued, not the default.
+        assert "via *litellm*" in posted[0]
+
+    def test_row_shape_is_the_workflow_contract(self, monkeypatch, tmp_path) -> None:
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5", ["x-ai/grok-4.5"]
+        )
+        assert "on the gateway as `x-ai/grok-4.5`" in posted[0]
+        assert plan[0] == {
+            "slug": "x-ai/grok-4.5",
             "requester": "U1",
             "message_ts": "1.0",
-            "route": route,
-            "gateway": (
-                gateway_catalog.as_dict(availability[slug]) if slug in availability else None
-            ),
+            "route": "openrouter",
+            "gateway": {"slug": "x-ai/grok-4.5", "status": "exact", "route": "x-ai/grok-4.5"},
         }
 
-    def test_unstated_route_defaults_to_openrouter(self) -> None:
-        row = self._row("<@U1> integrate Grok 4.5", ["openrouter/*"])
-        assert row["route"] == "openrouter"
+    def test_no_gateway_configured_still_produces_a_dispatchable_row(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        plan, _ = self._plan(monkeypatch, tmp_path, "<@B1> integrate Grok 4.5", None)
+        assert plan[0]["route"] == "openrouter"
+        assert plan[0]["gateway"]["status"] == "unknown"
 
-    def test_explicit_gateway_route_reaches_the_plan(self) -> None:
-        row = self._row("<@U1> integrate Grok 4.5 via litellm", ["openrouter/*"])
-        assert row["route"] == "litellm"
 
-    def test_gateway_verdict_is_carried_for_the_dispatch_log(self) -> None:
-        row = self._row("<@U1> integrate Grok 4.5", ["openrouter/x-ai/grok-4.5"])
-        assert row["gateway"] == {
-            "slug": "x-ai/grok-4.5",
-            "status": "exact",
-            "route": "openrouter/x-ai/grok-4.5",
-        }
+class TestUnconfirmedGatewayIsDowngraded:
+    """An unconfirmable ``via litellm`` must not be dispatched as if it were fine.
 
-    def test_no_gateway_configured_still_produces_a_dispatchable_row(self) -> None:
-        row = self._row("<@U1> integrate Grok 4.5", None)
-        assert row["route"] == "openrouter"
-        assert row["gateway"]["status"] == "unknown"
+    Dispatching it costs an hour of runner time and then blames the candidate for
+    an infra failure the poller could already see coming; the Slack thread — the
+    audit trail for the serving path — would also record a route the run did not
+    use. Driven through the real :func:`poller.run` for the same reason as
+    :class:`TestPlanRows`.
+    """
+
+    def _plan(self, monkeypatch, tmp_path, text: str, gateway: list[str] | None):
+        return TestPlanRows()._plan(monkeypatch, tmp_path, text, gateway)
+
+    def test_absent_model_downgrades_to_the_default_and_says_so(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        # Gateway readable, but nothing covers x-ai/grok-4.5.
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", ["anthropic/*"]
+        )
+        assert [row["route"] for row in plan] == ["openrouter", "openrouter"]
+        assert "via *openrouter*" in posted[0]
+        assert "could not confirm the gateway serves every model" in posted[0]
+
+    def test_unreadable_catalog_downgrades_to_the_default(self, monkeypatch, tmp_path) -> None:
+        """ "unknown" is not "reachable" — an unconfigured gateway must not be promised."""
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", None
+        )
+        assert plan[0]["route"] == "openrouter"
+        assert "could not confirm the gateway serves every model" in posted[0]
+
+    def test_confirmed_model_keeps_the_gateway_and_stays_quiet(self, monkeypatch, tmp_path) -> None:
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", ["x-ai/grok-4.5"]
+        )
+        assert plan[0]["route"] == "litellm"
+        assert "could not confirm" not in posted[0]
+
+    def test_an_openrouter_request_is_never_downgraded_or_warned(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """The guard is gateway-only; it must not editorialise the default route."""
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via openrouter", ["anthropic/*"]
+        )
+        assert plan[0]["route"] == "openrouter"
+        assert "could not confirm" not in posted[0]

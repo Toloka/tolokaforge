@@ -162,25 +162,39 @@ advisory on purpose: a gateway route may be backed by a *different upstream* for
 name, which is a comparability decision for a human, not a transport detail the automaton should
 take on itself.
 
+The name looked up is the one that actually reaches the gateway: litellm strips exactly one
+provider prefix, so this run's `provider: openrouter` + `name: <slug>` config puts the **bare
+slug** on the wire. An `openrouter/<slug>` (or `openrouter/*`) catalog entry is therefore *not*
+evidence for this run — reaching a prefixed route needs the gateway-named config in
+[`docs/LLM_LAYER.md` § the model name must be the gateway's route name](LLM_LAYER.md#the-model-name-must-be-the-gateways-route-name),
+which this workflow does not use.
+
 The report distinguishes two strengths, because they are not equally trustworthy:
 
 | Reply says | Means |
 |---|---|
-| `also on the gateway as <route>` | an explicit catalog entry — someone configured this model |
-| `probably reachable … (matched a passthrough)` | only a `<prefix>/*` wildcard covers it; a live call is the real proof |
+| `also on the gateway as <route>` | an explicit catalog entry for the bare slug — someone configured this model |
+| `probably reachable … (matched a passthrough)` | only a wildcard over the slug's own namespace (`x-ai/*`, or a bare `*`) covers it; a live call is the real proof |
 | `not on the gateway` | the catalog was read and does not cover it |
 
 A requester can choose the route with `via litellm` / `via openrouter` (also `through the
 gateway`, `using the proxy`, `via OR`). The directive is stripped before model-phrase parsing,
 so `integrate Grok 4.5 via litellm` still resolves the model as `Grok 4.5`. The chosen route
 travels in `plan.json` and is passed to `integrate-model.yml` as its `route` input; on the
-gateway route that workflow adds `LLM_PROXY_*` to the candidate's `.env`, so the probes run over
-the gateway (see [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway)).
+gateway route that workflow adds `LLM_PROXY_*` to the candidate's `.env`. That is **job-wide,
+not per-role**: `proxy.py` routes every `openrouter`/`openai` call, so the wire probes' user
+simulator (`openrouter/anthropic/claude-sonnet-4.6`) is proxied too and the gateway must serve
+it as well — otherwise observe goes infra-dirty in the user simulator, not in the candidate
+(see [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway)).
 
 Everything here degrades to the previous behaviour when the gateway is not configured: the
 availability lookup returns "unknown", nothing is reported, and `route` stays `openrouter`.
-Asking for `via litellm` without the secrets logs a workflow warning and probes over OpenRouter
-rather than failing the run.
+A `via litellm` request the poller cannot confirm (availability `unknown` or `not on the
+gateway`, for *any* model in the message) is **downgraded to `openrouter` with a warning in the
+reply** rather than dispatched — a run over a gateway that does not serve the model would fail
+every probe and read as a model failure. On a manual `workflow_dispatch` with `route: litellm`
+but no secrets, `integrate-model.yml` logs a workflow warning and probes over OpenRouter rather
+than failing the run.
 
 It runs entirely on the `github-actions[bot]` `GITHUB_TOKEN` (no PAT, no GitHub App): a bot
 token cannot be reached from outside GitHub, so the initiative comes from INSIDE (the workflow

@@ -231,10 +231,13 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
         # clarify reply here, not be confirmed and then dropped by resolved_slugs() below.
         resolutions = [demote_unsafe_slug(r) for r in resolutions]
         requested_route = model_resolver.parse_route(text)
-        route = requested_route or gateway_catalog.DEFAULT_ROUTE
         # Advisory gateway lookup. Fetched lazily and once; an unconfigured or unreachable
         # gateway yields None, which reports as "unknown" and changes nothing.
         if gateway_models is _UNFETCHED:
+            # Read from os.environ, not SecretManager (AGENTS.md § Secrets): the poller is a CI-only
+            # entrypoint whose credentials come from workflow `env:`, and DotEnvProvider's `.env`
+            # precedence would let a developer's local gateway leak into a real poll. Same rationale
+            # as SLACK_BOT_TOKEN above. Revisit if this tool ever gains a SecretManager bootstrap.
             gateway_models = gateway_catalog.fetch_gateway_catalog(
                 os.environ.get("LLM_PROXY_BASE_URL"), os.environ.get("LLM_PROXY_API_KEY")
             )
@@ -243,9 +246,27 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
             for r in resolutions
             if r.status == "resolved" and r.slug
         }
+        # Never promise a route the deployment cannot serve. With no readable catalog the run
+        # would fall back to OpenRouter anyway (integrate-model.yml), and with the model absent
+        # every probe would fail against a gateway we already know does not serve it -- either
+        # way a reply saying "via litellm" would misrecord the serving path. Refuse in the
+        # reply instead of dispatching a run whose outcome would read as a model failure.
+        route_warning = ""
+        if requested_route == gateway_catalog.ROUTE_GATEWAY and not all(
+            availability[r.slug].reachable for r in resolutions if r.slug in availability
+        ):
+            requested_route = None
+            route_warning = (
+                ":warning: I could not confirm the gateway serves every model above "
+                f"(see the notes), so this runs over *{gateway_catalog.DEFAULT_ROUTE}*. "
+                "Add the model to the gateway (or check its secrets) and re-request."
+            )
+        route = requested_route or gateway_catalog.DEFAULT_ROUTE
         reply = model_resolver.format_resolution_reply(
             requester, resolutions, availability, requested_route
         )
+        if route_warning:
+            reply = f"{reply}\n\n{route_warning}"
         if not slack._post_message(channel, reply, token, thread_ts=ts):
             # No durable processed-marker landed => do NOT add to the plan; retry next poll.
             # (Dispatching without a marker would double-run on the following poll.)
