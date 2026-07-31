@@ -38,6 +38,8 @@ import urllib.request
 
 import typer
 
+from . import icons
+
 _API = "https://slack.com/api/"
 _TIMEOUT = 15
 _HISTORY_SCAN = 500  # bounded scan cap: newest N top-level messages (headroom for the 48h window)
@@ -237,6 +239,7 @@ def cmd_reply(
     pr_comment: str = "",
     pr_url: str = "",
     run_url: str = "",
+    role: str = "",
 ) -> None:
     token = _ready(channel)
     if not token:
@@ -246,7 +249,9 @@ def cmd_reply(
         _log("no thread root and root post failed - dropping reply")
         _note_failure("could not post the thread reply (no root)")
         return
-    body = append_footer(text, pr_comment=pr_comment, pr_url=pr_url, run_url=run_url)
+    body = append_footer(
+        icons.prefix(role, text), pr_comment=pr_comment, pr_url=pr_url, run_url=run_url
+    )
     if mention:
         body += build_mention_suffix(os.environ.get("SLACK_MENTIONS"))
     if not _post_message(channel, body, token, thread_ts=thread_ts):
@@ -281,12 +286,20 @@ def post_thread(
     channel: str = typer.Option(..., "--channel"),
     thread_ts: str = typer.Option(..., "--thread-ts", help="parent message ts to reply under"),
     text: str = typer.Option(..., "--text"),
+    icon: str = typer.Option(
+        "",
+        "--icon",
+        help="Icon ROLE to prefix, e.g. pr_opened. The role's emoji comes from "
+        "`icons.DEFAULT_ICONS` unless ARENA_AUTOMATION_SLACK_ICON_OVERRIDE "
+        "overrides it. Empty = no icon.",
+    ),
 ) -> None:
     """Post a plain threaded reply under an arbitrary message ts. The poller workflow uses this to
     confirm a specific Slack request IN ITS OWN THREAD after the PR opens (with the PR link) or to
     report that starting it failed - the PR-keyed ``reply`` above threads on a different root."""
     try:
         token = _ready(channel)
+        text = icons.prefix(icon, text)
         if token and not _post_message(channel, text, token, thread_ts=thread_ts):
             _note_failure("could not post the threaded follow-up")
     except Exception as exc:  # a notification must never fail the job
@@ -310,6 +323,14 @@ def reply(
     run_url: str = typer.Option(
         "", "--run-url", help="Actions run URL, rendered as a Run log link"
     ),
+    icon: str = typer.Option(
+        "",
+        "--icon",
+        help="Icon ROLE to prefix, e.g. observe_started. The role's emoji comes "
+        "from `icons.DEFAULT_ICONS` unless ARENA_AUTOMATION_SLACK_ICON_OVERRIDE "
+        "overrides it. "
+        "Empty = no icon, for text that already carries its own lead.",
+    ),
 ) -> None:
     """Reply into the PR thread (create root if missing)."""
     try:
@@ -322,6 +343,7 @@ def reply(
             pr_comment=pr_comment,
             pr_url=pr_url,
             run_url=run_url,
+            role=icon,
         )
     except Exception as exc:  # a notification must never fail the job
         _log(f"unexpected error (ignored): {exc}")
