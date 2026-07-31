@@ -93,7 +93,18 @@ def _decode_entry(entry: dict[str, Any], index: int) -> Message:
 
 
 def _decode_tool_call(raw: dict[str, Any], message_index: int) -> ToolCall:
+    if "function" not in raw:
+        raise ValueError(
+            f"wire message {message_index}: tool call has no 'function'; "
+            f"keys present: {sorted(raw)}"
+        )
     function = raw["function"]
+    for key in ("name", "arguments"):
+        if key not in function:
+            raise ValueError(
+                f"wire message {message_index}: tool call's 'function' has no {key!r}; "
+                f"keys present: {sorted(function)}"
+            )
     name = function["name"]
     call_id = raw.get("id")
     if not call_id:

@@ -2,9 +2,15 @@
 
 A wire payload that cannot be reconstructed into a linkable trace is rejected,
 never degraded: a ``tool_calls`` entry without an ``id`` names the version skew
-that produced it, unparseable ``arguments`` name the tool, and a missing ``role``
-or ``content`` names the message. Defaulting any of these would hand grading a
-trace whose calls cannot be joined to their results, silently.
+that produced it, unparseable ``arguments`` name the tool, and a missing ``role``,
+``content``, ``function``, ``function.name`` or ``function.arguments`` names the
+message. Defaulting any of these would hand grading a trace whose calls cannot be
+joined to their results, silently.
+
+Every rejection is a ``ValueError``, because that is what the runner's
+``GradeTrial`` catches to turn a bad payload into a named RPC failure. A bare
+``KeyError`` escapes it and reaches the operator as ``KeyError: 'function'``,
+naming nothing.
 """
 
 from __future__ import annotations
@@ -56,6 +62,36 @@ def test_unparseable_arguments_are_rejected_rather_than_defaulted() -> None:
 
     with pytest.raises(ValueError, match="unparseable"):
         decode_transcript_wire(_messages(call))
+
+
+def test_a_tool_call_without_a_function_is_rejected_as_a_value_error() -> None:
+    """A bare ``KeyError`` escapes the ``except (ValueError, TimelineInconsistencyError)``
+    that turns a bad payload into a named `GradeTrial` failure, so the operator sees
+    ``KeyError: 'function'`` — naming neither the message nor what was wrong with it."""
+    call = _call()
+    del call["function"]
+
+    with pytest.raises(ValueError) as excinfo:
+        decode_transcript_wire(_messages(call))
+
+    message = str(excinfo.value)
+    assert "wire message 1" in message
+    assert "no 'function'" in message
+    assert "keys present: ['id']" in message
+
+
+@pytest.mark.parametrize("missing", ["name", "arguments"])
+def test_a_function_missing_a_key_is_rejected_naming_the_keys_present(missing: str) -> None:
+    function = {"name": "refund", "arguments": "{}"}
+    del function[missing]
+
+    with pytest.raises(ValueError) as excinfo:
+        decode_transcript_wire(_messages(_call(function=function)))
+
+    message = str(excinfo.value)
+    assert "wire message 1" in message
+    assert f"has no {missing!r}" in message
+    assert f"keys present: {sorted(function)}" in message
 
 
 @pytest.mark.parametrize("missing", ["role", "content"])

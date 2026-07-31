@@ -726,7 +726,7 @@ touches the trial's state.
 |---|---|
 | `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
 | `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
-| `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, or a `tool_calls` entry carrying no `id` |
+| `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
 | `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
 | `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
 | `Grading error: …` | Any other exception escaping the grading path |

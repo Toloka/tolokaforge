@@ -814,6 +814,15 @@ class TestGradeTrialTimelineReconciliation:
                 '[{"function": {"name": "echo", "arguments": "{}"}}]}]',
                 "carries no 'id'",
             ),
+            (
+                '[{"role": "assistant", "content": "", "tool_calls": [{"id": "toolu_echo"}]}]',
+                "no 'function'",
+            ),
+            (
+                '[{"role": "assistant", "content": "", "tool_calls": '
+                '[{"id": "toolu_echo", "function": {"name": "echo"}}]}]',
+                "has no 'arguments'",
+            ),
         ],
     )
     def test_an_undecodable_payload_fails_the_rpc(
