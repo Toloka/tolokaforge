@@ -37,7 +37,7 @@ from tenacity import (
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
-from tolokaforge.core.llm.proxy import resolve_proxy_config
+from tolokaforge.core.llm.proxy import UNROUTABLE_PROVIDERS, resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
 from tolokaforge.core.logging import get_logger
@@ -411,14 +411,16 @@ class LLMClient:
         # ``is None`` test. See ``tolokaforge/core/llm/proxy.py``.
         self._proxy = resolve_proxy_config()
         if self._proxy is not None and not self._proxy.applies_to(self.provider):
-            # Warn rather than drop quietly: a deployment that configured a
-            # gateway for compliance reasons needs to see which roles still
-            # reach providers directly.
-            self.logger.warning(
-                "Gateway configured but this provider is out of scope; calling provider directly",
-                base_url=self._proxy.base_url,
-                provider=self.provider,
-            )
+            if self.provider.split("/")[0] not in UNROUTABLE_PROVIDERS:
+                # Warn rather than drop quietly: a deployment that configured a
+                # gateway for compliance reasons needs to see which roles still
+                # reach providers directly.
+                self.logger.warning(
+                    "Gateway configured but this provider is out of scope; "
+                    "calling provider directly",
+                    base_url=self._proxy.base_url,
+                    provider=self.provider,
+                )
             self._proxy = None
 
         self._openrouter_headers = (
@@ -432,6 +434,13 @@ class LLMClient:
                 static_header_count=len(self._proxy.headers),
                 request_id_header=self._proxy.request_id_header,
             )
+            if self._proxy.api_key is None:
+                self.logger.warning(
+                    "Gateway has no LLM_PROXY_API_KEY; litellm will forward the "
+                    "PROVIDER credential to the gateway host. Set LLM_PROXY_API_KEY "
+                    "unless this gateway authenticates by network position.",
+                    base_url=self._proxy.base_url,
+                )
         elif self.provider.startswith("openrouter"):
             self._configure_openrouter_base_url()
         elif self.provider == "nova":

@@ -198,8 +198,16 @@ def test_request_is_addressed_to_the_gateway(gateway_client: LLMClient, gateway_
     assert kwargs["api_key"] == gateway_key
 
     # The model string must survive intact — re-prefixing it would silently
-    # break preset resolution and pricing lookup (see docs/LLM_LAYER.md § proxy).
-    assert kwargs["model"].endswith(gateway_client.config.name)
+    # miss the pricing table (see docs/LLM_LAYER.md § proxy).
+    expected_model = (
+        gateway_client.config.name
+        if gateway_client.config.name.startswith(f"{gateway_client.config.provider}/")
+        else f"{gateway_client.config.provider}/{gateway_client.config.name}"
+    )
+    assert kwargs["model"] == expected_model, (
+        f"model string was rewritten: {kwargs['model']!r} != {expected_model!r}; "
+        f"a re-prefix breaks normalize_model_name and degrades cost_source"
+    )
 
     for header in gateway_client._proxy.headers:
         assert header in kwargs["extra_headers"]

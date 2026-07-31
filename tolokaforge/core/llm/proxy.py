@@ -93,11 +93,13 @@ Why the model name is left alone
 
 :meth:`LLMClient._build_kwargs` applies this transport by setting ``api_base``
 and ``api_key`` only. The litellm model string keeps its original
-``<provider>/<name>`` shape, which is load-bearing: preset ``match:`` globs
-resolve off the config's ``name``, and :func:`tolokaforge.core.pricing.
-normalize_model_name` keys off the formatted model string. Re-prefixing the
-model would silently drop presets and silently miss the pricing table, so the
-gateway is a pure transport swap and nothing else.
+``<provider>/<name>`` shape. Only one thing depends on that string:
+:func:`tolokaforge.core.pricing.normalize_model_name` keys off it, and it
+returns any second-prefixed name verbatim, guaranteeing a pricing-table miss
+that degrades ``cost_source`` to ``"unknown"``. Presets are *not* coupled to it
+— ``build_capabilities`` resolves off ``ModelConfig.name`` / ``.provider``
+directly — but renaming *those* to gateway-specific values does drop the
+matched preset and the ``providers:`` overlay. See ``docs/LLM_LAYER.md`` § proxy.
 """
 
 from __future__ import annotations

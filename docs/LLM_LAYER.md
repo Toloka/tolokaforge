@@ -485,8 +485,8 @@ name: azure_ai/cohere-command-a-plus-05-2026
 
 List the routes a gateway serves with `GET {base_url}/models`.
 
-Gateway-specific names have two consequences, both following from the
-model-string coupling described below:
+Gateway-specific names have two consequences, both following from the naming
+couplings described below:
 
 - **Cost may be unknown.** `normalize_model_name` cannot map
   `openai/openrouter/anthropic/claude-opus-4.7` to a `pricing.json` key, so
@@ -501,7 +501,8 @@ model-string coupling described below:
 
 **This is a transport swap and nothing else.** `_build_kwargs` sets `api_base`,
 `api_key`, and `extra_headers`; the litellm model string keeps its original
-`<provider>/<name>` shape. That invariant is load-bearing in two places:
+`<provider>/<name>` shape. Two distinct couplings hang off model naming, and
+only the second is to that formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
   overlay off `ModelConfig.provider` (see [`presets`](#presets)). Re-prefixing

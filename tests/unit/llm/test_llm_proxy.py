@@ -483,7 +483,8 @@ class TestGatewayQuotaRejection:
         )
         client = LLMClient(ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.7"))
         message = str(self._raise_quota(client))
-        assert "gateway.example.com" in message
+        assert message.startswith("LLM gateway at https://gateway.example.com rejected the request")
+        assert "Provider key rotation does not apply" in message
         assert "exhausted" not in message.lower()
 
     def test_direct_path_still_reports_key_exhaustion(self, install_secrets) -> None:
