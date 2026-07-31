@@ -1610,10 +1610,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """The trial's grade-time views: the wire messages and the event timeline.
 
         The agent policy is the payload's leading ``system`` message and is split
-        off first, so the timeline is built from the transcript alone. That matters
-        for a hash-only trial, whose payload is the policy and nothing else: it has
-        to read as a records-only trial rather than as a message view whose every
-        recorded call is unlinkable.
+        off first: the judge needs it separately, and the timeline is built from the
+        transcript alone.
+
+        The split is *not* what makes a hash-only trial work — whose payload is the
+        policy and nothing else, and which must read as a records-only trial rather
+        than as a message view whose every recorded call is unlinkable. That is
+        guaranteed one layer down, by the builder counting only assistant and user
+        turns as a message view (non-guarantee N3). Measured: removing this split
+        leaves ``message_view_present`` ``False`` either way. Keep the split for the
+        judge, but do not move the hash-only guarantee up here — the lock that
+        protects it is ``test_a_view_of_only_harness_text_is_not_a_message_view``.
 
         Raises:
             ValueError: the payload does not decode into a transcript.
