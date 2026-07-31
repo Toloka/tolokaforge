@@ -25,12 +25,17 @@ Environment contract
     Gateway credential dedicated to integration testing. Absent → every test
     here skips, which is the state of any checkout without the secret.
 
-``LLM_PROXY_INT_TEST_MODEL`` (required)
+``LLM_PROXY_INT_TEST_MODEL`` (required once the key is set)
     Model name **as the gateway routes it**, e.g. a LiteLLM proxy's
     ``openrouter/<vendor>/<model>``. Required rather than defaulted because
     every gateway names its routes differently, and a wrong guess would test
     the gateway's fallback behaviour instead of this transport. Discover the
     available names with ``GET {base_url}/models``.
+
+    Not a credential — in CI this belongs in the workflow's ``env:``, not in a
+    secret. Missing it while the key *is* present **fails** rather than skips:
+    otherwise a pipeline holding the secret would report green while testing
+    nothing.
 
 ``LLM_PROXY_INT_TEST_BASE_URL`` (optional)
     Gateway base URL. Falls back to ``LLM_PROXY_BASE_URL``. Must include
@@ -117,16 +122,26 @@ def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
     Skips unless the dedicated key and a gateway route name are both present, so
     a checkout without the CI secret is quiet rather than failing.
     """
+    # Past this point the credential exists, which is an explicit signal that
+    # this environment intends to run the test. A missing companion is therefore
+    # a misconfiguration, not an opt-out, and must fail rather than skip — a
+    # pipeline that holds the secret but lacks the route name would otherwise go
+    # green while testing nothing.
     model = _secret(ENV_TEST_MODEL)
     if not model:
-        pytest.skip(
-            f"{ENV_TEST_MODEL} not set — the gateway's own route name is required; "
-            f"list candidates with GET {{base_url}}/models."
+        pytest.fail(
+            f"{ENV_TEST_API_KEY} is set but {ENV_TEST_MODEL} is not. The gateway's own "
+            f"route name is required — list candidates with GET {{base_url}}/models. "
+            f"Unset {ENV_TEST_API_KEY} to disable this test deliberately."
         )
 
     base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
     if not base_url:
-        pytest.skip(f"neither {ENV_TEST_BASE_URL} nor {ENV_BASE_URL} is set.")
+        pytest.fail(
+            f"{ENV_TEST_API_KEY} is set but neither {ENV_TEST_BASE_URL} nor "
+            f"{ENV_BASE_URL} is. Set a gateway base URL, or unset "
+            f"{ENV_TEST_API_KEY} to disable this test deliberately."
+        )
 
     provider = _secret(ENV_TEST_PROVIDER) or "openai"
 

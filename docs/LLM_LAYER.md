@@ -532,16 +532,23 @@ live past that boundary.
 It runs in the normal `tests/integration/` lane and **skips unless its own
 credential is present**, so a checkout without the secret is quiet:
 
-| Variable | Meaning |
-|---|---|
-| `LLM_PROXY_INT_TEST_API_KEY` | *Required.* Gateway credential dedicated to integration testing. The fixture overrides `LLM_PROXY_API_KEY` with it for the test's duration, so CI spend stays on its own budget and a local `.env` cannot charge the production key. |
-| `LLM_PROXY_INT_TEST_MODEL` | *Required.* The model name **as the gateway routes it**. Required rather than defaulted: a wrong guess would exercise the gateway's fallback behaviour instead of this transport. |
-| `LLM_PROXY_INT_TEST_BASE_URL` | Optional; falls back to `LLM_PROXY_BASE_URL`. |
-| `LLM_PROXY_INT_TEST_PROVIDER` | Optional, default `openai` — see the model-naming section above. |
+| Variable | Secret? | Meaning |
+|---|---|---|
+| `LLM_PROXY_INT_TEST_API_KEY` | **yes** | Gateway credential dedicated to integration testing. Its presence is the on-switch. The fixture overrides `LLM_PROXY_API_KEY` with it for the test's duration, so CI spend stays on its own budget and a local `.env` cannot charge the production key. |
+| `LLM_PROXY_INT_TEST_MODEL` | no | The model name **as the gateway routes it**. Required rather than defaulted: a wrong guess would exercise the gateway's fallback behaviour instead of this transport. Plain config — belongs in a workflow's `env:`. |
+| `LLM_PROXY_INT_TEST_BASE_URL` | depends | Gateway base URL; falls back to `LLM_PROXY_BASE_URL`. Keep it out of a public workflow file if the hostname is internal. |
+| `LLM_PROXY_INT_TEST_PROVIDER` | no | Optional, default `openai` — see the model-naming section above. |
 
 Three tests: one asserts the transport is applied and billed to the test key
 without spending, two make one small call each (a completion and a tool call,
 capped at 256 output tokens).
+
+**The gating is asymmetric on purpose.** No credential → skip, quietly, which is
+the state of any checkout without the secret. Credential present but a companion
+missing → **fail**. Holding the key is an explicit statement that this
+environment means to run the test, so a missing route name is a misconfiguration
+rather than an opt-out. Skipping there would let a pipeline report green while
+testing nothing.
 
 ### Key rotation under a gateway
 
