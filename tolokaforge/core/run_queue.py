@@ -42,8 +42,7 @@ class SqliteRunQueue:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
-            conn.execute(
-                """
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS attempts (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     task_id TEXT NOT NULL,
@@ -61,10 +60,8 @@ class SqliteRunQueue:
                     updated_at REAL NOT NULL,
                     UNIQUE(task_id, trial_index)
                 )
-                """
-            )
-            conn.execute(
-                """
+                """)
+            conn.execute("""
                 CREATE TABLE IF NOT EXISTS attempt_events (
                     id INTEGER PRIMARY KEY AUTOINCREMENT,
                     attempt_id INTEGER NOT NULL,
@@ -73,8 +70,7 @@ class SqliteRunQueue:
                     created_at REAL NOT NULL,
                     FOREIGN KEY(attempt_id) REFERENCES attempts(id)
                 )
-                """
-            )
+                """)
 
     def enqueue(self, task_id: str, trial_index: int) -> None:
         now = time.time()
@@ -133,15 +129,13 @@ class SqliteRunQueue:
         expires = now + max(30, lease_seconds)
         with self._connect() as conn:
             conn.execute("BEGIN IMMEDIATE")
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT id, task_id, trial_index, retry_count
                 FROM attempts
                 WHERE status='pending'
                 ORDER BY updated_at ASC, id ASC
                 LIMIT 1
-                """
-            ).fetchone()
+                """).fetchone()
             if row is None:
                 conn.execute("COMMIT")
                 return None
@@ -262,16 +256,14 @@ class SqliteRunQueue:
     def estimate_eta_seconds(self) -> float | None:
         """Estimate ETA from completed attempts; returns None when insufficient data."""
         with self._connect() as conn:
-            row = conn.execute(
-                """
+            row = conn.execute("""
                 SELECT
                     COUNT(*) AS completed_n,
                     MIN(started_at) AS min_started,
                     MAX(ended_at) AS max_ended
                 FROM attempts
                 WHERE status='completed' AND started_at IS NOT NULL AND ended_at IS NOT NULL
-                """
-            ).fetchone()
+                """).fetchone()
             if row is None:
                 return None
             completed_n = int(row["completed_n"] or 0)
@@ -337,8 +329,7 @@ class PostgresRunQueue:
     def _init_db(self) -> None:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS attempts (
                         id BIGSERIAL PRIMARY KEY,
                         task_id TEXT NOT NULL,
@@ -356,10 +347,8 @@ class PostgresRunQueue:
                         updated_at DOUBLE PRECISION NOT NULL,
                         UNIQUE(task_id, trial_index)
                     )
-                    """
-                )
-                cur.execute(
-                    """
+                    """)
+                cur.execute("""
                     CREATE TABLE IF NOT EXISTS attempt_events (
                         id BIGSERIAL PRIMARY KEY,
                         attempt_id BIGINT NOT NULL REFERENCES attempts(id),
@@ -367,8 +356,7 @@ class PostgresRunQueue:
                         payload TEXT,
                         created_at DOUBLE PRECISION NOT NULL
                     )
-                    """
-                )
+                    """)
 
     def enqueue(self, task_id: str, trial_index: int) -> None:
         now = time.time()
@@ -561,16 +549,14 @@ class PostgresRunQueue:
     def estimate_eta_seconds(self) -> float | None:
         with self._connect() as conn:
             with conn.cursor() as cur:
-                cur.execute(
-                    """
+                cur.execute("""
                     SELECT
                         COUNT(*) AS completed_n,
                         MIN(started_at) AS min_started,
                         MAX(ended_at) AS max_ended
                     FROM attempts
                     WHERE status='completed' AND started_at IS NOT NULL AND ended_at IS NOT NULL
-                    """
-                )
+                    """)
                 row = cur.fetchone()
                 if row is None:
                     return None

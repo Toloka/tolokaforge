@@ -30,8 +30,7 @@ from tolokaforge.core.engine_run_state import (
 pytestmark = pytest.mark.integration
 
 
-_RESOLVER_SCRIPT = textwrap.dedent(
-    """
+_RESOLVER_SCRIPT = textwrap.dedent("""
     import json, sys
     from pathlib import Path
     from tolokaforge.dx.cli.main import _activate_presets_overlay
@@ -52,8 +51,7 @@ _RESOLVER_SCRIPT = textwrap.dedent(
         cli_presets_file=cli_value, run_config=run_config, run_dir=run_dir
     )
     print(json.dumps({"resolved": resolved, "installed": get_overlay_path()}))
-    """
-).strip()
+    """).strip()
 
 
 def _run_resolver(

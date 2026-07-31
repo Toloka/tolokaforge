@@ -23,8 +23,7 @@ from tolokaforge.runtime.reset_recipes import RECIPE_REGISTRY
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
-COMPOSE = textwrap.dedent(
-    """
+COMPOSE = textwrap.dedent("""
     services:
       canary:
         image: "alpine:3.20"
@@ -34,8 +33,7 @@ COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
 def test_bare_recipe_is_a_noop_against_a_running_stack(tmp_path: Path) -> None:

@@ -190,14 +190,10 @@ class TestMcpAsyncEndToEnd:
         (pkg_root / "my_adapter_under_test" / "__init__.py").write_text("")
         (zendesk / "__init__.py").write_text("")
         (zendesk / "tools" / "__init__.py").write_text("")
-        (zendesk / "tools" / "create_item.py").write_text(
-            textwrap.dedent(
-                """
+        (zendesk / "tools" / "create_item.py").write_text(textwrap.dedent("""
                 class CreateItem:
                     pass
-                """
-            )
-        )
+                """))
         (zendesk / "models.py").write_text("")  # empty: registration is a no-op
 
         monkeypatch.syspath_prepend(str(pkg_root))
@@ -247,18 +243,14 @@ class TestMcpAsyncEndToEnd:
         (pkg_root / "my_e2e_adapter_pkg" / "__init__.py").write_text("")
         (zendesk / "__init__.py").write_text("")
         (zendesk / "tools" / "__init__.py").write_text("")
-        (zendesk / "tools" / "echo.py").write_text(
-            textwrap.dedent(
-                """
+        (zendesk / "tools" / "echo.py").write_text(textwrap.dedent("""
                 class Echo:
                     async def run_with_validation(self, db, arguments):
                         # Mirrors the real MCP runtime contract: take a kwargs
                         # dict, return a JSON-serializable dict. No DB use, so
                         # the mocked db_proxy is irrelevant here.
                         return {"echoed": arguments.get("message"), "count": len(arguments)}
-                """
-            )
-        )
+                """))
         # Deliberately NO models.py — exercises the fail-quiet
         # ``ModuleNotFoundError`` branch that this PR narrowed (improvement #2).
         monkeypatch.syspath_prepend(str(pkg_root))

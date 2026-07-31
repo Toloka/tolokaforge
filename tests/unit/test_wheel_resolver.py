@@ -59,8 +59,7 @@ def _clear_uv_cache_dir_cli_cache():
 def engine_root(tmp_path: Path) -> Path:
     """A minimal engine checkout with pyproject.toml + a Python file."""
     (tmp_path / "pyproject.toml").write_text(
-        textwrap.dedent(
-            """\
+        textwrap.dedent("""\
             [build-system]
             requires = ["hatchling"]
             build-backend = "hatchling.build"
@@ -68,8 +67,7 @@ def engine_root(tmp_path: Path) -> Path:
             [project]
             name = "tolokaforge"
             version = "0.3.0"
-        """
-        ),
+        """),
     )
     pkg = tmp_path / "tolokaforge"
     pkg.mkdir()
@@ -82,13 +80,11 @@ def engine_root(tmp_path: Path) -> Path:
 def tasks_root(tmp_path: Path) -> Path:
     """A checkout that looks like tolokaforge-tasks (not the engine)."""
     (tmp_path / "pyproject.toml").write_text(
-        textwrap.dedent(
-            """\
+        textwrap.dedent("""\
             [project]
             name = "tolokaforge-tasks"
             version = "0.1.0"
-        """
-        ),
+        """),
     )
     return tmp_path
 

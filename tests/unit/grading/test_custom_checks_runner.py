@@ -245,8 +245,7 @@ class TestMinimalCustomChecks:
         """Test that slow checks are terminated."""
         # Create a slow checks.py
         slow_checks = tmp_path / "checks.py"
-        slow_checks.write_text(
-            """
+        slow_checks.write_text("""
 import time
 from tolokaforge.core.grading.checks_interface import (
     CheckContext, CheckPassed, init, check
@@ -260,8 +259,7 @@ def setup(ctx: CheckContext):
 def slow_check():
     time.sleep(10)  # Sleep for 10 seconds
     return CheckPassed("Never reached")
-"""
-        )
+""")
 
         config = CustomChecksConfig(
             enabled=True,

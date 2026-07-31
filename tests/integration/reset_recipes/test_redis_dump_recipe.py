@@ -23,8 +23,7 @@ from tolokaforge.runtime.reset_recipes import RECIPE_REGISTRY
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
-COMPOSE = textwrap.dedent(
-    """
+COMPOSE = textwrap.dedent("""
     services:
       redis:
         image: "redis:7-alpine"
@@ -34,8 +33,7 @@ COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
 def _redis_cli(compose: DockerCompose, *args: str) -> str:
