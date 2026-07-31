@@ -18,6 +18,7 @@ from typing import Any
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.state_composition import compose_state_checks_score
 from tolokaforge.core.grading.trace_timeline import (
     AttemptedCall,
     TrialTimeline,
@@ -929,6 +930,33 @@ def evaluate_jsonpath_checks(
     return score, reasons
 
 
+def resolve_state_checks_component(
+    *,
+    hash_score: float,
+    jsonpath_score: float,
+    db_probe_score: float,
+    hash_weight: float | None,
+) -> float | None:
+    """Fold the runner's three state sources into one ``state_checks`` score.
+
+    Translates the runner's ``-1.0``-means-not-evaluated sentinel into the ``None``
+    the shared composer reads, and returns ``None`` for a component no source
+    produced. ``db_probes`` is the sole state source for the tasks that declare it
+    (mixing it with hash/jsonpath in one task is out of scope), so its score fills
+    the slot outright instead of folding with the other two.
+
+    Raises ``ValueError`` when a hash verdict and a JSONPath score are both real and
+    no ``hash_weight`` says how to fold them.
+    """
+    if db_probe_score >= 0:
+        return db_probe_score
+    return compose_state_checks_score(
+        hash_score=None if hash_score < 0 else hash_score,
+        jsonpath_score=None if jsonpath_score < 0 else jsonpath_score,
+        hash_weight=hash_weight,
+    )
+
+
 def combine_grade_components(
     components: dict[str, Any], grading_config: dict[str, Any]
 ) -> tuple[float, bool]:
@@ -952,36 +980,33 @@ def combine_grade_components(
             {
                 "combine_method": "all" | "weighted" | "any",
                 "weights": {"state_checks": 1.0, "transcript_rules": 0.5},
-                "pass_threshold": 1.0
+                "pass_threshold": 1.0,
+                "state_checks": {"hash_weight": 0.6}
             }
 
     Returns:
         Tuple of (score: float, binary_pass: bool)
+
+    Raises:
+        ValueError: a hash verdict and a JSONPath score are both real and
+            ``state_checks.hash_weight`` does not say how to fold them.
     """
     method = grading_config.get("combine_method", "all")
     weights = grading_config.get("weights", {})
     threshold = grading_config.get("pass_threshold", 1.0)
 
-    # Extract component scores
-    hash_score = components.get("hash_score", -1.0)
-    jsonpath_score = components.get("jsonpath_score", -1.0)
     transcript_score = components.get("transcript_score", -1.0)
 
     # Determine which components are active (score >= 0 means evaluated)
     active_components: dict[str, float] = {}
-    # state_checks: combine hash and jsonpath scores if both are available
-    if hash_score >= 0 and jsonpath_score >= 0:
-        # Both evaluated — use product for strictness
-        active_components["state_checks"] = hash_score * jsonpath_score
-    elif hash_score >= 0:
-        active_components["state_checks"] = hash_score
-    elif jsonpath_score >= 0:
-        active_components["state_checks"] = jsonpath_score
-    # db_probes is the sole state source for its tasks (mixing with hash/jsonpath
-    # in one task is out of scope), so it fills the state_checks slot directly.
-    db_probe_score = components.get("db_probe_score", -1.0)
-    if db_probe_score >= 0:
-        active_components["state_checks"] = db_probe_score
+    state_checks_component = resolve_state_checks_component(
+        hash_score=components.get("hash_score", -1.0),
+        jsonpath_score=components.get("jsonpath_score", -1.0),
+        db_probe_score=components.get("db_probe_score", -1.0),
+        hash_weight=(grading_config.get("state_checks") or {}).get("hash_weight"),
+    )
+    if state_checks_component is not None:
+        active_components["state_checks"] = state_checks_component
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 

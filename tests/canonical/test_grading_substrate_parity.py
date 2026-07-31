@@ -91,7 +91,6 @@ _DRIFT_EXEMPTIONS = frozenset(
     {
         "combine.method",
         "state_checks.hash.expected_state_hash",
-        "state_checks.hash.weight",
     }
 )
 

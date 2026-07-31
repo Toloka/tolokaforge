@@ -107,7 +107,6 @@ declared `reason`.
 |---|---|---|---|---|---|
 | `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #692 |
 | `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
-| `state_checks.hash.weight` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | core blends the hash score against the jsonpath score by this weight; the runner multiplies the two and has no weight concept | #686 |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
 | `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
@@ -121,6 +120,11 @@ The `state_checks.hash` family (`hash`, `hash.enabled`, `hash.golden_actions`)
 claims both substrates at `FIELD_RESOLUTION_ONLY`: the runner's evaluator drives
 db-service over HTTP, so no service-free differential exists (#687). Mocking the
 DB client to make the canonical guard pass would defeat the guard.
+
+`state_checks.hash.weight` claims both at the same enforcement for a different
+reason: both substrates read it through one shared composer, so the fold cannot
+differ by construction, and the cross-substrate differential that would demonstrate
+that rather than argue it is tracked on #686.
 
 ### What the guard cannot see
 
@@ -588,16 +592,30 @@ these keys requires a runner image built from the same release. Old engine + new
 runner is safe **for this key** (core-side `extra="ignore"`).
 
 **Runner-engine version lock (both directions)**: the runner-side
-`StateChecksConfig` is `extra="forbid"` and declares no `env_assertions` field. An
-engine older than this release translates `env_assertions` onto that field for
-**every** pack carrying a non-empty `state_checks:` block, whether or not the pack
-declares the key, and the trial spec crosses the wire as a plain
-`model_dump_json()`. So an old engine against a new runner image is rejected at
-`RegisterTrial` for *every* such trial, not only for packs that used the key —
-`state_checks` requires engine and runner image from the same release in both
-directions. (`db_hash_check` was never declared on the runner config at all, so no
+`StateChecksConfig` is `extra="forbid"`, and the trial spec crosses the wire as a
+plain `model_dump_json()` — so a field either side does not declare fails
+validation rather than being dropped. Two keys make the lock bite on **every** pack
+carrying a non-empty `state_checks:` block, whether or not the pack declares them,
+because the adapter emits both unconditionally:
+
+- `env_assertions`, which the current runner config does not declare: an engine
+  older than this release translates it onto that field, so an **old engine against
+  a new runner image** is rejected at `RegisterTrial`.
+- `hash_weight`, which a runner image older than this release does not declare: the
+  current engine emits it (as `null` when the pack declares no weight), so a **new
+  engine against an old runner image** is rejected the same way.
+
+`state_checks` therefore requires engine and runner image from the same release in
+both directions, and `make docker-build-core` is part of every engine upgrade that
+touches it. (`db_hash_check` was never declared on the runner config at all, so no
 engine ever emitted it and it is not part of this lock — a populated
 `db_hash_check` is rejected core-side at config load.)
+
+An old engine against a new runner image can also be rejected for a second,
+narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
+pack configuring a hash source *and* non-empty `jsonpaths` reaches the runner with
+nothing saying how to fold them, and the presence gate rejects it. That rejection is
+correct — the alternative is grading the trial by a rule the author never chose.
 
 ### Folding the hash verdict with `jsonpaths`
 
@@ -629,9 +647,16 @@ outside that range the component leaves `[0, 1]` altogether.
 `expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
 other shape yields at most one score, so a weight there would have nothing to
 divide: it loads, its range is still checked, and `grade.reasons` records that it
-was declared but not consulted. This fold is the core engine's;
-`state_checks.hash.weight` is core-only, per
-[Single-substrate keys](#single-substrate-keys).
+was declared but not consulted.
+
+The rule above is substrate-independent: one function
+(`core/grading/state_composition.py`) folds the two sources, and both the core
+engine and the runner's `GradeTrial` call it, so a pack's `state_checks` component
+does not depend on which substrate graded the trial. The runner carries the weight
+as the flattened `state_checks.hash_weight` on its `StateChecksConfig` and applies
+the same presence gate at `RegisterTrial`, so a config that needs a weight and
+arrives without one is rejected there rather than folded by a rule the author never
+chose.
 
 Hash grading that was configured but could not run — `hash.enabled` with neither
 source declared, or `golden_actions` with no task directory, `initial_state` or

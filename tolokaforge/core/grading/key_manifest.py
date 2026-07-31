@@ -240,17 +240,13 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="state_checks.hash.weight",
         kind=KeyKind.CONFIG_INPUT,
-        coverage=SubstrateCoverage.CORE_ONLY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="StateChecksConfig.hash",
-        runner_field=None,
+        runner_field="StateChecksConfig.hash_weight",
         core_dict_key="weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
-        reason=(
-            "core blends the hash score against the jsonpath score by this weight; "
-            "the runner multiplies the two and has no weight concept, so the same "
-            "trial gets opposite verdicts"
-        ),
+        runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
         tracking_issue=686,
     ),
     GradingKey(

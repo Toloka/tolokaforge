@@ -91,6 +91,7 @@ from tolokaforge.runner.grading import (
     evaluate_db_probes,
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
+    resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
     CUSTOM_CHECKS_DISABLED_SKIP,
@@ -1535,6 +1536,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return pb2.GradeTrialResponse(success=False, error=audit.error)
 
         # D) COMBINE SCORES
+        # Resolved before the combine, which resolves the same slot again, so that an
+        # undecidable fold fails the RPC naming this trial rather than reaching the
+        # outer catch-all as an anonymous grading error.
+        try:
+            state_checks_component = resolve_state_checks_component(
+                hash_score=components.hash_score,
+                jsonpath_score=components.jsonpath_score,
+                db_probe_score=components.db_probe_score,
+                hash_weight=state_checks_config.hash_weight if state_checks_config else None,
+            )
+        except ValueError as exc:
+            logger.error(f"GradeTrial: {trial_id} - {exc}")
+            return pb2.GradeTrialResponse(
+                success=False,
+                error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
+            )
+
         components_dict = components.model_dump()
         grading_config_dict = grading_config.model_dump()
         score, binary_pass = combine_grade_components(components_dict, grading_config_dict)
@@ -1571,15 +1589,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"termination_reason={termination_reason.value if termination_reason else 'none'}"
         )
 
-        if components.db_probe_score >= 0:
-            state_checks_component = components.db_probe_score
-        elif components.hash_score < 0:
-            state_checks_component = components.jsonpath_score
-        elif components.jsonpath_score < 0:
-            state_checks_component = components.hash_score
-        else:
-            state_checks_component = components.hash_score * components.jsonpath_score
-
         return pb2.GradeTrialResponse(
             success=True,
             error="",
@@ -1587,7 +1596,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 binary_pass=binary_pass,
                 score=score,
                 components=pb2.GradeComponents(
-                    state_checks=state_checks_component,
+                    # -1.0 is the wire's not-evaluated sentinel for a component.
+                    state_checks=(
+                        -1.0 if state_checks_component is None else state_checks_component
+                    ),
                     transcript_rules=components.transcript_score,
                     llm_judge=components.llm_judge_score,
                     custom_checks=components.custom_checks_score,

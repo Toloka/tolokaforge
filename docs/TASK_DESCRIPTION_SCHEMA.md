@@ -225,6 +225,7 @@ class StateChecksConfig(BaseModel):
     hash_enabled: bool = False
     expected_hash: Optional[str] = None           # Pre-computed (if available)
     golden_actions: List[GoldenAction] = Field(default_factory=list)
+    hash_weight: Optional[float] = None           # fold weight; None = author declared none
     numeric_string_fields: List[str] = Field(default_factory=list)  # per-field string folding
     id_fields: Dict[str, str] = Field(default_factory=dict)         # per-table PK; absent => "id"
     relaxed_validation: bool = False              # legacy escape hatch for the id_fields check

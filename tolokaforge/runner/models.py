@@ -27,6 +27,7 @@ from tolokaforge.core.deprecations import (
     coerce_network_policy_case,
     coerce_security_context_aliases,
 )
+from tolokaforge.core.grading.state_composition import resolve_hash_weight
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
@@ -298,6 +299,8 @@ class StateChecksConfig(BaseModel):
     hash_enabled: bool = False
     expected_hash: str | None = None  # Pre-computed (if available)
     golden_actions: list[GoldenAction] = Field(default_factory=list)
+    # None means the author declared no weight — never "fall back to a default".
+    hash_weight: float | None = None
     # Opt-in, PER-FIELD: record field names whose numeric-looking STRING values
     # fold ("130.00" == "130.0") when hashing state. Per-field (not a global
     # switch) because a numeric-looking string can carry meaning in its exact
@@ -331,6 +334,28 @@ class StateChecksConfig(BaseModel):
                     f"got {field!r}"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _validate_hash_weight_declaration(self) -> StateChecksConfig:
+        """Reject the one shape whose ``state_checks`` score is undecidable.
+
+        Calls the same predicate the core config calls, over this model's flattened
+        naming, so the two substrates cannot disagree about which configs are
+        gradeable. An engine that dropped ``hash.weight`` on the way to the wire is
+        therefore rejected at ``RegisterTrial`` rather than having its trial graded
+        by a fold rule the author never chose.
+        """
+        resolve_hash_weight(
+            {
+                "enabled": self.hash_enabled,
+                "expected_state_hash": self.expected_hash,
+                "golden_actions": self.golden_actions,
+                "weight": self.hash_weight,
+            },
+            jsonpaths=self.jsonpath_checks,
+            context="task_description grading.state_checks.hash_weight",
+        )
+        return self
 
     model_config = {"extra": "forbid"}
 

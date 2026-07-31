@@ -667,6 +667,7 @@ class NativeAdapter(BaseAdapter):
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
+                    hash_weight=hash_config.get("weight") if hash_config else None,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),

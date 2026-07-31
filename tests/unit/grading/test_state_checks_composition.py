@@ -1,20 +1,24 @@
-"""How the core engine folds a state hash and JSONPath assertions into one component.
+"""How each substrate folds a state hash and JSONPath assertions into one component.
 
-Drives the real :class:`~tolokaforge.core.grading.combine.GradingEngine` rather
-than the composer directly (that arithmetic is locked in
-``test_state_composition.py``), because what these cases pin is the *routing*: what
-state each half is evaluated against, when a source contributes nothing, and what
-happens when a hash was configured but no verdict could be produced.
+Drives the real :class:`~tolokaforge.core.grading.combine.GradingEngine` and the
+real ``RegisterTrial`` rather than the composer directly (that arithmetic is locked
+in ``test_state_composition.py``), because what these cases pin is the *routing*:
+what state each half is evaluated against, when a source contributes nothing, what
+happens when a hash was configured but no verdict could be produced, and that both
+substrates reach one shared predicate when they decide a config is ungradeable.
 """
 
 from __future__ import annotations
 
+import json
 from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
 from pydantic import ValidationError
 
+from tests.utils.runner_requests import register_request, trial_spec_json
+from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.state_checks import (
     GoldenReplayError,
@@ -32,6 +36,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.runner import runner_pb2 as pb2
 
 pytestmark = pytest.mark.unit
 
@@ -385,3 +390,160 @@ class TestFailedGoldenReplayIsNotAScore:
                 task_initial_state=InitialStateConfig(),
                 task_mcp_server="mcp_server.py",
             )
+
+
+_RUNNER_WIDGETS = {"widgets": [{"id": "W1", "status": "closed"}, {"id": "W2", "status": "open"}]}
+
+
+def _runner_task_description(state_checks: dict) -> dict:
+    """A registrable ``TaskDescription`` graded only by ``state_checks``."""
+    return {
+        "task_id": "runner_state_checks_fold",
+        "name": "Runner state_checks fold",
+        "category": "test",
+        "description": "A hash source and live assertions, folded by an author weight",
+        "adapter_type": "native",
+        "system_prompt": "You are a test assistant.",
+        "initial_state": {
+            "tables": _RUNNER_WIDGETS,
+            "schemas": [{"table_name": "widgets", "fields": {"id": "string", "status": "string"}}],
+            "unstable_fields": [],
+        },
+        "agent_tools": [],
+        "user_tools": [],
+        "grading": {
+            "combine_method": "weighted",
+            "weights": {"state_checks": 1.0},
+            "pass_threshold": 1.0,
+            "state_checks": {"jsonpath_checks": _HALF_SATISFIED_JSONPATHS, **state_checks},
+        },
+    }
+
+
+def _spec_payload(trial_id: str, state_checks: dict) -> dict:
+    return json.loads(trial_spec_json(_runner_task_description(state_checks), trial_id=trial_id))
+
+
+def _register(runner_service, mock_grpc_context, trial_id: str, spec_payload: dict):
+    request = register_request(json.dumps(spec_payload), trial_id=trial_id)
+    return runner_service.RegisterTrial(request, mock_grpc_context)
+
+
+class TestRunnerRejectsTheUndecidableConfig:
+    """``RegisterTrial`` rejects the shapes the core config rejects, via one predicate.
+
+    The weight is stripped from the serialised spec rather than left out of the
+    model, because that is the only way the shape reaches a runner in production: an
+    engine predating the field emits a ``state_checks`` block without it, and the
+    trial spec crosses the wire as a plain ``model_dump_json()``. The assertion is on
+    the *message*, so pointing the runner at its own copy of the predicate reddens it.
+    """
+
+    _SOURCES = {
+        "expected_state_hash": {"expected_hash": _MATCHING_HASH},
+        "golden_actions": {"golden_actions": [{"tool_name": "close_widget", "arguments": {}}]},
+    }
+
+    def _weighted(self, source_key: str) -> dict:
+        return {"hash_enabled": True, "hash_weight": 0.6, **self._SOURCES[source_key]}
+
+    @pytest.mark.parametrize("source_key", sorted(_SOURCES))
+    def test_a_stripped_weight_is_rejected(self, source_key, runner_service, mock_grpc_context):
+        trial_id = f"gate_stripped_{source_key}:0"
+        payload = _spec_payload(trial_id, self._weighted(source_key))
+        del payload["task"]["grading"]["state_checks"]["hash_weight"]
+
+        response = _register(runner_service, mock_grpc_context, trial_id, payload)
+
+        assert response.success is False
+        assert MISSING_HASH_WEIGHT_MESSAGE in response.error
+
+    @pytest.mark.parametrize("source_key", sorted(_SOURCES))
+    def test_the_same_spec_registers_with_its_weight(
+        self, source_key, runner_service, mock_grpc_context
+    ):
+        trial_id = f"gate_declared_{source_key}:0"
+
+        response = _register(
+            runner_service,
+            mock_grpc_context,
+            trial_id,
+            _spec_payload(trial_id, self._weighted(source_key)),
+        )
+
+        assert response.success is True, response.error
+
+
+class TestGradeTrialFoldsByTheAuthorWeight:
+    """``GradeTrial`` folds a live hash verdict with a live assertion score.
+
+    Both sources are real here: hash grading runs with empty ``golden_actions``
+    (expected state == initial state) against a trial that mutated nothing, so its
+    verdict is a genuine ``1.0``, and the fixture's two assertions leave the JSONPath
+    score at ``0.5``. The product rule would return ``0.5`` at every weight.
+
+    This shape is also the one the load gate accepts and the runner cannot always
+    fold: ``hash.enabled`` with no *declared* source is not undecidable at load —
+    core produces no verdict for it — but the runner's refusal semantics produce one
+    anyway. Without a weight the component is undecidable at grade time, and the RPC
+    says so rather than returning a grade folded by an invented rule.
+    """
+
+    _REFUSAL_HASH = {"hash_enabled": True, "golden_actions": []}
+
+    @pytest.mark.parametrize(("hash_weight", "expected"), [(0.6, 0.8), (0.25, 0.625), (0.0, 0.5)])
+    def test_component_is_the_blend(self, hash_weight, expected, runner_service, mock_grpc_context):
+        trial_id = f"fold_{hash_weight}:0"
+        state_checks = {**self._REFUSAL_HASH, "hash_weight": hash_weight}
+        registered = _register(
+            runner_service, mock_grpc_context, trial_id, _spec_payload(trial_id, state_checks)
+        )
+        assert registered.success is True, registered.error
+
+        response = runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is True, response.error
+        assert response.grade.components.state_checks == pytest.approx(expected)
+
+    def test_an_undecidable_fold_fails_the_rpc_naming_the_trial(
+        self, runner_service, mock_grpc_context
+    ):
+        trial_id = "fold_undecidable:0"
+        registered = _register(
+            runner_service, mock_grpc_context, trial_id, _spec_payload(trial_id, self._REFUSAL_HASH)
+        )
+        assert registered.success is True, registered.error
+
+        response = runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is False
+        assert not response.HasField("grade")
+        assert trial_id in response.error
+        assert MISSING_HASH_WEIGHT_MESSAGE in response.error
+
+
+class TestWeightCarryingPacksReachTheRunner:
+    """The two in-repo packs that declare a weight arrive at the runner carrying it.
+
+    Both configure a hash source *and* live assertions, so a gate that rejected the
+    shape, or a translation that dropped the value, would take them out of service
+    entirely.
+    """
+
+    @pytest.mark.parametrize(
+        ("tasks_glob", "task_id", "weight"),
+        [
+            ("tasks/**/task.yaml", "shop_orders_02", 0.6),
+            ("grading_parity/**/task.yaml", "all_keys", 0.75),
+        ],
+    )
+    def test_translated_weight(self, tasks_glob, task_id, weight, test_data_dir):
+        adapter = NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": tasks_glob})
+
+        state_checks = adapter.to_task_description(task_id).grading.state_checks
+
+        assert state_checks.hash_weight == pytest.approx(weight)
