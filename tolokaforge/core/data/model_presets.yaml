@@ -183,6 +183,41 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # thinkingmachines/inkling — model-specific overlay landed via auto-resolve
+  # (Slack-requested integration, PR #719). Exact-match globs only; no generic
+  # glob matches ``thinkingmachines/*`` so no sibling route is affected. The
+  # model round-trips every canonical tool-call shape natively (schema stays
+  # ``passthrough``), so the ONE non-default lever is a dict-map prompt policy:
+  #
+  #   * ``prompt_policy: dict_map_hints_ref`` (``RefResolvingDictMapHints``) —
+  #     the observe (default) baseline surfaced two dict-map *structural
+  #     variants* that regressed because the shipped ``DictMapHints`` never
+  #     fired on them: ``wide_map`` (value schema is a ``$ref`` → value_fields
+  #     empty, hint skipped) 2/15, and ``nested_in_object`` (dict-map one level
+  #     inside an ``object`` param, not detected) 5/15. On both variants the
+  #     model intermittently answered in prose and omitted the tool call; the
+  #     "MUST be included / DO NOT omit" nudge closes that lapse. The
+  #     ref-resolving subclass adds exactly those two firing conditions (resolve
+  #     a ``$ref`` value schema one hop; recurse one level into an ``object``
+  #     param). Reprobe: ``wide_map`` 2/15 → 5/5 (fixed); ``nested_in_object``
+  #     5/15 → 4/5 (lifted; the residual is a prose/no-tool-call consistency
+  #     ceiling on that harder-worded variant, not a preset-fixable format
+  #     artifact — see registry.py). ``DICT_MAP_TOOL_CALL`` itself is 15/15
+  #     native and stays required.
+  #   * ``reasoning_codec: openai`` — the model surfaces summary-only reasoning
+  #     (provider_raw carries ``reasoning_tokens``, no signed thinking blocks).
+  #     The OpenAI codec lands those summaries in the trajectory logs (same
+  #     choice as the sibling ``openrouter_dict_stringify_recovery`` preset). It
+  #     does NOT synthesize signed blocks, so THINKING_* stays known_unsupported
+  #     (see registry.py) — declaring ``openai`` here does not inflate them.
+  thinkingmachines_inkling:
+    match:
+      - "thinkingmachines/inkling"
+      - "thinkingmachines/inkling*"
+    schema_sanitizer: passthrough
+    prompt_policy: dict_map_hints_ref
+    reasoning_codec: openai
+
   # DeepSeek V3.2-Exp experimental V3.2 reasoning route.
   # Unlike the V4 line (openrouter_dict_stringify_recovery, above) it
   # round-trips dict-map and discriminated-union tool calls cleanly on

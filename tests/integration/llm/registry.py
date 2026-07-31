@@ -2371,6 +2371,77 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # -----------------------------------------------------------------
+    # thinkingmachines/inkling (OpenRouter) — landed via auto-resolve
+    # (Slack-requested integration, PR #719). Routes through the
+    # model-specific ``thinkingmachines_inkling`` preset (see
+    # model_presets.yaml): schema stays ``passthrough`` (every canonical
+    # tool-call shape round-trips natively 15/15), plus
+    # ``prompt_policy: dict_map_hints_ref`` (``RefResolvingDictMapHints``)
+    # and ``reasoning_codec: openai``.
+    #
+    # The observe (default) baseline surfaced two dict-map *structural
+    # variants* that regressed because the shipped ``DictMapHints`` never
+    # fired on them — ``wide_map`` ($ref value schema, hint skipped) 2/15 and
+    # ``nested_in_object`` (dict-map one level inside an object param, not
+    # detected) 5/15; on both the model intermittently answered in prose and
+    # omitted the tool call. ``RefResolvingDictMapHints`` adds exactly those
+    # two firing conditions; reprobe took ``wide_map`` 2/15 → 5/5 (fixed) and
+    # ``nested_in_object`` 5/15 → 4/5 (lifted). ``DICT_MAP_TOOL_CALL`` itself
+    # is 15/15 native, so it stays ``required``: the residual
+    # ``nested_in_object`` miss is a prose/no-tool-call consistency ceiling on
+    # that harder-worded variant, not a preset-fixable format artifact, and it
+    # is reclassified out of the fix-targets rather than demoting the base
+    # capability.
+    #
+    # The four ``known_unsupported`` ceilings are the observe-run ceilings
+    # (decision.json): the model surfaces summary-only reasoning
+    # (reasoning_tokens present, no signed thinking blocks), so the openai
+    # codec's THINKING_EMITS_BLOCKS / THINKING_REPLAY_ROUNDTRIP /
+    # UNSIGNED_THINKING_REPLAY probes have nothing to assert; and the explicit
+    # Anthropic-ephemeral cache contract (PROMPT_CACHING) is not wired on this
+    # OpenRouter route (call 1 created 0 cache_creation_input_tokens).
+    # IMPLICIT_PROMPT_CACHING stays ``required`` — the auto-cache reporting is
+    # route-flaky (majority-pass on the 2-call probe), and demoting would
+    # under-credit a surface that does work most of the time.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__thinkingmachines_inkling",
+        provider="openrouter",
+        name="thinkingmachines/inkling",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
 ]
 
 

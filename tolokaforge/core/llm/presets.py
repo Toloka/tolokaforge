@@ -34,6 +34,7 @@ from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
+    RefResolvingDictMapHints,
     SystemPromptPolicy,
 )
 from tolokaforge.core.llm.reasoning_codec import (
@@ -88,6 +89,7 @@ _SCHEMA_SANITIZERS: dict[str, type[ToolSchemaSanitizer]] = {
 _PROMPT_POLICIES: dict[str, type[SystemPromptPolicy]] = {
     "none": NoPromptEnrichment,
     "dict_map_hints": DictMapHints,
+    "dict_map_hints_ref": RefResolvingDictMapHints,
 }
 
 _CONTENT_POLICIES: dict[str, type[ToolContentPolicy]] = {
