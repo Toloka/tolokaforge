@@ -29,6 +29,8 @@ import json
 import re
 import urllib.request
 
+from automation import gateway_catalog
+
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # Maximal alpha runs (keeping a trailing "+", so "a+" != "a" and Cohere "A+" never collapses
 # onto "command-a") OR dotted-number runs; splits glued names ("gpt5.6" -> gpt, 5.6) and
@@ -37,6 +39,23 @@ _TOKEN_RE = re.compile(r"[a-z]+\+?|\d+(?:\.\d+)*")
 _CONNECTOR_RE = re.compile(r"\s*(?:,|&|\band\b|\bplus\b)\s*", re.IGNORECASE)
 _MENTION_RE = re.compile(r"<@[^>]+>")
 _INTEGRATE_RE = re.compile(r"\bintegrate\b", re.IGNORECASE)
+# Optional route directive: "integrate Grok 4.5 via litellm". Stripped BEFORE the phrases are
+# split, otherwise "Grok 4.5 via litellm" becomes the model phrase and resolves to nothing.
+# Accepts the gateway's product name and the generic words for it, since a requester types
+# whichever they think in.
+_ROUTE_RE = re.compile(
+    r"\b(?:via|through|over|using)\s+(?:the\s+)?"
+    r"(?P<route>litellm(?:\s+proxy)?|gateway|proxy|openrouter|or)\b",
+    re.IGNORECASE,
+)
+_ROUTE_ALIASES = {
+    "litellm": gateway_catalog.ROUTE_GATEWAY,
+    "litellm proxy": gateway_catalog.ROUTE_GATEWAY,
+    "gateway": gateway_catalog.ROUTE_GATEWAY,
+    "proxy": gateway_catalog.ROUTE_GATEWAY,
+    "openrouter": gateway_catalog.ROUTE_OPENROUTER,
+    "or": gateway_catalog.ROUTE_OPENROUTER,
+}
 
 
 @dataclasses.dataclass(frozen=True)
@@ -78,14 +97,29 @@ def _slug_model_alpha(slug: str) -> frozenset[str]:
     return _tokenize(slug.split("/", 1)[-1]).alpha
 
 
+def parse_route(text: str) -> str | None:
+    """The explicitly requested integration route, or ``None`` for "not stated".
+
+    ``None`` deliberately differs from :data:`gateway_catalog.DEFAULT_ROUTE`: the
+    caller needs to know whether a human chose OpenRouter or merely did not ask,
+    because only the first justifies overriding a gateway-only model.
+    """
+    match = _ROUTE_RE.search(_MENTION_RE.sub(" ", text))
+    if not match:
+        return None
+    return _ROUTE_ALIASES.get(" ".join(match.group("route").lower().split()))
+
+
 def parse_command(text: str) -> list[str]:
-    """Extract the model phrases from a free-text integrate request. Drops any bot mention,
-    keeps everything after the first ``integrate`` keyword, and splits on and / & / , / plus.
+    """Extract the model phrases from a free-text integrate request. Drops any bot mention
+    and any ``via <route>`` directive, keeps everything after the first ``integrate`` keyword,
+    and splits on and / & / , / plus.
     Returns ``[]`` when the message is not an integrate request (no keyword)."""
-    match = _INTEGRATE_RE.search(_MENTION_RE.sub(" ", text))
+    cleaned = _ROUTE_RE.sub(" ", _MENTION_RE.sub(" ", text))
+    match = _INTEGRATE_RE.search(cleaned)
     if not match:
         return []
-    tail = _MENTION_RE.sub(" ", text)[match.end() :]
+    tail = cleaned[match.end() :]
     return [phrase for chunk in _CONNECTOR_RE.split(tail) if (phrase := chunk.strip(" .\t\r\n"))]
 
 
@@ -128,13 +162,35 @@ def resolve_all(
     return [resolve(phrase, catalog, aliases) for phrase in parse_command(text)]
 
 
-def format_resolution_reply(requester_id: str, resolutions: list[Resolution]) -> str:
+def format_resolution_reply(
+    requester_id: str,
+    resolutions: list[Resolution],
+    availability: dict[str, gateway_catalog.Availability] | None = None,
+    requested_route: str | None = None,
+) -> str:
     """Slack mrkdwn reply: what started, and which phrases need an exact slug. The requester
-    is pinged at the top so the ambiguous re-request lands on the right person."""
+    is pinged at the top so the ambiguous re-request lands on the right person.
+
+    When ``availability`` is supplied, each resolved model also reports whether the
+    deployment's LLM gateway could serve it — advisory only, since a gateway route may be
+    backed by a different upstream and that is a comparability call for a human.
+    ``requested_route`` echoes an explicit ``via <route>`` directive so the requester can
+    see it was honoured; absent, the default route is used and named."""
     lines = [f"<@{requester_id}> here is what I could resolve from your request:", ""]
+    effective_route = requested_route or gateway_catalog.DEFAULT_ROUTE
     for r in resolutions:
         if r.status == "resolved":
-            lines.append(f":white_check_mark: *{r.query}*: starting integration as `{r.slug}`")
+            lines.append(
+                f":white_check_mark: *{r.query}*: starting integration as `{r.slug}` "
+                f"via *{effective_route}*"
+            )
+            note = (
+                gateway_catalog.describe(availability[r.slug])
+                if availability and r.slug in availability
+                else ""
+            )
+            if note:
+                lines.append(f"    ◦ {note}")
         elif r.status == "ambiguous":
             lines.append(
                 f":warning: *{r.query}* is ambiguous ({len(r.candidates)} matches). "
@@ -145,6 +201,14 @@ def format_resolution_reply(requester_id: str, resolutions: list[Resolution]) ->
             lines.append(
                 f":x: *{r.query}*: no matching model on OpenRouter. Check the name and version."
             )
+    if requested_route is None and availability:
+        reachable = [s for s, a in availability.items() if a.reachable]
+        if reachable:
+            lines += [
+                "",
+                f"_Default route is *{gateway_catalog.DEFAULT_ROUTE}*. To use the gateway "
+                f"instead, re-request with `via litellm`._",
+            ]
     return "\n".join(lines)
 
 

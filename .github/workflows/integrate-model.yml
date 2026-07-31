@@ -40,6 +40,13 @@ on:
         description: "what triggered it (e.g. slack); informational only"
         required: false
         default: manual
+      route:
+        description: >-
+          transport for the candidate's probes: "openrouter" (default) or "litellm" to go
+          through the LLM gateway. The gateway route needs the ARENA_AUTOMATION_LLM_PROXY_*
+          secrets; without them the run falls back to OpenRouter rather than failing.
+        required: false
+        default: openrouter
 
 permissions:
   contents: write
@@ -187,7 +194,24 @@ jobs:
         # metacharacters can never be command-substituted.
         env:
           ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
-        run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+          ROUTE: ${{ inputs.route || 'openrouter' }}
+          PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
+          PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
+        # OPENROUTER_API_KEY is always written: it is the fallback, and the probes' own pricing
+        # lookups use it even on the gateway route. LLM_PROXY_* is added only when the gateway
+        # route was requested AND configured -- writing a base URL without a key would silently
+        # forward the OpenRouter key to the gateway host (see docs/LLM_LAYER.md § proxy).
+        run: |
+          printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+          if [ "$ROUTE" = "litellm" ]; then
+            if [ -n "$PROXY_BASE_URL" ] && [ -n "$PROXY_API_KEY" ]; then
+              printf '%s\n' "LLM_PROXY_BASE_URL=$PROXY_BASE_URL" >> .env
+              printf '%s\n' "LLM_PROXY_API_KEY=$PROXY_API_KEY" >> .env
+              echo "candidate probes will run through the LLM gateway"
+            else
+              echo "::warning title=Gateway route unavailable::route=litellm was requested but ARENA_AUTOMATION_LLM_PROXY_BASE_URL / _API_KEY are not set; probing over OpenRouter instead"
+            fi
+          fi
 
       - name: Resolve candidate model_id slug
         id: slug
