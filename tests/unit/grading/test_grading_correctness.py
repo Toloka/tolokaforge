@@ -631,18 +631,88 @@ class TestTranscriptRulesEvaluation:
     def test_disallowed_tool_declared_but_never_run_passes(self):
         """A call the agent declared on a terminating turn never reached the
         substrate, so there is no forbidden execution to report. Naming intent as
-        the violation is a matcher question, tracked on #678."""
+        the violation is a matcher question, tracked on #678.
+
+        The trial records another call, which is what makes "declared, not
+        recorded" mean "did not run" — see the records-absent case below.
+        """
         config = self._config(
             tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
         )
         timeline = build_timeline(
             [("assistant", "I will remove the customer next.")],
+            [self._call("read_file")],
             unexecuted=[ToolCall(id="never_ran", name="delete_customer", arguments={})],
         )
         result = evaluate_transcript_rules(timeline, config)
         assert result.passed is True
         assert result.score == 1.0
         assert result.details[0].message == "Disallowed tool 'delete_customer' was never called"
+
+    def test_a_records_less_timeline_fails_every_tool_expectation_by_name(self):
+        """Re-grading a recorded bundle is this shape: `tool_log` is not written to
+        `trajectory.yaml`, so the message view declares calls and nothing says
+        whether they ran. Reading that as "never used" passed every
+        `disallowed_tools` check unconditionally (docs/GRADING.md G6b)."""
+        config = self._config(
+            tool_expectations=ToolExpectations(
+                required_tools=["read_file"], disallowed_tools=["delete_customer"]
+            )
+        )
+        timeline = build_timeline(
+            [("assistant", "Removing the customer.")],
+            unexecuted=[
+                ToolCall(id="c1", name="read_file", arguments={}),
+                ToolCall(id="c2", name="delete_customer", arguments={}),
+            ],
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert timeline.records_present is False
+        assert result.passed is False
+        assert result.score == 0.0
+        assert [(d.rule_type, d.passed) for d in result.details] == [
+            ("required_tool", False),
+            ("disallowed_tool", False),
+        ]
+        for detail in result.details:
+            assert "carries no tool-call record" in detail.message
+
+    def test_a_records_less_timeline_still_clears_a_tool_never_asked_for(self):
+        """A record can only name a call the message view declared, so a tool the
+        trial never asked for never ran — knowable without the record view."""
+        config = self._config(tool_expectations=ToolExpectations(disallowed_tools=["drop_table"]))
+        timeline = build_timeline(
+            [("assistant", "Reading the file.")],
+            unexecuted=[ToolCall(id="c1", name="read_file", arguments={})],
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is True
+        assert result.details[0].message == "Disallowed tool 'drop_table' was never called"
+
+    def test_a_records_less_timeline_names_the_gap_on_a_required_action(self):
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="a1",
+                    requestor="assistant",
+                    tool_name="delete_customer",
+                    arguments={"customer_id": "c1"},
+                )
+            ]
+        )
+        timeline = build_timeline(
+            [("assistant", "Removing the customer.")],
+            unexecuted=[ToolCall(id="c1", name="delete_customer", arguments={"customer_id": "c1"})],
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is False
+        assert "carries no tool-call record" in result.details[0].message
 
     def test_tool_expectations_decomposes_one_sub_check_per_tool(self):
         """Each declared tool is scored independently, like must_contain entries."""

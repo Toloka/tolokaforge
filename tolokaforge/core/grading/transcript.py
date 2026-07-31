@@ -94,13 +94,25 @@ class TranscriptChecker:
         required_tools: list[str] | None,
         disallowed_tools: list[str] | None,
     ) -> tuple[float, list[str]]:
-        """Check tool usage expectations"""
+        """Check tool usage expectations.
+
+        A call with no record did not run — but only while the timeline carries
+        records at all. Without them nothing knows whether the declared calls ran,
+        so the check fails naming that rather than reading absent evidence as
+        "never used", which would pass every disallowed tool the trial called.
+        """
         reasons = []
         score = 1.0
 
-        tools_used = {
-            call.tool_name for call in attempted_calls(timeline) if call.status is not None
-        }
+        calls = attempted_calls(timeline)
+        if not timeline.records_present and calls and (required_tools or disallowed_tools):
+            declared = ", ".join(sorted({call.tool_name for call in calls}))
+            return 0.0, [
+                "Tool expectations unevaluatable: the trial carries no tool-call record, "
+                f"so whether it ran the calls it declared ({declared}) is unknown"
+            ]
+
+        tools_used = {call.tool_name for call in calls if call.status is not None}
 
         if required_tools:
             missing = set(required_tools) - tools_used

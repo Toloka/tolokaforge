@@ -164,8 +164,8 @@ def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, Key
 def transcript_rules_author_keys() -> tuple[str, ...]:
     """Every ledger key under ``transcript_rules``, for the blanket degenerate skip.
 
-    A trial with neither messages nor tool history runs no per-field sub-check, so
-    the whole subtree is skipped as a unit. A site that did run records the per-key
+    A trial whose timeline carries no events runs no per-field sub-check, so the
+    whole subtree is skipped as a unit. A site that did run records the per-key
     constant instead.
     """
     return tuple(

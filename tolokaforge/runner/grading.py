@@ -3,7 +3,7 @@ Grading Helper Functions for Runner Service
 
 This module provides helper functions for the GradeTrial RPC implementation:
 - compute_state_diff: Compute human-readable diff between two stable states
-- evaluate_transcript_rules: Evaluate transcript rules against conversation history
+- evaluate_transcript_rules: Evaluate transcript rules against the trial's event timeline
 - combine_grade_components: Combine component scores into final grade
 
 See docs/GRPC_PROTOCOL.md for grading algorithm specification.
@@ -226,7 +226,8 @@ def evaluate_transcript_rules(
     rules: dict[str, Any],
 ) -> TranscriptEvaluationResult:
     """
-    Evaluate the author-facing ``TranscriptRulesConfig`` against a trajectory.
+    Evaluate the author-facing ``TranscriptRulesConfig`` against the trial's
+    event timeline.
 
     ``rules`` is a single ``TranscriptRulesConfig.model_dump()`` dict — the
     schema task authors actually write in ``grading.yaml``. It is decomposed
@@ -242,7 +243,9 @@ def evaluate_transcript_rules(
     - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
       per declared tool. A required tool must have been called *successfully*; a
       disallowed tool must not have run at **any** status, because an attempted
-      forbidden call is itself the violation.
+      forbidden call is itself the violation. Both fail on a timeline that carries
+      no records for a call the message view declared — whether it ran is then
+      unknown, and a "did not run" reading would pass every forbidden call.
     - ``required_actions`` (list[RequiredAction]): each declared tool call must
       appear on the timeline, matched by ``tool_name`` + ``requestor`` and
       by the argument subset named in ``compare_args`` (``None`` = compare all
@@ -284,6 +287,7 @@ def evaluate_transcript_rules(
 
     assistant_messages = assistant_texts(timeline)
     calls = attempted_calls(timeline)
+    records_present = timeline.records_present
 
     if must_contain:
         accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
@@ -302,14 +306,16 @@ def evaluate_transcript_rules(
     if required_tools or disallowed_tools:
         accounted_keys[TOOL_EXPECTATIONS_KEY] = EVALUATED
         for tool_name in required_tools:
-            details.append(_check_required_tool(tool_name, calls))
+            details.append(_check_required_tool(tool_name, calls, records_present=records_present))
         for tool_name in disallowed_tools:
-            details.append(_check_disallowed_tool(tool_name, calls))
+            details.append(
+                _check_disallowed_tool(tool_name, calls, records_present=records_present)
+            )
 
     if required_actions:
         accounted_keys[REQUIRED_ACTIONS_KEY] = EVALUATED
         for action in required_actions:
-            details.append(_check_required_action(action, calls))
+            details.append(_check_required_action(action, calls, records_present=records_present))
 
     if communicate_info:
         accounted_keys[COMMUNICATE_INFO_KEY] = EVALUATED
@@ -343,9 +349,38 @@ _REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
 }
 
 
+_UNRECORDED = (
+    "the trial carries no tool-call record, so nothing knows whether the calls it "
+    "declared ran. A timeline rebuilt from a recorded bundle is in that state, "
+    "because tool_log is not written to trajectory.yaml"
+)
+
+
+def _declared(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
+    """Every call to ``tool_name`` the agent asked for, whether or not it ran."""
+    return [call for call in calls if call.tool_name == tool_name]
+
+
 def _executed(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
-    """The calls to ``tool_name`` that actually ran, so carry an outcome."""
-    return [call for call in calls if call.tool_name == tool_name and call.status is not None]
+    """The calls to ``tool_name`` that actually ran, so carry an outcome.
+
+    Separates ran from did-not-run only while the timeline carries records.
+    Without them every call reads as un-run, so callers ask
+    :func:`_outcome_unknown` first instead of reading absent evidence as a fact.
+    """
+    return [call for call in _declared(calls, tool_name) if call.status is not None]
+
+
+def _outcome_unknown(
+    calls: Sequence[AttemptedCall], tool_name: str, *, records_present: bool
+) -> bool:
+    """Whether the timeline can say if the declared calls to ``tool_name`` ran.
+
+    A record can only name a call the message view declared, so a tool the agent
+    never asked for never ran — knowable from the message view alone. Whatever it
+    did ask for is unknown the moment the record view is missing.
+    """
+    return not records_present and bool(_declared(calls, tool_name))
 
 
 def _check_must_contain(text: str, assistant_messages: Sequence[str]) -> TranscriptRuleResult:
@@ -416,12 +451,21 @@ def _check_max_turns(max_turns: int, turn_count: int) -> TranscriptRuleResult:
     )
 
 
-def _check_required_tool(tool_name: str, calls: Sequence[AttemptedCall]) -> TranscriptRuleResult:
+def _check_required_tool(
+    tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
+) -> TranscriptRuleResult:
     """A required tool must have been called successfully at least once.
 
     Same "a failed call did not happen" rule ``_check_required_action`` applies:
     an errored call did not accomplish the work the author required.
     """
+    if _outcome_unknown(calls, tool_name, records_present=records_present):
+        return TranscriptRuleResult(
+            rule_type="required_tool",
+            rule={"required_tool": tool_name},
+            passed=False,
+            message=f"Required tool {tool_name!r}: {_UNRECORDED}",
+        )
     called = any(call.status is ToolExecutionStatus.SUCCESS for call in _executed(calls, tool_name))
     return TranscriptRuleResult(
         rule_type="required_tool",
@@ -435,14 +479,25 @@ def _check_required_tool(tool_name: str, calls: Sequence[AttemptedCall]) -> Tran
     )
 
 
-def _check_disallowed_tool(tool_name: str, calls: Sequence[AttemptedCall]) -> TranscriptRuleResult:
+def _check_disallowed_tool(
+    tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
+) -> TranscriptRuleResult:
     """A disallowed tool must not have run, at any status.
 
     Status-insensitive on purpose: attempting a forbidden call is the violation,
     so an errored attempt fails the check just like a successful one. A call the
     agent declared on a terminating turn never reached the substrate and is not
     counted; naming intent as a violation is a matcher question, tracked on #678.
+    That exclusion needs the record view, so a declared call the timeline holds no
+    records for fails the check instead of reading as one that never ran.
     """
+    if _outcome_unknown(calls, tool_name, records_present=records_present):
+        return TranscriptRuleResult(
+            rule_type="disallowed_tool",
+            rule={"disallowed_tool": tool_name},
+            passed=False,
+            message=f"Disallowed tool {tool_name!r}: {_UNRECORDED}",
+        )
     offending = _executed(calls, tool_name)
     if not offending:
         message = f"Disallowed tool {tool_name!r} was never called"
@@ -461,7 +516,7 @@ def _check_disallowed_tool(tool_name: str, calls: Sequence[AttemptedCall]) -> Tr
 
 
 def _check_required_action(
-    action: dict[str, Any], calls: Sequence[AttemptedCall]
+    action: dict[str, Any], calls: Sequence[AttemptedCall], *, records_present: bool
 ) -> TranscriptRuleResult:
     """A declared tool call must appear on the timeline.
 
@@ -495,6 +550,14 @@ def _check_required_action(
             rule=action,
             passed=False,
             message=f"{label}: no tool_name declared",
+        )
+
+    if _outcome_unknown(calls, tool_name, records_present=records_present):
+        return TranscriptRuleResult(
+            rule_type="required_action",
+            rule=action,
+            passed=False,
+            message=f"{label}: {_UNRECORDED}",
         )
 
     for call in calls:

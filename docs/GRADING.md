@@ -347,6 +347,14 @@ Both degenerate states are reported on the timeline, never inferred: a constrain
 that reads a field the missing view supplies must become a **named failing
 sub-check, not a silent pass.**
 
+The tool-expectation checks on both substrates honour that by gating on
+`records_present`, not on `status is None`. Those two are indistinguishable per
+call — a terminating turn's declared call and a bundle-sourced call both carry no
+status — so the flag is the only thing that says whether "no record" is a fact or
+an absent view. A tool the message view never declared still passes a
+`disallowed_tools` check with no records present, because a record can only name a
+declared call (G7): the message view alone proves that tool never ran.
+
 ### Non-guarantees
 
 - **N2 — no user-executed tool events occur today.** The builder emits

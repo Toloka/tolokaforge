@@ -188,9 +188,14 @@ class TestToolExpectations:
 
     def test_a_call_that_never_ran_is_not_a_use(self, checker):
         """A terminating turn's tool calls never reach the substrate, so they
-        satisfy no required tool and violate no disallowed one."""
+        satisfy no required tool and violate no disallowed one.
+
+        The trial recorded another call, which is what licenses reading "declared,
+        not recorded" as "did not run".
+        """
         timeline = build_timeline(
             [("assistant", "I will look that up next.")],
+            [recorded_call("search_kb", sequence=0)],
             unexecuted=[ToolCall(id="never_ran", name="db_query", arguments={})],
         )
         required_score, required_reasons = checker.check_tool_expectations(
@@ -203,6 +208,33 @@ class TestToolExpectations:
         )
         assert disallowed_score == 1.0
         assert disallowed_reasons == []
+
+    def test_a_records_less_timeline_fails_instead_of_reporting_no_use(self, checker):
+        """`BaseAdapter.grade` on a recorded bundle builds exactly this timeline —
+        `tool_log` is not written to `trajectory.yaml` — so reading "no record" as
+        "did not run" passed every `disallowed_tools` check unconditionally."""
+        timeline = build_timeline(
+            [("assistant", "Dropping the table.")],
+            unexecuted=[ToolCall(id="c1", name="drop_table", arguments={})],
+        )
+
+        assert timeline.records_present is False
+        for required, disallowed in ((["drop_table"], None), (None, ["drop_table"])):
+            score, reasons = checker.check_tool_expectations(timeline, required, disallowed)
+            assert score == 0.0
+            assert reasons == [
+                "Tool expectations unevaluatable: the trial carries no tool-call record, "
+                "so whether it ran the calls it declared (drop_table) is unknown"
+            ]
+
+    def test_a_records_less_timeline_with_no_expectations_declared_is_untouched(self, checker):
+        """Nothing is claimed about tools, so nothing is unevaluatable."""
+        timeline = build_timeline(
+            [("assistant", "Dropping the table.")],
+            unexecuted=[ToolCall(id="c1", name="drop_table", arguments={})],
+        )
+
+        assert checker.check_tool_expectations(timeline, None, None) == (1.0, [])
 
 
 @pytest.mark.unit
