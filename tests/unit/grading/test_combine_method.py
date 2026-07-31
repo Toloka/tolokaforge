@@ -8,24 +8,34 @@ Expected values are written out per (method, threshold) cell rather than recompu
 from the implementation, and the table's key set is pinned to the whole cross product
 of :data:`COMBINE_METHODS` and the swept thresholds — so a fourth declared method
 cannot land without its own rows.
+
+The runner's combine folds the same two components under the same weights, so it owes
+the table's answers at the swept threshold it is driven at; core's own aggregation is
+proven against both substrates at the canonical tier
+(``tests/canonical/test_grading_substrate_parity.py``), and what is unit-locked here is
+the verdict it reaches with nothing scored, where there is no map to aggregate.
 """
 
 from itertools import product
 
 import pytest
 
+from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
     combine_by_method,
     validate_combine_method,
 )
+from tolokaforge.core.models import GradingConfig, Trajectory
+from tolokaforge.runner.grading import combine_grade_components
 
 pytestmark = pytest.mark.unit
 
 _COMPONENTS = {"state_checks": 0.0, "transcript_rules": 1.0}
 _WEIGHTED_MEAN = 0.5
 _PASS_THRESHOLDS = (0.0, 0.8, 1.0)
+_RUNNER_THRESHOLD = 0.8
 
 _EXPECTED: dict[tuple[str, float], tuple[float, bool]] = {
     ("weighted", 0.0): (0.5, True),
@@ -41,6 +51,15 @@ _EXPECTED: dict[tuple[str, float], tuple[float, bool]] = {
 
 _UNSUPPORTED_VALUES = ("min", "bogus_method_xyz", "ALL", "", "weighted ", None, 1.0, True, ["all"])
 
+# The runner scores ``state_checks`` from its JSONPath assertions and
+# ``transcript_rules`` from its rule evaluation, at the weights that make its own mean
+# the ``_WEIGHTED_MEAN`` above.
+_RUNNER_COMPONENT_SCORES = {"jsonpath_score": 0.0, "transcript_score": 1.0}
+_RUNNER_CONFIG = {
+    "weights": {"state_checks": 1.0, "transcript_rules": 1.0},
+    "pass_threshold": _RUNNER_THRESHOLD,
+}
+
 
 def _combine(method: str, pass_threshold: float) -> tuple[float, bool]:
     return combine_by_method(
@@ -49,6 +68,35 @@ def _combine(method: str, pass_threshold: float) -> tuple[float, bool]:
         weighted_mean=_WEIGHTED_MEAN,
         pass_threshold=pass_threshold,
     )
+
+
+def _runner_combine(method: object) -> tuple[float, bool]:
+    return combine_grade_components(
+        _RUNNER_COMPONENT_SCORES, {**_RUNNER_CONFIG, "combine_method": method}
+    )
+
+
+def _unscored_trial_grade(*, method: str, pass_threshold: float) -> tuple[float, bool]:
+    """Core's verdict on a trial where no configured component was scored."""
+    grading_config = GradingConfig.model_validate(
+        {
+            "combine": {
+                "method": method,
+                "weights": {"state_checks": 1.0},
+                "pass_threshold": pass_threshold,
+            }
+        }
+    )
+    trajectory = Trajectory(
+        task_id="unscored",
+        trial_index=0,
+        start_ts="2026-01-01T00:00:00+00:00",
+        end_ts="2026-01-01T00:00:00+00:00",
+        messages=[],
+        tool_log=[],
+    )
+    grade = GradingEngine(grading_config).grade_trajectory(trajectory, {})
+    return grade.score, grade.binary_pass
 
 
 class TestDispatchTable:
@@ -150,3 +198,47 @@ class TestEmptyComponentScores:
                 weighted_mean=_WEIGHTED_MEAN,
                 pass_threshold=0.8,
             )
+
+    @pytest.mark.parametrize(("pass_threshold", "expected_pass"), ((0.0, True), (0.8, False)))
+    def test_core_answers_an_unscored_trial_from_the_threshold_alone(
+        self, pass_threshold, expected_pass
+    ):
+        """``all`` over an empty map has no answer, so the engine must not ask for one.
+
+        Its own answer compares ``0.0`` to the author's threshold, which passes at
+        ``pass_threshold: 0.0`` — a config shape that grades today.
+        """
+        assert _unscored_trial_grade(method="all", pass_threshold=pass_threshold) == (
+            0.0,
+            expected_pass,
+        )
+
+
+class TestTheRunnerCombineDispatchesOnTheDeclaredMethod:
+    """``combine_grade_components`` aggregates by the method or refuses to grade."""
+
+    @pytest.mark.parametrize("method", COMBINE_METHODS)
+    def test_each_declared_method_folds_the_runner_components_to_the_shared_answer(self, method):
+        assert _runner_combine(method) == _EXPECTED[(method, _RUNNER_THRESHOLD)]
+
+    @pytest.mark.parametrize(
+        ("alias", "replacement"), tuple(RETIRED_COMBINE_METHOD_ALIASES.items())
+    )
+    def test_an_alias_fails_the_grade_naming_its_replacement(self, alias, replacement):
+        with pytest.raises(ValueError) as excinfo:
+            _runner_combine(alias)
+        message = str(excinfo.value)
+        assert f"Use {replacement!r}" in message, message
+        assert "never worked" in message, message
+
+    @pytest.mark.parametrize("value", _UNSUPPORTED_VALUES)
+    def test_an_unsupported_value_fails_the_grade_listing_every_supported_method(self, value):
+        with pytest.raises(ValueError) as excinfo:
+            _runner_combine(value)
+        message = str(excinfo.value)
+        for method in COMBINE_METHODS:
+            assert repr(method) in message, message
+
+    def test_a_config_that_declares_no_method_fails_the_grade(self):
+        with pytest.raises(ValueError, match="not a supported combine method"):
+            combine_grade_components(_RUNNER_COMPONENT_SCORES, _RUNNER_CONFIG)

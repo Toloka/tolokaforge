@@ -1,0 +1,28 @@
+task_id: combine_method
+name: "Substrate differential: combine.method"
+category: test
+description: |
+  Substrate-parity differential fixture for the combine algebra. The grading.yaml
+  declares two deterministic components a single trial splits — one scores 0.0 and
+  the other 1.0 — so the three aggregations give three different scores.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

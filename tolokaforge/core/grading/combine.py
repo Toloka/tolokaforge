@@ -21,6 +21,7 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
+from tolokaforge.core.grading.combine_method import combine_by_method, validate_combine_method
 from tolokaforge.core.grading.state_checks import (
     GoldenReplayError,
     StateChecker,
@@ -183,33 +184,7 @@ class GradingEngine:
             if custom_reasons:
                 reasons_parts.append(f"Custom: {custom_reasons}")
 
-        # Combine scores with weights
-        final_score = 0.0
-        total_weight = 0.0
-
-        weights = self.config.combine.weights
-        if components.state_checks is not None and "state_checks" in weights:
-            final_score += components.state_checks * weights["state_checks"]
-            total_weight += weights["state_checks"]
-
-        if components.transcript_rules is not None and "transcript_rules" in weights:
-            final_score += components.transcript_rules * weights["transcript_rules"]
-            total_weight += weights["transcript_rules"]
-
-        if components.llm_judge is not None and "llm_judge" in weights:
-            final_score += components.llm_judge * weights["llm_judge"]
-            total_weight += weights["llm_judge"]
-
-        if components.custom_checks is not None and "custom_checks" in weights:
-            final_score += components.custom_checks * weights["custom_checks"]
-            total_weight += weights["custom_checks"]
-
-        # Normalize score
-        if total_weight > 0:
-            final_score = final_score / total_weight
-
-        # Binary pass/fail
-        binary_pass = final_score >= self.config.combine.pass_threshold
+        final_score, binary_pass = self._combine(components)
 
         return Grade(
             binary_pass=binary_pass,
@@ -218,6 +193,46 @@ class GradingEngine:
             reasons=" | ".join(reasons_parts) if reasons_parts else "All checks passed",
             state_diff=state_diff_result,
             custom_checks_details=custom_checks_details,
+        )
+
+    def _combine(self, components: GradeComponents) -> tuple[float, bool]:
+        """Aggregate the scored components into ``(score, binary_pass)`` by the author's method.
+
+        ``combine.weights`` decides which components enter the map at all: a scored
+        component with no declared weight is left out of the mean's numerator, its
+        denominator and the aggregation. With nothing in the map there is nothing to
+        aggregate, and the trial's verdict is the threshold comparison alone.
+        """
+        method = validate_combine_method(
+            self.config.combine.method, context="grading.yaml combine.method"
+        )
+        weights = self.config.combine.weights
+        component_scores: dict[str, float] = {}
+        final_score = 0.0
+        total_weight = 0.0
+        for name, score in (
+            ("state_checks", components.state_checks),
+            ("transcript_rules", components.transcript_rules),
+            ("llm_judge", components.llm_judge),
+            ("custom_checks", components.custom_checks),
+        ):
+            if score is None or name not in weights:
+                continue
+            component_scores[name] = score
+            final_score += score * weights[name]
+            total_weight += weights[name]
+
+        if total_weight > 0:
+            final_score = final_score / total_weight
+
+        if not component_scores:
+            return final_score, final_score >= self.config.combine.pass_threshold
+
+        return combine_by_method(
+            method=method,
+            component_scores=component_scores,
+            weighted_mean=final_score,
+            pass_threshold=self.config.combine.pass_threshold,
         )
 
     def _grade_state_checks(

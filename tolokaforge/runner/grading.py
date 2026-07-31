@@ -19,6 +19,10 @@ from typing import Any
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.combine_method import (
+    combine_by_method,
+    validate_combine_method,
+)
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
     inert_hash_weight_reason,
@@ -1019,9 +1023,12 @@ def combine_grade_components(
 
     Raises:
         ValueError: a hash verdict and a JSONPath score are both real and
-            ``state_checks.hash_weight`` does not say how to fold them.
+            ``state_checks.hash_weight`` does not say how to fold them; or
+            ``combine_method`` is missing or names no supported aggregation.
     """
-    method = grading_config.get("combine_method", "all")
+    method = validate_combine_method(
+        grading_config.get("combine_method"), context="grading config combine_method"
+    )
     weights = grading_config.get("weights", {})
     threshold = grading_config.get("pass_threshold", 1.0)
 
@@ -1077,44 +1084,26 @@ def combine_grade_components(
         # Truly no grading configured at all — pass by default
         return 1.0, True
 
-    if method == "all":
-        # All components must pass (score >= threshold)
-        all_pass = all(score >= threshold for score in active_components.values())
-        # Score is minimum of all component scores
-        final_score = min(active_components.values())
-        return final_score, all_pass
+    # Computed for every method, read only by ``weighted``: the shared dispatch
+    # decides the aggregation and this substrate keeps its own mean.
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for component_name, score in active_components.items():
+        weight = weights.get(component_name, 1.0)
+        weighted_sum += score * weight
+        total_weight += weight
 
-    elif method == "weighted":
-        # Weighted average of component scores
-        total_weight = 0.0
-        weighted_sum = 0.0
-
-        for component_name, score in active_components.items():
-            weight = weights.get(component_name, 1.0)
-            weighted_sum += score * weight
-            total_weight += weight
-
-        if total_weight > 0:
-            final_score = weighted_sum / total_weight
-        else:
-            final_score = 1.0
-
-        binary_pass = final_score >= threshold
-        return final_score, binary_pass
-
-    elif method == "any":
-        # Any component passing is sufficient
-        any_pass = any(score >= threshold for score in active_components.values())
-        # Score is maximum of all component scores
-        final_score = max(active_components.values())
-        return final_score, any_pass
-
+    if total_weight > 0:
+        weighted_mean = weighted_sum / total_weight
     else:
-        # Unknown method - default to "all" behavior
-        logger.warning(f"Unknown combine_method '{method}', defaulting to 'all'")
-        all_pass = all(score >= threshold for score in active_components.values())
-        final_score = min(active_components.values())
-        return final_score, all_pass
+        weighted_mean = 1.0
+
+    return combine_by_method(
+        method=method,
+        component_scores=active_components,
+        weighted_mean=weighted_mean,
+        pass_threshold=threshold,
+    )
 
 
 def build_grade_reasons(

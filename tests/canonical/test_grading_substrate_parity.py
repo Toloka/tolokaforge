@@ -1,6 +1,6 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Eight locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Nine locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
@@ -24,7 +24,9 @@ Eight locks over :mod:`tolokaforge.core.grading.key_manifest`:
    lock 6's canonical-tier hash inputs the only values that path yields rather
    than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
-   enumerated here, and the weight sweep lock 6 rests on stays substantive.
+   enumerated here, and the weight sweep lock 6 rests on stays substantive;
+9. both substrates aggregate one split pair of deterministic components by the
+   author's ``combine.method``, each method pinned to a score written out here.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -47,6 +49,7 @@ from tests.utils.timelines import declare_calls
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     Enforcement,
@@ -110,6 +113,33 @@ _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
     ("hash_matching", 1.0),
     ("hash_diverging", 0.0),
 )
+
+_METHOD_KEY = "combine.method"
+_METHOD_CASE = "split_components"
+
+# What the combine-method pack's two deterministic components score, on both
+# substrates. Their min, mean and max are three different numbers: on equal
+# components every method returns the same one and the table below could not tell
+# the aggregations apart.
+_METHOD_COMPONENTS: dict[str, float] = {"state_checks": 0.0, "transcript_rules": 1.0}
+
+# The pack's authored combine.pass_threshold, asserted against the loaded config so
+# the flags written out below are the answers to the threshold the author wrote.
+_METHOD_PASS_THRESHOLD = 0.8
+
+COMBINE_METHOD_VERDICTS: dict[str, tuple[float, bool]] = {
+    "weighted": (0.5, False),
+    "all": (0.0, False),
+    "any": (1.0, True),
+}
+"""``(score, binary_pass)`` each declared method owes on :data:`_METHOD_COMPONENTS`.
+
+Written out rather than recomputed: one shared dispatch makes the two substrates
+agree however wrong that dispatch is, so what carries lock 9 is each cell's pinned
+value and the three scores being distinct. Keyed by method, and the key set is
+asserted against :data:`COMBINE_METHODS`, so a fourth declared method cannot land
+without an answer here.
+"""
 
 _HASH_SCORE_NAME = "hash_score"
 _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
@@ -1124,4 +1154,131 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "distinct weights strictly inside (0, 1). At 0.0 and 1.0 the blend collapses onto a "
         f"single source, so {sorted(_CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3)} would claim a "
         "canonical differential that a fold merely selecting the dominant source passes"
+    )
+
+
+# --------------------------------------------------------------------------
+# 9. Both substrates aggregate by the author's combine.method
+# --------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _MethodVerdict:
+    """One substrate's aggregation of the combine-method pack at one method."""
+
+    components: dict[str, float]
+    score: float
+    binary_pass: bool
+
+
+def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _MethodVerdict:
+    """Core's verdict, with the method authored into a copy of the pack's grading.yaml.
+
+    Rewriting the YAML rather than the loaded model puts the whole load path under
+    test — the author's key, the shared load gate and ``get_grading_config``.
+    """
+    pack = _pack_dir(test_data_dir, _METHOD_KEY)
+    task_dir = root / "grading_parity" / pack.name
+    shutil.copytree(pack, task_dir)
+    grading_path = task_dir / "grading.yaml"
+    authored = yaml.safe_load(grading_path.read_text())
+    authored["combine"]["method"] = method
+    grading_path.write_text(yaml.safe_dump(authored))
+
+    grading_config = _parity_adapter(root).get_grading_config(_task_id_for(_METHOD_KEY))
+    assert grading_config.combine.method == method, (
+        f"the core config loaded combine.method {grading_config.combine.method!r} from a "
+        f"grading.yaml declaring {method!r}, so this cell measures a method nobody wrote"
+    )
+    assert grading_config.combine.pass_threshold == _METHOD_PASS_THRESHOLD, (
+        f"the pack's authored pass_threshold is {grading_config.combine.pass_threshold}, so "
+        f"the flags pinned against {_METHOD_PASS_THRESHOLD} answer a different question"
+    )
+    case = _load_case(pack, _METHOD_CASE)
+    grade = GradingEngine(grading_config, task_dir=task_dir).grade_trajectory(
+        case.core_trajectory, case.state
+    )
+    return _MethodVerdict(
+        components={
+            "state_checks": grade.components.state_checks,
+            "transcript_rules": grade.components.transcript_rules,
+        },
+        score=grade.score,
+        binary_pass=grade.binary_pass,
+    )
+
+
+def _runner_method_verdict(test_data_dir: Path, *, method: str) -> _MethodVerdict:
+    """The runner's verdict, from its real evaluators and its real combine.
+
+    The method is set on the ``model_dump()`` the runner's production caller hands the
+    combine, because ``runner.models.GradingConfig.combine_method`` does not declare
+    every method the combine dispatches and so cannot carry all three.
+    """
+    task_description = _parity_adapter(test_data_dir).to_task_description(_task_id_for(_METHOD_KEY))
+    grading = task_description.grading
+    case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
+    jsonpath_score, _ = evaluate_jsonpath_checks(
+        grading.state_checks.jsonpath_checks, state=case.state
+    )
+    transcript_score = evaluate_transcript_rules(
+        case.runner_timeline, grading.transcript_rules.model_dump()
+    ).score
+    score, binary_pass = combine_grade_components(
+        {"jsonpath_score": jsonpath_score, "transcript_score": transcript_score},
+        {**grading.model_dump(), "combine_method": method},
+    )
+    return _MethodVerdict(
+        components={"state_checks": jsonpath_score, "transcript_rules": transcript_score},
+        score=score,
+        binary_pass=binary_pass,
+    )
+
+
+@pytest.mark.parametrize("method", COMBINE_METHODS)
+def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_data_dir, tmp_path):
+    """Each substrate folds one split pair of components by the method, to a pinned answer.
+
+    One shared dispatch makes cross-substrate agreement hold by construction — two
+    substrates calling one function that returned the mean for every method agree
+    perfectly — so the equality at the end is the weakest assertion here. What carries
+    the lock is that each substrate's answer is the one written out per method, over
+    components a fold cannot mistake for each other.
+
+    The fixture is deterministic on purpose. A judge- or probe-weighted pack would
+    score nothing core-side, so the two component maps would differ before any method
+    was read and the cell would measure that instead.
+    """
+    assert set(COMBINE_METHOD_VERDICTS) == set(COMBINE_METHODS), (
+        f"COMBINE_METHOD_VERDICTS answers for {sorted(COMBINE_METHOD_VERDICTS)} but "
+        f"COMBINE_METHODS declares {sorted(COMBINE_METHODS)}. A declared method with no "
+        "row here is a method with no cross-substrate evidence"
+    )
+    scores = {score for score, _ in COMBINE_METHOD_VERDICTS.values()}
+    assert len(scores) == len(COMBINE_METHODS), (
+        f"the declared methods are pinned to {sorted(scores)} — fewer scores than methods. "
+        "An implementation returning one aggregation for every method satisfies a table "
+        "whose rows agree"
+    )
+
+    expected_score, expected_pass = COMBINE_METHOD_VERDICTS[method]
+    core = _core_method_verdict(test_data_dir, tmp_path / f"method_{method}", method=method)
+    runner = _runner_method_verdict(test_data_dir, method=method)
+    for substrate, verdict in (("core", core), ("runner", runner)):
+        assert verdict.components == _METHOD_COMPONENTS, (
+            f"the {substrate} substrate scored the pack's components {verdict.components}, "
+            f"not {_METHOD_COMPONENTS} — the answers pinned below aggregate other numbers"
+        )
+        assert verdict.score == pytest.approx(expected_score), (
+            f"the {substrate} substrate aggregated {_METHOD_COMPONENTS} by {method!r} into "
+            f"{verdict.score}, not {expected_score}"
+        )
+        assert verdict.binary_pass is expected_pass, (
+            f"the {substrate} substrate aggregated {_METHOD_COMPONENTS} by {method!r} to "
+            f"binary_pass {verdict.binary_pass}, not {expected_pass}"
+        )
+
+    assert (core.score, core.binary_pass) == (runner.score, runner.binary_pass), (
+        f"the substrates disagree on {method!r}: core {(core.score, core.binary_pass)} vs "
+        f"runner {(runner.score, runner.binary_pass)}"
     )
