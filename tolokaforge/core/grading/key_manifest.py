@@ -54,7 +54,7 @@ class Enforcement(str, Enum):
     """A satisfying/violating differential runs in-process, no services."""
 
     DIFFERENTIAL_INTEGRATION = "DIFFERENTIAL_INTEGRATION"
-    """The differential needs real services; ``enforcing_test`` names it."""
+    """The differential needs real services; ``enforcing_test`` names it as a nodeid."""
 
     FIELD_RESOLUTION_ONLY = "FIELD_RESOLUTION_ONLY"
     """Only "the field exists and resolves" is proven; requires a tracking issue
@@ -75,6 +75,10 @@ class GradingKey:
     entries: one substrate may flatten the subtree into per-leaf fields, so the
     root itself need not declare a field on both sides. :func:`family_author_keys`
     reads it, and the runtime ledger accounts for a family as a unit.
+
+    ``enforcing_test`` is a pytest nodeid — ``<module path>::<test function>`` —
+    so the claim names the function that runs the differential rather than a file
+    that merely contains one.
     """
 
     author_key: str
@@ -103,6 +107,12 @@ class GradingKey:
                 f"{self.author_key}: enforcement DIFFERENTIAL_INTEGRATION needs an "
                 "enforcing_test naming the integration test that proves the differential"
             )
+        if self.enforcing_test and "::" not in self.enforcing_test:
+            raise ValueError(
+                f"{self.author_key}: enforcing_test {self.enforcing_test!r} is a file, not a "
+                "pytest nodeid. Name the test function that runs the differential: "
+                "<module path>::<test function>"
+            )
         if (
             self.coverage.startswith("BOTH")
             and not self.family_root
@@ -127,6 +137,17 @@ different evaluator needs its own recording site.
 """
 
 _ID_FIELDS_LOAD_CHECK = "tolokaforge.runner.id_resolution.check_id_fields_reference_known_tables"
+
+_HASH_COMPOSITION_WIRE_TEST = (
+    "tests/integration/test_docker_grading_hash_composition.py"
+    "::test_the_runner_blends_its_golden_replay_verdict_by_the_authors_weight"
+)
+"""Drives the runner's own golden-replay hash verdict into the shared composer.
+
+A matching and a diverging final state, at two weights strictly inside ``(0, 1)``,
+over real gRPC and a real db-service. The hash family's differential cannot run
+in-process: the evaluator replays golden actions against db-service over HTTP.
+"""
 
 _TRANSCRIPT_AGGREGATION_REASON = (
     "core averages four fixed buckets while the runner scores one sub-check per "
@@ -186,31 +207,31 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         author_key="state_checks.hash",
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.hash",
         runner_field=None,
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
-        tracking_issue=687,
+        enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
         family_root=True,
     ),
     GradingKey(
         author_key="state_checks.hash.enabled",
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.hash_enabled",
         core_dict_key="enabled",
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
-        tracking_issue=687,
+        enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
     ),
     GradingKey(
         author_key="state_checks.hash.golden_actions",
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.golden_actions",
         core_dict_key="golden_actions",
@@ -218,7 +239,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
             "tolokaforge.core.grading.state_checks.StateChecker.check_hash_against_golden_replay"
         ),
         runner_evaluator=RUNNER_HASH_EVALUATOR,
-        tracking_issue=687,
+        enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
     ),
     GradingKey(
         author_key="state_checks.hash.expected_state_hash",
@@ -297,7 +318,10 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.db_probes",
         runner_field="StateChecksConfig.db_probes",
         runner_evaluator="tolokaforge.runner.grading.evaluate_db_probes",
-        enforcing_test="tests/integration/test_helpdesk_workflow_end_to_end.py",
+        enforcing_test=(
+            "tests/integration/test_helpdesk_workflow_end_to_end.py"
+            "::test_helpdesk_workflow_infrastructure_end_to_end"
+        ),
         reason=(
             "the probe DSN resolves only inside the task's docker network, which the "
             "runner container joins and the host-side core engine does not; the core "
@@ -393,7 +417,10 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="GradingConfig.llm_judge",
         runner_field="GradingConfig.llm_judge",
         runner_evaluator="tolokaforge.runner.service.RunnerServiceImpl._grade_llm_judge",
-        enforcing_test="tests/integration/test_rubric_judge_live.py",
+        enforcing_test=(
+            "tests/integration/test_rubric_judge_live.py"
+            "::test_rubric_judge_live_gate_fails_when_refund_missing"
+        ),
         reason=(
             "the rubric judge runs runner-side on the shared ToolCallingLoop; the core "
             "engine deliberately leaves the llm_judge component unset. The whole "

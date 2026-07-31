@@ -40,8 +40,10 @@ author-facing key is one `GradingKey` entry declaring three axes:
 - **`enforcement`** — how strongly the coverage claim is proven.
   `DIFFERENTIAL_CANONICAL`: a satisfying/violating pair moves both substrates'
   scores in-process. `DIFFERENTIAL_INTEGRATION`: the differential needs real
-  services, and `enforcing_test` names the integration test that runs it.
-  `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
+  services, and `enforcing_test` names the test function that runs it as a pytest
+  nodeid — `<module path>::<test function>`, resolved by the canonical suite
+  against the module's own AST so naming a file that merely contains a test is
+  rejected. `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
 
 [`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
 makes the manifest load-bearing. Adding a grading field to either substrate's
@@ -117,10 +119,34 @@ live in the test module, not beside the manifest, so widening one is an edit a
 reviewer sees in the same commit.
 
 The `state_checks.hash` family (`hash`, `hash.enabled`, `hash.golden_actions`)
-claims `BOTH_SCORE_PARITY` at `FIELD_RESOLUTION_ONLY`: both substrates fold the hash
-verdict by the same rule, so the component scores agree, but the runner's evaluator
-drives db-service over HTTP, so no service-free differential exists (#687). Mocking
-the DB client to make the canonical guard pass would defeat the guard.
+claims `BOTH_SCORE_PARITY` at `DIFFERENTIAL_INTEGRATION`. Both substrates fold the
+hash verdict by the same rule, so the component scores agree — but the runner's
+evaluator replays golden actions against db-service over HTTP, so no service-free
+differential can reach it, and mocking the DB client to make a canonical guard pass
+would defeat the guard. The differential therefore runs over real gRPC and a real
+db-service, in
+[`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
+a matching and a diverging final state against the same golden replay, at two
+weights strictly inside `(0, 1)`, with the wire's `state_checks` component pinned to
+the blend and required to differ between the two weights.
+
+**What that proves and what it does not.** The runner's own golden-replay verdict
+reaches the shared composer, and the author's `weight` reaches the fold — measured
+on the wire: forcing the runner's fold to a constant weight, and reverting it to the
+pre-`weight` product, each turn every cell red. What it does not prove is
+`state_checks.numeric_string_fields`, which stays `FIELD_RESOLUTION_ONLY` (#687) —
+the folding pair is claimed to be honored identically on both substrates and no test
+drives it through the runner's hash evaluator. Nor does the canonical suite prove
+this test *passes*: it resolves the nodeid and stops there, and `test-gate` does not
+fire on a pull request (#700), so this tier is run locally and its output quoted.
+
+**Coverage and enforcement are orthogonal on purpose**, which is what lets a true
+coverage claim carry weak enforcement. `BOTH_SCORE_PARITY` states what is the case —
+both substrates produce the same component score — and `DIFFERENTIAL_INTEGRATION`
+states how strongly that is proven. Weakening the coverage claim to
+`BOTH_SIGNAL_PARITY` to signal thin enforcement would make the manifest say something
+false in order to avoid saying something weak. The enforcement axis is where the
+weakness belongs, and it says so; `state_checks.db_probes` sits at the same tier.
 
 `state_checks.hash.weight` is proven at `DIFFERENTIAL_CANONICAL` by a composition
 sweep in the same suite: a fixture pack configuring both state sources — a

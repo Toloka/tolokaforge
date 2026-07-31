@@ -5,8 +5,10 @@ Eight locks over :mod:`tolokaforge.core.grading.key_manifest`:
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
 2. the exemption sets are frozen here — in the test module, never beside the
-   manifest data they guard — so widening one is a reviewable edit, and every
-   entry matching lock 3's predicate names both evaluators and owns a fixture;
+   manifest data they guard — so widening one is a reviewable edit, every entry
+   matching lock 3's predicate names both evaluators and owns a fixture, and every
+   ``DIFFERENTIAL_INTEGRATION`` claim's ``enforcing_test`` nodeid resolves to a test
+   function pytest would collect;
 3. every key claiming both substrates at ``DIFFERENTIAL_CANONICAL`` demonstrably
    moves both substrates' component scores, through each substrate's real
    production evaluator and its real combine;
@@ -270,6 +272,40 @@ def _differential_entries() -> tuple[GradingKey, ...]:
         if item.kind is KeyKind.SCORED_CHECK
         and item.coverage.startswith("BOTH")
         and item.enforcement is Enforcement.DIFFERENTIAL_CANONICAL
+    )
+
+
+def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
+    """The named integration test exists as a function pytest would collect.
+
+    Resolved by parsing the module, never by importing it: the integration tier
+    pulls testcontainers and a docker daemon, neither of which the canonical tier
+    has. That is also the limit of what this can prove — the nodeid resolves and is
+    collectable; whether it *passes* is what running the integration tier answers.
+    """
+    module_path, separator, function_name = item.enforcing_test.partition("::")
+    assert separator, (
+        f"{item.author_key}: enforcing_test {item.enforcing_test!r} is a module path, not a "
+        "pytest nodeid, so it names no test function"
+    )
+    module_file = _REPO_ROOT / module_path
+    assert module_file.is_file(), (
+        f"{item.author_key}: enforcing_test module {module_path!r} does not exist on disk, "
+        "so nothing proves the integration differential"
+    )
+    declared = {
+        node.name
+        for node in ast.parse(module_file.read_text()).body
+        if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+    }
+    collectable = sorted(name for name in declared if name.startswith("test_"))
+    assert function_name in declared, (
+        f"{item.author_key}: enforcing_test names {function_name!r}, which {module_path} does "
+        f"not declare at module level. It declares {collectable}"
+    )
+    assert function_name.startswith("test_"), (
+        f"{item.author_key}: enforcing_test names {function_name!r}, which pytest does not "
+        "collect as a test"
     )
 
 
@@ -560,10 +596,7 @@ def test_exemption_sets_are_frozen_and_classified(test_data_dir):
 
     for item in GRADING_KEYS:
         if item.enforcement is Enforcement.DIFFERENTIAL_INTEGRATION:
-            assert (_REPO_ROOT / item.enforcing_test).is_file(), (
-                f"{item.author_key}: enforcing_test {item.enforcing_test!r} does not exist "
-                "on disk, so nothing proves the integration differential"
-            )
+            _assert_enforcing_test_is_collectable(item)
         for evaluator in (item.core_evaluator, item.runner_evaluator):
             if evaluator is None:
                 continue
@@ -748,8 +781,9 @@ def _composition_verdict(
     validation. Core's hash verdict is the real one: the pack commits the
     ``expected_state_hash`` of its ``hash_matching`` state, so ``check_hash``
     produces the verdict in process. The runner's is handed in, because its hash
-    evaluator drives db-service over HTTP (#687) — honest only because that verdict
-    is binary, which lock 7 holds.
+    evaluator drives db-service over HTTP — honest only because that verdict is
+    binary, which lock 7 holds, and because the runner producing it for itself is
+    proven at the integration tier by the hash family's ``enforcing_test``.
     """
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
     root = tmp_path / f"weight_{weight}_{case}"

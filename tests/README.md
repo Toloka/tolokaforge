@@ -158,7 +158,17 @@ A test that exercises a runner-side wire field needs `make docker-build-core`
 first, because the field ships inside the image. Only a *missing* image skips: a
 **stale** `tolokaforge-runner:latest` fails at `RegisterTrial` with a pydantic
 extra-forbid error naming the field (the runner config models are
-`extra="forbid"`), which points at the test rather than at the image.
+`extra="forbid"`), which points at the test rather than at the image. The builder
+tags by content hash and does **not** move `:latest`, which is the tag the
+testcontainer fixtures pin, so retag after building:
+`docker tag <fresh-ref> tolokaforge-runner:latest` (#740).
+
+Some suites in this tier are the `enforcing_test` a grading-key manifest entry
+names — `test_docker_grading_hash_composition.py` for the `state_checks.hash`
+family, `test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
+`test_rubric_judge_live.py` for `llm_judge`. `test_grading_substrate_parity.py`
+resolves each nodeid without importing it, so renaming one of those test functions
+fails the canonical tier naming the manifest entry.
 
 Two members of this tier are **Docker-free and keyless** (they need only the `uv`
 CLI): `test_plugin_discovery.py` and `test_external_harness_e2e.py`. Both install
