@@ -50,7 +50,6 @@ Environment contract
 
 from __future__ import annotations
 
-import os
 from collections.abc import Iterator
 
 import pytest
@@ -64,7 +63,7 @@ from tolokaforge.core.llm.proxy import (
 )
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
-from tolokaforge.secrets import DictProvider, SecretManager
+from tolokaforge.secrets import DictProvider, SecretManager, get_default
 from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_api]
@@ -91,35 +90,51 @@ _WEATHER_TOOL = {
 }
 
 
+def _secret(name: str) -> str:
+    """Read a configuration value through ``SecretManager``.
+
+    Not ``os.environ``: the repo's secrets contract routes credential reads
+    through ``SecretManager`` (see ``AGENTS.md``), and it also means a value
+    living only in ``.env`` resolves deterministically rather than depending on
+    a dependency's import-time ``load_dotenv`` side effect.
+    """
+    return (get_default().get_secret(name) or "").strip()
+
+
 @pytest.fixture(scope="module")
-def gateway_client() -> Iterator[LLMClient]:
+def gateway_key() -> str:
+    """The dedicated integration-test credential, or skip."""
+    api_key = _secret(ENV_TEST_API_KEY)
+    if not api_key:
+        pytest.skip(f"{ENV_TEST_API_KEY} not set — skipping live gateway test.")
+    return api_key
+
+
+@pytest.fixture(scope="module")
+def gateway_client(gateway_key: str) -> Iterator[LLMClient]:
     """An ``LLMClient`` pointed at the gateway, billed to the test credential.
 
     Skips unless the dedicated key and a gateway route name are both present, so
     a checkout without the CI secret is quiet rather than failing.
     """
-    api_key = os.environ.get(ENV_TEST_API_KEY, "").strip()
-    if not api_key:
-        pytest.skip(f"{ENV_TEST_API_KEY} not set — skipping live gateway test.")
-
-    model = os.environ.get(ENV_TEST_MODEL, "").strip()
+    model = _secret(ENV_TEST_MODEL)
     if not model:
         pytest.skip(
             f"{ENV_TEST_MODEL} not set — the gateway's own route name is required; "
             f"list candidates with GET {{base_url}}/models."
         )
 
-    base_url = (
-        os.environ.get(ENV_TEST_BASE_URL, "").strip() or os.environ.get(ENV_BASE_URL, "").strip()
-    )
+    base_url = _secret(ENV_TEST_BASE_URL) or _secret(ENV_BASE_URL)
     if not base_url:
         pytest.skip(f"neither {ENV_TEST_BASE_URL} nor {ENV_BASE_URL} is set.")
 
+    provider = _secret(ENV_TEST_PROVIDER) or "openai"
+
     # Override the gateway credential so this run bills to the test budget even
     # when a production LLM_PROXY_API_KEY is present in .env or the environment.
-    secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: api_key}
+    secrets: dict[str, str] = {ENV_BASE_URL: base_url, ENV_API_KEY: gateway_key}
     for passthrough in (ENV_HEADERS, ENV_REQUEST_ID_HEADER):
-        value = os.environ.get(passthrough, "").strip()
+        value = _secret(passthrough)
         if value:
             secrets[passthrough] = value
 
@@ -128,7 +143,7 @@ def gateway_client() -> Iterator[LLMClient]:
     try:
         client = LLMClient(
             ModelConfig(
-                provider=os.environ.get(ENV_TEST_PROVIDER, "openai").strip() or "openai",
+                provider=provider,
                 name=model,
                 temperature=0.0,
                 # Enough headroom for a tool call from a model that emits
@@ -148,7 +163,7 @@ def gateway_client() -> Iterator[LLMClient]:
         secrets_manager._default_manager = original
 
 
-def test_request_is_addressed_to_the_gateway(gateway_client: LLMClient) -> None:
+def test_request_is_addressed_to_the_gateway(gateway_client: LLMClient, gateway_key: str) -> None:
     """The transport is applied and billed to the test key. No network spend."""
     kwargs = gateway_client._build_kwargs(
         system="Be terse.",
@@ -163,7 +178,9 @@ def test_request_is_addressed_to_the_gateway(gateway_client: LLMClient) -> None:
     )
 
     assert kwargs["api_base"] == gateway_client._proxy.base_url
-    assert kwargs["api_key"] == os.environ[ENV_TEST_API_KEY].strip()
+    # Spend isolation: the call carries the test credential, not whatever
+    # production gateway key the ambient environment holds.
+    assert kwargs["api_key"] == gateway_key
 
     # The model string must survive intact — re-prefixing it would silently
     # break preset resolution and pricing lookup (see docs/LLM_LAYER.md § proxy).
