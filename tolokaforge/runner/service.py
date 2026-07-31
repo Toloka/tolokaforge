@@ -991,9 +991,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Raises:
             ValueError: ``call_id`` is empty. Registered engines declare a
-                protocol version that carries it, so this is a harness bug
-                rather than version skew, and it must not reach the agent as a
-                survivable tool error.
+                protocol version that carries it and ``ToolCall.id`` rejects an
+                empty id at message construction, so this is a harness bug rather
+                than version skew. Aborting the RPC keeps it out of the
+                non-success statuses, where it would be indistinguishable from
+                the model emitting malformed arguments. It does still reach the
+                agent as a tool failure: the host's
+                ``GrpcRunnerClient.execute_tool`` turns any ``grpc.RpcError``
+                into a failed ``ToolResult``. What the raise buys is the cause,
+                named in the runner log.
         """
         trial_id = request.trial_id
         tool_name = request.tool_name

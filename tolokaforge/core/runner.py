@@ -51,6 +51,8 @@ def _as_utc(ts: float | None) -> datetime | None:
     if ts is None:
         return None
     return datetime.fromtimestamp(ts, tz=timezone.utc)
+
+
 class TrialToolCallRecorder:
     """The trial's single ordered tool-call record.
 

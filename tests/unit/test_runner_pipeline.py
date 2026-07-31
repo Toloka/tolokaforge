@@ -647,7 +647,13 @@ class TestGradeTrialTerminationReason:
     ):
         """The field is typed for the whole enum, not the subset the host
         currently routes to the RPC, and the runner reads back the value it was
-        sent rather than some other member of the enum."""
+        sent rather than some other member of the enum.
+
+        The assertion is on the log line because nothing in grading reads the
+        reason yet — #678 is the first consumer. It locks the wire round trip, not
+        any grading behaviour; when a check starts reading the reason, assert on
+        the verdict instead.
+        """
         with caplog.at_level(logging.INFO, logger="tolokaforge.runner.service"):
             response = runner_service.GradeTrial(
                 pb2.GradeTrialRequest(trial_id=graded_trial, termination_reason=reason),
