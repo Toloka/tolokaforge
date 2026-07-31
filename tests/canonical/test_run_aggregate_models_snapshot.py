@@ -541,6 +541,7 @@ def test_int_valued_numeric_fields_preserve_int_type() -> None:
         "expected_failure_modes": [],
         "total_trials": 1,
         "measured_trials": 1,
+        "scored_trials": 1,
         "successful_trials": 1,
         "success_rate": 1.0,  # rate — stays float
         "avg_score": 1.0,  # rate — stays float
@@ -613,6 +614,7 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
         "total_tasks": 2,
         "total_trials": 5,
         "measured_trials": 5,
+        "scored_trials": 5,
         "success_rate_micro": 1.0,  # rate — stays float
         "avg_score_micro": 1.0,  # rate — stays float
         "avg_latency_s": 5,  # int — widened
@@ -646,9 +648,8 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
         "latency_p50_s_macro",
     ):
         value = getattr(model, field)
-        assert isinstance(value, int) and not isinstance(value, bool), (
-            f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. Got {value!r}."
-        )
+        stayed_int = isinstance(value, int) and not isinstance(value, bool)
+        assert stayed_int, f"AggregateMetrics.{field} coerced {value!r} to {type(value).__name__}"
 
     # And rate fields DID stay narrow float — a regression that widens them
     # would be caught by mypy at consumer sites, but a runtime guard here

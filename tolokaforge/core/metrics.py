@@ -286,10 +286,16 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
 
     ``avg_score`` averages the scores that exist rather than dividing a filtered
     numerator by an unfiltered count — the arithmetic that made one ungraded
-    trial halve a task's average score.
+    trial halve a task's average score. ``scored_trials`` is that average's own
+    denominator, counted from the same list, so the run-level micro can rebuild
+    the numerator instead of assuming every measured trial was graded. A
+    ``HARNESS_ERROR`` trial is measured and never reaches grading, so the two
+    counts differ on any run that hit one.
     """
+    scores = [t.grade.score for t in measured if t.grade is not None]
     return {
-        "avg_score": _mean_or_none(t.grade.score for t in measured if t.grade is not None),
+        "scored_trials": len(scores),
+        "avg_score": _mean_or_none(scores),
         "avg_latency_s": _mean_or_none(t.metrics.latency_total_s for t in measured),
         "avg_turns": _mean_or_none(t.metrics.turns for t in measured),
         "avg_tool_calls": _mean_or_none(t.metrics.tool_calls for t in measured),
@@ -304,8 +310,10 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
     ``total_trials`` counts every attempt. Every performance rate is over
     ``measured_trials`` and is ``None`` — never ``0.0`` — when that is zero, so a
     task whose every trial was aborted reports no performance instead of a
-    perfect failure. Latency percentiles cover every attempt: they describe what
-    the harness executed, not how the agent performed.
+    perfect failure. ``avg_score`` has a narrower denominator of its own,
+    ``scored_trials``, because a measured trial can still carry no grade.
+    Latency percentiles cover every attempt: they describe what the harness
+    executed, not how the agent performed.
 
     Args:
         trajectories: The task's full trial list — never a filtered one
@@ -374,10 +382,14 @@ def calculate_aggregate_metrics(
     """
     Calculate aggregate metrics across all tasks
 
-    Rates aggregate over measured trials only: the micro-averages weigh by each
-    task's ``measured_trials``, and the macro-averages skip a task that measured
-    nothing rather than averaging in a zero. ``total_trials`` still counts every
-    attempt, and token / cost totals still cover every attempt.
+    Rates aggregate over measured trials only, and the macro-averages skip a task
+    that measured nothing rather than averaging in a zero. ``total_trials`` still
+    counts every attempt, and token / cost totals still cover every attempt.
+
+    Each micro-average weighs by the denominator of the per-task figure it
+    averages: ``success_rate_micro`` by ``measured_trials`` and
+    ``avg_score_micro`` by ``scored_trials``. They are the same number only on a
+    run where every measured trial was graded.
 
     Args:
         task_metrics: List of metrics dictionaries for each task
@@ -392,11 +404,13 @@ def calculate_aggregate_metrics(
     n_tasks = len(task_metrics)
     total_trials = sum(m["total_trials"] for m in task_metrics)
     measured_trials = sum(m["measured_trials"] for m in task_metrics)
+    scored_trials = sum(m["scored_trials"] for m in task_metrics)
 
     agg = {
         "total_tasks": n_tasks,
         "total_trials": total_trials,
         "measured_trials": measured_trials,
+        "scored_trials": scored_trials,
         "harness_errors": sum(m["harness_errors"] for m in task_metrics),
         "infrastructure_aborts": _merge_abort_counts(task_metrics),
         "outcomes_by_reason": _merge_outcomes_by_reason(task_metrics),
@@ -410,14 +424,18 @@ def calculate_aggregate_metrics(
             if measured_trials > 0
             else None
         )
+        # Weighed by ``scored_trials``, not ``measured_trials``: a measured trial
+        # with no grade is not in any task's ``avg_score``, so weighing by the
+        # measured count would rebuild a numerator that never existed and let one
+        # harness error move the run's headline score.
         agg["avg_score_micro"] = (
             sum(
-                m["avg_score"] * m["measured_trials"]
+                m["avg_score"] * m["scored_trials"]
                 for m in task_metrics
                 if m["avg_score"] is not None
             )
-            / measured_trials
-            if measured_trials > 0
+            / scored_trials
+            if scored_trials > 0
             else None
         )
     else:

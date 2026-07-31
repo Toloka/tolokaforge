@@ -65,6 +65,16 @@ def _rate_limited(trial_idx: int) -> Trajectory:
     )
 
 
+def _harness_error(trial_idx: int) -> Trajectory:
+    """A trial our own defect killed: counted in the rates, and never graded."""
+    return _trial(
+        trial_idx,
+        score=None,
+        status=TrialStatus.ERROR,
+        termination_reason=TerminationReason.ERROR,
+    )
+
+
 @pytest.mark.unit
 class TestPassAtK:
     """Test pass@k calculation"""
@@ -344,8 +354,45 @@ class TestInfrastructureAbortsLeaveTheDenominator:
 
         # Two measured trials across both tasks, one of them successful.
         assert agg["measured_trials"] == 2
+        assert agg["scored_trials"] == 2
         assert agg["success_rate_micro"] == pytest.approx(0.5)
         assert agg["avg_score_micro"] == pytest.approx(0.5)
+
+    def test_the_score_micro_weighs_by_scored_trials_not_measured_ones(self) -> None:
+        """A harness error is measured and never graded, so weighing the score
+        micro by ``measured_trials`` would rebuild a numerator no trial produced.
+
+        Here task A scores 1.0 over its one graded trial and task B scores 0.0
+        over its one. Three trials are measured, two are scored, and the only
+        honest run-level score is 0.5.
+        """
+        task_a = calculate_task_metrics([_trial(0, score=1.0), _harness_error(1)])
+        task_b = calculate_task_metrics([_trial(0, score=0.0)])
+
+        agg = calculate_aggregate_metrics([task_a, task_b], weighted=True)
+
+        assert task_a["measured_trials"] == 2
+        assert task_a["scored_trials"] == 1
+        assert agg["measured_trials"] == 3
+        assert agg["scored_trials"] == 2
+        assert agg["avg_score_micro"] == pytest.approx(0.5)
+        # The rate over the measured denominator keeps that denominator: an
+        # ungraded trial is not a success, and dropping it would hide the defect.
+        assert agg["success_rate_micro"] == pytest.approx(1 / 3)
+
+    def test_an_all_ungraded_task_contributes_nothing_to_the_score_micro(self) -> None:
+        """The reviewer's first measurement: one all-ungraded task beside one
+        scoring 1.0 reported 0.5, when the only score in the run was 1.0."""
+        ungraded = calculate_task_metrics([_harness_error(0)])
+        scored = calculate_task_metrics([_trial(0, score=1.0)])
+
+        agg = calculate_aggregate_metrics([ungraded, scored], weighted=True)
+
+        assert ungraded["scored_trials"] == 0
+        assert ungraded["avg_score"] is None
+        assert agg["measured_trials"] == 2
+        assert agg["scored_trials"] == 1
+        assert agg["avg_score_micro"] == pytest.approx(1.0)
 
     def test_a_run_that_measured_nothing_reports_no_rates(self) -> None:
         agg = calculate_aggregate_metrics([calculate_task_metrics([_rate_limited(0)])])

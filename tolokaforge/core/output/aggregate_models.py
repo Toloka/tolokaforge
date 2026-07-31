@@ -121,13 +121,16 @@ class PerTaskMetrics(BaseModel):
 
     # Trial counts + basic success signal. ``total_trials`` counts every
     # attempt; ``measured_trials`` counts the ones that measured the agent and
-    # is the denominator of every rate in this row. ``harness_errors`` overlaps
-    # ``measured_trials`` (our own defects are counted, and their count is a
-    # run-health signal); ``infrastructure_aborts`` does not — it is the rest of
-    # ``total_trials``, broken down per reason so provider throttling and a
-    # harness regression can never read the same.
+    # is the denominator of every rate in this row except ``avg_score``, whose
+    # denominator is ``scored_trials`` — the measured trials that produced a
+    # grade at all. ``harness_errors`` overlaps ``measured_trials`` (our own
+    # defects are counted, and their count is a run-health signal);
+    # ``infrastructure_aborts`` does not — it is the rest of ``total_trials``,
+    # broken down per reason so provider throttling and a harness regression can
+    # never read the same.
     total_trials: int
     measured_trials: int
+    scored_trials: int
     infrastructure_aborts: dict[str, int] = Field(default_factory=dict)
     harness_errors: int = 0
     outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
@@ -208,6 +211,7 @@ class AggregateMetrics(BaseModel):
     # The run-level halves of the per-task counts, so a rate is never read
     # without the denominator that produced it in the same object.
     measured_trials: int
+    scored_trials: int
     infrastructure_aborts: dict[str, int] = Field(default_factory=dict)
     harness_errors: int = 0
     outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
@@ -216,7 +220,9 @@ class AggregateMetrics(BaseModel):
     # ([0, 1] scalar from ``sum(...) / n``): always ``float`` at the
     # producer. Stays narrow — no ``int`` widening — matching the
     # ``PerTaskMetrics.success_rate`` / ``avg_score`` siblings. ``None`` when
-    # the run measured nothing at all.
+    # the run measured nothing at all. Each weighs by the denominator of the
+    # per-task figure it averages: ``success_rate_micro`` by ``measured_trials``,
+    # ``avg_score_micro`` by ``scored_trials``.
     success_rate_micro: float | None = None
     avg_score_micro: float | None = None
 

@@ -1192,19 +1192,22 @@ to be readable:
 | Key | Meaning |
 |---|---|
 | `total_trials` | Every attempt the run made |
-| `measured_trials` | The attempts that measured the agent — the denominator of every rate in the row |
+| `measured_trials` | The attempts that measured the agent — the denominator of every rate in the row except `avg_score` |
+| `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
 | `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}` |
 
-`measured_trials + sum(infrastructure_aborts.values()) == total_trials`, and
+`measured_trials + sum(infrastructure_aborts.values()) == total_trials`,
+`0 <= scored_trials <= measured_trials`, and
 `0 <= harness_errors <= measured_trials`.
 
-`success_rate`, `avg_score`, `avg_latency_s`, `avg_turns`, `avg_tool_calls`,
-`stuck_rate`, `pass@k` and `pass_hat@k` — and their `_micro` / `_macro`
-aggregates — are over `measured_trials`. All of them are `null` when
-`measured_trials` is `0`, and such a task is excluded from the run's macro
-averages. Cost fields, `total_<usage-field>` / `avg_<usage-field>` token
+`success_rate`, `avg_latency_s`, `avg_turns`, `avg_tool_calls`, `stuck_rate`,
+`pass@k` and `pass_hat@k` — and their `_micro` / `_macro` aggregates — are over
+`measured_trials`; `avg_score` and `avg_score_micro` are over `scored_trials`,
+because a measured trial can still carry no grade. All of them are `null` when
+their denominator is `0`, and a task that measured nothing is excluded from the
+run's macro averages. Cost fields, `total_<usage-field>` / `avg_<usage-field>` token
 counters and the latency percentiles cover **every** attempt: an aborted trial
 really did buy its tokens.
 

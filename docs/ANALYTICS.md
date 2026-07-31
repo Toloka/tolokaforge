@@ -86,7 +86,11 @@ describe, so it is not in any rate; the counts that say so sit in the same row:
 
 - `total_trials`: every attempt the run made
 - `measured_trials`: the attempts that measured the agent — **the denominator of
-  every rate below**
+  every rate below except `avg_score`**
+- `scored_trials`: the measured attempts that produced a grade — **`avg_score`'s
+  denominator**, and the weight `avg_score_micro` uses. A `harness_error` trial is
+  measured and never reaches grading, so `scored_trials < measured_trials` on any
+  run that hit one
 - `infrastructure_aborts`: per reason, the attempts excluded from that
   denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`). All
   three keys are always present, so a zero is distinguishable from a missing key
@@ -97,6 +101,7 @@ describe, so it is not in any rate; the counts that say so sit in the same row:
   it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`, and
+`0 <= scored_trials <= measured_trials`, and
 `0 <= harness_errors <= measured_trials`.
 
 `outcomes_by_reason` is what makes a classification call auditable without a
@@ -113,14 +118,22 @@ raises every published rate with nothing in the output to show it.
 ### Success and Quality
 
 - `success_rate`: passing attempts / measured attempts
-- `avg_score`: mean continuous score over the measured attempts that were graded
+- `avg_score`: mean continuous score over `scored_trials` — the measured attempts
+  that were graded
 - `pass@k`: probability at least one pass appears in `k` draws
 - `pass_hat@k`: alias using the same Chen et al. estimator as `pass@k`
 - `stuck_rate`: measured attempts that tripped stuck detection / measured attempts
 
 When `measured_trials` is `0`, every one of these is `null` — never `0.0`, which
 would read as a task the model failed at — and the task drops out of the
-run-level macro averages.
+run-level macro averages. `avg_score` is `null` whenever `scored_trials` is `0`,
+which a task can reach with measured trials to its name.
+
+At run level each micro-average weighs by the denominator of the per-task figure
+it averages: `success_rate_micro` by `measured_trials`, `avg_score_micro` by
+`scored_trials`. Weighing the score by the measured count would rebuild a
+numerator no trial produced, so a single ungraded trial would move the run's
+headline score.
 
 Estimator used in code:
 
@@ -160,7 +173,6 @@ performance average, so it follows the measured denominator.
 ### Reliability
 
 - `tool_success_rate`
-- `stuck_rate`
 - `harness_errors` and `infrastructure_aborts` per task and run-wide
 - retry-related run behavior (visible through queue counts and failed/completed totals)
 
