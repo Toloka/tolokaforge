@@ -285,6 +285,72 @@ def _detect_synthetic_envelope(response: Any) -> str | None:
     return None
 
 
+def _detect_degraded_tool_arguments(
+    tool_name: str,
+    arguments: dict[str, Any],
+    sanitized_tools: list[dict[str, Any]] | None,
+) -> tuple[str, ...] | None:
+    """Detect tool calls missing parameters required by their wire schema.
+
+    Some providers return a normal-looking tool-call envelope while the
+    content itself is degraded: the tool name and finish reason are valid,
+    but ``arguments`` is empty or omits required root parameters. Accepting
+    that call poisons the trajectory because it is recorded as a legitimate
+    assistant turn and replayed on every subsequent request.
+
+    Detection uses the post-sanitisation schema sent to the provider, which
+    is the authoritative contract for the emitted call. A tool is flagged
+    only when its own ``function.parameters.required`` list contains one or
+    more strings and at least one of those keys is absent from the parsed,
+    response-policy-normalised argument dictionary. Tools with no parameters
+    schema or an absent / empty ``required`` list legitimately accept empty
+    dictionaries and are never flagged.
+
+    :meth:`LLMClient._assemble_result` raises :class:`RuntimeError` on a
+    non-``None`` return. Because assembly runs inside
+    :meth:`LLMClient.generate`'s ``@retry`` scope, tenacity re-attempts the
+    whole turn and no degraded :class:`GenerationResult` reaches trajectory
+    writers.
+
+    Returns
+    -------
+    The missing required parameter names in schema order, or ``None`` when
+    the tool call satisfies its schema or no required parameters are
+    declared.
+    """
+    for tool in sanitized_tools or []:
+        if not isinstance(tool, dict):
+            continue
+        function = tool.get("function")
+        if not isinstance(function, dict) or function.get("name") != tool_name:
+            continue
+        parameters = function.get("parameters")
+        if not isinstance(parameters, dict):
+            return None
+        required = parameters.get("required")
+        if not isinstance(required, list) or not required:
+            return None
+        missing = tuple(
+            parameter
+            for parameter in required
+            if isinstance(parameter, str) and parameter not in arguments
+        )
+        return missing or None
+    return None
+
+
+def _tool_arguments_payload_shape(raw_args: Any) -> dict[str, Any]:
+    """Return a secret-safe structural summary of a raw argument payload."""
+    shape: dict[str, Any] = {"raw_arguments_type": type(raw_args).__name__}
+    if isinstance(raw_args, str):
+        shape["raw_arguments_length"] = len(raw_args)
+        shape["raw_arguments_is_blank"] = not raw_args.strip()
+    elif isinstance(raw_args, dict):
+        shape["raw_arguments_count"] = len(raw_args)
+        shape["raw_argument_keys"] = sorted(str(key) for key in raw_args)
+    return shape
+
+
 def _litellm_response_cost(response: Any) -> float | None:
     """Pull per-call cost in USD from litellm.
 
@@ -636,15 +702,33 @@ class LLMClient:
         if isinstance(raw_args, dict):
             return _normalize(raw_args)
         if raw_args is None or not isinstance(raw_args, str):
+            self.logger.warning(
+                "Tool arguments payload is not an object or string",
+                tool=tool_name,
+                **_tool_arguments_payload_shape(raw_args),
+            )
             return {}
 
         args_str = raw_args.strip()
         if not args_str:
+            self.logger.warning(
+                "Tool arguments payload is empty",
+                tool=tool_name,
+                **_tool_arguments_payload_shape(raw_args),
+            )
             return {}
 
         try:
             parsed = json.loads(args_str)
-            return _normalize(parsed) if isinstance(parsed, dict) else {}
+            if isinstance(parsed, dict):
+                return _normalize(parsed)
+            self.logger.warning(
+                "Parsed tool arguments are not an object",
+                tool=tool_name,
+                parsed_arguments_type=type(parsed).__name__,
+                **_tool_arguments_payload_shape(raw_args),
+            )
+            return {}
         except json.JSONDecodeError:
             pass
 
@@ -671,6 +755,7 @@ class LLMClient:
             "Failed to parse tool arguments",
             tool=tool_name,
             error="Unable to parse with JSON/YAML fallbacks",
+            **_tool_arguments_payload_shape(raw_args),
         )
         return {}
 
@@ -1295,16 +1380,42 @@ class LLMClient:
 
         if hasattr(message, "tool_calls") and message.tool_calls:
             for tc in message.tool_calls:
-                arguments = self._parse_tool_arguments(tc.function.name, tc.function.arguments)
+                tool_name = tc.function.name
+                raw_arguments = tc.function.arguments
+                arguments = self._parse_tool_arguments(tool_name, raw_arguments)
                 arguments = self.capabilities.response_policy.parse_arguments(
                     arguments,
-                    param_types=param_types_by_tool.get(tc.function.name),
+                    param_types=param_types_by_tool.get(tool_name),
                 )
+                missing_required = _detect_degraded_tool_arguments(
+                    tool_name,
+                    arguments,
+                    sanitized_tools,
+                )
+                if missing_required is not None:
+                    # Raise inside generate()'s existing tenacity scope. No
+                    # ToolCall or GenerationResult is returned, so trajectory
+                    # writers cannot commit or replay the degraded turn.
+                    self.logger.warning(
+                        "Discarding degraded tool-call response with empty/missing "
+                        "required tool arguments",
+                        tool=tool_name,
+                        tool_call_id=tc.id,
+                        missing_required_parameters=list(missing_required),
+                        model=self.model_name,
+                        **_tool_arguments_payload_shape(raw_arguments),
+                    )
+                    raise RuntimeError(
+                        "LLM API returned degraded tool call with empty/missing "
+                        f"required tool arguments (tool={tool_name!r}, "
+                        f"missing_required_parameters={list(missing_required)!r}). "
+                        "Retrying."
+                    )
 
                 tool_calls.append(
                     ToolCall(
                         id=tc.id,
-                        name=tc.function.name,
+                        name=tool_name,
                         arguments=arguments,
                     )
                 )
