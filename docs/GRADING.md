@@ -338,10 +338,17 @@ initial user prompt precedes the first assistant message and carries index 0.
   - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
     recorded, so the call emits a normal pair carrying `tool_not_found` /
     `invalid_arguments` and a `status` matcher counts it.
-  - *`trial_not_found`.* Unrecordable — there is no trial context to record into —
-    so it emits a `tool_call` with no `tool_result`, indistinguishable from the
-    never-attempted case. Declared rather than implied; it is a harness fault for
-    which no grading verdict is meaningful.
+  - *`trial_not_found`.* The two substrates differ, and the difference is declared
+    rather than implied. The runner's own trial-context recorder has no trial to
+    record into, so runner-side the call emits a `tool_call` with no `tool_result`,
+    indistinguishable from the never-attempted case. **Core-side it is recorded.**
+    Since the caller records, `GrpcRunnerClient` builds a `ToolResult` whose status
+    the proto does not map (`RECORDED_STATUS_BY_PROTO` has no entry for
+    `TRIAL_NOT_FOUND`), and `resolve_tool_status` then resolves a failed result to
+    `error` — so the call emits a normal pair and a `status` matcher sees `error`.
+    Either way it is a harness fault for which no grading verdict is meaningful, so
+    a constraint should not depend on which shape it takes. Whether `error` is the
+    right status for a call that never reached a tool is #727.
 - **G5 — where both views describe one call, the record wins.** The two views word
   the same failure differently: the `role: tool` message carries `Error: <error>`,
   while the record carries the executing layer's own text, untruncated. So `result`
