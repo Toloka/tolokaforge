@@ -210,6 +210,28 @@ def _note_failure(what: str) -> None:
         print(f"::warning title=Slack notification skipped::{what} (see [slack_notify] logs)")
 
 
+def _prefixed(role: str, text: str) -> str:
+    """:func:`icons.prefix`, except that an unknown ROLE costs only the STYLING.
+
+    ``icons.icon`` raises on an unknown role, which is right: a role is written by this codebase,
+    so a bad one is a bug here rather than a user's typo. But the CLI wrappers below catch every
+    exception and exit 0, so an escaping raise loses the whole notification on a green step - and
+    in :func:`cmd_reply`, where the thread root is posted before the prefix is applied, leaves a
+    root with nothing under it. "A notification must never fail the job it reports on" has to
+    mean the message still goes out.
+
+    Reported on BOTH channels, because they have different reach: the stderr line is the only
+    record outside CI (:func:`_note_failure` prints nothing without ``GITHUB_ACTIONS``), and the
+    annotation is what makes a passing job visibly flag it.
+    """
+    try:
+        return icons.prefix(role, text)
+    except ValueError as exc:
+        _log(f"unknown icon role {role!r}: sending the message unstyled ({exc})")
+        _note_failure(f"unknown icon role {role!r}: message sent unstyled")
+        return text
+
+
 def _ready(channel: str) -> str | None:
     """Return the bot token if a real post is possible, else None (dry-run)."""
     token = os.environ.get("SLACK_BOT_TOKEN")
@@ -250,7 +272,7 @@ def cmd_reply(
         _note_failure("could not post the thread reply (no root)")
         return
     body = append_footer(
-        icons.prefix(role, text), pr_comment=pr_comment, pr_url=pr_url, run_url=run_url
+        _prefixed(role, text), pr_comment=pr_comment, pr_url=pr_url, run_url=run_url
     )
     if mention:
         body += build_mention_suffix(os.environ.get("SLACK_MENTIONS"))
@@ -299,7 +321,7 @@ def post_thread(
     report that starting it failed - the PR-keyed ``reply`` above threads on a different root."""
     try:
         token = _ready(channel)
-        text = icons.prefix(icon, text)
+        text = _prefixed(icon, text)
         if token and not _post_message(channel, text, token, thread_ts=thread_ts):
             _note_failure("could not post the threaded follow-up")
     except Exception as exc:  # a notification must never fail the job

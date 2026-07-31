@@ -139,7 +139,7 @@ Instead of opening the PR by hand, tag the bot in the automation channel:
 ```
 
 A scheduled workflow (`.github/workflows/slack-integrate.yml`) polls the channel and, per
-request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTICALLY
+request, resolves each free-text model phrase to a model slug DETERMINISTICALLY
 (`automation resolve-models` / `model_resolver`, no LLM guessing - strict version discipline, so
 "Grok 4.5" never resolves to `grok-4` or `grok-4.3`), then:
 
@@ -147,7 +147,31 @@ request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTI
   commit carrying the request metadata - no artifact is committed) and dispatches
   `integrate-model.yml` on it via `workflow_dispatch`, then replies in-thread with the PR link;
 - **ambiguous** (several slugs match) -> replies in-thread with the exact slugs to choose from;
-- **unknown** (no catalog match) -> replies that it could not find the model.
+- **unknown** (no match in either catalog) -> replies that it could not find the model, naming
+  which catalogs were actually searched.
+
+**Two catalogs, OpenRouter first.** A phrase is matched against the OpenRouter catalog and, only
+if that matches NOTHING, against the deployment's gateway catalog. A fallback rather than a union,
+deliberately: a phrase that resolves (or is ambiguous) against OpenRouter is unaffected by the
+gateway, so the calibrated default route cannot move and a gateway that lists the same model under
+a second route name cannot turn a working request into a clarify reply. The fallback is what makes
+a gateway-ONLY model such as `azure_ai/cohere-command-a-plus-05-2026` requestable.
+
+A gateway catalog is a routing table rather than a model list, so only part of it is a candidate: a
+wildcard (`x-ai/*`) is a passthrough, an id the OpenRouter catalog already carries (bare or under
+one route prefix) is the same model under a second name, and an id outside the slug charset can
+never be integrated because a slug reaches the shell.
+
+**Known limits of the gateway-only path.** Two things do not follow automatically, and both surface
+in the reply rather than being discovered mid-run:
+
+- `automation ensure-pricing` resolves a price by exact id against the OpenRouter catalog, so a
+  gateway-only id never matches. Without a `pricing.json` entry, `COST_USD_POPULATED` (a
+  non-opt-out CORE capability) fails in observe.
+- the run's gateway `.env` is job-wide, so the gateway must also serve the wire probes' user
+  simulator (`anthropic/claude-sonnet-4.6`). The poller checks it and downgrades an explicit
+  `via litellm` when it is missing; a gateway-only model has no route to downgrade to, so it is
+  warned about instead.
 
 ### Integration route (OpenRouter vs the LLM gateway)
 
@@ -187,10 +211,19 @@ simulator (`openrouter/anthropic/claude-sonnet-4.6`) is proxied too and the gate
 it as well — otherwise observe goes infra-dirty in the user simulator, not in the candidate
 (see [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway)).
 
-Everything here degrades to the previous behaviour when the gateway is not configured: the
-availability lookup returns "unknown", nothing is reported, and `route` stays `openrouter`.
+The route is chosen **per model, not per message**, because the two sides of one request can
+disagree. A model that resolved only from the gateway catalog pins the gateway: OpenRouter does
+not carry it, so the calibrated default is not an option and an explicit `via openrouter` for it
+is reported as not honourable instead of being dispatched onto a name OpenRouter would reject.
+Everything else in the same message keeps the default. This is not a comparability loophole: a
+model OpenRouter carries is never moved to the gateway unless a human asks with `via litellm`.
+
+With no gateway configured the flow is OpenRouter-only: the availability lookup returns
+"unknown", nothing is reported, resolution searches OpenRouter alone (and says so when it fails),
+and `route` stays `openrouter`.
 A `via litellm` request the poller cannot confirm (availability `unknown` or `not on the
-gateway`, for *any* model in the message) is **downgraded to `openrouter` with a warning in the
+gateway`, for any model in the message that OpenRouter *does* carry - a gateway-only model is not
+evidence against the gateway) is **downgraded to `openrouter` with a warning in the
 reply** rather than dispatched — a run over a gateway that does not serve the model would fail
 every probe and read as a model failure. On a manual `workflow_dispatch` with `route: litellm`
 but no secrets, `integrate-model.yml` logs a workflow warning and probes over OpenRouter rather
@@ -245,8 +278,12 @@ those pairs separate icons - one entry would restyle them all.
 `automation.icons.DEFAULT_ICONS` is the registry, and its defaults reproduce
 exactly what the flow sends today, so an unset variable changes nothing.
 
-Every message site names its role (`slack reply --icon <role>`), so the emoji is
-no longer in the message text.
+Every message site names its role, so no emoji is left in message text: the workflow-driven
+notifications pass `slack reply --icon <role>`, and the messages the poller BUILDS in Python
+(its reply to a request) call `icons.icon(role, overrides)` per line. Both are swept by
+`tools/automation/tests/test_icons.py`, which fails on an emoji literal in either the workflows or
+the automation sources. It is a tripwire rather than a proof: it sees literals and unicode emoji
+characters, so an emoji assembled at runtime would still need catching by review.
 
 Four behaviours worth knowing:
 
@@ -263,6 +300,11 @@ Four behaviours worth knowing:
 
 This does not extend to reactions: `reactions.add` fails with `invalid_name` on
 an emoji the workspace lacks, so a reaction vocabulary has to stay standard.
+
+An unknown role costs only the STYLING: the message is sent unstyled and the bad role is raised
+as a workflow annotation. `icons.icon()` itself still raises (a role is written by this codebase,
+so a bad one is a bug here, not a user typo), but the CLI wrappers catch everything and exit 0,
+which would otherwise turn that raise into a silently dropped notification on a green step.
 
 Messages are emoji-prefixed and carry the run URL. `mention` = the `SLACK_MENTIONS` users are
 pinged (terminal / attention states only):

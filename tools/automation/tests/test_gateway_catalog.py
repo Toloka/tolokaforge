@@ -12,6 +12,8 @@ Two behaviours carry real risk and are pinned hardest:
 from __future__ import annotations
 
 import json
+import pathlib
+import re
 
 import pytest
 from automation import gateway_catalog, model_resolver, poller, slack
@@ -280,8 +282,13 @@ class TestPlanRows:
         assert "via *openrouter*" in posted[0]
 
     def test_explicit_gateway_route_reaches_the_plan(self, monkeypatch, tmp_path) -> None:
+        # The catalog covers the user simulator too: the integration run's gateway `.env` is
+        # job-wide, so a gateway serving only `x-ai/*` could not serve this run at all.
         plan, posted = self._plan(
-            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", ["x-ai/*"]
+            monkeypatch,
+            tmp_path,
+            "<@B1> integrate Grok 4.5 via litellm",
+            ["x-ai/*", gateway_catalog.USER_SIMULATOR_SLUG],
         )
         assert [row["route"] for row in plan] == ["litellm", "litellm"]
         # The reply must state the route it actually queued, not the default.
@@ -342,10 +349,41 @@ class TestUnconfirmedGatewayIsDowngraded:
 
     def test_confirmed_model_keeps_the_gateway_and_stays_quiet(self, monkeypatch, tmp_path) -> None:
         plan, posted = self._plan(
-            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", ["x-ai/grok-4.5"]
+            monkeypatch,
+            tmp_path,
+            "<@B1> integrate Grok 4.5 via litellm",
+            ["x-ai/grok-4.5", gateway_catalog.USER_SIMULATOR_SLUG],
         )
         assert plan[0]["route"] == "litellm"
         assert "could not confirm" not in posted[0]
+
+    def test_an_unserved_user_simulator_also_downgrades(self, monkeypatch, tmp_path) -> None:
+        """The candidate is covered, the simulator is not - and the run proxies both.
+
+        The integration run writes the gateway credentials JOB-WIDE, so `via litellm` with a
+        gateway that lacks `anthropic/claude-sonnet-4.6` sends observe infra-dirty in the
+        SIMULATOR. Nothing in the reply would point at the gateway, so the poller has to.
+        """
+        plan, posted = self._plan(
+            monkeypatch, tmp_path, "<@B1> integrate Grok 4.5 via litellm", ["x-ai/grok-4.5"]
+        )
+        assert [row["route"] for row in plan] == ["openrouter", "openrouter"]
+        assert "user simulator" in posted[0]
+        assert gateway_catalog.USER_SIMULATOR_SLUG in posted[0]
+
+    def test_a_gateway_only_model_cannot_be_downgraded_so_it_warns_instead(
+        self, monkeypatch, tmp_path
+    ) -> None:
+        """No OpenRouter route exists for it, so the honest outcome is a warning, not a move."""
+        plan, posted = self._plan(
+            monkeypatch,
+            tmp_path,
+            "<@B1> integrate azure_ai/cohere-command-a-plus-05-2026",
+            ["azure_ai/cohere-command-a-plus-05-2026"],
+        )
+        assert [row["route"] for row in plan] == ["litellm", "litellm"]
+        assert "user simulator" in posted[0]
+        assert "infra-dirty in the simulator" in posted[0]
 
     def test_an_openrouter_request_is_never_downgraded_or_warned(
         self, monkeypatch, tmp_path
@@ -356,3 +394,25 @@ class TestUnconfirmedGatewayIsDowngraded:
         )
         assert plan[0]["route"] == "openrouter"
         assert "could not confirm" not in posted[0]
+
+
+class TestTheSimulatorConstantTracksTheWorkflow:
+    """`USER_SIMULATOR_SLUG` is a copy of a value that lives in the workflow.
+
+    The gateway evidence check is only as good as that name, and a rename in the workflow would
+    leave the check silently looking up a model nobody runs - green, and useless. So the copy is
+    pinned to its source here rather than trusted.
+    """
+
+    def test_the_constant_is_the_model_the_workflow_actually_runs(self) -> None:
+        workflow = (
+            pathlib.Path(__file__).resolve().parents[3]
+            / ".github"
+            / "workflows"
+            / "integrate-model.yml"
+        )
+        text = workflow.read_text()
+        # The user-simulator block in the generated model config: `user:` then its `name:`.
+        match = re.search(r"^\s*user:\s*$.*?^\s*name:\s*\"(?P<slug>[^\"]+)\"", text, re.M | re.S)
+        assert match, "could not find the user simulator's name in integrate-model.yml"
+        assert match.group("slug") == gateway_catalog.USER_SIMULATOR_SLUG

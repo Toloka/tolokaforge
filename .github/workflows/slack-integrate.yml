@@ -3,8 +3,9 @@ name: Slack-triggered integration poller
 # Turns a Slack request ("@delivery-tech-bot integrate Grok 4.5 and Hy3") into integration
 # runs, with NO new app and NO PAT - only the github-actions[bot] GITHUB_TOKEN. A bot token
 # cannot be reached from outside GitHub, so the initiative comes from INSIDE: this workflow
-# POLLS the channel (the existing bot token, read-only history), resolves each model phrase to
-# an OpenRouter slug DETERMINISTICALLY (automation.model_resolver - no LLM guessing), and:
+# POLLS the channel (the existing bot token, read-only history), resolves each model phrase
+# DETERMINISTICALLY (automation.model_resolver - no LLM guessing) against the OpenRouter catalog
+# and, for a phrase OpenRouter cannot match, the deployment's gateway catalog, and:
 #   * clearly-identified model  -> opens a draft integration PR + dispatches integrate-model.yml
 #   * ambiguous / unknown model -> replies in-thread asking for an exact slug (no run started)
 #
@@ -87,7 +88,8 @@ jobs:
       - name: Poll the channel and resolve requests
         # Reads history, resolves each @bot integrate request, posts one threaded reply per
         # request, and writes plan.json = [{slug, requester, message_ts, route, gateway}] for the
-        # resolved models. `route` is the requested integration route (default openrouter).
+        # resolved models. `route` is PER MODEL: the requested route (default openrouter), except
+        # a model that exists only on the gateway, which can run nowhere else.
         run: |
           uv run automation slack-poll \
             --channel "$SLACK_CHANNEL" \
@@ -128,7 +130,7 @@ jobs:
             git push -q -u origin "$BRANCH" || return 1
             PR_URL="$(gh pr create -R "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
               --title "integrate: ${SLUG}" \
-              --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically against the OpenRouter catalog; this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
+              --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically (OpenRouter catalog first, then the LLM gateway's); this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
             PR_NUM="$(printf '%s' "$PR_URL" | grep -oE '[0-9]+$')"
             [ -n "$PR_NUM" ] || { echo "could not parse PR number from '$PR_URL'"; return 1; }
             echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"

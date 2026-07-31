@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+import os
 import urllib.error
 import urllib.request
 
@@ -100,6 +101,31 @@ def fetch_gateway_catalog(
     return sorted(
         str(entry["id"]) for entry in entries if isinstance(entry, dict) and entry.get("id")
     )
+
+
+#: Env names carrying the gateway contract. Read from ``os.environ`` rather than through
+#: ``SecretManager`` (AGENTS.md § Secrets) for one reason that applies to every caller here: this
+#: package is a standalone workspace member without the engine's secrets stack, and the entry
+#: points are CI-only, where the credential arrives through the workflow's ``env:``. Going through
+#: ``DotEnvProvider`` would additionally give a developer's local ``.env`` precedence, which is
+#: how a dev gateway would end up answering a real poll.
+ENV_BASE_URL = "LLM_PROXY_BASE_URL"
+ENV_API_KEY = "LLM_PROXY_API_KEY"
+
+#: The user simulator the wire probes run, from ``integrate-model.yml``. On the gateway route that
+#: workflow's ``.env`` is JOB-WIDE, so the simulator is proxied too and the gateway must serve it
+#: as well - otherwise observe goes infra-dirty in the simulator rather than in the candidate.
+#: Pinned against the workflow by a test, since a rename there would silently void that check.
+USER_SIMULATOR_SLUG = "anthropic/claude-sonnet-4.6"
+
+
+def fetch_configured_catalog(timeout: int = 15) -> list[str] | None:
+    """The gateway catalog for THIS deployment, or ``None`` when there is no readable gateway.
+
+    The single owner of the environment read, so every caller sees the same catalog the poll
+    does; a hand-run diagnostic that disagreed with the poll would be worse than no diagnostic.
+    """
+    return fetch_gateway_catalog(os.environ.get(ENV_BASE_URL), os.environ.get(ENV_API_KEY), timeout)
 
 
 def lookup(slug: str, catalog: list[str] | None) -> Availability:
