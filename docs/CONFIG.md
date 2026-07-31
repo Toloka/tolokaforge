@@ -502,6 +502,11 @@ Common keys:
 - `AWS_ACCESS_KEY_ID`, `AWS_SECRET_ACCESS_KEY`
 - `OLLAMA_API_BASE`
 
+Routing calls through an LLM gateway (a LiteLLM proxy or equivalent) instead of
+calling providers directly (`LLM_PROXY_BASE_URL`, `LLM_PROXY_API_KEY`,
+`LLM_PROXY_HEADERS`, `LLM_PROXY_REQUEST_ID_HEADER`, `LLM_PROXY_PROVIDERS`) is
+documented in [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway).
+
 ## Output Structure
 
 ```
