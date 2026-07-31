@@ -7,10 +7,6 @@ core substrate) and the names re-exported below; every author-facing
 ``grading.yaml`` key and the substrate that evaluates it are enumerated in
 :mod:`~tolokaforge.core.grading.key_manifest`, which is the map worth reading
 first.
-
-No per-module index is kept here on purpose. The one this docstring used to
-carry listed eight of eighteen modules and read as complete, which is worse
-than no index: a reader who trusts it concludes a module does not exist.
 """
 
 from tolokaforge.core.grading.check_runner import (

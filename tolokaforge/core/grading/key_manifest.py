@@ -149,6 +149,20 @@ over real gRPC and a real db-service. The hash family's differential cannot run
 in-process: the evaluator replays golden actions against db-service over HTTP.
 """
 
+_HASH_SOURCE_SHAPE_REASON = (
+    "both substrates fold the hash verdict by one shared rule, but only one of the three "
+    "hash-source shapes is proven to hand them the same verdict. Proven: golden_actions, "
+    "by the enforcing_test — both replay the actions and compare against the resulting "
+    "state. Not proven: expected_state_hash alone, because no runner path reads the "
+    "translated expected_hash (#693), so the runner compares the trial against the "
+    "*initial* state where core compares it against the author's literal. Not proven: "
+    "hash.enabled with no declared source, where core produces no verdict at all while "
+    "the runner's refusal semantics produce a binary one — measured on a pack with live "
+    "assertions scoring 0.5, core scores the component 0.5 and the runner 0.8 at "
+    "weight 0.6. Moving either shape moves refusal-task verdicts, which needs its own "
+    "corpus measurement"
+)
+
 _TRANSCRIPT_AGGREGATION_REASON = (
     "core averages four fixed buckets while the runner scores one sub-check per "
     "declared entry, so the two component scores differ in magnitude"
@@ -206,19 +220,21 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="state_checks.hash",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.hash",
         runner_field=None,
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
+        reason=_HASH_SOURCE_SHAPE_REASON,
+        tracking_issue=741,
         family_root=True,
     ),
     GradingKey(
         author_key="state_checks.hash.enabled",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
         core_field="StateChecksConfig.hash",
         runner_field="StateChecksConfig.hash_enabled",
@@ -226,6 +242,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
+        reason=_HASH_SOURCE_SHAPE_REASON,
+        tracking_issue=741,
     ),
     GradingKey(
         author_key="state_checks.hash.golden_actions",

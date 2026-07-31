@@ -118,22 +118,50 @@ Every other row is drift and names the issue that closes it. The exemption sets
 live in the test module, not beside the manifest, so widening one is an edit a
 reviewer sees in the same commit.
 
-The `state_checks.hash` family (`hash`, `hash.enabled`, `hash.golden_actions`)
-claims `BOTH_SCORE_PARITY` at `DIFFERENTIAL_INTEGRATION`. Both substrates fold the
-hash verdict by the same rule, so the component scores agree — but the runner's
-evaluator replays golden actions against db-service over HTTP, so no service-free
-differential can reach it, and mocking the DB client to make a canonical guard pass
-would defeat the guard. The differential therefore runs over real gRPC and a real
-db-service, in
+The `state_checks.hash` family sits at `DIFFERENTIAL_INTEGRATION`, and **its three
+members do not all claim the same coverage**, because which hash *source* a pack
+declares decides whether the two substrates compare the trial against the same
+expected state:
+
+| Member | coverage | Tracked |
+|---|---|---|
+| `state_checks.hash.golden_actions` | `BOTH_SCORE_PARITY` | — |
+| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | #741 |
+| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | #741 |
+
+The fold rule is shared on every shape — both substrates call
+`compose_state_checks_score` — but the *inputs* to it still differ for two of the
+three source shapes:
+
+- **`golden_actions`** — proven. Both substrates replay the actions and hash the
+  resulting state, so the same trial yields the same verdict and therefore the same
+  component. This is the shape the `enforcing_test` drives.
+- **`expected_state_hash` alone** — not proven. The adapter translates it onto the
+  runner's `expected_hash` field and **no runner path reads it** (#693), so the
+  runner falls back on refusal semantics and compares the trial against the
+  **initial** state where core compares it against the author's literal.
+- **`hash.enabled` with no declared source** — not proven. Core produces **no**
+  verdict (below), while the runner runs hash grading anyway for the refusal shape
+  and produces a real binary one. Measured, on a pack with live assertions scoring
+  `0.5` at `weight: 0.6`: core's component is `0.5` on both hash outcomes, the
+  runner's is `0.8` on a match and `0.2` on a divergence (#741).
+
+Moving either unproven shape moves refusal-task verdicts across the corpus, which is
+why #741 owns it rather than the change that found it.
+
+The golden-actions differential runs over real gRPC and a real db-service, in
 [`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
-a matching and a diverging final state against the same golden replay, at two
-weights strictly inside `(0, 1)`, with the wire's `state_checks` component pinned to
-the blend and required to differ between the two weights.
+the runner's evaluator replays golden actions against db-service over HTTP, so no
+service-free differential can reach it, and mocking the DB client to make a canonical
+guard pass would defeat the guard. A matching and a diverging final state against the
+same golden replay, at two weights strictly inside `(0, 1)`, with the wire's
+`state_checks` component pinned to the blend and required to differ between the two
+weights.
 
 **What that proves and what it does not.** The runner's own golden-replay verdict
 reaches the shared composer, and the author's `weight` reaches the fold — measured
-on the wire: forcing the runner's fold to a constant weight, and reverting it to the
-pre-`weight` product, each turn every cell red. What it does not prove is
+on the wire: forcing the runner's fold to a constant weight, and replacing it with a
+plain product of the two scores, each turn every cell red. What it does not prove is
 `state_checks.numeric_string_fields`, which stays `FIELD_RESOLUTION_ONLY` (#687) —
 the folding pair is claimed to be honored identically on both substrates and no test
 drives it through the runner's hash evaluator. Nor does the canonical suite prove
@@ -141,12 +169,15 @@ this test *passes*: it resolves the nodeid and stops there, and `test-gate` does
 fire on a pull request (#700), so this tier is run locally and its output quoted.
 
 **Coverage and enforcement are orthogonal on purpose**, which is what lets a true
-coverage claim carry weak enforcement. `BOTH_SCORE_PARITY` states what is the case —
-both substrates produce the same component score — and `DIFFERENTIAL_INTEGRATION`
-states how strongly that is proven. Weakening the coverage claim to
-`BOTH_SIGNAL_PARITY` to signal thin enforcement would make the manifest say something
-false in order to avoid saying something weak. The enforcement axis is where the
-weakness belongs, and it says so; `state_checks.db_probes` sits at the same tier.
+coverage claim carry weak enforcement. `state_checks.hash.golden_actions` is the
+example: `BOTH_SCORE_PARITY` states what is the case — both substrates produce the
+same component score — and `DIFFERENTIAL_INTEGRATION` states how strongly that is
+proven. Weakening a *true* coverage claim to `BOTH_SIGNAL_PARITY` to signal thin
+enforcement would make the manifest say something false in order to avoid saying
+something weak; the enforcement axis is where the weakness belongs, and it says so.
+The two `BOTH_SIGNAL_PARITY` rows above are the opposite case — there the score
+claim itself is false for a source shape, so the coverage axis is the honest place
+for it. `state_checks.db_probes` sits at the same enforcement tier.
 
 `state_checks.hash.weight` is proven at `DIFFERENTIAL_CANONICAL` by a composition
 sweep in the same suite: a fixture pack configuring both state sources — a
@@ -166,10 +197,26 @@ weights at which a fold that merely *selects* the dominant source is
 distinguishable from one that mixes them. Both halves are what stop the enforcement
 level from resting on a citation.
 
-The hash verdict either substrate produces is `0.0` or `1.0`, which is what lets the
-canonical sweep hand the runner's fold a hash score directly instead of standing up
-db-service. The same suite audits every hash-verdict producer for it, so a partial
-hash score cannot land without the sweep's premise being re-examined.
+Core's verdict there is its own: the fixture commits the `expected_state_hash` of its
+matching state, so `check_hash` produces the verdict in process. **The runner's is
+handed to its fold rather than produced**, because the runner's hash evaluator drives
+db-service over HTTP. That keeps the sweep a statement about the *fold* — the key is
+`CONFIG_INPUT` — and not a claim that the two evaluators agree on the
+`expected_state_hash` shape, which they do not (above). The substitution is honest
+because the hash verdict either substrate produces is `0.0` or `1.0`, never a
+fraction, so the value handed in is one the runner's own path would yield; the same
+lock asserts core's evaluator returns exactly those two for the fixture's two states.
+
+**That premise is audited, within a stated limit.** The suite reads the source of
+every function the manifest names as a hash-verdict producer — derived from the hash
+family's declared evaluators and asserted as set equality against a frozen set, so a
+fourth producer forces a reviewable edit rather than landing with the audit green.
+Each one must choose its score between literals rather than computing it, and every
+`return` must carry that score somewhere the audit reads. What it cannot see is a
+producer reached only *through* one of those functions: the audit follows declared
+evaluators, not call graphs. So a partial hash score cannot land inside an audited
+producer without the sweep's premise being re-examined, and a new producer cannot be
+declared without one.
 
 ### What the guard cannot see
 
@@ -656,6 +703,15 @@ touches it. (`db_hash_check` was never declared on the runner config at all, so 
 engine ever emitted it and it is not part of this lock — a populated
 `db_hash_check` is rejected core-side at config load.)
 
+**This lock is narrower than the proto3 rule that governs the rest of registration.**
+`engine_protocol_version` and `call_id` are proto message fields, which an older
+runner drops as unknown — so for those the bound is one-sided and a newer engine
+registers fine (see [`RUNNER.md`](RUNNER.md#engine--image-version-lock)). The trial
+spec is not a proto message: it crosses as `trial_spec_json`, a JSON string parsed by
+`extra="forbid"` Pydantic models, where an unknown field is an error rather than a
+dropped byte. The signature of the skew is a Pydantic `extra_forbidden` error naming
+`hash_weight` in the `RegisterTrialResponse.error`.
+
 An old engine against a new runner image can also be rejected for a second,
 narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
 pack configuring a hash source *and* non-empty `jsonpaths` reaches the runner with
@@ -677,7 +733,8 @@ A source nobody configured contributes nothing rather than a score:
 
 - **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
   hash verdict, at every `weight`. An empty assertion list is not a pass.
-- **`jsonpaths` only** (no hash source): the component is the assertion score.
+- **`jsonpaths` only** (no hash source declared): the component is the assertion
+  score. **Core-side only** — see the substrate note below.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 
 `hash.weight` is consulted only in the third case, and it has **no default**:
@@ -686,29 +743,64 @@ pack that needs a weight and declares none is **rejected at load** — by
 `tolokaforge validate` and by the grading config model — with a message naming the
 three meaningful choices: `1.0` lets the hash decide, `0.0` lets the jsonpaths
 decide, `0.5` gives them equal shares. The value must lie within `[0.0, 1.0]`;
-outside that range the component leaves `[0, 1]` altogether.
+outside that range the component leaves `[0, 1]` altogether, and a value that is not
+a real number in that range — a bool, a numeric string — is rejected on **both**
+substrates rather than coerced into one.
 
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
 `expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
-other shape yields at most one score, so a weight there would have nothing to
-divide: it loads, its range is still checked, and `grade.reasons` records that it
-was declared but not consulted.
+other shape yields at most one score *core-side*, so a weight there would have
+nothing to divide: it loads, its range is still checked, and `grade.reasons` records
+that it was declared but not consulted — on both substrates, from one constant.
 
-The rule above is substrate-independent: one function
-(`core/grading/state_composition.py`) folds the two sources, and both the core
-engine and the runner's `GradeTrial` call it, so a pack's `state_checks` component
-does not depend on which substrate graded the trial. The runner carries the weight
-as the flattened `state_checks.hash_weight` on its `StateChecksConfig` and applies
-the same presence gate at `RegisterTrial`, so a config that needs a weight and
-arrives without one is rejected there rather than folded by a rule the author never
-chose.
+**The gate over-approximates in two known ways, and both err toward asking the
+author a question rather than guessing an answer.**
 
-Hash grading that was configured but could not run — `hash.enabled` with neither
-source declared, or `golden_actions` with no task directory, `initial_state` or
-`mcp_server` to replay them against — yields **no** hash verdict and names the
-skipped check in `grade.reasons`, rather than a `0.0` that reads as a state the
-agent got wrong (#729). A golden replay that fails to *execute* is a grading
-error rather than a verdict: it raises, and the trial is left unscored.
+1. **Golden actions with no replay context.** Whether the engine has the
+   `task_dir` / `initial_state` / `mcp_server` a replay needs is unknowable from
+   `grading.yaml`, so a pack that would produce no hash verdict for that reason is
+   still asked for a weight. It lands only on configs already silently broken (#729).
+2. **`db_probes` declared alongside.** `db_probes` is the sole state source for the
+   tasks that declare it, so runner-side its score fills the component outright and
+   the fold is never reached — the weight the gate demanded is then reported as
+   unconsulted. Core-side that is not over-approximation at all: the core engine has
+   no `db_probes` evaluator, so it *does* fold the hash with the jsonpaths and *does*
+   consult the weight. Teaching the shared predicate about `db_probes` would
+   therefore trade a load-time rejection for a grade-time raise on the core
+   substrate, which is why it stays. #731 owns the precedence itself.
+
+**Which substrate graded the trial still matters, for two hash-source shapes.** The
+fold is one function (`core/grading/state_composition.py`) and both the core engine
+and the runner's `GradeTrial` call it, so the *rule* is shared; the runner carries
+the weight as the flattened `state_checks.hash_weight` on its `StateChecksConfig` and
+applies the same presence gate at `RegisterTrial`. What is not shared is what each
+substrate feeds that fold:
+
+- **`hash.enabled` with no declared source.** Core produces no hash verdict and the
+  component is the assertion score alone. The runner runs hash grading anyway — the
+  refusal shape, where the expected state *is* the initial state — so it folds a real
+  binary verdict with the assertions. Measured at `weight: 0.6` against assertions
+  scoring `0.5`: core `0.5`, runner `0.8` on a match and `0.2` on a divergence. A
+  pack of this shape carrying live assertions and *no* weight loads on both
+  substrates and then fails `GradeTrial` on the runner, because the fold it reaches
+  there is undecidable — see
+  [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrial-error-semantics). Tracked as #741.
+- **`expected_state_hash` alone.** No runner path reads the translated
+  `expected_hash` (#693), so the runner again compares the trial against the initial
+  state where core compares it against the author's literal.
+
+Only **`golden_actions`** is proven to hand both substrates the same verdict, and
+therefore the same component — see
+[Substrate Parity](#substrate-parity) for the manifest rows and the test that proves
+it.
+
+**Core-side**, hash grading that was configured but could not run — `hash.enabled`
+with neither source declared, or `golden_actions` with no task directory,
+`initial_state` or `mcp_server` to replay them against — yields **no** hash verdict
+and names the skipped check in `grade.reasons`, rather than a `0.0` that reads as a
+state the agent got wrong (#729). A golden replay that fails to *execute* is a
+grading error rather than a verdict on either substrate: core raises and the trial is
+left unscored, the runner answers `GradeTrial` with `success=false`.
 
 ### Best Practices
 

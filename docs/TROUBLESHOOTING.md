@@ -24,19 +24,31 @@ convention is: `db-service` on 8000, `mock-web` on 8080,
 
 ## Every Trial Fails at Registration
 
-A `RegisterTrial` failure naming an engine protocol version means the runner image
-is newer than the engine driving it. `ENGINE_PROTOCOL_VERSION`
-([`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py)) is declared
-on every registration and the runner refuses anything below its own, so no trial
-starts and no tokens are spent. Rebuild the image from the tree you are running:
+Engine and runner image must come from the same release, and a skew in **either**
+direction fails every trial at registration. Both are fixed the same way — rebuild the
+image from the tree you are running, or pin an image tag built from a matching engine:
 
 ```bash
 make docker-build-core
 ```
 
-Or pin an image tag built from a matching engine. The bound is one-sided — a newer
-engine against an older image registers fine — so this only appears when the image
-is ahead. See [RUNNER.md](RUNNER.md) § Engine / image version lock.
+**The image is newer than the engine.** The error names an engine protocol version.
+`ENGINE_PROTOCOL_VERSION`
+([`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py)) is declared on
+every registration and the runner refuses anything below its own, so no trial starts
+and no tokens are spent.
+
+**The engine is newer than the image.** The error is a Pydantic validation failure —
+`extra_forbidden` — naming a field the older image's config models do not declare;
+`state_checks.hash_weight` is the current one, and it appears for **every** pack
+carrying a non-empty `state_checks:` block, because the engine emits the field
+whether or not the pack declares a weight. The trial spec crosses the wire as a JSON
+string parsed by `extra="forbid"` models, so an unknown key there is an error rather
+than a dropped field — unlike a proto message field, which an older runner ignores.
+
+See [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock
+and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §
+"Runner-engine version lock (both directions)".
 
 ## Browser Tool Errors
 

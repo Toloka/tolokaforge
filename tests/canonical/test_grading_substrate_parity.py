@@ -55,6 +55,7 @@ from tolokaforge.core.grading.key_manifest import (
     SubstrateCoverage,
     author_keys,
     entry,
+    family_author_keys,
 )
 from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
@@ -113,11 +114,18 @@ _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
 _HASH_SCORE_NAME = "hash_score"
 _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
 
-# Every function that can hand a hash verdict to the shared composer.
-_HASH_VERDICT_PRODUCERS: tuple[tuple[str, str], ...] = (
-    ("tolokaforge/core/grading/state_checks.py", "check_hash"),
-    ("tolokaforge/core/grading/state_checks.py", "check_hash_against_golden_replay"),
-    ("tolokaforge/runner/service.py", "_execute_hash_grading"),
+_HASH_FAMILY_ROOT = "state_checks.hash"
+
+# Every function that can hand a hash verdict to the shared composer, as
+# (repo-relative module, function name). Asserted as set equality against the
+# hash family's declared evaluators, so a fourth producer forces an edit here
+# instead of landing with lock 7 green and lock 6's binariness premise false.
+_HASH_VERDICT_PRODUCERS = frozenset(
+    {
+        ("tolokaforge/core/grading/state_checks.py", "check_hash"),
+        ("tolokaforge/core/grading/state_checks.py", "check_hash_against_golden_replay"),
+        ("tolokaforge/runner/service.py", "_execute_hash_grading"),
+    }
 )
 
 # --------------------------------------------------------------------------
@@ -309,19 +317,47 @@ def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
     )
 
 
-def _import_dotted(path: str) -> Any:
-    """Resolve a dotted module/attribute path, longest importable prefix first."""
+def _split_dotted(path: str) -> tuple[Any, list[str]]:
+    """A dotted path's longest importable module prefix, and the attributes after it."""
     parts = path.split(".")
     for boundary in range(len(parts), 0, -1):
         try:
             module = importlib.import_module(".".join(parts[:boundary]))
         except ImportError:
             continue
-        resolved = module
-        for attribute in parts[boundary:]:
-            resolved = getattr(resolved, attribute)
-        return resolved
+        return module, parts[boundary:]
     raise ImportError(f"no importable module prefix in {path!r}")
+
+
+def _import_dotted(path: str) -> Any:
+    """Resolve a dotted module/attribute path, longest importable prefix first."""
+    module, attributes = _split_dotted(path)
+    resolved: Any = module
+    for attribute in attributes:
+        resolved = getattr(resolved, attribute)
+    return resolved
+
+
+def _evaluator_source(evaluator: str) -> tuple[str, str]:
+    """A declared evaluator's source location: (repo-relative module, function name)."""
+    module, attributes = _split_dotted(evaluator)
+    assert attributes, f"{evaluator!r} names a module, not a function with source to read"
+    return str(Path(module.__file__).resolve().relative_to(_REPO_ROOT)), attributes[-1]
+
+
+def _declared_hash_verdict_producers() -> frozenset[tuple[str, str]]:
+    """Every evaluator the manifest names for a *scored* member of the hash family.
+
+    ``state_checks.hash.weight`` is ``CONFIG_INPUT`` — it names the composer that
+    consumes a verdict, not a function that produces one — so the ``SCORED_CHECK``
+    filter is what keeps the fold itself out of the audit.
+    """
+    return frozenset(
+        _evaluator_source(evaluator)
+        for author_key in family_author_keys(_HASH_FAMILY_ROOT)
+        for evaluator in (entry(author_key).core_evaluator, entry(author_key).runner_evaluator)
+        if evaluator is not None and entry(author_key).kind is KeyKind.SCORED_CHECK
+    )
 
 
 # --------------------------------------------------------------------------
@@ -812,7 +848,7 @@ def _composition_verdict(
         jsonpath_score=runner_jsonpath,
         db_probe_score=-1.0,
         hash_weight=runner_grading.state_checks.hash_weight,
-    )
+    ).component
     runner_total, _ = combine_grade_components(
         {"hash_score": hash_score, "jsonpath_score": runner_jsonpath},
         runner_grading.model_dump(),
@@ -977,15 +1013,25 @@ def _sole_function(module_path: str, function_name: str) -> ast.AST:
     return found[0]
 
 
+def _carries_a_verdict(exit_node: ast.Return) -> bool:
+    """Whether a ``return`` puts its verdict somewhere this audit can read it."""
+    return any(_verdict_expression(node) is not None for node in ast.walk(exit_node))
+
+
 def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[float]:
     """Every value the named producer can hand on as a hash score.
 
     Fails when a score position holds a computed expression rather than a choice
     between literals: a derived partial verdict would make lock 6's ``0.0``/``1.0``
-    runner inputs a stand-in for values that path never yields.
+    runner inputs a stand-in for values that path never yields. Fails too when the
+    producer leaves by a ``return`` whose verdict sits outside the three positions
+    :func:`_verdict_expression` reads — otherwise a refactor to ``return result``
+    routes the verdict past the audit while the literals it left behind keep the
+    binariness assertion green.
     """
+    producer = _sole_function(module_path, function_name)
     constants: set[float] = set()
-    for node in ast.walk(_sole_function(module_path, function_name)):
+    for node in ast.walk(producer):
         expression = _verdict_expression(node)
         if expression is None:
             continue
@@ -995,6 +1041,19 @@ def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[
             f"{expression.lineno} instead of choosing between literals"
         )
         constants |= reachable
+
+    unaudited = [
+        node.lineno
+        for node in ast.walk(producer)
+        if isinstance(node, ast.Return) and not _carries_a_verdict(node)
+    ]
+    assert not unaudited, (
+        f"{module_path}::{function_name} returns at lines {unaudited} without putting a "
+        "verdict in a position this audit reads — the first element of a returned tuple, "
+        f"an assignment to {_HASH_SCORE_NAME}, or a {_HASH_SCORE_NAME}= keyword. The "
+        "literals it leaves behind would keep the binariness assertion green while the "
+        "verdict it actually returns went unread"
+    )
     return frozenset(constants)
 
 
@@ -1007,7 +1066,13 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
     fixture's two cases are graded through it — which pins the two values lock 6
     hands the runner as the ones core's own evaluator returns for the same states.
     """
-    for module_path, function_name in _HASH_VERDICT_PRODUCERS:
+    producers = _declared_hash_verdict_producers()
+    assert producers == _HASH_VERDICT_PRODUCERS, (
+        "the set of functions the manifest names as hash-verdict producers changed. Every "
+        "one is audited below, and lock 6 hands the runner's fold a 0.0/1.0 verdict on the "
+        "strength of that audit — so widening this set is an edit a reviewer sees"
+    )
+    for module_path, function_name in sorted(producers):
         reachable = _reachable_hash_verdicts(module_path, function_name)
         assert reachable == _BINARY_HASH_VERDICT, (
             f"{module_path}::{function_name} can produce hash scores {sorted(reachable)}, "

@@ -767,6 +767,13 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 A degenerate trial therefore **scores badly rather than erroring** — the skip
 suppresses the component, and the recorded reason says why.
 
+The ledger covers scored checks, so one skip is reported beside it rather than
+through it: a `state_checks.hash_weight` the fold never consulted — because only one
+state source produced a score, or because `db_probes` filled the component outright —
+appends its own line to `Grade.reasons`, from the same constant the core engine uses.
+`hash_weight` is a `CONFIG_INPUT`, not a scored check, so the ledger would never have
+seen it.
+
 `grading_method = "test_execution"` dispatches before the component phase and the
 ledger does not apply to it.
 

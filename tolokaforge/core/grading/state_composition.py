@@ -26,6 +26,13 @@ INERT_HASH_WEIGHT_REASON = (
 
 _WEIGHT_DOMAIN = "state_checks.hash.weight must be a real number within [0.0, 1.0]"
 
+HASH_SOURCE_KEYS: tuple[str, ...] = ("expected_state_hash", "golden_actions")
+"""The ``state_checks.hash`` members that give the hash something to compare against.
+
+Author-facing key names, so a substrate flattening the ``hash`` block onto its own
+fields translates *into* these rather than restating which keys count as a source.
+"""
+
 
 def validate_hash_weight(value: object, *, context: str) -> float:
     """Return ``value`` as a weight, or raise ``ValueError`` naming ``context``."""
@@ -62,7 +69,7 @@ def resolve_hash_weight(
     undecidable = (
         weight is None
         and bool(hash_config.get("enabled", False))
-        and bool(hash_config.get("expected_state_hash") or hash_config.get("golden_actions"))
+        and any(hash_config.get(key) for key in HASH_SOURCE_KEYS)
         and bool(jsonpaths)
     )
     if undecidable:

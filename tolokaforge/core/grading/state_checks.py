@@ -416,42 +416,6 @@ class StateChecker:
 
         return data
 
-    def compute_tau_style_expected_hash(
-        self,
-        golden_actions: list[dict[str, Any]],
-        task_dir: Path,
-        initial_state_path: str,
-        mcp_server_path: str,
-        task_domain: str,
-        *,
-        numeric_string_fields: list[str] | None = None,
-    ) -> str:
-        """
-        Compute expected hash by executing golden actions on fresh data (tau-bench style).
-
-        This is more robust than pre-computed hashes because:
-        - Golden actions are the source of truth
-        - Hash is computed dynamically from current initial state
-        - Adding unrelated data doesn't break grading
-
-        Args:
-            golden_actions: List of actions with "name" and "kwargs" keys
-            task_dir: Task directory containing data files
-            initial_state_path: Path to initial state JSON file (relative to task_dir)
-            mcp_server_path: Path to MCP server module (relative to task_dir)
-            task_domain: Domain name (e.g., "airline", "retail")
-            numeric_string_fields: Record field names whose numeric-looking
-                string values fold when hashing (per-field opt-in).
-
-        Returns:
-            Expected SHA256 hash of state after executing golden actions
-        """
-        data = self._execute_golden_actions(
-            golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
-        )
-        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
-        return consistent_hash(to_hashable(data, string_fields))
-
     def check_hash_against_golden_replay(
         self,
         db_state: dict[str, Any],

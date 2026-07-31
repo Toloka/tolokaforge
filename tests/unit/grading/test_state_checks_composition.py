@@ -26,6 +26,7 @@ from tolokaforge.core.grading.state_checks import (
     to_hashable,
 )
 from tolokaforge.core.grading.state_composition import (
+    HASH_SOURCE_KEYS,
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
 )
@@ -37,6 +38,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.models import StateChecksConfig as RunnerStateChecksConfig
 
 pytestmark = pytest.mark.unit
 
@@ -175,6 +177,44 @@ class TestHashWeightIsRequiredAndBounded:
                     "weight": weight,
                 },
             )
+
+    @pytest.mark.parametrize("declared", [True, "0.5", 2.0, -0.1])
+    def test_neither_substrate_accepts_a_non_weight(self, declared):
+        """Driven through both config models, because coercion hides two of these.
+
+        Core reads its ``hash`` block as an untyped dict, so its validator sees what
+        the author wrote. The runner declares ``hash_weight`` as a typed field, and
+        Pydantic's lax coercion turns ``True`` into ``1.0`` and ``"0.5"`` into ``0.5``
+        before any after-validator or ``ge``/``le`` bound could object — so
+        ``hash_weight: true`` on the wire would silently mean "the hash decides
+        outright" on an ``extra="forbid"`` model whose job is rejecting malformed
+        input. Testing the shared validator alone would not have seen it.
+        """
+        with pytest.raises(ValidationError, match="state_checks.hash.weight"):
+            StateChecksConfig(
+                hash={
+                    "enabled": True,
+                    "expected_state_hash": _MATCHING_HASH,
+                    "weight": declared,
+                }
+            )
+        with pytest.raises(ValidationError, match="state_checks.hash.weight"):
+            RunnerStateChecksConfig(
+                hash_enabled=True, expected_hash=_MATCHING_HASH, hash_weight=declared
+            )
+
+    @pytest.mark.parametrize(("declared", "expected"), [(0.0, 0.0), (0.5, 0.5), (1, 1.0)])
+    def test_both_substrates_accept_a_real_weight(self, declared, expected):
+        core = StateChecksConfig(
+            hash={"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": declared}
+        )
+        runner = RunnerStateChecksConfig(
+            hash_enabled=True, expected_hash=_MATCHING_HASH, hash_weight=declared
+        )
+
+        assert core.hash["weight"] == declared
+        assert isinstance(runner.hash_weight, float)
+        assert runner.hash_weight == pytest.approx(expected)
 
 
 class TestLoadTimePredicateDiscriminates:
@@ -439,10 +479,22 @@ class TestRunnerRejectsTheUndecidableConfig:
     the *message*, so pointing the runner at its own copy of the predicate reddens it.
     """
 
+    # Author-facing hash-source key -> the runner fields the adapter flattens it onto.
     _SOURCES = {
         "expected_state_hash": {"expected_hash": _MATCHING_HASH},
         "golden_actions": {"golden_actions": [{"tool_name": "close_widget", "arguments": {}}]},
     }
+
+    def test_every_hash_source_is_driven_through_registration(self):
+        """A source the runner model does not flatten would slip past its gate.
+
+        The runner rebuilds the author-facing ``hash`` block from its own flattened
+        fields before calling the shared predicate, so a hash source added to
+        ``HASH_SOURCE_KEYS`` and not to that translation leaves the gate blind to it —
+        the trial registers and then fails at ``GradeTrial`` instead. Holding this map
+        to the exported vocabulary is what forces the pair of edits together.
+        """
+        assert set(self._SOURCES) == set(HASH_SOURCE_KEYS)
 
     def _weighted(self, source_key: str) -> dict:
         return {"hash_enabled": True, "hash_weight": 0.6, **self._SOURCES[source_key]}
@@ -506,6 +558,31 @@ class TestGradeTrialFoldsByTheAuthorWeight:
 
         assert response.success is True, response.error
         assert response.grade.components.state_checks == pytest.approx(expected)
+        assert INERT_HASH_WEIGHT_REASON not in response.grade.reasons
+
+    def test_a_weight_the_fold_skipped_is_reported_on_the_grade(
+        self, runner_service, mock_grpc_context
+    ):
+        """The tau shape: a hash verdict, no assertions, and a weight nothing divides.
+
+        The runner grades every production trial, so a weight it silently skipped is
+        the "accepted and ignored" shape this milestone exists to end. Core reports it
+        from the same constant.
+        """
+        trial_id = "fold_inert:0"
+        state_checks = {**self._REFUSAL_HASH, "hash_weight": 1.0, "jsonpath_checks": []}
+        registered = _register(
+            runner_service, mock_grpc_context, trial_id, _spec_payload(trial_id, state_checks)
+        )
+        assert registered.success is True, registered.error
+
+        response = runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is True, response.error
+        assert response.grade.components.state_checks == pytest.approx(1.0)
+        assert INERT_HASH_WEIGHT_REASON in response.grade.reasons
 
     def test_an_undecidable_fold_fails_the_rpc_naming_the_trial(
         self, runner_service, mock_grpc_context

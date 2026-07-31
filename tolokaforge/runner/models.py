@@ -27,7 +27,7 @@ from tolokaforge.core.deprecations import (
     coerce_network_policy_case,
     coerce_security_context_aliases,
 )
-from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
@@ -292,6 +292,9 @@ class DbProbe(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+_HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
+
+
 class StateChecksConfig(BaseModel):
     """State-based grading configuration."""
 
@@ -335,6 +338,21 @@ class StateChecksConfig(BaseModel):
                 )
         return value
 
+    @field_validator("hash_weight", mode="before")
+    @classmethod
+    def _validate_hash_weight_domain(cls, value: object) -> float | None:
+        """Reject what core rejects, before Pydantic coerces it into range.
+
+        ``mode="before"`` is load-bearing: Pydantic's lax coercion turns ``true``
+        into ``1.0`` and ``"0.5"`` into ``0.5``, so any validator running after it —
+        or a declarative ``ge``/``le`` constraint — sees a clean float and can no
+        longer tell that the wire carried a bool or a string. ``hash_weight: true``
+        would then silently mean "the hash decides outright".
+        """
+        if value is None:
+            return None
+        return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
+
     @model_validator(mode="after")
     def _validate_hash_weight_declaration(self) -> StateChecksConfig:
         """Reject the one shape whose ``state_checks`` score is undecidable.
@@ -353,7 +371,7 @@ class StateChecksConfig(BaseModel):
                 "weight": self.hash_weight,
             },
             jsonpaths=self.jsonpath_checks,
-            context="task_description grading.state_checks.hash_weight",
+            context=_HASH_WEIGHT_CONTEXT,
         )
         return self
 

@@ -13,12 +13,16 @@ import glob
 import logging
 import re
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jsonpath_ng.ext import parse
 
-from tolokaforge.core.grading.state_composition import compose_state_checks_score
+from tolokaforge.core.grading.state_composition import (
+    compose_state_checks_score,
+    inert_hash_weight_reason,
+)
 from tolokaforge.core.grading.trace_timeline import (
     AttemptedCall,
     TrialTimeline,
@@ -930,30 +934,56 @@ def evaluate_jsonpath_checks(
     return score, reasons
 
 
+@dataclass(frozen=True)
+class StateChecksOutcome:
+    """The runner's ``state_checks`` slot, and what its declared weight decided.
+
+    ``component`` is ``None`` when no state source produced a score, which the
+    combine treats differently from a ``0.0`` it would fold in as a failure.
+    ``inert_weight_reason`` carries the author-facing note for a weight the fold
+    never consulted, so the runner reports the skip the way the core engine does.
+    """
+
+    component: float | None
+    inert_weight_reason: str | None
+
+
 def resolve_state_checks_component(
     *,
     hash_score: float,
     jsonpath_score: float,
     db_probe_score: float,
     hash_weight: float | None,
-) -> float | None:
+) -> StateChecksOutcome:
     """Fold the runner's three state sources into one ``state_checks`` score.
 
     Translates the runner's ``-1.0``-means-not-evaluated sentinel into the ``None``
-    the shared composer reads, and returns ``None`` for a component no source
-    produced. ``db_probes`` is the sole state source for the tasks that declare it
-    (mixing it with hash/jsonpath in one task is out of scope), so its score fills
-    the slot outright instead of folding with the other two.
+    the shared composer reads. ``db_probes`` is the sole state source for the tasks
+    that declare it (mixing it with hash/jsonpath in one task is out of scope), so
+    its score fills the slot outright and hides whatever the other two produced —
+    which is why the probe branch reports the weight as unconsulted too.
 
     Raises ``ValueError`` when a hash verdict and a JSONPath score are both real and
     no ``hash_weight`` says how to fold them.
     """
-    if db_probe_score >= 0:
-        return db_probe_score
-    return compose_state_checks_score(
-        hash_score=None if hash_score < 0 else hash_score,
-        jsonpath_score=None if jsonpath_score < 0 else jsonpath_score,
-        hash_weight=hash_weight,
+    probes_decide = db_probe_score >= 0
+    hash_source = None if probes_decide or hash_score < 0 else hash_score
+    jsonpath_source = None if probes_decide or jsonpath_score < 0 else jsonpath_score
+    return StateChecksOutcome(
+        component=(
+            db_probe_score
+            if probes_decide
+            else compose_state_checks_score(
+                hash_score=hash_source,
+                jsonpath_score=jsonpath_source,
+                hash_weight=hash_weight,
+            )
+        ),
+        inert_weight_reason=inert_hash_weight_reason(
+            hash_score=hash_source,
+            jsonpath_score=jsonpath_source,
+            hash_weight=hash_weight,
+        ),
     )
 
 
@@ -999,14 +1029,14 @@ def combine_grade_components(
 
     # Determine which components are active (score >= 0 means evaluated)
     active_components: dict[str, float] = {}
-    state_checks_component = resolve_state_checks_component(
+    state_checks_slot = resolve_state_checks_component(
         hash_score=components.get("hash_score", -1.0),
         jsonpath_score=components.get("jsonpath_score", -1.0),
         db_probe_score=components.get("db_probe_score", -1.0),
         hash_weight=(grading_config.get("state_checks") or {}).get("hash_weight"),
     )
-    if state_checks_component is not None:
-        active_components["state_checks"] = state_checks_component
+    if state_checks_slot.component is not None:
+        active_components["state_checks"] = state_checks_slot.component
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 

@@ -1540,7 +1540,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # undecidable fold fails the RPC naming this trial rather than reaching the
         # outer catch-all as an anonymous grading error.
         try:
-            state_checks_component = resolve_state_checks_component(
+            state_checks_slot = resolve_state_checks_component(
                 hash_score=components.hash_score,
                 jsonpath_score=components.jsonpath_score,
                 db_probe_score=components.db_probe_score,
@@ -1579,6 +1579,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if audit.skip_notes:
             reasons += " | " + "; ".join(audit.skip_notes)
 
+        # The ledger's skip notes cover populated SCORED_CHECK keys; hash.weight is a
+        # CONFIG_INPUT the fold can skip on its own, so it reports itself.
+        if state_checks_slot.inert_weight_reason:
+            reasons += f" | {state_checks_slot.inert_weight_reason}"
+
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:
             errors_str = "; ".join(hash_result.golden_action_errors)
@@ -1598,7 +1603,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 components=pb2.GradeComponents(
                     # -1.0 is the wire's not-evaluated sentinel for a component.
                     state_checks=(
-                        -1.0 if state_checks_component is None else state_checks_component
+                        -1.0 if state_checks_slot.component is None else state_checks_slot.component
                     ),
                     transcript_rules=components.transcript_score,
                     llm_judge=components.llm_judge_score,
