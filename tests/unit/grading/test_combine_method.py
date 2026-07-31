@@ -14,11 +14,17 @@ the table's answers at the swept threshold it is driven at; core's own aggregati
 proven against both substrates at the canonical tier
 (``tests/canonical/test_grading_substrate_parity.py``), and what is unit-locked here is
 the verdict it reaches with nothing scored, where there is no map to aggregate.
+
+The two models an author's method is loaded through close the same set, and their
+rejection is asserted on the alias's named replacement and the "never worked" sentence
+— the two things a bare ``Literal`` cannot say, since its own ``literal_error`` already
+quotes the offending value and the whole permitted set.
 """
 
 from itertools import product
 
 import pytest
+import yaml
 
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import (
@@ -27,8 +33,9 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
-from tolokaforge.core.models import GradingConfig, Trajectory
+from tolokaforge.core.models import GradingCombineConfig, GradingConfig, Trajectory
 from tolokaforge.runner.grading import combine_grade_components
+from tolokaforge.runner.models import GradingConfig as RunnerGradingConfig
 
 pytestmark = pytest.mark.unit
 
@@ -59,6 +66,11 @@ _RUNNER_CONFIG = {
     "weights": {"state_checks": 1.0, "transcript_rules": 1.0},
     "pass_threshold": _RUNNER_THRESHOLD,
 }
+
+# The two models an author's method is loaded through — the ``grading.yaml`` block
+# core reads and the field the runner is handed over the wire — as
+# (model, field name).
+_MODEL_GATES = ((GradingCombineConfig, "method"), (RunnerGradingConfig, "combine_method"))
 
 
 def _combine(method: str, pass_threshold: float) -> tuple[float, bool]:
@@ -242,3 +254,61 @@ class TestTheRunnerCombineDispatchesOnTheDeclaredMethod:
     def test_a_config_that_declares_no_method_fails_the_grade(self):
         with pytest.raises(ValueError, match="not a supported combine method"):
             combine_grade_components(_RUNNER_COMPONENT_SCORES, _RUNNER_CONFIG)
+
+
+class TestBothModelsCloseTheDeclaredSet:
+    """The two load gates admit the same three methods and answer alike outside them."""
+
+    def test_every_aggregation_a_retired_alias_names_is_one_an_author_may_write(self):
+        """The rejection message promises a replacement, so the promise must load.
+
+        Keyed off the alias map rather than :data:`COMBINE_METHODS`: a lock reading the
+        declared set would narrow with it, and a set narrowed out from under the
+        migration is what left ``any`` implemented, documented and unwritable.
+        """
+        assert set(RETIRED_COMBINE_METHOD_ALIASES.values()) == {"all", "any"}
+
+    @pytest.mark.parametrize(("model", "field"), _MODEL_GATES)
+    @pytest.mark.parametrize("replacement", sorted(set(RETIRED_COMBINE_METHOD_ALIASES.values())))
+    def test_a_replacement_loads_on_both_models(self, model, field, replacement):
+        assert getattr(model(**{field: replacement}), field) == replacement
+
+    @pytest.mark.parametrize(("model", "field"), _MODEL_GATES)
+    @pytest.mark.parametrize("method", COMBINE_METHODS)
+    def test_a_declared_method_survives_the_dump_as_a_plain_string(self, model, field, method):
+        """Four committed trial bundles record this key in YAML, which an enum member
+        cannot represent."""
+        dumped = model(**{field: method}).model_dump()[field]
+
+        assert type(dumped) is str, f"{model.__name__}.{field} dumped {dumped!r}"
+        assert yaml.safe_dump({field: dumped})
+
+    @pytest.mark.parametrize(("model", "field"), _MODEL_GATES)
+    @pytest.mark.parametrize(
+        ("alias", "replacement"), tuple(RETIRED_COMBINE_METHOD_ALIASES.items())
+    )
+    def test_an_alias_is_rejected_naming_its_replacement_on_both_models(
+        self, model, field, alias, replacement
+    ):
+        """Asserted on the two things Pydantic cannot say for itself.
+
+        A bare ``Literal`` rejects the alias too, and its ``literal_error`` already
+        quotes the offending value and the whole permitted set — so an assertion on
+        those passes with the validator deleted.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            model(**{field: alias})
+        message = str(excinfo.value)
+        assert f"Use {replacement!r}" in message, message
+        assert "never worked" in message, message
+
+    @pytest.mark.parametrize(("model", "field"), _MODEL_GATES)
+    @pytest.mark.parametrize("value", _UNSUPPORTED_VALUES)
+    def test_an_unsupported_value_is_rejected_listing_every_supported_method(
+        self, model, field, value
+    ):
+        with pytest.raises(ValueError) as excinfo:
+            model(**{field: value})
+        message = str(excinfo.value)
+        for method in COMBINE_METHODS:
+            assert repr(method) in message, message

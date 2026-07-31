@@ -15,6 +15,9 @@ migration:
 * The ``llm_judge.customization`` block (and its project-defaults twin
   ``grading_defaults.llm_judge.customization``) rejects malformed values and
   unknown keys, the message naming the offending field.
+* ``combine``: the aggregation ``method`` is a closed set, and the two retired
+  names that were declared but never dispatched are rejected naming the rule each
+  one meant.
 """
 
 from __future__ import annotations
@@ -27,6 +30,10 @@ import yaml
 from click.testing import CliRunner
 
 from tolokaforge.adapters._task_loader import validate_grading_yaml
+from tolokaforge.core.grading.combine_method import (
+    COMBINE_METHODS,
+    RETIRED_COMBINE_METHOD_ALIASES,
+)
 from tolokaforge.core.models import GradingDefaults, StateChecksConfig
 from tolokaforge.dx.cli.main import cli
 
@@ -449,3 +456,107 @@ def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Pat
     validate_grading_yaml(
         _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}})
     )
+
+
+# ---------------------------------------------------------------------------
+# combine.method — the aggregation an author names, rejected at validate time
+#
+# This gate closes the bad-*value* half of the combine typo space. A misspelled
+# *key* (``combine: {methd: any}``) is a different defect, tracked in #745.
+# ---------------------------------------------------------------------------
+
+
+_WEIGHTS = {"state_checks": 1.0}
+
+
+def _write_combine(tmp_path: Path, combine: dict) -> Path:
+    """Serialise the block: an indented string fixture lands ``method`` outside
+    ``combine`` and every rejection below false-greens."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(yaml.safe_dump({"combine": combine}))
+    return grading
+
+
+@pytest.mark.parametrize(("alias", "replacement"), tuple(RETIRED_COMBINE_METHOD_ALIASES.items()))
+def test_validate_rejects_a_retired_combine_method_naming_its_replacement(
+    tmp_path: Path, alias: str, replacement: str
+):
+    """Asserted on the two things a bare ``Literal`` cannot say.
+
+    Pydantic's own ``literal_error`` already quotes the offending value and the whole
+    permitted set, so an assertion on those would pass with this gate's alias-aware
+    validator deleted.
+    """
+    grading = _write_combine(tmp_path, {"method": alias, "weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    assert f"Use {replacement!r}" in message, message
+    assert "never worked" in message, message
+
+
+@pytest.mark.parametrize("method", ["bogus_method_xyz", "min", "Weighted", ""])
+def test_validate_rejects_an_unsupported_combine_method_listing_the_supported_set(
+    tmp_path: Path, method: str
+):
+    grading = _write_combine(tmp_path, {"method": method, "weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    for supported in COMBINE_METHODS:
+        assert repr(supported) in message, message
+
+
+@pytest.mark.parametrize("method", COMBINE_METHODS)
+def test_validate_accepts_every_declared_combine_method(tmp_path: Path, method: str):
+    validate_grading_yaml(_write_combine(tmp_path, {"method": method, "weights": _WEIGHTS}))
+
+
+def test_validate_accepts_a_combine_block_that_names_no_method(tmp_path: Path):
+    """A partial block declares only what it overrides, and the field keeps its default.
+
+    ``examples/native/example-microservices-pack/tasks/long_debugging_session`` ships
+    exactly this shape over a project-level default, so a gate reading the key instead
+    of constructing the block would reject a pack that grades today.
+    """
+    validate_grading_yaml(_write_combine(tmp_path, {"pass_threshold": 0.7}))
+
+
+@pytest.mark.parametrize(
+    "combine",
+    [
+        {"method": "weighted", "pass_threshold": "high"},
+        {"method": "weighted", "weights": {"state_checks": "most"}},
+    ],
+    ids=["pass_threshold", "weights"],
+)
+def test_validate_rejects_a_malformed_combine_block_beside_a_valid_method(
+    tmp_path: Path, combine: dict
+):
+    """The gate constructs the whole block, so its siblings are validated too.
+
+    A gate narrowed to the one field would leave these two loading, which is what
+    makes this the lock for constructing ``GradingCombineConfig`` rather than
+    reaching past it to ``method``.
+    """
+    with pytest.raises(ValueError):
+        validate_grading_yaml(_write_combine(tmp_path, combine))
+
+
+def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path):
+    """The author-facing gate: ``tolokaforge validate`` is where a typo is heard."""
+    task_file = _write_task(
+        tmp_path / "retired_combine_method",
+        yaml.safe_dump({"combine": {"method": "all_pass", "weights": _WEIGHTS}}),
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "Use 'all'" in out
+    assert "never worked" in out

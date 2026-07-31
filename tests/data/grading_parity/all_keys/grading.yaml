@@ -1,5 +1,5 @@
 combine:
-  method: all_pass
+  method: all
   weights:
     state_checks: 0.5
     transcript_rules: 0.5

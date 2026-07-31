@@ -288,7 +288,7 @@ class GradingConfig(BaseModel):
     
     Supports multiple methods combined with weights.
     """
-    combine_method: Literal["weighted", "all_pass", "any_pass"] = "weighted"
+    combine_method: Literal["weighted", "all", "any"] = "weighted"
     weights: Dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
     pass_threshold: float = 0.8
     

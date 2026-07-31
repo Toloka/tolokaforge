@@ -1343,7 +1343,29 @@ probe passes only for the one the after-hours policy permits.
 
 ## Score Combination
 
-Final score formula:
+`combine.method` names the rule that folds the scored components into one score and
+one pass flag. Three methods are supported, and both substrates dispatch on the same
+closed set — anything else fails the load, naming what an author may write instead.
+
+| `method` | score | `binary_pass` |
+|---|---|---|
+| `weighted` (default) | the weighted mean below | `score >= pass_threshold` |
+| `all` | the **weakest** component's score | every component `>= pass_threshold` |
+| `any` | the **strongest** component's score | **any** component `>= pass_threshold` |
+
+> **`any` inflates a score and can pass a failing trial.** It reports the best
+> component and ignores the rest, so a trial whose other declared, weighted
+> components all scored `0.0` still passes with a full `1.0` — including one that
+> failed its state hash. On components scoring `0.0` and `1.0` at
+> `pass_threshold: 0.8`, `weighted` gives `(0.5, False)`, `all` gives `(0.0, False)`
+> and `any` gives `(1.0, True)`. Declare it only when one satisfied component is
+> genuinely the whole objective.
+
+`all` and `any` compare each component to `pass_threshold` and never consult
+`combine.weights`: for those two methods the weights decide only **which** components
+enter the fold, not how much each counts.
+
+The `weighted` mean:
 
 ```
 final_score = (state_score       * W_state

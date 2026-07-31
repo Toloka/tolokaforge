@@ -58,7 +58,7 @@ from tolokaforge.core.deprecations import (
     source_context,
     warn_deprecated,
 )
-from tolokaforge.core.models import TaskConfig, TaskDefaults
+from tolokaforge.core.models import GradingCombineConfig, TaskConfig, TaskDefaults
 from tolokaforge.core.project_loader import construct_config, deep_merge
 
 # Keys that live on ``project.task_defaults`` but are not ``TaskConfig`` fields.
@@ -74,10 +74,11 @@ def validate_grading_yaml(grading_path: Path) -> None:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
-    validate time with a clear migration message, not only at run time. Two blocks
-    carry removals: ``llm_judge`` (the free-text ``rubric: str`` / ``output_schema``
-    / ``model_ref`` shapes, raised by :class:`LLMJudgeConfig`) and ``state_checks``
-    (``env_assertions`` / ``db_hash_check``, raised by :class:`StateChecksConfig`).
+    validate time with a clear migration message, not only at run time. ``combine``
+    is validated whenever it is declared; ``llm_judge`` (the free-text
+    ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised by
+    :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
+    ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals.
 
     Validate is the earliest gate a task pack meets: the engine's own
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
@@ -100,6 +101,14 @@ def validate_grading_yaml(grading_path: Path) -> None:
         raise RuntimeError(
             f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
         )
+
+    # The whole combine block, on any declared one: the aggregation an author names
+    # decides how every component score folds, and a value outside the declared set
+    # has no fold. Constructing the block rather than the one field also puts a
+    # malformed ``weights`` / ``pass_threshold`` under the same gate.
+    combine = grading_data.get("combine")
+    if isinstance(combine, dict):
+        GradingCombineConfig(**combine)
 
     # The rubric migration lives on the canonical LLMJudgeConfig, so validate the
     # llm_judge block directly — independent of the surrounding grading schema,

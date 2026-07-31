@@ -27,6 +27,7 @@ from tolokaforge.core.deprecations import (
     coerce_network_policy_case,
     coerce_security_context_aliases,
 )
+from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
@@ -626,9 +627,16 @@ class GradingConfig(BaseModel):
     Supports multiple methods combined with weights.
     """
 
-    combine_method: Literal["weighted", "all_pass", "any_pass", "all"] = "weighted"
+    combine_method: CombineMethod = "weighted"
     weights: dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
     pass_threshold: float = 0.8
+
+    @field_validator("combine_method", mode="before")
+    @classmethod
+    def _validate_combine_method(cls, value: Any) -> Any:
+        # Before the Literal, which would answer a retired alias with a bare
+        # literal_error naming no replacement.
+        return validate_combine_method(value, context="TaskDescription grading.combine_method")
 
     # Declarative grading dispatch — adapters tell the runner *how* to grade in data,
     # so the runner never infers it from the adapter's identity.

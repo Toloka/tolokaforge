@@ -1171,20 +1171,22 @@ class _MethodVerdict:
     binary_pass: bool
 
 
-def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _MethodVerdict:
-    """Core's verdict, with the method authored into a copy of the pack's grading.yaml.
+def _author_method(test_data_dir: Path, root: Path, *, method: str) -> None:
+    """Copy the combine-method pack under ``root`` with ``method`` authored into it.
 
-    Rewriting the YAML rather than the loaded model puts the whole load path under
-    test — the author's key, the shared load gate and ``get_grading_config``.
+    Rewriting the YAML rather than a loaded model puts the whole load path under test
+    for both substrates — the author's key, the shared load gate, and each
+    substrate's own translation of it — and hands them one file to disagree over.
     """
-    pack = _pack_dir(test_data_dir, _METHOD_KEY)
-    task_dir = root / "grading_parity" / pack.name
-    shutil.copytree(pack, task_dir)
-    grading_path = task_dir / "grading.yaml"
+    shutil.copytree(_pack_dir(test_data_dir, _METHOD_KEY), _pack_dir(root, _METHOD_KEY))
+    grading_path = _pack_dir(root, _METHOD_KEY) / "grading.yaml"
     authored = yaml.safe_load(grading_path.read_text())
     authored["combine"]["method"] = method
     grading_path.write_text(yaml.safe_dump(authored))
 
+
+def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _MethodVerdict:
+    """Core's verdict on the authored pack, aggregated by the method it declares."""
     grading_config = _parity_adapter(root).get_grading_config(_task_id_for(_METHOD_KEY))
     assert grading_config.combine.method == method, (
         f"the core config loaded combine.method {grading_config.combine.method!r} from a "
@@ -1194,8 +1196,8 @@ def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _Me
         f"the pack's authored pass_threshold is {grading_config.combine.pass_threshold}, so "
         f"the flags pinned against {_METHOD_PASS_THRESHOLD} answer a different question"
     )
-    case = _load_case(pack, _METHOD_CASE)
-    grade = GradingEngine(grading_config, task_dir=task_dir).grade_trajectory(
+    case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
+    grade = GradingEngine(grading_config, task_dir=_pack_dir(root, _METHOD_KEY)).grade_trajectory(
         case.core_trajectory, case.state
     )
     return _MethodVerdict(
@@ -1208,15 +1210,17 @@ def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _Me
     )
 
 
-def _runner_method_verdict(test_data_dir: Path, *, method: str) -> _MethodVerdict:
-    """The runner's verdict, from its real evaluators and its real combine.
+def _runner_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _MethodVerdict:
+    """The runner's verdict on the authored pack, from its real evaluators and combine.
 
-    The method is set on the ``model_dump()`` the runner's production caller hands the
-    combine, because ``runner.models.GradingConfig.combine_method`` does not declare
-    every method the combine dispatches and so cannot carry all three.
+    The method reaches the combine the way production sends it: translated onto
+    ``TaskDescription.grading.combine_method`` and read off that model's dump.
     """
-    task_description = _parity_adapter(test_data_dir).to_task_description(_task_id_for(_METHOD_KEY))
-    grading = task_description.grading
+    grading = _parity_adapter(root).to_task_description(_task_id_for(_METHOD_KEY)).grading
+    assert grading.combine_method == method, (
+        f"the adapter translated combine.method {method!r} into combine_method "
+        f"{grading.combine_method!r}, so this cell measures a method nobody wrote"
+    )
     case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     jsonpath_score, _ = evaluate_jsonpath_checks(
         grading.state_checks.jsonpath_checks, state=case.state
@@ -1226,7 +1230,7 @@ def _runner_method_verdict(test_data_dir: Path, *, method: str) -> _MethodVerdic
     ).score
     score, binary_pass = combine_grade_components(
         {"jsonpath_score": jsonpath_score, "transcript_score": transcript_score},
-        {**grading.model_dump(), "combine_method": method},
+        grading.model_dump(),
     )
     return _MethodVerdict(
         components={"state_checks": jsonpath_score, "transcript_rules": transcript_score},
@@ -1262,8 +1266,10 @@ def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_d
     )
 
     expected_score, expected_pass = COMBINE_METHOD_VERDICTS[method]
-    core = _core_method_verdict(test_data_dir, tmp_path / f"method_{method}", method=method)
-    runner = _runner_method_verdict(test_data_dir, method=method)
+    root = tmp_path / f"method_{method}"
+    _author_method(test_data_dir, root, method=method)
+    core = _core_method_verdict(test_data_dir, root, method=method)
+    runner = _runner_method_verdict(test_data_dir, root, method=method)
     for substrate, verdict in (("core", core), ("runner", runner)):
         assert verdict.components == _METHOD_COMPONENTS, (
             f"the {substrate} substrate scored the pack's components {verdict.components}, "

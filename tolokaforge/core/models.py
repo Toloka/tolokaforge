@@ -20,6 +20,7 @@ from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     coerce_task_packs_alias,
 )
+from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.state_composition import resolve_hash_weight
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
@@ -2031,9 +2032,16 @@ class GradingCombineConfig(BaseModel):
 
     model_config = {"extra": "ignore"}
 
-    method: str = "weighted"
+    method: CombineMethod = "weighted"
     weights: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
+
+    @field_validator("method", mode="before")
+    @classmethod
+    def _validate_method(cls, value: Any) -> Any:
+        # Before the Literal, which would answer a retired alias with a bare
+        # literal_error naming no replacement.
+        return validate_combine_method(value, context="grading.yaml combine.method")
 
 
 class GradingConfig(BaseModel):
