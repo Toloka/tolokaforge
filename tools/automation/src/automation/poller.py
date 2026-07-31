@@ -164,25 +164,24 @@ def route_plan(
         for r in resolutions
         if r.slug in availability and r.source != model_resolver.SOURCE_GATEWAY
     ]
-    simulator_unreachable = simulator is not None and not simulator.reachable
+    models_unconfirmed = not all(availability[r.slug].reachable for r in downgradable)
+    simulator_unconfirmed = simulator is not None and not simulator.reachable
+    # Named in a message only when the catalog was READ and does not cover it. With no readable
+    # gateway there is nothing specific to say about one model, and pointing at the simulator
+    # would send someone checking a name that is fine.
+    simulator_absent = simulator is not None and simulator.status == gateway_catalog.STATUS_ABSENT
     if requested_route == gateway_catalog.ROUTE_GATEWAY and (
-        simulator_unreachable or not all(availability[r.slug].reachable for r in downgradable)
+        models_unconfirmed or simulator_unconfirmed
     ):
         requested_route = None
         downgraded = True
-        # The model-level reason first: it is the one the requester can see in the notes above.
-        # The simulator is only named when the requested models ARE covered, since then it is the
-        # whole reason and blaming "every model above" would send someone checking a fine name.
-        missing = (
-            "every model above (see the notes)"
-            if not all(availability[r.slug].reachable for r in downgradable)
-            else f"the wire probes' user simulator (`{gateway_catalog.USER_SIMULATOR_SLUG}`)"
-        )
-        warnings.append(
-            f"{warning_icon} I could not confirm the gateway serves {missing}, so the models "
-            f"OpenRouter carries run over *{gateway_catalog.DEFAULT_ROUTE}*. Add it to the "
-            "gateway (or check its secrets) and re-request."
-        )
+        if models_unconfirmed or not simulator_absent:
+            warnings.append(
+                f"{warning_icon} I could not confirm the gateway serves every model above "
+                f"(see the notes), so the models OpenRouter carries run over "
+                f"*{gateway_catalog.DEFAULT_ROUTE}*. Add the model to the gateway (or check its "
+                "secrets) and re-request."
+            )
     if requested_route == gateway_catalog.ROUTE_OPENROUTER and gateway_only:
         names = ", ".join(f"`{r.slug}`" for r in gateway_only)
         warnings.append(
@@ -194,15 +193,27 @@ def route_plan(
         for r in resolutions
         if r.status == "resolved" and r.slug
     }
-    if simulator_unreachable and gateway_catalog.ROUTE_GATEWAY in routes.values():
-        # Reached only by a gateway-ONLY model, which the downgrade above cannot help: there is no
-        # OpenRouter route for it. Say what will go wrong and what fixes it, since the run itself
-        # would report a user-simulator failure that reads like nothing to do with the gateway.
+    gateway_pinned = gateway_catalog.ROUTE_GATEWAY in routes.values()
+    if simulator_absent and (downgraded or gateway_pinned):
+        # ONE warning for one fact with two consequences: a model OpenRouter carries falls back,
+        # a gateway-only model cannot. Two warnings here read as the bot repeating itself, and a
+        # gateway-only model needs saying either way - the run would report a user-simulator
+        # failure that looks like nothing to do with the gateway.
+        consequences = []
+        if downgraded:
+            consequences.append(
+                f"the models OpenRouter carries run over *{gateway_catalog.DEFAULT_ROUTE}*"
+            )
+        if gateway_pinned:
+            consequences.append(
+                "a model only the gateway carries still runs there, so observe may go "
+                "infra-dirty in the simulator rather than in the candidate"
+            )
         warnings.append(
             f"{warning_icon} I could not confirm the gateway serves the wire probes' user "
-            f"simulator (`{gateway_catalog.USER_SIMULATOR_SLUG}`). The integration run proxies "
-            "it too, so observe may go infra-dirty in the simulator rather than in the "
-            "candidate. Add it to the gateway if that happens."
+            f"simulator (`{gateway_catalog.USER_SIMULATOR_SLUG}`), which the integration run "
+            f"proxies too: {'; '.join(consequences)}. Add it to the gateway (or check its "
+            "secrets)."
         )
     return RoutePlan(
         routes=routes,

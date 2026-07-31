@@ -311,6 +311,45 @@ class TestRoutePlan:
         assert plan.warnings, "grok is absent from the gateway, so the directive is refused"
         assert "the models OpenRouter carries run over" in plan.warnings[0]
 
+    def test_one_simulator_warning_covers_both_of_its_consequences(self):
+        # `via litellm` + a gateway-only model + a reachable OpenRouter model + an absent
+        # simulator makes both the downgrade and the gateway-only risk true at once. One fact
+        # gets one warning; two would read as the bot repeating itself.
+        entries = [self.GATEWAY_ONLY, "x-ai/grok-4.5"]  # no user simulator
+        text = f"<@{BOT}> integrate grok 4.5 and {self.GATEWAY_ONLY} via litellm"
+        resolutions = self._resolutions(text, gateway_entries=entries)
+        plan = poller.route_plan(
+            resolutions,
+            self._availability(resolutions, entries),
+            mr.parse_route(text),
+            simulator=gateway_catalog.lookup(gateway_catalog.USER_SIMULATOR_SLUG, entries),
+        )
+        assert len(plan.warnings) == 1
+        warning = plan.warnings[0]
+        assert gateway_catalog.USER_SIMULATOR_SLUG in warning
+        assert "the models OpenRouter carries run over" in warning
+        assert "infra-dirty in the simulator" in warning
+        # ... and the routes still say what each model actually does.
+        assert plan.routes == {
+            "x-ai/grok-4.5": gateway_catalog.ROUTE_OPENROUTER,
+            self.GATEWAY_ONLY: gateway_catalog.ROUTE_GATEWAY,
+        }
+
+    def test_an_unreadable_gateway_is_not_blamed_on_the_simulator(self):
+        # "unknown" still refuses the route, but naming one model would send someone checking a
+        # name that is fine: there is no readable catalog at all.
+        text = f"<@{BOT}> integrate grok 4.5 via litellm"
+        resolutions = self._resolutions(text)
+        plan = poller.route_plan(
+            resolutions,
+            self._availability(resolutions, None),
+            mr.parse_route(text),
+            simulator=gateway_catalog.lookup(gateway_catalog.USER_SIMULATOR_SLUG, None),
+        )
+        assert len(plan.warnings) == 1
+        assert "every model above" in plan.warnings[0]
+        assert gateway_catalog.USER_SIMULATOR_SLUG not in plan.warnings[0]
+
     def test_unresolved_phrases_never_reach_the_plan(self):
         resolutions = self._resolutions(f"<@{BOT}> integrate nope/nothing-9 and grok 4.5")
         plan = poller.route_plan(resolutions, self._availability(resolutions, None), None)
