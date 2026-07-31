@@ -329,6 +329,9 @@ class TestRoutePlan:
         assert gateway_catalog.USER_SIMULATOR_SLUG in warning
         assert "the models OpenRouter carries run over" in warning
         assert "infra-dirty in the simulator" in warning
+        # The two consequences point in opposite directions, so they are not run into one
+        # sentence: each gets its own line.
+        assert warning.count("\n    \u2022 ") == 2
         # ... and the routes still say what each model actually does.
         assert plan.routes == {
             "x-ai/grok-4.5": gateway_catalog.ROUTE_OPENROUTER,

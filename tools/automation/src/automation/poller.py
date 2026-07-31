@@ -209,11 +209,17 @@ def route_plan(
                 "a model only the gateway carries still runs there, so observe may go "
                 "infra-dirty in the simulator rather than in the candidate"
             )
+        # Two consequences point in opposite directions - one model falls back, another cannot -
+        # so they go on their own lines rather than into one sentence.
+        detail = (
+            f" {consequences[0]}."
+            if len(consequences) == 1
+            else "\n" + "\n".join(f"    • {clause}" for clause in consequences)
+        )
         warnings.append(
             f"{warning_icon} I could not confirm the gateway serves the wire probes' user "
             f"simulator (`{gateway_catalog.USER_SIMULATOR_SLUG}`), which the integration run "
-            f"proxies too: {'; '.join(consequences)}. Add it to the gateway (or check its "
-            "secrets)."
+            f"proxies too:{detail}\nAdd it to the gateway (or check its secrets)."
         )
     return RoutePlan(
         routes=routes,
