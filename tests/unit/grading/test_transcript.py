@@ -11,6 +11,24 @@ from tolokaforge.core.models import Message, MessageRole, ToolCall
 pytestmark = pytest.mark.unit
 
 
+def _bundle_timeline(tool_output: str):
+    """A trial re-graded from its recorded bundle: no records, results on the messages.
+
+    ``tool_log`` is not written to ``trajectory.yaml``, so this is the state every
+    re-grade of a recorded trial is in — and the tool's output survives only on the
+    ``role: tool`` message.
+    """
+    call = ToolCall(id="call_A", name="lookup_customer", arguments={"customer_id": "42"})
+    return build_trial_timeline(
+        [
+            Message(role=MessageRole.ASSISTANT, content="Looking that up.", tool_calls=[call]),
+            Message(role=MessageRole.TOOL, content=tool_output, tool_call_id="call_A"),
+        ],
+        [],
+        None,
+    )
+
+
 @pytest.mark.unit
 class TestMustContain:
     """Test must_contain phrase checking"""
@@ -63,6 +81,14 @@ class TestMustContain:
         assert score == 1.0
         assert reasons == []
 
+    def test_a_tool_result_is_searchable_on_a_re_graded_bundle(self, checker):
+        """With no record view the tool output is still on the ``role: tool``
+        message, so a phrase that only a tool returned is still found."""
+        timeline = _bundle_timeline("plan: unlimited-MMS")
+
+        assert timeline.records_present is False
+        assert checker.check_must_contain(timeline, ["unlimited-MMS"]) == (1.0, [])
+
     def test_a_harness_annotation_is_not_searchable(self, checker):
         """``role: system`` turns are harness text, not trial text, so an author
         cannot satisfy a phrase rule with a termination notice."""
@@ -103,6 +129,18 @@ class TestDisallowRegex:
         assert score == 0.0
         assert len(reasons) == 1
         assert "factory.?reset" in reasons[0]
+
+    def test_a_pattern_a_tool_returned_violates_on_a_re_graded_bundle(self, checker):
+        """The leak a `disallow_regex` exists to catch usually arrives in a tool's
+        output. Re-grading the bundle carries no records, and a search that skipped
+        the ``role: tool`` messages would clear the pattern while the SSN sat on
+        disk — a silent pass, in the agent's favour."""
+        timeline = _bundle_timeline("SSN 123-45-6789 for customer 42")
+
+        assert timeline.records_present is False
+        score, reasons = checker.check_disallowed_regex(timeline, [r"\d{3}-\d{2}-\d{4}"])
+        assert score == 0.0
+        assert reasons == ["Disallowed pattern '\\d{3}-\\d{2}-\\d{4}' found: ['123-45-6789']"]
 
 
 @pytest.mark.unit

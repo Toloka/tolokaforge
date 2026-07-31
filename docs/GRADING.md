@@ -288,12 +288,14 @@ field predicates with uniform field access. **`None` means the field is either
 inapplicable to the kind or unrecorded, and a predicate over a `None` field is
 unmatched, never vacuously true.**
 
-Unrecorded is the second case and it is not rare: `executor`, `status`, `result`
-and `latency_seconds` are `None` on every event of a bundle-sourced timeline
-(G6b), and on any call that never ran (G4). So `status != success` matches nothing
-at all on such a timeline rather than matching everything — read `records_present`
-before trusting either answer. Per-field detail is in the table below; G4 and G6b
-say when each field goes missing on a kind it does apply to.
+Unrecorded is the second case and it is not rare: `executor`, `status` and
+`latency_seconds` are `None` on every event of a bundle-sourced timeline (G6b),
+and on any call that never ran (G4). So `status != success` matches nothing at all
+on such a timeline rather than matching everything — read `records_present` before
+trusting either answer. `result` is the exception: a bundle keeps the `role: tool`
+messages, so a bundle-sourced timeline still says what each tool returned (G6b).
+Per-field detail is in the table below; G4 and G6b say when each field goes
+missing on a kind it does apply to.
 
 | Field | Kinds it applies to | Meaning |
 | --- | --- | --- |
@@ -306,7 +308,7 @@ say when each field goes missing on a kind it does apply to.
 | `executor` | `tool_call` / `tool_result` | `ToolExecutorIdentity`, from the record |
 | `arguments` | `tool_call` | the arguments the caller passed, verbatim |
 | `status` | `tool_result` | `ToolExecutionStatus`, from the record |
-| `result` | `tool_result` | the recorded output, untruncated |
+| `result` | `tool_result` | what the tool returned: the record's untruncated output, or the answering `role: tool` message's text when there are no records |
 | `latency_seconds` | `tool_result` | wall time measured by the recording caller |
 
 `turn_index` is the assistant *generation* an event belongs to. Every event one
@@ -340,10 +342,12 @@ initial user prompt precedes the first assistant message and carries index 0.
     so it emits a `tool_call` with no `tool_result`, indistinguishable from the
     never-attempted case. Declared rather than implied; it is a harness fault for
     which no grading verdict is meaningful.
-- **G5 — `result` and `status` come from the record, not the message.** The two
-  views word the same failure differently: the `role: tool` message carries
-  `Error: <error>`, while the record carries the executing layer's own text,
-  untruncated. The record wins. The two substrates also word an executor-level
+- **G5 — where both views describe one call, the record wins.** The two views word
+  the same failure differently: the `role: tool` message carries `Error: <error>`,
+  while the record carries the executing layer's own text, untruncated. So `result`
+  and `status` are read from the record wherever a record exists. This is a rule
+  about precedence between two present views, not about what exists when only one
+  of them is — G6b covers that. The two substrates also word an executor-level
   failure differently from each other, so a `result` predicate combined with
   `status != success` is matching harness text and is not substrate-portable;
   match on `status` instead.
@@ -352,10 +356,25 @@ initial user prompt precedes the first assistant message and carries index 0.
   input carrying no assistant or user turn is built from the records alone:
   `tool_call` + `tool_result` pairs in `sequence` order, all at `turn_index` 0,
   `message_view_present = False`.
-- **G6b — messages-only is the normal state for a recorded bundle.** `tool_log` is
-  not written to `trajectory.yaml`, so a timeline rebuilt from a bundle has no
-  records: `records_present = False`, every `tool_call` is unpaired, and
-  `executor` / `status` / `result` / `latency_seconds` are `None` throughout.
+- **G6b — messages-only is the normal state for a recorded bundle, and its results
+  come from the message view.** `tool_log` is not written to `trajectory.yaml`, so
+  a timeline rebuilt from a bundle has no records: `records_present = False` and
+  `executor` / `status` / `latency_seconds` are `None` throughout. The tool output
+  is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
+  its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
+  that message's text, joined by id and never by position. A failed call's text is
+  then the agent-facing rendering (`Error: <error>`) rather than the executing
+  layer's own, which is one more reason a `result` predicate is not portable (G5).
+  `records_present` therefore means "a record view was supplied", not "results
+  exist": a constraint reading `status`, `executor` or `latency_seconds` is still a
+  **named failing sub-check** and never a silent pass, while a phrase rule still
+  reads what the tools returned. A `role: tool` message answering a call the
+  message view does not declare raises `TimelineInconsistencyError` naming its
+  index, symmetrically with G7 — that text is the only surviving evidence of what
+  the call returned, so it can be neither joined nor dropped. Where records *are*
+  present those messages are the shadowed view: neither read nor validated, because
+  extending the join's loudness to evidence nothing reads would fail a live grading
+  run over a discrepancy no verdict depends on.
 - **G7 — reconciliation failure is loud.** When a message view is present, every
   record must be linkable by `call_id` to a call in it. An unlinkable record
   raises `TimelineInconsistencyError` naming its `call_id`, `sequence` and
@@ -370,7 +389,7 @@ initial user prompt precedes the first assistant message and carries index 0.
   guarantee rather than on a coincidence.
 
 Both degenerate states are reported on the timeline, never inferred: a constraint
-that reads a field the missing view supplies must become a **named failing
+that reads a field only the missing view supplies must become a **named failing
 sub-check, not a silent pass.**
 
 The tool-expectation checks on both substrates honour that by gating on
@@ -596,9 +615,11 @@ the block, and both read it off the
 call the agent declared on a terminating turn never ran, so it satisfies no
 `required_tools` entry and violates no `disallowed_tools` entry. A phrase rule
 (`must_contain`, `disallow_regex`, `communicate_info`) sees the agent's own text
-runner-side; core-side it also sees the user's turns and the untruncated text
-tools returned. Neither substrate can see the harness's `role: system`
-annotations — a termination notice cannot satisfy a required phrase (N3).
+runner-side; core-side it also sees the user's turns and the text tools returned —
+from the record while the trial carries one and from the `role: tool` messages
+otherwise (G6b), so re-grading a recorded bundle still reads tool output. Neither
+substrate can see the harness's `role: system` annotations — a termination notice
+cannot satisfy a required phrase (N3).
 
 ### `tool_expectations`
 

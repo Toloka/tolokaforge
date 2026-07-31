@@ -331,19 +331,138 @@ def test_a_record_matching_no_message_side_call_raises() -> None:
     assert "'wire_transfer'" in message
 
 
-def test_a_bundle_with_no_records_has_calls_but_no_results() -> None:
+def test_a_bundle_with_no_records_takes_each_result_from_its_tool_message() -> None:
     """The normal state for a timeline rebuilt from a recorded bundle: ``tool_log``
-    is not written to ``trajectory.yaml``, so every call is unpaired."""
+    is not written to ``trajectory.yaml``, but the ``role: tool`` messages are, so
+    the tool output is on disk and only the record's own fields are missing.
+
+    ``call_B``'s text is the message view's wording, not the record's — the record
+    said ``{"error": ...}`` and this says ``Error: {"error": ...}``, which is the
+    proof this timeline read the messages.
+    """
     messages, _ = _refund_trial()
 
     timeline = build_trial_timeline(messages, [], None)
 
     assert timeline.records_present is False
     assert timeline.message_view_present is True
-    assert _of_kind(timeline, TraceEventKind.TOOL_RESULT) == []
-    calls = _of_kind(timeline, TraceEventKind.TOOL_CALL)
-    assert [event.call_id for event in calls] == ["call_A", "call_B"]
-    assert all(event.executor is None and event.status is None for event in calls)
+    results = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    assert {event.call_id: event.result for event in results} == {
+        "call_A": '{"ok": true}',
+        "call_B": 'Error: {"error": "already refunded"}',
+    }
+    populated = {
+        field
+        for field in _OPTIONAL_FIELDS
+        for event in results
+        if getattr(event, field) is not None
+    }
+    assert populated == {"call_id", "tool_name", "result"}
+    assert all(event.executor is None for event in _of_kind(timeline, TraceEventKind.TOOL_CALL))
+
+
+def test_a_bundle_pairs_its_tool_messages_by_id_and_not_by_position() -> None:
+    """Two calls to one tool with byte-identical arguments differ only in the id,
+    and nothing makes a bundle's results arrive in the order the calls were
+    declared. Pairing by position would swap these two outcomes."""
+    arguments = {"order_id": "42"}
+    messages = [
+        _assistant(
+            "", _call("call_A", "refund", **arguments), _call("call_B", "refund", **arguments)
+        ),
+        _tool_message("call_B", '{"error": "already refunded"}'),
+        _tool_message("call_A", '{"ok": true}'),
+    ]
+
+    timeline = build_trial_timeline(messages, [], None)
+
+    results = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    assert {event.call_id: event.result for event in results} == {
+        "call_A": '{"ok": true}',
+        "call_B": '{"error": "already refunded"}',
+    }
+
+
+def test_a_bundle_call_with_no_tool_message_stays_unpaired() -> None:
+    """A terminating turn's call never ran, so the bundle holds no result for it.
+    G4 still emits the call: dropping it makes an ``absent`` or ``count``
+    constraint wrong in the agent's favour."""
+    messages = [
+        _assistant("", _call("call_A", "refund", order_id="42")),
+        _tool_message("call_A", '{"ok": true}'),
+        _assistant("###STOP###", _call("call_B", "refund", order_id="43")),
+    ]
+
+    timeline = build_trial_timeline(messages, [], None)
+
+    assert [(event.kind, event.call_id) for event in timeline.events] == [
+        (TraceEventKind.ASSISTANT_MESSAGE, None),
+        (TraceEventKind.TOOL_CALL, "call_A"),
+        (TraceEventKind.TOOL_RESULT, "call_A"),
+        (TraceEventKind.ASSISTANT_MESSAGE, None),
+        (TraceEventKind.TOOL_CALL, "call_B"),
+    ]
+
+
+def test_a_tool_message_answering_no_declared_call_raises() -> None:
+    """Symmetric with G7: the result's text is the only evidence of what the tool
+    returned, so a result that names no call can be neither joined nor dropped."""
+    messages = [
+        _assistant("", _call("call_A", "refund", order_id="42")),
+        _tool_message("call_ghost", '{"ok": true}'),
+    ]
+
+    with pytest.raises(TimelineInconsistencyError) as raised:
+        build_trial_timeline(messages, [], None)
+
+    assert "'call_ghost'" in str(raised.value)
+    assert "index 1" in str(raised.value)
+
+
+def test_a_tool_message_carrying_no_call_id_raises() -> None:
+    messages = [
+        _assistant("", _call("call_A", "refund", order_id="42")),
+        Message(role=MessageRole.TOOL, content='{"ok": true}'),
+    ]
+
+    with pytest.raises(TimelineInconsistencyError) as raised:
+        build_trial_timeline(messages, [], None)
+
+    assert "answers tool-call id None" in str(raised.value)
+
+
+def test_two_tool_messages_answering_one_call_raise() -> None:
+    """Letting the second win silently is the ambiguous join ``call_id`` exists to
+    prevent, exactly as for a duplicated record."""
+    messages = [
+        _assistant("", _call("call_A", "refund", order_id="42")),
+        _tool_message("call_A", '{"ok": true}'),
+        _tool_message("call_A", '{"error": "already refunded"}'),
+    ]
+
+    with pytest.raises(TimelineInconsistencyError) as raised:
+        build_trial_timeline(messages, [], None)
+
+    assert "'call_A'" in str(raised.value)
+    assert "index 2" in str(raised.value)
+
+
+def test_a_records_present_timeline_neither_joins_nor_validates_its_tool_messages() -> None:
+    """G5 is precedence, and precedence only bites where both views exist: with a
+    record present the message view's copies are not read at all, so the join's
+    loudness does not extend to them either. Making it would fail a live grading
+    run over evidence nothing reads."""
+    messages = [
+        _assistant("", _call("call_A", "refund", order_id="42")),
+        _tool_message("call_A", "Error: Tool error: ValueError: already refunded"),
+        _tool_message("call_ghost", "answers a call this trial never made"),
+    ]
+    records = [recorded_call("refund", call_id="call_A", output="already refunded")]
+
+    timeline = build_trial_timeline(messages, records, None)
+
+    (result,) = _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    assert result.result == "already refunded"
 
 
 def test_records_only_input_pairs_every_call_at_turn_zero() -> None:
