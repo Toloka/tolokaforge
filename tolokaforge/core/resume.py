@@ -104,8 +104,18 @@ class RunState(BaseModel):
         """Get list of completed trials"""
         return [trial for trial in self.trials.values() if trial.status == "completed"]
 
-    def mark_completed(self, task_id: str, trial_index: int, binary_pass: bool, score: float):
-        """Mark trial as completed"""
+    def mark_completed(
+        self,
+        task_id: str,
+        trial_index: int,
+        binary_pass: bool | None,
+        score: float | None,
+    ):
+        """Mark trial as completed.
+
+        ``binary_pass`` / ``score`` are ``None`` for a trial that produced no
+        grade: the attempt is over, but there is no verdict to record.
+        """
         key = f"{task_id}:{trial_index}"
         if key in self.trials:
             self.trials[key].status = "completed"

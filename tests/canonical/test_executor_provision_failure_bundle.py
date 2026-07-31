@@ -27,6 +27,7 @@ from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Trajectory, TrialStatus
 from tolokaforge.core.orchestrator import Orchestrator
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
+from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION
 from tolokaforge.core.runtime import InMemoryRuntimeBackend, ProvisionError
 from tolokaforge.core.trial import TrialResult
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
@@ -78,7 +79,6 @@ class TestBundleWrittenOnProvisionFailure:
         trial_dir = _trial_dir(tmp_path, "task-1", 0)
         assert (trial_dir / "trajectory.yaml").exists()
         assert (trial_dir / "metrics.yaml").exists()
-        assert (trial_dir / "grade.yaml").exists()
         # The heavy conductor snapshot never runs on this path.
         assert not (trial_dir / "task.yaml").exists()
         assert not (trial_dir / "env.yaml").exists()
@@ -92,13 +92,14 @@ class TestBundleWrittenOnProvisionFailure:
         # Default-``Metrics`` shape: ``cost_usd`` is ``None`` until an API call
         # prices the trial; ``_collect_existing_cost`` reads it as zero.
         assert metrics["cost_usd"] is None
-        assert metrics["schema_version"] == 1
+        assert metrics["schema_version"] == TRIAL_BUNDLE_SCHEMA_VERSION
         assert metrics["error"] == "provision_error"
         assert metrics["error_reason"] == "no capacity in region"
 
-        grade = yaml.safe_load((trial_dir / "grade.yaml").read_text())
-        assert grade["binary_pass"] is False
-        assert grade["score"] == 0.0
+        # No ``grade.yaml``: the trial body never ran, so there is no verdict.
+        # The failure is recorded where it happened — the trajectory's
+        # termination reason and the metrics error fields above.
+        assert not (trial_dir / "grade.yaml").exists()
 
     def test_collect_existing_cost_reads_the_failed_trial(self, tmp_path: Path) -> None:
         backend = _FailProvisionBackend("boom")

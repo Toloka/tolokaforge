@@ -12,6 +12,14 @@ import yaml
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, ToolExecutionStatus, Trajectory
 
+TRIAL_BUNDLE_SCHEMA_VERSION = 2
+"""The per-trial bundle generation stamped into ``metrics.yaml``.
+
+Version 2 bundles omit ``grade.yaml`` for a trial the infrastructure aborted —
+there is no verdict to write — so a consumer can tell an absent grade from a
+truncated bundle without guessing.
+"""
+
 
 def _represent_multiline_str(dumper, data):
     """Custom YAML representer for multiline strings
@@ -127,7 +135,9 @@ class OutputWriter:
             trajectory: Trajectory object containing metrics
         """
         metrics_data = trajectory.metrics.model_dump(mode="json")
-        metrics_data["schema_version"] = 1
+        # Generation 2 of the trial bundle: a trial the infrastructure aborted
+        # carries no ``grade.yaml``, so a reader cannot assume one is there.
+        metrics_data["schema_version"] = TRIAL_BUNDLE_SCHEMA_VERSION
 
         # Add detailed tool usage breakdown from tool_log
         # Field names match ToolUsage model: tool_name, call_count, success_count,

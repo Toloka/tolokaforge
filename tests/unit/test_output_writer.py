@@ -15,7 +15,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.output_writer import OutputWriter
+from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION, OutputWriter
 
 pytestmark = pytest.mark.unit
 
@@ -98,7 +98,7 @@ def test_write_metrics(tmp_path, sample_trajectory):
     assert data["latency_total_s"] == 300.0
     assert data["turns"] == 2
     assert data["tool_calls"] == 3
-    assert data["schema_version"] == 1
+    assert data["schema_version"] == TRIAL_BUNDLE_SCHEMA_VERSION
 
     assert "tool_usage" in data
     tool_usage = data["tool_usage"]

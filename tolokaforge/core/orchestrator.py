@@ -55,6 +55,7 @@ from tolokaforge.core.models import (
     TrialStatus,
     TypeSenseConfig,
 )
+from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
 from tolokaforge.core.output.aggregates import FileAggregateWriter, RunAggregateWriter
 from tolokaforge.core.output.artifacts import FileArtifactWriter, TrialArtifactWriter
 from tolokaforge.core.output.service_log_rollup import collect_service_log_captures
@@ -156,12 +157,16 @@ def _tasks_need_full_stack(tasks: list[Any]) -> bool:
         mock_web = (
             initial_state.mock_web
             if hasattr(initial_state, "mock_web")
-            else initial_state.get("mock_web") if isinstance(initial_state, dict) else None
+            else initial_state.get("mock_web")
+            if isinstance(initial_state, dict)
+            else None
         )
         rag = (
             initial_state.rag
             if hasattr(initial_state, "rag")
-            else initial_state.get("rag") if isinstance(initial_state, dict) else None
+            else initial_state.get("rag")
+            if isinstance(initial_state, dict)
+            else None
         )
         if mock_web or rag:
             return True
@@ -1781,16 +1786,14 @@ class Orchestrator:
                             )
                         else:
                             run_queue.mark_completed(lease.id, cost_usd=trial_cost)
-                            # Update run state
-                            if trajectory.grade:
-                                run_state.mark_completed(
-                                    task_id,
-                                    trial_idx,
-                                    trajectory.grade.binary_pass,
-                                    trajectory.grade.score,
-                                )
-                            else:
-                                run_state.mark_completed(task_id, trial_idx, False, 0.0)
+                            # An ungraded trial records no verdict: a 0.0 here
+                            # is indistinguishable from a task the agent failed.
+                            run_state.mark_completed(
+                                task_id,
+                                trial_idx,
+                                trajectory.grade.binary_pass if trajectory.grade else None,
+                                trajectory.grade.score if trajectory.grade else None,
+                            )
                             self.state_manager.save_state(run_state)
 
                             self._events.trial_completed(
@@ -2204,6 +2207,33 @@ class Orchestrator:
         self.logger.info("Run prepared", **summary)
         return summary
 
+    def _warn_on_degraded_coverage(self, all_task_metrics: list[dict[str, Any]]) -> None:
+        """Announce every task whose sample was reduced by an infrastructure abort.
+
+        An aborted trial leaves the rate denominators — which is correct — but it
+        also shrinks the sample ``pass@k`` is estimated from, and a ``pass@5``
+        that silently became ``null`` because one trial died is
+        indistinguishable in JSON from a task that never ran five trials.
+        """
+        for task_metrics in all_task_metrics:
+            aborts = task_metrics["infrastructure_aborts"]
+            if not sum(aborts.values()):
+                continue
+            measured = task_metrics["measured_trials"]
+            lost_k = [
+                k
+                for k in (1, 5, 10)
+                if task_metrics.get(f"pass@{k}") is None and k <= task_metrics["total_trials"]
+            ]
+            self.logger.warning(
+                "Task coverage degraded by infrastructure aborts",
+                task_id=task_metrics.get("task_id"),
+                total_trials=task_metrics["total_trials"],
+                measured_trials=measured,
+                infrastructure_aborts={reason: count for reason, count in aborts.items() if count},
+                pass_at_k_without_coverage=lost_k,
+            )
+
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""
         if not self.results:
@@ -2230,6 +2260,8 @@ class Orchestrator:
                 task_metrics["expected_failure_modes"] = task_cfg.metadata.expected_failure_modes
                 task_metrics["tags"] = task_cfg.metadata.tags
             all_task_metrics.append(task_metrics)
+
+        self._warn_on_degraded_coverage(all_task_metrics)
 
         # Calculate aggregate metrics
         aggregate = calculate_aggregate_metrics(all_task_metrics, weighted=True)
@@ -2275,7 +2307,7 @@ class Orchestrator:
                 group, weighted=True
             )
 
-        aggregate["schema_version"] = 1
+        aggregate["schema_version"] = AGGREGATE_SCHEMA_VERSION
         aggregate["captured_service_logs"] = collect_service_log_captures(output_dir).model_dump(
             by_alias=True, mode="json"
         )

@@ -148,9 +148,7 @@ class TestProvisionErrorBranches:
 
         assert result.trajectory.status == TrialStatus.ERROR
         assert result.trajectory.termination_reason == TerminationReason.PROVISION_ERROR
-        assert result.trajectory.grade is not None
-        assert result.trajectory.grade.binary_pass is False
-        assert "Provisioning failed" in result.trajectory.grade.reasons
+        assert result.trajectory.grade is None
         # Conductor never runs on the failure path.
         assert conductor.call_log.runs == []
         logger.error.assert_called_once()
@@ -206,6 +204,7 @@ class TestSynthesizedFailureShape:
         assert result.trial_id == spec.trial_id
         assert result.trajectory.status == TrialStatus.ERROR
         assert result.trajectory.termination_reason == TerminationReason.PROVISION_ERROR
-        assert "db image pull failed" in result.trajectory.grade.reasons
-        assert result.trajectory.grade.score == 0.0
-        assert result.trajectory.grade.binary_pass is False
+        # No grade at all: a provisioning failure measured nothing, and a
+        # fabricated 0.0 would be indistinguishable from a task the agent
+        # failed. The reason survives on the trial's metrics.yaml.
+        assert result.trajectory.grade is None

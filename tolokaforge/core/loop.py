@@ -41,7 +41,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError
+from tolokaforge.core.llm.client import (
+    GenerationResult,
+    LLMApiTimeoutError,
+    is_typed_rate_limit_exception,
+    matches_rate_limit_text,
+)
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Message,
@@ -162,9 +167,17 @@ ErrorClassifier = Callable[[Exception], TerminationDecision]
 def classify_loop_error(exc: Exception) -> TerminationDecision:
     """Classify a turn-loop exception into a terminal reason + message.
 
-    Reproduces the agent's exact classification. ``LLMApiTimeoutError`` is
-    matched by *type* — substring matching on "timeout" would mis-classify
-    tool / sandbox / browser timeouts that are not upstream-LLM timeouts.
+    ``API_TIMEOUT`` and ``RATE_LIMIT`` are matched by *type* — through the
+    ``__cause__`` chain for the rate limit, since the client re-raises every
+    provider error wrapped. Both reasons exclude the trial from the measured
+    denominator, and a substring is not strong enough evidence to spend that:
+    "timeout" also names tool / sandbox / browser timeouts, and a 429 shape can
+    appear inside a provider response body that echoes request content.
+
+    An exception whose *text* looks like a rate limit but carries no typed
+    evidence terminates as ``ERROR``. Something in the stack stringified a
+    provider exception instead of chaining it — our defect, so the trial counts
+    and the message says why it was not treated as a rate limit.
     """
     error_str = str(exc)
     if isinstance(exc, LLMApiTimeoutError):
@@ -173,11 +186,20 @@ def classify_loop_error(exc: Exception) -> TerminationDecision:
             system_message=f"API timeout: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
         )
-    lowered = error_str.lower()
-    if "429" in error_str or "RateLimitError" in error_str or "rate limit" in lowered:
+    if is_typed_rate_limit_exception(exc):
         return TerminationDecision(
             reason=TerminationReason.RATE_LIMIT,
             system_message=f"Rate limit error: {error_str}. Dialogue terminated.",
+            status=TrialStatus.ERROR,
+        )
+    if matches_rate_limit_text(error_str):
+        return TerminationDecision(
+            reason=TerminationReason.ERROR,
+            system_message=(
+                "Rate-limit-shaped error with no typed provider exception behind it, "
+                f"so the trial is counted rather than excluded: {error_str}. "
+                "Dialogue terminated."
+            ),
             status=TrialStatus.ERROR,
         )
     if "API" in error_str or "OpenAI" in error_str or "Anthropic" in error_str:

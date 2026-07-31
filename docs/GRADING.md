@@ -715,19 +715,76 @@ with `state_checks` under `combine.weights.custom_checks`.
 
 ---
 
+## Infrastructure aborts produce no grade
+
+A trial the provider or the substrate killed before the agent could work is not a
+task the model failed. It produces **no `Grade` at all** — not a zero, not a
+status field — and it is excluded from every rate in `per_task_metrics.json` and
+`aggregate.json`.
+
+This is the same rule as the errored judge one level up. An errored `llm_judge`
+component is left unscored and dropped from the weighted combine rather than read
+as `0.0` (see § Fail-loud: the ERRORED status); a trial that never ran is left
+ungraded and dropped from the denominator for exactly the same reason. `Grade.score`
+is a required `[0, 1]` float, so a grade for such a trial would have to carry a
+number describing work nobody did, and every consumer that reads `.score` without
+branching would read that number as a model failure. `Trajectory.grade` is
+`Grade | None`: absence is unrepresentable as zero, and a consumer that forgets to
+branch fails loudly.
+
+### Which trials are aborts
+
+Exclusion is earned by **typed** evidence. Exactly three termination reasons
+qualify, and each is produced from an exception type or an HTTP status rather than
+from matching prose against an exception message:
+
+| Reason | Evidence |
+|---|---|
+| `rate_limit` | `openai.RateLimitError` (which `litellm.RateLimitError` subclasses, so one check covers every provider litellm routes) or `status_code == 429`, found on the exception or on its `__cause__` chain |
+| `api_timeout` | `LLMApiTimeoutError` |
+| `provision_error` | `ProvisionError` raised by the runtime backend's `provision` / `await_ready` |
+
+Everything else is **counted**, including the cases that look like
+infrastructure:
+
+| Reason | Class | Why it counts |
+|---|---|---|
+| `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
+| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
+| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal |
+| `stuck_detected` | measured | The agent repeated itself without progress. It auto-fails with `score: 0.0`, and that verdict is correct |
+
+The asymmetry decides every borderline case: misclassifying an agent failure as
+infrastructure raises every published number with nothing in the output to show
+it, while misclassifying infrastructure as an agent failure lowers them by a
+bounded amount that `infrastructure_aborts` makes visible. So an unrecognised
+termination reason is counted, and a rate-limit-shaped message with no typed
+exception behind it terminates as `error` rather than buying its way out of the
+benchmark.
+
+`outcomes_by_reason` records every observed reason with the class it was counted
+as, so any of these judgements can be recomputed from a finished run's aggregate
+without a rerun. See [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § Run-level
+metric denominators and [`docs/ANALYTICS.md`](ANALYTICS.md:1) § The denominator:
+measured trials.
+
 ## pass@k Metrics
 
 Estimates probability that at least 1 of k attempts succeeds.
 
 ### Formula
 
-Given `n` trials with `c` successes:
+Given `n` **measured** trials with `c` successes:
 
 ```
 pass@k = 1 - C(n - c, k) / C(n, k)
 ```
 
-Where `C(a, b)` is binomial coefficient "a choose b".
+Where `C(a, b)` is binomial coefficient "a choose b". `n` counts the trials that
+measured the agent, so an infrastructure abort neither counts as a failure nor
+props up the sample size — and one lost trial can therefore turn `pass@5` into
+`null`, since five samples are needed to estimate it and four cannot. The run
+logs a warning naming each task whose coverage was reduced that way.
 
 ### Example
 

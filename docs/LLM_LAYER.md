@@ -805,9 +805,15 @@ prose. Vertex `RESOURCE_EXHAUSTED`, OpenAI `insufficient_quota`, `TPM limit
 reached` and Anthropic `overloaded_error` match nothing there on purpose: they
 arrive typed through litellm, so tier 1 catches them.
 
-The engine's three string-only classifiers (`core/loop.py`, `core/runner.py`,
-`core/resume.py`) are separate and unaffected — `AllApiKeysExhaustedError`
-subclasses `RuntimeError` and carries the same message as before.
+`core/loop.py`'s `classify_loop_error` shares the type tiers through
+`is_typed_rate_limit_exception`, because `TerminationReason.RATE_LIMIT` excludes
+a trial from every benchmark rate and prose is not evidence strong enough to
+spend that (see [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce
+no grade). It uses `matches_rate_limit_text` only as a diagnostic: a
+rate-limit-shaped message with no typed exception behind it terminates as a
+*counted* reason, not as an abort. The remaining text-matching classifiers
+(`core/runner.py`'s user-simulator retry, `core/resume.py`) are separate and
+unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
 
 ### Probe telemetry recording sites
 

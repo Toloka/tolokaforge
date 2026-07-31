@@ -50,6 +50,7 @@ from tolokaforge.core.models import (
     Usage,
 )
 from tolokaforge.core.output.aggregate_models import (
+    AGGREGATE_SCHEMA_VERSION,
     AggregateMetrics,
     CapturedServiceLogsRollup,
     FailureAttribution,
@@ -257,7 +258,7 @@ def test_run_aggregate_round_trip_with_schema_version() -> None:
     """``RunAggregate`` = ``AggregateMetrics`` + the ``schema_version``
     envelope the orchestrator stamps before writing ``aggregate.json``."""
     payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
-    payload["schema_version"] = 1
+    payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
 
     _round_trip(RunAggregate, payload)
 
@@ -324,7 +325,7 @@ def test_run_aggregate_round_trip_with_captured_service_logs() -> None:
     trial-body entry (``capture_reason`` ``None``) — round-trips
     byte-identically."""
     payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
-    payload["schema_version"] = 1
+    payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
     payload["captured_service_logs"] = _captured_service_logs_payload()
 
     _round_trip(RunAggregate, payload)
@@ -336,7 +337,7 @@ def test_run_aggregate_round_trip_omitting_captured_service_logs() -> None:
     pre-feature ``aggregate.json`` (no key) is distinguishable from a
     clean-run zero roll-up (key present, ``captures: 0``)."""
     payload = calculate_aggregate_metrics(_sample_task_metrics_list(), weighted=True)
-    payload["schema_version"] = 1
+    payload["schema_version"] = AGGREGATE_SCHEMA_VERSION
     assert "captured_service_logs" not in payload
 
     model = RunAggregate.model_validate(payload)
@@ -502,15 +503,16 @@ def test_schema_version_survives_exclude_unset() -> None:
         "schema_version must survive exclude_unset=True on RunAggregate — "
         f"got dumped keys: {sorted(dumped.keys())}"
     )
-    assert (
-        dumped["schema_version"] == 1
-    ), f"schema_version default drifted; expected 1, got {dumped['schema_version']!r}"
+    assert dumped["schema_version"] == AGGREGATE_SCHEMA_VERSION, (
+        f"schema_version default drifted; expected {AGGREGATE_SCHEMA_VERSION}, "
+        f"got {dumped['schema_version']!r}"
+    )
 
     # And it survives a JSON round-trip too.
     reloaded = RunAggregate.model_validate_json(
         model.model_dump_json(by_alias=True, exclude_unset=True)
     )
-    assert reloaded.schema_version == 1
+    assert reloaded.schema_version == AGGREGATE_SCHEMA_VERSION
 
 
 def test_int_valued_numeric_fields_preserve_int_type() -> None:
@@ -538,6 +540,7 @@ def test_int_valued_numeric_fields_preserve_int_type() -> None:
         "tags": [],
         "expected_failure_modes": [],
         "total_trials": 1,
+        "measured_trials": 1,
         "successful_trials": 1,
         "success_rate": 1.0,  # rate — stays float
         "avg_score": 1.0,  # rate — stays float
@@ -609,6 +612,7 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
     agg_payload: dict[str, Any] = {
         "total_tasks": 2,
         "total_trials": 5,
+        "measured_trials": 5,
         "success_rate_micro": 1.0,  # rate — stays float
         "avg_score_micro": 1.0,  # rate — stays float
         "avg_latency_s": 5,  # int — widened
@@ -643,8 +647,7 @@ def test_int_valued_aggregate_fields_preserve_int_type() -> None:
     ):
         value = getattr(model, field)
         assert isinstance(value, int) and not isinstance(value, bool), (
-            f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. "
-            f"Got {value!r}."
+            f"AggregateMetrics.{field}: int input coerced to {type(value).__name__}. Got {value!r}."
         )
 
     # And rate fields DID stay narrow float — a regression that widens them

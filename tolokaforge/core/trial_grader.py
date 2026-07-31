@@ -4,18 +4,23 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
 *trigger* grading, not own it. This module defines the swappable seam:
 
 * :class:`TrialGrader` — Protocol with a single method ``grade`` that maps a
-  completed :class:`Trajectory` to a :class:`Grade`. Any conductor holds a
-  ``TrialGrader`` and delegates the phase to it.
+  completed :class:`Trajectory` to a :class:`Grade`, or to ``None`` when there
+  is nothing to grade. Any conductor holds a ``TrialGrader`` and delegates the
+  phase to it.
 * :class:`RunnerRPCTrialGrader` — production implementation. Encapsulates
-  the three grading strategies the conductor previously carried inline:
+  the grading strategies the conductor previously carried inline:
 
-  1. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
-     touching the runner (a 429 or similar terminated the trial before any
-     work could happen; running the judge on an empty transcript would
-     produce a false positive).
-  2. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
+  1. An infrastructure abort (:func:`classify_trial_outcome` returns
+     ``INFRASTRUCTURE_ABORT``) — **no grade at all**. The provider or the
+     substrate killed the trial before the agent could be measured, and any
+     score would describe work that never happened.
+  2. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
+     touching the runner. The trial did end badly on the agent's watch, but
+     running the judge on a truncated transcript would produce a false
+     positive.
+  3. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
      even if the state hash happens to match the golden.
-  3. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  4. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
      is parsed into :class:`Grade`.
 
@@ -30,6 +35,7 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
@@ -77,8 +83,9 @@ class TrialGrader(Protocol):
         spec: TrialSpec,
         trajectory: Trajectory,
         agent_system_prompt: str,
-    ) -> Grade:
-        """Return the :class:`Grade` for a completed trial.
+    ) -> Grade | None:
+        """Return the :class:`Grade` for a completed trial, or ``None`` when
+        the trial produced nothing to grade.
 
         ``spec`` carries trial identity, per-trial metadata, and the
         runner-side ``spec.task`` projection needed for dispatch.
@@ -86,15 +93,20 @@ class TrialGrader(Protocol):
         and termination reason. ``agent_system_prompt`` is the
         post-policy system prompt the judge receives as the agent's
         policy for rubric evaluation.
+
+        ``None`` is the answer for a trial the agent never got to run —
+        the absence is not representable as a score, so a caller that
+        forgets to branch fails instead of reading a fabricated zero.
         """
         ...
 
 
 class RunnerRPCTrialGrader:
     """Production :class:`TrialGrader`. Dispatches to the runner's
-    ``grade_trial`` gRPC for real grading, and short-circuits with an
+    ``grade_trial`` gRPC for real grading, short-circuits with an
     auto-fail :class:`Grade` when the trajectory shape rules out a
-    meaningful judge result.
+    meaningful judge result, and returns ``None`` for a trial that never
+    ran.
 
     Instantiated per-run with a bound ``runtime_backend`` and the
     per-run :class:`StructuredLogger`. The orchestrator constructs one
@@ -110,8 +122,20 @@ class RunnerRPCTrialGrader:
         spec: TrialSpec,
         trajectory: Trajectory,
         agent_system_prompt: str,
-    ) -> Grade:
+    ) -> Grade | None:
         task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+                termination_reason=(
+                    trajectory.termination_reason.value if trajectory.termination_reason else None
+                ),
+            )
+            return None
 
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(

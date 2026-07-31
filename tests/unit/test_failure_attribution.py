@@ -8,7 +8,10 @@ import pytest
 
 from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.failure_attribution import (
+    EXCLUDED_TYPED_REASONS,
+    TrialOutcomeClass,
     attribute_failure,
+    classify_trial_outcome,
     is_failed_trajectory,
     summarize_failure_attributions,
 )
@@ -23,8 +26,161 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.orchestrator import Orchestrator
 
 pytestmark = pytest.mark.unit
+
+_MEASURED = TrialOutcomeClass.MEASURED
+_HARNESS = TrialOutcomeClass.HARNESS_ERROR
+_ABORT = TrialOutcomeClass.INFRASTRUCTURE_ABORT
+
+# Every ``TrialStatus`` x (``TerminationReason`` | None) cell, with both answers
+# written out: what the trial is counted as, and whether it is retried. The
+# cross-product is the point — over the handful of pairs a reader expects, any
+# default looks like any other, so a test restricted to them proves the table's
+# scope and never its truth.
+#
+# The two columns disagree in three reachable cells — ``(error, api_error)``,
+# ``(error, error)`` and ``(timeout, timeout)`` are retried *and* counted — and
+# that is the design, not a defect: whether an attempt is worth repeating and
+# whether it measured the agent are different questions. Deriving either column
+# from the other is what this table exists to prevent.
+_OUTCOME_CELLS: tuple[
+    tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool], ...
+] = (
+    (TrialStatus.COMPLETED, TerminationReason.AGENT_DONE, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.USER_STOP, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.STUCK_DETECTED, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.MAX_TURNS, _MEASURED, False),
+    (TrialStatus.COMPLETED, TerminationReason.TIMEOUT, _MEASURED, True),
+    (TrialStatus.COMPLETED, TerminationReason.ERROR, _HARNESS, True),
+    (TrialStatus.COMPLETED, TerminationReason.RATE_LIMIT, _ABORT, True),
+    (TrialStatus.COMPLETED, TerminationReason.API_TIMEOUT, _ABORT, False),
+    (TrialStatus.COMPLETED, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.COMPLETED, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.COMPLETED, None, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.AGENT_DONE, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.USER_STOP, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.STUCK_DETECTED, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.MAX_TURNS, _MEASURED, False),
+    (TrialStatus.FAILED, TerminationReason.TIMEOUT, _MEASURED, True),
+    (TrialStatus.FAILED, TerminationReason.ERROR, _HARNESS, True),
+    (TrialStatus.FAILED, TerminationReason.RATE_LIMIT, _ABORT, True),
+    (TrialStatus.FAILED, TerminationReason.API_TIMEOUT, _ABORT, False),
+    (TrialStatus.FAILED, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.FAILED, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.FAILED, None, _HARNESS, False),
+    (TrialStatus.TIMEOUT, TerminationReason.AGENT_DONE, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.USER_STOP, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.STUCK_DETECTED, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.MAX_TURNS, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.ERROR, _HARNESS, True),
+    (TrialStatus.TIMEOUT, TerminationReason.RATE_LIMIT, _ABORT, True),
+    (TrialStatus.TIMEOUT, TerminationReason.API_TIMEOUT, _ABORT, True),
+    (TrialStatus.TIMEOUT, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.TIMEOUT, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.TIMEOUT, None, _HARNESS, True),
+    (TrialStatus.ERROR, TerminationReason.AGENT_DONE, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.USER_STOP, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.STUCK_DETECTED, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.MAX_TURNS, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.TIMEOUT, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.ERROR, _HARNESS, True),
+    (TrialStatus.ERROR, TerminationReason.RATE_LIMIT, _ABORT, True),
+    (TrialStatus.ERROR, TerminationReason.API_TIMEOUT, _ABORT, True),
+    (TrialStatus.ERROR, TerminationReason.API_ERROR, _MEASURED, True),
+    (TrialStatus.ERROR, TerminationReason.PROVISION_ERROR, _ABORT, False),
+    (TrialStatus.ERROR, None, _HARNESS, True),
+)
+
+
+def _cell_id(cell: tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool]) -> str:
+    status, reason, _, _ = cell
+    return f"{status.value}-{reason.value if reason else 'unset'}"
+
+
+def outcome_cells() -> tuple:
+    """The cross-product cells, as pytest params keyed by ``status-reason``."""
+    return tuple(pytest.param(cell, id=_cell_id(cell)) for cell in _OUTCOME_CELLS)
+
+
+def _cell_trajectory(status: TrialStatus, reason: TerminationReason | None) -> Trajectory:
+    traj = _base_trajectory()
+    traj.status = status
+    traj.termination_reason = reason
+    return traj
+
+
+class TestOutcomeClassificationCrossProduct:
+    """``classify_trial_outcome`` is total, and the exclusion default is an
+    allowlist: a reason it has never heard of is counted, not dropped."""
+
+    def test_the_table_covers_every_cell_exactly_once(self) -> None:
+        cells = {(status, reason) for status, reason, _, _ in _OUTCOME_CELLS}
+        expected = {
+            (status, reason) for status in TrialStatus for reason in (*TerminationReason, None)
+        }
+        assert cells == expected
+        assert len(_OUTCOME_CELLS) == len(expected) == 44
+
+    @pytest.mark.parametrize("cell", outcome_cells())
+    def test_every_cell_classifies_as_tabled(
+        self, cell: tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool]
+    ) -> None:
+        status, reason, expected_class, _ = cell
+        assert classify_trial_outcome(_cell_trajectory(status, reason)) is expected_class
+
+    def test_an_unrecognised_reason_would_be_counted(self) -> None:
+        """The allowlist default, asserted where it matters: exclusion is
+        earned by membership, so a reason nobody classified stays in the
+        denominator and stays visible."""
+        counted = {
+            reason
+            for reason in TerminationReason
+            if classify_trial_outcome(_cell_trajectory(TrialStatus.ERROR, reason)) is not _ABORT
+        }
+        assert counted == set(TerminationReason) - EXCLUDED_TYPED_REASONS
+
+
+class TestRetryabilityIsIndependentOfCountability:
+    """``Orchestrator._is_retryable_trajectory`` is pinned bit-identical over
+    the same cells. It is deliberately NOT derived from the classification —
+    the cells where the two answers differ are the design."""
+
+    @pytest.mark.parametrize("cell", outcome_cells())
+    def test_every_cell_retries_as_tabled(
+        self, cell: tuple[TrialStatus, TerminationReason | None, TrialOutcomeClass, bool]
+    ) -> None:
+        status, reason, _, expected_retryable = cell
+        traj = _cell_trajectory(status, reason)
+        assert Orchestrator._is_retryable_trajectory(traj) is expected_retryable
+
+    def test_an_auth_shaped_api_error_is_not_retried(self) -> None:
+        """The one cell whose answer depends on the message rather than the
+        pair: a bad key fails the same way on every attempt."""
+        traj = _cell_trajectory(TrialStatus.ERROR, TerminationReason.API_ERROR)
+        traj.messages = [
+            Message(
+                role=MessageRole.SYSTEM,
+                content="API error: LLM API call failed: AuthenticationError - invalid key",
+            )
+        ]
+        assert Orchestrator._is_retryable_trajectory(traj) is False
+        # Countability does not consult the message, so it is unmoved.
+        assert classify_trial_outcome(traj) is _MEASURED
+
+    def test_the_two_answers_disagree_where_the_table_says_they_do(self) -> None:
+        """A guard on the table itself: if these cells ever agree, one column
+        was derived from the other and the regression lock stopped biting."""
+        disagreements = {
+            (status, reason)
+            for status, reason, outcome_class, retryable in _OUTCOME_CELLS
+            if retryable is not (outcome_class is _ABORT)
+        }
+        assert (TrialStatus.ERROR, TerminationReason.API_ERROR) in disagreements
+        assert (TrialStatus.ERROR, TerminationReason.ERROR) in disagreements
+        assert (TrialStatus.TIMEOUT, TerminationReason.TIMEOUT) in disagreements
 
 
 def _base_trajectory() -> Trajectory:

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 from collections import Counter
+from enum import Enum
 from typing import Any
 
 from tolokaforge.core.models import (
@@ -26,6 +27,71 @@ _CONNECTION_ERROR_RE = re.compile(
     r"ERR_CONNECTION_REFUSED|ECONNREFUSED|Connection refused|net::ERR_",
     re.IGNORECASE,
 )
+
+
+class TrialOutcomeClass(str, Enum):
+    """Whether a trial measured the agent, and if not, whose fault that was.
+
+    ``MEASURED`` — the agent was given its budget and the outcome describes
+    how it performed, including every way it can perform badly (a spent turn
+    or wall-clock budget, a repeated-action loop, a provider error we cannot
+    attribute).
+
+    ``HARNESS_ERROR`` — something broke and the evidence points at us. Counted
+    in the rates like any other failure, because excluding it would remove our
+    own defects from the denominator; a non-zero count is a run-health signal.
+
+    ``INFRASTRUCTURE_ABORT`` — the trial never happened. No grade is produced
+    and it is excluded from every rate.
+    """
+
+    MEASURED = "measured"
+    HARNESS_ERROR = "harness_error"
+    INFRASTRUCTURE_ABORT = "infrastructure_abort"
+
+
+EXCLUDED_TYPED_REASONS = frozenset(
+    {
+        TerminationReason.API_TIMEOUT,
+        TerminationReason.PROVISION_ERROR,
+        TerminationReason.RATE_LIMIT,
+    }
+)
+"""The termination reasons that exclude a trial from the measured denominator.
+
+Membership is earned by *typed* evidence: every one of these reasons is
+produced from an exception type or an HTTP status, never from matching prose
+against an exception message. A reason produced by text matching cannot gate
+exclusion — a context-window overflow and a malformed tool schema both read as
+"an API error" — and excluding a trial the agent actually failed inflates every
+benchmark number with nothing in the output to show it. Counting a trial the
+provider killed deflates them instead, visibly and boundedly, so that is the
+direction the tie breaks. ``tests/canonical/test_termination_reason_reachability.py``
+fails if any reason here becomes producible from prose.
+"""
+
+
+def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
+    """Return whether *trajectory* measured the agent.
+
+    Total over ``(status, termination_reason)`` and gated on the exclusion
+    allowlist, so a reason this function has never heard of is ``MEASURED``.
+    That default is the point: an unrecognised reason that fell out of the
+    denominator would be invisible in the output, while one that stayed in is
+    visible in ``outcomes_by_reason`` and recoverable without a rerun.
+    """
+    reason = trajectory.termination_reason
+    if reason in EXCLUDED_TYPED_REASONS:
+        return TrialOutcomeClass.INFRASTRUCTURE_ABORT
+    if reason is TerminationReason.ERROR:
+        return TrialOutcomeClass.HARNESS_ERROR
+    if reason is None and trajectory.status in (
+        TrialStatus.ERROR,
+        TrialStatus.TIMEOUT,
+        TrialStatus.FAILED,
+    ):
+        return TrialOutcomeClass.HARNESS_ERROR
+    return TrialOutcomeClass.MEASURED
 
 
 def is_failed_trajectory(trajectory: Trajectory) -> bool:
@@ -159,6 +225,7 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
         "termination_reason": (
             trajectory.termination_reason.value if trajectory.termination_reason else None
         ),
+        "outcome_class": classify_trial_outcome(trajectory).value,
         "failure_class": failure_class,
         "deterministic": deterministic,
         "confidence": confidence,
@@ -167,8 +234,14 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
 
 
 def summarize_failure_attributions(attributions: list[dict[str, Any]]) -> dict[str, Any]:
-    """Aggregate attribution stats for reporting."""
+    """Aggregate attribution stats for reporting.
+
+    ``by_outcome_class`` splits the attempts by whose fault they were, so a
+    reader of the summary alone can tell an agent failure from a trial that
+    never ran.
+    """
     by_class = Counter(a.get("failure_class", "unknown") for a in attributions)
+    by_outcome_class = Counter(a.get("outcome_class", "unknown") for a in attributions)
     by_tool = Counter()
     deterministic_count = 0
 
@@ -185,5 +258,6 @@ def summarize_failure_attributions(attributions: list[dict[str, Any]]) -> dict[s
         "total_failed_attempts": total,
         "deterministic_attribution_coverage": (deterministic_count / total) if total else None,
         "by_failure_class": dict(by_class),
+        "by_outcome_class": dict(by_outcome_class),
         "by_tool": dict(by_tool),
     }

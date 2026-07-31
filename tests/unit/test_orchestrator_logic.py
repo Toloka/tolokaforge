@@ -524,6 +524,59 @@ class TestGenerateReports:
         # Should not raise even with no results
         orch._generate_reports(Path("/tmp/fake"))
 
+    def test_degraded_pass_at_k_coverage_is_announced(self, tmp_path: Path) -> None:
+        """An aborted trial shrinks the sample ``pass@k`` is estimated from, and
+        a ``pass@5`` that became ``null`` for that reason is indistinguishable in
+        JSON from a task that never ran five trials. The run says so out loud."""
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        orch.logger = MagicMock()
+        orch.tasks = [_make_task_config("T1")]
+        orch.results = [_make_trajectory("T1", i) for i in range(4)]
+        orch.results.append(
+            _make_trajectory(
+                "T1",
+                4,
+                status=TrialStatus.ERROR,
+                termination_reason=TerminationReason.RATE_LIMIT,
+            )
+        )
+        orch.results[-1].grade = None
+
+        orch._generate_reports(tmp_path)
+
+        warnings = [
+            call
+            for call in orch.logger.warning.call_args_list
+            if call.args and call.args[0] == "Task coverage degraded by infrastructure aborts"
+        ]
+        assert len(warnings) == 1, "an aborted trial must be announced, not left in a JSON field"
+        assert warnings[0].kwargs["task_id"] == "T1"
+        assert warnings[0].kwargs["measured_trials"] == 4
+        assert warnings[0].kwargs["infrastructure_aborts"] == {"rate_limit": 1}
+        assert warnings[0].kwargs["pass_at_k_without_coverage"] == [5]
+
+    def test_a_clean_run_announces_no_degraded_coverage(self, tmp_path: Path) -> None:
+        from unittest.mock import MagicMock
+
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        orch = Orchestrator(_make_run_config())
+        orch.logger = MagicMock()
+        orch.tasks = [_make_task_config("T1")]
+        orch.results = [_make_trajectory("T1", i) for i in range(2)]
+
+        orch._generate_reports(tmp_path)
+
+        assert not [
+            call
+            for call in orch.logger.warning.call_args_list
+            if call.args and call.args[0] == "Task coverage degraded by infrastructure aborts"
+        ]
+
     def test_generates_aggregate_files(self, tmp_path: Path) -> None:
         from tolokaforge.core.orchestrator import Orchestrator
 
@@ -659,6 +712,7 @@ class TestGenerateReports:
         :class:`RunAggregateWriter` impl and routes the four aggregates
         through it instead of the default disk-backed writer."""
         from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+        from tolokaforge.core.output.aggregate_models import AGGREGATE_SCHEMA_VERSION
         from tolokaforge.core.output.aggregates import InMemoryAggregateWriter
 
         writer = InMemoryAggregateWriter()
@@ -673,7 +727,7 @@ class TestGenerateReports:
         assert not (tmp_path / "per_task_metrics.json").exists()
         bundle = writer.runs[tmp_path]
         assert bundle.aggregate is not None
-        assert bundle.aggregate["schema_version"] == 1
+        assert bundle.aggregate["schema_version"] == AGGREGATE_SCHEMA_VERSION
         assert bundle.per_task_metrics is not None
         assert len(bundle.per_task_metrics) == 1
         assert bundle.metadata_slices is not None

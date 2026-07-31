@@ -210,6 +210,30 @@ Practical guidance:
 - Keep `max_attempt_retries` small (`1-2`) to avoid infinite churn on invalid tasks.
 - Always set `max_budget_usd` for long runs.
 
+### Retryability and countability are two questions
+
+One classification of a finished trial answers both, and the answers are
+independent by design:
+
+- **Is another attempt worth making?** `Orchestrator._is_retryable_trajectory`.
+  Anything transient — a rate limit, an API error, a timeout, a bare error — is
+  requeued until `max_attempt_retries` is spent. A deterministic fault
+  (`provision_error`, an auth-shaped `api_error`) is not: the next attempt fails
+  the same way.
+- **Did the attempt measure the agent?** `classify_trial_outcome`. Only a trial
+  killed by a *typed* infrastructure condition — `rate_limit`, `api_timeout`,
+  `provision_error` — leaves the rate denominators.
+
+They disagree, and the disagreements are the point. A wall-clock `timeout`, an
+`api_error` and a bare `error` are all retried *and* counted: repeating them may
+help, and the agent whose behaviour produced them was measured doing so. Deriving
+either answer from the other would silently either stop retrying transient
+failures or start excusing agent failures from the benchmark.
+
+Retries are exhausted before any of this is recorded, so a trial that eventually
+succeeded contributes one measured result, not one per attempt. See
+[`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
+
 ## Programmatic Queue Access
 
 ```python

@@ -6,7 +6,7 @@ This guide explains Tolokaforge metrics outputs, failure attribution, and progra
 
 After a run, Tolokaforge writes analytics artifacts in `evaluation.output_dir`:
 
-- `aggregate.json`: run-level aggregate metrics (`schema_version: 1`)
+- `aggregate.json`: run-level aggregate metrics (`schema_version: 2`)
 - `per_task_metrics.json`: per-task metrics across trials
 - `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes
 - `failure_attribution.json`: failed-attempt attribution summary + per-attempt evidence
@@ -78,24 +78,73 @@ the roll-up simply omits what it cannot parse.
 
 ## Core Metrics
 
+### The denominator: measured trials
+
+Every rate is computed over the trials that **measured the agent**. A trial the
+provider or the substrate killed produced no grade and no performance to
+describe, so it is not in any rate; the counts that say so sit in the same row:
+
+- `total_trials`: every attempt the run made
+- `measured_trials`: the attempts that measured the agent — **the denominator of
+  every rate below**
+- `infrastructure_aborts`: per reason, the attempts excluded from that
+  denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`). All
+  three keys are always present, so a zero is distinguishable from a missing key
+- `harness_errors`: attempts that failed on a defect of ours. **Inside**
+  `measured_trials`, not excluded from it — our own bugs stay in the denominator.
+  A non-zero value is a run-health signal
+- `outcomes_by_reason`: every termination reason the run observed, with the class
+  it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`
+
+`measured_trials + sum(infrastructure_aborts.values()) == total_trials`, and
+`0 <= harness_errors <= measured_trials`.
+
+`outcomes_by_reason` is what makes a classification call auditable without a
+rerun: it carries the counts needed to recompute the numbers under a different
+convention (say, counting wall-clock timeouts as aborts) from the aggregate
+alone, with no need to re-read a single `trajectory.yaml`.
+
+A trial is an infrastructure abort only when its termination reason was produced
+from an exception **type** — `rate_limit`, `api_timeout`, `provision_error`. A
+message that merely looks like one of those conditions terminates as a counted
+reason instead. Exclusion has to be earned, because a trial wrongly excluded
+raises every published rate with nothing in the output to show it.
+
 ### Success and Quality
 
-- `success_rate`: passing attempts / total attempts
-- `avg_score`: mean continuous score from grading
+- `success_rate`: passing attempts / measured attempts
+- `avg_score`: mean continuous score over the measured attempts that were graded
 - `pass@k`: probability at least one pass appears in `k` draws
 - `pass_hat@k`: alias using the same Chen et al. estimator as `pass@k`
+- `stuck_rate`: measured attempts that tripped stuck detection / measured attempts
+
+When `measured_trials` is `0`, every one of these is `null` — never `0.0`, which
+would read as a task the model failed at — and the task drops out of the
+run-level macro averages.
 
 Estimator used in code:
 
 `pass@k = 1 - C(n-c, k) / C(n, k)`
 
 where:
-- `n`: number of attempts
+- `n`: measured attempts
 - `c`: passing attempts
+
+`pass@k` is `null` when `k > n`. Read it next to `measured_trials` and
+`infrastructure_aborts`: `pass@5: null` with `measured_trials: 4` and one abort
+means coverage was **lost**, while the same `null` with `total_trials: 4` means
+it never existed. The run logs a warning naming the affected tasks and the `k`
+values that lost coverage whenever a run records any abort.
 
 ### Latency, Cost, and Tokens
 
-- `avg_latency_s`, `latency_p50_s`, `latency_p90_s`, `latency_p99_s`
+Spend covers **every attempt**: an aborted trial bought whatever tokens it burned
+before it died, and a cost total that hid them would under-report the run.
+Latency percentiles likewise describe every attempt — they say what the harness
+executed, not how the agent performed. `avg_latency_s` is the exception: it is a
+performance average, so it follows the measured denominator.
+
+- `avg_latency_s` (measured attempts), `latency_p50_s`, `latency_p90_s`, `latency_p99_s`
 - `total_cost_usd`, `avg_cost_usd`
 - Full [`Usage`](../tolokaforge/core/llm/usage.py:1) aggregates — one
   `total_<field>` + `avg_<field>` pair per `Usage` field:
@@ -112,7 +161,13 @@ where:
 
 - `tool_success_rate`
 - `stuck_rate`
+- `harness_errors` and `infrastructure_aborts` per task and run-wide
 - retry-related run behavior (visible through queue counts and failed/completed totals)
+
+Retryability and countability are two independent questions over one
+classification. A wall-clock timeout is retried *and* counted: repeating it may
+help, and the agent that burned the budget was measured doing so. See
+[`docs/RUNNER.md`](RUNNER.md:1) § Retries, Rate Limits, and Budget.
 
 ## Failure Attribution
 
@@ -126,6 +181,11 @@ Deterministic classes currently emitted:
 Fallback class:
 
 - `model_reasoning`
+
+Every attribution record also carries `outcome_class` (`measured` /
+`harness_error` / `infrastructure_abort`), so a reader of a single record can see
+whether the attempt counted, and the summary carries `by_outcome_class` for the
+same split run-wide.
 
 Evidence payloads include tool name/index, error strings, state-diff keys, and termination reasons when available.
 

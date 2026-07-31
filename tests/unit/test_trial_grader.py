@@ -12,7 +12,9 @@ from unittest.mock import MagicMock
 import pytest
 
 from tests.canonical._factories import make_trajectory, make_trial_spec
-from tolokaforge.core.models import JudgeStatus, TerminationReason, TrialStatus
+from tests.unit.test_failure_attribution import outcome_cells
+from tolokaforge.core.failure_attribution import TrialOutcomeClass
+from tolokaforge.core.models import Grade, JudgeStatus, TerminationReason, TrialStatus
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 
 pytestmark = pytest.mark.unit
@@ -110,6 +112,50 @@ class TestAutoFailBranches:
         assert backend.calls == []
         assert logger.info.call_args.args[0] == "Trial stuck - automatic fail"
         assert logger.info.call_args.kwargs["termination_reason"] == "stuck_detected"
+
+
+class TestInfrastructureAbortProducesNoGrade:
+    """A trial the infrastructure killed is not graded at all.
+
+    ``None`` rather than ``Grade(score=0.0)``: ``Grade.score`` is a required
+    ``[0, 1]`` float, so any grade for a trial that never ran has to carry a
+    number that describes work nobody did. Absence cannot be misread as zero,
+    and a consumer that forgets to branch fails loudly instead of quietly
+    reporting a model failure.
+    """
+
+    @pytest.mark.parametrize("cell", outcome_cells())
+    def test_none_exactly_for_the_abort_cells(self, cell) -> None:
+        status, reason, outcome_class, _ = cell
+        backend = _StubBackend()
+        grader, _ = _make_grader(backend)
+
+        grade = grader.grade(
+            make_trial_spec(),
+            make_trajectory(status=status, termination_reason=reason),
+            "sysprompt",
+        )
+
+        if outcome_class is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            assert grade is None
+            assert backend.calls == [], "an ungraded trial must not reach the runner"
+        else:
+            assert isinstance(grade, Grade)
+
+    def test_the_abort_is_logged_with_its_reason(self) -> None:
+        backend = _StubBackend()
+        grader, logger = _make_grader(backend)
+
+        grader.grade(
+            make_trial_spec(),
+            make_trajectory(
+                status=TrialStatus.ERROR, termination_reason=TerminationReason.RATE_LIMIT
+            ),
+            "sysprompt",
+        )
+
+        assert logger.info.call_args.args[0] == "Trial aborted by infrastructure - not graded"
+        assert logger.info.call_args.kwargs["termination_reason"] == "rate_limit"
 
 
 class TestRunnerRPCBranch:

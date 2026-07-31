@@ -1,6 +1,7 @@
-"""Every ``TerminationReason`` is producible, and only some of them are graded.
+"""Every ``TerminationReason`` is producible, only some are graded, and the ones
+that excuse a trial from the benchmark are earned by typed evidence.
 
-Two locks over one observation. Both rest on the ``observed_outcomes`` fixture,
+Four locks over one observation. All rest on the ``observed_outcomes`` fixture,
 which drives the real termination paths — the dialogue runner, the tool-calling
 loop's error classifier and wall-clock check, and the provisioning bracket — and
 reports the ``(status, reason)`` pairs it saw. Nothing here is a hand-written
@@ -14,13 +15,18 @@ table of what the code is believed to do.
    without an RPC: a task grade describes how the agent performed the task, and
    a trial that never completed has no such performance to describe. Routing one
    to the task grader would produce a score for work that never happened.
+3. A reason that excludes a trial from the measured denominator is produced from
+   an exception *type*, never from prose. An exception whose message merely looks
+   like one of those conditions gets a counted reason instead. This is the lock
+   that makes exclusion honest: text matching cannot tell a provider's rate limit
+   from a task conversation about rate limits, and a trial wrongly excluded
+   inflates every published number with nothing in the output to show it.
+4. An excluded trial produces no grade at all, so no fabricated score describes
+   work that never happened.
 
-The second is asserted as that invariant, not as a description of the mechanism
-behind it. Today the mechanism is a pair of short-circuits in
-``RunnerRPCTrialGrader.grade`` that synthesise a fail-:class:`Grade` for those
-trials; the invariant holds whatever answers them, so a change to how they are
-answered leaves this lock intact while a change to *which* reasons reach the
-runner fails it.
+Locks 2 and 4 are asserted as invariants, not as descriptions of the mechanism
+behind them, so a change to *how* those trials are answered leaves them intact
+while a change to *which* reasons are answered that way fails them.
 """
 
 from __future__ import annotations
@@ -30,9 +36,15 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+from litellm.exceptions import RateLimitError
 
 from tests.canonical._factories import make_task_config, make_trajectory, make_trial_spec
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.failure_attribution import (
+    EXCLUDED_TYPED_REASONS,
+    TrialOutcomeClass,
+    classify_trial_outcome,
+)
 from tolokaforge.core.llm.client import (
     GenerationResult,
     LLMApiTimeoutError,
@@ -62,6 +74,43 @@ GRADED_REASONS = frozenset(
         TerminationReason.MAX_TURNS,
     }
 )
+
+# The reasons that answer a trial with no grade at all. Each one means the agent
+# never got its turn: the provider refused, the call never came back, or the
+# environment never came up.
+UNGRADED_REASONS = frozenset(
+    {
+        TerminationReason.RATE_LIMIT,
+        TerminationReason.API_TIMEOUT,
+        TerminationReason.PROVISION_ERROR,
+    }
+)
+
+# One prose-only impostor per excluded reason: an exception carrying no typed
+# evidence whatsoever, whose *message* names the condition the reason describes.
+# Each must terminate as some other, counted reason.
+PROSE_IMPOSTORS: dict[TerminationReason, Exception] = {
+    TerminationReason.RATE_LIMIT: RuntimeError(
+        "LLM API call failed: HTTP/1.1 429 Too Many Requests - rate limit exceeded"
+    ),
+    TerminationReason.API_TIMEOUT: RuntimeError(
+        "LLM API call failed: the API request timed out after 120s"
+    ),
+    TerminationReason.PROVISION_ERROR: RuntimeError(
+        "provisioning failed: the substrate never came up (provision_error)"
+    ),
+}
+
+
+def _wrapped_rate_limit() -> Exception:
+    """The production shape of a real 429: the provider's typed exception, one
+    ``__cause__`` link below the wrapper the client re-raises."""
+    inner = RateLimitError(
+        message="Rate limit exceeded", llm_provider="openrouter", model="anthropic/claude"
+    )
+    wrapped = RuntimeError(f"LLM API call failed: {inner}")
+    wrapped.__cause__ = inner
+    return wrapped
 
 
 class _ScriptedAgent:
@@ -137,7 +186,7 @@ def observed_outcomes() -> frozenset[tuple[TrialStatus, TerminationReason]]:
         _run_trial(_text("Still working."), max_turns=1),
         _run_trial(_text("unreached"), episode_timeout_s=0),
         _run_trial(LLMApiTimeoutError("upstream never answered")),
-        _run_trial(RuntimeError("429 Too Many Requests")),
+        _run_trial(_wrapped_rate_limit()),
         _run_trial(RuntimeError("OpenAI returned 500")),
         _run_trial(RuntimeError("something the classifier cannot name")),
         _provision_failure_trajectory(),
@@ -216,4 +265,68 @@ def test_only_reasons_from_a_completed_trial_reach_grade_trial(
         "design invariant, not an accident: "
         f"expected {sorted(r.value for r in GRADED_REASONS)}, "
         f"got {sorted(r.value for r in reached)}"
+    )
+
+
+def test_every_excluded_reason_is_earned_by_typed_evidence() -> None:
+    """No amount of 429-shaped prose can buy a trial its way out of the
+    denominator.
+
+    Each impostor is driven through the real trial path, so what is asserted is
+    the classification the engine performs, not the one the classifier is
+    believed to perform. Revert the rate-limit branch to substring matching and
+    the ``rate_limit`` case goes red.
+    """
+    assert set(PROSE_IMPOSTORS) == set(EXCLUDED_TYPED_REASONS), (
+        "an excluded reason has no prose impostor, so nothing checks that it "
+        "cannot be produced from text: "
+        f"{sorted(r.value for r in set(EXCLUDED_TYPED_REASONS) ^ set(PROSE_IMPOSTORS))}"
+    )
+
+    for excluded, impostor in PROSE_IMPOSTORS.items():
+        produced = _run_trial(impostor).termination_reason
+        assert produced is not excluded, (
+            f"{excluded.value} was produced from prose alone ({impostor}). That reason "
+            "excludes the trial from every rate, so any message the agent's own "
+            "failure can contain would silently inflate the benchmark."
+        )
+        assert (
+            classify_trial_outcome(_run_trial(impostor))
+            is not TrialOutcomeClass.INFRASTRUCTURE_ABORT
+        )
+
+
+def test_a_real_typed_rate_limit_is_still_excluded() -> None:
+    """The negative above must not cost the exclusion it guards: the production
+    shape — typed exception one ``__cause__`` below the client's wrapper — is
+    still recognised."""
+    trajectory = _run_trial(_wrapped_rate_limit())
+
+    assert trajectory.termination_reason is TerminationReason.RATE_LIMIT
+    assert classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT
+
+
+def test_no_grade_is_produced_for_an_aborted_trial(
+    observed_outcomes: frozenset[tuple[TrialStatus, TerminationReason]],
+) -> None:
+    """Which observed reasons answer with no grade at all, asserted against the
+    named set rather than against the classifier that decides it."""
+    grader = RunnerRPCTrialGrader(runtime_backend=_RecordingBackend(), logger=MagicMock())
+
+    ungraded = {
+        reason
+        for status, reason in observed_outcomes
+        if grader.grade(
+            make_trial_spec(),
+            make_trajectory(status=status, termination_reason=reason),
+            "You are an agent.",
+        )
+        is None
+    }
+
+    assert ungraded == UNGRADED_REASONS, (
+        "the set of termination reasons that produce no grade changed. Every one "
+        "of them means the agent never ran, so a score for it would describe work "
+        f"that never happened: expected {sorted(r.value for r in UNGRADED_REASONS)}, "
+        f"got {sorted(r.value for r in ungraded)}"
     )

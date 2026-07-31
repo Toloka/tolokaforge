@@ -652,7 +652,29 @@ class TestTrialRunnerRun:
         assert traj.termination_reason == TerminationReason.ERROR
 
     def test_rate_limit_error_classification(self) -> None:
-        """Rate limit errors get correct termination reason."""
+        """A provider's typed 429 → RATE_LIMIT, reached through the wrapper the
+        client re-raises it inside."""
+        from litellm.exceptions import RateLimitError
+
+        inner = RateLimitError(
+            message="Rate limit exceeded", llm_provider="openrouter", model="anthropic/claude"
+        )
+        wrapped = RuntimeError(f"LLM API call failed: {inner}")
+        wrapped.__cause__ = inner
+        agent = MagicMock()
+        agent.generate.side_effect = wrapped
+
+        runner = _make_runner(agent_client=agent)
+        traj = runner.run("System", "Task")
+
+        assert traj.status == TrialStatus.ERROR
+        assert traj.termination_reason == TerminationReason.RATE_LIMIT
+
+    def test_untyped_429_text_is_not_a_rate_limit(self) -> None:
+        """A 429-shaped message with no typed exception behind it is counted,
+        not excused: ``RATE_LIMIT`` takes the trial out of every rate, and prose
+        cannot tell a provider's throttle from a transcript that discusses one.
+        The trial records why it was not treated as one."""
         agent = MagicMock()
         agent.generate.side_effect = Exception("429 Too Many Requests")
 
@@ -660,7 +682,8 @@ class TestTrialRunnerRun:
         traj = runner.run("System", "Task")
 
         assert traj.status == TrialStatus.ERROR
-        assert traj.termination_reason == TerminationReason.RATE_LIMIT
+        assert traj.termination_reason == TerminationReason.ERROR
+        assert "no typed provider exception" in traj.messages[-1].content
 
     def test_api_timeout_classification(self) -> None:
         """``LLMApiTimeoutError`` raised by the client → API_TIMEOUT."""

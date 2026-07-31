@@ -1,8 +1,110 @@
-"""Metrics calculation including pass^k"""
+"""Metrics calculation including pass^k.
 
+Every performance rate here is computed over the trials that **measured the
+agent**. A trial the provider or the substrate killed produced no grade and no
+performance to describe, so counting it would report a model failure that never
+happened; ``measured_trials`` / ``infrastructure_aborts`` /
+``outcomes_by_reason`` ride alongside the rates so a reader always sees which
+denominator produced them. Spend (cost, token counters) covers every attempted
+trial — those tokens were really bought.
+"""
+
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from math import comb
+from typing import Any
 
+from tolokaforge.core.failure_attribution import (
+    EXCLUDED_TYPED_REASONS,
+    TrialOutcomeClass,
+    classify_trial_outcome,
+)
 from tolokaforge.core.models import Trajectory
+
+
+@dataclass(frozen=True)
+class TrialOutcomePartition:
+    """A task's trajectories split by :func:`classify_trial_outcome`.
+
+    ``measured_trials + sum(infrastructure_aborts.values()) == total_trials``.
+    ``harness_errors`` overlaps ``measured`` rather than partitioning against
+    it: our own defects are counted like any other failure, and the count is a
+    run-health signal on its own.
+    """
+
+    total_trials: int
+    measured: tuple[Trajectory, ...]
+    outcomes_by_reason: dict[str, dict[str, Any]]
+    infrastructure_aborts: dict[str, int]
+    harness_errors: int
+
+    @property
+    def measured_trials(self) -> int:
+        return len(self.measured)
+
+
+def _outcome_key(trajectory: Trajectory) -> str:
+    """The ``outcomes_by_reason`` key for *trajectory*.
+
+    A termination reason is its own key. A trial that recorded none is keyed by
+    its status instead, so every key maps to exactly one outcome class — a
+    reason-less trial is ``MEASURED`` when it completed and ``HARNESS_ERROR``
+    when it did not.
+    """
+    reason = trajectory.termination_reason
+    if reason is not None:
+        return reason.value
+    return f"unset_{trajectory.status.value}"
+
+
+def partition_trial_outcomes(trajectories: Sequence[Trajectory]) -> TrialOutcomePartition:
+    """Split *trajectories* into the measured set and the aborted counts.
+
+    Callers must hand this the **whole** trial list. Pre-filtering is what
+    produced the numbers this partition exists to fix: a filtered list makes
+    every downstream denominator silently agree with the filter.
+    """
+    measured: list[Trajectory] = []
+    outcomes_by_reason: dict[str, dict[str, Any]] = {}
+    harness_errors = 0
+
+    for trajectory in trajectories:
+        outcome = classify_trial_outcome(trajectory)
+        row = outcomes_by_reason.setdefault(
+            _outcome_key(trajectory), {"class": outcome.value, "count": 0}
+        )
+        row["count"] += 1
+        if outcome is TrialOutcomeClass.HARNESS_ERROR:
+            harness_errors += 1
+        if outcome is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            measured.append(trajectory)
+
+    # Every excluded reason is reported, present or not: a zero is a fact about
+    # the run, while a missing key is only a fact about the writer.
+    infrastructure_aborts = {
+        reason.value: outcomes_by_reason.get(reason.value, {}).get("count", 0)
+        for reason in sorted(EXCLUDED_TYPED_REASONS, key=lambda r: r.value)
+    }
+
+    return TrialOutcomePartition(
+        total_trials=len(trajectories),
+        measured=tuple(measured),
+        outcomes_by_reason=outcomes_by_reason,
+        infrastructure_aborts=infrastructure_aborts,
+        harness_errors=harness_errors,
+    )
+
+
+def _mean_or_none(values: Iterable[float]) -> float | None:
+    """The mean of *values*, or ``None`` when there are none to average.
+
+    ``None`` is the honest answer for an empty sample; ``0.0`` reads as a
+    measured zero.
+    """
+    materialised = list(values)
+    if not materialised:
+        return None
+    return sum(materialised) / len(materialised)
 
 
 def _percentile(sorted_values: list[float], p: float) -> float:
@@ -98,28 +200,35 @@ def calculate_pass_k(
     pass@k measures the probability that at least 1 out of k attempts succeeds.
     Uses the correct HumanEval formula: pass@k = 1 - C(n-c, k) / C(n, k)
 
+    ``n`` is the number of **measured** trials, so a trial the infrastructure
+    aborted neither counts as a failure nor props up the sample size. One lost
+    trial can therefore turn ``pass@5`` from a number into ``None``: five
+    samples are needed to estimate pass@5 and four cannot do it. Read the
+    ``None`` next to ``measured_trials`` / ``infrastructure_aborts`` in the same
+    row, which say whether coverage was lost or never existed.
+
     Args:
-        trajectories: List of trajectories for a task
+        trajectories: The task's full trial list — never a filtered one
         k_values: List of k values to calculate (default: [1, 5, 10])
 
     Returns:
         Dictionary with pass@k for each k value
     """
-    # Count successful trials
     if k_values is None:
         k_values = [1, 5, 10]
-    n_total = len(trajectories)
-    n_success = sum(1 for t in trajectories if t.grade and t.grade.binary_pass)
+    measured = partition_trial_outcomes(trajectories).measured
+    n_measured = len(measured)
+    n_success = sum(1 for t in measured if t.grade and t.grade.binary_pass)
 
     results = {}
     for k in k_values:
-        if k > n_total:
-            # Not enough trials for this k
+        # ``compute_pass_at_k`` raises on k > n, so the guard and the sample
+        # size have to be the same number.
+        if n_measured == 0 or k > n_measured:
             results[f"pass@{k}"] = None
             results[f"pass_hat@{k}"] = None
         else:
-            # Use correct pass@k formula
-            pass_k = compute_pass_at_k(n=n_total, c=n_success, k=k)
+            pass_k = compute_pass_at_k(n=n_measured, c=n_success, k=k)
             results[f"pass@{k}"] = pass_k
             # Alias for pass-hat@k naming (same Chen et al. estimator).
             results[f"pass_hat@{k}"] = pass_k
@@ -127,12 +236,79 @@ def calculate_pass_k(
     return results
 
 
+_USAGE_FIELDS = (
+    "prompt_tokens",
+    "completion_tokens",
+    "reasoning_tokens",
+    "cached_tokens",
+    "cache_creation_input_tokens",
+    "cache_read_input_tokens",
+)
+
+
+def _spend_metrics(trajectories: Sequence[Trajectory]) -> dict[str, Any]:
+    """Token and cost accounting over **every** attempted trial.
+
+    An aborted trial still bought whatever tokens it burned before it died, so
+    excluding it here would under-report what the run actually cost. Judge spend
+    is tracked apart from agent spend: the rubric judge runs its own LLM in the
+    Runner, so its cost lives on ``grade.judge_usage``, and a run's true total is
+    the sum of both.
+    """
+    n_total = len(trajectories)
+    spend: dict[str, Any] = {}
+    for field in _USAGE_FIELDS:
+        spend[f"avg_{field}"] = sum(getattr(t.metrics.usage, field) for t in trajectories) / n_total
+
+    known_costs = [t.metrics.cost_usd for t in trajectories if t.metrics.cost_usd is not None]
+    spend["total_cost_usd"] = sum(known_costs) if known_costs else None
+    spend["avg_cost_usd"] = (
+        spend["total_cost_usd"] / n_total if spend["total_cost_usd"] is not None else None
+    )
+
+    judge_costs = [
+        t.grade.judge_usage.cost_usd
+        for t in trajectories
+        if t.grade is not None and t.grade.judge_usage is not None
+    ]
+    spend["judge_cost_usd"] = sum(judge_costs) if judge_costs else None
+    if spend["total_cost_usd"] is None and spend["judge_cost_usd"] is None:
+        spend["total_cost_incl_judge_usd"] = None
+    else:
+        spend["total_cost_incl_judge_usd"] = (spend["total_cost_usd"] or 0.0) + (
+            spend["judge_cost_usd"] or 0.0
+        )
+    return spend
+
+
+def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
+    """The agent's performance averages, ``None`` when nothing was measured.
+
+    ``avg_score`` averages the scores that exist rather than dividing a filtered
+    numerator by an unfiltered count — the arithmetic that made one ungraded
+    trial halve a task's average score.
+    """
+    return {
+        "avg_score": _mean_or_none(t.grade.score for t in measured if t.grade is not None),
+        "avg_latency_s": _mean_or_none(t.metrics.latency_total_s for t in measured),
+        "avg_turns": _mean_or_none(t.metrics.turns for t in measured),
+        "avg_tool_calls": _mean_or_none(t.metrics.tool_calls for t in measured),
+        "stuck_rate": _mean_or_none(1.0 if t.metrics.stuck_detected else 0.0 for t in measured),
+    }
+
+
 def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
     """
     Calculate aggregate metrics for a task across all trials
 
+    ``total_trials`` counts every attempt. Every performance rate is over
+    ``measured_trials`` and is ``None`` — never ``0.0`` — when that is zero, so a
+    task whose every trial was aborted reports no performance instead of a
+    perfect failure. Latency percentiles cover every attempt: they describe what
+    the harness executed, not how the agent performed.
+
     Args:
-        trajectories: List of trajectories for a task
+        trajectories: The task's full trial list — never a filtered one
 
     Returns:
         Dictionary with aggregate metrics
@@ -140,91 +316,56 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
     if not trajectories:
         return {}
 
-    n_total = len(trajectories)
-    n_success = sum(1 for t in trajectories if t.grade and t.grade.binary_pass)
+    partition = partition_trial_outcomes(trajectories)
+    measured = partition.measured
+    n_success = sum(1 for t in measured if t.grade and t.grade.binary_pass)
 
-    # Basic success metrics
-    metrics = {
-        "total_trials": n_total,
+    metrics: dict[str, Any] = {
+        "total_trials": partition.total_trials,
+        "measured_trials": partition.measured_trials,
+        "infrastructure_aborts": partition.infrastructure_aborts,
+        "harness_errors": partition.harness_errors,
+        "outcomes_by_reason": partition.outcomes_by_reason,
         "successful_trials": n_success,
-        "success_rate": n_success / n_total if n_total > 0 else 0.0,
+        "success_rate": (n_success / partition.measured_trials) if measured else None,
     }
-
-    # pass@k metrics
-    pass_k_results = calculate_pass_k(trajectories)
-    metrics.update(pass_k_results)
-
-    # Average metrics
-    metrics["avg_score"] = (
-        sum(t.grade.score for t in trajectories if t.grade) / n_total if n_total > 0 else 0.0
-    )
-    metrics["avg_latency_s"] = (
-        sum(t.metrics.latency_total_s for t in trajectories) / n_total if n_total > 0 else 0.0
-    )
-    metrics["avg_turns"] = (
-        sum(t.metrics.turns for t in trajectories) / n_total if n_total > 0 else 0.0
-    )
-    metrics["avg_tool_calls"] = (
-        sum(t.metrics.tool_calls for t in trajectories) / n_total if n_total > 0 else 0.0
-    )
-    # Per-task token/cache/reasoning averages. Pulled from the full Usage
-    # object on each trajectory so Anthropic cache counters + reasoning
-    # budgets are first-class citizens (Stage 5 / P7).
-    _usage_fields = (
-        "prompt_tokens",
-        "completion_tokens",
-        "reasoning_tokens",
-        "cached_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-    )
-    for _field in _usage_fields:
-        metrics[f"avg_{_field}"] = (
-            sum(getattr(t.metrics.usage, _field) for t in trajectories) / n_total
-            if n_total > 0
-            else 0.0
-        )
-    known_costs = [t.metrics.cost_usd for t in trajectories if t.metrics.cost_usd is not None]
-    metrics["total_cost_usd"] = sum(known_costs) if known_costs else None
-    metrics["avg_cost_usd"] = (
-        metrics["total_cost_usd"] / n_total
-        if metrics["total_cost_usd"] is not None and n_total > 0
-        else None
-    )
-    # Judge spend is separate from the agent trajectory cost: the rubric judge
-    # runs its own LLM in the Runner, so its cost lives on ``grade.judge_usage``,
-    # not ``trajectory.metrics``. ``total_cost_usd`` above is agent-only; surface
-    # judge cost on its own and a combined total so a run's true spend is visible
-    # without parsing every ``grade.yaml`` (issue: run-level judge cost).
-    _judge_costs = [
-        t.grade.judge_usage.cost_usd
-        for t in trajectories
-        if t.grade is not None and t.grade.judge_usage is not None
-    ]
-    metrics["judge_cost_usd"] = sum(_judge_costs) if _judge_costs else None
-    if metrics["total_cost_usd"] is None and metrics["judge_cost_usd"] is None:
-        metrics["total_cost_incl_judge_usd"] = None
-    else:
-        metrics["total_cost_incl_judge_usd"] = (metrics["total_cost_usd"] or 0.0) + (
-            metrics["judge_cost_usd"] or 0.0
-        )
-
+    metrics.update(calculate_pass_k(trajectories))
+    metrics.update(_measured_averages(measured))
+    metrics.update(_spend_metrics(trajectories))
     metrics.update(calculate_latency_percentiles([t.metrics.latency_total_s for t in trajectories]))
 
     # Per-API-call latency percentiles aggregated across every call in
     # every trial. Useful for diagnosing upstream tail latency separately
     # from per-trial wall time, which also includes tool execution.
     api_call_latencies = [call.latency_s for t in trajectories for call in t.metrics.usage.calls]
-    api_call_percentiles = calculate_latency_percentiles(api_call_latencies)
-    for key, value in api_call_percentiles.items():
+    for key, value in calculate_latency_percentiles(api_call_latencies).items():
         metrics[f"api_call_{key}"] = value
 
-    # Stuck detection rate
-    metrics["stuck_rate"] = (
-        sum(1 for t in trajectories if t.metrics.stuck_detected) / n_total if n_total > 0 else 0.0
-    )
-
     return metrics
+
+
+def _merge_abort_counts(task_metrics: list[dict[str, Any]]) -> dict[str, int]:
+    """Sum each excluded reason's abort count across tasks."""
+    return {
+        reason.value: sum(m["infrastructure_aborts"].get(reason.value, 0) for m in task_metrics)
+        for reason in sorted(EXCLUDED_TYPED_REASONS, key=lambda r: r.value)
+    }
+
+
+def _merge_outcomes_by_reason(task_metrics: list[dict[str, Any]]) -> dict[str, dict[str, Any]]:
+    """Sum the per-reason outcome counts across tasks.
+
+    Every reason the run observed lands here with the class it was counted as,
+    which is what makes a classification call reversible from the aggregate
+    alone: the counts needed to recompute the other convention are all present
+    without re-reading a single ``trajectory.yaml``.
+    """
+    merged: dict[str, dict[str, Any]] = {}
+    for task in task_metrics:
+        for key, row in task["outcomes_by_reason"].items():
+            entry = merged.setdefault(key, {"class": row["class"], "count": 0})
+            entry["count"] += row["count"]
+    return merged
 
 
 def calculate_aggregate_metrics(
@@ -233,9 +374,14 @@ def calculate_aggregate_metrics(
     """
     Calculate aggregate metrics across all tasks
 
+    Rates aggregate over measured trials only: the micro-averages weigh by each
+    task's ``measured_trials``, and the macro-averages skip a task that measured
+    nothing rather than averaging in a zero. ``total_trials`` still counts every
+    attempt, and token / cost totals still cover every attempt.
+
     Args:
         task_metrics: List of metrics dictionaries for each task
-        weighted: Whether to weight by number of trials per task
+        weighted: Whether to weight by number of measured trials per task
 
     Returns:
         Dictionary with aggregate metrics
@@ -245,31 +391,43 @@ def calculate_aggregate_metrics(
 
     n_tasks = len(task_metrics)
     total_trials = sum(m["total_trials"] for m in task_metrics)
+    measured_trials = sum(m["measured_trials"] for m in task_metrics)
 
     agg = {
         "total_tasks": n_tasks,
         "total_trials": total_trials,
+        "measured_trials": measured_trials,
+        "harness_errors": sum(m["harness_errors"] for m in task_metrics),
+        "infrastructure_aborts": _merge_abort_counts(task_metrics),
+        "outcomes_by_reason": _merge_outcomes_by_reason(task_metrics),
     }
 
     if weighted:
-        # Weighted average (micro-average)
+        # Micro-average: every measured trial weighs the same, so a task with
+        # more measured trials pulls harder.
         agg["success_rate_micro"] = (
-            sum(m["successful_trials"] for m in task_metrics) / total_trials
-            if total_trials > 0
-            else 0.0
+            sum(m["successful_trials"] for m in task_metrics) / measured_trials
+            if measured_trials > 0
+            else None
         )
         agg["avg_score_micro"] = (
-            sum(m["avg_score"] * m["total_trials"] for m in task_metrics) / total_trials
-            if total_trials > 0
-            else 0.0
+            sum(
+                m["avg_score"] * m["measured_trials"]
+                for m in task_metrics
+                if m["avg_score"] is not None
+            )
+            / measured_trials
+            if measured_trials > 0
+            else None
         )
     else:
-        # Unweighted average (macro-average)
-        agg["success_rate_macro"] = (
-            sum(m["success_rate"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
+        # Macro-average: every task weighs the same. A task that measured
+        # nothing contributes no rate at all rather than a zero.
+        agg["success_rate_macro"] = _mean_or_none(
+            m["success_rate"] for m in task_metrics if m["success_rate"] is not None
         )
-        agg["avg_score_macro"] = (
-            sum(m["avg_score"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
+        agg["avg_score_macro"] = _mean_or_none(
+            m["avg_score"] for m in task_metrics if m["avg_score"] is not None
         )
 
     # pass@k aggregates (macro-average)
@@ -289,34 +447,20 @@ def calculate_aggregate_metrics(
         else:
             agg[f"{pass_hat_k_key}_macro"] = None
 
-    # Other averages
-    agg["avg_latency_s"] = (
-        sum(m["avg_latency_s"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
-    )
-    agg["avg_turns"] = sum(m["avg_turns"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
-    agg["avg_tool_calls"] = (
-        sum(m["avg_tool_calls"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
-    )
-    agg["stuck_rate"] = sum(m["stuck_rate"] for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
+    # Other averages — macro over the tasks that have the rate at all.
+    for key in ("avg_latency_s", "avg_turns", "avg_tool_calls", "stuck_rate"):
+        agg[key] = _mean_or_none(m[key] for m in task_metrics if m[key] is not None)
 
-    # Token / cache / reasoning aggregates (Stage 5 / P7 — the flat
-    # tokens_input / tokens_output were removed; every field of the Usage
-    # dataclass is exposed here so analytics can audit cache hit-rate and
-    # reasoning-budget spend.)
-    _agg_usage_fields = (
-        "prompt_tokens",
-        "completion_tokens",
-        "reasoning_tokens",
-        "cached_tokens",
-        "cache_creation_input_tokens",
-        "cache_read_input_tokens",
-    )
-    for _field in _agg_usage_fields:
-        agg[f"total_{_field}"] = sum(
-            m.get(f"avg_{_field}", 0) * m["total_trials"] for m in task_metrics
+    # Token / cache / reasoning aggregates: every field of the Usage dataclass
+    # is exposed here so analytics can audit cache hit-rate and reasoning-budget
+    # spend. Per-task averages are over every attempt, so the run totals
+    # reconstruct as ``avg x total_trials``.
+    for field in _USAGE_FIELDS:
+        agg[f"total_{field}"] = sum(
+            m.get(f"avg_{field}", 0) * m["total_trials"] for m in task_metrics
         )
-        agg[f"avg_{_field}"] = (
-            sum(m.get(f"avg_{_field}", 0) for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
+        agg[f"avg_{field}"] = (
+            sum(m.get(f"avg_{field}", 0) for m in task_metrics) / n_tasks if n_tasks > 0 else 0.0
         )
     _known_total_costs = [
         m.get("total_cost_usd") for m in task_metrics if m.get("total_cost_usd") is not None

@@ -309,66 +309,6 @@ class TestErrorTrialDetected:
         assert grade.score == 0.0
         assert "timeout" in grade.reasons.lower()
 
-    def test_rate_limit_is_retryable(self):
-        """
-        Verify that rate limit errors are classified as retryable.
-
-        This mirrors orchestrator._is_retryable_trajectory().
-        """
-        now = datetime.now()
-        trajectory = Trajectory(
-            task_id="TEST-003",
-            trial_index=0,
-            start_ts=now,
-            end_ts=now,
-            status=TrialStatus.ERROR,
-            termination_reason=TerminationReason.RATE_LIMIT,
-            messages=[],
-            metrics=Metrics(),
-        )
-
-        # Check retryable classification
-        is_retryable = trajectory.status in (
-            TrialStatus.ERROR,
-            TrialStatus.TIMEOUT,
-        ) or trajectory.termination_reason in (
-            TerminationReason.RATE_LIMIT,
-            TerminationReason.API_ERROR,
-            TerminationReason.TIMEOUT,
-            TerminationReason.ERROR,
-        )
-
-        assert is_retryable is True, "Rate limit errors should be retryable"
-
-    def test_completed_trial_not_retryable(self):
-        """
-        Verify that completed trials (even with score=0) are not retryable.
-        """
-        now = datetime.now()
-        trajectory = Trajectory(
-            task_id="TEST-004",
-            trial_index=0,
-            start_ts=now,
-            end_ts=now,
-            status=TrialStatus.COMPLETED,
-            termination_reason=TerminationReason.AGENT_DONE,  # AGENT_DONE is the correct enum value
-            messages=[],
-            metrics=Metrics(),
-        )
-
-        # Check retryable classification
-        is_retryable = trajectory.status in (
-            TrialStatus.ERROR,
-            TrialStatus.TIMEOUT,
-        ) or trajectory.termination_reason in (
-            TerminationReason.RATE_LIMIT,
-            TerminationReason.API_ERROR,
-            TerminationReason.TIMEOUT,
-            TerminationReason.ERROR,
-        )
-
-        assert is_retryable is False, "Completed trials should not be retryable"
-
 
 class TestLLMJudgePlaceholderStatus:
     """
@@ -461,12 +401,12 @@ class TestLLMJudgePlaceholderStatus:
 
         score, binary_pass = combine_grade_components(components, grading_config)
 
-        assert (
-            score == 0.0
-        ), f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
-        assert (
-            binary_pass is False
-        ), "binary_pass should be False when grading was configured but nothing evaluated"
+        assert score == 0.0, (
+            f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
+        )
+        assert binary_pass is False, (
+            "binary_pass should be False when grading was configured but nothing evaluated"
+        )
 
     def test_combine_grade_components_passes_when_nothing_configured(self):
         """
