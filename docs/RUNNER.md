@@ -107,9 +107,16 @@ runner **refuses to register a trial from an engine below its own version**,
 naming the skew in `RegisterTrialResponse.error`. The orchestrator already treats a
 registration failure as fatal, so a skewed pair fails before any tokens are spent.
 
-The bound is one-sided: a **newer** engine against an older image still registers,
-because the runner only rejects what is below its own version. An **older** engine
-against a newer image fails every trial at registration.
+The bound is one-sided, and the unprotected direction is the quieter one. An
+**older** engine against a newer image fails every trial at registration, loudly.
+A **newer** engine against an older image still registers — the older runner does
+not know the `engine_protocol_version` field, and proto3 drops unknown fields
+rather than erroring — so the skew surfaces later and less clearly: that engine
+sends a `call_id` on every `ExecuteTool` which the older runner also ignores, so
+calls are recorded without the id grading joins on.
+
+**So the order matters: rebuild the image before rolling the engine.** Upgrading
+the engine first leaves you inside the one window the gate cannot close.
 
 That is what an engine upgrade needs: rebuild the image from the same tree
 (`make docker-build-core`) or pin an image tag that matches. The gate sits at
