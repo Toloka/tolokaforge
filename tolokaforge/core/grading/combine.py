@@ -28,7 +28,8 @@ from tolokaforge.core.grading.state_checks import (
 )
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
-    validate_hash_weight,
+    inert_hash_weight_reason,
+    resolve_hash_weight,
 )
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
@@ -239,25 +240,25 @@ class GradingEngine:
             # collect jsonpath credit for assertions it never made.
             jsonpath_score = None
 
+        # Re-resolved here rather than trusted from load: ``state_checks.hash`` is an
+        # untyped dict, so nothing stops a caller mutating it after validation.
+        hash_weight = resolve_hash_weight(
+            checks.hash,
+            jsonpaths=checks.jsonpaths,
+            context="grading.yaml state_checks.hash.weight",
+        )
         score = compose_state_checks_score(
             hash_score=hash_score,
             jsonpath_score=jsonpath_score,
-            hash_weight=self._declared_hash_weight(),
+            hash_weight=hash_weight,
         )
-        return score, "; ".join(jsonpath_reasons + hash_reasons), diff_result
-
-    def _declared_hash_weight(self) -> float | None:
-        """Return the author's ``state_checks.hash.weight``, or ``None`` if unset.
-
-        There is no default: a weight is meaningful only when a hash verdict and a
-        JSONPath score are both real, and every candidate value there silently
-        discards one of them.
-        """
-        hash_config = self.config.state_checks.hash or {}
-        declared = hash_config.get("weight")
-        if declared is None:
-            return None
-        return validate_hash_weight(declared, context="grading.yaml state_checks.hash.weight")
+        inert_reason = inert_hash_weight_reason(
+            hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=hash_weight
+        )
+        reasons = jsonpath_reasons + hash_reasons
+        if inert_reason:
+            reasons.append(inert_reason)
+        return score, "; ".join(reasons), diff_result
 
     def _check_state_hash(
         self, final_env_state: dict[str, Any]

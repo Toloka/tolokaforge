@@ -130,7 +130,9 @@ state_checks:
   hash:
     enabled: true
     expected_state_hash: "abc123..."  # SHA256 of normalized final state
-    weight: 0.5
+    weight: 0.5                       # REQUIRED in exactly this shape: hash source
+                                      # + non-empty jsonpaths. No default; rejected
+                                      # at load without it. See docs/GRADING.md.
 
 transcript_rules:
   must_contain: ["confirmation number"]

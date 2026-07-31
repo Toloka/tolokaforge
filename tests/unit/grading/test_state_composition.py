@@ -6,17 +6,37 @@ score its hash verdict alone, and a weight that leaked into that branch would
 move those verdicts silently.
 """
 
+from itertools import product
+
 import pytest
 
 from tolokaforge.core.grading.state_composition import (
+    INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
     compose_state_checks_score,
+    inert_hash_weight_reason,
+    resolve_hash_weight,
     validate_hash_weight,
 )
 
 pytestmark = pytest.mark.unit
 
 WEIGHT_DOMAIN = (0.0, 0.5, 0.6, 1.0, None)
+
+_ASSERTIONS = [{"path": "$.db.widgets[0].status", "equals": "closed"}]
+_GOLDEN_ACTIONS = [{"name": "close_widget"}]
+
+# Every combination of the facts the predicate reads, swept over both ways of
+# declaring a hash source. Exactly one shape is undecidable, so dropping any one
+# condition changes which shapes reject.
+_DECLARATION_SPACE = tuple(
+    product(
+        (True, False),  # hash.enabled
+        ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
+        (_ASSERTIONS, []),  # state_checks.jsonpaths
+        (0.5, None),  # hash.weight
+    ),
+)
 
 
 class TestPresenceCases:
@@ -108,3 +128,85 @@ class TestValidateHashWeight:
     def test_rejection_names_the_offending_value(self):
         with pytest.raises(ValueError, match="2.0"):
             validate_hash_weight(2.0, context="grading.yaml")
+
+
+class TestResolveHashWeight:
+    """A weight is mandatory exactly where the composer consults it.
+
+    The declaration space is swept exhaustively rather than sampled: the predicate's
+    whole content is *which* shape is undecidable, and a sampled set cannot show that
+    dropping a condition widened the rejection. The sweep is over the untyped ``hash``
+    block an author actually writes, so it covers what counts as a hash source too.
+    """
+
+    def test_exactly_one_declaration_shape_is_undecidable(self):
+        rejected = set()
+        for enabled, source, jsonpaths, weight in _DECLARATION_SPACE:
+            hash_config = {"enabled": enabled, **source}
+            if weight is not None:
+                hash_config["weight"] = weight
+            shape = (enabled, tuple(source), bool(jsonpaths), weight)
+            try:
+                returned = resolve_hash_weight(
+                    hash_config,
+                    jsonpaths=jsonpaths,
+                    context="grading.yaml state_checks.hash.weight",
+                )
+            except ValueError as exc:
+                assert str(exc) == MISSING_HASH_WEIGHT_MESSAGE, shape
+                rejected.add(shape)
+                continue
+            assert returned == weight, shape
+
+        assert rejected == {
+            (True, ("expected_state_hash",), True, None),
+            (True, ("golden_actions",), True, None),
+        }, (
+            "the rejected set is the whole predicate: hash grading on, a source to "
+            "grade against, assertions to weigh it against, and no weight — for each "
+            "of the two hash sources. Any other membership means a condition was "
+            "dropped or added."
+        )
+
+    @pytest.mark.parametrize("declared_weight", (2.0, -0.1, "0.5", True))
+    @pytest.mark.parametrize("jsonpaths", (_ASSERTIONS, []))
+    def test_the_range_holds_even_where_the_weight_is_inert(self, declared_weight, jsonpaths):
+        with pytest.raises(ValueError, match="state_checks.hash.weight"):
+            resolve_hash_weight(
+                {"enabled": True, "expected_state_hash": "aaaa", "weight": declared_weight},
+                jsonpaths=jsonpaths,
+                context="grading.yaml state_checks.hash.weight",
+            )
+
+    def test_an_absent_hash_block_declares_no_weight(self):
+        assert resolve_hash_weight(None, jsonpaths=_ASSERTIONS, context="grading.yaml") is None
+
+
+class TestInertHashWeightReason:
+    """A declared weight the composer skipped is reported, not silently dropped."""
+
+    @pytest.mark.parametrize(
+        ("hash_score", "jsonpath_score"),
+        ((1.0, None), (None, 0.5), (None, None)),
+    )
+    def test_a_declared_weight_the_composer_skipped_is_named(self, hash_score, jsonpath_score):
+        assert (
+            inert_hash_weight_reason(
+                hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=0.6
+            )
+            == INERT_HASH_WEIGHT_REASON
+        )
+
+    def test_a_consulted_weight_earns_no_reason(self):
+        assert inert_hash_weight_reason(hash_score=1.0, jsonpath_score=0.5, hash_weight=0.6) is None
+
+    @pytest.mark.parametrize(
+        ("hash_score", "jsonpath_score"), ((1.0, 0.5), (1.0, None), (None, 0.5), (None, None))
+    )
+    def test_an_undeclared_weight_earns_no_reason(self, hash_score, jsonpath_score):
+        assert (
+            inert_hash_weight_reason(
+                hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=None
+            )
+            is None
+        )

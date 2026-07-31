@@ -13,6 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 import pytest
+from pydantic import ValidationError
 
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.state_checks import (
@@ -20,10 +21,14 @@ from tolokaforge.core.grading.state_checks import (
     consistent_hash,
     to_hashable,
 )
-from tolokaforge.core.grading.state_composition import MISSING_HASH_WEIGHT_MESSAGE
+from tolokaforge.core.grading.state_composition import (
+    INERT_HASH_WEIGHT_REASON,
+    MISSING_HASH_WEIGHT_MESSAGE,
+)
 from tolokaforge.core.models import (
     GradingConfig,
     InitialStateConfig,
+    StateChecksConfig,
     Trajectory,
     TrialStatus,
 )
@@ -128,32 +133,190 @@ class TestTauStylePackScoresItsHashVerdict:
 
 
 class TestHashWeightIsRequiredAndBounded:
-    """Grading a config that needs a weight and carries none fails loud, and an
-    out-of-range weight is rejected instead of producing a score outside [0, 1]."""
+    """A config that needs a weight and carries none is rejected at load, and an
+    out-of-range weight is rejected instead of producing a score outside [0, 1].
+
+    Load time, not grade time: the whole point is that the author hears about it
+    before a token is spent on the trial.
+    """
 
     def test_both_sources_without_a_weight_raise_the_shared_message(self):
-        with pytest.raises(ValueError) as excinfo:
-            _grade(
+        with pytest.raises(ValidationError) as excinfo:
+            StateChecksConfig(
+                jsonpaths=_HALF_SATISFIED_JSONPATHS,
+                hash={"enabled": True, "expected_state_hash": _MATCHING_HASH},
+            )
+        assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
+
+    def test_the_engine_never_sees_a_config_it_would_have_to_reject(self):
+        with pytest.raises(ValidationError) as excinfo:
+            _engine(
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
                     "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH},
                 }
             )
-        assert str(excinfo.value) == MISSING_HASH_WEIGHT_MESSAGE
+        assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
 
     @pytest.mark.parametrize("weight", [2.0, -0.1])
-    def test_out_of_range_weight_is_rejected(self, weight):
-        with pytest.raises(ValueError, match="state_checks.hash.weight"):
-            _grade(
+    @pytest.mark.parametrize("jsonpaths", [_HALF_SATISFIED_JSONPATHS, []])
+    def test_out_of_range_weight_is_rejected_declared_or_inert(self, weight, jsonpaths):
+        with pytest.raises(ValidationError, match="state_checks.hash.weight"):
+            StateChecksConfig(
+                jsonpaths=jsonpaths,
+                hash={
+                    "enabled": True,
+                    "expected_state_hash": _MISMATCHING_HASH,
+                    "weight": weight,
+                },
+            )
+
+
+class TestLoadTimePredicateDiscriminates:
+    """Which author-visible shapes the load-time gate rejects, and which it must not.
+
+    Every accepted row exists to kill a specific over-broad reading of the
+    predicate: an unsourced hash produces no verdict to weigh, a disabled hash
+    produces none either, and an empty assertion list leaves nothing for a weight
+    to divide. Rejecting any of them would demand a number the composer never reads.
+    """
+
+    _GOLDEN = [{"name": "close_widget"}]
+
+    @pytest.mark.parametrize(
+        ("case", "state_checks", "rejected"),
+        [
+            (
+                "golden_actions and assertions, no weight",
+                {
+                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                    "hash": {"enabled": True, "golden_actions": _GOLDEN},
+                },
+                True,
+            ),
+            (
+                "expected_state_hash and assertions, no weight",
+                {
+                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                    "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH},
+                },
+                True,
+            ),
+            (
+                "golden_actions and assertions, with a weight",
+                {
+                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                    "hash": {"enabled": True, "golden_actions": _GOLDEN, "weight": 0.6},
+                },
+                False,
+            ),
+            (
+                "expected_state_hash and assertions, with a weight",
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
                     "hash": {
                         "enabled": True,
-                        "expected_state_hash": _MISMATCHING_HASH,
-                        "weight": weight,
+                        "expected_state_hash": _MATCHING_HASH,
+                        "weight": 0.6,
                     },
-                }
-            )
+                },
+                False,
+            ),
+            (
+                "hash on with no source, assertions, no weight",
+                {"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": {"enabled": True}},
+                False,
+            ),
+            (
+                "hash off with a source and assertions, no weight",
+                {
+                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                    "hash": {"enabled": False, "expected_state_hash": _MATCHING_HASH},
+                },
+                False,
+            ),
+            (
+                "hash off with an inert weight",
+                {
+                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                    "hash": {
+                        "enabled": False,
+                        "expected_state_hash": _MATCHING_HASH,
+                        "weight": 0.6,
+                    },
+                },
+                False,
+            ),
+            (
+                "golden_actions with no assertions, no weight",
+                {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN}},
+                False,
+            ),
+            (
+                "a recorded tau bundle: a weight beside an empty assertion list",
+                {
+                    "jsonpaths": [],
+                    "hash": {
+                        "enabled": True,
+                        "expected_state_hash": _MATCHING_HASH,
+                        "weight": 1.0,
+                    },
+                },
+                False,
+            ),
+        ],
+    )
+    def test_shape(self, case, state_checks, rejected):
+        if not rejected:
+            assert StateChecksConfig(**state_checks) is not None
+            return
+        with pytest.raises(ValidationError) as excinfo:
+            StateChecksConfig(**state_checks)
+        assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
+
+
+class TestInertWeightIsReportedNotDropped:
+    """A weight that loaded but was never consulted says so on the grade.
+
+    "Accepted and reported" rather than "accepted and ignored" — the recorded tau
+    bundles carry a weight beside an empty assertion list, so rejecting one would
+    make them unloadable, and dropping it in silence is the disease this milestone
+    is about.
+    """
+
+    def test_a_tau_shaped_pack_reports_its_unconsulted_weight(self):
+        grade = _grade(
+            {
+                "jsonpaths": [],
+                "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": 1.0},
+            }
+        )
+        assert INERT_HASH_WEIGHT_REASON in grade.reasons
+        assert grade.components.state_checks == pytest.approx(1.0)
+
+    def test_a_disabled_hash_reports_its_unconsulted_weight(self):
+        grade = _grade(
+            {
+                "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                "hash": {
+                    "enabled": False,
+                    "expected_state_hash": _MATCHING_HASH,
+                    "weight": 0.6,
+                },
+            }
+        )
+        assert INERT_HASH_WEIGHT_REASON in grade.reasons
+        assert grade.components.state_checks == pytest.approx(0.5)
+
+    def test_a_consulted_weight_earns_no_reason(self):
+        grade = _grade(
+            {
+                "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": 0.6},
+            }
+        )
+        assert INERT_HASH_WEIGHT_REASON not in grade.reasons
+        assert grade.components.state_checks == pytest.approx(0.8)
 
 
 class TestUnevaluatedHashIsReported:
@@ -164,7 +327,11 @@ class TestUnevaluatedHashIsReported:
         grade = _grade(
             {
                 "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                "hash": {"enabled": True, "golden_actions": [{"name": "close_widget"}]},
+                "hash": {
+                    "enabled": True,
+                    "golden_actions": [{"name": "close_widget"}],
+                    "weight": 0.6,
+                },
             }
         )
         assert "golden_actions" in grade.reasons

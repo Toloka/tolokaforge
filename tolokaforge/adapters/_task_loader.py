@@ -79,6 +79,10 @@ def validate_grading_yaml(grading_path: Path) -> None:
     / ``model_ref`` shapes, raised by :class:`LLMJudgeConfig`) and ``state_checks``
     (``env_assertions`` / ``db_hash_check``, raised by :class:`StateChecksConfig`).
 
+    Validate is the earliest gate a task pack meets: the engine's own
+    :class:`StateChecksConfig` is not constructed until artifacts are written, by
+    which point the trial has already been paid for.
+
     A missing grading file is not an error here: ``load_task_yaml`` already
     validates the ``grading`` path field, and some adapters synthesise grading
     config without an on-disk file.
@@ -109,11 +113,14 @@ def validate_grading_yaml(grading_path: Path) -> None:
 
         LLMJudgeConfig(**llm_judge)
 
-    # Same shape for the removed state-check keys: construct the block only when a
-    # removed key is present, so the sole new failure mode is its migration error.
+    # Same shape for state_checks: construct the block on a removed key, and on any
+    # declared ``hash`` block — whose composition weight is undecidable in one shape
+    # and is the reason a pack must hear about it before the run rather than after.
     state_checks = grading_data.get("state_checks")
     if isinstance(state_checks, dict) and (
-        "env_assertions" in state_checks or "db_hash_check" in state_checks
+        "env_assertions" in state_checks
+        or "db_hash_check" in state_checks
+        or isinstance(state_checks.get("hash"), dict)
     ):
         from tolokaforge.core.models import StateChecksConfig
 

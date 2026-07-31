@@ -23,6 +23,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from tolokaforge.adapters._task_loader import validate_grading_yaml
@@ -347,3 +348,104 @@ def test_project_grading_defaults_reject_malformed_customization(customization: 
     each carrying it."""
     with pytest.raises(Exception, match=match):
         GradingDefaults(llm_judge={"customization": customization})
+
+
+# ---------------------------------------------------------------------------
+# state_checks.hash.weight — rejected at validate time, not at grade time
+# ---------------------------------------------------------------------------
+
+
+_ASSERTIONS = [{"path": "$.db.widgets[0].status", "equals": "closed"}]
+_GOLDEN_ACTIONS = [{"name": "close_widget"}]
+
+
+def _write_grading(tmp_path: Path, state_checks: dict) -> Path:
+    """Serialise the block rather than indenting a string: a mis-indented ``hash``
+    lands as a sibling of ``state_checks`` and every rejection here false-greens."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        yaml.safe_dump(
+            {
+                "combine": {
+                    "method": "weighted",
+                    "weights": {"state_checks": 1.0},
+                    "pass_threshold": 1.0,
+                },
+                "state_checks": state_checks,
+            }
+        )
+    )
+    return grading
+
+
+@pytest.mark.parametrize(
+    "hash_block",
+    [
+        {"enabled": True, "expected_state_hash": "aaaa"},
+        {"enabled": True, "golden_actions": _GOLDEN_ACTIONS},
+    ],
+    ids=["expected_state_hash", "golden_actions"],
+)
+def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_block: dict):
+    """Validate is where an author hears this: the engine's own model is not
+    constructed until artifacts are written, so a run-time-only gate would report
+    an undecidable score after the trial had already been paid for."""
+    grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
+    with pytest.raises(ValueError, match="state_checks.hash.weight is required"):
+        validate_grading_yaml(grading)
+
+
+@pytest.mark.parametrize(
+    "state_checks",
+    [
+        {
+            "jsonpaths": _ASSERTIONS,
+            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 0.6},
+        },
+        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": True}},
+        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        {
+            "jsonpaths": _ASSERTIONS,
+            "hash": {"enabled": False, "expected_state_hash": "aaaa", "weight": 0.6},
+        },
+        {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTIONS}},
+        {
+            "jsonpaths": [],
+            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 1.0},
+        },
+    ],
+    ids=[
+        "weight_declared",
+        "hash_on_with_no_source",
+        "hash_off_with_a_source",
+        "hash_off_with_an_inert_weight",
+        "no_assertions_to_weigh",
+        "recorded_tau_bundle_shape",
+    ],
+)
+def test_validate_accepts_every_shape_the_weight_cannot_decide(tmp_path: Path, state_checks: dict):
+    """The gate must stay narrow. Each shape here would demand a number the
+    composer never reads, and the last one is the recorded tau bundle: rejecting
+    it would make three committed trial bundles unloadable."""
+    validate_grading_yaml(_write_grading(tmp_path, state_checks))
+
+
+@pytest.mark.parametrize("weight", [2.0, -0.1])
+def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, weight: float):
+    grading = _write_grading(
+        tmp_path,
+        {
+            "jsonpaths": _ASSERTIONS,
+            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": weight},
+        },
+    )
+    with pytest.raises(ValueError, match=r"state_checks.hash.weight must be a real number"):
+        validate_grading_yaml(grading)
+
+
+def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Path):
+    """Without a ``hash`` block, ``StateChecksConfig`` is never constructed here — the
+    reason every fixture above declares one rather than relying on jsonpaths alone."""
+    validate_grading_yaml(
+        _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}})
+    )

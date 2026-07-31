@@ -20,6 +20,7 @@ from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
     coerce_task_packs_alias,
 )
+from tolokaforge.core.grading.state_composition import resolve_hash_weight
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
@@ -1986,6 +1987,16 @@ class StateChecksConfig(BaseModel):
                     f"got {field!r}"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _validate_hash_weight_declaration(self) -> Self:
+        """Reject at load the one shape whose ``state_checks`` score is undecidable."""
+        resolve_hash_weight(
+            self.hash,
+            jsonpaths=self.jsonpaths,
+            context="grading.yaml state_checks.hash.weight",
+        )
+        return self
 
 
 class CommunicateInfo(BaseModel):

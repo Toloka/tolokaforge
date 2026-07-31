@@ -618,12 +618,19 @@ A source nobody configured contributes nothing rather than a score:
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
 
 `hash.weight` is consulted only in the third case, and it has **no default**:
-every candidate value there silently discards something the author asked for. A
-pack that configures both sources without a weight fails grading with a message
-naming the three meaningful choices — `1.0` lets the hash decide, `0.0` lets the
-jsonpaths decide, `0.5` gives them equal shares. The value must lie within
-`[0.0, 1.0]`; outside that range the component leaves `[0, 1]` altogether. This
-fold is the core engine's; `state_checks.hash.weight` is core-only, per
+every candidate value there silently discards something the author asked for. So a
+pack that needs a weight and declares none is **rejected at load** — by
+`tolokaforge validate` and by the grading config model — with a message naming the
+three meaningful choices: `1.0` lets the hash decide, `0.0` lets the jsonpaths
+decide, `0.5` gives them equal shares. The value must lie within `[0.0, 1.0]`;
+outside that range the component leaves `[0, 1]` altogether.
+
+"Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
+`expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
+other shape yields at most one score, so a weight there would have nothing to
+divide: it loads, its range is still checked, and `grade.reasons` records that it
+was declared but not consulted. This fold is the core engine's;
+`state_checks.hash.weight` is core-only, per
 [Single-substrate keys](#single-substrate-keys).
 
 Hash grading that was configured but could not run — `hash.enabled` with neither
@@ -643,7 +650,8 @@ error rather than a verdict: it raises, and the trial is left unscored.
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
 - Combining the hash with JSONPath assertions requires an explicit `weight` —
   decide which source carries the verdict, per
-  [Folding the hash verdict with `jsonpaths`](#folding-the-hash-verdict-with-jsonpaths)
+  [Folding the hash verdict with `jsonpaths`](#folding-the-hash-verdict-with-jsonpaths).
+  `tolokaforge validate` rejects that combination without one
 
 ---
 
