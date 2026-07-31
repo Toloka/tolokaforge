@@ -213,6 +213,23 @@ def resolve_tool_status(result: ToolResult) -> ToolExecutionStatus:
     return ToolExecutionStatus.SUCCESS if result.success else ToolExecutionStatus.ERROR
 
 
+def resolve_tool_output(result: ToolResult) -> str:
+    """The text a recorder stores for ``result``.
+
+    A failed call records its ``error`` verbatim, not a rendering of it: the
+    record is the grader's input, so the sibling *message* text — which prefixes
+    ``Error:`` for the agent to read — must not be what a matcher sees. This is
+    the one place that decision lives, so the two recorder call sites cannot
+    drift the way the status decision did before :func:`resolve_tool_status`.
+
+    The two substrates still disagree on a *failed* call's text (the runner
+    prefixes ``Tool error: <Type>:``, the in-process executor does not), which
+    makes a ``result`` matcher non-portable; #717 tracks converging them, and
+    this function is where that convergence belongs.
+    """
+    return result.output if result.success else (result.error or "")
+
+
 class Tool(ABC):
     """Base class for all tools"""
 

@@ -328,7 +328,7 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
     }
 
 
-def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, any]:
+def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, Any]:
     """
     Calculate aggregate metrics for a task across all trials
 
@@ -408,8 +408,8 @@ def _merge_outcomes_by_reason(task_metrics: list[dict[str, Any]]) -> dict[str, d
 
 
 def calculate_aggregate_metrics(
-    task_metrics: list[dict[str, any]], weighted: bool = True
-) -> dict[str, any]:
+    task_metrics: list[dict[str, Any]], weighted: bool = True
+) -> dict[str, Any]:
     """
     Calculate aggregate metrics across all tasks
 

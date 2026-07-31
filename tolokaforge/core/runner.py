@@ -35,7 +35,7 @@ from tolokaforge.core.run_display_events import (
     RunDisplayEvents,
 )
 from tolokaforge.core.stuck import StuckDetector
-from tolokaforge.tools.registry import ToolExecutor, resolve_tool_status
+from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
 
 # Import user tools support (optional for dual-control scenarios)
 try:
@@ -652,9 +652,7 @@ class TrialRunner:
                     arguments=tc.arguments or {},
                     executor=ToolExecutorIdentity.USER,
                     status=resolve_tool_status(tool_result),
-                    output=(
-                        tool_result.output if tool_result.success else (tool_result.error or "")
-                    ),
+                    output=resolve_tool_output(tool_result),
                     latency_seconds=tool_duration,
                 )
 

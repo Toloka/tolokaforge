@@ -57,7 +57,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
-from tolokaforge.tools.registry import ToolExecutor, resolve_tool_status
+from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
 
 
 class LoopLLMClient(Protocol):
@@ -387,9 +387,7 @@ class ToolCallingLoop:
                     arguments=tc.arguments or {},
                     executor=ToolExecutorIdentity.AGENT,
                     status=resolve_tool_status(tool_result),
-                    output=(
-                        tool_result.output if tool_result.success else (tool_result.error or "")
-                    ),
+                    output=resolve_tool_output(tool_result),
                     latency_seconds=tool_duration,
                 )
 
