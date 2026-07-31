@@ -152,11 +152,26 @@ request, resolves each free-text model phrase to a model slug DETERMINISTICALLY
 
 **Two catalogs, OpenRouter first.** A phrase is matched against the OpenRouter catalog and, only
 if that matches NOTHING, against the deployment's gateway catalog. A fallback rather than a union,
-deliberately: every phrase that resolves (or is ambiguous) against OpenRouter behaves exactly as
-before, so the calibrated default route never moves and a gateway that lists the same model under
+deliberately: a phrase that resolves (or is ambiguous) against OpenRouter is unaffected by the
+gateway, so the calibrated default route cannot move and a gateway that lists the same model under
 a second route name cannot turn a working request into a clarify reply. The fallback is what makes
-a gateway-ONLY model requestable at all - `integrate azure_ai/cohere-command-a-plus-05-2026` used
-to come back "no matching model on OpenRouter" even when the gateway served it.
+a gateway-ONLY model such as `azure_ai/cohere-command-a-plus-05-2026` requestable.
+
+A gateway catalog is a routing table rather than a model list, so only part of it is a candidate: a
+wildcard (`x-ai/*`) is a passthrough, an id the OpenRouter catalog already carries (bare or under
+one route prefix) is the same model under a second name, and an id outside the slug charset can
+never be integrated because a slug reaches the shell.
+
+**Known limits of the gateway-only path.** Two things do not follow automatically, and both surface
+in the reply rather than being discovered mid-run:
+
+- `automation ensure-pricing` resolves a price by exact id against the OpenRouter catalog, so a
+  gateway-only id never matches. Without a `pricing.json` entry, `COST_USD_POPULATED` (a
+  non-opt-out CORE capability) fails in observe.
+- the run's gateway `.env` is job-wide, so the gateway must also serve the wire probes' user
+  simulator (`anthropic/claude-sonnet-4.6`). The poller checks it and downgrades an explicit
+  `via litellm` when it is missing; a gateway-only model has no route to downgrade to, so it is
+  warned about instead.
 
 ### Integration route (OpenRouter vs the LLM gateway)
 
@@ -203,9 +218,9 @@ is reported as not honourable instead of being dispatched onto a name OpenRouter
 Everything else in the same message keeps the default. This is not a comparability loophole: a
 model OpenRouter carries is never moved to the gateway unless a human asks with `via litellm`.
 
-Everything here degrades to the previous behaviour when the gateway is not configured: the
-availability lookup returns "unknown", nothing is reported, resolution searches OpenRouter alone
-(and says so when it fails), and `route` stays `openrouter`.
+With no gateway configured the flow is OpenRouter-only: the availability lookup returns
+"unknown", nothing is reported, resolution searches OpenRouter alone (and says so when it fails),
+and `route` stays `openrouter`.
 A `via litellm` request the poller cannot confirm (availability `unknown` or `not on the
 gateway`, for any model in the message that OpenRouter *does* carry - a gateway-only model is not
 evidence against the gateway) is **downgraded to `openrouter` with a warning in the
@@ -266,9 +281,9 @@ exactly what the flow sends today, so an unset variable changes nothing.
 Every message site names its role, so no emoji is left in message text: the workflow-driven
 notifications pass `slack reply --icon <role>`, and the messages the poller BUILDS in Python
 (its reply to a request) call `icons.icon(role, overrides)` per line. Both are swept by
-`tools/automation/tests/test_icons.py`, which fails on a literal shortcode in either the
-workflows or the automation sources - the poller's reply shipped with four hardcoded icons
-because that sweep originally covered the workflows only.
+`tools/automation/tests/test_icons.py`, which fails on an emoji literal in either the workflows or
+the automation sources. It is a tripwire rather than a proof: it sees literals and unicode emoji
+characters, so an emoji assembled at runtime would still need catching by review.
 
 Four behaviours worth knowing:
 

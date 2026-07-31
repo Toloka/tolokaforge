@@ -6,7 +6,6 @@ the logic stays unit-testable and the GitHub Actions workflow is a thin caller.
 from __future__ import annotations
 
 import json
-import os
 
 import typer
 
@@ -152,13 +151,10 @@ def resolve_models(
     """Deterministically resolve the model phrases in a Slack request to model slugs.
     Prints a JSON list of {query, status, slug, candidates, source} for the poller to act on.
 
-    Searches the same two catalogs as the poller - OpenRouter, then the gateway from
-    ``LLM_PROXY_BASE_URL`` / ``LLM_PROXY_API_KEY`` - so debugging a request by hand cannot
-    disagree with what the poll actually did."""
+    Searches the same two catalogs as the poller, through the same accessor, so debugging a
+    request by hand cannot disagree with what the poll actually did."""
     catalog = model_resolver.fetch_openrouter_catalog()
-    gateway_entries = gateway_catalog.fetch_gateway_catalog(
-        os.environ.get("LLM_PROXY_BASE_URL"), os.environ.get("LLM_PROXY_API_KEY")
-    )
+    gateway_entries = gateway_catalog.fetch_configured_catalog()
     resolutions = model_resolver.resolve_all(request, catalog, gateway_entries=gateway_entries)
     typer.echo(json.dumps([model_resolver.as_dict(r) for r in resolutions], indent=2))
 

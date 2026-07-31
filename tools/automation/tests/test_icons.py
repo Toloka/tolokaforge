@@ -93,9 +93,15 @@ class TestResolution:
 SOURCES = Path(icons.__file__).parent
 SOURCE_FILES = sorted(p for p in SOURCES.glob("*.py") if p.name != "icons.py")
 
-#: A Slack emoji shortcode. `::error::` / `::warning::` are GitHub Actions annotations printed
-#: to stdout, not Slack emoji, so a colon-pair on either side is excluded.
-_EMOJI_LITERAL_RE = re.compile(r"(?<!:):([a-z0-9_+-]+):(?!:)")
+#: A Slack emoji shortcode. Two exclusions keep it honest: a colon-pair on either side is a
+#: GitHub Actions annotation (`::error::`), and a name must contain a LETTER, so a time or a ratio
+#: in a message ("12:30:45", "1:2") is not mistaken for an emoji.
+_EMOJI_LITERAL_RE = re.compile(r"(?<!:):([a-z0-9_+-]*[a-z][a-z0-9_+-]*):(?!:)")
+
+#: Unicode ranges that RENDER as emoji in Slack, for the literals a shortcode sweep cannot see.
+#: Deliberately narrow - the pictographic and dingbat blocks - so the typographic characters these
+#: messages legitimately use (the U+25E6 bullet in a reply) are not swept up.
+_EMOJI_CHAR_RE = re.compile(r"[\U0001F000-\U0001FAFF\u2600-\u27bf\ufe0f]")
 
 
 def _emoji_in_code(path: Path) -> list[str]:
@@ -124,6 +130,8 @@ def _emoji_in_code(path: Path) -> list[str]:
             continue
         for match in _EMOJI_LITERAL_RE.finditer(node.value):
             found.append(f"{path.name}:{node.lineno}: {match.group(0)}")
+        for match in _EMOJI_CHAR_RE.finditer(node.value):
+            found.append(f"{path.name}:{node.lineno}: {match.group(0)!r} (unicode emoji)")
     return found
 
 
@@ -163,12 +171,15 @@ class TestTheWorkflowsAndTheRegistryAgree:
             assert not re.search(r"""(MSG|SLACK)=['"]?:[a-z_]+:""", text), name
 
     def test_no_python_built_message_still_hardcodes_an_emoji(self):
-        """The same guard over the SOURCES, which is where four icons hid.
+        """The same guard over the SOURCES, not just the workflows.
 
-        The workflow-only sweep above passed while the poller's whole reply - resolved,
-        ambiguous, unknown, route-downgraded - carried literal shortcodes, so a workspace with
-        the full override JSON still saw stock emoji on the first message the flow ever sends.
-        Any emoji in a source file must come from the registry.
+        A message built in Python is as Slack-visible as one built in YAML, so an emoji literal
+        in a source file is an icon no override can reach.
+
+        A tripwire, not a proof: it sees literals (including the constant parts of an f-string)
+        and unicode emoji characters, so an emoji assembled at runtime - `":" + name + ":"`,
+        `f":{name}:"`, `.format()` - still gets through. Those are worth catching by review;
+        this catches the shape that actually shipped.
         """
         offenders = [item for source in SOURCE_FILES for item in _emoji_in_code(source)]
         assert offenders == [], (
@@ -277,28 +288,71 @@ class TestEveryIconCallSiteReachesACommandThatAcceptsIt:
 
 
 class TestAnUnknownRoleDoesNotCostTheMessage:
-    """A role typo is a bug in this codebase, but losing the notification is a worse one.
+    """A role typo is a bug in this codebase; losing the notification is a worse one.
 
-    `icon()` raises, and the CLI wrappers catch everything and exit 0 - so before this, a bad
-    role meant no message at all on a green step (and, in `reply`, a thread root with nothing
-    under it).
+    `icon()` raises and the CLI wrappers catch everything then exit 0, so an escaping raise
+    costs the whole message on a green step - and in `reply`, where the thread root is posted
+    first, leaves a root with nothing under it.
+
+    Driven through the COMMANDS rather than through the helper: a test that calls `_prefixed`
+    directly still passes with both call sites reverted to `icons.prefix`, which is exactly the
+    regression it is supposed to catch.
     """
 
-    def test_the_message_still_goes_out_unstyled(self, monkeypatch):
+    @staticmethod
+    def _capture(monkeypatch) -> tuple[dict, list[str]]:
         import automation.slack as slack
 
-        noted: list[str] = []
-        monkeypatch.setattr(slack, "_note_failure", noted.append)
-        assert slack._prefixed("not_a_role", "Observe started") == "Observe started"
-        assert len(noted) == 1
-        assert "not_a_role" in noted[0]
-
-    def test_a_good_role_is_untouched(self):
-        import automation.slack as slack
-
-        assert slack._prefixed("observe_started", "Observe started") == (
-            ":arrow_forward: Observe started"
+        sent: dict = {}
+        logged: list[str] = []
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-test")
+        monkeypatch.setattr(slack, "_ready", lambda channel: "xoxb-test")
+        monkeypatch.setattr(slack, "_find_or_create_root", lambda *a, **k: "1.0")
+        monkeypatch.setattr(slack, "_log", logged.append)
+        monkeypatch.setattr(
+            slack,
+            "_post_message",
+            lambda ch, text, tok, thread_ts=None: sent.setdefault("t", text) or True,
         )
+        return sent, logged
+
+    def test_reply_still_posts_under_its_root(self, monkeypatch):
+        import automation.slack as slack
+
+        sent, logged = self._capture(monkeypatch)
+        slack.cmd_reply("C1", 42, "Integrated: preset committed.", "m", False, role="not_a_role")
+        assert sent.get("t", "").startswith("Integrated: preset committed.")
+        assert any("not_a_role" in line for line in logged)
+
+    def test_post_thread_still_posts(self, monkeypatch):
+        import automation.slack as slack
+        from typer.testing import CliRunner
+
+        sent, logged = self._capture(monkeypatch)
+        result = CliRunner().invoke(
+            slack.app,
+            [
+                "post-thread",
+                "--channel",
+                "C1",
+                "--thread-ts",
+                "1.0",
+                "--text",
+                "Dispatch failed",
+                "--icon",
+                "not_a_role",
+            ],
+        )
+        assert result.exit_code == 0
+        assert sent.get("t", "").startswith("Dispatch failed")
+        assert any("not_a_role" in line for line in logged)
+
+    def test_a_good_role_is_still_applied(self, monkeypatch):
+        import automation.slack as slack
+
+        sent, _ = self._capture(monkeypatch)
+        slack.cmd_reply("C1", 42, "Observe started", "m", False, role="observe_started")
+        assert sent["t"].startswith(":arrow_forward: Observe started")
 
 
 class TestAFullOverrideRestylesEveryMessage:

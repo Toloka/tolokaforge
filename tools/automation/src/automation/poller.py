@@ -42,11 +42,12 @@ from automation import gateway_catalog, icons, model_resolver, slack
 # for a genuinely opaque codename, added here when one appears.
 ALIASES: dict[str, str] = {}
 
-# The charset a real OpenRouter slug ever uses. A resolved slug is always a live catalog id so it
-# passes, but the catalog is an EXTERNAL untrusted source and slugs flow into shell (branch name,
-# PR title/body, `gh workflow run -f model=`); a slug with a shell metacharacter is dropped, never
-# interpolated. Defence-in-depth behind the resolver's own "only ever returns a catalog entry".
-_SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
+# The charset a model slug may use, shared with the resolver so there is one rule rather than two
+# copies to drift. A resolved slug is always a live catalog id so it passes, but a catalog is an
+# EXTERNAL untrusted source and slugs flow into shell (branch name, PR title/body, `gh workflow
+# run -f model=`); a slug with a shell metacharacter is dropped, never interpolated.
+# Defence-in-depth behind the resolver's own "only ever returns a catalog entry".
+_SAFE_SLUG_RE = model_resolver.SAFE_SLUG_RE
 
 # Sentinel for "the gateway catalog has not been fetched yet". Distinct from None, which is a
 # *fetched* answer meaning "no gateway configured or unreachable" — without it, an unreachable
@@ -117,6 +118,10 @@ class RoutePlan:
     routes: dict[str, str]
     warnings: tuple[str, ...]
     requested_route: str | None
+    #: True when a stated route could not be honoured. Both that and "nothing was asked" leave
+    #: ``requested_route`` as ``None``, and the reply has to tell them apart: only the second one
+    #: should go on to offer the gateway as an option.
+    downgraded: bool = False
 
 
 def route_plan(
@@ -124,6 +129,7 @@ def route_plan(
     availability: dict[str, gateway_catalog.Availability],
     requested_route: str | None,
     overrides: dict[str, str] | None = None,
+    simulator: gateway_catalog.Availability | None = None,
 ) -> RoutePlan:
     """Decide the route PER MODEL, and the warnings that make a non-honoured directive visible.
 
@@ -139,25 +145,43 @@ def route_plan(
       model failure. Only models OpenRouter CARRIES are considered here; a gateway-only model is
       not evidence against the gateway.
     * ``via openrouter`` for a model OpenRouter does not carry at all.
+
+    ``simulator`` is the gateway availability of the wire probes' user simulator. It belongs in
+    the same evidence, because the integration run's gateway ``.env`` is JOB-WIDE: the simulator
+    is proxied too, so a gateway that does not serve it sends observe infra-dirty in the
+    SIMULATOR rather than in the candidate. It can veto an explicit ``via litellm`` (that route
+    has a working alternative), but it cannot veto a gateway-only model, which has none - there
+    the requester is told what to fix before the run burns.
     """
     if overrides is None:
         overrides = icons.load_icon_overrides()
     warning_icon = icons.icon("route_downgraded", overrides)
     warnings: list[str] = []
+    downgraded = False
     gateway_only = [r for r in resolutions if r.source == model_resolver.SOURCE_GATEWAY and r.slug]
     downgradable = [
         r
         for r in resolutions
         if r.slug in availability and r.source != model_resolver.SOURCE_GATEWAY
     ]
-    if requested_route == gateway_catalog.ROUTE_GATEWAY and not all(
-        availability[r.slug].reachable for r in downgradable
+    simulator_unreachable = simulator is not None and not simulator.reachable
+    if requested_route == gateway_catalog.ROUTE_GATEWAY and (
+        simulator_unreachable or not all(availability[r.slug].reachable for r in downgradable)
     ):
         requested_route = None
+        downgraded = True
+        # The model-level reason first: it is the one the requester can see in the notes above.
+        # The simulator is only named when the requested models ARE covered, since then it is the
+        # whole reason and blaming "every model above" would send someone checking a fine name.
+        missing = (
+            "every model above (see the notes)"
+            if not all(availability[r.slug].reachable for r in downgradable)
+            else f"the wire probes' user simulator (`{gateway_catalog.USER_SIMULATOR_SLUG}`)"
+        )
         warnings.append(
-            f"{warning_icon} I could not confirm the gateway serves every model above "
-            f"(see the notes), so this runs over *{gateway_catalog.DEFAULT_ROUTE}*. "
-            "Add the model to the gateway (or check its secrets) and re-request."
+            f"{warning_icon} I could not confirm the gateway serves {missing}, so the models "
+            f"OpenRouter carries run over *{gateway_catalog.DEFAULT_ROUTE}*. Add it to the "
+            "gateway (or check its secrets) and re-request."
         )
     if requested_route == gateway_catalog.ROUTE_OPENROUTER and gateway_only:
         names = ", ".join(f"`{r.slug}`" for r in gateway_only)
@@ -170,7 +194,22 @@ def route_plan(
         for r in resolutions
         if r.status == "resolved" and r.slug
     }
-    return RoutePlan(routes=routes, warnings=tuple(warnings), requested_route=requested_route)
+    if simulator_unreachable and gateway_catalog.ROUTE_GATEWAY in routes.values():
+        # Reached only by a gateway-ONLY model, which the downgrade above cannot help: there is no
+        # OpenRouter route for it. Say what will go wrong and what fixes it, since the run itself
+        # would report a user-simulator failure that reads like nothing to do with the gateway.
+        warnings.append(
+            f"{warning_icon} I could not confirm the gateway serves the wire probes' user "
+            f"simulator (`{gateway_catalog.USER_SIMULATOR_SLUG}`). The integration run proxies "
+            "it too, so observe may go infra-dirty in the simulator rather than in the "
+            "candidate. Add it to the gateway if that happens."
+        )
+    return RoutePlan(
+        routes=routes,
+        warnings=tuple(warnings),
+        requested_route=requested_route,
+        downgraded=downgraded,
+    )
 
 
 def resolved_slugs(resolutions: list[model_resolver.Resolution]) -> list[str]:
@@ -294,15 +333,7 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
             # Fetched BEFORE resolution, not after: resolution falls back to this catalog for a
             # phrase OpenRouter cannot match, which is the only way a gateway-only model
             # (`azure_ai/...`) can be requested at all.
-            #
-            # Read from os.environ, not SecretManager (AGENTS.md § Secrets): the poller is a
-            # CI-only entrypoint whose credentials come from workflow `env:`, and DotEnvProvider's
-            # `.env` precedence would let a developer's local gateway leak into a real poll. Same
-            # rationale as SLACK_BOT_TOKEN above. Revisit if this tool ever gains a SecretManager
-            # bootstrap.
-            gateway_models = gateway_catalog.fetch_gateway_catalog(
-                os.environ.get("LLM_PROXY_BASE_URL"), os.environ.get("LLM_PROXY_API_KEY")
-            )
+            gateway_models = gateway_catalog.fetch_configured_catalog()
         text = message.get("text", "")
         resolutions = model_resolver.resolve_all(text, catalog, ALIASES, gateway_models)
         if not resolutions:  # mention + "integrate" but no parseable model phrase
@@ -323,13 +354,19 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
         # every probe would fail against a gateway we already know does not serve it -- either
         # way a reply saying "via litellm" would misrecord the serving path. Refuse in the
         # reply instead of dispatching a run whose outcome would read as a model failure.
-        plan_routes = route_plan(resolutions, availability, requested_route)
+        plan_routes = route_plan(
+            resolutions,
+            availability,
+            requested_route,
+            simulator=gateway_catalog.lookup(gateway_catalog.USER_SIMULATOR_SLUG, gateway_models),
+        )
         reply = model_resolver.format_resolution_reply(
             requester,
             resolutions,
             availability,
             plan_routes.requested_route,
             gateway_searched=gateway_models is not None,
+            route_downgraded=plan_routes.downgraded,
         )
         if plan_routes.warnings:
             reply = "\n\n".join([reply, *plan_routes.warnings])

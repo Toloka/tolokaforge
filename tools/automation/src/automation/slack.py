@@ -211,20 +211,24 @@ def _note_failure(what: str) -> None:
 
 
 def _prefixed(role: str, text: str) -> str:
-    """:func:`icons.prefix`, except that an unknown ROLE must not cost the whole message.
+    """:func:`icons.prefix`, except that an unknown ROLE costs only the STYLING.
 
-    ``icons.icon`` raises on an unknown role, which is right - a role is written by this
-    codebase, so a bad one is a bug here rather than a user's typo. But both CLI wrappers catch
-    every exception and exit 0, so that raise became a DROPPED notification on a GREEN step: in
-    :func:`cmd_reply` the thread root is posted BEFORE the prefix is applied, leaving a root with
-    no reply under it. The role error is still surfaced as a workflow annotation; the message
-    goes out unstyled rather than not at all, which is what "a notification must never fail the
-    job it reports on" has to mean here.
+    ``icons.icon`` raises on an unknown role, which is right: a role is written by this codebase,
+    so a bad one is a bug here rather than a user's typo. But the CLI wrappers below catch every
+    exception and exit 0, so an escaping raise loses the whole notification on a green step - and
+    in :func:`cmd_reply`, where the thread root is posted before the prefix is applied, leaves a
+    root with nothing under it. "A notification must never fail the job it reports on" has to
+    mean the message still goes out.
+
+    Reported on BOTH channels, because they have different reach: the stderr line is the only
+    record outside CI (:func:`_note_failure` prints nothing without ``GITHUB_ACTIONS``), and the
+    annotation is what makes a passing job visibly flag it.
     """
     try:
         return icons.prefix(role, text)
     except ValueError as exc:
-        _note_failure(f"unknown icon role {role!r}: sending the message unstyled ({exc})")
+        _log(f"unknown icon role {role!r}: sending the message unstyled ({exc})")
+        _note_failure(f"unknown icon role {role!r}: message sent unstyled")
         return text
 
 

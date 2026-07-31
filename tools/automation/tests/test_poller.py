@@ -259,6 +259,58 @@ class TestRoutePlan:
         assert plan.routes == {self.GATEWAY_ONLY: gateway_catalog.ROUTE_GATEWAY}
         assert plan.warnings == ()
 
+    def test_a_downgrade_does_not_then_suggest_the_route_it_refused(self):
+        # `requested_route` arrives as None both when nothing was asked and when a directive was
+        # refused. Without that distinction the reply tells a requester who just asked for the
+        # gateway to re-request with the gateway.
+        import automation.model_resolver as resolver
+
+        entries = ["x-ai/grok-4.5"]  # gateway has grok but not hy3
+        resolutions = self._resolutions(
+            f"<@{BOT}> integrate grok 4.5 and hy3 via litellm", gateway_entries=entries
+        )
+        availability = self._availability(resolutions, entries)
+        plan = poller.route_plan(resolutions, availability, gateway_catalog.ROUTE_GATEWAY)
+        assert plan.downgraded is True
+        reply = resolver.format_resolution_reply(
+            "U1",
+            resolutions,
+            availability,
+            plan.requested_route,
+            gateway_searched=True,
+            route_downgraded=plan.downgraded,
+        )
+        assert "re-request with `via litellm`" not in reply
+        # ... while the un-asked case still offers the option.
+        plain = poller.route_plan(resolutions, availability, None)
+        assert plain.downgraded is False
+        assert "re-request with `via litellm`" in resolver.format_resolution_reply(
+            "U1",
+            resolutions,
+            availability,
+            plain.requested_route,
+            gateway_searched=True,
+            route_downgraded=plain.downgraded,
+        )
+
+    def test_the_downgrade_warning_does_not_speak_for_a_gateway_only_model(self):
+        # A mixed request downgrades only what OpenRouter carries, so a warning saying the whole
+        # message runs over openrouter would contradict the route written to plan.json.
+        entries = [self.GATEWAY_ONLY]
+        resolutions = self._resolutions(
+            f"<@{BOT}> integrate grok 4.5 and {self.GATEWAY_ONLY} via litellm",
+            gateway_entries=entries,
+        )
+        plan = poller.route_plan(
+            resolutions,
+            self._availability(resolutions, entries),
+            gateway_catalog.ROUTE_GATEWAY,
+        )
+        assert plan.routes[self.GATEWAY_ONLY] == gateway_catalog.ROUTE_GATEWAY
+        assert plan.routes["x-ai/grok-4.5"] == gateway_catalog.ROUTE_OPENROUTER
+        assert plan.warnings, "grok is absent from the gateway, so the directive is refused"
+        assert "the models OpenRouter carries run over" in plan.warnings[0]
+
     def test_unresolved_phrases_never_reach_the_plan(self):
         resolutions = self._resolutions(f"<@{BOT}> integrate nope/nothing-9 and grok 4.5")
         plan = poller.route_plan(resolutions, self._availability(resolutions, None), None)

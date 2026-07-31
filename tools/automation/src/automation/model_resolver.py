@@ -22,12 +22,11 @@ Which catalogs are searched
 ---------------------------
 
 OpenRouter first; the deployment's LLM-gateway catalog is a FALLBACK, consulted only for a
-phrase OpenRouter cannot match at all. Fallback rather than a union, deliberately: every
-phrase that resolves (or is ambiguous) against OpenRouter today behaves identically, so the
-calibrated default route never moves and a gateway listing the same model under a second
-route name cannot turn a working request into a clarify reply. The fallback is the only way
-a gateway-ONLY model can be requested at all - before it existed, ``azure_ai/cohere-...``
-came back as "no matching model on OpenRouter" even though the gateway served it.
+phrase OpenRouter cannot match at all. Fallback rather than a union, deliberately: a phrase
+that resolves (or is ambiguous) against OpenRouter is unaffected by the gateway, so the
+calibrated default route cannot move and a gateway listing the same model under a second
+route name cannot turn a working request into a clarify reply. The fallback is what makes a
+gateway-ONLY model (``azure_ai/cohere-command-a-plus-05-2026``) requestable.
 
 Only the network fetch (:func:`fetch_openrouter_catalog`) does I/O; everything the tests
 care about is pure and catalog-injected.
@@ -47,13 +46,23 @@ _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 # onto "command-a") OR dotted-number runs; splits glued names ("gpt5.6" -> gpt, 5.6) and
 # ignores every other separator (space / _ / - / /).
 _TOKEN_RE = re.compile(r"[a-z]+\+?|\d+(?:\.\d+)*")
-# Request connectors, for "integrate a and b". The WORD connectors require
-# surrounding whitespace; `\band\b` / `\bplus\b` alone would fire inside a slug,
-# because a hyphen is a regex word boundary. That tore
-# `azure_ai/cohere-command-a-plus-05-2026` into two halves and, worse, silently
-# reduced `cohere/command-a-plus` to `cohere/command-a-` - a DIFFERENT model name
-# that could go on to match something real.
-_CONNECTOR_RE = re.compile(r"\s*(?:,|&)\s*|\s+(?:and|plus)\s+", re.IGNORECASE)
+# Request connectors, for "integrate a, b and c". Two rules do the work:
+#
+#  * a WORD connector must be delimited by whitespace (or the end of the request). A hyphen is a
+#    regex word boundary, so a bare `\band\b` / `\bplus\b` also fires INSIDE a slug and turns
+#    `cohere/command-a-plus` into `cohere/command-a-` - a different model name that may still
+#    match something real.
+#  * punctuation may carry a word connector with it, because `a, b, and c` is how English writes
+#    a list. Punctuation consumes the space after itself, so the following `and` has no
+#    whitespace on its left and has to be matched here rather than by the word rule.
+_CONNECTOR_RE = re.compile(
+    r"\s*[,&]\s*(?:(?:and|plus)(?:\s+|$))?|\s+(?:and|plus)(?:\s+|$)", re.IGNORECASE
+)
+# The charset a model slug may use. OpenRouter ids are strict slugs, but a gateway catalog is a
+# deployment's own routing table and its ids are free-form, while a slug flows into shell (branch
+# name, PR title, `gh workflow run -f model=`). A candidate that fails this cannot be integrated,
+# and offering it back as a "re-request with this exact slug" clarification would loop forever.
+SAFE_SLUG_RE = re.compile(r"^[A-Za-z0-9._/-]+$")
 _MENTION_RE = re.compile(r"<@[^>]+>")
 _INTEGRATE_RE = re.compile(r"\bintegrate\b", re.IGNORECASE)
 # Optional route directive: "integrate Grok 4.5 via litellm". Stripped BEFORE the phrases are
@@ -95,8 +104,7 @@ class Resolution:
     slug: str | None = None
     candidates: tuple[str, ...] = ()
     #: Which catalog the slug came from (:data:`SOURCE_OPENROUTER` / :data:`SOURCE_GATEWAY`).
-    #: Defaults to OpenRouter, which is what every resolution meant before the gateway
-    #: fallback existed.
+    #: Defaults to OpenRouter, the calibrated route.
     source: str = SOURCE_OPENROUTER
 
 
@@ -168,13 +176,15 @@ def _gateway_candidates(entries: list[str] | None, openrouter_slugs: set[str]) -
     resolution candidate:
 
     * a wildcard (``x-ai/*``, ``*``) is a passthrough, not a model name;
-    * an id the OpenRouter catalog already carries adds no new candidate - the fallback only
-      runs when OpenRouter matched nothing, so such an entry cannot match either;
-    * an id that is an OpenRouter slug under a route prefix (``openrouter/x-ai/grok-4.5``) is
-      the SAME model under a second name, and :func:`gateway_catalog.lookup` documents that
-      prefixed route as one this flow cannot reach anyway.
+    * an id outside :data:`SAFE_SLUG_RE` can never be integrated (a slug reaches the shell), so
+      offering it as a candidate could only produce a clarification nobody can satisfy;
+    * an id the OpenRouter catalog already carries, bare or under one route prefix
+      (``openrouter/x-ai/grok-4.5``), is the same model under a second name. Letting one model
+      resolve under two names is a serving-path decision, not a transport detail. Only ONE prefix
+      is stripped, so a doubly-prefixed alias survives - unreachable in practice, since the
+      fallback runs only for a phrase no OpenRouter slug matched.
 
-    What survives is exactly what OpenRouter does not carry - a gateway-only route such as
+    What survives is what OpenRouter does not carry - a gateway-only route such as
     ``azure_ai/cohere-command-a-plus-05-2026``.
     """
     if not entries:
@@ -182,9 +192,9 @@ def _gateway_candidates(entries: list[str] | None, openrouter_slugs: set[str]) -
     candidates = []
     for entry in entries:
         slug = entry.strip()
-        if not slug or "*" in slug or slug in openrouter_slugs:
+        if not slug or "*" in slug or not SAFE_SLUG_RE.match(slug):
             continue
-        if slug.split("/", 1)[-1] in openrouter_slugs:  # an OpenRouter slug under a route prefix
+        if slug in openrouter_slugs or slug.split("/", 1)[-1] in openrouter_slugs:
             continue
         candidates.append(slug)
     return candidates
@@ -217,12 +227,15 @@ def resolve(
     this is a fallback and not a union. ``aliases`` (lowercased phrase -> slug) covers opaque
     internal shortnames like ``hy3`` that no string match can reach; it is consulted first.
     """
+    openrouter_slugs = set(catalog)
     primary = _resolve_against(query, catalog, aliases)
-    gateway = _gateway_candidates(gateway_entries, set(catalog))
+    gateway = _gateway_candidates(gateway_entries, openrouter_slugs)
     if primary.status == "resolved":
-        # Only reachable through an alias: the token path returns catalog members only. An alias
-        # pointing at a gateway-only route must still be routed there.
-        if primary.slug not in set(catalog) and primary.slug in set(gateway):
+        # Reachable only through an alias, since the token path returns catalog members. A slug
+        # OpenRouter does not carry cannot run there whatever the gateway catalog says - or fails
+        # to say, when it could not be read - so membership of the OPENROUTER catalog is what
+        # decides the route.
+        if primary.slug not in openrouter_slugs:
             return dataclasses.replace(primary, source=SOURCE_GATEWAY)
         return primary
     if primary.status != "none" or not gateway:
@@ -282,6 +295,7 @@ def format_resolution_reply(
     requested_route: str | None = None,
     gateway_searched: bool = False,
     overrides: dict[str, str] | None = None,
+    route_downgraded: bool = False,
 ) -> str:
     """Slack mrkdwn reply: what started, and which phrases need an exact slug. The requester
     is pinged at the top so the ambiguous re-request lands on the right person.
@@ -296,9 +310,12 @@ def format_resolution_reply(
     Every icon here comes from the role registry, so a workspace override restyles the whole
     reply; ``overrides`` is injectable for tests and resolved once otherwise.
 
-    ``gateway_searched`` says whether the gateway catalog was readable, so a failure can name
-    what was actually consulted. Reporting "no matching model on OpenRouter" when a configured
-    gateway had never been searched is what sent a requester chasing a name that was fine."""
+    ``route_downgraded`` says a ``via <route>`` directive could not be honoured, which is the
+    other reason ``requested_route`` can arrive as ``None``; the closing default-route hint is
+    suppressed then, since the downgrade warning covers it.
+
+    ``gateway_searched`` says whether the gateway catalog was readable, so a failure names what
+    was actually consulted rather than sending a requester to check a name that is fine."""
     # Resolved ONCE: icons.icon() re-reads and re-parses the env JSON whenever it is handed
     # None, and this function emits one icon per requested model.
     if overrides is None:
@@ -312,8 +329,12 @@ def format_resolution_reply(
                 f"integration as `{r.slug}` via *{route_for(r, requested_route)}*"
             )
             if r.source == SOURCE_GATEWAY:
+                # About the NAME, not the model: a gateway route can be the same model under
+                # another vendor prefix, and which upstream serves a model is a comparability
+                # call for a human rather than a claim to make here.
                 lines.append(
-                    "    ◦ only on the gateway, not on OpenRouter, so it can run nowhere else"
+                    "    ◦ no OpenRouter slug matched this name; it resolved from the gateway "
+                    "catalog, so it runs there"
                 )
             # Suppressed for a gateway-sourced model: "ALSO on the gateway" reads as "in
             # addition to OpenRouter", which is exactly what is not true, and the line above
@@ -341,7 +362,11 @@ def format_resolution_reply(
                 f"{icons.icon('request_unresolved', overrides)} *{r.query}*: no matching "
                 f"model on {searched}. Check the name and version.{unsearched}"
             )
-    if requested_route is None and availability:
+    # Suppressed after a downgrade: `requested_route` is None either because nothing was asked
+    # or because a `via litellm` could not be honoured, and in the second case this hint would
+    # tell a requester who just asked for the gateway to ask for the gateway. The downgrade
+    # warning already says what to do instead.
+    if requested_route is None and availability and not route_downgraded:
         openrouter_sourced = [r for r in resolutions if r.source == SOURCE_OPENROUTER and r.slug]
         if openrouter_sourced and any(
             availability[r.slug].reachable for r in openrouter_sourced if r.slug in availability
