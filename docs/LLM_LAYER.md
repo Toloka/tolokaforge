@@ -455,6 +455,50 @@ next to its own hardcoded base URL; a gateway replaces the base URL but not the
 rewrite, so litellm would get a provider-less model string and raise
 `BadRequestError` before sending anything.
 
+### The model name must be the gateway's route name
+
+Enabling the gateway is **not** a drop-in for existing run configs. litellm
+strips exactly one provider prefix before sending, so `provider: openrouter` +
+`name: anthropic/claude-opus-4.7` puts `anthropic/claude-opus-4.7` on the wire.
+A gateway resolves that against *its own* model table, which need not mean what
+the provider would mean by it.
+
+Observed on a real LiteLLM proxy: that name matched the gateway's catch-all
+`anthropic/*` route, which is backed by **Bedrock**, so the request was served
+by a different upstream than the config asked for. It failed loudly there only
+because that particular Bedrock model rejects `temperature=0.0`; a
+closer-matching route would have silently evaluated a different serving path.
+For a leaderboard that is a comparability break, not a transport detail.
+
+So name the model the way the gateway names it, and pick the provider so that
+litellm's prefix strip leaves that name intact:
+
+```yaml
+# Gateway route "openrouter/anthropic/claude-opus-4.7"
+provider: openai                              # wire: openrouter/anthropic/claude-opus-4.7
+name: openrouter/anthropic/claude-opus-4.7
+
+# Gateway route "azure_ai/cohere-command-a-plus-05-2026"
+provider: openai                              # wire: azure_ai/cohere-command-a-plus-05-2026
+name: azure_ai/cohere-command-a-plus-05-2026
+```
+
+List the routes a gateway serves with `GET {base_url}/models`.
+
+Gateway-specific names have two consequences, both following from the
+model-string coupling described below:
+
+- **Cost may be unknown.** `normalize_model_name` cannot map
+  `openai/openrouter/anthropic/claude-opus-4.7` to a `pricing.json` key, so
+  `cost_usd` depends on the gateway returning cost in the response. Measured on
+  a LiteLLM proxy: its `azure_ai/…` route did (`cost_source="litellm"`), its
+  `openrouter/…` route did not (`cost_source="unknown"`). Add a `pricing.json`
+  entry keyed on the exact formatted model string when the gateway is silent.
+- **`provider: openai` does not get the `providers.openrouter` preset overlay**,
+  so reasoning routes through `reasoning_effort` rather than
+  `extra_body.reasoning`. That is correct for an OpenAI-shaped gateway endpoint,
+  but verify it for reasoning models before trusting a run.
+
 **This is a transport swap and nothing else.** `_build_kwargs` sets `api_base`,
 `api_key`, and `extra_headers`; the litellm model string keeps its original
 `<provider>/<name>` shape. That invariant is load-bearing in two places:
