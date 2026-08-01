@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and the flagship pack discriminates.
 
-Three claims over the packs an author reads as the reference:
+Four claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -16,6 +16,10 @@ Three claims over the packs an author reads as the reference:
 3. **``tolokaforge validate`` is a gate over that corpus**: it partitions the same 30
    task files into the 28 it loads under their project's ``task_defaults`` and the two
    it rejects, and exits non-zero because of them.
+4. **The tool inventory a gate reads answers for exactly the tools the wire carries.**
+   The inventory resolves schemas read-only while ``to_task_description`` may spawn the
+   task's MCP server; both go through one producer, and this is where a second copy of
+   the resolution would show up.
 """
 
 from __future__ import annotations
@@ -28,6 +32,7 @@ from click.testing import CliRunner
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
+from tolokaforge.adapters._task_loader import build_tool_inventory
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
@@ -43,6 +48,9 @@ _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 # passing over the empty set. The two files outside it are the ``terminal_bench``
 # pair, which ship no enclosing project and are the corpus's two known-invalid tasks.
 _GRADED_TASK_COUNT = 28
+# Tool schemas the corpus puts on the wire, across the 23 tasks that declare any, so a
+# parameter comparison that resolved nothing fails instead of passing over empty maps.
+_CORPUS_TOOL_COUNT = 54
 _TASKS_WITHOUT_A_PROJECT = (
     _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
@@ -60,8 +68,8 @@ def _enclosing_project(task_yaml: Path) -> Path | None:
     return None
 
 
-def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
-    """The task's id and its effective grading config, loaded the orchestrator's way.
+def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
+    """The task's id and an adapter over it, wired the orchestrator's way.
 
     The adapter is pointed at this one task file rather than at the project's own
     discovery glob: several packs are run through a glob rooted at ``dataset/``
@@ -83,15 +91,25 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
     )
     task_ids = adapter.get_task_ids()
     assert len(task_ids) == 1, f"{task_yaml} resolved to {task_ids}, not one task"
-    return task_ids[0], adapter.get_grading_config(task_ids[0])
+    return task_ids[0], adapter
+
+
+def _corpus_task_files() -> list[Path]:
+    return [
+        task_yaml
+        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
+        if task_yaml not in _TASKS_WITHOUT_A_PROJECT
+    ]
+
+
+def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
+    """The task's id and its effective grading config."""
+    task_id, adapter = _pack_adapter(task_yaml)
+    return task_id, adapter.get_grading_config(task_id)
 
 
 def _graded_corpus() -> dict[str, GradingConfig]:
-    return dict(
-        _grading_config(task_yaml)
-        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
-        if task_yaml not in _TASKS_WITHOUT_A_PROJECT
-    )
+    return dict(_grading_config(task_yaml) for task_yaml in _corpus_task_files())
 
 
 def test_every_component_an_example_pack_configures_carries_a_weight() -> None:
@@ -114,6 +132,45 @@ def test_every_component_an_example_pack_configures_carries_a_weight() -> None:
         "these packs configure a component the effective combine never weights, so core "
         "drops it from the fold and the runner invents a 1.0 for it (#744)"
     )
+
+
+def test_the_tool_inventory_answers_for_the_tools_the_wire_actually_carries() -> None:
+    """One producer serves both the run and the pre-run gate, so neither can drift.
+
+    The two sides are not the same source: the inventory reads the producer in
+    read-only mode, while ``to_task_description`` assembles ``ToolSchema`` objects
+    around it in subprocess mode. A second copy of the schema lookup inlined into
+    the adapter fails here as soon as the two copies disagree.
+    """
+    divergent_names: dict[str, tuple[list[str], list[str]]] = {}
+    divergent_parameters: dict[str, list[str]] = {}
+    compared = 0
+
+    for task_yaml in _corpus_task_files():
+        task_id, adapter = _pack_adapter(task_yaml)
+        wire = {
+            tool.name: tool.parameters for tool in adapter.to_task_description(task_id).agent_tools
+        }
+        inventory = build_tool_inventory(adapter.get_task(task_id), adapter.get_task_dir(task_id))
+
+        if inventory.declared != set(wire):
+            divergent_names[task_id] = (sorted(inventory.declared), sorted(wire))
+        drifted = sorted(
+            name
+            for name, parameters in wire.items()
+            if name in inventory.parameters and inventory.parameters[name] != parameters
+        )
+        if drifted:
+            divergent_parameters[task_id] = drifted
+        compared += sum(1 for name in wire if name in inventory.parameters)
+
+    assert compared == _CORPUS_TOOL_COUNT, (
+        f"the guard compared {compared} tool schemas, not {_CORPUS_TOOL_COUNT}. Every tool "
+        "the corpus puts on the wire resolves in the inventory too, so a shortfall means "
+        "the read-only mode stopped answering for tools the run still ships"
+    )
+    assert divergent_names == {}, "the inventory and the wire disagree on which tools exist"
+    assert divergent_parameters == {}, "the two modes resolved different schemas for one tool"
 
 
 def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:

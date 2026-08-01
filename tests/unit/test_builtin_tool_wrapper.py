@@ -8,7 +8,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.adapters.native import _builtin_tool_schemas
+from tolokaforge.adapters._task_loader import _builtin_tool_schemas
 
 # ---------------------------------------------------------------------------
 # _builtin_tool_schemas helper
