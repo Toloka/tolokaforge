@@ -372,18 +372,34 @@ into a score. Runner-side `GradeTrial` returns `success = False` with the offend
 On the host, `RunnerRPCTrialGrader.grade` raises `GradingFailedError` for **any**
 `GradeTrial` that returns no verdict — reconciliation failure, an undecodable
 payload, or an unaccounted scored key. A stand-in `score=0.0` would be worse than
-what it replaced: a normally-terminated trial classifies `MEASURED`, so the zero
+what it replaced: such a trial stays inside the measured denominator, so the zero
 would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
 failure reported against evidence that was never read.
 
-The consequence is that such a trial appears in **no** published number. The
-exception propagates out of the conductor's grading phase, so the trial's bundle is
-not written and the trajectory never reaches the run's results — `total_trials`
-does not count it. It is loud where it happens: the failure is logged, the
-orchestrator retries the attempt and then records it in `run_state.json`, and a
-`trial_failed` event fires. Whether an ungradeable trial should instead be counted
-as a `HARNESS_ERROR` is an open published-numbers question, not something this
-behaviour decides.
+The consequence is that such a trial is **counted but unscored**. The conductor's
+grading phase catches the exception, records the reason on
+`Trajectory.grading_error`, and lets the trial finish its normal path: its
+`status` and `termination_reason` still describe how the trial itself ended, its
+bundle is written with the cause in `trajectory.yaml` and no `grade.yaml`, and it
+reaches `total_trials` and `measured_trials` while staying out of `scored_trials`.
+The failure is logged at `error` level where it happens.
+
+It is attributed as **ours**, not as the agent's: the trial classifies
+`TrialOutcomeClass.UNGRADEABLE`, adds to the `ungradeable` count in
+`per_task_metrics.json` and `aggregate.json`, gets its own `outcomes_by_reason`
+row keyed `ungradeable_<reason>`, and lands in `failure_attribution.json` as
+`failure_class: grading_failure` with `deterministic: true`. It is a non-pass in
+`success_rate` and `pass@k`, so a grading regression shows up as a visible,
+bounded deflation instead of as a run that got quietly smaller. While the run is
+still going, the live panel says the same thing: the trial's row reads `n/a`,
+which is a third verdict distinct from both `pass` and `fail`
+(see [CLI.md § Live run panel](CLI.md#live-run-panel---displayrich-during-tolokaforge-run)).
+
+Because the attempt terminates normally, it is **not retried** — retryability
+reads the trajectory's own status and reason, which grading's failure does not
+touch. A grading failure that a second attempt would have got past is therefore
+recorded ungradeable on the first: the price of never fabricating a verdict and
+never counting one attempt twice.
 
 **One key is still evaluated from different sources.** The core engine evaluates
 `transcript_rules.required_actions` and `transcript_rules.communicate_info`
@@ -1241,6 +1257,7 @@ infrastructure:
 | `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
 | `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal |
 | `stuck_detected` | measured | The agent repeated itself without progress. It auto-fails with `score: 0.0`, and that verdict is correct |
+| any reason, with `grading_error` set | ungradeable | Grading refused, so no verdict exists. Counted for the same reason a harness error is — the fault is ours — and reported separately as `ungradeable`. This is read **before** the reason, so a refusal is never traded for an exclusion |
 
 The asymmetry decides every borderline case: misclassifying an agent failure as
 infrastructure raises every published number with nothing in the output to show
@@ -1252,7 +1269,11 @@ benchmark.
 
 `outcomes_by_reason` records every observed reason with the class it was counted
 as, so any of these judgements can be recomputed from a finished run's aggregate
-without a rerun. See [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Run-level
+without a rerun. An ungradeable trial's row is keyed `ungradeable_<reason>` —
+`ungradeable_agent_done` for the common case — which keeps one key mapping to
+exactly one class while leaving the reason legible, so the graded and ungradeable
+halves of one reason stay separable from the aggregate alone. See
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Run-level
 metric denominators and [`docs/ANALYTICS.md`](ANALYTICS.md) § The denominator:
 measured trials.
 

@@ -18,6 +18,7 @@ DETERMINISTIC_CLASSES = {
     "tool_arguments",
     "tool_execution",
     "grader_contract",
+    "grading_failure",
     "infrastructure",
     "timeout_or_resource",
     "provision_failure",
@@ -43,11 +44,17 @@ class TrialOutcomeClass(str, Enum):
 
     ``INFRASTRUCTURE_ABORT`` — the trial never happened. No grade is produced
     and it is excluded from every rate.
+
+    ``UNGRADEABLE`` — the trial happened and the agent was measured, but grading
+    itself could not produce a verdict, and the fault is ours. Counted in
+    ``measured_trials`` for the same reason ``HARNESS_ERROR`` is, excluded from
+    ``scored_trials`` because no grade exists, and a non-pass for every rate.
     """
 
     MEASURED = "measured"
     HARNESS_ERROR = "harness_error"
     INFRASTRUCTURE_ABORT = "infrastructure_abort"
+    UNGRADEABLE = "ungradeable"
 
 
 EXCLUDED_TYPED_REASONS = frozenset(
@@ -74,12 +81,23 @@ fails if any reason here becomes producible from prose.
 def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
     """Return whether *trajectory* measured the agent.
 
+    ``grading_error`` is read before the pair, and unconditionally: it is typed
+    evidence that *we* failed, while exclusion is earned by typed evidence that
+    the provider or the substrate killed the trial. Our own defects stay in the
+    denominator, so a refusal outranks any reason that would have removed one.
+    It outranks every *other* reason too, including the ones that would have
+    named the fault ours by another name: a trial we could not grade is reported
+    ungradeable even when its own termination was also a defect of ours, so it
+    leaves ``harness_errors`` alone and lands in ``ungradeable`` instead.
+
     Total over ``(status, termination_reason)`` and gated on the exclusion
     allowlist, so a reason this function has never heard of is ``MEASURED``.
     That default is the point: an unrecognised reason that fell out of the
     denominator would be invisible in the output, while one that stayed in is
     visible in ``outcomes_by_reason`` and recoverable without a rerun.
     """
+    if trajectory.grading_error is not None:
+        return TrialOutcomeClass.UNGRADEABLE
     reason = trajectory.termination_reason
     if reason in EXCLUDED_TYPED_REASONS:
         return TrialOutcomeClass.INFRASTRUCTURE_ABORT
@@ -109,7 +127,15 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
     failure_class = "model_reasoning"
     deterministic = False
 
-    if trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
+    if trajectory.grading_error is not None:
+        # Ahead of every other branch, not only the tool-log scan: an ungradeable
+        # trial has no failed call and no grade to inspect, so it would come out
+        # ``model_reasoning``, and a refusal is the cause even when the trial's own
+        # termination would have attributed the failure elsewhere.
+        failure_class = "grading_failure"
+        deterministic = True
+        evidence.append({"kind": "grading_error", "error": trajectory.grading_error})
+    elif trajectory.termination_reason == TerminationReason.PROVISION_ERROR:
         failure_class = "provision_failure"
         deterministic = True
         evidence.append(
