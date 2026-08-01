@@ -584,7 +584,7 @@ The complete set of files a project can ship:
 | `shared/environment.compose.yaml` | project root or task dir | Base compose file referenced by `default_environment` | Optional |
 | `shared/system_prompt.md` | project root | Default system prompt referenced by `task_defaults.system_prompt` | Optional |
 | `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, actors, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest) | Required |
-| `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, llm_judge, custom_checks) | Required |
+| `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, trace_checks, llm_judge, custom_checks) | Required |
 | `environment.compose.yaml` | task dir | Task-local compose (used when the task overrides the project default) | Optional |
 | `initial_state.json` | task dir | Task-local seed payload, or an overlay on a named project seed | Optional |
 | `shared/seeds/*` | project root | Named seed baselines declared in `project.yaml`'s `assets` registry | Optional |

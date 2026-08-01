@@ -22,6 +22,7 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.combine_method import combine_by_method
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import (
     GoldenReplayError,
     StateChecker,
@@ -208,17 +209,13 @@ class GradingEngine:
         component_scores: dict[str, float] = {}
         final_score = 0.0
         total_weight = 0.0
-        for name, score in (
-            ("state_checks", components.state_checks),
-            ("transcript_rules", components.transcript_rules),
-            ("llm_judge", components.llm_judge),
-            ("custom_checks", components.custom_checks),
-        ):
-            if score is None or name not in weights:
+        for spec in GRADE_COMPONENTS:
+            score = getattr(components, spec.core_field)
+            if score is None or spec.name not in weights:
                 continue
-            component_scores[name] = score
-            final_score += score * weights[name]
-            total_weight += weights[name]
+            component_scores[spec.name] = score
+            final_score += score * weights[spec.name]
+            total_weight += weights[spec.name]
 
         if total_weight > 0:
             final_score = final_score / total_weight

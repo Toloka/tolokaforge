@@ -38,6 +38,7 @@ import json
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
@@ -319,10 +320,10 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         binary_pass=raw_grade["binary_pass"],
         score=raw_grade["score"],
         components=GradeComponents(
-            state_checks=raw_grade["components"].get("state_checks", -1.0),
-            transcript_rules=raw_grade["components"].get("transcript_rules", -1.0),
-            llm_judge=raw_grade["components"].get("llm_judge", -1.0),
-            custom_checks=raw_grade["components"].get("custom_checks", -1.0),
+            **{
+                spec.core_field: raw_grade["components"].get(spec.name, -1.0)
+                for spec in GRADE_COMPONENTS
+            }
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,

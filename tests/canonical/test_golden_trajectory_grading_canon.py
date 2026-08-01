@@ -18,6 +18,7 @@ import pytest
 import yaml
 
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.models import GradingConfig, Trajectory
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
@@ -47,10 +48,14 @@ def test_golden_trajectory_grading_matches_pinned_verdict(canonical_project_dir)
 
     assert grade.binary_pass == golden["binary_pass"]
     assert grade.score == pytest.approx(golden["score"])
-    assert grade.components.state_checks == pytest.approx(golden["components"]["state_checks"])
-    assert grade.components.transcript_rules == golden["components"]["transcript_rules"]
-    assert grade.components.llm_judge == golden["components"]["llm_judge"]
-    assert grade.components.custom_checks == golden["components"]["custom_checks"]
+    # Every registered component, so a new one cannot be silently unasserted here.
+    # A key the golden grade.yaml never wrote means the component went unevaluated.
+    for spec in GRADE_COMPONENTS:
+        pinned = golden["components"].get(spec.name)
+        scored = getattr(grade.components, spec.core_field)
+        expected = pinned if pinned is None else pytest.approx(pinned)
+        message = f"{spec.name}: golden pins {pinned!r}, grading produced {scored!r}"
+        assert scored == expected, message
     assert "hash matches" in grade.reasons
 
     # Determinism: a second grade with a fresh engine yields the identical verdict.

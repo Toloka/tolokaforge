@@ -43,6 +43,7 @@ from tolokaforge.core.compose_materialisation import (
     shutdown_compose,
     write_capture_manifest,
 )
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.models import SeedRef
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -180,6 +181,29 @@ def _proto_score_to_optional(value: float) -> float | None:
     Convert negative sentinels to proper None for the Python ``GradeComponents`` model.
     """
     return None if value < 0 else value
+
+
+def _wire_components_to_scores(grade: runner_pb2.Grade) -> dict[str, float | None]:
+    """Lower a wire ``Grade`` into one score per registered component.
+
+    Three things mean "not evaluated" and all three must reach ``None``: the
+    ``-1.0`` sentinel, an absent ``components`` submessage, and an
+    explicit-presence field the sending runner never set. The latter two decode
+    as proto3's ``0.0`` default, which is indistinguishable from a real zero
+    score unless presence is read rather than the value.
+    """
+    if not grade.HasField("components"):
+        return {spec.name: None for spec in GRADE_COMPONENTS}
+
+    components = grade.components
+    declared = components.DESCRIPTOR.fields_by_name
+    scores: dict[str, float | None] = {}
+    for spec in GRADE_COMPONENTS:
+        if declared[spec.name].has_presence and not components.HasField(spec.name):
+            scores[spec.name] = None
+            continue
+        scores[spec.name] = _proto_score_to_optional(getattr(components, spec.name))
+    return scores
 
 
 class GrpcRunnerClient:
@@ -546,28 +570,7 @@ class GrpcRunnerClient:
                     "score": grade.score,
                     "reasons": grade.reasons,
                     "state_diff_json": grade.state_diff_json if grade.state_diff_json else None,
-                    "components": {
-                        "state_checks": (
-                            _proto_score_to_optional(grade.components.state_checks)
-                            if grade.components
-                            else None
-                        ),
-                        "transcript_rules": (
-                            _proto_score_to_optional(grade.components.transcript_rules)
-                            if grade.components
-                            else None
-                        ),
-                        "llm_judge": (
-                            _proto_score_to_optional(grade.components.llm_judge)
-                            if grade.components
-                            else None
-                        ),
-                        "custom_checks": (
-                            _proto_score_to_optional(grade.components.custom_checks)
-                            if grade.components
-                            else None
-                        ),
-                    },
+                    "components": _wire_components_to_scores(grade),
                     "custom_checks": [
                         {
                             "check_name": cc.check_name,

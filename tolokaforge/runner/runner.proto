@@ -362,6 +362,17 @@ message GradeComponents {
 
   // Custom Python checks score
   double custom_checks = 4;
+
+  // Trace checks score (temporal constraints over the trial's event timeline).
+  // Explicit presence (optional) rather than the -1.0 sentinel the four fields
+  // above use: proto3 scalars have no presence, so a runner image predating
+  // this field would decode as 0.0 and the host would record a scored zero
+  // where the truth is "this runner cannot evaluate trace checks". The
+  // RegisterTrial version gate does not cover this direction — a new engine
+  // registers happily against an older runner. Absent means not evaluated;
+  // present -1.0 also means not evaluated (a runner that has the field but
+  // scored nothing).
+  optional double trace_checks = 5;
 }
 
 message CustomCheckResult {

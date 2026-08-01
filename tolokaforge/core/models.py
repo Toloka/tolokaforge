@@ -507,6 +507,7 @@ class GradeComponents(BaseModel):
 
     state_checks: float | None = None
     transcript_rules: float | None = None
+    trace_checks: float | None = None
     llm_judge: float | None = None
     custom_checks: float | None = None
 

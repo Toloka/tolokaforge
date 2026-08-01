@@ -2388,6 +2388,7 @@ class GradeComponents(BaseModel):
     db_probe_reasons: str = ""
     transcript_pass: bool | None = None
     transcript_score: float = -1.0
+    trace_checks_score: float = -1.0  # -1.0 means not evaluated
     llm_judge_score: float = -1.0  # -1.0 means not evaluated
     llm_judge_reasons: str = ""
     custom_checks_score: float = -1.0  # -1.0 means not evaluated

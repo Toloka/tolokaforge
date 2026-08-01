@@ -54,6 +54,7 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
@@ -1580,21 +1581,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"termination_reason={termination_reason.value if termination_reason else 'none'}"
         )
 
+        # -1.0 is the wire's not-evaluated sentinel for a component.
+        wire_component_scores = {
+            spec.name: getattr(components, spec.runner_score_field)
+            for spec in GRADE_COMPONENTS
+            if spec.runner_score_field is not None
+        }
+        wire_component_scores["state_checks"] = (
+            -1.0 if state_checks_slot.component is None else state_checks_slot.component
+        )
+
         return pb2.GradeTrialResponse(
             success=True,
             error="",
             grade=pb2.Grade(
                 binary_pass=binary_pass,
                 score=score,
-                components=pb2.GradeComponents(
-                    # -1.0 is the wire's not-evaluated sentinel for a component.
-                    state_checks=(
-                        -1.0 if state_checks_slot.component is None else state_checks_slot.component
-                    ),
-                    transcript_rules=components.transcript_score,
-                    llm_judge=components.llm_judge_score,
-                    custom_checks=components.custom_checks_score,
-                ),
+                components=pb2.GradeComponents(**wire_component_scores),
                 reasons=reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
                 custom_checks=custom_check_wire_results,

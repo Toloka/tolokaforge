@@ -1449,8 +1449,7 @@ Weights act at **two distinct levels**, and they compose multiplicatively:
    `Σ(weight · score) / Σ(weight)` → a single `llm_judge` score in `[0, 1]`.
    Required criteria are gates, not weighted contributors.
 2. **`weights.llm_judge`** (top-level `combine`) — scales that whole judge
-   component against `state_checks`, `transcript_rules`, and `custom_checks` in
-   the final-score formula below.
+   component against the other components in the final-score formula below.
 
 So a criterion's pull on the final score is `(its weight / Σ judge weights) ×
 weights.llm_judge / Σ all weights`. Tune *within-rubric* importance with
@@ -1734,9 +1733,10 @@ The `weighted` mean:
 ```
 final_score = (state_score       * W_state
              + transcript_score  * W_transcript
+             + trace_score       * W_trace
              + judge_score       * W_judge
              + custom_score      * W_custom)
-              / (W_state + W_transcript + W_judge + W_custom)
+              / (W_state + W_transcript + W_trace + W_judge + W_custom)
 
 binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion gated)
 ```
@@ -1746,9 +1746,36 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
 as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
 declares no weight for, where the runner includes it at an invented `1.0` — the
-divergence tracked by #744 above. A `custom_checks`-only pack whose score comes
-back absent still fails loud (empty active set with a configured `custom_checks`
-weight ⇒ `(0.0, False)`, not a silent `(1.0, True)`).
+divergence tracked by #744 above.
+
+**Configured but unevaluated fails loud, for every component.** A component is
+configured when `combine.weights` gives it a weight **and** the pack writes its
+`grading.yaml` section. If every configured component then comes back
+unevaluated, the trial scores `(0.0, False)` rather than a silent `(1.0, True)` —
+so a pack weighted entirely on one component that never ran fails instead of
+passing on nothing. A weight with no matching section is a different case: that
+pack is read as declaring no grading at all and passes by default, and the two
+substrates disagree on it (**#758**).
+
+### What a component is
+
+`GRADE_COMPONENTS` in
+[`tolokaforge/core/grading/grade_components.py`](../tolokaforge/core/grading/grade_components.py)
+is the single enumeration of the grading components, and every site that has to
+name them all reads it: the weighted fold on both substrates, the
+configured-but-unevaluated check, the wire message, and the lowering of a wire
+grade back into scores. Each entry declares four names for one component — the
+`combine.weights` key (which is also the proto field and the wire dict key), the
+`grading.yaml` section that configures it, the core `GradeComponents` attribute,
+and the runner's `*_score` attribute. `state_checks` declares no runner
+attribute: the runner has no single field for it, because hash, JSONPath and DB
+probes are folded into that slot first (see
+[Substrate Grading](#substrate-grading-state_checksdb_probes)).
+
+The five components are `state_checks`, `transcript_rules`, `trace_checks`,
+`llm_judge` and `custom_checks`. Adding a sixth means adding an entry; the
+canonical suite fails a registry that disagrees with the core model, the wire
+descriptor, the runner's fields or the config sections.
 
 ### Weighting Strategies
 
