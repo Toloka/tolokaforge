@@ -32,10 +32,17 @@ Nine locks over :mod:`tolokaforge.core.grading.key_manifest`:
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
+
+Locks 3, 6, 7 and 9 drive a real trial, and each reads it through one fixture
+loader, so what a ``grading_parity`` pack can express bounds what they can prove.
+That loader's contract — a tool call belongs to the message that requested it, and
+carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
 import importlib
+import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,7 +58,6 @@ from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
-from tests.utils.timelines import declare_calls
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
@@ -71,6 +77,7 @@ from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_t
 from tolokaforge.core.models import (
     Message,
     RecordedToolCall,
+    ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
@@ -87,7 +94,11 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     runner_dump_path,
 )
-from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
+from tolokaforge.runner.service import (
+    RunnerServiceImpl,
+    TrialContextRuntime,
+    _build_runner_check_transcript,
+)
 
 pytestmark = pytest.mark.canonical
 
@@ -375,6 +386,14 @@ def _declared_hash_verdict_producers() -> frozenset[tuple[str, str]]:
 # Fixture-pack helpers
 # --------------------------------------------------------------------------
 
+# The one shape a ``trial.yaml`` case may take. Every key is read; anything else
+# is rejected, so a pack cannot carry a field the loader silently drops.
+_CASE_KEYS = frozenset({"messages", "state"})
+_MESSAGE_KEYS = frozenset({"role", "content", "tool_calls"})
+_CALL_KEYS = frozenset({"tool_name", "executor", "status", "arguments", "output"})
+
+_FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
 
 @dataclass(frozen=True)
 class _TrialCase:
@@ -411,42 +430,90 @@ def _declared_author_keys(grading_yaml: dict[str, Any]) -> set[str]:
     return {key for key in author_keys() if _yaml_declares(grading_yaml, key)}
 
 
+def _reject_unknown(authored: dict[str, Any], allowed: frozenset[str], *, what: str) -> None:
+    """A fixture key nothing reads expresses less than its author wrote — so it is an error."""
+    unknown = sorted(set(authored) - allowed)
+    assert not unknown, f"{what} declares {unknown}; the loader reads only {sorted(allowed)}"
+
+
+def _authored_call(raw_call: dict[str, Any], *, sequence: int) -> tuple[ToolCall, RecordedToolCall]:
+    """One authored call, as the message view declares it and as the record kept it.
+
+    ``latency_seconds`` is not authorable and is pinned at ``0.0``: wall time is
+    not compared across substrates, so a fixture varying it would pin a number no
+    parity claim reads.
+    """
+    call_id = f"call_{sequence}"
+    return (
+        ToolCall(id=call_id, name=raw_call["tool_name"], arguments=raw_call["arguments"]),
+        RecordedToolCall(
+            call_id=call_id,
+            sequence=sequence,
+            tool_name=raw_call["tool_name"],
+            arguments=raw_call["arguments"],
+            executor=ToolExecutorIdentity(raw_call["executor"]),
+            output=raw_call.get("output", ""),
+            status=ToolExecutionStatus(raw_call["status"]),
+            latency_seconds=0.0,
+            timestamp=_FIXTURE_TIMESTAMP,
+        ),
+    )
+
+
+def _wire_message(message: Message) -> dict[str, Any]:
+    """One turn as the runner receives it, in ``llm_messages_json``'s OpenAI shape."""
+    wire: dict[str, Any] = {"role": message.role.value, "content": message.content}
+    if message.tool_calls:
+        wire["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+            }
+            for call in message.tool_calls
+        ]
+    return wire
+
+
 def _load_case(pack_dir: Path, case: str) -> _TrialCase:
+    """One authored trial, in the input shape each substrate really takes.
+
+    A call is authored inside the message that requested it, so a fixture places
+    its calls across turns and the timeline's ``turn_index`` and event order follow
+    what the author wrote.
+    """
     fixture = yaml.safe_load((pack_dir / "trial.yaml").read_text())[case]
-    messages = [Message(role=raw["role"], content=raw["content"]) for raw in fixture["messages"]]
-    now = "2026-01-01T00:00:00+00:00"
+    where = f"{pack_dir.name}/trial.yaml case {case!r}"
+    _reject_unknown(fixture, _CASE_KEYS, what=where)
+
     # One recorded-tool-call list feeds both substrates: the core engine holds it
     # on the Trajectory, the runner's evaluators read its dump. A per-substrate
     # fixture could disagree with itself, which is the divergence this suite exists
-    # to catch.
-    recorded = [
-        RecordedToolCall(
-            call_id=f"call_{index}",
-            sequence=index,
-            tool_name=call["tool_name"],
-            arguments=call["arguments"],
-            executor=ToolExecutorIdentity(call["executor"]),
-            output="",
-            status=ToolExecutionStatus(call["status"]),
-            latency_seconds=0.0,
-            timestamp=now,
-        )
-        for index, call in enumerate(fixture["tool_calls"])
-    ]
-    # The assistant turn that made the calls must declare them, or the trial's two
-    # views of itself disagree and neither substrate will grade it.
-    view = declare_calls(messages, recorded)
+    # to catch. The message view declares every one of them, or the trial's two
+    # views disagree and neither substrate will grade it.
+    view: list[Message] = []
+    recorded: list[RecordedToolCall] = []
+    for index, raw in enumerate(fixture["messages"]):
+        _reject_unknown(raw, _MESSAGE_KEYS, what=f"{where} message {index}")
+        declared: list[ToolCall] = []
+        for raw_call in raw.get("tool_calls", ()):
+            _reject_unknown(raw_call, _CALL_KEYS, what=f"{where} message {index} tool call")
+            call, record = _authored_call(raw_call, sequence=len(recorded))
+            declared.append(call)
+            recorded.append(record)
+        view.append(Message(role=raw["role"], content=raw["content"], tool_calls=declared or None))
+
     trajectory = Trajectory(
         task_id=pack_dir.name,
         trial_index=0,
-        start_ts=now,
-        end_ts=now,
+        start_ts=_FIXTURE_TIMESTAMP,
+        end_ts=_FIXTURE_TIMESTAMP,
         messages=view,
         tool_log=recorded,
     )
     return _TrialCase(
         core_trajectory=trajectory,
-        runner_messages=fixture["messages"],
+        runner_messages=[_wire_message(message) for message in view],
         runner_timeline=build_trial_timeline(view, recorded, None),
         state=fixture["state"],
     )
@@ -1276,3 +1343,156 @@ def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_d
         f"the substrates disagree on {method!r}: core {(core.score, core.binary_pass)} vs "
         f"runner {(runner.score, runner.binary_pass)}"
     )
+
+
+# --------------------------------------------------------------------------
+# The fixture loader every lock above reads its trials through
+# --------------------------------------------------------------------------
+
+_MULTI_TURN_CASE = "two_turns"
+
+_MULTI_TURN_FIXTURE: dict[str, Any] = {
+    _MULTI_TURN_CASE: {
+        "messages": [
+            {"role": "user", "content": "Refund PAY-1 if it is a duplicate."},
+            {
+                "role": "assistant",
+                "content": "Looking that up.",
+                "tool_calls": [
+                    {
+                        "tool_name": "billing_api_get_payment",
+                        "executor": "agent",
+                        "status": "success",
+                        "arguments": {"payment_id": "PAY-1"},
+                        "output": '{"amount": 10}',
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Denying it.",
+                "tool_calls": [
+                    {
+                        "tool_name": "servicenow_csm_update_case",
+                        "executor": "agent",
+                        "status": "success",
+                        "arguments": {"u_resolution_code": "denied_ineligible"},
+                    }
+                ],
+            },
+        ],
+        "state": {},
+    }
+}
+
+# What the fixture above must build, event by event. The two calls sit on
+# different assistant turns, so a loader gathering them onto one turn produces
+# different ``turn_index`` values here; the first call authors an ``output`` and
+# the second omits one, so the two result rows pin the text read and the default.
+_MULTI_TURN_EVENTS: tuple[tuple[int, int, str, str | None, str | None], ...] = (
+    (0, 0, "user_message", None, None),
+    (1, 0, "assistant_message", None, None),
+    (2, 0, "tool_call", "billing_api_get_payment", None),
+    (3, 0, "tool_result", "billing_api_get_payment", '{"amount": 10}'),
+    (4, 1, "assistant_message", None, None),
+    (5, 1, "tool_call", "servicenow_csm_update_case", None),
+    (6, 1, "tool_result", "servicenow_csm_update_case", ""),
+)
+
+
+def _write_pack(tmp_path: Path, fixture: dict[str, Any]) -> Path:
+    pack = tmp_path / "authored_pack"
+    pack.mkdir()
+    (pack / "trial.yaml").write_text(yaml.safe_dump(fixture))
+    return pack
+
+
+def _produced_events(
+    timeline: TrialTimeline,
+) -> tuple[tuple[int, int, str, str | None, str | None], ...]:
+    return tuple(
+        (event.position, event.turn_index, event.kind.value, event.tool_name, event.result)
+        for event in timeline.events
+    )
+
+
+def test_the_fixture_loader_places_each_turns_calls_where_the_author_wrote_them(tmp_path):
+    """A call authored under a turn is that turn's call, with its own result text.
+
+    Every lock above reads its trial through this loader, so what a pack can say is
+    the limit of what they can prove. A loader that gathered a trial's calls onto
+    one turn would leave ordering across turns — and any window over ``turn_index``
+    — with no expressible fixture at all.
+    """
+    pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
+    trial = _load_case(pack, _MULTI_TURN_CASE)
+
+    assert _produced_events(trial.runner_timeline) == _MULTI_TURN_EVENTS
+
+    assert [
+        (message.role.value, [call.name for call in message.tool_calls or []])
+        for message in trial.core_trajectory.messages
+    ] == [
+        ("user", []),
+        ("assistant", ["billing_api_get_payment"]),
+        ("assistant", ["servicenow_csm_update_case"]),
+    ], "the core substrate's trajectory does not carry the placement the timeline shows"
+
+
+def test_the_fixture_loader_hands_the_runner_wire_shaped_tool_calls(tmp_path):
+    """The runner's own decoder reads the authored calls back off ``runner_messages``.
+
+    ``_grade_custom_checks`` takes the wire ``llm_messages``, so a fixture-shaped
+    call there decodes to an empty tool name and a check reads a trial that made no
+    call — the parity suite's own silent divergence.
+    """
+    pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
+    transcript = _build_runner_check_transcript(_load_case(pack, _MULTI_TURN_CASE).runner_messages)
+
+    assert [
+        (call.name, call.arguments)
+        for message in transcript.messages
+        for call in message.tool_calls
+    ] == [
+        ("billing_api_get_payment", {"payment_id": "PAY-1"}),
+        ("servicenow_csm_update_case", {"u_resolution_code": "denied_ineligible"}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("what", "mutate", "rejected"),
+    [
+        (
+            "a trial-wide call list",
+            lambda case: case.update(
+                tool_calls=[{"tool_name": "cancel_order", "executor": "agent", "status": "success"}]
+            ),
+            "['tool_calls']",
+        ),
+        (
+            "a misspelled message key",
+            lambda case: case["messages"][1].update(
+                tool_call=case["messages"][1].pop("tool_calls")
+            ),
+            "['tool_call']",
+        ),
+        (
+            "an authored latency",
+            lambda case: case["messages"][1]["tool_calls"][0].update(latency_seconds=1.5),
+            "['latency_seconds']",
+        ),
+    ],
+)
+def test_the_fixture_loader_rejects_a_key_it_would_not_read(what, mutate, rejected, tmp_path):
+    """One shape, no modes: a key the loader does not read fails the pack that wrote it.
+
+    The trial-wide list is the shape this loader replaced, and it is the one a pack
+    copied from an older fixture would carry — accepted silently, it would place
+    every call on the last assistant turn again.
+    """
+    fixture = yaml.safe_load(yaml.safe_dump(_MULTI_TURN_FIXTURE))
+    mutate(fixture[_MULTI_TURN_CASE])
+    pack = _write_pack(tmp_path, fixture)
+
+    with pytest.raises(AssertionError, match=re.escape(rejected)):
+        _load_case(pack, _MULTI_TURN_CASE)

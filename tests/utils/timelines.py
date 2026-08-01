@@ -1,10 +1,13 @@
-"""Builders for coherent :class:`TrialTimeline` test fixtures.
+"""Builder for coherent :class:`TrialTimeline` test fixtures.
 
 Both grading substrates read a timeline, so a grading test needs a message view
 and a record set that agree: a record naming a call no message asked for is a
-reconciliation failure, not a fixture shortcut. :func:`declare_calls` makes the
-pair agree and :func:`build_timeline` assembles the timeline from the turns and
-records a test actually cares about.
+reconciliation failure, not a fixture shortcut. :func:`build_timeline` assembles
+the timeline from the turns and records a test actually cares about, declaring
+every call on the message view so the two agree.
+
+Calls land on the last assistant turn, so a test that needs them spread across
+turns builds its message view itself.
 """
 
 from __future__ import annotations
@@ -21,7 +24,7 @@ from tolokaforge.core.models import (
 )
 
 
-def declare_calls(
+def _declare_calls(
     messages: Sequence[Message],
     recorded: Sequence[RecordedToolCall],
     *,
@@ -62,5 +65,5 @@ def build_timeline(
     if not messages:
         return build_trial_timeline([], recorded, termination_reason)
     return build_trial_timeline(
-        declare_calls(messages, recorded, unexecuted=unexecuted), recorded, termination_reason
+        _declare_calls(messages, recorded, unexecuted=unexecuted), recorded, termination_reason
     )

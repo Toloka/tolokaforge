@@ -145,6 +145,34 @@ Compare output against committed golden snapshots in `snapshots/`.
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a
   reconciliation failure, not a shortcut.
 
+Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
+authors a `task.yaml` and a `grading.yaml`. A pack that drives a differential adds
+a `trial.yaml` holding one named case per trial it grades — conventionally
+`satisfying` and `violating` — in the one shape its loader reads:
+
+```yaml
+satisfying:
+  messages:
+    - { role: user, content: "Refund PAY-1 if it is a duplicate." }
+    - role: assistant
+      content: "Looking that up."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-1" }
+          output: '{"amount": 10}'
+  state: {}
+```
+
+A tool call belongs to the message that requested it, so a case places its calls
+across the turns that made them and the timeline's `turn_index` follows what the
+author wrote. `output` is that call's own result text and defaults to `""`. Call
+ids and `sequence` are assigned in document order, and `latency_seconds` is not
+authorable — wall time is not compared across substrates, so a pinned value would
+be one nothing reads. Any other key fails the load naming itself, because a
+fixture key the loader ignores expresses less than its author wrote.
+
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 
 ### Integration Tests (`tests/integration/`)
