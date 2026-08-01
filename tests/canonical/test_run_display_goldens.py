@@ -77,12 +77,23 @@ def frozen_clock(monkeypatch: pytest.MonkeyPatch) -> None:
 
 
 def _replay_events(display: LiveRunDisplay) -> None:
-    """Fifteen events covering every state transition the panel renders.
+    """Twenty events covering every state transition the panel renders.
 
-    The sequence is deliberately mid-run — two completions, one failure,
+    The sequence is deliberately mid-run — four completions, one failure,
     two still-running trials — so the golden exercises every branch of
     the left-pane glyph map, the right-pane focused-trial summary, and
     the bottom-bar counters simultaneously.
+
+    The four completions cover all three verdicts a completed trial can
+    carry: ``task_a`` / ``task_b`` pass, ``task_f`` fails, and ``task_g``
+    carries none at all. ``task_g`` fires no ``judgment_scored`` — an
+    ungraded trial has no verdict to publish.
+
+    ``task_f`` and ``task_g`` fire no ``trial_progress``, which is what
+    keeps :data:`_BASE_TOTAL_COST` — the hand-written sum of the four
+    progress deltas below — equal to the cumulative cost this sequence
+    reaches. They also complete *before* ``task_b`` so auto-follow leaves
+    focus on a trial with populated token and cost counters.
     """
 
     display.run_started(total_trials=50, initial_completed=0)
@@ -122,6 +133,11 @@ def _replay_events(display: LiveRunDisplay) -> None:
         completion_tokens_delta=1450,
         cost_delta_usd=0.14,
     )
+    display.trial_started(trial_id="task_f:0", task_id="task_f", trial_index=0, total_index=5)
+    display.judgment_scored(trial_id="task_f:0", score=0.10, binary_pass=False)
+    display.trial_completed(trial_id="task_f:0", binary_pass=False, score=0.10)
+    display.trial_started(trial_id="task_g:0", task_id="task_g", trial_index=0, total_index=6)
+    display.trial_completed(trial_id="task_g:0", binary_pass=None, score=None)
     display.judgment_scored(trial_id="task_b:0", score=0.72, binary_pass=True)
     display.trial_completed(trial_id="task_b:0", binary_pass=True, score=0.72)
 

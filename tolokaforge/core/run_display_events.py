@@ -187,8 +187,15 @@ class RunDisplayEvents(Protocol):
     ) -> None:
         """Fired after each LLM generation inside the trial's agent loop."""
 
-    def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
-        """Fired on a terminal, non-retryable success."""
+    def trial_completed(
+        self, *, trial_id: str, binary_pass: bool | None, score: float | None
+    ) -> None:
+        """Fired on a terminal, non-retryable success.
+
+        ``binary_pass`` is ``None`` when the trial carries no verdict —
+        grading could not produce one. A ``False`` there would render as a
+        task the agent failed.
+        """
 
     def trial_failed(self, *, trial_id: str, error: str, retryable: bool) -> None:
         """Fired on terminal failure (retryable-exhausted or hard raise)."""

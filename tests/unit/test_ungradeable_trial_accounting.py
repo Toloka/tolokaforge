@@ -352,7 +352,13 @@ class _GradingPhaseConductor:
         )
 
 
-def _run_with_one_refusal(tmp_path: Path, refusal: str, *, repeats: int) -> Path:
+def _run_with_one_refusal(
+    tmp_path: Path,
+    refusal: str,
+    *,
+    repeats: int,
+    events: _RecordingEvents | None = None,
+) -> Path:
     """Drive a real ``Orchestrator.run()`` in which trial 1's grading refuses."""
     run_root = tmp_path / "results" / "run_base"
     run_root.parent.mkdir(parents=True, exist_ok=True)
@@ -361,6 +367,7 @@ def _run_with_one_refusal(tmp_path: Path, refusal: str, *, repeats: int) -> Path
     orch = Orchestrator(
         _make_run_config(run_root, repeats=repeats),
         deps=OrchestratorDeps(
+            events=events or _RecordingEvents(),
             runtime_backend=InMemoryRuntimeBackend(),
             conductor_factory=lambda ctx: _GradingPhaseConductor(ctx, grader),
         ),
@@ -417,6 +424,24 @@ class TestTheRunCountsTheUngradeableAttempt:
         run_state = json.loads((run_dir / "run_state.json").read_text())
         assert run_state["trials"]["TASK-A:1"]["status"] == "completed"
         assert run_state["failed_trials"] == 0
+
+    def test_the_completion_event_carries_no_verdict(
+        self, real_refusal: str, tmp_path: Path
+    ) -> None:
+        """The live display is told the trial was not graded, not that it failed."""
+        events = _RecordingEvents()
+        _run_with_one_refusal(tmp_path, real_refusal, repeats=2, events=events)
+
+        completions = {
+            kwargs["trial_id"]: kwargs for kind, kwargs in events.calls if kind == "trial_completed"
+        }
+        assert completions.keys() == {"TASK-A:0", "TASK-A:1"}
+        # The graded trial's verdict still arrives, so the None below is the
+        # ungradeable trial's and not a recorder that drops every kwarg.
+        assert completions["TASK-A:0"]["binary_pass"] is True
+        assert completions["TASK-A:0"]["score"] == 1.0
+        assert completions["TASK-A:1"]["binary_pass"] is None
+        assert completions["TASK-A:1"]["score"] is None
 
 
 # ---------------------------------------------------------------------------

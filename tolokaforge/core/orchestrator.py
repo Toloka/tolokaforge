@@ -1795,7 +1795,7 @@ class Orchestrator:
                             self._events.trial_completed(
                                 trial_id=f"{task_id}:{trial_idx}",
                                 binary_pass=(
-                                    trajectory.grade.binary_pass if trajectory.grade else False
+                                    trajectory.grade.binary_pass if trajectory.grade else None
                                 ),
                                 score=trajectory.grade.score if trajectory.grade else None,
                             )
