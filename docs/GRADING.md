@@ -917,7 +917,10 @@ took zero turns, which is within any limit, so the check passes vacuously. On a
 refusal-style task — where the expected final state equals the initial state — that
 trial also matches the expected state hash, and the whole trial passes without the
 agent having acted. `min_assistant_turns` is the assertion that it acted at all;
-`docs/TASKS.md` covers when a task should declare one.
+[`docs/TASKS.md`](TASKS.md#refusal-tasks-and-other-do-nothing-passes) § Refusal
+tasks and other do-nothing passes covers when a task should declare one, the
+`combine.weights` entry it needs to reach the final score, and the state-side half
+of the same hole that the floor does not close.
 
 **The floor is a gate on the whole `transcript_rules` component, not a sub-check
 inside it.** Unmet, the component is `0.0` on both substrates whatever the other

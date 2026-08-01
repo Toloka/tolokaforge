@@ -301,9 +301,57 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 - Prefer `state_checks.jsonpaths` for deterministic, objective checks.
 - Use `transcript_rules` to enforce tool usage patterns.
 - Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks).
-- For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding.
+- For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding — unless an idle agent already satisfies the state, in which case `transcript_rules` needs a weight of its own (below).
 
 See `docs/REFERENCE.md` for full schemas.
+
+### Refusal tasks and other do-nothing passes
+
+A task whose expected final state **equals** its initial state — the agent is meant
+to refuse, or to conclude that nothing needs changing — grades an idle agent as a
+success. The unchanged state *is* the expected state, so the hash comparison and
+every `state_checks.jsonpaths` assertion written against it hold; and
+`transcript_rules.max_turns` bounds the turn counter from above only, so zero turns
+is within any limit. Nothing in such a pack asks whether the agent did anything at
+all.
+
+Declare an activity floor, and weight the component that carries it:
+
+```yaml
+transcript_rules:
+  min_assistant_turns: 1        # the agent must have produced at least one turn
+  must_contain: ["cannot"]      # and must have said why it is refusing
+
+combine:
+  weights: { state_checks: 0.5, transcript_rules: 0.5 }
+  pass_threshold: 0.8
+```
+
+The floor is a gate on the whole `transcript_rules` component rather than one more
+sub-check inside it: unmet, the component is `0.0` whatever the other keys scored,
+and `grade.reasons` carries `Assistant turn count 0 below min_assistant_turns of
+1`. **The `combine.weights` entry is not optional** — core admits a scored
+component only when `combine.weights` declares a weight for it, so a floor declared
+in a pack that weights `state_checks` alone is evaluated and then dropped before it
+can reach the final score.
+
+A floor above `max_turns` admits no turn count at all. `tolokaforge validate`
+rejects such a pack, naming both keys and both values, so an unsatisfiable window
+is caught before the run is paid for.
+
+The floor counts assistant **generations**, not answers — three tool-call-only
+turns with no prose satisfy `min_assistant_turns: 3`, so pair it with a phrase rule
+when the refusal itself is the deliverable. See
+[`docs/GRADING.md`](GRADING.md#turn-bounds) § Turn bounds for the full semantics.
+
+**The floor closes the transcript half of this hole; the state half is open.** A
+`state_checks` block with no source the grading substrate can evaluate — one
+carrying only `id_fields`, or only `db_probes`, or an empty `jsonpaths` list — is
+scored a free `1.0` by core and recorded as not evaluated by the runner, so it
+either contributes a passing component nothing earned or contributes nothing at
+all. Either way it asks nothing of the agent. That is **#733**. Give a refusal task
+at least one state assertion a wrong action would break: an idle agent and an agent
+that acted wrongly must not come out with the same `state_checks` score.
 
 ---
 
@@ -319,6 +367,7 @@ Tasks that always pass (100% success rate) provide zero RL training signal. Task
 - **Overly broad scripted_flow triggers.** Generic words like "done", "confirmed", "success" end the conversation before the agent finishes. Use specific triggers (order IDs, exact phrases) or use LLM user simulator.
 - **LLM judge with high weight as a softener.** An LLM judge giving 0.7 for "attempted the task" masks state_checks failures. Reserve LLM judge for genuinely subjective evaluation.
 - **JavaScript safety nets.** Code like `value || 'correct_answer'` means the graded value is always correct regardless of agent action. Record what actually happened.
+- **Grading an idle agent cannot fail.** If the expected final state equals the initial state, a do-nothing agent matches it and passes; declare an activity floor — see [Refusal tasks and other do-nothing passes](#refusal-tasks-and-other-do-nothing-passes).
 
 ### Patterns for Effective Difficulty
 
