@@ -378,7 +378,8 @@ def test_degenerate_trial_still_grades_a_declared_activity_floor(runner_service,
     No messages and no tool history is exactly the answer `min_assistant_turns`
     asks for, so the floor is evaluated where its siblings are skipped: the
     component is `0.0` rather than absent from the combine, the reason names the
-    bound, and the sibling's skip note survives the split.
+    bound, the floor itself is never recorded as skipped, and the sibling's skip
+    note survives the split.
     """
     grading = {
         "combine_method": "weighted",
@@ -393,6 +394,10 @@ def test_degenerate_trial_still_grades_a_declared_activity_floor(runner_service,
     assert response.grade.binary_pass is False
     assert response.grade.components.transcript_rules == pytest.approx(0.0)
     assert "Assistant turn count 0 below min_assistant_turns of 1" in response.grade.reasons
+    # The blanket skip sweeps the whole subtree by key prefix, so the floor is the one
+    # member that must be carved out of it. Left in, the reasons would say the floor
+    # drove the verdict *and* was never evaluated.
+    assert "transcript_rules.min_assistant_turns skipped" not in response.grade.reasons
     assert (
         "transcript_rules.must_contain skipped: the trial's timeline carries no events"
         in response.grade.reasons

@@ -154,6 +154,14 @@ def validate_grading_yaml(grading_path: Path) -> None:
         from tolokaforge.core.models import TranscriptRulesConfig
 
         TranscriptRulesConfig(**transcript_rules)
+    elif transcript_rules is not None:
+        raise RuntimeError(
+            f"Grading file {grading_path}: 'transcript_rules' must be a mapping of rule "
+            f"keys, got {type(transcript_rules).__name__} ({transcript_rules!r}). "
+            "A key indented one level too far under 'transcript_rules:' makes the block a "
+            "list. Write 'transcript_rules:' then each rule key indented one level beneath "
+            "it."
+        )
 
 
 def load_task_yaml(

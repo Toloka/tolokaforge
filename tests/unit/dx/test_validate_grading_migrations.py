@@ -610,7 +610,9 @@ _TRANSCRIPT_MODELS = (CoreTranscriptRules, RunnerTranscriptRules)
 _MODEL_IDS = ("core", "runner")
 
 
-def _write_transcript_rules(tmp_path: Path, transcript_rules: dict) -> Path:
+def _write_transcript_rules(tmp_path: Path, transcript_rules: object) -> Path:
+    """Serialise the block beside a valid ``combine``, so a rejection below is the
+    transcript gate's and not the combine gate's."""
     grading = tmp_path / "grading.yaml"
     grading.write_text(
         yaml.safe_dump(
@@ -668,6 +670,25 @@ def test_both_substrates_accept_every_window_a_trial_can_land_in(
     model(**transcript_rules)
 
 
+@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
+@pytest.mark.parametrize(
+    "transcript_rules",
+    [{"min_assistant_turns": 0}, {"max_turns": 0}],
+    ids=["floor_below_the_domain", "ceiling_below_the_domain"],
+)
+def test_both_substrates_reject_a_turn_bound_below_the_domain(model: type, transcript_rules: dict):
+    """Each bound is declarable from 1 up, on the wire model as well as the core one.
+
+    A floor of 0 asserts nothing, and the runtime key ledger tests a declared key by
+    truthiness, so it would be an unpoliced declaration. A ceiling below 1 is the
+    same defect from the other side: it closes the window on its own, so every trial
+    fails the transcript component whatever the agent did — the outcome the window
+    gate rejects when a pack writes both keys.
+    """
+    with pytest.raises(ValueError, match="greater than or equal to 1"):
+        model(**transcript_rules)
+
+
 def test_validate_rejects_a_pack_whose_turn_window_admits_nothing(tmp_path: Path):
     """Validate is where an author hears this.
 
@@ -684,6 +705,32 @@ def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
     validate_grading_yaml(
         _write_transcript_rules(tmp_path, {"min_assistant_turns": 1, "max_turns": 5})
     )
+
+
+@pytest.mark.parametrize(
+    "transcript_rules",
+    [[{"max_turns": 3}], "max_turns: 3", 3],
+    ids=["list", "string", "number"],
+)
+def test_validate_rejects_a_transcript_rules_block_that_is_not_a_mapping(
+    tmp_path: Path, transcript_rules: object
+):
+    """The shape half of the typo space the window gate reads past.
+
+    ``isinstance(..., dict)`` alone reports such a pack valid, and every rule the
+    block was meant to carry then grades as unset — a closed turn window included.
+    The same shape ``combine`` carries in
+    ``test_validate_rejects_a_combine_block_that_is_not_a_mapping``.
+    """
+    grading = _write_transcript_rules(tmp_path, transcript_rules)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "'transcript_rules'" in message, message
+    assert type(transcript_rules).__name__ in message, message
 
 
 @pytest.mark.parametrize(

@@ -344,14 +344,22 @@ turns with no prose satisfy `min_assistant_turns: 3`, so pair it with a phrase r
 when the refusal itself is the deliverable. See
 [`docs/GRADING.md`](GRADING.md#turn-bounds) § Turn bounds for the full semantics.
 
-**The floor closes the transcript half of this hole; the state half is open.** A
-`state_checks` block with no source the grading substrate can evaluate — one
-carrying only `id_fields`, or only `db_probes`, or an empty `jsonpaths` list — is
-scored a free `1.0` by core and recorded as not evaluated by the runner, so it
-either contributes a passing component nothing earned or contributes nothing at
-all. Either way it asks nothing of the agent. That is **#733**. Give a refusal task
-at least one state assertion a wrong action would break: an idle agent and an agent
-that acted wrongly must not come out with the same `state_checks` score.
+**The floor closes the transcript half of this hole; the state half is open.**
+Core scores a `state_checks` block it has no evaluable source for a free `1.0` —
+one carrying only `id_fields`, only `db_probes`, or an empty `jsonpaths` list — so
+the component passes on evidence nothing produced. That is **#733**.
+
+The runner splits those three. An `id_fields`-only or empty-`jsonpaths` block
+records the not-evaluated sentinel and contributes nothing, which asks nothing of
+the agent either. A `db_probes`-only block is a **real** check the runner runs and
+core cannot: `state_checks.db_probes` is `RUNNER_ONLY` in the substrate-parity
+manifest, evaluated by `evaluate_db_probes`, because the probe DSN resolves only
+inside the task's docker network. So probes do assert something — just not on the
+core substrate, where the same pack takes the free `1.0`.
+
+Either way, give a refusal task at least one state assertion a wrong action would
+break on the substrate you grade on: an idle agent and an agent that acted wrongly
+must not come out with the same `state_checks` score.
 
 ---
 

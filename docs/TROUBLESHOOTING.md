@@ -39,12 +39,14 @@ every registration and the runner refuses anything below its own, so no trial st
 and no tokens are spent.
 
 **The engine is newer than the image.** The error is a Pydantic validation failure —
-`extra_forbidden` — naming a field the older image's config models do not declare;
-`state_checks.hash_weight` is the current one, and it appears for **every** pack
-carrying a non-empty `state_checks:` block, because the engine emits the field
-whether or not the pack declares a weight. The trial spec crosses the wire as a JSON
-string parsed by `extra="forbid"` models, so an unknown key there is an error rather
-than a dropped field — unlike a proto message field, which an older runner ignores.
+`extra_forbidden` — naming a field the older image's config models do not declare.
+Two fields carry it: `state_checks.hash_weight`, which appears for **every** pack
+carrying a non-empty `state_checks:` block, and
+`transcript_rules.min_assistant_turns`, which appears for **every** pack carrying a
+`transcript_rules:` block. The engine emits both whether or not the pack declares
+them. The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
+models, so an unknown key there is an error rather than a dropped field — unlike a
+proto message field, which an older runner ignores.
 
 See [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock
 and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §

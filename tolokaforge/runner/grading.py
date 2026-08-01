@@ -274,8 +274,9 @@ def evaluate_transcript_rules(
     passed. The component score feeds
     ``combine_grade_components`` where ``pass_threshold`` is applied, so a
     fraction (rather than all-or-nothing) lets authors set partial-credit
-    thresholds (e.g. ``pass_threshold: 0.75``). An empty config (no fields set)
-    is a no-op pass with ``score=1.0`` — there is nothing to violate.
+    thresholds (e.g. ``pass_threshold: 0.75``). A config that produces no sub-check
+    rows is a no-op pass with ``score=1.0`` — no fields set, or a met floor as the
+    only declared rule, leaves nothing that could have been violated.
 
     Unknown / missing data is surfaced as a FAILING sub-check, never silently
     passed (AGENTS.md: surface failures explicitly).
@@ -309,7 +310,7 @@ def evaluate_transcript_rules(
     unmet_floor: TranscriptRuleResult | None = None
     if min_assistant_turns is not None:
         accounted_keys[MIN_ASSISTANT_TURNS_KEY] = EVALUATED
-        unmet_floor = _check_min_assistant_turns(min_assistant_turns, len(assistant_messages))
+        unmet_floor = _unmet_activity_floor(min_assistant_turns, len(assistant_messages))
         if unmet_floor is not None:
             details.append(unmet_floor)
 
@@ -349,7 +350,8 @@ def evaluate_transcript_rules(
                 details.append(check)
 
     if not details:
-        # No rules configured — nothing can be violated.
+        # No sub-check rows — nothing can be violated. Either nothing was declared,
+        # or a met activity floor was the only declaration and emits no row.
         return TranscriptEvaluationResult(
             passed=True, score=1.0, details=[], accounted_keys=accounted_keys
         )
@@ -478,9 +480,7 @@ def _check_max_turns(max_turns: int, turn_count: int) -> TranscriptRuleResult:
     )
 
 
-def _check_min_assistant_turns(
-    min_assistant_turns: int, turn_count: int
-) -> TranscriptRuleResult | None:
+def _unmet_activity_floor(min_assistant_turns: int, turn_count: int) -> TranscriptRuleResult | None:
     """The failing row for an unmet activity floor, or ``None`` when it is met.
 
     A met floor emits no row at all. The floor is a gate on the whole component,
