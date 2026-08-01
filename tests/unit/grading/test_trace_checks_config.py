@@ -27,7 +27,8 @@ from tests.utils.trace_checks_configs import (
     EVERY_OPERATOR_MATCHER,
     every_kind_block,
 )
-from tolokaforge.core.models import TraceChecksConfig
+from tolokaforge.core.grading.trace_timeline import TraceEventKind
+from tolokaforge.core.models import OnMissing, TraceChecksConfig
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
     TRACE_MATCHABLE_FIELDS_BY_KIND,
@@ -430,6 +431,37 @@ def test_the_whole_vocabulary_loads():
 
     assert len(config.constraints) == len(TRACE_CONSTRAINT_KINDS)
     assert {item.require.declared_kind() for item in config.constraints} == TRACE_CONSTRAINT_KINDS
+
+
+_KINDS_THAT_ANCHOR_NOTHING = frozenset({"present", "absent", "count"})
+
+
+@pytest.mark.parametrize("kind", sorted(set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING))
+def test_on_missing_is_accepted_on_every_kind_that_anchors_something(kind: str):
+    """The complement of the three ``on_missing`` rejection rows above.
+
+    Those rows stay green if the rejection widens to the whole vocabulary, which
+    would leave ``on_missing`` unwritable and its default the only reachable
+    policy. These seven are the kinds that select an anchor distinct from the thing
+    asserted, so the opt-in has something to decide.
+    """
+    assert len(set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING) == 7
+
+    config = TraceChecksConfig(
+        **_block(_constraint(EVERY_CONSTRAINT_KIND[kind], on_missing="pass"))
+    )
+
+    assert config.constraints[0].on_missing is OnMissing.PASS
+
+
+def test_the_matchable_table_answers_for_every_event_kind():
+    """The sweep below reads the table, so a kind missing from it is never swept.
+
+    Two sources: the table here and the event vocabulary the timeline builds. A
+    kind added to :class:`TraceEventKind` with no row would leave every matcher
+    over it rejected, and the per-kind sweep would not notice.
+    """
+    assert set(TRACE_MATCHABLE_FIELDS_BY_KIND) == set(TraceEventKind)
 
 
 def test_a_matcher_may_read_every_field_its_kind_carries():

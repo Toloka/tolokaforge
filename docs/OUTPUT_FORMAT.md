@@ -902,7 +902,7 @@ layers.
 `components.custom_checks` and `custom_checks_details` are populated only when
 the pack sets `grading.custom_checks.enabled: true` and delivers a `checks.py`
 alongside the task. See [`docs/GRADING.md`](GRADING.md#custom-checks) for how
-the aggregate combines with the other three components and
+the aggregate combines with the other four components and
 [`docs/custom_checks.md`](custom_checks.md) for the `@init` + `@check`
 authoring API.
 

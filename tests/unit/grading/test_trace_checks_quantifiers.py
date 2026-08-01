@@ -20,6 +20,10 @@ trajectory over the kind's own tools, one extra event inserted at every place it
 could go — rather than trusted. Polarity is a property of the *quantified* domain,
 so the sweep is over trajectories where every side matched something: a side that
 matched nothing never reaches a quantifier at all, and ``on_missing`` decides it.
+That scoping is why the empty-side counterexamples at the end of this file are
+standing locks rather than sweep cells — the case they pin is the one the sweep
+excludes by construction, and it is where a bracket over two readings stops
+bracketing.
 """
 
 from __future__ import annotations
@@ -587,3 +591,80 @@ def test_absent_between_is_undecided_where_its_two_anchors_pull_opposite_ways():
     ) == ([2, 8], [3, 10], [5])
     assert result.passed is False
     assert "cannot be decided" in result.message
+
+
+def _straddled_timeline(undecidable: str, definite: str) -> TrialTimeline:
+    """Two calls to ``undecidable`` the trial never ran, straddling a recorded ``definite``.
+
+    A status-reading matcher over ``undecidable`` therefore has **no** definite
+    match and two undecidable events, one on each side of the other matcher's only
+    match — the arrangement under which the two readings of a quantified side agree
+    and a completion between them does not.
+    """
+    return build_turn_timeline(
+        [
+            Turn("user", "Do the work."),
+            Turn(
+                "assistant",
+                "Asking.",
+                unexecuted=[ToolCall(id="never_ran_early", name=undecidable, arguments={})],
+            ),
+            Turn("assistant", "Running.", recorded=[recorded_call(definite, sequence=0)]),
+            Turn(
+                "assistant",
+                "Asking again.",
+                unexecuted=[ToolCall(id="never_ran_late", name=undecidable, arguments={})],
+            ),
+        ]
+    )
+
+
+# One cell per polarity of the empty side, with the ``on_missing`` that makes the
+# empty reading agree with the everything reading: a universal side reads False at
+# both under a named failure, an existential side reads True at both under the
+# opt-in.
+_EMPTY_SIDE_CELLS: dict[str, str] = {"all": "fail", "any": "pass"}
+
+
+@pytest.mark.parametrize("quantifier", sorted(_EMPTY_SIDE_CELLS))
+def test_a_quantified_side_with_no_definite_match_is_undecided(quantifier: str):
+    """A side nothing definitely matches is not bracketed by its two readings.
+
+    The empty reading is not a vacuous quantification whose verdict the relation
+    supplies — it is an unmatched anchor, decided by ``on_missing`` — so it carries a
+    verdict from a different source and the interval it is the bottom of brackets
+    nothing. Both cells are a definite verdict some completion contradicts:
+
+    - ``all`` under ``on_missing: fail`` reads False empty (the named failure) and
+      False over both undecidables (position 7 is not before 4), while the
+      completion in which only the call at position 2 succeeded reads
+      ``all({2}) → 2 < 4`` — **True**;
+    - ``any`` under ``on_missing: pass`` reads True empty (the opt-in) and True over
+      both (position 2 is before 4), while the completion in which only the call at
+      position 7 succeeded reads ``any({7}) → 7 < 4`` — **False**.
+
+    Naming the singleton readings alongside the two ends is what reaches the honest
+    answer, and it is the answer for every ``on_missing``: what the trial did not
+    record is what decides this, not the author's policy for an anchor that never
+    occurred.
+    """
+    timeline = _straddled_timeline(_LEFT, _RIGHT)
+
+    result = evaluate_constraint(
+        timeline,
+        {
+            "before": {
+                "left": _status_side(quantifier, _LEFT),
+                "right": _side("any", _RIGHT),
+            }
+        },
+        on_missing=_EMPTY_SIDE_CELLS[quantifier],
+    )
+
+    assert (_positions_of(timeline, _LEFT), _positions_of(timeline, _RIGHT)) == ([2, 7], [4]), (
+        "the right side's one definite match has to sit between the left side's two "
+        "undecidables, or no completion disagrees with the readings that bracket them"
+    )
+    assert result.passed is False
+    assert "cannot be decided" in result.message
+    assert "status" in result.message

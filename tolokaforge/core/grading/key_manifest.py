@@ -13,8 +13,15 @@ here fails that suite, and every entry claiming both substrates at
 substrates' component scores.
 """
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from enum import Enum
+
+from tolokaforge.core.models import (
+    KeyAccounting,
+    KeyAccountingRecord,
+    TraceConstraintKind,
+)
 
 
 class KeyKind(str, Enum):
@@ -75,10 +82,10 @@ class GradingKey:
     field, ``*_field`` names the list and ``*_element_path`` is a dotted path
     walked from the element model (``"require.before"``). Several entries then
     name one list field, so the field-coverage lock reads the element path rather
-    than the field as the claim. The walk needs the Pydantic models this module
-    deliberately does not import, so it lives in
+    than the field as the claim. The walk needs the substrates' grading-config
+    models, which this module does not import, so it lives in
     ``tests/canonical/test_grading_substrate_parity.py``; what is checked here is
-    only what needs no model at all.
+    only what needs no config model at all.
 
     ``family_root`` marks an entry that stands for a whole subtree of leaf
     entries: one substrate may flatten the subtree into per-leaf fields, so the
@@ -680,6 +687,46 @@ def author_keys() -> frozenset[str]:
 def entry(author_key: str) -> GradingKey:
     """The manifest entry for ``author_key``, raising ``KeyError`` when absent."""
     return _BY_AUTHOR_KEY[author_key]
+
+
+def checked_author_key(author_key: str) -> str:
+    """``author_key`` itself, raising at import when the manifest no longer has it."""
+    return entry(author_key).author_key
+
+
+EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
+
+NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
+)
+
+TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")
+
+TRACE_CONSTRAINT_KEY_BY_KIND: Mapping[TraceConstraintKind, str] = {
+    TraceConstraintKind.PRESENT: checked_author_key("trace_checks.constraints.present"),
+    TraceConstraintKind.ABSENT: checked_author_key("trace_checks.constraints.absent"),
+    TraceConstraintKind.COUNT: checked_author_key("trace_checks.constraints.count"),
+    TraceConstraintKind.BEFORE: checked_author_key("trace_checks.constraints.before"),
+    TraceConstraintKind.IMMEDIATELY_BEFORE: checked_author_key(
+        "trace_checks.constraints.immediately_before"
+    ),
+    TraceConstraintKind.ABSENT_BEFORE: checked_author_key("trace_checks.constraints.absent_before"),
+    TraceConstraintKind.ABSENT_BETWEEN: checked_author_key(
+        "trace_checks.constraints.absent_between"
+    ),
+    TraceConstraintKind.ALL_OF: checked_author_key("trace_checks.constraints.all_of"),
+    TraceConstraintKind.ANY_OF: checked_author_key("trace_checks.constraints.any_of"),
+    TraceConstraintKind.NEGATE: checked_author_key("trace_checks.constraints.negate"),
+}
+"""The author key each constraint kind is accounted under, one line per kind.
+
+Written out rather than comprehended over
+:class:`~tolokaforge.runner.models.TraceConstraintKind`, so the lock comparing
+the two compares two sources: a comprehension would assert the vocabulary against
+itself and pass with a kind nothing accounts for. Each value is resolved through
+:func:`checked_author_key`, so a kind the manifest stops carrying an entry for
+raises at import instead of accounting against a key nothing enumerates.
+"""
 
 
 def family_author_keys(root_author_key: str) -> tuple[str, ...]:

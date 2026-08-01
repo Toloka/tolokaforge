@@ -586,7 +586,7 @@ def _declared_author_keys(grading_yaml: dict[str, Any]) -> set[str]:
 
 
 _CONSTRAINT_KIND_KEYS = frozenset(
-    f"trace_checks.constraints.{kind}" for kind in TRACE_CONSTRAINT_KINDS
+    f"trace_checks.constraints.{kind.value}" for kind in TRACE_CONSTRAINT_KINDS
 )
 
 
@@ -1818,12 +1818,14 @@ def test_the_manifest_addresses_every_constraint_kind_and_no_other():
 
     assert addressed == set(TRACE_CONSTRAINT_KINDS), (
         f"the manifest addresses {sorted(addressed)} where the vocabulary is "
-        f"{sorted(TRACE_CONSTRAINT_KINDS)}. A kind with no entry has no fixture pack "
+        f"{sorted(kind.value for kind in TRACE_CONSTRAINT_KINDS)}. A kind with no entry has "
+        f"no fixture pack "
         "and no parity claim; an entry with no kind addresses a payload nothing evaluates"
     )
     assert set(TraceConstraintExpr.model_fields) == set(TRACE_CONSTRAINT_KINDS), (
         f"TraceConstraintExpr declares {sorted(TraceConstraintExpr.model_fields)} where "
-        f"the vocabulary is {sorted(TRACE_CONSTRAINT_KINDS)}. Every field on that model "
+        f"the vocabulary is {sorted(kind.value for kind in TRACE_CONSTRAINT_KINDS)}. Every "
+        f"field on that model "
         "is a constraint kind an author can write, so the two are the same set"
     )
 

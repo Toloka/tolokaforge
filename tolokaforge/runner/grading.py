@@ -536,8 +536,8 @@ def _check_disallowed_tool(
     Status-insensitive on purpose: attempting a forbidden call is the violation,
     so an errored attempt fails the check just like a successful one. A call the
     agent declared on a terminating turn never reached the substrate and is not
-    counted; naming intent as a violation is a matcher question, tracked on #678.
-    That exclusion needs the record view, so a declared call the timeline holds no
+    counted; a ``trace_checks`` matcher over the call event is where that intent is
+    nameable. That exclusion needs the record view, so a declared call the timeline holds no
     records for fails the check instead of reading as one that never ran.
     """
     if _outcome_unknown(calls, tool_name, records_present=records_present):
@@ -1128,6 +1128,7 @@ def build_grade_reasons(
     state_diff: dict[str, Any] | None = None,
     transcript_result: dict[str, Any] | None = None,
     judge_reasons: str | None = None,
+    trace_checks_result: dict[str, Any] | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -1136,6 +1137,7 @@ def build_grade_reasons(
         components: Component scores dict
         state_diff: State diff if hash comparison failed
         transcript_result: Transcript evaluation result
+        trace_checks_result: Trace checks evaluation result
 
     Returns:
         Human-readable reasons string
@@ -1199,10 +1201,16 @@ def build_grade_reasons(
             else:
                 reasons.append("Transcript: failed")
 
-    # Trace checks reason
+    # Trace checks reason — the score, then every failing constraint by name, the
+    # same lines core's engine emits so a grade reads the same on both substrates.
     trace_checks_score = components.get("trace_checks_score", -1.0)
     if trace_checks_score >= 0:
         reasons.append(f"Trace checks: score={trace_checks_score:.2f}")
+        reasons.extend(
+            f"Trace check {item['id']}: {item['message']}"
+            for item in (trace_checks_result or {}).get("constraints", [])
+            if not item["passed"]
+        )
 
     # LLM judge reason
     llm_judge_score = components.get("llm_judge_score", -1.0)

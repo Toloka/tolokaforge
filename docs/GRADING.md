@@ -1365,10 +1365,11 @@ turn 0** with the first assistant turn, so `first_turn: 0` includes it. "Before
 the first user message" is therefore not expressible as a window — that window is
 always empty — and the intent is `absent_before`.
 
-### Matching a result is scoped to successful calls (#717)
+### Matching a result is scoped to successful calls
 
-A matcher carrying a `result` predicate must also carry a `status` predicate whose
-**only** operator is `equals`, valued `success`. Any other status predicate —
+This scoping exists because of #717. A matcher carrying a `result` predicate must
+also carry a `status` predicate whose **only** operator is `equals`, valued
+`success`. Any other status predicate —
 `not_equals: error`, `in_: [success, timeout]`, `exists: true`, or none at all —
 is rejected at load naming #717.
 
@@ -1481,6 +1482,13 @@ evaluator.
 
 Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable
 and stays so, because it is not compared across substrates.
+
+One cost shape worth knowing when authoring: `absent_between` evaluates the
+product of its `start` readings, its `end` readings and its `forbidden` readings,
+so on a timeline where all three matchers are undecidable its work grows cubically
+in the number of undecidable events. Trials in the size range the harness produces
+stay well inside that, and a records-present timeline has no undecidable events at
+all.
 
 ---
 
@@ -1749,7 +1757,7 @@ scored as it was). See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md).
 
 The `custom_checks` component runs author-written Python `@check`
 functions from a pack's `checks.py`. It's the deterministic-Python gap
-the other three components don't express: arithmetic over final DB
+the other four components don't express: arithmetic over final DB
 rows, invariants that span multiple tables, transcript patterns tied to
 computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
 `CheckSkipped`; per-check results ride the wire as `CustomCheckResult`

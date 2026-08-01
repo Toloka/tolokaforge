@@ -55,7 +55,7 @@ def test_the_constraint_vocabulary_is_closed_at_ten_members():
         "the manifest and the docs do not cover is a kind no fixture pack proves"
     )
     assert set(TraceConstraintExpr.model_fields) == TRACE_CONSTRAINT_KINDS, (
-        f"TRACE_CONSTRAINT_KINDS holds {sorted(TRACE_CONSTRAINT_KINDS)} but "
+        f"TRACE_CONSTRAINT_KINDS holds {sorted(k.value for k in TRACE_CONSTRAINT_KINDS)} but "
         f"TraceConstraintExpr declares {sorted(TraceConstraintExpr.model_fields)}. The "
         "evaluator dispatches on the frozenset and the loader validates against the "
         "fields, so a kind in one and not the other is either unreachable or unvalidated"

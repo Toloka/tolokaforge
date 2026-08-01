@@ -133,7 +133,8 @@ A multi-container run composes five layers:
 4. **Grading blends independent signals** — `state_checks.db_probes`
    (an independent postgres oracle via a read-only role) with
    `transcript_rules.required_actions` (did the agent take the right tool
-   actions) and an `llm_judge` rubric, combined by weight.
+   actions), `trace_checks` (did it take them in the right order) and an
+   `llm_judge` rubric, combined by weight.
 5. **Traces land in the trial dir** — `grade.yaml`, `trajectory.yaml`,
    `metrics.yaml`, `env.yaml`, and (on failure) per-service logs — the full
    post-mortem surface for one trial.
@@ -567,17 +568,21 @@ through, and it can never mutate the substrate. The runner container joins the
 task's docker network, so it reaches the service (e.g. `app-db:5432`) at grade
 time.
 
-Substrate state is one of three grader families these packs blend:
+Substrate state is one of four grader families these packs blend:
 
 - **`state_checks.db_probes`** — the independent-oracle read against the
   substrate described above.
 - **`transcript_rules.required_actions`** — asserts the agent actually took the
   named tool actions during the run (e.g. called a specific endpoint), grading
   the process rather than only the end state.
+- **`trace_checks`** — declarative conditions on the trajectory itself: ordering,
+  scoped absence, and counting over the trial's event timeline, for the process
+  claims a flat presence check cannot state (e.g. the payment was looked up
+  *before* the case was denied).
 - **`llm_judge`** — a rubric scored by a judge model, for open-ended output a
   deterministic check can't express (a root-cause note, a well-argued rationale).
 
-Full field reference for all three in [`docs/GRADING.md`](GRADING.md) §
+Full field reference for all four in [`docs/GRADING.md`](GRADING.md) §
 Substrate Grading; the `multi_service_lot_ops` pack below is the worked example.
 
 ## Further reading

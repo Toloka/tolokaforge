@@ -756,28 +756,50 @@ class AbsentBetweenConstraint(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-TRACE_CONSTRAINT_KINDS: frozenset[str] = frozenset(
+class TraceConstraintKind(str, Enum):
+    """One member of the closed constraint vocabulary.
+
+    Each member names a field of :class:`TraceConstraintExpr` holding that kind's
+    payload, so a kind and the payload address that reaches it are the same token.
+    """
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    COUNT = "count"
+    BEFORE = "before"
+    IMMEDIATELY_BEFORE = "immediately_before"
+    ABSENT_BEFORE = "absent_before"
+    ABSENT_BETWEEN = "absent_between"
+    ALL_OF = "all_of"
+    ANY_OF = "any_of"
+    NEGATE = "negate"
+
+
+TRACE_CONSTRAINT_KINDS: frozenset[TraceConstraintKind] = frozenset(
     {
-        "present",
-        "absent",
-        "count",
-        "before",
-        "immediately_before",
-        "absent_before",
-        "absent_between",
-        "all_of",
-        "any_of",
-        "negate",
+        TraceConstraintKind.PRESENT,
+        TraceConstraintKind.ABSENT,
+        TraceConstraintKind.COUNT,
+        TraceConstraintKind.BEFORE,
+        TraceConstraintKind.IMMEDIATELY_BEFORE,
+        TraceConstraintKind.ABSENT_BEFORE,
+        TraceConstraintKind.ABSENT_BETWEEN,
+        TraceConstraintKind.ALL_OF,
+        TraceConstraintKind.ANY_OF,
+        TraceConstraintKind.NEGATE,
     }
 )
 """The closed constraint vocabulary, written out rather than read off
-:class:`TraceConstraintExpr`, so the totality lock compares two sources."""
+:class:`TraceConstraintExpr` or off :class:`TraceConstraintKind`, so the totality
+lock compares sources that can disagree."""
 
 # Kinds whose verdict is about the match itself, for which an unmatched-anchor
 # policy would decide the very thing the constraint asserts. On ``present`` the
 # pair is worse than redundant: unmatched would pass by the policy and matched by
 # the constraint, so the check could not fail.
-_KINDS_WITHOUT_AN_ANCHOR: frozenset[str] = frozenset({"present", "absent", "count"})
+_KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
+    {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
+)
 
 
 class TraceConstraintExpr(BaseModel):
@@ -806,21 +828,24 @@ class TraceConstraintExpr(BaseModel):
 
     model_config = {"extra": "forbid"}
 
-    def declared_kind(self) -> str:
+    def declared_kind(self) -> TraceConstraintKind:
         """The one constraint kind this expression is."""
         return next(iter(self.declared_kinds()))
 
-    def declared_kinds(self) -> frozenset[str]:
+    def declared_kinds(self) -> frozenset[TraceConstraintKind]:
         """Every constraint kind carrying a payload — exactly one after validation."""
-        return frozenset(kind for kind in TRACE_CONSTRAINT_KINDS if getattr(self, kind) is not None)
+        return frozenset(
+            kind for kind in TRACE_CONSTRAINT_KINDS if getattr(self, kind.value) is not None
+        )
 
     @model_validator(mode="after")
     def _require_exactly_one_kind(self) -> TraceConstraintExpr:
-        declared = sorted(self.declared_kinds())
+        declared = sorted(kind.value for kind in self.declared_kinds())
         if len(declared) != 1:
             raise ValueError(
                 f"a constraint expression declares {declared or 'no kind'}, and exactly one "
-                f"of {sorted(TRACE_CONSTRAINT_KINDS)} is required. Two conditions are an "
+                f"of {sorted(kind.value for kind in TRACE_CONSTRAINT_KINDS)} is required. "
+                "Two conditions are an "
                 "all_of over two expressions"
             )
         return self
@@ -913,7 +938,7 @@ class TraceConstraint(BaseModel):
         kind = self.require.declared_kind()
         if self.on_missing is not None and kind in _KINDS_WITHOUT_AN_ANCHOR:
             raise ValueError(
-                f"{self.id}: on_missing has nothing to decide on a {kind!r} constraint, "
+                f"{self.id}: on_missing has nothing to decide on a {kind.value!r} constraint, "
                 "whose verdict is the match itself. Setting it would answer the very "
                 "question the constraint asks"
             )
@@ -2415,23 +2440,13 @@ class TraceConstraintResult(BaseModel):
     """
 
     id: str = Field(min_length=1)
-    kind: str
+    kind: TraceConstraintKind
     passed: bool
     weight: float
     message: str = ""
     matched_positions: list[int] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
-
-    @field_validator("kind")
-    @classmethod
-    def _require_a_kind_from_the_vocabulary(cls, value: str) -> str:
-        if value not in TRACE_CONSTRAINT_KINDS:
-            raise ValueError(
-                f"{value!r} is not a trace constraint kind. A result names one of "
-                f"{sorted(TRACE_CONSTRAINT_KINDS)}"
-            )
-        return value
 
 
 class TraceChecksResult(BaseModel):

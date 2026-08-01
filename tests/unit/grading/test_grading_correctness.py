@@ -257,6 +257,26 @@ class TestGoldenMismatchScoresZero:
 
         assert "Trace checks" not in reasons
 
+    def test_build_grade_reasons_names_each_failing_trace_constraint(self):
+        """The runner emits the per-constraint lines core's engine emits.
+
+        A score alone says how much was lost, never which constraint lost it, so a
+        grade produced by the runner would answer less than the same grade produced
+        by core — a substrate difference in what the author reads.
+        """
+        reasons = build_grade_reasons(
+            {"trace_checks_score": 0.5},
+            trace_checks_result={
+                "constraints": [
+                    {"id": "lookup_before_denial", "passed": False, "message": "before: no match"},
+                    {"id": "no_prefill", "passed": True, "message": ""},
+                ]
+            },
+        )
+
+        assert "Trace check lookup_before_denial: before: no match" in reasons
+        assert "no_prefill" not in reasons, "a passing constraint has nothing to report"
+
 
 class TestErrorTrialDetected:
     """Test that technical errors are properly detected and marked"""

@@ -37,6 +37,12 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
+from tolokaforge.core.grading.key_manifest import (
+    EVALUATED,
+    NO_TIMELINE_EVENTS_SKIP,
+    TRACE_CONSTRAINT_KEY_BY_KIND,
+    TRACE_CONSTRAINTS_KEY,
+)
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
@@ -61,16 +67,11 @@ from tolokaforge.core.models import (
     TraceChecksResult,
     TraceConstraint,
     TraceConstraintExpr,
+    TraceConstraintKind,
     TraceConstraintResult,
     TraceMatcher,
     TurnWindow,
     ValuePredicate,
-)
-from tolokaforge.runner.grading_ledger import (
-    EVALUATED,
-    NO_TIMELINE_EVENTS_SKIP,
-    TRACE_CONSTRAINT_KEY_BY_KIND,
-    TRACE_CONSTRAINTS_KEY,
 )
 
 __all__ = ["MatcherOutcome", "evaluate_trace_checks", "select_events"]
@@ -316,7 +317,7 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
         return TraceChecksResult(
             accounted_keys=_accounting(_declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
         )
-    visited: set[str] = set()
+    visited: set[TraceConstraintKind] = set()
     results = [
         _evaluate_constraint(timeline, constraint, visited) for constraint in config.constraints
     ]
@@ -329,7 +330,7 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
 
 
 def _accounting(
-    kinds: Iterable[str], record: KeyAccountingRecord
+    kinds: Iterable[TraceConstraintKind], record: KeyAccountingRecord
 ) -> dict[str, KeyAccountingRecord]:
     """``record`` filed against the block's key and each kind's own."""
     return {
@@ -338,12 +339,12 @@ def _accounting(
     }
 
 
-def _declared_kinds(config: TraceChecksConfig) -> set[str]:
+def _declared_kinds(config: TraceChecksConfig) -> set[TraceConstraintKind]:
     """Every kind the block declares, including those nested inside a composite."""
     return {kind for item in config.constraints for kind in _expression_kinds(item.require)}
 
 
-def _expression_kinds(expr: TraceConstraintExpr) -> set[str]:
+def _expression_kinds(expr: TraceConstraintExpr) -> set[TraceConstraintKind]:
     """``expr``'s own kind, and recursively those of the expressions it holds.
 
     Nesting is read off the payload's shape rather than from a second list of
@@ -351,7 +352,7 @@ def _expression_kinds(expr: TraceConstraintExpr) -> set[str]:
     code instead of being silently treated as a leaf.
     """
     kind = expr.declared_kind()
-    payload = getattr(expr, kind)
+    payload = getattr(expr, kind.value)
     nested = payload if isinstance(payload, list) else [payload]
     kinds = {kind}
     for item in nested:
@@ -374,7 +375,7 @@ def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
 
 
 def _evaluate_constraint(
-    timeline: TrialTimeline, constraint: TraceConstraint, visited: set[str]
+    timeline: TrialTimeline, constraint: TraceConstraint, visited: set[TraceConstraintKind]
 ) -> TraceConstraintResult:
     on_missing = constraint.on_missing or OnMissing.FAIL
     resolver = _Resolver(timeline, constraint.within, visited)
@@ -414,7 +415,10 @@ class _Resolver:
     """
 
     def __init__(
-        self, timeline: TrialTimeline, within: TurnWindow | None, visited_kinds: set[str]
+        self,
+        timeline: TrialTimeline,
+        within: TurnWindow | None,
+        visited_kinds: set[TraceConstraintKind],
     ) -> None:
         self.timeline = timeline
         self.visited_kinds = visited_kinds
@@ -468,7 +472,7 @@ def _inside(event: TraceEvent, window: TurnWindow) -> bool:
 def _evaluate(expr: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
     kind = expr.declared_kind()
     resolver.visited_kinds.add(kind)
-    return _HANDLERS[kind](getattr(expr, kind), resolver, on_missing)
+    return _HANDLERS[kind](getattr(expr, kind.value), resolver, on_missing)
 
 
 def _present(payload: PresentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
@@ -659,17 +663,17 @@ _NEGATED: Mapping[_Truth, _Truth] = {
     _Truth.UNKNOWN: _Truth.UNKNOWN,
 }
 
-_HANDLERS: Mapping[str, Callable[[Any, _Resolver, OnMissing], _Truth]] = {
-    "present": _present,
-    "absent": _absent,
-    "count": _count,
-    "before": _before,
-    "immediately_before": _immediately_before,
-    "absent_before": _absent_before,
-    "absent_between": _absent_between,
-    "all_of": _all_of,
-    "any_of": _any_of,
-    "negate": _negate,
+_HANDLERS: Mapping[TraceConstraintKind, Callable[[Any, _Resolver, OnMissing], _Truth]] = {
+    TraceConstraintKind.PRESENT: _present,
+    TraceConstraintKind.ABSENT: _absent,
+    TraceConstraintKind.COUNT: _count,
+    TraceConstraintKind.BEFORE: _before,
+    TraceConstraintKind.IMMEDIATELY_BEFORE: _immediately_before,
+    TraceConstraintKind.ABSENT_BEFORE: _absent_before,
+    TraceConstraintKind.ABSENT_BETWEEN: _absent_between,
+    TraceConstraintKind.ALL_OF: _all_of,
+    TraceConstraintKind.ANY_OF: _any_of,
+    TraceConstraintKind.NEGATE: _negate,
 }
 
 # One reading of one side: the positions it holds under one completion of the
@@ -683,10 +687,18 @@ def _side_readings(
 ) -> list[_Reading]:
     """Every position set this side could hold once the missing evidence is known.
 
-    Two readings bound a side quantified ``any`` or ``all``: existential
-    quantification is monotone in the matched set and universal quantification
-    antitone, whatever relation the constraint applies, so the definitely-matched
-    set and the everything-matched set bracket every completion between them.
+    Two readings bound a side quantified ``any`` or ``all`` **once some event
+    definitely matches it**: existential quantification is monotone in the matched
+    set and universal quantification antitone, whatever relation the constraint
+    applies, so the definitely-matched set and the everything-matched set bracket
+    every completion between them.
+
+    With nothing definitely matched the bracket breaks, because its bottom is the
+    empty reading and an empty side is not a vacuous quantification: it is an
+    unmatched anchor, whose verdict ``on_missing`` supplies rather than the
+    relation. A reading of one undecidable event can therefore fall outside the two
+    ends — the singletons are where a universal reading is largest and an
+    existential one smallest — so they are enumerated alongside them.
 
     A ``first`` / ``last`` side instead **selects** one event, and every
     undecidable event ahead of the earliest (behind the latest) definite match is a
@@ -699,15 +711,18 @@ def _side_readings(
     """
     matched = tuple(event.position for event in outcome.matched)
     unknown = tuple(event.position for event in outcome.undecidable)
-    selecting = quantifier is not None and quantifier.value in _SELECTING_QUANTIFIERS
-    if selecting:
-        return _selections(matched, unknown, earliest=quantifier.value == "first")
+    if quantifier is not None and quantifier in _SELECTING_QUANTIFIERS:
+        return _selections(matched, unknown, earliest=quantifier == AnchorQuantifier.FIRST)
     if not unknown:
         return [matched]
+    if not matched:
+        return [(), *((position,) for position in unknown), tuple(sorted(unknown))]
     return [matched, tuple(sorted(matched + unknown))]
 
 
-_SELECTING_QUANTIFIERS = frozenset({"first", "last"})
+# Both quantifier domains spell these the same, and a ``str`` enum compares and
+# hashes as its value, so one set covers a ``MatcherSide`` and an ``AnchorSide``.
+_SELECTING_QUANTIFIERS = frozenset({AnchorQuantifier.FIRST, AnchorQuantifier.LAST})
 
 
 def _selections(matched: _Reading, unknown: _Reading, *, earliest: bool) -> list[_Reading]:
@@ -770,27 +785,33 @@ def _adjacency(timeline: TrialTimeline, among: AdjacencyView) -> Callable[[int, 
 
 # Why a definite failure failed, per kind — the sentence a task author reads
 # beside the constraint's id in the grade.
-_FAILURE_DETAIL: Mapping[str, str] = {
-    "present": "no event matched",
-    "absent": "an event matched",
-    "count": "the number of matching events is outside the declared bounds",
-    "before": "no match is ordered before the other side under the declared quantifiers",
-    "immediately_before": "no match is immediately followed by the other side in that view",
-    "absent_before": "a forbidden event occurs before the anchor",
-    "absent_between": "a forbidden event occurs inside the window",
-    "all_of": "a nested expression does not hold",
-    "any_of": "no nested expression holds",
-    "negate": "the negated expression holds",
+_FAILURE_DETAIL: Mapping[TraceConstraintKind, str] = {
+    TraceConstraintKind.PRESENT: "no event matched",
+    TraceConstraintKind.ABSENT: "an event matched",
+    TraceConstraintKind.COUNT: "the number of matching events is outside the declared bounds",
+    TraceConstraintKind.BEFORE: (
+        "no match is ordered before the other side under the declared quantifiers"
+    ),
+    TraceConstraintKind.IMMEDIATELY_BEFORE: (
+        "no match is immediately followed by the other side in that view"
+    ),
+    TraceConstraintKind.ABSENT_BEFORE: "a forbidden event occurs before the anchor",
+    TraceConstraintKind.ABSENT_BETWEEN: "a forbidden event occurs inside the window",
+    TraceConstraintKind.ALL_OF: "a nested expression does not hold",
+    TraceConstraintKind.ANY_OF: "no nested expression holds",
+    TraceConstraintKind.NEGATE: "the negated expression holds",
 }
 
 
-def _message(truth: _Truth, kind: str, resolver: _Resolver, on_missing: OnMissing) -> str:
+def _message(
+    truth: _Truth, kind: TraceConstraintKind, resolver: _Resolver, on_missing: OnMissing
+) -> str:
     """What the grade says about this constraint — empty when it passed."""
     if truth is _Truth.TRUE:
         return ""
     if truth is _Truth.UNKNOWN:
-        return f"{kind} cannot be decided — " + "; ".join(resolver.undecided())
+        return f"{kind.value} cannot be decided — " + "; ".join(resolver.undecided())
     unmatched = resolver.unmatched_anchors() if on_missing is OnMissing.FAIL else []
     if unmatched:
-        return f"{kind} is unmatched: {' and '.join(unmatched)} selected no event"
-    return f"{kind}: {_FAILURE_DETAIL[kind]}"
+        return f"{kind.value} is unmatched: {' and '.join(unmatched)} selected no event"
+    return f"{kind.value}: {_FAILURE_DETAIL[kind]}"

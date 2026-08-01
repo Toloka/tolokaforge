@@ -414,10 +414,12 @@ grading: "grading.yaml"
 ```yaml
 combine:
   method: "weighted"
-  weights:
-    state_checks: 0.6
+  weights:                                 # one entry per component the pack configures
+    state_checks: 0.4
     transcript_rules: 0.2
-    llm_judge: 0.2
+    trace_checks: 0.2
+    llm_judge: 0.1
+    custom_checks: 0.1
   pass_threshold: 0.8
 
 state_checks:
@@ -432,6 +434,18 @@ transcript_rules:
   tool_expectations:                       # one sub-check per declared tool,
     required_tools: ["browser"]             # graded on both substrates —
     disallowed_tools: []                    # see docs/GRADING.md § Transcript Rules
+
+trace_checks:                              # ordering / absence / counting over the timeline
+  constraints:                             # see docs/GRADING.md § Trace Checks
+    - id: searched_before_answering
+      description: "the policy corpus is searched before the reply is sent"
+      require:
+        before:
+          left:  { quantifier: any,  match: { kind: tool_call, tool: { equals: search } } }
+          right: { quantifier: last, match: { kind: assistant_message } }
+
+custom_checks:                             # author-written Python, see docs/custom_checks.md
+  enabled: true                            # required; false (default) disables the block
 
 llm_judge:                                 # the judge MODEL is set once per run
                                            # under models.judge — NOT here

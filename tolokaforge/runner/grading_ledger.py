@@ -20,15 +20,21 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.key_manifest import EVALUATED as EVALUATED
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     RUNNER_HASH_EVALUATOR,
+    TRACE_CONSTRAINT_KEY_BY_KIND,
+    TRACE_CONSTRAINTS_KEY,
     GradingKey,
     KeyKind,
     SubstrateCoverage,
-    entry,
+    checked_author_key,
     family_author_keys,
     scored_keys_claiming_runner,
+)
+from tolokaforge.core.grading.key_manifest import (
+    NO_TIMELINE_EVENTS_SKIP as NO_TIMELINE_EVENTS_SKIP,
 )
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
@@ -40,13 +46,8 @@ from tolokaforge.runner.models import (
     TranscriptRulesConfig,
 )
 
-EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
-
 HASH_DISABLED_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="hash grading not enabled"
-)
-NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
-    outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="no transcript messages"
@@ -59,45 +60,17 @@ CUSTOM_CHECKS_DISABLED_SKIP = KeyAccountingRecord(
 )
 
 
-def _manifest_key(author_key: str) -> str:
-    """``author_key`` itself, raising at import when the manifest no longer has it."""
-    return entry(author_key).author_key
-
-
-MUST_CONTAIN_KEY = _manifest_key("transcript_rules.must_contain")
-DISALLOW_REGEX_KEY = _manifest_key("transcript_rules.disallow_regex")
-MAX_TURNS_KEY = _manifest_key("transcript_rules.max_turns")
-MIN_ASSISTANT_TURNS_KEY = _manifest_key("transcript_rules.min_assistant_turns")
-TOOL_EXPECTATIONS_KEY = _manifest_key("transcript_rules.tool_expectations")
-REQUIRED_ACTIONS_KEY = _manifest_key("transcript_rules.required_actions")
-COMMUNICATE_INFO_KEY = _manifest_key("transcript_rules.communicate_info")
-JSONPATHS_KEY = _manifest_key("state_checks.jsonpaths")
-DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
-LLM_JUDGE_KEY = _manifest_key("llm_judge")
-CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
-TRACE_CONSTRAINTS_KEY = _manifest_key("trace_checks.constraints")
-
-TRACE_CONSTRAINT_KEY_BY_KIND: Mapping[str, str] = {
-    "present": _manifest_key("trace_checks.constraints.present"),
-    "absent": _manifest_key("trace_checks.constraints.absent"),
-    "count": _manifest_key("trace_checks.constraints.count"),
-    "before": _manifest_key("trace_checks.constraints.before"),
-    "immediately_before": _manifest_key("trace_checks.constraints.immediately_before"),
-    "absent_before": _manifest_key("trace_checks.constraints.absent_before"),
-    "absent_between": _manifest_key("trace_checks.constraints.absent_between"),
-    "all_of": _manifest_key("trace_checks.constraints.all_of"),
-    "any_of": _manifest_key("trace_checks.constraints.any_of"),
-    "negate": _manifest_key("trace_checks.constraints.negate"),
-}
-"""The author key each constraint kind is accounted under, one line per kind.
-
-Written out rather than comprehended over
-:data:`~tolokaforge.runner.models.TRACE_CONSTRAINT_KINDS`, so the lock comparing
-the two compares two sources: a comprehension would assert the vocabulary against
-itself and pass with a kind nothing accounts for. Each value is resolved through
-:func:`_manifest_key`, so a kind the manifest stops carrying an entry for raises
-at import instead of accounting against a key nothing enumerates.
-"""
+MUST_CONTAIN_KEY = checked_author_key("transcript_rules.must_contain")
+DISALLOW_REGEX_KEY = checked_author_key("transcript_rules.disallow_regex")
+MAX_TURNS_KEY = checked_author_key("transcript_rules.max_turns")
+MIN_ASSISTANT_TURNS_KEY = checked_author_key("transcript_rules.min_assistant_turns")
+TOOL_EXPECTATIONS_KEY = checked_author_key("transcript_rules.tool_expectations")
+REQUIRED_ACTIONS_KEY = checked_author_key("transcript_rules.required_actions")
+COMMUNICATE_INFO_KEY = checked_author_key("transcript_rules.communicate_info")
+JSONPATHS_KEY = checked_author_key("state_checks.jsonpaths")
+DB_PROBES_KEY = checked_author_key("state_checks.db_probes")
+LLM_JUDGE_KEY = checked_author_key("llm_judge")
+CUSTOM_CHECKS_KEY = checked_author_key("custom_checks")
 
 # Every model the runner's GradingConfig reaches, with where its fields sit in
 # ``GradingConfig.model_dump()``.

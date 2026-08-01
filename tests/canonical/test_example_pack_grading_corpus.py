@@ -9,10 +9,10 @@ Two claims over the packs an author reads as the reference:
    after the project layer merges — because five shipped packs declare no ``combine``
    of their own and inherit ``llm_judge: 1.0`` from ``project.yaml``. Over raw
    ``grading.yaml`` the same guard is red on those five on day one.
-2. **``helpdesk_01``'s ``trace_checks`` block asserts what its README once said could
-   not be asserted**, and each of its three constraints can fail on its own. A
-   trajectory that reaches the right database state by a wrong process fails the
-   constraint that names that process and no other.
+2. **``helpdesk_01``'s ``trace_checks`` block asserts the process its README calls
+   ungradeable by any other rule**, and each of its three constraints can fail on
+   its own. A trajectory that reaches the right database state by a wrong process
+   fails the constraint that names that process and no other.
 """
 
 from __future__ import annotations
