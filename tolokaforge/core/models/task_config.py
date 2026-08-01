@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_valid
 from tolokaforge.core.deprecations import canonicalize_actor_config
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     EnvironmentPatch,
@@ -424,10 +425,24 @@ class TranscriptRulesConfig(BaseModel):
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
-    max_turns: int | None = None
+    # Both bounds are declarable from 1 up. A ceiling below 1 admits no
+    # assistant-turn count at all, and a floor of 0 asserts nothing — and the
+    # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
+    # be an unpoliced declaration.
+    max_turns: int | None = Field(default=None, ge=1)
+    min_assistant_turns: int | None = Field(default=None, ge=1)
     tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
+
+    @model_validator(mode="after")
+    def _validate_turn_window(self) -> Self:
+        validate_turn_window(
+            min_assistant_turns=self.min_assistant_turns,
+            max_turns=self.max_turns,
+            context="grading.yaml transcript_rules",
+        )
+        return self
 
 
 class GradingCombineConfig(BaseModel):

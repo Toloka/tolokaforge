@@ -691,6 +691,7 @@ class NativeAdapter(BaseAdapter):
                     must_contain=transcript_data.get("must_contain", []),
                     disallow_regex=transcript_data.get("disallow_regex", []),
                     max_turns=transcript_data.get("max_turns"),
+                    min_assistant_turns=transcript_data.get("min_assistant_turns"),
                     tool_expectations=(
                         ToolExpectations(**tool_expectations_data)
                         if tool_expectations_data

@@ -92,17 +92,24 @@ Three properties keep the ledger from rejecting configs that grade correctly:
 - **A key counts as populated only when it is non-empty.** An explicitly written
   `disallowed_tools: []` is indistinguishable from unset, and either way has
   nothing to evaluate.
-- **Every skip is recorded, not silent.** `transcript_rules` is skipped when the
-  trial's timeline carries no events, `llm_judge` when it has no
-  messages, `custom_checks` when the pack wrote the block but left
-  `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
-  reads when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
-  standing skip: it is declared `CORE_ONLY` because no runner path reads it (#693),
-  so it is recorded as such whether or not hash grading ran — folding it into the
-  family's outcome would report a silently dead key as scored. Each skip records
-  its reason, which appears in `grade.reasons` whenever the skipped key was
-  populated: a degenerate trial scores badly rather than erroring the RPC, but the
-  reason it scored badly is visible.
+- **Every skip is recorded, not silent.** The `transcript_rules` keys other than
+  `min_assistant_turns` are skipped when the trial's timeline carries no events,
+  `llm_judge` when it has no messages, `custom_checks` when the pack wrote the block
+  but left `enabled` off, and the `state_checks.hash` members the runner's hash
+  evaluator reads when `hash.enabled` is not set.
+  `state_checks.hash.expected_state_hash` is a standing skip: it is declared
+  `CORE_ONLY` because no runner path reads it (#693), so it is recorded as such
+  whether or not hash grading ran — folding it into the family's outcome would report
+  a silently dead key as scored. Each skip records its reason, which appears in
+  `grade.reasons` whenever the skipped key was populated: a degenerate trial scores
+  badly rather than erroring the RPC, but the reason it scored badly is visible.
+
+  A declared `min_assistant_turns` is the one transcript rule **evaluated** on an
+  events-less timeline, because absence is exactly the answer that key asks for: a
+  trial that left no trace made no assistant turn. It scores the whole
+  `transcript_rules` component `0.0` there and its siblings still record the skip,
+  so the component enters the combine rather than dropping out of it. See
+  [Turn bounds](#turn-bounds).
 
   "No events" is narrower than "no messages": `role: system` messages are harness
   annotations and never become events (N3), so a trial whose only messages are a
@@ -235,6 +242,25 @@ producer reached only *through* one of those functions: the audit follows declar
 evaluators, not call graphs. So a partial hash score cannot land inside an audited
 producer without the sweep's premise being re-examined, and a new producer cannot be
 declared without one.
+
+### Score-parity keys outside the hash family
+
+| Key | kind | coverage | enforcement |
+|---|---|---|---|
+| `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+
+This is the only `transcript_rules` key claiming score parity — the other six are
+`BOTH_SIGNAL_PARITY` (#685), because the core engine averages four always-present
+buckets where the runner takes a fraction of decomposed sub-checks, so the two
+magnitudes differ on a mixed pack. **Its parity rests on a different mechanism than
+`state_checks.hash.golden_actions`'.** That key agrees because both substrates fold
+their inputs through one shared composer, so the aggregation itself is common code.
+`min_assistant_turns` has no shared code path at all: it agrees because it
+contributes *nothing* when met and forces `0.0` on **both** substrates when unmet, so
+it can never itself be the source of a disagreement. On a pack that also declares
+phrase or tool rules any divergence in the component belongs to those keys'
+aggregation, which is #685's territory, not the floor's. See
+[§ Turn bounds](#turn-bounds) for what the key asserts.
 
 ### What the guard cannot see
 
@@ -720,7 +746,7 @@ runner is safe **for this key** (core-side `extra="ignore"`).
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Three keys carry the lock:
+being dropped. Four keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -728,21 +754,25 @@ being dropped. Three keys carry the lock:
 - `state_checks.hash_weight`, which a runner image older than this release does not
   declare: the current engine emits it (as `null` when the pack declares no weight),
   so a **new engine against an old runner image** is rejected the same way.
+- `transcript_rules.min_assistant_turns`, which a runner image older than this release
+  does not declare: the current engine emits it (as `null` when the pack declares no
+  floor), so a **new engine against an old runner image** is rejected the same way.
 - `combine_method`, whose declared value domain both gained and lost members in this
   release. The runner `GradingConfig` validates it against the closed set in
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
   rejected by an older image, and an **old engine** translating a name the set no
   longer holds is rejected by a current one.
 
-The first two bite on **every** pack carrying a non-empty `state_checks:` block,
-whether or not the pack declares them, because the adapter emits both
+The first two bite on **every** pack carrying a non-empty `state_checks:` block and
+`min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, whether
+or not the pack declares the key, because the adapter emits all three
 unconditionally. `combine_method` bites only on a pack declaring an affected value —
-`weighted` and `all` cross in either direction. So `state_checks` requires engine and
-runner image from the same release in both directions, and `make docker-build-core` is
-part of every engine upgrade that touches `state_checks` or runs a pack declaring
-`any`. (`db_hash_check` was never declared on the runner config at all, so no engine
-ever emitted it and it is not part of this lock — a populated `db_hash_check` is
-rejected core-side at config load.)
+`weighted` and `all` cross in either direction. So `state_checks` and
+`transcript_rules` each require engine and runner image from the same release, and
+`make docker-build-core` is part of every engine upgrade that touches either block or
+runs a pack declaring `any`. (`db_hash_check` was never declared on the runner config
+at all, so no engine ever emitted it and it is not part of this lock — a populated
+`db_hash_check` is rejected core-side at config load.)
 
 **This lock is narrower than the proto3 rule that governs the rest of registration.**
 `engine_protocol_version` and `call_id` are proto message fields, which an older
@@ -751,7 +781,8 @@ registers fine (see [`RUNNER.md`](RUNNER.md#engine--image-version-lock)). The tr
 spec is not a proto message: it crosses as `trial_spec_json`, a JSON string parsed by
 `extra="forbid"` Pydantic models, where an unknown field is an error rather than a
 dropped byte. The signature of the skew is a Pydantic `extra_forbidden` error naming
-`hash_weight` in the `RegisterTrialResponse.error`.
+`hash_weight` or `min_assistant_turns` in the `RegisterTrialResponse.error` —
+whichever block the pack carries.
 
 An old engine against a new runner image can also be rejected for a second,
 narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
@@ -875,6 +906,75 @@ otherwise (G6b), so re-grading a recorded bundle still reads tool output. Neithe
 substrate can see the harness's `role: system` annotations — a termination notice
 cannot satisfy a required phrase (N3).
 
+### Turn bounds
+
+`max_turns` and `min_assistant_turns` bound one counter from two sides — the
+number of **assistant generations** the trial produced:
+
+```yaml
+transcript_rules:
+  max_turns: 18            # the agent must not take more than 18 turns
+  min_assistant_turns: 1   # opt-in: the agent must have taken at least 1
+```
+
+**`max_turns` alone passes a trial that produced nothing.** A do-nothing agent
+took zero turns, which is within any limit, so the check passes vacuously. On a
+refusal-style task — where the expected final state equals the initial state — that
+trial also matches the expected state hash, and the whole trial passes without the
+agent having acted. `min_assistant_turns` is the assertion that it acted at all;
+[`docs/TASKS.md`](TASKS.md#refusal-tasks-and-other-do-nothing-passes) § Refusal
+tasks and other do-nothing passes covers when a task should declare one, the
+`combine.weights` entry it needs to reach the final score, and the state-side half
+of the same hole that the floor does not close.
+
+**The floor is a gate on the whole `transcript_rules` component, not a sub-check
+inside it.** Unmet, the component is `0.0` on both substrates whatever the other
+keys scored. Met, it contributes nothing at all — no sub-check row runner-side, no
+extra bucket core-side — so a pack that declares it and satisfies it scores exactly
+what the other keys score. That is deliberate: as a fifth core-side bucket a failed
+floor would score `(1+1+1+1+0)/5 = 0.8`, which is the default `pass_threshold`, and
+as one more runner sub-check alongside two passing keys it would score `0.667`,
+which any `pass_threshold` at or below that swallows. Either way the bound would be
+declarable and unable to fail a trial.
+
+**It counts generations, not answers.** Three tool-call-only turns with no prose
+satisfy `min_assistant_turns: 3`. The sharper "did the agent actually *answer*"
+check — a non-empty assistant message after the last tool call — is **#678**'s trace
+checks; do not read a green floor as evidence the agent replied.
+
+**A declared floor is evaluated on an events-less timeline**, where every other
+transcript rule is skipped — see [The runtime ledger](#the-runtime-ledger).
+
+**A window no trial can land in is rejected at load.** A floor above the ceiling
+admits no assistant-turn count at all, so the component would be `0.0` however the
+agent behaved. `tolokaforge validate` rejects such a pack before the run is paid
+for, naming both keys and both values:
+
+```
+grading.yaml transcript_rules declares an unsatisfiable turn window:
+min_assistant_turns (5) is above max_turns (3), so no assistant-turn count
+satisfies both bounds and every trial fails the transcript component. Lower
+min_assistant_turns to at most 3, or raise max_turns to at least 5.
+```
+
+One predicate (`core/grading/turn_bounds.py`) is called by **both**
+`TranscriptRulesConfig` models, so a window the engine rejects at validate time is
+rejected at `RegisterTrial` too rather than registering and grading. A floor *equal*
+to the ceiling is satisfiable — by exactly that many turns — and either key on its
+own bounds one side only, so only a pack declaring both can close the window.
+
+**Both keys are declarable from `1` up**, which is what keeps that last sentence
+true: a ceiling of `0` closes the window on its own, and a floor of `0` asserts
+nothing. Either is rejected at load naming the key and the bound.
+
+**Runner-engine version lock**: `min_assistant_turns` is declared on the
+runner-side `TranscriptRulesConfig` (`extra="forbid"`), so an engine of this release
+requires a runner image built from it — the engine emits the field on **every** pack
+carrying a `transcript_rules:` block, as `null` when the pack declares no floor, so
+an older image rejects such a pack at `RegisterTrial` whether or not it asks for a
+floor. Old engine + new runner is safe **for this key** (core-side
+`extra="ignore"`).
+
 ### `tool_expectations`
 
 Names the tools the agent must use and the tools it must not touch:
@@ -888,9 +988,10 @@ transcript_rules:
 
 **One sub-check per declared tool** on the runner path, the same decomposition
 `must_contain` and `disallow_regex` get: the component score is the fraction of
-sub-checks that passed, and every failure is named in `grade.reasons`. A task
-declaring two required and two disallowed tools yields four independent
-sub-checks.
+sub-checks that passed — unless a declared `min_assistant_turns` floor is unmet,
+which forces the component to `0.0` — and every failure is named in
+`grade.reasons`. A task declaring two required and two disallowed tools yields four
+independent sub-checks.
 
 **The two lists treat call status differently, deliberately.** A `required_tools`
 entry is satisfied only by a call with `status == "success"` — an errored call did
@@ -1517,7 +1618,7 @@ Tasks used for RL training need grading that produces a meaningful signal — no
 
 ### Principles
 
-- **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly.
+- **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly. **Not on a task whose correct outcome is to change nothing** — a refusal-style task's expected final state equals its initial state, so an agent that did nothing at all scores `1.0` on state alone. Weight `transcript_rules` alongside it and declare a `min_assistant_turns` floor, which fails a trial that produced no assistant turns (see [§ Turn bounds](#turn-bounds)). A block with no evaluable source — only `id_fields`, or an empty `jsonpaths` list — is a free `1.0` core-side for the same reason (#733).
 - **Reserve `llm_judge` for genuinely subjective tasks.** An LLM judge giving 0.7 for "attempted the task" masks real failures. Don't use it as padding.
 - **CI portability:** the judge model is a run-level role (`models.judge`), so CI can point it at `mock/mock-judge` to run without live judge inference; for real evaluations set `models.judge` to your production judge model. (No per-task edit is needed — switch the whole run in one place.)
 - **Check specific values, not just existence.** Assert `equals: "Large (14\")"` instead of just checking the path exists. Assert `equals: "apple_pay"` instead of checking that any payment method was set.

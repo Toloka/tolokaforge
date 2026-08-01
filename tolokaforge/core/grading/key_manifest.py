@@ -406,6 +406,16 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         tracking_issue=685,
     ),
     GradingKey(
+        author_key="transcript_rules.min_assistant_turns",
+        kind=KeyKind.SCORED_CHECK,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="TranscriptRulesConfig.min_assistant_turns",
+        runner_field="TranscriptRulesConfig.min_assistant_turns",
+        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
+    ),
+    GradingKey(
         author_key="transcript_rules.required_actions",
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,

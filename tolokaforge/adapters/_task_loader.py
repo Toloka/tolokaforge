@@ -75,9 +75,9 @@ def validate_grading_yaml(grading_path: Path) -> None:
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
     validate time with a clear migration message, not only at run time. ``combine``
-    is validated whenever it is declared; ``llm_judge`` (the free-text
-    ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised by
-    :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
+    and ``transcript_rules`` are validated whenever either is declared; ``llm_judge``
+    (the free-text ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised
+    by :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
     ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals.
 
     Validate is the earliest gate a task pack meets: the engine's own
@@ -143,6 +143,25 @@ def validate_grading_yaml(grading_path: Path) -> None:
         from tolokaforge.core.models import StateChecksConfig
 
         StateChecksConfig(**state_checks)
+
+    # The whole transcript_rules block, on any declared one: a turn window whose floor
+    # sits above its ceiling admits no assistant-turn count, so the component is 0.0
+    # however the agent behaves. Constructing the block rather than the two fields also
+    # puts the ``min_assistant_turns`` domain and a misspelled key inside the
+    # ``extra="forbid"`` ``tool_expectations`` under the same gate.
+    transcript_rules = grading_data.get("transcript_rules")
+    if isinstance(transcript_rules, dict):
+        from tolokaforge.core.models import TranscriptRulesConfig
+
+        TranscriptRulesConfig(**transcript_rules)
+    elif transcript_rules is not None:
+        raise RuntimeError(
+            f"Grading file {grading_path}: 'transcript_rules' must be a mapping of rule "
+            f"keys, got {type(transcript_rules).__name__} ({transcript_rules!r}). "
+            "A key indented one level too far under 'transcript_rules:' makes the block a "
+            "list. Write 'transcript_rules:' then each rule key indented one level beneath "
+            "it."
+        )
 
 
 def load_task_yaml(

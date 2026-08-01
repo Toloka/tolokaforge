@@ -23,6 +23,7 @@
     "communicate_info": [],
     "disallow_regex": [],
     "max_turns": 5,
+    "min_assistant_turns": null,
     "must_contain": [],
     "required_actions": [],
     "tool_expectations": null

@@ -151,6 +151,7 @@ class GradingEngine:
                 must_contain=self.config.transcript_rules.must_contain,
                 disallow_regex=self.config.transcript_rules.disallow_regex,
                 max_turns=self.config.transcript_rules.max_turns,
+                min_assistant_turns=self.config.transcript_rules.min_assistant_turns,
                 required_tools=(
                     self.config.transcript_rules.tool_expectations.required_tools
                     if self.config.transcript_rules.tool_expectations

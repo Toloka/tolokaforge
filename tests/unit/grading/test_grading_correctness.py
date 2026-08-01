@@ -570,6 +570,57 @@ class TestTranscriptRulesEvaluation:
         assert result.passed is False
         assert result.score == 0.0
 
+    # --- min_assistant_turns -----------------------------------------------
+
+    def test_met_floor_emits_no_sub_check(self):
+        """A met floor must add no row, or it would dilute the fraction."""
+        timeline = self._timeline([("user", "Cancel O1."), ("assistant", "Cancelled O1.")])
+
+        result = evaluate_transcript_rules(timeline, self._config(min_assistant_turns=1))
+
+        assert result.details == []
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_unmet_floor_fails_naming_the_bound_and_both_counts(self):
+        timeline = self._timeline([("user", "Cancel O1.")])
+
+        result = evaluate_transcript_rules(timeline, self._config(min_assistant_turns=1))
+
+        assert result.passed is False
+        assert result.score == 0.0
+        assert [(d.rule_type, d.message) for d in result.details] == [
+            ("min_assistant_turns", "Assistant turn count 0 below min_assistant_turns of 1")
+        ]
+
+    def test_an_unmet_floor_vetoes_a_passing_fraction(self):
+        """The floor is a gate on the component, not one more sub-check.
+
+        Both other rules pass on this trial, so scoring the floor as a fourth
+        sub-check would yield 0.667 and any `pass_threshold` at or below that
+        would swallow the violation.
+        """
+        timeline = self._timeline([("user", "Cancel O1."), ("assistant", "Cancelled O1.")])
+        config = self._config(
+            min_assistant_turns=3,  # fail (1 assistant turn)
+            must_contain=["Cancelled"],  # pass
+            max_turns=5,  # pass
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.score == 0.0
+        assert sum(1 for d in result.details if d.passed) == 2
+
+    def test_a_zero_activity_trial_passes_when_no_floor_is_declared(self):
+        """Opt-in: `max_turns` alone still passes a trial that produced nothing."""
+        timeline = self._timeline([("user", "Cancel O1.")])
+
+        result = evaluate_transcript_rules(timeline, self._config(max_turns=18))
+
+        assert result.passed is True
+        assert result.score == 1.0
+
     # --- tool_expectations -------------------------------------------------
 
     def test_empty_tool_expectations_contributes_no_sub_checks(self):

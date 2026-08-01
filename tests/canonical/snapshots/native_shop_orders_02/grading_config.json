@@ -101,6 +101,7 @@
       "(?i)(unable to place|cannot process|order failed|payment failed)"
     ],
     "max_turns": 14,
+    "min_assistant_turns": null,
     "must_contain": [],
     "required_actions": [
       {
