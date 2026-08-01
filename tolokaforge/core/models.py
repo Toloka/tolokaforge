@@ -22,6 +22,7 @@ from tolokaforge.core.deprecations import (
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
 
@@ -2046,6 +2047,15 @@ class TranscriptRulesConfig(BaseModel):
     tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
+
+    @model_validator(mode="after")
+    def _validate_turn_window(self) -> Self:
+        validate_turn_window(
+            min_assistant_turns=self.min_assistant_turns,
+            max_turns=self.max_turns,
+            context="grading.yaml transcript_rules",
+        )
+        return self
 
 
 class GradingCombineConfig(BaseModel):

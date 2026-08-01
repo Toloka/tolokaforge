@@ -29,6 +29,7 @@ from tolokaforge.core.deprecations import (
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
+from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
@@ -406,6 +407,22 @@ class TranscriptRulesConfig(BaseModel):
     communicate_info: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _validate_turn_window(self) -> TranscriptRulesConfig:
+        """Reject the window no assistant-turn count satisfies.
+
+        Calls the same predicate the core config calls, so an engine and a runner
+        built from different releases cannot disagree about which packs are
+        gradeable: a window core rejected at ``tolokaforge validate`` is rejected at
+        ``RegisterTrial`` too.
+        """
+        validate_turn_window(
+            min_assistant_turns=self.min_assistant_turns,
+            max_turns=self.max_turns,
+            context="task_description grading.transcript_rules",
+        )
+        return self
 
 
 class Criterion(BaseModel):

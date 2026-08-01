@@ -937,6 +937,24 @@ checks; do not read a green floor as evidence the agent replied.
 **A declared floor is evaluated on an events-less timeline**, where every other
 transcript rule is skipped — see [The runtime ledger](#the-runtime-ledger).
 
+**A window no trial can land in is rejected at load.** A floor above the ceiling
+admits no assistant-turn count at all, so the component would be `0.0` however the
+agent behaved. `tolokaforge validate` rejects such a pack before the run is paid
+for, naming both keys and both values:
+
+```
+grading.yaml transcript_rules declares an unsatisfiable turn window:
+min_assistant_turns (5) is above max_turns (3), so no assistant-turn count
+satisfies both bounds and every trial fails the transcript component. Lower
+min_assistant_turns to at most 3, or raise max_turns to at least 5.
+```
+
+One predicate (`core/grading/turn_bounds.py`) is called by **both**
+`TranscriptRulesConfig` models, so a window the engine rejects at validate time is
+rejected at `RegisterTrial` too rather than registering and grading. A floor *equal*
+to the ceiling is satisfiable — by exactly that many turns — and either key on its
+own bounds one side only, so only a pack declaring both can close the window.
+
 **Runner-engine version lock**: `min_assistant_turns` is declared on the
 runner-side `TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting
 the key requires a runner image built from the same release — `RegisterTrial`

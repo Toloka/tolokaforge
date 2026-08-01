@@ -19,6 +19,9 @@ migration:
   names that were declared but never dispatched are rejected naming the rule each
   one meant; a block that is not a mapping is rejected naming the file, the key and
   the shape received.
+* ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
+  its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
+  substrates' models naming both keys and both values.
 """
 
 from __future__ import annotations
@@ -36,7 +39,9 @@ from tolokaforge.core.grading.combine_method import (
     RETIRED_COMBINE_METHOD_ALIASES,
 )
 from tolokaforge.core.models import GradingDefaults, StateChecksConfig
+from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.dx.cli.main import cli
+from tolokaforge.runner.models import TranscriptRulesConfig as RunnerTranscriptRules
 
 pytestmark = pytest.mark.unit
 
@@ -590,3 +595,128 @@ def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path
     assert "0 valid, 1 invalid" in out
     assert "Use 'all'" in out
     assert "never worked" in out
+
+
+# ---------------------------------------------------------------------------
+# transcript_rules — the turn window, rejected at validate time on both substrates
+#
+# A floor above the ceiling admits no assistant-turn count, so the component is
+# 0.0 however the agent behaves. Heard at validate time rather than after a trial
+# has been run and paid for.
+# ---------------------------------------------------------------------------
+
+
+_TRANSCRIPT_MODELS = (CoreTranscriptRules, RunnerTranscriptRules)
+_MODEL_IDS = ("core", "runner")
+
+
+def _write_transcript_rules(tmp_path: Path, transcript_rules: dict) -> Path:
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"transcript_rules": 1.0}},
+                "transcript_rules": transcript_rules,
+            }
+        )
+    )
+    return grading
+
+
+@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
+@pytest.mark.parametrize(
+    ("floor", "ceiling"),
+    [(5, 3), (4, 3), (2, 1)],
+    ids=["clear", "off_by_one", "ceiling_of_one"],
+)
+def test_both_substrates_reject_an_unsatisfiable_turn_window(model: type, floor: int, ceiling: int):
+    """One predicate, both models: the engine and the runner agree on what loads.
+
+    Asserted on the paired key-and-value text rather than the bare digits — a
+    message naming only the bound it tripped leaves the author guessing which of
+    the two keys to move, and digits alone appear in any pydantic error.
+    """
+    with pytest.raises(ValueError) as excinfo:
+        model(min_assistant_turns=floor, max_turns=ceiling)
+
+    message = str(excinfo.value)
+    assert f"min_assistant_turns ({floor})" in message, message
+    assert f"max_turns ({ceiling})" in message, message
+
+
+@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
+@pytest.mark.parametrize(
+    "transcript_rules",
+    [
+        {"min_assistant_turns": 3, "max_turns": 3},
+        {"min_assistant_turns": 1, "max_turns": 5},
+        {"min_assistant_turns": 9},
+        {"max_turns": 1},
+        {"must_contain": ["shipped"]},
+    ],
+    ids=["floor_equals_ceiling", "all_keys_pack_shape", "floor_alone", "ceiling_alone", "neither"],
+)
+def test_both_substrates_accept_every_window_a_trial_can_land_in(
+    model: type, transcript_rules: dict
+):
+    """The gate must stay narrow: only a pack declaring *both* can close the window.
+
+    ``floor_equals_ceiling`` is satisfied by exactly that many turns, and
+    ``all_keys_pack_shape`` is what ``tests/data/grading_parity/all_keys`` ships — the
+    corpus shape a gate reading either key on its own would reject.
+    """
+    model(**transcript_rules)
+
+
+def test_validate_rejects_a_pack_whose_turn_window_admits_nothing(tmp_path: Path):
+    """Validate is where an author hears this.
+
+    Without the gate the pack loads clean and every trial fails the transcript
+    component at grade time — after the tokens are spent.
+    """
+    grading = _write_transcript_rules(tmp_path, {"min_assistant_turns": 5, "max_turns": 3})
+
+    with pytest.raises(ValueError, match="unsatisfiable turn window"):
+        validate_grading_yaml(grading)
+
+
+def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
+    validate_grading_yaml(
+        _write_transcript_rules(tmp_path, {"min_assistant_turns": 1, "max_turns": 5})
+    )
+
+
+@pytest.mark.parametrize(
+    ("transcript_rules", "match"),
+    [
+        ({"min_assistant_turns": 0}, "greater than or equal to 1"),
+        ({"tool_expectations": {"required_toolz": ["db_update"]}}, "required_toolz"),
+    ],
+    ids=["floor_below_the_domain", "misspelled_tool_expectations_key"],
+)
+def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
+    tmp_path: Path, transcript_rules: dict, match: str
+):
+    """The gate constructs the whole block, so its siblings are validated too.
+
+    A gate that read the two window fields off the raw dict and compared them
+    directly — never constructing the model — would leave both of these loading: a
+    floor of 0 asserting nothing, and a misspelled ``tool_expectations`` key grading
+    as an empty list.
+    """
+    with pytest.raises(ValueError, match=match):
+        validate_grading_yaml(_write_transcript_rules(tmp_path, transcript_rules))
+
+
+def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: Path):
+    task_file = _write_task(
+        tmp_path / "unsatisfiable_turn_window",
+        yaml.safe_dump({"transcript_rules": {"min_assistant_turns": 5, "max_turns": 3}}),
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "min_assistant_turns (5)" in out
+    assert "max_turns (3)" in out
