@@ -3256,6 +3256,33 @@ def test_left_pane_renders_a_markup_shaped_task_id_literally(status: str) -> Non
         assert "[missing]" in body
 
 
+def test_right_pane_renders_a_failed_trials_markup_shaped_text_literally() -> None:
+    """The focused pane's FAILED view quotes the task id and the error verbatim.
+
+    Both are interpolated into markup, so an unescaped value is either eaten as
+    a style tag (``[missing]``, a syntactically valid name) or raises out of the
+    render path (``[/close]``, a close with nothing open).
+    """
+    from rich.console import Console
+
+    from tolokaforge.dx._display import THEME
+
+    error = "KeyError: '[missing]' at [/close]"
+    display = LiveRunDisplay(refresh_per_second=1000)
+    display.run_started(total_trials=1, initial_completed=0)
+    display.trial_started(trial_id="a:0", task_id="task[bold]a", trial_index=0, total_index=0)
+    display.trial_failed(trial_id="a:0", error=error, retryable=False)
+
+    console = Console(
+        width=120, force_terminal=True, color_system="truecolor", record=True, theme=THEME
+    )
+    console.print(display._render_right_pane())
+    body = console.export_text()
+
+    assert "task[bold]a" in body
+    assert error in body
+
+
 # ---------------------------------------------------------------------------
 # Adaptive main-region sizing
 # ---------------------------------------------------------------------------

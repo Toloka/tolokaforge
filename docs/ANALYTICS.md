@@ -119,15 +119,14 @@ The counts that say which is which sit in the same row:
 the two diagnostic counts never cover the same attempt —
 `0 <= harness_errors + ungradeable <= measured_trials`.
 
-**Which direction the numbers move, if you are comparing against older figures.**
-Every rate here is **weakly higher** than the same run's figures under the previous
-convention, because an aborted trial used to enter the denominator carrying a
-fabricated `0.0`. The gap is exactly the abort count: a run with no aborts reports
-identical numbers, and a run where half the trials were rate-limited can double.
-So a dashboard that appears to improve on the day this lands has not improved —
-it stopped counting trials the provider killed as trials the model failed. Read
-`infrastructure_aborts` alongside any rate you are comparing, and use the
-`schema_version` stamp to tell which convention produced a given file.
+**What a rate on this page is a rate over.** Every one of them has
+`measured_trials` underneath it, which means each includes our own defects — a
+harness error and an ungradeable trial both weigh against the run — and excludes
+only the attempts a **typed** infrastructure abort removed. So a rate read alone
+cannot say how much of the run it describes: two tasks both reporting
+`success_rate: 0.5` are not comparable if one of them lost half its attempts to
+the provider and the other lost none. Read `infrastructure_aborts` alongside any
+rate you compare, and the coverage behind the number travels with it.
 
 `outcomes_by_reason` is what makes a classification call auditable without a
 rerun: it carries the counts needed to recompute the numbers under a different
@@ -198,7 +197,7 @@ performance average, so it follows the measured denominator.
 ### Reliability
 
 - `tool_success_rate`
-- `harness_errors` and `infrastructure_aborts` per task and run-wide
+- `harness_errors`, `ungradeable` and `infrastructure_aborts` per task and run-wide
 - retry-related run behavior (visible through queue counts and failed/completed totals)
 
 Retryability and countability are two independent questions over one

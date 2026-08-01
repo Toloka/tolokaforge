@@ -391,7 +391,7 @@ row keyed `ungradeable_<reason>`, and lands in `failure_attribution.json` as
 `failure_class: grading_failure` with `deterministic: true`. It is a non-pass in
 `success_rate` and `pass@k`, so a grading regression shows up as a visible,
 bounded deflation instead of as a run that got quietly smaller. While the run is
-still going, the live panel says the same thing: the trial's row reads `ungraded`,
+still going, the live panel says the same thing: the trial's row reads `n/a`,
 which is a third verdict distinct from both `pass` and `fail`
 (see [CLI.md § Live run panel](CLI.md#live-run-panel---displayrich-during-tolokaforge-run)).
 

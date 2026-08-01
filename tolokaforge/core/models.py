@@ -656,7 +656,7 @@ class Trajectory(BaseModel):
     def _reject_graded_and_ungradeable(self) -> Self:
         """Refuse a value claiming both a verdict and a reason there is none.
 
-        ``model_config`` leaves ``validate_assignment`` off, so this fires on
+        ``Trajectory`` does not enable ``validate_assignment``, so this fires on
         construction and ``model_validate`` but stays silent on attribute
         assignment — which is how the conductor sets both fields. It is a
         deserialisation-boundary guard: a contradictory trajectory cannot be

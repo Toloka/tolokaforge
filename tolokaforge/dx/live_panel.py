@@ -904,13 +904,18 @@ def _truncate_error(error_str: str, *, width: int = 60) -> str:
 _VERDICT_LABELS: dict[bool | None, str] = {
     True: "[success]pass[/success]",
     False: "[error]fail[/error]",
-    None: "[warn]ungraded[/warn]",
+    None: "[warn]n/a[/warn]",
 }
 """Left-pane verdict column for a trial in the ``completed`` state.
 
 ``None`` is grading's own failure: the trial ran and was measured, and no
 verdict exists for it. It renders as neither ``pass`` nor ``fail`` because
-either would attribute our outcome to the agent."""
+either would attribute our outcome to the agent.
+
+Every label is at most six characters. At an 80-column terminal the trials pane
+holds 28 columns of content, and a row with a six-character task id spends 22 of
+them before the verdict. A longer label wraps, and the continuation line carries
+no glyph, index or id — an orphaned word under the row it belongs to."""
 
 
 _TRIAL_LOG_TAIL_MAX = 20
@@ -2440,9 +2445,10 @@ class LiveRunDisplay:
         if snapshot.status == "failed" and snapshot.error:
             hint = _derive_hint(snapshot.error)
             parts = [
-                f"[error]FAILED[/error]  {snapshot.task_id} · {snapshot.trial_index}",
+                f"[error]FAILED[/error]  {_escape_markup(snapshot.task_id)} · "
+                f"{snapshot.trial_index}",
                 "",
-                _truncate_error(snapshot.error, width=200),
+                _escape_markup(_truncate_error(snapshot.error, width=200)),
             ]
             if hint:
                 parts.append("")

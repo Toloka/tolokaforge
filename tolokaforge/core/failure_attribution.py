@@ -85,6 +85,10 @@ def classify_trial_outcome(trajectory: Trajectory) -> TrialOutcomeClass:
     evidence that *we* failed, while exclusion is earned by typed evidence that
     the provider or the substrate killed the trial. Our own defects stay in the
     denominator, so a refusal outranks any reason that would have removed one.
+    It outranks every *other* reason too, including the ones that would have
+    named the fault ours by another name: a trial we could not grade is reported
+    ungradeable even when its own termination was also a defect of ours, so it
+    leaves ``harness_errors`` alone and lands in ``ungradeable`` instead.
 
     Total over ``(status, termination_reason)`` and gated on the exclusion
     allowlist, so a reason this function has never heard of is ``MEASURED``.
@@ -124,8 +128,10 @@ def attribute_failure(trajectory: Trajectory) -> dict[str, Any]:
     deterministic = False
 
     if trajectory.grading_error is not None:
-        # Must stay ahead of the tool-log scan: an ungradeable trial has no failed
-        # call and no grade to inspect, so it would come out ``model_reasoning``.
+        # Ahead of every other branch, not only the tool-log scan: an ungradeable
+        # trial has no failed call and no grade to inspect, so it would come out
+        # ``model_reasoning``, and a refusal is the cause even when the trial's own
+        # termination would have attributed the failure elsewhere.
         failure_class = "grading_failure"
         deterministic = True
         evidence.append({"kind": "grading_error", "error": trajectory.grading_error})

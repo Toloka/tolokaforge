@@ -95,7 +95,12 @@ on has four members.
 
 
 class OutcomeReasonCount(BaseModel):
-    """One ``outcomes_by_reason`` row: how a termination reason was counted.
+    """One ``outcomes_by_reason`` row: how a group of trials was counted.
+
+    The key the row hangs off is a termination reason, or ``unset_<status>`` for
+    a trial that recorded no reason, or either of those under an ``ungradeable_``
+    prefix — see :func:`~tolokaforge.core.metrics._outcome_key` for why the
+    prefix is what keeps one key mapping to exactly one ``class``.
 
     ``class`` is a Python keyword, so the field is aliased; dump with
     ``by_alias=True`` to produce the wire shape.
