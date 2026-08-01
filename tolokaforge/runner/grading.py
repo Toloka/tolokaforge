@@ -24,6 +24,7 @@ from tolokaforge.core.grading.combine_method import (
     validate_combine_method,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
     inert_hash_weight_reason,
@@ -757,16 +758,6 @@ def evaluate_jsonpath_file_checks(
     return score, reasons
 
 
-def _contains(haystack: Any, needle: Any, ci: bool = False) -> bool:
-    if isinstance(haystack, str) and isinstance(needle, str):
-        return needle.casefold() in haystack.casefold() if ci else needle in haystack
-    if isinstance(haystack, list | tuple | set):
-        return any(_contains(item, needle, ci=ci) for item in haystack)
-    if isinstance(haystack, dict):
-        return any(_contains(value, needle, ci=ci) for value in haystack.values())
-    return haystack == needle
-
-
 def evaluate_jsonpath_state_checks(
     checks: list[dict[str, Any]],
     state: dict[str, Any],
@@ -840,10 +831,10 @@ def evaluate_jsonpath_state_checks(
                 if value.casefold() == expected.casefold():
                     found = True
                     break
-            if op_name == "contains" and _contains(value, expected):
+            if op_name == "contains" and contains(value, expected):
                 found = True
                 break
-            if op_name == "contains_ci" and _contains(value, expected, ci=True):
+            if op_name == "contains_ci" and contains(value, expected, ci=True):
                 found = True
                 break
 

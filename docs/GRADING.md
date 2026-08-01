@@ -1031,8 +1031,9 @@ evaluated over the [trial event timeline](#trial-event-timeline). Where
 `trace_checks` expresses ordering, scoped negation, non-equality argument
 predicates, nested argument paths, counting, and a call's status or result.
 
-**Not yet scored.** The block is validated at load and crosses to both substrates
-as one model; no evaluator reads it yet, so it contributes no component score.
+**Not yet scored.** The block is validated at load, crosses to both substrates as
+one model, and its matchers resolve against the timeline — but no substrate folds a
+`trace_checks` score into the grade yet, so it contributes no component score.
 Tracked by **#678**.
 
 ### The config surface
@@ -1114,6 +1115,40 @@ matches a list holding `W1` and a dict holding it as a value.
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
 not need. A predicate declaring **no** operator is rejected at load.
+
+### What a matcher resolves to: matched, and undecidable
+
+Resolving a matcher yields two sets — the events that **definitely** match, and the
+events **nobody can decide**. Three rules govern them.
+
+**A predicate over a `None` field is unmatched, never vacuously true.** Only
+`exists` reads a `None`; every other operator is false there. So
+`args: { refund_id: { not_equals: R-1 } }` does **not** hold for a call that carried
+no `refund_id` at all — an absent argument satisfies no negative predicate. Write
+`exists: false` for "the argument is absent".
+
+**A `tool_call` matcher reads `status` and `result` through the result paired to it
+by `call_id`.** The call event carries neither of its own — a `tool_call` event
+always has `status: None` — so the pairing is what decides a status predicate, and
+a call the trial recorded no result for has no outcome to read at all.
+
+**Evidence only the tool-call record could supply makes an event undecidable.**
+`executor` and `status` come from that record alone. An event whose every other
+predicate passes, but whose record-only evidence is missing, is neither a match nor
+a definite miss: one completion of the record would select it and another would
+not. Two ordinary states reach it — a bundle re-graded without its tool-call record,
+and a call the agent declared that never executed. **Nothing may read an
+undecidable event as a pass in the agent's favour** — the hazard
+[G4](#guarantees) names when it says dropping an attempted call makes an `absent`
+or `count` constraint wrong in the agent's favour.
+
+Undecidability is scoped **to the matcher**, never to the event kind:
+
+- an event whose other predicates already fail is *decided* — it cannot match at
+  any status — so an unexecuted call to a tool the matcher does not name changes
+  nothing;
+- a matcher over a fully recorded call is *decided*, because the pairing answers
+  it.
 
 ### The constraint vocabulary — ten members
 
