@@ -55,8 +55,8 @@ from tolokaforge.core.llm.client import (
     LLMClient,
     _build_rate_limit_wait,
     _is_rate_limit_exception,
-    _matches_rate_limit_text,
     _should_retry_exception,
+    matches_rate_limit_text,
 )
 from tolokaforge.core.models import (
     RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
@@ -574,9 +574,9 @@ class TestTerminalKeyExhaustionIsNotARateLimit:
         assert _should_retry_exception(self._exhausted()) is True
 
     def test_it_is_a_runtime_error_carrying_the_unchanged_message(self) -> None:
-        """Every string-only classifier in the engine (``core/loop.py``,
-        ``core/runner.py``, ``core/resume.py``) and every ``except RuntimeError``
-        keeps matching, so the new type cannot change an existing run."""
+        """The engine's text-matching classifiers (``core/runner.py``,
+        ``core/resume.py``) and every ``except RuntimeError`` keep matching, so
+        the type cannot change an existing run."""
         exhausted = self._exhausted()
         assert isinstance(exhausted, RuntimeError)
         assert str(exhausted) == "All API keys exhausted"
@@ -698,7 +698,7 @@ class TestAnAuthoritativeStatusBeatsProse:
         wrapped = RuntimeError(f"LLM API call failed: {inner}")
         wrapped.__cause__ = inner
 
-        assert _matches_rate_limit_text(str(wrapped)) is True
+        assert matches_rate_limit_text(str(wrapped)) is True
         assert _is_rate_limit_exception(wrapped) is False
 
     def test_an_untyped_chain_still_text_matches(self) -> None:

@@ -1,0 +1,31 @@
+# The two cases differ only in audit.actor, which no JSONPath assertion reads and
+# the state hash covers: the JSONPath score is 0.5 in both, the hash verdict is not.
+hash_matching:
+  messages:
+    - role: assistant
+      content: "Order O1 is on its way with SlowShip."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: shipped
+          carrier: slowship
+      audit:
+        - id: A1
+          actor: agent
+
+hash_diverging:
+  messages:
+    - role: assistant
+      content: "Order O1 is on its way with SlowShip."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: shipped
+          carrier: slowship
+      audit:
+        - id: A1
+          actor: user

@@ -2,7 +2,8 @@
 
 import pytest
 
-from tolokaforge.core.models import Message, MessageRole, ToolCall
+from tests.utils.recorded_calls import recorded_call
+from tolokaforge.core.models import Message, MessageRole, RecordedToolCall, ToolCall
 from tolokaforge.core.stuck import StuckDetector
 
 pytestmark = pytest.mark.unit
@@ -13,9 +14,9 @@ def _assistant_msg(content: str, tool_calls: list[ToolCall] | None = None) -> Me
     return Message(role=MessageRole.ASSISTANT, content=content, tool_calls=tool_calls)
 
 
-def _tool_log(tool: str, arguments: dict | None = None) -> dict:
-    """Create a tool-log dict matching the format StuckDetector expects."""
-    return {"tool": tool, "arguments": arguments or {}}
+def _tool_log(tool: str, arguments: dict | None = None) -> RecordedToolCall:
+    """One recorded tool call, as :class:`StuckDetector` reads them."""
+    return recorded_call(tool, arguments=arguments)
 
 
 # ---------------------------------------------------------------------------

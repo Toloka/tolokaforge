@@ -9,20 +9,28 @@ These tests verify that the grading system works correctly:
 PROJECT RULES: Tests use real behavior, no mocks.
 """
 
+from collections.abc import Sequence
 from datetime import datetime
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
+from tests.utils.recorded_calls import recorded_call
+from tests.utils.timelines import build_timeline
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
+from tolokaforge.core.grading.trace_timeline import TrialTimeline
 from tolokaforge.core.hash import compute_stable_hash
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     Message,
     Metrics,
+    RecordedToolCall,
     TerminationReason,
+    ToolCall,
+    ToolExecutionStatus,
+    ToolExecutorIdentity,
     Trajectory,
     TrialStatus,
 )
@@ -32,7 +40,7 @@ from tolokaforge.runner.grading import (
     compute_state_diff,
     evaluate_transcript_rules,
 )
-from tolokaforge.runner.models import RequiredAction, TranscriptRulesConfig
+from tolokaforge.runner.models import RequiredAction, ToolExpectations, TranscriptRulesConfig
 
 
 class TestGoldenMatchScoresOne:
@@ -309,66 +317,6 @@ class TestErrorTrialDetected:
         assert grade.score == 0.0
         assert "timeout" in grade.reasons.lower()
 
-    def test_rate_limit_is_retryable(self):
-        """
-        Verify that rate limit errors are classified as retryable.
-
-        This mirrors orchestrator._is_retryable_trajectory().
-        """
-        now = datetime.now()
-        trajectory = Trajectory(
-            task_id="TEST-003",
-            trial_index=0,
-            start_ts=now,
-            end_ts=now,
-            status=TrialStatus.ERROR,
-            termination_reason=TerminationReason.RATE_LIMIT,
-            messages=[],
-            metrics=Metrics(),
-        )
-
-        # Check retryable classification
-        is_retryable = trajectory.status in (
-            TrialStatus.ERROR,
-            TrialStatus.TIMEOUT,
-        ) or trajectory.termination_reason in (
-            TerminationReason.RATE_LIMIT,
-            TerminationReason.API_ERROR,
-            TerminationReason.TIMEOUT,
-            TerminationReason.ERROR,
-        )
-
-        assert is_retryable is True, "Rate limit errors should be retryable"
-
-    def test_completed_trial_not_retryable(self):
-        """
-        Verify that completed trials (even with score=0) are not retryable.
-        """
-        now = datetime.now()
-        trajectory = Trajectory(
-            task_id="TEST-004",
-            trial_index=0,
-            start_ts=now,
-            end_ts=now,
-            status=TrialStatus.COMPLETED,
-            termination_reason=TerminationReason.AGENT_DONE,  # AGENT_DONE is the correct enum value
-            messages=[],
-            metrics=Metrics(),
-        )
-
-        # Check retryable classification
-        is_retryable = trajectory.status in (
-            TrialStatus.ERROR,
-            TrialStatus.TIMEOUT,
-        ) or trajectory.termination_reason in (
-            TerminationReason.RATE_LIMIT,
-            TerminationReason.API_ERROR,
-            TerminationReason.TIMEOUT,
-            TerminationReason.ERROR,
-        )
-
-        assert is_retryable is False, "Completed trials should not be retryable"
-
 
 class TestLLMJudgePlaceholderStatus:
     """
@@ -461,12 +409,8 @@ class TestLLMJudgePlaceholderStatus:
 
         score, binary_pass = combine_grade_components(components, grading_config)
 
-        assert (
-            score == 0.0
-        ), f"Score should be 0.0 when configured grading has no evaluated components, got {score}"
-        assert (
-            binary_pass is False
-        ), "binary_pass should be False when grading was configured but nothing evaluated"
+        assert score == 0.0, f"configured grading with nothing evaluated scored {score}, not 0.0"
+        assert binary_pass is False, "configured grading with nothing evaluated must not pass"
 
     def test_combine_grade_components_passes_when_nothing_configured(self):
         """
@@ -498,10 +442,10 @@ class TestLLMJudgePlaceholderStatus:
 class TestTranscriptRulesEvaluation:
     """Real-behaviour tests for the author-facing TranscriptRulesConfig grader.
 
-    ``evaluate_transcript_rules`` takes a single
-    ``TranscriptRulesConfig.model_dump()`` dict (the schema authors write in
-    grading.yaml) and decomposes its fields into per-field sub-checks. These
-    tests exercise each field honestly with realistic fixtures and prove the
+    ``evaluate_transcript_rules`` takes the trial's :class:`TrialTimeline` plus a
+    single ``TranscriptRulesConfig.model_dump()`` dict (the schema authors write
+    in grading.yaml) and decomposes the config's fields into per-field sub-checks.
+    These tests exercise each field honestly with realistic fixtures and prove the
     historical always-pass no-op bug is gone.
     """
 
@@ -510,10 +454,34 @@ class TestTranscriptRulesEvaluation:
         """Build a TranscriptRulesConfig dump with only the given fields set."""
         return TranscriptRulesConfig(**fields).model_dump()
 
+    @staticmethod
+    def _timeline(
+        turns: Sequence[tuple[str, str]] = (),
+        calls: Sequence[RecordedToolCall] = (),
+    ) -> TrialTimeline:
+        return build_timeline(turns, calls)
+
+    @staticmethod
+    def _call(
+        tool_name: str,
+        *,
+        sequence: int = 0,
+        status: str = "success",
+        arguments: dict | None = None,
+        executor: str = "agent",
+    ) -> RecordedToolCall:
+        return recorded_call(
+            tool_name,
+            sequence=sequence,
+            status=ToolExecutionStatus(status),
+            arguments=arguments,
+            executor=ToolExecutorIdentity(executor),
+        )
+
     # --- empty config (no-op pass) -----------------------------------------
 
     def test_empty_config_is_noop_pass(self):
-        result = evaluate_transcript_rules([], [], self._config())
+        result = evaluate_transcript_rules(self._timeline(), self._config())
         assert result.passed is True
         assert result.score == 1.0
         assert result.details == []
@@ -521,28 +489,40 @@ class TestTranscriptRulesEvaluation:
     # --- must_contain ------------------------------------------------------
 
     def test_must_contain_present(self):
-        messages = [
-            {"role": "user", "content": "Help me with my order"},
-            {"role": "assistant", "content": "I'll help you with your order."},
-        ]
-        result = evaluate_transcript_rules(messages, [], self._config(must_contain=["help you"]))
+        timeline = self._timeline(
+            [
+                ("user", "Help me with my order"),
+                ("assistant", "I'll help you with your order."),
+            ]
+        )
+        result = evaluate_transcript_rules(timeline, self._config(must_contain=["help you"]))
         assert result.passed is True
         assert result.score == 1.0
 
     def test_must_contain_absent_fails(self):
-        messages = [
-            {"role": "user", "content": "Help me with my order"},
-            {"role": "assistant", "content": "I cannot assist with that."},
-        ]
-        result = evaluate_transcript_rules(messages, [], self._config(must_contain=["help you"]))
+        timeline = self._timeline(
+            [
+                ("user", "Help me with my order"),
+                ("assistant", "I cannot assist with that."),
+            ]
+        )
+        result = evaluate_transcript_rules(timeline, self._config(must_contain=["help you"]))
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_must_contain_only_searches_assistant_turns(self):
+        """A phrase the *user* said does not satisfy the rule — the check is on
+        what the agent communicated."""
+        timeline = self._timeline([("user", "please say confirmed"), ("assistant", "Okay.")])
+        result = evaluate_transcript_rules(timeline, self._config(must_contain=["confirmed"]))
         assert result.passed is False
         assert result.score == 0.0
 
     def test_must_contain_partial_credit(self):
         """One of two required strings present → score 0.5, not passed."""
-        messages = [{"role": "assistant", "content": "Your order is confirmed."}]
+        timeline = self._timeline([("assistant", "Your order is confirmed.")])
         result = evaluate_transcript_rules(
-            messages, [], self._config(must_contain=["confirmed", "refunded"])
+            timeline, self._config(must_contain=["confirmed", "refunded"])
         )
         assert result.passed is False
         assert result.score == 0.5
@@ -550,17 +530,17 @@ class TestTranscriptRulesEvaluation:
     # --- disallow_regex ----------------------------------------------------
 
     def test_disallow_regex_no_match_passes(self):
-        messages = [{"role": "assistant", "content": "I'll help you with your request."}]
+        timeline = self._timeline([("assistant", "I'll help you with your request.")])
         result = evaluate_transcript_rules(
-            messages, [], self._config(disallow_regex=[r"cannot\s+help"])
+            timeline, self._config(disallow_regex=[r"cannot\s+help"])
         )
         assert result.passed is True
         assert result.score == 1.0
 
     def test_disallow_regex_match_fails(self):
-        messages = [{"role": "assistant", "content": "Sorry, I cannot   help with that."}]
+        timeline = self._timeline([("assistant", "Sorry, I cannot   help with that.")])
         result = evaluate_transcript_rules(
-            messages, [], self._config(disallow_regex=[r"cannot\s+help"])
+            timeline, self._config(disallow_regex=[r"cannot\s+help"])
         )
         assert result.passed is False
         assert result.score == 0.0
@@ -568,33 +548,197 @@ class TestTranscriptRulesEvaluation:
     # --- max_turns ---------------------------------------------------------
 
     def test_max_turns_under_limit_passes(self):
-        messages = [
-            {"role": "user", "content": "Q1"},
-            {"role": "assistant", "content": "A1"},
-            {"role": "user", "content": "Q2"},
-            {"role": "assistant", "content": "A2"},
-        ]
-        result = evaluate_transcript_rules(messages, [], self._config(max_turns=5))
+        timeline = self._timeline(
+            [
+                ("user", "Q1"),
+                ("assistant", "A1"),
+                ("user", "Q2"),
+                ("assistant", "A2"),
+            ]
+        )
+        result = evaluate_transcript_rules(timeline, self._config(max_turns=5))
         assert result.passed is True
         assert result.score == 1.0
 
     def test_max_turns_over_limit_fails(self):
-        messages = [{"role": "assistant", "content": f"A{i}"} for i in range(10)]
-        result = evaluate_transcript_rules(messages, [], self._config(max_turns=5))
+        timeline = self._timeline([("assistant", f"A{i}") for i in range(10)])
+        result = evaluate_transcript_rules(timeline, self._config(max_turns=5))
         assert result.passed is False
         assert result.score == 0.0
+
+    # --- tool_expectations -------------------------------------------------
+
+    def test_empty_tool_expectations_contributes_no_sub_checks(self):
+        """An empty block must not add sub-checks, or it would dilute the fraction."""
+        config = self._config(tool_expectations=ToolExpectations())
+        result = evaluate_transcript_rules(self._timeline(calls=[self._call("anything")]), config)
+        assert result.details == []
+        assert result.passed is True
+        assert result.score == 1.0
+
+    def test_required_tool_called_successfully_passes(self):
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["write_file"]))
+        result = evaluate_transcript_rules(self._timeline(calls=[self._call("write_file")]), config)
+        assert result.passed is True
+        assert result.score == 1.0
+        assert [d.rule_type for d in result.details] == ["required_tool"]
+
+    def test_required_tool_never_called_fails_with_named_sub_check(self):
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["write_file"]))
+        result = evaluate_transcript_rules(self._timeline(calls=[self._call("read_file")]), config)
+        assert result.passed is False
+        assert result.score == 0.0
+        assert len(result.details) == 1
+        detail = result.details[0]
+        assert detail.rule_type == "required_tool"
+        assert "write_file" in detail.message
+        assert detail.passed is False
+
+    def test_required_tool_errored_call_does_not_count(self):
+        """Mirrors required_actions: a failed call did not do the work."""
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["write_file"]))
+        result = evaluate_transcript_rules(
+            self._timeline(calls=[self._call("write_file", status="error")]), config
+        )
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_disallowed_tool_never_called_passes(self):
+        config = self._config(
+            tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
+        )
+        result = evaluate_transcript_rules(self._timeline(calls=[self._call("read_file")]), config)
+        assert result.passed is True
+        assert result.score == 1.0
+        assert [d.rule_type for d in result.details] == ["disallowed_tool"]
+
+    @pytest.mark.parametrize("status", ["success", "error", "timeout"])
+    def test_disallowed_tool_called_at_any_status_fails(self, status):
+        """Attempting a forbidden call IS the violation — status is irrelevant."""
+        config = self._config(
+            tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
+        )
+        result = evaluate_transcript_rules(
+            self._timeline(calls=[self._call("delete_customer", status=status)]), config
+        )
+        assert result.passed is False
+        assert result.score == 0.0
+        detail = result.details[0]
+        assert detail.rule_type == "disallowed_tool"
+        assert "delete_customer" in detail.message
+        assert status in detail.message
+
+    def test_disallowed_tool_declared_but_never_run_passes(self):
+        """A call the agent declared on a terminating turn never reached the
+        substrate, so there is no forbidden execution to report. Naming intent as
+        the violation is a matcher question, tracked on #678.
+
+        The trial records another call, which is what makes "declared, not
+        recorded" mean "did not run" — see the records-absent case below.
+        """
+        config = self._config(
+            tool_expectations=ToolExpectations(disallowed_tools=["delete_customer"])
+        )
+        timeline = build_timeline(
+            [("assistant", "I will remove the customer next.")],
+            [self._call("read_file")],
+            unexecuted=[ToolCall(id="never_ran", name="delete_customer", arguments={})],
+        )
+        result = evaluate_transcript_rules(timeline, config)
+        assert result.passed is True
+        assert result.score == 1.0
+        assert result.details[0].message == "Disallowed tool 'delete_customer' was never called"
+
+    def test_a_records_less_timeline_fails_every_tool_expectation_by_name(self):
+        """Re-grading a recorded bundle is this shape: `tool_log` is not written to
+        `trajectory.yaml`, so the message view declares calls and nothing says
+        whether they ran. Reading that as "never used" passed every
+        `disallowed_tools` check unconditionally (docs/GRADING.md G6b)."""
+        config = self._config(
+            tool_expectations=ToolExpectations(
+                required_tools=["read_file"], disallowed_tools=["delete_customer"]
+            )
+        )
+        timeline = build_timeline(
+            [("assistant", "Removing the customer.")],
+            unexecuted=[
+                ToolCall(id="c1", name="read_file", arguments={}),
+                ToolCall(id="c2", name="delete_customer", arguments={}),
+            ],
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert timeline.records_present is False
+        assert result.passed is False
+        assert result.score == 0.0
+        assert [(d.rule_type, d.passed) for d in result.details] == [
+            ("required_tool", False),
+            ("disallowed_tool", False),
+        ]
+        for detail in result.details:
+            assert "carries no tool-call record" in detail.message
+
+    def test_a_records_less_timeline_still_clears_a_tool_never_asked_for(self):
+        """A record can only name a call the message view declared, so a tool the
+        trial never asked for never ran — knowable without the record view."""
+        config = self._config(tool_expectations=ToolExpectations(disallowed_tools=["drop_table"]))
+        timeline = build_timeline(
+            [("assistant", "Reading the file.")],
+            unexecuted=[ToolCall(id="c1", name="read_file", arguments={})],
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is True
+        assert result.details[0].message == "Disallowed tool 'drop_table' was never called"
+
+    def test_a_records_less_timeline_names_the_gap_on_a_required_action(self):
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="a1",
+                    requestor="assistant",
+                    tool_name="delete_customer",
+                    arguments={"customer_id": "c1"},
+                )
+            ]
+        )
+        timeline = build_timeline(
+            [("assistant", "Removing the customer.")],
+            unexecuted=[ToolCall(id="c1", name="delete_customer", arguments={"customer_id": "c1"})],
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is False
+        assert "carries no tool-call record" in result.details[0].message
+
+    def test_tool_expectations_decomposes_one_sub_check_per_tool(self):
+        """Each declared tool is scored independently, like must_contain entries."""
+        config = self._config(
+            tool_expectations=ToolExpectations(
+                required_tools=["write_file", "read_file"],
+                disallowed_tools=["delete_customer", "drop_table"],
+            )
+        )
+        timeline = self._timeline(
+            calls=[
+                self._call("write_file", sequence=0),
+                self._call("delete_customer", sequence=1),
+            ]
+        )
+        result = evaluate_transcript_rules(timeline, config)
+        # write_file present (pass), read_file absent (fail), delete_customer
+        # called (fail), drop_table untouched (pass).
+        assert len(result.details) == 4
+        assert result.score == 0.5
+        assert result.passed is False
 
     # --- required_actions --------------------------------------------------
 
     def test_required_action_present(self):
-        tool_history = [
-            {
-                "tool_name": "get_order",
-                "arguments": {"order_id": "123"},
-                "executor": "agent",
-                "status": "success",
-            },
-        ]
+        timeline = self._timeline(calls=[self._call("get_order", arguments={"order_id": "123"})])
         config = self._config(
             required_actions=[
                 RequiredAction(
@@ -606,19 +750,12 @@ class TestTranscriptRulesEvaluation:
                 )
             ]
         )
-        result = evaluate_transcript_rules([], tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is True
         assert result.score == 1.0
 
     def test_required_action_absent_fails(self):
-        tool_history = [
-            {
-                "tool_name": "list_orders",
-                "arguments": {},
-                "executor": "agent",
-                "status": "success",
-            },
-        ]
+        timeline = self._timeline(calls=[self._call("list_orders")])
         config = self._config(
             required_actions=[
                 RequiredAction(
@@ -629,20 +766,17 @@ class TestTranscriptRulesEvaluation:
                 )
             ]
         )
-        result = evaluate_transcript_rules([], tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score == 0.0
 
     def test_required_action_compare_args_right_args(self):
         """compare_args subset matches → pass."""
-        tool_history = [
-            {
-                "tool_name": "book_reservation",
-                "arguments": {"user_id": "mia_li_3668", "seat": "12A"},
-                "executor": "agent",
-                "status": "success",
-            },
-        ]
+        timeline = self._timeline(
+            calls=[
+                self._call("book_reservation", arguments={"user_id": "mia_li_3668", "seat": "12A"})
+            ]
+        )
         config = self._config(
             required_actions=[
                 RequiredAction(
@@ -654,20 +788,17 @@ class TestTranscriptRulesEvaluation:
                 )
             ]
         )
-        result = evaluate_transcript_rules([], tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is True
         assert result.score == 1.0
 
     def test_required_action_compare_args_wrong_args_fails(self):
         """compare_args subset mismatches → fail (the arg value differs)."""
-        tool_history = [
-            {
-                "tool_name": "book_reservation",
-                "arguments": {"user_id": "someone_else", "seat": "12A"},
-                "executor": "agent",
-                "status": "success",
-            },
-        ]
+        timeline = self._timeline(
+            calls=[
+                self._call("book_reservation", arguments={"user_id": "someone_else", "seat": "12A"})
+            ]
+        )
         config = self._config(
             required_actions=[
                 RequiredAction(
@@ -679,20 +810,13 @@ class TestTranscriptRulesEvaluation:
                 )
             ]
         )
-        result = evaluate_transcript_rules([], tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score == 0.0
 
     def test_required_action_requestor_mismatch_fails(self):
         """A call made by the user does not satisfy an assistant-requestor action."""
-        tool_history = [
-            {
-                "tool_name": "get_order",
-                "arguments": {},
-                "executor": "user",
-                "status": "success",
-            },
-        ]
+        timeline = self._timeline(calls=[self._call("get_order", executor="user")])
         config = self._config(
             required_actions=[
                 RequiredAction(
@@ -703,19 +827,12 @@ class TestTranscriptRulesEvaluation:
                 )
             ]
         )
-        result = evaluate_transcript_rules([], tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
 
     def test_required_action_failed_call_does_not_count(self):
         """A non-success status does not satisfy a required action."""
-        tool_history = [
-            {
-                "tool_name": "get_order",
-                "arguments": {},
-                "executor": "agent",
-                "status": "error",
-            },
-        ]
+        timeline = self._timeline(calls=[self._call("get_order", status="error")])
         config = self._config(
             required_actions=[
                 RequiredAction(
@@ -726,32 +843,51 @@ class TestTranscriptRulesEvaluation:
                 )
             ]
         )
-        result = evaluate_transcript_rules([], tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
+
+    def test_required_action_unexecuted_call_does_not_count(self):
+        """A call the agent declared on a terminating turn never ran, so it carries
+        no status — and absent evidence must fail rather than pass."""
+        timeline = build_timeline(
+            [("assistant", "Cancelling now.")],
+            unexecuted=[ToolCall(id="never_ran", name="get_order", arguments={})],
+        )
+        config = self._config(
+            required_actions=[
+                RequiredAction(
+                    action_id="get",
+                    requestor="assistant",
+                    tool_name="get_order",
+                    compare_args=[],
+                )
+            ]
+        )
+        result = evaluate_transcript_rules(timeline, config)
+        assert result.passed is False
+        assert result.score == 0.0
 
     # --- communicate_info --------------------------------------------------
 
     def test_communicate_info_required_present(self):
-        messages = [
-            {"role": "assistant", "content": "Your Wi-Fi password is aurora-481-fennel."},
-        ]
+        timeline = self._timeline([("assistant", "Your Wi-Fi password is aurora-481-fennel.")])
         config = self._config(communicate_info=[{"info": "aurora-481-fennel", "required": True}])
-        result = evaluate_transcript_rules(messages, [], config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is True
         assert result.score == 1.0
 
     def test_communicate_info_required_absent_fails(self):
-        messages = [{"role": "assistant", "content": "Here is some unrelated text."}]
+        timeline = self._timeline([("assistant", "Here is some unrelated text.")])
         config = self._config(communicate_info=[{"info": "aurora-481-fennel", "required": True}])
-        result = evaluate_transcript_rules(messages, [], config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score == 0.0
 
     def test_communicate_info_not_required_is_not_scored(self):
         """Non-required info is advisory and produces no sub-check."""
-        messages = [{"role": "assistant", "content": "Nothing relevant here."}]
+        timeline = self._timeline([("assistant", "Nothing relevant here.")])
         config = self._config(communicate_info=[{"info": "aurora-481-fennel", "required": False}])
-        result = evaluate_transcript_rules(messages, [], config)
+        result = evaluate_transcript_rules(timeline, config)
         # No sub-checks at all → no-op pass.
         assert result.details == []
         assert result.passed is True
@@ -764,8 +900,8 @@ class TestTranscriptRulesEvaluation:
         and ALWAYS returning passed=True / score=1.0. A config the transcript
         clearly violates must now fail.
         """
-        messages = [{"role": "assistant", "content": "I did nothing useful."}]
-        tool_history = []  # the required action never happened
+        # The required action never happened, so the timeline carries no records.
+        timeline = self._timeline([("assistant", "I did nothing useful.")])
         config = self._config(
             must_contain=["confirmation number"],
             required_actions=[
@@ -778,7 +914,7 @@ class TestTranscriptRulesEvaluation:
             ],
             communicate_info=[{"info": "your refund", "required": True}],
         )
-        result = evaluate_transcript_rules(messages, tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score < 1.0
         # Every sub-check should be present and failing.
@@ -787,18 +923,13 @@ class TestTranscriptRulesEvaluation:
 
     def test_combined_fields_mixed_pass_fail(self):
         """Multiple fields together: score is the fraction of sub-checks passed."""
-        messages = [
-            {"role": "user", "content": "Cancel my booking"},
-            {"role": "assistant", "content": "Done — your booking is cancelled."},
-        ]
-        tool_history = [
-            {
-                "tool_name": "cancel_booking",
-                "arguments": {"booking_id": "B1"},
-                "executor": "agent",
-                "status": "success",
-            },
-        ]
+        timeline = self._timeline(
+            [
+                ("user", "Cancel my booking"),
+                ("assistant", "Done — your booking is cancelled."),
+            ],
+            [self._call("cancel_booking", arguments={"booking_id": "B1"})],
+        )
         config = self._config(
             must_contain=["cancelled"],  # pass
             max_turns=5,  # pass (1 assistant turn)
@@ -812,7 +943,7 @@ class TestTranscriptRulesEvaluation:
             ],  # pass
             communicate_info=[{"info": "refund issued", "required": True}],  # fail
         )
-        result = evaluate_transcript_rules(messages, tool_history, config)
+        result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score == 0.75  # 3 of 4 sub-checks pass
 

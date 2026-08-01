@@ -17,6 +17,7 @@ import re
 import threading
 import time
 from collections.abc import Callable
+from enum import Enum
 from typing import Any
 
 import litellm
@@ -91,15 +92,14 @@ class LLMApiTimeoutError(RuntimeError):
 class AllApiKeysExhaustedError(RuntimeError):
     """Raised when every rotatable API key has hit its own quota / credit cap.
 
-    A :class:`RuntimeError` subclass carrying the same message the engine has
-    always raised here, so :func:`_should_retry_exception` and the engine's
-    three string-only 429 classifiers
-    (:func:`tolokaforge.core.loop.classify_error`,
-    ``TrialRunner._is_rate_limit_error``, ``core/resume.py``) behave exactly as
-    before.
+    A :class:`RuntimeError` subclass, so :func:`_should_retry_exception` and the
+    engine's remaining text-matching 429 classifiers
+    (``TrialRunner._is_rate_limit_error``, ``core/resume.py``) treat it as the
+    plain ``RuntimeError`` it always was.
 
-    The type exists so :func:`_is_rate_limit_exception` can tell this apart from
-    a transient 429. ``_call_with_key_rotation`` enters its rotation branch on
+    The type exists so :func:`_is_rate_limit_exception` and
+    :func:`is_typed_rate_limit_exception` can tell this apart from a transient
+    429. ``_call_with_key_rotation`` enters its rotation branch on
     the provider's own 429 ("Key limit exceeded") and chains it as ``__cause__``,
     so a ``__cause__`` walk would otherwise classify a **terminal** condition as
     a rate limit and hand it rate-limit probe mode's multi-hour fixed-interval
@@ -319,25 +319,85 @@ Adding prose for them would widen the false-positive surface for no gain.
 """
 
 
-def _matches_rate_limit_text(text: str) -> bool:
+def matches_rate_limit_text(text: str) -> bool:
+    """True when *text* carries one of the anchored 429 shapes.
+
+    Prose is not evidence of a rate limit on its own — see
+    :data:`_RATE_LIMIT_TEXT_PATTERNS` and
+    :func:`~tolokaforge.core.loop.classify_loop_error`, which uses a match here
+    as a *harness* diagnostic rather than as an infrastructure verdict.
+    """
     return any(pattern.search(text) for pattern in _RATE_LIMIT_TEXT_PATTERNS)
+
+
+class _RateLimitTypeEvidence(str, Enum):
+    """What a ``__cause__`` walk found about an exception's 429-ness.
+
+    ``TERMINAL_EXHAUSTION`` and ``OTHER_HTTP_STATUS`` are both "not a transient
+    429", but they are distinct findings: the first is authoritative about the
+    condition, the second only about this link's status.
+    """
+
+    TYPED_429 = "typed_429"
+    TERMINAL_EXHAUSTION = "terminal_exhaustion"
+    OTHER_HTTP_STATUS = "other_http_status"
+    NONE = "none"
+
+
+def _rate_limit_type_evidence(exc: BaseException) -> _RateLimitTypeEvidence:
+    """Walk *exc* and its causes for 429 evidence carried by type or status.
+
+    The walk is bounded by :data:`_EXCEPTION_CAUSE_DEPTH` because the outer
+    controller never sees the provider's exception directly.
+    ``litellm.exceptions.RateLimitError`` subclasses ``openai.RateLimitError``,
+    so one ``isinstance`` covers every provider litellm routes, and
+    ``status_code == 429`` catches a bare ``APIStatusError``.
+
+    :class:`AllApiKeysExhaustedError` stops the walk: it chains the provider's
+    own 429 as its ``__cause__`` but every rotatable key is spent and
+    :meth:`LLMClient._rotate_key` only ever advances its index, so the condition
+    never clears.
+    """
+    candidate: BaseException | None = exc
+    saw_http_status = False
+    for _ in range(_EXCEPTION_CAUSE_DEPTH):
+        if candidate is None:
+            break
+        if isinstance(candidate, openai.RateLimitError):
+            return _RateLimitTypeEvidence.TYPED_429
+        status = getattr(candidate, "status_code", None)
+        if status == 429:
+            return _RateLimitTypeEvidence.TYPED_429
+        if isinstance(status, int):
+            saw_http_status = True
+        if isinstance(candidate, AllApiKeysExhaustedError):
+            return _RateLimitTypeEvidence.TERMINAL_EXHAUSTION
+        cause = candidate.__cause__
+        candidate = cause if cause is not candidate else None
+
+    if saw_http_status:
+        return _RateLimitTypeEvidence.OTHER_HTTP_STATUS
+    return _RateLimitTypeEvidence.NONE
+
+
+def is_typed_rate_limit_exception(exc: BaseException) -> bool:
+    """True when *exc* or one of its causes carries a 429 by type or status.
+
+    Message text is never consulted, which is what makes this predicate usable
+    as the gate on ``TerminationReason.RATE_LIMIT`` — and through it on
+    excluding a trial from a benchmark's denominator. A rate limit that reaches
+    us as prose only is a harness deficiency, not evidence.
+    """
+    return _rate_limit_type_evidence(exc) is _RateLimitTypeEvidence.TYPED_429
 
 
 def _is_rate_limit_exception(exc: BaseException) -> bool:
     """True when *exc* is a **transient** upstream 429.
 
-    Three tiers, strongest evidence first, all walked along the ``__cause__``
-    chain because the outer controller never sees the provider's exception
-    directly (see :data:`_EXCEPTION_CAUSE_DEPTH`):
+    Three tiers, strongest evidence first:
 
-    1. **Type / status.** ``litellm.exceptions.RateLimitError`` subclasses
-       ``openai.RateLimitError``, so one ``isinstance`` covers every provider
-       litellm routes, and ``status_code == 429`` catches a bare
-       ``APIStatusError``.
-    2. **Terminal-condition veto.** :class:`AllApiKeysExhaustedError` chains the
-       provider's own 429 as its ``__cause__`` but is *not* transient — every
-       rotatable key is spent and :meth:`LLMClient._rotate_key` never resets its
-       index. It stops the walk and returns ``False`` so the condition takes the
+    1. **Type / status**, and 2. the **terminal-condition veto** — both from
+       :func:`_rate_limit_type_evidence`. The veto keeps key exhaustion on the
        ordinary bounded-exponential branch instead of probe mode's multi-hour
        fixed-interval budget.
     3. **Anchored text**, last resort — see :data:`_RATE_LIMIT_TEXT_PATTERNS`.
@@ -352,32 +412,19 @@ def _is_rate_limit_exception(exc: BaseException) -> bool:
        tiers 1-2: an untyped chain still text-matches, so a real 429 that
        arrives only as prose is still absorbed.
 
-    Used only by the rate-limit probe controller. The engine's three
-    existing 429 classifiers (:func:`tolokaforge.core.loop.classify_error`,
-    ``TrialRunner._is_rate_limit_error``, ``core/resume.py``) are string-only
-    and are deliberately left untouched, so this predicate cannot alter any
-    existing classification.
+    Used by the rate-limit probe controller, which asks about *transience* —
+    a different question from :func:`is_typed_rate_limit_exception`, which asks
+    what the error can be proven to be.
     """
-    candidate: BaseException | None = exc
-    saw_http_status = False
-    for _ in range(_EXCEPTION_CAUSE_DEPTH):
-        if candidate is None:
-            break
-        if isinstance(candidate, openai.RateLimitError):
-            return True
-        status = getattr(candidate, "status_code", None)
-        if status == 429:
-            return True
-        if isinstance(status, int):
-            saw_http_status = True
-        if isinstance(candidate, AllApiKeysExhaustedError):
-            return False
-        cause = candidate.__cause__
-        candidate = cause if cause is not candidate else None
-
-    if saw_http_status:
+    evidence = _rate_limit_type_evidence(exc)
+    if evidence is _RateLimitTypeEvidence.TYPED_429:
+        return True
+    if evidence in (
+        _RateLimitTypeEvidence.TERMINAL_EXHAUSTION,
+        _RateLimitTypeEvidence.OTHER_HTTP_STATUS,
+    ):
         return False
-    return _matches_rate_limit_text(str(exc))
+    return matches_rate_limit_text(str(exc))
 
 
 def _build_rate_limit_wait(probe: RateLimitProbeConfig) -> wait_base:

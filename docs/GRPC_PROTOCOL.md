@@ -57,7 +57,7 @@ sequenceDiagram
         R-->>H: ToolOutput - output string or error
     end
 
-    H->>R: GradeTrial - trajectory_json
+    H->>R: GradeTrial - llm_messages_json
     R->>DB: Snapshot current state
     R->>DB: Reset to initial state
     R->>R: Execute golden path
@@ -129,6 +129,12 @@ message RegisterTrialRequest {
 
   // Optional: Override timeout for tool execution (seconds)
   double default_tool_timeout_s = 3;
+
+  // Wire-protocol version the calling engine speaks. See
+  // tolokaforge/runner/protocol.py for the current value and what it carries.
+  // RegisterTrial fails when it is below the version the runner requires, so
+  // an engine/image skew aborts the trial before any tokens are spent.
+  int32 engine_protocol_version = 4;
 }
 
 message RegisterTrialResponse {
@@ -184,6 +190,12 @@ message ExecuteToolRequest {
   // Which environment is making the call
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
+
+  // The provider's tool-call id (ToolCall.id) — the key that joins this call
+  // to the tool-result message it produced. Required: the runner rejects an
+  // empty value, because two calls to the same tool with identical arguments
+  // are otherwise indistinguishable in the recorded history.
+  string call_id = 6;
 }
 
 message ExecuteToolResponse {
@@ -253,10 +265,20 @@ message GradeTrialRequest {
   // Trial identifier
   string trial_id = 1;
 
-  // Optional: LLM messages for transcript rules grading
-  // Only needed if grading config includes transcript_rules (must_contain, required_actions, etc.)
-  // For hash-only grading (TlkMcpCore, Tau), this can be omitted - Runner has tool call history
-  // Contains: messages array with role, content (assistant/user text only, not tool results)
+  // The trial's full interleaved message trace, encoded by
+  // tolokaforge.core.grading.transcript_wire.encode_transcript_wire: a JSON array
+  // of {role, content} objects in execution order, covering every role — a tool
+  // result crosses as role "tool" carrying its tool_call_id.
+  // An assistant or user turn that called tools also carries
+  // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
+  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
+  // the only key joining a call to its result — parallel calls to one tool with
+  // identical arguments are otherwise indistinguishable — and
+  // decode_transcript_wire rejects a payload whose tool_calls carry none.
+  // The leading "system" message is the agent's policy, lifted out by
+  // split_leading_system_message rather than replayed as a conversational turn.
+  // Needed for transcript_rules and llm_judge grading; for hash-only grading
+  // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
   // Optional: Skip golden path execution if expected hash is pre-computed
@@ -266,6 +288,13 @@ message GradeTrialRequest {
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading
   repeated string grading_components = 4;  // "state_checks", "transcript_rules"
+
+  // How the trial ended, as a tolokaforge.core.models.TerminationReason value
+  // ("agent_done", "user_stop", "max_turns", ...); empty when the engine
+  // reported none. Grading input, never author-matchable: it tells a deliberate
+  // finish apart from an exhausted turn budget. A value outside the enum fails
+  // the RPC rather than parsing to "none", which would mislabel trial health.
+  string termination_reason = 5;
 }
 
 message GradeTrialResponse {
@@ -337,7 +366,7 @@ message JudgeReport {
 }
 
 message GradeComponents {
-  // State checks score (hash comparison, JSONPath assertions, env assertions)
+  // State checks score (hash comparison, JSONPath assertions, DB probes)
   // -1.0 means not evaluated
   double state_checks = 1;
 
@@ -370,9 +399,11 @@ message GradeComponents {
 //      shared tool-calling loop, returning criterion_results + the llm_judge
 //      component score (or JUDGE_STATUS_ERRORED with no score), plus a
 //      JudgeReport (judge usage + transcript).
-//   3. The Runner combines all component scores using grading.weights and
-//      returns the final Grade. (An earlier protocol revision left the judge to
-//      the Host; the Runner now owns it — see docs/RUBRIC_GRADING_DESIGN.md.)
+//   3. The Runner folds all component scores by grading.combine_method — one of
+//      "weighted" (their mean, scaled by grading.weights), "all" (the weakest)
+//      or "any" (the strongest) — and returns the final Grade. (An earlier
+//      protocol revision left the judge to the Host; the Runner now owns it —
+//      see docs/RUBRIC_GRADING_DESIGN.md.)
 
 message CustomCheckResult {
   string check_name = 1;
@@ -485,6 +516,12 @@ message HealthCheckResponse {
 
 ### RegisterTrialRequest
 
+**Version lock.** `engine_protocol_version` declares the wire protocol the calling engine speaks; `ENGINE_PROTOCOL_VERSION` in [`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py) is the single source of that number, and the engine sets it on every registration. The runner refuses to register a trial from an engine below its own version and names the skew in `RegisterTrialResponse.error`, which the orchestrator already treats as fatal — so a skewed pair fails before any tokens are spent, rather than burning a turn budget on rejected tool calls and reporting a completed trial that scored ~0.
+
+Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that predates the field sends nothing, which arrives as `0` and is refused. Rebuild the runner image from the engine you are running (`make docker-build-core`) or pin an image tag that matches it.
+
+The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
+
 The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](docs/TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
 
 ```json
@@ -532,61 +569,107 @@ The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/c
 }
 ```
 
+`grading.combine_method` is a closed set — `weighted`, `all` or `any`. The runner
+validates it while decoding this payload, so any other value fails `RegisterTrial`
+with a `ValidationError` naming the value and the three it may be. Which score each
+one returns is in [GRADING.md](GRADING.md#score-combination) § Score Combination.
+
 ### ExecuteToolRequest/Response
 
 The tool execution flow:
 
-1. Host receives tool call from LLM: `{"name": "book_reservation", "arguments": {"user_id": "mia_li_3668"}}`
-2. Host sends `ExecuteToolRequest` with `arguments_json = '{"user_id": "mia_li_3668"}'`
+1. Host receives tool call from LLM: `{"id": "call_123", "name": "book_reservation", "arguments": {"user_id": "mia_li_3668"}}`
+2. Host sends `ExecuteToolRequest` with `arguments_json = '{"user_id": "mia_li_3668"}'` and `call_id = "call_123"`
 3. Runner:
    - Looks up tool by name in registered tools
    - Reconstructs tool from `ToolSource` (module_path, class_name, invocation_style)
    - Executes tool with arguments
    - State mutations are persisted to DB Service
+   - Records the call in the trial's history under `call_id`, stamped with a trial-wide 0-based `sequence`
 4. Runner returns `ExecuteToolResponse` with output string
+
+**`call_id` is required.** It is the provider's `ToolCall.id`, and it is the only key that joins a recorded call to the `role: tool` message carrying its result — position does not resolve the same tool called twice with identical arguments. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
 
 **Error Handling:**
 
-| Status | Meaning | Host Action |
-|--------|---------|-------------|
-| `SUCCESS` | Tool executed successfully | Return output to LLM |
-| `ERROR` | Tool raised exception | Return error message to LLM |
-| `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM |
-| `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial |
-| `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM |
-| `TRIAL_NOT_FOUND` | Trial ID not registered | Log error, fail trial |
+| Status | Meaning | Host Action | Recorded in trial history |
+|--------|---------|-------------|---------------------------|
+| `SUCCESS` | Tool executed successfully | Return output to LLM | yes |
+| `ERROR` | Tool raised exception | Return error message to LLM | yes |
+| `TIMEOUT` | Execution exceeded timeout | Return timeout message to LLM | yes |
+| `TOOL_NOT_FOUND` | Tool name not registered | Log error, fail trial | yes |
+| `INVALID_ARGUMENTS` | Arguments don't match schema | Return validation error to LLM | yes, with empty `arguments` |
+| `TRIAL_NOT_FOUND` | Trial ID not registered | Log error, fail trial | no — there is no trial context to record into |
+
+A call the runner refuses before execution is still recorded, because the host appends a `role: tool` error message for it either way; a record that omitted it would read as a call the agent never attempted.
 
 ### GradeTrialRequest
 
-The `trajectory_json` contains the full conversation history:
+`llm_messages_json` is a JSON **array** of messages — the trial's full interleaved
+trace in execution order, not a trajectory object:
 
 ```json
-{
-  "task_id": "airline_task_001",
-  "trial_index": 0,
-  "start_ts": "2024-01-15T10:00:00Z",
-  "end_ts": "2024-01-15T10:05:00Z",
-  "status": "completed",
-  "messages": [
-    {"role": "user", "content": "I want to book a flight to Seattle"},
-    {"role": "assistant", "content": "", "tool_calls": [
-      {"id": "call_123", "name": "book_reservation", "arguments": {"user_id": "mia_li_3668", "origin": "JFK", "destination": "SEA"}}
-    ]},
-    {"role": "tool", "content": "Reservation confirmed: RES-456", "tool_call_id": "call_123"},
-    {"role": "assistant", "content": "I've booked your flight to Seattle."}
-  ],
-  "tool_log": [
-    {"tool_name": "book_reservation", "success": true, "output": "Reservation confirmed: RES-456"}
-  ]
-}
+[
+  {"role": "system", "content": "You are a booking agent. Follow the refund policy."},
+  {"role": "user", "content": "I want to book a flight to Seattle"},
+  {"role": "assistant", "content": "", "tool_calls": [
+    {"id": "call_123", "function": {"name": "book_reservation", "arguments": "{\"user_id\": \"mia_li_3668\", \"origin\": \"JFK\", \"destination\": \"SEA\"}"}}
+  ]},
+  {"role": "tool", "content": "Reservation confirmed: RES-456", "tool_call_id": "call_123"},
+  {"role": "assistant", "content": "I've booked your flight to Seattle."}
+]
 ```
+
+Three properties a consumer can rely on:
+
+- **Tool results are on the wire.** A result is a `role: tool` message carrying the
+  `tool_call_id` of the call that produced it, positioned where it happened.
+- **Calls are joined to results by `id`, never by position.** Every `tool_calls`
+  entry carries the provider's tool-call id; `arguments` is a JSON-encoded string.
+  Parallel calls to one tool with identical arguments are distinguishable only by
+  that id, so a payload whose `tool_calls` carry none is rejected rather than
+  degraded — see `tolokaforge.core.grading.transcript_wire`.
+- **The leading `system` message is the agent's policy**, lifted out of the
+  transcript and injected as policy for rubric evaluation rather than replayed as
+  a conversational turn.
+
+`tool_calls` appears on `role: user` turns too, for a simulated user that calls
+tools. `content_blocks` (multimodal), reasoning blocks and per-message timestamps
+are not represented: a screenshot-only assistant turn crosses as `content: ""`.
+
+The Runner's own ordered tool-call record is a **separate** input it already
+holds — one `RecordedToolCall` per call, carrying `call_id`, `sequence`,
+`tool_name`, `arguments`, `executor`, `status`, `output` (untruncated),
+`latency_seconds` and `timestamp` — and never rides on this request.
+
+`termination_reason` carries how the trial ended, as a `TerminationReason`
+value. It is typed for the whole enum, and the Runner parses it back to the enum
+or fails the RPC naming the accepted set — an unrecognised value is never
+coerced to "not reported", which would make a skewed engine look like a healthy
+trial. An empty value means the engine reported no reason, which is valid.
+
+Only three reasons reach this RPC — `agent_done`, `user_stop` and `max_turns`.
+Each names a trial the agent drove to an end the harness planned for, and task
+grading is meaningful for exactly those. The host grader answers every other
+trial itself, without an RPC: a task grade describes how the agent performed the
+task, and a trial that never completed has no such performance to describe.
+`tests/canonical/test_termination_reason_reachability.py` locks both halves —
+that every reason is produced by some real termination path, and that only those
+three reach `GradeTrial`.
 
 ### Grading Algorithm
 
 The Runner executes this grading algorithm:
 
 ```python
-def grade_trial(trial_id: str, trajectory: Trajectory) -> Grade:
+def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
+    # 0. Join the transcript and the tool-call record into the trial's timeline.
+    #    Raises TimelineInconsistencyError -> success=false, before any component.
+    _, transcript = split_leading_system_message(llm_messages)
+    timeline = build_trial_timeline(
+        decode_transcript_wire(transcript), trial_context.tool_call_history, termination_reason
+    )
+
     # 1. Get current trial state from DB Service
     trial_state = db_service.get_state(trial_id)
     
@@ -613,14 +696,21 @@ def grade_trial(trial_id: str, trajectory: Trajectory) -> Grade:
         state_score = 0.0
         state_diff = compute_diff(golden_state, trial_state)
     
-    # 6. Evaluate transcript rules
-    transcript_score = evaluate_transcript(trajectory, grading_config.transcript_rules)
+    # 6. Evaluate transcript rules off the timeline
+    transcript_score = evaluate_transcript_rules(timeline, grading_config.transcript_rules)
     
-    # 7. Combine scores
-    final_score = weighted_combine(state_score, transcript_score, ...)
+    # 7. Fold the components by the method the pack declared. "weighted" returns
+    #    their mean scaled by grading_config.weights, "all" the weakest component,
+    #    "any" the strongest; anything else raises and the RPC returns success=false.
+    final_score, binary_pass = combine_by_method(
+        method=grading_config.combine_method,
+        component_scores={"state_checks": state_score, "transcript_rules": transcript_score},
+        weighted_mean=weighted_mean(state_score, transcript_score, grading_config.weights),
+        pass_threshold=pass_threshold,
+    )
     
     return Grade(
-        binary_pass=final_score >= pass_threshold,
+        binary_pass=binary_pass,
         score=final_score,
         components=GradeComponents(state_checks=state_score, transcript_rules=transcript_score),
         state_diff_json=json.dumps(state_diff) if state_diff else ""
@@ -637,6 +727,69 @@ return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
 All components (DB Service, adapters, grading engine) MUST use this exact algorithm for hash comparison to work correctly.
+
+### GradeTrial Error Semantics
+
+`GradeTrialResponse.success = false` leaves `grade` unset — an unusable grade is
+never approximated with a score. The two views of the trial are joined into its
+[event timeline](GRADING.md#trial-event-timeline) **before** any component runs,
+so an unreadable or self-contradictory payload fails the RPC before golden replay
+touches the trial's state.
+
+The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
+`GradingFailedError` on any `success = false`, so the trial is published with no
+score rather than with one the runner never computed. See
+[`GRADING.md`](GRADING.md#trial-event-timeline) for what that costs the run's
+counts.
+
+| `error` | Cause |
+|---|---|
+| `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
+| `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
+| `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
+| `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions |
+| `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
+| `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
+| `Grading error: …` | Any other exception escaping the grading path |
+
+**The accounted-keys ledger.** Through the component phase the Runner records,
+at every point an evaluator runs or is deliberately skipped, which author-facing
+`grading.yaml` key that call accounts for. After the phase it subtracts those
+records from the scored keys the request's `TaskDescription.grading` actually
+populated (non-empty, not merely present). Any remainder is a key that would have
+contributed nothing to the score while the trial still received a grade, so the
+RPC fails naming each key and the runner evaluator its manifest entry expects. A
+key the manifest declares core-only that nonetheless arrives populated fails the
+same way, quoting the reason it is core-only. Scope is scored checks only:
+`state_checks.id_fields`, `state_checks.relaxed_validation` and
+`state_checks.numeric_string_fields` shape other checks instead of producing a
+component score, and `combine.*` is the aggregation itself. See
+[`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
+
+**The recorded skips.** A trial can legitimately reach `GradeTrial` with a
+populated key whose evaluator cannot run. Each such site records a skip rather
+than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
+
+| Skip | Condition | Keys covered |
+|---|---|---|
+| `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so every rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key |
+| `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
+| `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
+| `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
+| `skipped: custom checks not enabled` | The pack wrote a `custom_checks` block but left `enabled` false, so the executor never runs | `custom_checks` |
+
+A degenerate trial therefore **scores badly rather than erroring** — the skip
+suppresses the component, and the recorded reason says why.
+
+The ledger covers scored checks, so one skip is reported beside it rather than
+through it: a `state_checks.hash_weight` the fold never consulted — because only one
+state source produced a score, or because `db_probes` filled the component outright —
+appends its own line to `Grade.reasons`, from the same constant the core engine uses.
+`hash_weight` is a `CONFIG_INPUT`, not a scored check, so the ledger would never have
+seen it.
+
+`grading_method = "test_execution"` dispatches before the component phase and the
+ledger does not apply to it.
 
 ## Unstable Fields Handling
 
@@ -671,7 +824,7 @@ def get_stable_state(trial_id: str) -> Dict:
 The Host (orchestrator) needs to:
 
 1. **Replace `RegisterTools` with `RegisterTrial`**: Send full TaskDescription instead of just tool definitions
-2. **Update `DockerExecutorAdapter`**: Use new `ExecuteToolResponse` status enum
+2. **Update `DockerRunnerAdapter`**: Use new `ExecuteToolResponse` status enum
 3. **Add `GradeTrial` call**: After trial completion, call `GradeTrial` instead of local grading
 4. **Handle new error statuses**: Map `ExecutionStatus` to appropriate LLM responses
 

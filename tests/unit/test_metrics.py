@@ -18,10 +18,61 @@ from tolokaforge.core.models import (
     JudgeStatus,
     JudgeUsage,
     Metrics,
+    TerminationReason,
     Trajectory,
+    TrialStatus,
 )
 
 pytestmark = pytest.mark.unit
+
+
+def _trial(
+    trial_idx: int,
+    *,
+    score: float | None = None,
+    status: TrialStatus = TrialStatus.COMPLETED,
+    termination_reason: TerminationReason | None = TerminationReason.AGENT_DONE,
+    latency_s: float = 1.0,
+    turns: int = 3,
+) -> Trajectory:
+    """One trial. ``score=None`` means no grade at all — the shape a trial the
+    infrastructure aborted now has."""
+    grade = (
+        None
+        if score is None
+        else Grade(binary_pass=score >= 0.5, score=score, components=GradeComponents())
+    )
+    return Trajectory(
+        task_id="task_outcomes",
+        trial_index=trial_idx,
+        start_ts=datetime.now(tz=timezone.utc),
+        end_ts=datetime.now(tz=timezone.utc),
+        status=status,
+        termination_reason=termination_reason,
+        messages=[],
+        metrics=Metrics(latency_total_s=latency_s, turns=turns),
+        grade=grade,
+    )
+
+
+def _rate_limited(trial_idx: int) -> Trajectory:
+    """A trial a provider 429 killed: no grade, and not the agent's failure."""
+    return _trial(
+        trial_idx,
+        score=None,
+        status=TrialStatus.ERROR,
+        termination_reason=TerminationReason.RATE_LIMIT,
+    )
+
+
+def _harness_error(trial_idx: int) -> Trajectory:
+    """A trial our own defect killed: counted in the rates, and never graded."""
+    return _trial(
+        trial_idx,
+        score=None,
+        status=TrialStatus.ERROR,
+        termination_reason=TerminationReason.ERROR,
+    )
 
 
 @pytest.mark.unit
@@ -163,6 +214,217 @@ class TestExtendedMetrics:
         assert metrics["api_call_latency_p50_s"] == pytest.approx(3.0)
         assert metrics["api_call_latency_p90_s"] > metrics["api_call_latency_p50_s"]
         assert metrics["api_call_latency_p99_s"] >= metrics["api_call_latency_p90_s"]
+
+
+@pytest.mark.unit
+class TestInfrastructureAbortsLeaveTheDenominator:
+    """Rates describe the trials that measured the agent.
+
+    The numbers below are the measured ones from the same four trials before
+    and after: with two of four killed by rate limits, the task's true 1-of-2
+    performance used to be reported as 1-of-4.
+    """
+
+    def test_two_of_four_rate_limited(self) -> None:
+        metrics = calculate_task_metrics(
+            [
+                _trial(0, score=1.0),
+                _trial(1, score=0.3),
+                _rate_limited(2),
+                _rate_limited(3),
+            ]
+        )
+
+        assert metrics["total_trials"] == 4
+        assert metrics["measured_trials"] == 2
+        assert metrics["infrastructure_aborts"] == {
+            "api_timeout": 0,
+            "provision_error": 0,
+            "rate_limit": 2,
+        }
+        assert metrics["harness_errors"] == 0
+        assert metrics["successful_trials"] == 1
+        assert metrics["success_rate"] == pytest.approx(0.5)
+        assert metrics["avg_score"] == pytest.approx(0.65)
+        assert metrics["pass@1"] == pytest.approx(0.5)
+
+    def test_the_partition_accounts_for_every_trial(self) -> None:
+        """``measured + aborted == attempted``, with harness errors *inside*
+        the measured half — our own defects are counted, not excluded."""
+        metrics = calculate_task_metrics(
+            [
+                _trial(0, score=1.0),
+                _trial(
+                    1,
+                    score=0.0,
+                    status=TrialStatus.ERROR,
+                    termination_reason=TerminationReason.ERROR,
+                ),
+                _rate_limited(2),
+            ]
+        )
+
+        assert (
+            metrics["measured_trials"] + sum(metrics["infrastructure_aborts"].values())
+            == metrics["total_trials"]
+        )
+        assert metrics["harness_errors"] == 1
+        assert 0 <= metrics["harness_errors"] <= metrics["measured_trials"]
+
+    def test_outcomes_by_reason_covers_every_observed_reason(self) -> None:
+        """Every reason is counted with the class it was counted as, so a
+        classification call can be recomputed from the aggregate alone."""
+        metrics = calculate_task_metrics(
+            [
+                _trial(0, score=1.0),
+                _trial(
+                    1,
+                    score=0.0,
+                    status=TrialStatus.TIMEOUT,
+                    termination_reason=TerminationReason.TIMEOUT,
+                ),
+                _rate_limited(2),
+            ]
+        )
+
+        assert metrics["outcomes_by_reason"] == {
+            "agent_done": {"class": "measured", "count": 1},
+            "timeout": {"class": "measured", "count": 1},
+            "rate_limit": {"class": "infrastructure_abort", "count": 1},
+        }
+        counted = sum(row["count"] for row in metrics["outcomes_by_reason"].values())
+        assert counted == metrics["total_trials"]
+
+    def test_a_stuck_trial_still_fails_and_still_counts(self) -> None:
+        """The one auto-fail verdict produced host-side stays a fail: an agent
+        that repeated itself was measured doing so."""
+        metrics = calculate_task_metrics(
+            [
+                _trial(
+                    0,
+                    score=0.0,
+                    termination_reason=TerminationReason.STUCK_DETECTED,
+                ),
+                _trial(1, score=1.0),
+            ]
+        )
+
+        assert metrics["measured_trials"] == 2
+        assert metrics["success_rate"] == pytest.approx(0.5)
+        assert metrics["outcomes_by_reason"]["stuck_detected"]["class"] == "measured"
+
+    def test_every_trial_aborted_reports_no_performance(self) -> None:
+        """No rate is ``0.0`` when nothing was measured — a zero would read as
+        a task the agent failed at."""
+        metrics = calculate_task_metrics([_rate_limited(0), _rate_limited(1)])
+
+        assert metrics["total_trials"] == 2
+        assert metrics["measured_trials"] == 0
+        assert metrics["infrastructure_aborts"]["rate_limit"] == 2
+        for key in (
+            "success_rate",
+            "avg_score",
+            "avg_latency_s",
+            "avg_turns",
+            "avg_tool_calls",
+            "stuck_rate",
+            "pass@1",
+            "pass@5",
+            "pass_hat@1",
+        ):
+            assert metrics[key] is None, f"{key} fabricated a number from zero measured trials"
+
+    def test_an_all_aborted_task_is_excluded_from_the_macro_averages(self) -> None:
+        measured_task = calculate_task_metrics([_trial(0, score=1.0), _trial(1, score=1.0)])
+        aborted_task = calculate_task_metrics([_rate_limited(0)])
+
+        agg = calculate_aggregate_metrics([measured_task, aborted_task], weighted=False)
+
+        assert agg["success_rate_macro"] == pytest.approx(1.0)
+        assert agg["avg_score_macro"] == pytest.approx(1.0)
+        assert agg["total_trials"] == 3
+        assert agg["measured_trials"] == 2
+        assert agg["infrastructure_aborts"]["rate_limit"] == 1
+
+    def test_the_micro_average_weighs_by_measured_trials(self) -> None:
+        task_a = calculate_task_metrics([_trial(0, score=1.0), _rate_limited(1)])
+        task_b = calculate_task_metrics([_trial(0, score=0.0)])
+
+        agg = calculate_aggregate_metrics([task_a, task_b], weighted=True)
+
+        # Two measured trials across both tasks, one of them successful.
+        assert agg["measured_trials"] == 2
+        assert agg["scored_trials"] == 2
+        assert agg["success_rate_micro"] == pytest.approx(0.5)
+        assert agg["avg_score_micro"] == pytest.approx(0.5)
+
+    def test_the_score_micro_weighs_by_scored_trials_not_measured_ones(self) -> None:
+        """A harness error is measured and never graded, so weighing the score
+        micro by ``measured_trials`` would rebuild a numerator no trial produced.
+
+        Here task A scores 1.0 over its one graded trial and task B scores 0.0
+        over its one. Three trials are measured, two are scored, and the only
+        honest run-level score is 0.5.
+        """
+        task_a = calculate_task_metrics([_trial(0, score=1.0), _harness_error(1)])
+        task_b = calculate_task_metrics([_trial(0, score=0.0)])
+
+        agg = calculate_aggregate_metrics([task_a, task_b], weighted=True)
+
+        assert task_a["measured_trials"] == 2
+        assert task_a["scored_trials"] == 1
+        assert agg["measured_trials"] == 3
+        assert agg["scored_trials"] == 2
+        assert agg["avg_score_micro"] == pytest.approx(0.5)
+        # The rate over the measured denominator keeps that denominator: an
+        # ungraded trial is not a success, and dropping it would hide the defect.
+        assert agg["success_rate_micro"] == pytest.approx(1 / 3)
+
+    def test_an_all_ungraded_task_contributes_nothing_to_the_score_micro(self) -> None:
+        """The reviewer's first measurement: one all-ungraded task beside one
+        scoring 1.0 reported 0.5, when the only score in the run was 1.0."""
+        ungraded = calculate_task_metrics([_harness_error(0)])
+        scored = calculate_task_metrics([_trial(0, score=1.0)])
+
+        agg = calculate_aggregate_metrics([ungraded, scored], weighted=True)
+
+        assert ungraded["scored_trials"] == 0
+        assert ungraded["avg_score"] is None
+        assert agg["measured_trials"] == 2
+        assert agg["scored_trials"] == 1
+        assert agg["avg_score_micro"] == pytest.approx(1.0)
+
+    def test_a_run_that_measured_nothing_reports_no_rates(self) -> None:
+        agg = calculate_aggregate_metrics([calculate_task_metrics([_rate_limited(0)])])
+
+        assert agg["success_rate_micro"] is None
+        assert agg["avg_score_micro"] is None
+        assert agg["avg_turns"] is None
+
+    def test_pass_at_k_loses_coverage_rather_than_estimating_from_fewer(self) -> None:
+        """Five trials with one aborted cannot estimate pass@5 — and the row
+        carries the counts that say why."""
+        trajectories = [_trial(i, score=1.0) for i in range(4)] + [_rate_limited(4)]
+
+        metrics = calculate_task_metrics(trajectories)
+
+        assert metrics["measured_trials"] == 4
+        assert metrics["infrastructure_aborts"]["rate_limit"] == 1
+        assert metrics["pass@1"] == pytest.approx(1.0)
+        assert metrics["pass@5"] is None
+
+    def test_token_and_cost_spend_still_covers_every_attempt(self) -> None:
+        """An aborted trial bought its tokens before it died, so spend counts
+        them. Only performance rates move to the measured denominator."""
+        spender = _trial(0, score=1.0)
+        spender.metrics.cost_usd = 0.02
+        aborted = _rate_limited(1)
+        aborted.metrics.cost_usd = 0.01
+
+        metrics = calculate_task_metrics([spender, aborted])
+
+        assert metrics["total_cost_usd"] == pytest.approx(0.03)
+        assert metrics["avg_cost_usd"] == pytest.approx(0.015)
 
 
 @pytest.mark.unit

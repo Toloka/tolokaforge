@@ -151,6 +151,8 @@ class _FakeRunnerClient:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> Any:
         self.calls.append(
             (
@@ -162,6 +164,7 @@ class _FakeRunnerClient:
                     "arguments": arguments,
                     "timeout_seconds": timeout_seconds,
                     "executor": executor,
+                    "call_id": call_id,
                 },
             )
         )
@@ -172,12 +175,14 @@ class _FakeRunnerClient:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         return self._record(
             "grade_trial",
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
+            termination_reason=termination_reason,
         )
 
     def get_state(
@@ -362,7 +367,7 @@ class TestProvision:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         backend.provision(spec)
         backend.register_trial(trial_id=spec.trial_id, trial_spec_json="{}")
-        backend.execute_tool(trial_id=spec.trial_id, tool_name="x", arguments={})
+        backend.execute_tool(trial_id=spec.trial_id, tool_name="x", arguments={}, call_id="c0")
         backend.get_state(trial_id=spec.trial_id)
         client = backend._clients[spec.trial_id]
         assert isinstance(client, _CountingClient)
@@ -701,19 +706,23 @@ class TestPerTrialRpcDelegation:
     def test_execute_tool_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
-        patched_backend.execute_tool(trial_id=spec.trial_id, tool_name="echo", arguments={"x": 1})
+        patched_backend.execute_tool(
+            trial_id=spec.trial_id, tool_name="echo", arguments={"x": 1}, call_id="toolu_A"
+        )
         client = patched_backend._clients[spec.trial_id]
         assert isinstance(client, _FakeRunnerClient)
         assert client.calls[-1][0] == "execute_tool"
         assert client.calls[-1][2]["arguments"] == {"x": 1}
+        assert client.calls[-1][2]["call_id"] == "toolu_A"
 
     def test_grade_trial_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         patched_backend.provision(spec)
-        patched_backend.grade_trial(trial_id=spec.trial_id)
+        patched_backend.grade_trial(trial_id=spec.trial_id, termination_reason="agent_done")
         client = patched_backend._clients[spec.trial_id]
         assert isinstance(client, _FakeRunnerClient)
         assert client.calls[-1][0] == "grade_trial"
+        assert client.calls[-1][2]["termination_reason"] == "agent_done"
 
     def test_get_state_delegates(self, patched_backend: PerTrialRuntimeBackend) -> None:
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")

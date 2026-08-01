@@ -10,7 +10,552 @@ Tolokaforge evaluates agent performance across four dimensions:
    over final state, transcript patterns tied to computed values). See
    [custom_checks.md](custom_checks.md).
 
-Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENCE.md) for `grading.yaml` schema.
+`combine.method` folds the component scores into one score and one pass flag — their
+weighted mean, the weakest of them or the strongest, as the pack declares. See
+[Score Combination](#score-combination) for the three rules and
+[REFERENCE.md](REFERENCE.md) for the `grading.yaml` schema.
+
+---
+
+## Substrate Parity
+
+Two substrates grade a trial. The **core** substrate is the in-process
+`GradingEngine` (`tolokaforge/core/grading/combine.py`) used by `validate`, the
+`NativeAdapter` helpers and the test suite. The **runner** substrate is the gRPC
+`GradeTrial` path (`tolokaforge/runner/service.py`), which is what production
+runs use. A key an author writes in `grading.yaml` reaches the runner only
+through `NativeAdapter.to_task_description`, so a key the translation misses is
+a key that silently scores nothing in production while still grading locally.
+
+[`tolokaforge/core/grading/key_manifest.py`](../tolokaforge/core/grading/key_manifest.py)
+is the single source of truth for which substrate consumes which key. Every
+author-facing key is one `GradingKey` entry declaring three axes:
+
+- **`kind`** — `SCORED_CHECK` (produces a component score), `CONFIG_INPUT`
+  (shapes another check; no score of its own), `AGGREGATION` (combines component
+  scores). The satisfying/violating **pair** sweep selects `SCORED_CHECK` alone,
+  because only a scored key has a violating trajectory that moves a *component*.
+  A `CONFIG_INPUT` or `AGGREGATION` key still reaches `DIFFERENTIAL_CANONICAL`
+  through a differential over what it does govern — each one over a
+  [`tests/data/grading_parity/`](../tests/data/grading_parity/) pack of its own:
+  `state_checks.hash.weight` by sweeping the weight across one pack's two hash
+  cases, `combine.method` by re-authoring the method over one pack's split
+  components. Both escape the pair sweep, so a frozen set in the test module
+  enumerates every claim it does not reach and asserts, per entry, the property
+  that entry's own differential rests on (below).
+- **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
+  same component score), `BOTH_SIGNAL_PARITY` (both consume it and both
+  discriminate; the magnitudes differ because the two substrates aggregate
+  differently), `CORE_ONLY`, `RUNNER_ONLY`. Anything other than a `BOTH_*` value
+  requires a written `reason`.
+- **`enforcement`** — how strongly the coverage claim is proven.
+  `DIFFERENTIAL_CANONICAL`: a satisfying/violating pair moves both substrates'
+  scores in-process. `DIFFERENTIAL_INTEGRATION`: the differential needs real
+  services, and `enforcing_test` names the test function that runs it as a pytest
+  nodeid — `<module path>::<test function>`, resolved by the canonical suite
+  against the module's own AST so naming a file that merely contains a test is
+  rejected. `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
+
+[`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
+makes the manifest load-bearing. Adding a grading field to either substrate's
+config model without a manifest entry fails that suite naming the field; a scored
+key that claims both substrates at `DIFFERENTIAL_CANONICAL` must move both
+substrates' component scores against
+[`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; every key
+both substrates declare must survive adapter translation non-default; and every key
+the runtime ledger checks must resolve to a field on the runner config **and** be
+claimed by one of the ledger's recording sites, so a key no site records fails the
+suite instead of failing every `GradeTrial` that carries it.
+
+### The runtime ledger
+
+The canonical suite guards the *config models*; the runner guards each individual
+request. Through the component phase `GradeTrial` records, at every point an
+evaluator is invoked or deliberately skipped, which author key that call accounts
+for. Each record is a `KeyAccountingRecord` — an outcome of `EVALUATED` or
+`SKIPPED` plus, for a skip, the `detail` a task author reads. It then subtracts
+those records from the scored keys the request's grading config actually populated
+([`tolokaforge/runner/grading_ledger.py`](../tolokaforge/runner/grading_ledger.py)).
+A non-empty remainder means a key would have scored nothing, so the RPC returns
+`success=False` naming each key and the runner evaluator its manifest entry
+expects — never a grade, and never a `0.0` folded into the combine. A key the
+manifest declares `CORE_ONLY` that nonetheless arrives populated fails the same
+way, quoting that entry's `reason` — unless a recording site claims it as a
+standing skip, per **Every skip is recorded, not silent** below.
+
+Three properties keep the ledger from rejecting configs that grade correctly:
+
+- **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
+  `relaxed_validation`, `numeric_string_fields`) shape another check rather than
+  producing a component, and `AGGREGATION` keys are the combine itself, so neither
+  is ever evaluated in the component phase.
+- **A key counts as populated only when it is non-empty.** An explicitly written
+  `disallowed_tools: []` is indistinguishable from unset, and either way has
+  nothing to evaluate.
+- **Every skip is recorded, not silent.** `transcript_rules` is skipped when the
+  trial's timeline carries no events, `llm_judge` when it has no
+  messages, `custom_checks` when the pack wrote the block but left
+  `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
+  reads when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
+  standing skip: it is declared `CORE_ONLY` because no runner path reads it (#693),
+  so it is recorded as such whether or not hash grading ran — folding it into the
+  family's outcome would report a silently dead key as scored. Each skip records
+  its reason, which appears in `grade.reasons` whenever the skipped key was
+  populated: a degenerate trial scores badly rather than erroring the RPC, but the
+  reason it scored badly is visible.
+
+  "No events" is narrower than "no messages": `role: system` messages are harness
+  annotations and never become events (N3), so a trial whose only messages are a
+  termination notice and which made no tool call is skipped despite having
+  messages. That is the point — grading a rule against harness text would let a
+  task score itself on strings the harness wrote.
+
+`grading_method: test_execution` returns before the component phase, so the ledger
+does not apply to that dispatch mode — recorded as the `grading_method` entry's
+declared `reason`.
+
+### Single-substrate keys
+
+| Key | kind | coverage | enforcement | Why only one substrate | Tracked |
+|---|---|---|---|---|---|
+| `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
+| `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
+| `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
+| `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
+
+Architectural entries can never be both substrates and carry no tracking issue.
+Every other row is drift and names the issue that closes it. The exemption sets
+live in the test module, not beside the manifest, so widening one is an edit a
+reviewer sees in the same commit.
+
+The `state_checks.hash` family sits at `DIFFERENTIAL_INTEGRATION`, and **its three
+members do not all claim the same coverage**, because which hash *source* a pack
+declares decides whether the two substrates compare the trial against the same
+expected state:
+
+| Member | coverage | Tracked |
+|---|---|---|
+| `state_checks.hash.golden_actions` | `BOTH_SCORE_PARITY` | — |
+| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | #741 |
+| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | #741 |
+
+The fold rule is shared on every shape — both substrates call
+`compose_state_checks_score` — but the *inputs* to it still differ for two of the
+three source shapes:
+
+- **`golden_actions`** — proven. Both substrates replay the actions and hash the
+  resulting state, so the same trial yields the same verdict and therefore the same
+  component. This is the shape the `enforcing_test` drives.
+- **`expected_state_hash` alone** — not proven. The adapter translates it onto the
+  runner's `expected_hash` field and **no runner path reads it** (#693), so the
+  runner falls back on refusal semantics and compares the trial against the
+  **initial** state where core compares it against the author's literal.
+- **`hash.enabled` with no declared source** — not proven. Core produces **no**
+  verdict (below), while the runner runs hash grading anyway for the refusal shape
+  and produces a real binary one. Measured, on a pack with live assertions scoring
+  `0.5` at `weight: 0.6`: core's component is `0.5` on both hash outcomes, the
+  runner's is `0.8` on a match and `0.2` on a divergence (#741).
+
+Moving either unproven shape moves refusal-task verdicts across the corpus, which is
+why #741 owns it rather than the change that found it.
+
+The golden-actions differential runs over real gRPC and a real db-service, in
+[`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
+the runner's evaluator replays golden actions against db-service over HTTP, so no
+service-free differential can reach it, and mocking the DB client to make a canonical
+guard pass would defeat the guard. A matching and a diverging final state against the
+same golden replay, at two weights strictly inside `(0, 1)`, with the wire's
+`state_checks` component pinned to the blend and required to differ between the two
+weights.
+
+**What that proves and what it does not.** The runner's own golden-replay verdict
+reaches the shared composer, and the author's `weight` reaches the fold — measured
+on the wire: forcing the runner's fold to a constant weight, and replacing it with a
+plain product of the two scores, each turn every cell red. What it does not prove is
+`state_checks.numeric_string_fields`, which stays `FIELD_RESOLUTION_ONLY` (#687) —
+the folding pair is claimed to be honored identically on both substrates and no test
+drives it through the runner's hash evaluator. Nor does the canonical suite prove
+this test *passes*: it resolves the nodeid and stops there, and `test-gate` does not
+fire on a pull request (#700), so this tier is run locally and its output quoted.
+
+**Coverage and enforcement are orthogonal on purpose**, which is what lets a true
+coverage claim carry weak enforcement. `state_checks.hash.golden_actions` is the
+example: `BOTH_SCORE_PARITY` states what is the case — both substrates produce the
+same component score — and `DIFFERENTIAL_INTEGRATION` states how strongly that is
+proven. Weakening a *true* coverage claim to `BOTH_SIGNAL_PARITY` to signal thin
+enforcement would make the manifest say something false in order to avoid saying
+something weak; the enforcement axis is where the weakness belongs, and it says so.
+The two `BOTH_SIGNAL_PARITY` rows above are the opposite case — there the score
+claim itself is false for a source shape, so the coverage axis is the honest place
+for it. `state_checks.db_probes` sits at the same enforcement tier.
+
+`state_checks.hash.weight` is proven at `DIFFERENTIAL_CANONICAL` by a composition
+sweep in the same suite: a fixture pack configuring both state sources — a
+pre-computed `expected_state_hash` and two `$.db.…` assertions of which one holds —
+is graded on both substrates at four weights spanning `(0, 1)`, and each composite
+is pinned to `jsonpath_score * (1 - weight) + hash_score * weight` computed by the
+test rather than compared only against the other substrate. Cross-substrate equality
+alone would prove nothing: both substrates call one composer, so they agree by
+construction even if that composer ignored its arguments.
+
+That differential is a `CONFIG_INPUT` key, and the lock that runs the
+`DIFFERENTIAL_CANONICAL` fixtures selects `SCORED_CHECK` keys only, so the claim
+would otherwise be reached by no lock at all. A frozen set in the test module
+enumerates every `DIFFERENTIAL_CANONICAL` entry outside that lock's reach, and for
+each one asserts the property that entry's own differential rests on. Membership in
+the set enforces nothing by itself — a differential deleted wholesale leaves the set
+unchanged — so the per-entry clause is what stops the enforcement level from resting
+on a citation:
+
+- `state_checks.hash.weight` — the sweep still spans two weights strictly inside
+  `(0, 1)`, the weights at which a fold that merely *selects* the dominant source is
+  distinguishable from one that mixes them.
+- `combine.method` — the method differential's hand-written answer table still
+  covers every declared method, with a distinct score each, so an implementation
+  returning one aggregation for all three cannot satisfy it. See
+  [Score Combination](#score-combination).
+
+Core's verdict there is its own: the fixture commits the `expected_state_hash` of its
+matching state, so `check_hash` produces the verdict in process. **The runner's is
+handed to its fold rather than produced**, because the runner's hash evaluator drives
+db-service over HTTP. That keeps the sweep a statement about the *fold* — the key is
+`CONFIG_INPUT` — and not a claim that the two evaluators agree on the
+`expected_state_hash` shape, which they do not (above). The substitution is honest
+because the hash verdict either substrate produces is `0.0` or `1.0`, never a
+fraction, so the value handed in is one the runner's own path would yield; the same
+lock asserts core's evaluator returns exactly those two for the fixture's two states.
+
+**That premise is audited, within a stated limit.** The suite reads the source of
+every function the manifest names as a hash-verdict producer — derived from the hash
+family's declared evaluators and asserted as set equality against a frozen set, so a
+fourth producer forces a reviewable edit rather than landing with the audit green.
+Each one must choose its score between literals rather than computing it, and every
+`return` must carry that score somewhere the audit reads. What it cannot see is a
+producer reached only *through* one of those functions: the audit follows declared
+evaluators, not call graphs. So a partial hash score cannot land inside an audited
+producer without the sweep's premise being re-examined, and a new producer cannot be
+declared without one.
+
+### What the guard cannot see
+
+`model_fields` introspection enumerates typed config fields, and all four core
+grading models are `extra="ignore"`. So `state_checks.hash.*`, the
+`state_checks.jsonpaths[*]` operator vocabulary, and `custom_checks.*` internals
+are structurally outside the enumeration — the manifest records nested dict keys
+as **declared data**, verified only to live inside a dict-typed field. And a green
+parity suite proves each key *discriminates*, not that its discrimination is
+*correct*.
+
+It also cannot see a key the two substrates read from **different evidence**. The
+manifest freezes config keys and field paths, not evaluation sources, so
+`transcript_rules.required_actions` passes every lock while core evaluates it from
+`trajectory.messages` and the runner evaluates it from the tool-call record — see
+[Both substrates consume it](#both-substrates-consume-it).
+
+### The recorded tool calls both substrates read
+
+Both substrates record every tool call as a `RecordedToolCall`
+(`tolokaforge/runner/models.py`, re-exported from `tolokaforge.core.models`), so a
+check over tool calls sees the same fields whichever substrate grades it:
+
+| Field | Meaning |
+| --- | --- |
+| `call_id` | the provider's tool-call id — the only key that joins a call to its result |
+| `sequence` | trial-wide, 0-based, execution order across **every** executor |
+| `tool_name` | the tool the call named |
+| `arguments` | the arguments the caller passed, verbatim |
+| `executor` | `agent` or `user` (`ToolExecutorIdentity`) |
+| `status` | how the call ended (`ToolExecutionStatus`) |
+| `output` | the tool's output, untruncated — or the failure text on a failed call |
+| `latency_seconds` | wall time measured by the recording caller |
+| `timestamp` | when the call was recorded |
+
+One recorder per trial owns the list and stamps `sequence` at append time, so
+interleaved order across executors is correct by construction rather than
+reconstructed afterwards. Calls the executor **refuses** — an unknown tool name,
+a schema-violating or unparseable argument — are recorded too, carrying the
+rejection's own status: the transcript gets a `role: tool` error message for them
+either way, so a record that omitted them would read as a call the agent never
+attempted.
+
+Two properties are worth reading carefully:
+
+- **`output` on a failed call is the executing layer's failure text, not the
+  tool's.** It is also not the text the `role: tool` message carries — the
+  message view and the record view word a failure differently. A `result` matcher
+  combined with `status != success` is matching harness text.
+- **`arguments` are never rewritten.** They are the grader's input; see
+  [`docs/SECURITY.md`](SECURITY.md#tool-call-arguments).
+
+**One status value is not producible on every path.** `SUCCESS`, `ERROR`,
+`TOOL_NOT_FOUND` and `INVALID_ARGUMENTS` come from four distinct branches of the
+in-process executor and are recorded on both substrates. `TIMEOUT` is produced
+only on the runner substrate, because the pure in-process executor implements no
+timeout at all — `ToolPolicy.timeout_s` is declared and never read (#691). That is
+a missing *feature*, not a recording gap: there is no behaviour to record, so no
+check loses signal it would otherwise have had.
+[`tests/canonical/test_tool_execution_status_reachability.py`](../tests/canonical/test_tool_execution_status_reachability.py)
+drives a real recording path for every member, so the vocabulary cannot grow a
+value no run produces.
+
+`executor: user` is unreachable in every run today, **equally on both
+substrates**, because no code path constructs a user-side tool executor (#688).
+An unreachable-everywhere value is a scope limit, not substrate drift.
+
+### How the trial ended
+
+Both substrates give grading the trial's `TerminationReason`: the core substrate
+reads `Trajectory.termination_reason`, and the host sends the same value on
+`GradeTrialRequest.termination_reason`. It exists so grading can tell a
+deliberate finish (`agent_done`) from an exhausted turn budget (`max_turns`) —
+the same score means something different in each case.
+
+**It is grading input, not an author-matchable key.** There is no `grading.yaml`
+field for it and no key-manifest entry, so no task can score itself on it. That
+is deliberate: a task's score must depend on what the agent did, not on how the
+harness or the provider happened to stop the run, and a matcher on the
+termination reason would let a task pass or fail on infrastructure weather.
+
+Only `agent_done`, `user_stop` and `max_turns` reach the runner. Every other
+reason describes a trial the host grader resolves itself, without an RPC — see
+[`docs/GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrialrequest).
+[`tests/canonical/test_termination_reason_reachability.py`](../tests/canonical/test_termination_reason_reachability.py)
+drives a real termination path for every member of the enum, so a reason that no
+run can produce cannot be introduced, and pins which of them reach `GradeTrial`.
+
+---
+
+## Trial event timeline
+
+A trial leaves two records of itself, and neither alone is gradeable. The
+**message view** — assistant and user turns, each tool call carried on the
+message that requested it — says what the agent asked for but knows no status,
+latency or executor identity. The **tool-call record** says what happened when
+each call ran but has no conversation.
+
+[`build_trial_timeline`](../tolokaforge/core/grading/trace_timeline.py) joins them
+into one ordered tuple of `TraceEvent`:
+
+```python
+def build_trial_timeline(
+    messages: Sequence[Message],
+    recorded_calls: Sequence[RecordedToolCall],
+    termination_reason: TerminationReason | None,
+) -> TrialTimeline
+```
+
+It is a pure function — no services, no I/O — over three inputs both grading
+substrates already hold, which is what makes a check over the timeline mean the
+same thing whichever substrate grades the trial:
+
+| Argument | Runner substrate | Core substrate |
+| --- | --- | --- |
+| `messages` | `decode_transcript_wire(llm_messages_json)` | `trajectory.messages` |
+| `recorded_calls` | `trial_context.tool_call_history` | `trajectory.tool_log` |
+| `termination_reason` | `GradeTrialRequest.termination_reason` | `trajectory.termination_reason` |
+
+### Both substrates consume it
+
+Every transcript rule is evaluated off the timeline on both substrates. The
+runner builds it once in `GradeTrial`, before any grading component runs, and
+`evaluate_transcript_rules(timeline, rules)` decomposes the author's config
+against it. The core `GradingEngine` builds it from the trajectory and
+`TranscriptChecker.grade(timeline, …)` reads the same events. The call/result
+join and the assistant-turn view are shared accessors on the timeline module
+(`attempted_calls`, `assistant_texts`), so the two substrates cannot drift into
+reading one timeline differently.
+
+**A reconciliation failure fails the RPC, and the host does not substitute a
+verdict.** `TimelineInconsistencyError` from either builder call is never folded
+into a score. Runner-side `GradeTrial` returns `success = False` with the offending
+`call_id` in the error and no `Grade` at all; core-side the exception propagates.
+On the host, `RunnerRPCTrialGrader.grade` raises `GradingFailedError` for **any**
+`GradeTrial` that returns no verdict — reconciliation failure, an undecodable
+payload, or an unaccounted scored key. A stand-in `score=0.0` would be worse than
+what it replaced: a normally-terminated trial classifies `MEASURED`, so the zero
+would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
+failure reported against evidence that was never read.
+
+The consequence is that such a trial appears in **no** published number. The
+exception propagates out of the conductor's grading phase, so the trial's bundle is
+not written and the trajectory never reaches the run's results — `total_trials`
+does not count it. It is loud where it happens: the failure is logged, the
+orchestrator retries the attempt and then records it in `run_state.json`, and a
+`trial_failed` event fires. Whether an ungradeable trial should instead be counted
+as a `HARNESS_ERROR` is an open published-numbers question, not something this
+behaviour decides.
+
+**One key is still evaluated from different sources.** The core engine evaluates
+`transcript_rules.required_actions` and `transcript_rules.communicate_info`
+through `ActionEvaluator` / `CommunicateEvaluator` over `trajectory.messages`,
+outside `TranscriptChecker` and therefore off the timeline; the runner evaluates
+`required_actions` from the timeline's records. Both substrates read the key and
+both discriminate it, so the manifest's parity claim holds — but the *evidence*
+differs, and the manifest freezes config keys, not evaluation sources. Closing
+#685 should unify the source as well as the averaging.
+
+### The event
+
+One flat `TraceEvent` type carries all four kinds — `assistant_message`,
+`user_message`, `tool_call`, `tool_result` — so a matcher is a conjunction of
+field predicates with uniform field access. **`None` means the field is either
+inapplicable to the kind or unrecorded, and a predicate over a `None` field is
+unmatched, never vacuously true.**
+
+Unrecorded is the second case and it is not rare: `executor`, `status` and
+`latency_seconds` are `None` on every event of a bundle-sourced timeline (G6b),
+and on any call that never ran (G4). So `status != success` matches nothing at all
+on such a timeline rather than matching everything — read `records_present` before
+trusting either answer. `result` is the exception: a bundle keeps the `role: tool`
+messages, so a bundle-sourced timeline still says what each tool returned (G6b).
+Per-field detail is in the table below; G4 and G6b say when each field goes
+missing on a kind it does apply to.
+
+| Field | Kinds it applies to | Meaning |
+| --- | --- | --- |
+| `position` | all | dense, 0-based index into `events` |
+| `turn_index` | all | 0-based index of the assistant generation the event belongs to |
+| `kind` | all | `TraceEventKind` |
+| `text` | `*_message` | the message text as the wire carries it |
+| `call_id` | `tool_call` / `tool_result` | the provider's tool-call id — the join key |
+| `tool_name` | `tool_call` / `tool_result` | the tool the call named |
+| `executor` | `tool_call` / `tool_result` | `ToolExecutorIdentity`, from the record |
+| `arguments` | `tool_call` | the arguments the caller passed, verbatim |
+| `status` | `tool_result` | `ToolExecutionStatus`, from the record |
+| `result` | `tool_result` | what the tool returned: the record's untruncated output, or the answering `role: tool` message's text when there are no records |
+| `latency_seconds` | `tool_result` | wall time measured by the recording caller |
+
+`turn_index` is the assistant *generation* an event belongs to. Every event one
+assistant message emits — the message, the tool calls it requested, the results
+they produced, and the user message that answered it — carries that generation's
+index, so "in the same turn" means "in the same assistant generation". The
+initial user prompt precedes the first assistant message and carries index 0.
+
+### Guarantees
+
+- **G1 — message order is authoritative.** Event order follows `messages` order,
+  and `position` is dense: `events[i].position == i`.
+- **G2 — `turn_index` counts assistant generations**, per the paragraph above.
+- **G3 — a call and its result are joined by id, and uniqueness is enforced.**
+  Each `tool_call` has at most one `tool_result` with the same `call_id`, at a
+  later `position`. A `call_id` occurring twice raises
+  `TimelineInconsistencyError` naming both positions rather than picking a
+  winner: two calls to one tool with identical arguments differ only in the id, so
+  a collision makes the join ambiguous, and an ambiguous join is a broken
+  invariant rather than task data.
+- **G4 — an attempted call is always an event, and "attempted" is not
+  "executed".** A `tool_call` is **never** dropped, because dropping one makes an
+  `absent` or `count` constraint wrong in the agent's favour. Three states:
+  - *Never attempted.* Termination is decided before a turn's calls execute, so a
+    terminating turn's calls reach the message view and never run. Emitted as a
+    `tool_call` with no `tool_result` and `status = None`.
+  - *Attempted and rejected.* An unknown tool name or schema-invalid arguments are
+    recorded, so the call emits a normal pair carrying `tool_not_found` /
+    `invalid_arguments` and a `status` matcher counts it.
+  - *`trial_not_found`.* The two substrates differ, and the difference is declared
+    rather than implied. The runner's own trial-context recorder has no trial to
+    record into, so runner-side the call emits a `tool_call` with no `tool_result`,
+    indistinguishable from the never-attempted case. **Core-side it is recorded.**
+    Since the caller records, `GrpcRunnerClient` builds a `ToolResult` whose status
+    the proto does not map (`RECORDED_STATUS_BY_PROTO` has no entry for
+    `TRIAL_NOT_FOUND`), and `resolve_tool_status` then resolves a failed result to
+    `error` — so the call emits a normal pair and a `status` matcher sees `error`.
+    Either way it is a harness fault for which no grading verdict is meaningful, so
+    a constraint should not depend on which shape it takes. Whether `error` is the
+    right status for a call that never reached a tool is #727.
+- **G5 — where both views describe one call, the record wins.** The two views word
+  the same failure differently: the `role: tool` message carries `Error: <error>`,
+  while the record carries the executing layer's own text, untruncated. So `result`
+  and `status` are read from the record wherever a record exists. This is a rule
+  about precedence between two present views, not about what exists when only one
+  of them is — G6b covers that. The two substrates also word an executor-level
+  failure differently from each other, so a `result` predicate combined with
+  `status != success` is matching harness text and is not substrate-portable;
+  match on `status` instead.
+- **G6 — records-only is a declared input state.** Hash-only grading legitimately
+  omits the transcript, and `role: system` messages are not events (N3), so an
+  input carrying no assistant or user turn is built from the records alone:
+  `tool_call` + `tool_result` pairs in `sequence` order, all at `turn_index` 0,
+  `message_view_present = False`.
+- **G6b — messages-only is the normal state for a recorded bundle, and its results
+  come from the message view.** `tool_log` is not written to `trajectory.yaml`, so
+  a timeline rebuilt from a bundle has no records: `records_present = False` and
+  `executor` / `status` / `latency_seconds` are `None` throughout. The tool output
+  is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
+  its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
+  that message's text, joined by id and never by position. A failed call's text is
+  then the agent-facing rendering (`Error: <error>`) rather than the executing
+  layer's own, which is one more reason a `result` predicate is not portable (G5).
+  `records_present` therefore means "a record view was supplied", not "results
+  exist": a constraint reading `status`, `executor` or `latency_seconds` is still a
+  **named failing sub-check** and never a silent pass, while a phrase rule still
+  reads what the tools returned. A `role: tool` message answering a call the
+  message view does not declare raises `TimelineInconsistencyError` naming its
+  index, symmetrically with G7 — that text is the only surviving evidence of what
+  the call returned, so it can be neither joined nor dropped. Where records *are*
+  present those messages are the shadowed view: neither read nor validated, because
+  extending the join's loudness to evidence nothing reads would fail a live grading
+  run over a discrepancy no verdict depends on.
+- **G7 — reconciliation failure is loud.** When a message view is present, every
+  record must be linkable by `call_id` to a call in it. An unlinkable record
+  raises `TimelineInconsistencyError` naming its `call_id`, `sequence` and
+  `tool_name`: the two views disagreeing about one trial is a harness bug, and
+  grading around it would be exactly the silent degradation
+  [AGENTS.md](../AGENTS.md) core rule 1 forbids.
+- **G8 — within a turn, executed calls follow recorded execution order.** The
+  `tool_call`s of one assistant message are emitted in ascending
+  `RecordedToolCall.sequence` — execution order, since `sequence` is stamped at
+  execution time — with calls that never executed after them in declaration
+  order. So an "immediately before" or "nothing between" constraint rests on a
+  guarantee rather than on a coincidence.
+
+Both degenerate states are reported on the timeline, never inferred: a constraint
+that reads a field only the missing view supplies must become a **named failing
+sub-check, not a silent pass.**
+
+The tool-expectation checks on both substrates honour that by gating on
+`records_present`, not on `status is None`. Those two are indistinguishable per
+call — a terminating turn's declared call and a bundle-sourced call both carry no
+status — so the flag is the only thing that says whether "no record" is a fact or
+an absent view. A tool the message view never declared still passes a
+`disallowed_tools` check with no records present, because a record can only name a
+declared call (G7): the message view alone proves that tool never ran.
+
+### Non-guarantees
+
+- **N2 — no user-executed tool events occur today.** The builder emits
+  `executor: user` whenever a record carries it, but no code path constructs a
+  user-side tool executor (#688), so the vocabulary is defined and unreachable.
+  A user-simulator call also emits no `role: tool` message — the result is inlined
+  into the user message text — so such a call pairs with a `tool_result` built
+  from the record and never from the message view.
+- **N3 — `role: system` messages are not events.** The loop appends termination
+  and max-turns notices as system messages, and the transcript wire prepends the
+  agent's policy as one. They are harness text, not agent or user behaviour;
+  making them matchable would let a task grade itself on harness strings.
+  `TrialTimeline.termination_reason` is the typed channel for the same
+  information.
+- **N4 — message text is the wire text.** `content_blocks` (screenshots),
+  `reasoning` and per-message timestamps are not on the timeline. A
+  screenshot-only turn carries `text = ""`.
+- **N5 — `timeout` is unproducible on the pure in-process path**, because that
+  executor implements no timeout at all (#691). `status` itself is present on
+  every recorded call on both substrates.
+- **N6 — the timeline says what happened, not whether it was correct.** A green
+  timeline is not a correctness proof; that is each task's grading config's job.
+- **N7 — `TraceEvent` is not hashable.** `arguments` is a dict on every
+  `tool_call`, even an empty one, so a generated hash would raise for that kind and
+  succeed for the others — `set()` / `Counter()` over results working while the
+  same code over calls raised. `__hash__` is `None` so it fails uniformly at the
+  first use. Key on `position` (unique per event) or `call_id` (unique per call).
+  Equality is unaffected.
+
+[`tests/canonical/test_trace_timeline_substrate_parity.py`](../tests/canonical/test_trace_timeline_substrate_parity.py)
+drives one scripted tool-call sequence through each substrate's real recording
+path and compares the resulting events field by field, so a divergence in either
+substrate's recording fails there. `latency_seconds` is excluded from that
+equality — two substrates cannot measure the same wall time — and is instead
+asserted to be a positive float on both.
 
 ---
 
@@ -57,8 +602,8 @@ it cannot masquerade as a number.
 > **Hash-algorithm change (recompute stored hashes).** `to_hashable` now applies
 > `canonical_number`, so it produces different digests than the pre-canonicalization
 > version for any numeric-bearing state. Because grading recomputes the golden
-> hash live (golden-action replay via `compute_tau_style_expected_hash`), this is
-> symmetric and safe. But any **externally pre-computed** `expected_state_hash`
+> hash live (golden-action replay via
+> `StateChecker.check_hash_against_golden_replay`), this is symmetric and safe. But any **externally pre-computed** `expected_state_hash`
 > stored from before this change is stale and will false-fail — recompute it.
 > (Scanned at time of writing: `0` task-pack grading configs store a hash literal,
 > so there is nothing to migrate in-tree.)
@@ -94,9 +639,9 @@ state_checks:
 
 Only list fields that are genuinely numeric quantities. Do NOT list identifier
 or code fields (`payment_method_last4`, `id`, `organization_id`): folding those
-would treat `"0042"`-style values as numbers. This key is honored identically on
-both grading substrates (the core `GradingEngine`/`to_hashable` path and the
-runner gRPC/`compute_stable_hash` path).
+would treat `"0042"`-style values as numbers. Both substrates consume this key
+with score parity — see [Substrate Parity](#substrate-parity) for what that
+claim covers and how it is enforced.
 
 ### Declaring a table's primary key for non-`id` tables
 
@@ -140,7 +685,9 @@ state_checks:
 
 `relaxed_validation` defaults to `false`; new tasks should fix typos rather than
 enable it. The runner also runs the same check as belt-and-suspenders for engines
-that bypass `NativeAdapter.to_task_description`.
+that bypass `NativeAdapter.to_task_description`. Both keys are consumed at load
+time / `RegisterTrial` on both substrates rather than in the grade-time component
+phase — see [Substrate Parity](#substrate-parity).
 
 **Tables materialized only by `initialization_actions`**: the cross-check reads
 `initial_state.tables` (typically populated from `initial_state.json_db`). A
@@ -152,7 +699,133 @@ if you want the strict check to accept it.
 **Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
 on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
 these keys requires a runner image built from the same release. Old engine + new
-runner is safe (core-side `extra="ignore"`).
+runner is safe **for this key** (core-side `extra="ignore"`).
+
+**Runner-engine version lock (both directions)**: the trial spec crosses the wire as
+a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
+a field *value*, that the receiving side does not declare fails validation rather than
+being dropped. Three keys carry the lock:
+
+- `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
+  declare: an engine older than this release translates it onto that field, so an
+  **old engine against a new runner image** is rejected at `RegisterTrial`.
+- `state_checks.hash_weight`, which a runner image older than this release does not
+  declare: the current engine emits it (as `null` when the pack declares no weight),
+  so a **new engine against an old runner image** is rejected the same way.
+- `combine_method`, whose declared value domain both gained and lost members in this
+  release. The runner `GradingConfig` validates it against the closed set in
+  [§ Score Combination](#score-combination): a **new engine** translating `any` is
+  rejected by an older image, and an **old engine** translating a name the set no
+  longer holds is rejected by a current one.
+
+The first two bite on **every** pack carrying a non-empty `state_checks:` block,
+whether or not the pack declares them, because the adapter emits both
+unconditionally. `combine_method` bites only on a pack declaring an affected value —
+`weighted` and `all` cross in either direction. So `state_checks` requires engine and
+runner image from the same release in both directions, and `make docker-build-core` is
+part of every engine upgrade that touches `state_checks` or runs a pack declaring
+`any`. (`db_hash_check` was never declared on the runner config at all, so no engine
+ever emitted it and it is not part of this lock — a populated `db_hash_check` is
+rejected core-side at config load.)
+
+**This lock is narrower than the proto3 rule that governs the rest of registration.**
+`engine_protocol_version` and `call_id` are proto message fields, which an older
+runner drops as unknown — so for those the bound is one-sided and a newer engine
+registers fine (see [`RUNNER.md`](RUNNER.md#engine--image-version-lock)). The trial
+spec is not a proto message: it crosses as `trial_spec_json`, a JSON string parsed by
+`extra="forbid"` Pydantic models, where an unknown field is an error rather than a
+dropped byte. The signature of the skew is a Pydantic `extra_forbidden` error naming
+`hash_weight` in the `RegisterTrialResponse.error`.
+
+An old engine against a new runner image can also be rejected for a second,
+narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
+pack configuring a hash source *and* non-empty `jsonpaths` reaches the runner with
+nothing saying how to fold them, and the presence gate rejects it. That rejection is
+correct — the alternative is grading the trial by a rule the author never chose.
+
+### Folding the hash verdict with `jsonpaths`
+
+`state_checks` has two possible sources — the state hash and the JSONPath
+assertions — and one component score. Each source reads a different level of the
+trial's final state, and both levels are fixed:
+
+| source | evaluated against |
+|---|---|
+| `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
+| `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
+
+A source nobody configured contributes nothing rather than a score:
+
+- **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
+  hash verdict, at every `weight`. An empty assertion list is not a pass.
+- **`jsonpaths` only** (no hash source declared): the component is the assertion
+  score. **Core-side only** — see the substrate note below.
+- **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
+
+`hash.weight` is consulted only in the third case, and it has **no default**:
+every candidate value there silently discards something the author asked for. So a
+pack that needs a weight and declares none is **rejected at load** — by
+`tolokaforge validate` and by the grading config model — with a message naming the
+three meaningful choices: `1.0` lets the hash decide, `0.0` lets the jsonpaths
+decide, `0.5` gives them equal shares. The value must lie within `[0.0, 1.0]`;
+outside that range the component leaves `[0, 1]` altogether, and a value that is not
+a real number in that range — a bool, a numeric string — is rejected on **both**
+substrates rather than coerced into one.
+
+"Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
+`expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
+other shape yields at most one score *core-side*, so a weight there would have
+nothing to divide: it loads, its range is still checked, and `grade.reasons` records
+that it was declared but not consulted — on both substrates, from one constant.
+
+**The gate over-approximates in two known ways, and both err toward asking the
+author a question rather than guessing an answer.**
+
+1. **Golden actions with no replay context.** Whether the engine has the
+   `task_dir` / `initial_state` / `mcp_server` a replay needs is unknowable from
+   `grading.yaml`, so a pack that would produce no hash verdict for that reason is
+   still asked for a weight. It lands only on configs already silently broken (#729).
+2. **`db_probes` declared alongside.** `db_probes` is the sole state source for the
+   tasks that declare it, so runner-side its score fills the component outright and
+   the fold is never reached — the weight the gate demanded is then reported as
+   unconsulted. Core-side that is not over-approximation at all: the core engine has
+   no `db_probes` evaluator, so it *does* fold the hash with the jsonpaths and *does*
+   consult the weight. Teaching the shared predicate about `db_probes` would
+   therefore trade a load-time rejection for a grade-time raise on the core
+   substrate, which is why it stays. #731 owns the precedence itself.
+
+**Which substrate graded the trial still matters, for two hash-source shapes.** The
+fold is one function (`core/grading/state_composition.py`) and both the core engine
+and the runner's `GradeTrial` call it, so the *rule* is shared; the runner carries
+the weight as the flattened `state_checks.hash_weight` on its `StateChecksConfig` and
+applies the same presence gate at `RegisterTrial`. What is not shared is what each
+substrate feeds that fold:
+
+- **`hash.enabled` with no declared source.** Core produces no hash verdict and the
+  component is the assertion score alone. The runner runs hash grading anyway — the
+  refusal shape, where the expected state *is* the initial state — so it folds a real
+  binary verdict with the assertions. Measured at `weight: 0.6` against assertions
+  scoring `0.5`: core `0.5`, runner `0.8` on a match and `0.2` on a divergence. A
+  pack of this shape carrying live assertions and *no* weight loads on both
+  substrates and then fails `GradeTrial` on the runner, because the fold it reaches
+  there is undecidable — see
+  [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrial-error-semantics). Tracked as #741.
+- **`expected_state_hash` alone.** No runner path reads the translated
+  `expected_hash` (#693), so the runner again compares the trial against the initial
+  state where core compares it against the author's literal.
+
+Only **`golden_actions`** is proven to hand both substrates the same verdict, and
+therefore the same component — see
+[Substrate Parity](#substrate-parity) for the manifest rows and the test that proves
+it.
+
+**Core-side**, hash grading that was configured but could not run — `hash.enabled`
+with neither source declared, or `golden_actions` with no task directory,
+`initial_state` or `mcp_server` to replay them against — yields **no** hash verdict
+and names the skipped check in `grade.reasons`, rather than a `0.0` that reads as a
+state the agent got wrong (#729). A golden replay that fails to *execute* is a
+grading error rather than a verdict on either substrate: core raises and the trial is
+left unscored, the runner answers `GradeTrial` with `success=false`.
 
 ### Best Practices
 
@@ -162,7 +835,74 @@ runner is safe (core-side `extra="ignore"`).
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
-- Combine with JSONPath assertions using `weight: 0.8` for flexibility
+- Combining the hash with JSONPath assertions requires an explicit `weight` —
+  decide which source carries the verdict, per
+  [Folding the hash verdict with `jsonpaths`](#folding-the-hash-verdict-with-jsonpaths).
+  `tolokaforge validate` rejects that combination without one
+
+---
+
+## Transcript Rules
+
+`transcript_rules` grades the *process* — what the agent said and which tools it
+reached for — rather than the final state. Both substrates consume every key in
+the block, and both read it off the
+[trial event timeline](#trial-event-timeline).
+
+**What a rule can see.** A tool rule sees the calls that reached the substrate: a
+call the agent declared on a terminating turn never ran, so it satisfies no
+`required_tools` entry and violates no `disallowed_tools` entry. A phrase rule
+(`must_contain`, `disallow_regex`, `communicate_info`) sees the agent's own text
+runner-side; core-side it also sees the user's turns and the text tools returned —
+from the record while the trial carries one and from the `role: tool` messages
+otherwise (G6b), so re-grading a recorded bundle still reads tool output. Neither
+substrate can see the harness's `role: system` annotations — a termination notice
+cannot satisfy a required phrase (N3).
+
+### `tool_expectations`
+
+Names the tools the agent must use and the tools it must not touch:
+
+```yaml
+transcript_rules:
+  tool_expectations:
+    required_tools: ["db_update"]        # each must have been called successfully
+    disallowed_tools: ["bash"]           # none may be called, at any status
+```
+
+**One sub-check per declared tool** on the runner path, the same decomposition
+`must_contain` and `disallow_regex` get: the component score is the fraction of
+sub-checks that passed, and every failure is named in `grade.reasons`. A task
+declaring two required and two disallowed tools yields four independent
+sub-checks.
+
+**The two lists treat call status differently, deliberately.** A `required_tools`
+entry is satisfied only by a call with `status == "success"` — an errored call did
+not do the work the author required, the same rule `required_actions` applies. A
+`disallowed_tools` entry fails on a call at **any** status, errors included:
+attempting a forbidden action is itself the violation, so a `delete_customer` call
+that happened to blow up still fails the check.
+
+`extra="forbid"` on the block means a misspelled key (`required_toolz`) fails at
+load rather than grading as an empty list.
+
+**Known limitation — a misspelled *tool name* is not caught here.** Grade-time
+evaluation cannot tell `required_tools: ["db_updat"]` from "the agent never called
+it", and a typo in `disallowed_tools` passes trivially because no call ever matches
+it. Validating tool names against the task's declared tool set belongs at load
+time and is owned by **#679**; do not read a green `tool_expectations` check as
+evidence that the names are spelled correctly.
+
+**Score parity:** signal, not score. Both substrates discriminate, but the core
+`GradingEngine` folds both lists into one of four averaged buckets, so a violation
+that scores `0.0` on the runner scores `0.75` core-side (#685). Core also ignores
+call status. See [Substrate Parity](#substrate-parity).
+
+**Runner-engine version lock**: `tool_expectations` is declared on the runner-side
+`TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
+requires a runner image built from the same release — `RegisterTrial` rejects it
+otherwise. Old engine + new runner is safe **for this key** (core-side
+`extra="ignore"`).
 
 ---
 
@@ -463,19 +1203,76 @@ with `state_checks` under `combine.weights.custom_checks`.
 
 ---
 
+## Infrastructure aborts produce no grade
+
+A trial the provider or the substrate killed before the agent could work is not a
+task the model failed. It produces **no `Grade` at all** — not a zero, not a
+status field — and it is excluded from every rate in `per_task_metrics.json` and
+`aggregate.json`.
+
+This is the same rule as the errored judge one level up. An errored `llm_judge`
+component is left unscored and dropped from the weighted combine rather than read
+as `0.0` (see § Fail-loud: the ERRORED status); a trial that never ran is left
+ungraded and dropped from the denominator for exactly the same reason. `Grade.score`
+is a required `[0, 1]` float, so a grade for such a trial would have to carry a
+number describing work nobody did, and every consumer that reads `.score` without
+branching would read that number as a model failure. `Trajectory.grade` is
+`Grade | None`: absence is unrepresentable as zero, and a consumer that forgets to
+branch fails loudly.
+
+### Which trials are aborts
+
+Exclusion is earned by **typed** evidence. Exactly three termination reasons
+qualify, and each is produced from an exception type or an HTTP status rather than
+from matching prose against an exception message:
+
+| Reason | Evidence |
+|---|---|
+| `rate_limit` | `openai.RateLimitError` (which `litellm.RateLimitError` subclasses, so one check covers every provider litellm routes) or `status_code == 429`, found on the exception or on its `__cause__` chain |
+| `api_timeout` | `LLMApiTimeoutError` |
+| `provision_error` | `ProvisionError` raised by the runtime backend's `provision` / `await_ready` |
+
+Everything else is **counted**, including the cases that look like
+infrastructure:
+
+| Reason | Class | Why it counts |
+|---|---|---|
+| `timeout` | measured | A declared wall-clock budget over agent actions, the same as `max_turns`. A thrashing agent hits it too, and excluding it would make thrashing vanish from the denominator |
+| `api_error` | measured | Produced by matching provider names in the message text, which also matches a context-window overflow (agent behaviour) and a 400 from a malformed tool schema (our bug) |
+| `error` | harness error | The classifier's fall-through, so usually a defect of ours. Counted — excluding our own bugs would hide them — and reported separately as `harness_errors` so a non-zero count is visible as a run-health signal |
+| `stuck_detected` | measured | The agent repeated itself without progress. It auto-fails with `score: 0.0`, and that verdict is correct |
+
+The asymmetry decides every borderline case: misclassifying an agent failure as
+infrastructure raises every published number with nothing in the output to show
+it, while misclassifying infrastructure as an agent failure lowers them by a
+bounded amount that `infrastructure_aborts` makes visible. So an unrecognised
+termination reason is counted, and a rate-limit-shaped message with no typed
+exception behind it terminates as `error` rather than buying its way out of the
+benchmark.
+
+`outcomes_by_reason` records every observed reason with the class it was counted
+as, so any of these judgements can be recomputed from a finished run's aggregate
+without a rerun. See [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Run-level
+metric denominators and [`docs/ANALYTICS.md`](ANALYTICS.md) § The denominator:
+measured trials.
+
 ## pass@k Metrics
 
 Estimates probability that at least 1 of k attempts succeeds.
 
 ### Formula
 
-Given `n` trials with `c` successes:
+Given `n` **measured** trials with `c` successes:
 
 ```
 pass@k = 1 - C(n - c, k) / C(n, k)
 ```
 
-Where `C(a, b)` is binomial coefficient "a choose b".
+Where `C(a, b)` is binomial coefficient "a choose b". `n` counts the trials that
+measured the agent, so an infrastructure abort neither counts as a failure nor
+props up the sample size — and one lost trial can therefore turn `pass@5` into
+`null`, since five samples are needed to estimate it and four cannot. The run
+logs a warning naming each task whose coverage was reduced that way.
 
 ### Example
 
@@ -571,7 +1368,55 @@ probe passes only for the one the after-hours policy permits.
 
 ## Score Combination
 
-Final score formula:
+`combine.method` names the rule that folds the scored components into one score and
+one pass flag. Three methods are supported, and both substrates dispatch on the same
+closed set — anything else fails the load, naming what an author may write instead.
+
+| `method` | score | `binary_pass` |
+|---|---|---|
+| `weighted` (default) | the weighted mean below | `score >= pass_threshold` |
+| `all` | the **weakest** component's score | every component `>= pass_threshold` |
+| `any` | the **strongest** component's score | **any** component `>= pass_threshold` |
+
+> **`any` inflates a score and can pass a failing trial.** It reports the best
+> component and ignores the rest, so a trial whose other declared, weighted
+> components all scored `0.0` still passes with a full `1.0` — including one that
+> failed its state hash. On components scoring `0.0` and `1.0` at
+> `pass_threshold: 0.8`, `weighted` gives `(0.5, False)`, `all` gives `(0.0, False)`
+> and `any` gives `(1.0, True)`. Declare it only when one satisfied component is
+> genuinely the whole objective.
+
+`all` and `any` compare each component to `pass_threshold` and never scale it by
+`combine.weights` — measured, weights of `0.9`/`0.1` and of `1.0`/`1.0` give both
+methods the same answer on the same components. What they aggregate is the map of
+components, and **which components the map holds is a substrate-scoped question**:
+
+- **Core** admits a scored component only when `combine.weights` declares a weight
+  for it.
+- **The runner** admits every component it evaluated, weighting an undeclared one at
+  an invented `1.0`.
+
+That is why `combine.method` and `combine.weights` are both `BOTH_SIGNAL_PARITY`
+tracked by **#744**. Under `weighted` the gap is a magnitude; under `all` and `any`
+the map *is* the whole input, so it is a verdict flip. Measured on
+`state_checks: 0.0` and `transcript_rules: 1.0` at `pass_threshold: 0.8` with only
+`state_checks` weighted, `any` gives `(0.0, False)` core-side and `(1.0, True)`
+runner-side. **Declare a weight for every component the pack scores** and this
+divergence closes: on the same trial with both weighted, all three methods answer
+identically on both substrates.
+
+One asymmetry survives #744, because it is architectural rather than a defect: core
+produces no `llm_judge` component and cannot produce a `state_checks.db_probes` one —
+both `RUNNER_ONLY` by design — so on a judge- or probe-graded pack core's map is
+empty where the runner's is scored. The canonical differential therefore proves the
+dispatch over deterministic components, which is the whole of what is provable for
+this key.
+
+`combine_method` is one of the three keys that lock an engine to a runner image built
+from the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
+§ "Runner-engine version lock (both directions)".
+
+The `weighted` mean:
 
 ```
 final_score = (state_score       * W_state
@@ -586,9 +1431,11 @@ binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion 
 A component that was not evaluated is **excluded** from both the numerator and
 the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
-as a `0.0`. A `custom_checks`-only pack whose score comes back absent still
-fails loud (empty active set with a configured `custom_checks` weight ⇒
-`(0.0, False)`, not a silent `(1.0, True)`).
+as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
+declares no weight for, where the runner includes it at an invented `1.0` — the
+divergence tracked by #744 above. A `custom_checks`-only pack whose score comes
+back absent still fails loud (empty active set with a configured `custom_checks`
+weight ⇒ `(0.0, False)`, not a silent `(1.0, True)`).
 
 ### Weighting Strategies
 

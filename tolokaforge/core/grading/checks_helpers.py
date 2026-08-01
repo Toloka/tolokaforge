@@ -7,11 +7,11 @@ dicts, inspect tool-call sequences, and pattern-match text. Domain-specific
 helpers should be defined at the project level (e.g. ``tasks/airline/
 check_helpers.py``).
 
-Framework-internal utility (``build_check_context``) is called by BOTH grading
-paths — :class:`~tolokaforge.core.grading.combine.GradingEngine` on the host
-and the runner-side :class:`~tolokaforge.runner.service.RunnerServiceImpl` —
-so the two builders cannot diverge on the ``final_env_state`` shape transform
-custom checks depend on.
+Framework-internal utilities (``custom_checks_enabled``, ``build_check_context``)
+are called by BOTH grading paths — :class:`~tolokaforge.core.grading.combine.GradingEngine`
+on the host and the runner-side :class:`~tolokaforge.runner.service.RunnerServiceImpl`
+— so the two cannot diverge on when custom checks run or on the
+``final_env_state`` shape transform they depend on.
 
 Usage in ``checks.py``:
     from tolokaforge.core.grading.checks_helpers import (
@@ -23,18 +23,43 @@ from __future__ import annotations
 
 import re
 from collections.abc import Sequence
-from typing import Any
+from typing import Any, TypeGuard
 
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
+    CustomChecksConfig,
     EnvironmentState,
     TaskContext,
     Transcript,
 )
 
 # =============================================================================
-# Framework-internal: shared CheckContext builder (used by both grading paths)
+# Framework-internal: shared gate + CheckContext builder (both grading paths)
 # =============================================================================
+
+
+def custom_checks_enabled(
+    custom_checks: dict[str, Any] | None,
+) -> TypeGuard[dict[str, Any]]:
+    """Whether a pack's raw ``grading.custom_checks`` block opts into execution.
+
+    The one gate both substrates, the adapter's ``checks.py`` delivery decision
+    and the runner's accounted-keys ledger ask. A delivery gate that disagreed
+    with an execution gate is precisely the shape that produces a pack claiming
+    custom checks whose ``checks.py`` never arrives.
+
+    Validates before reading, so a mistyped key raises here rather than reading
+    ``enabled`` as its default and disabling a scored component silently. The
+    trial's registration is the loud end of that: ``RegisterTrial`` turns the
+    ``ValidationError`` into a refusal naming the offending config.
+
+    Raises:
+        ValidationError: the block is non-empty and is not a valid
+            :class:`~tolokaforge.core.grading.checks_interface.CustomChecksConfig`.
+    """
+    if not custom_checks:
+        return False
+    return CustomChecksConfig(**custom_checks).enabled
 
 
 def build_check_context(

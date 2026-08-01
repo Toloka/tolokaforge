@@ -251,13 +251,15 @@ Output files are written by [`tolokaforge/core/output_writer.py`](../tolokaforge
 **Status: Implemented and functional**
 
 **Implementation at:**
-- [`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py:182-224) - `evaluate_transcript_rules()`
+- [`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py) - `evaluate_transcript_rules()`
 
 **Supported rule types:**
-- `must_contain` - Check if assistant message contains text
-- `must_not_contain` - Check no assistant message contains text
-- `required_tool_call` - Check tool was called with arguments
+- `must_contain` - Check an assistant message contains text
+- `disallow_regex` - Check no assistant message matches a regex
 - `max_turns` - Verify conversation under turn limit
+- `required_actions` - Check a tool call appears on the trial's event timeline with matching arguments
+- `communicate_info` - Check a required info string appears in an assistant message
+- `tool_expectations` - Check the required tools were called successfully and the disallowed tools never were
 
 **Current behavior:**
 - `transcript_rules` field in `GradeComponents` is `null` when the pack ships

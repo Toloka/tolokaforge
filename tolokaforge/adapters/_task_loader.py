@@ -58,7 +58,7 @@ from tolokaforge.core.deprecations import (
     source_context,
     warn_deprecated,
 )
-from tolokaforge.core.models import TaskConfig, TaskDefaults
+from tolokaforge.core.models import GradingCombineConfig, TaskConfig, TaskDefaults
 from tolokaforge.core.project_loader import construct_config, deep_merge
 
 # Keys that live on ``project.task_defaults`` but are not ``TaskConfig`` fields.
@@ -73,10 +73,16 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 def validate_grading_yaml(grading_path: Path) -> None:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
-    Run by ``tolokaforge validate`` so a malformed grading block — most notably
-    the pre-Stage-2 free-text ``llm_judge.rubric: str`` / removed
-    ``output_schema`` shape — is rejected at validate time with a clear
-    migration message (raised by :class:`LLMJudgeConfig`), not only at run time.
+    Run by ``tolokaforge validate`` so a malformed grading block is rejected at
+    validate time with a clear migration message, not only at run time. ``combine``
+    is validated whenever it is declared; ``llm_judge`` (the free-text
+    ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised by
+    :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
+    ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals.
+
+    Validate is the earliest gate a task pack meets: the engine's own
+    :class:`StateChecksConfig` is not constructed until artifacts are written, by
+    which point the trial has already been paid for.
 
     A missing grading file is not an error here: ``load_task_yaml`` already
     validates the ``grading`` path field, and some adapters synthesise grading
@@ -84,6 +90,7 @@ def validate_grading_yaml(grading_path: Path) -> None:
 
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
+        RuntimeError: If the file or a block this gate constructs is not a mapping.
     """
     if not grading_path.exists():
         return
@@ -94,6 +101,22 @@ def validate_grading_yaml(grading_path: Path) -> None:
     if not isinstance(grading_data, dict):
         raise RuntimeError(
             f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
+        )
+
+    # The whole combine block, on any declared one: the aggregation an author names
+    # decides how every component score folds, and a value outside the declared set
+    # has no fold. Constructing the block rather than the one field also puts a
+    # malformed ``weights`` / ``pass_threshold`` under the same gate.
+    combine = grading_data.get("combine")
+    if isinstance(combine, dict):
+        GradingCombineConfig(**combine)
+    elif combine is not None:
+        raise RuntimeError(
+            f"Grading file {grading_path}: 'combine' must be a mapping of method / "
+            f"weights / pass_threshold, got {type(combine).__name__} ({combine!r}). "
+            "A key indented one level too far under 'combine:' makes the block a list; "
+            "a method written next to the key makes it a string. Write the method as "
+            "'combine:' then 'method:' indented beneath it."
         )
 
     # The rubric migration lives on the canonical LLMJudgeConfig, so validate the
@@ -107,6 +130,19 @@ def validate_grading_yaml(grading_path: Path) -> None:
         from tolokaforge.runner.models import LLMJudgeConfig
 
         LLMJudgeConfig(**llm_judge)
+
+    # Same shape for state_checks: construct the block on a removed key, and on any
+    # declared ``hash`` block — whose composition weight is undecidable in one shape
+    # and is the reason a pack must hear about it before the run rather than after.
+    state_checks = grading_data.get("state_checks")
+    if isinstance(state_checks, dict) and (
+        "env_assertions" in state_checks
+        or "db_hash_check" in state_checks
+        or isinstance(state_checks.get("hash"), dict)
+    ):
+        from tolokaforge.core.models import StateChecksConfig
+
+        StateChecksConfig(**state_checks)
 
 
 def load_task_yaml(

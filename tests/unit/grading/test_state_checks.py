@@ -286,62 +286,6 @@ class TestHashGrading:
 
 
 @pytest.mark.unit
-class TestCombinedGrading:
-    """Test combined JSONPath and hash grading"""
-
-    @pytest.fixture
-    def checker(self):
-        return StateChecker()
-
-    @pytest.fixture
-    def state(self):
-        return {"lines": [{"id": 1, "enabled": True}], "count": 1}
-
-    def test_hash_only(self, checker, state):
-        """Test hash-only grading"""
-        expected_hash = consistent_hash(to_hashable(state))
-        score, reasons = checker.grade(
-            state=state,
-            jsonpath_assertions=[],
-            expected_hash=expected_hash,
-            hash_weight=1.0,
-        )
-        assert score == 1.0
-
-    def test_jsonpath_only(self, checker, state):
-        """Test JSONPath-only grading"""
-        assertions = [{"path": "$.lines[0].enabled", "equals": True, "description": "Enabled"}]
-        score, reasons = checker.grade(
-            state=state, jsonpath_assertions=assertions, expected_hash=None, hash_weight=0.5
-        )
-        assert score == 1.0
-
-    def test_combined_both_pass(self, checker, state):
-        """Test combined grading where both pass"""
-        expected_hash = consistent_hash(to_hashable(state))
-        assertions = [{"path": "$.count", "equals": 1, "description": "Count is 1"}]
-        score, reasons = checker.grade(
-            state=state,
-            jsonpath_assertions=assertions,
-            expected_hash=expected_hash,
-            hash_weight=0.5,
-        )
-        assert score == 1.0
-
-    def test_combined_hash_fail_jsonpath_pass(self, checker, state):
-        """Test combined grading where hash fails but JSONPath passes"""
-        wrong_hash = "0" * 64
-        assertions = [{"path": "$.count", "equals": 1, "description": "Count is 1"}]
-        score, reasons = checker.grade(
-            state=state,
-            jsonpath_assertions=assertions,
-            expected_hash=wrong_hash,
-            hash_weight=0.5,
-        )
-        assert score == pytest.approx(0.5)
-
-
-@pytest.mark.unit
 class TestUnknownOperatorFailsLoud:
     """Pins the contract: an assertion with no recognized operator must FAIL
     (with an actionable reason), not silently satisfy on path-existence.

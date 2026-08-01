@@ -40,7 +40,7 @@ async def test_upsert_and_delete_use_configured_key():
 
     await wrapper._sync_state_changes(before, after)
 
-    (_table, ops) = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
+    _table, ops = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
     upsert = next(op for op in ops if op["op"] == "upsert")
     assert upsert["key"] == "widget_id"  # config-resolved, not "id"
 
@@ -52,7 +52,7 @@ async def test_delete_filter_uses_configured_key():
 
     await wrapper._sync_state_changes(before, after)
 
-    (_table, ops) = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
+    _table, ops = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
     delete = next(op for op in ops if op["op"] == "delete")
     assert delete["filter"] == {"widget_id": "W1"}  # not {"id": "W1"}
 
@@ -64,7 +64,7 @@ async def test_defaults_to_id_key_unchanged():
 
     await wrapper._sync_state_changes(before, after)
 
-    (_table, ops) = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
+    _table, ops = wrapper.db_proxy._async_proxy.db_client.mutations[-1]
     upsert = next(op for op in ops if op["op"] == "upsert")
     assert upsert["key"] == "id"
 

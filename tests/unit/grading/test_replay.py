@@ -3,7 +3,7 @@
 Locks the contract of :mod:`tolokaforge.core.grading.replay`:
 
 * the reconstructed transcript is **byte-identical** to the live
-  ``_build_judge_messages_json`` + strip path the runner uses;
+  ``encode_transcript_wire`` + strip path the runner uses;
 * a judge-eligible trial with no rubric and no override fails loud with a named
   error, while a not-applicable trial is a declared skip even under a rubric
   override (a rubric override never conjures a judge stage onto a trial that
@@ -49,6 +49,10 @@ from tolokaforge.core.grading.replay import (
     replay_trial,
     run_replay_batch,
 )
+from tolokaforge.core.grading.transcript_wire import (
+    encode_transcript_wire,
+    split_leading_system_message,
+)
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -61,10 +65,6 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
-from tolokaforge.core.trial_grader import (
-    _build_judge_messages_json,
-    split_leading_system_message,
-)
 
 pytestmark = pytest.mark.unit
 
@@ -178,7 +178,7 @@ def test_reconstructed_transcript_is_byte_identical_to_live_path(tmp_path: Path)
     )
 
     # The live grading path the runner takes for this trajectory + agent prompt.
-    wire = _build_judge_messages_json(trajectory, _AGENT_PROMPT)
+    wire = encode_transcript_wire(trajectory, _AGENT_PROMPT)
     assert wire is not None
     expected_prompt, expected_transcript = split_leading_system_message(json.loads(wire))
 

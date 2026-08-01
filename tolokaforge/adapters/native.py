@@ -10,6 +10,7 @@ import yaml
 
 from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
+from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -434,13 +435,13 @@ class NativeAdapter(BaseAdapter):
         from tolokaforge.runner.models import (
             AdapterType,
             DbProbe,
-            EnvAssertion,
             GoldenAction,
             InitializationAction,
             InvocationStyle,
             RequiredAction,
             StateChecksConfig,
             TaskDescription,
+            ToolExpectations,
             ToolSchema,
             ToolSource,
             TranscriptRulesConfig,
@@ -649,19 +650,6 @@ class NativeAdapter(BaseAdapter):
                             )
                         )
 
-                # Extract env assertions
-                env_assertions: list[EnvAssertion] = []
-                for assertion in state_checks_data.get("env_assertions", []):
-                    env_assertions.append(
-                        EnvAssertion(
-                            env_type=assertion.get("env_type", "user"),
-                            func_name=assertion.get("tool_name", ""),
-                            arguments=assertion.get("arguments", {}),
-                            assert_value=assertion.get("assert_value", True),
-                            message=assertion.get("message"),
-                        )
-                    )
-
                 db_probes = [DbProbe(**probe) for probe in state_checks_data.get("db_probes", [])]
 
                 id_fields_declared = dict(state_checks_data.get("id_fields", {}))
@@ -679,8 +667,8 @@ class NativeAdapter(BaseAdapter):
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
+                    hash_weight=hash_config.get("weight") if hash_config else None,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
-                    env_assertions=env_assertions,
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),
                     id_fields=id_fields_declared,
@@ -702,10 +690,16 @@ class NativeAdapter(BaseAdapter):
                         )
                     )
 
+                tool_expectations_data = transcript_data.get("tool_expectations")
                 transcript_rules = TranscriptRulesConfig(
                     must_contain=transcript_data.get("must_contain", []),
                     disallow_regex=transcript_data.get("disallow_regex", []),
                     max_turns=transcript_data.get("max_turns"),
+                    tool_expectations=(
+                        ToolExpectations(**tool_expectations_data)
+                        if tool_expectations_data
+                        else None
+                    ),
                     required_actions=required_actions,
                     communicate_info=transcript_data.get("communicate_info", []),
                 )
@@ -804,10 +798,8 @@ class NativeAdapter(BaseAdapter):
         # Custom checks packs (with or without an MCP server) also need the
         # bundle so the runner can resolve ``custom_checks.file`` and every
         # ``relative_imports`` path under the trial's ``artifacts_dir``.
-        custom_checks_enabled = bool(custom_checks_data and custom_checks_data.get("enabled"))
-        tool_artifacts = (
-            self._bundle_task_artifacts(task_dir) if mcp_server_ref or custom_checks_enabled else {}
-        )
+        needs_bundle = mcp_server_ref or custom_checks_enabled(custom_checks_data)
+        tool_artifacts = self._bundle_task_artifacts(task_dir) if needs_bundle else {}
 
         # mcp_server.py loads its initial state from ``initial_state.json``
         # next to itself (see ``create_server`` in tools_interface.py). For the

@@ -27,15 +27,11 @@ def dockerfile_context(tmp_path):
     context_dir.mkdir()
 
     dockerfile = context_dir / "Dockerfile"
-    dockerfile.write_text(
-        textwrap.dedent(
-            """\
+    dockerfile.write_text(textwrap.dedent("""\
         FROM alpine:3.18
         COPY hello.txt /hello.txt
         CMD ["cat", "/hello.txt"]
-        """
-        )
-    )
+        """))
 
     hello_file = context_dir / "hello.txt"
     hello_file.write_text("hello world")
@@ -96,16 +92,12 @@ class TestDockerCaching:
         cleanup_images.append(image1)
 
         # Modify Dockerfile
-        dockerfile.write_text(
-            textwrap.dedent(
-                """\
+        dockerfile.write_text(textwrap.dedent("""\
             FROM alpine:3.18
             COPY hello.txt /hello.txt
             RUN echo "extra layer"
             CMD ["cat", "/hello.txt"]
-            """
-            )
-        )
+            """))
 
         # Build again — should get a different hash
         image2 = registry.get_or_build(
@@ -170,16 +162,12 @@ class TestDockerCaching:
         context_dir.mkdir()
 
         dockerfile = context_dir / "Dockerfile"
-        dockerfile.write_text(
-            textwrap.dedent(
-                """\
+        dockerfile.write_text(textwrap.dedent("""\
             FROM alpine:3.18
             ARG VERSION=1.0
             RUN echo "version: $VERSION" > /version.txt
             CMD ["cat", "/version.txt"]
-            """
-            )
-        )
+            """))
 
         # Build with VERSION=1.0
         image1 = registry.get_or_build(
@@ -208,15 +196,11 @@ class TestDockerCaching:
         context_dir.mkdir()
 
         dockerfile = context_dir / "Dockerfile"
-        dockerfile.write_text(
-            textwrap.dedent(
-                """\
+        dockerfile.write_text(textwrap.dedent("""\
             FROM alpine:3.18
             COPY app.txt /app.txt
             CMD ["cat", "/app.txt"]
-            """
-            )
-        )
+            """))
 
         app_file = context_dir / "app.txt"
         app_file.write_text("app content")

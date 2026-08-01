@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.core.grading.state_composition import INERT_HASH_WEIGHT_REASON
 from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
     build_grade_reasons,
@@ -20,6 +21,7 @@ from tolokaforge.runner.grading import (
     evaluate_jsonpath_checks,
     evaluate_jsonpath_file_checks,
     evaluate_jsonpath_state_checks,
+    resolve_state_checks_component,
 )
 
 pytestmark = pytest.mark.unit
@@ -260,6 +262,94 @@ def test_mixed_jsonpath_checks_keep_file_compatibility(tmp_path: Path):
     assert "State: PASS: state check" in reasons
 
 
+class TestStateChecksSlot:
+    """Which of the three state sources fills the ``state_checks`` slot, and how.
+
+    The runner's ``-1.0`` sentinel means *not evaluated*, so every case here pins
+    the composed value — including ``None`` for a component no source produced,
+    which is a different outcome from a ``0.0`` the combine would fold in as a
+    failure.
+
+    Every case also pins whether the declared weight earns the inert-weight note.
+    The two columns are independent on purpose: the note follows from which sources
+    the fold *saw*, so a case where the component is right and the note is missing
+    is exactly the "accepted and ignored" shape the note exists to end.
+    """
+
+    @pytest.mark.parametrize(
+        (
+            "case",
+            "hash_score",
+            "jsonpath_score",
+            "db_probe_score",
+            "hash_weight",
+            "expected",
+            "expect_inert",
+        ),
+        [
+            ("hash only", 1.0, -1.0, -1.0, None, 1.0, False),
+            ("hash only, an inert weight is not consulted", 0.0, -1.0, -1.0, 0.6, 0.0, True),
+            ("jsonpaths only", -1.0, 0.75, -1.0, None, 0.75, False),
+            ("jsonpaths only, an inert weight is not consulted", -1.0, 0.75, -1.0, 0.6, 0.75, True),
+            ("both, hash passing", 1.0, 0.5, -1.0, 0.6, 0.8, False),
+            ("both, hash failing", 0.0, 0.5, -1.0, 0.6, 0.2, False),
+            ("both, at a second weight", 1.0, 0.5, -1.0, 0.25, 0.625, False),
+            ("both, weight 1.0 gives the hash the verdict", 0.0, 0.5, -1.0, 1.0, 0.0, False),
+            ("both, weight 0.0 gives the jsonpaths the verdict", 0.0, 0.5, -1.0, 0.0, 0.5, False),
+            ("neither", -1.0, -1.0, -1.0, None, None, False),
+            ("db_probes alone", -1.0, -1.0, 0.4, None, 0.4, False),
+            ("db_probes outrank a hash verdict", 1.0, -1.0, 0.4, None, 0.4, False),
+            ("db_probes outrank a jsonpath score", -1.0, 0.75, 0.4, None, 0.4, False),
+            ("db_probes outrank a fold of both", 1.0, 0.5, 0.4, 0.6, 0.4, True),
+            ("db_probes outrank both before a weight is needed", 1.0, 0.5, 0.4, None, 0.4, False),
+        ],
+    )
+    def test_composed_value(
+        self,
+        case,
+        hash_score,
+        jsonpath_score,
+        db_probe_score,
+        hash_weight,
+        expected,
+        expect_inert,
+    ):
+        slot = resolve_state_checks_component(
+            hash_score=hash_score,
+            jsonpath_score=jsonpath_score,
+            db_probe_score=db_probe_score,
+            hash_weight=hash_weight,
+        )
+
+        if expected is None:
+            assert slot.component is None
+        else:
+            assert slot.component == pytest.approx(expected)
+        expected_reason = INERT_HASH_WEIGHT_REASON if expect_inert else None
+        assert slot.inert_weight_reason == expected_reason
+
+    def test_two_real_sources_without_a_weight_raise_the_shared_message(self):
+        with pytest.raises(ValueError, match="no defensible default"):
+            resolve_state_checks_component(
+                hash_score=1.0, jsonpath_score=0.5, db_probe_score=-1.0, hash_weight=None
+            )
+
+
+@pytest.mark.parametrize(("hash_weight", "expected"), [(0.6, 0.8), (0.25, 0.625)])
+def test_combine_folds_by_the_weight_the_grading_config_carries(hash_weight, expected):
+    components = {"hash_score": 1.0, "jsonpath_score": 0.5, "transcript_score": -1.0}
+    grading_config = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "state_checks": {
+            "jsonpath_checks": [{"path_glob": "x"}],
+            "hash_weight": hash_weight,
+        },
+    }
+    score, _ = combine_grade_components(components, grading_config)
+    assert score == pytest.approx(expected)
+
+
 def test_combine_components_uses_jsonpath_when_hash_absent():
     components = {"hash_score": -1.0, "jsonpath_score": 0.75, "transcript_score": -1.0}
     grading_config = {
@@ -269,17 +359,6 @@ def test_combine_components_uses_jsonpath_when_hash_absent():
     }
     score, _ = combine_grade_components(components, grading_config)
     assert score == 0.75
-
-
-def test_combine_components_multiplies_hash_and_jsonpath():
-    components = {"hash_score": 1.0, "jsonpath_score": 0.5, "transcript_score": -1.0}
-    grading_config = {
-        "combine_method": "weighted",
-        "weights": {"state_checks": 1.0},
-        "state_checks": {"jsonpath_checks": [{"path_glob": "x"}]},
-    }
-    score, _ = combine_grade_components(components, grading_config)
-    assert score == pytest.approx(0.5)
 
 
 def _stub_rows(rows, monkeypatch):

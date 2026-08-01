@@ -1,0 +1,23 @@
+# The single ``db`` level is what the DB service returns to the runner and what
+# build_check_context picks for the core engine, so both substrates read it.
+satisfying:
+  messages:
+    - role: assistant
+      content: "Order O1 has been shipped."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: shipped
+
+violating:
+  messages:
+    - role: assistant
+      content: "Order O1 has been shipped."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: pending

@@ -821,24 +821,45 @@ class InProcessConductor:
         :class:`TrialGrader` and assign it to ``trajectory.grade``.
 
         Grading strategy — including auto-fail on ``ERROR`` / ``TIMEOUT``
-        / ``STUCK_DETECTED`` and the runner-RPC path for a normal
+        / ``STUCK_DETECTED``, the ``None`` verdict for a trial the
+        infrastructure aborted, and the runner-RPC path for a normal
         completion — lives inside the grader. This phase is the trigger
         (per CLOUD_RUNTIME §6.3): assemble the agent's post-policy
         system prompt, delegate.
+
+        An ungraded trial scores nothing: no ``judgment_scored`` event
+        fires, because there is no judgment to report.
+
+        A :class:`~tolokaforge.core.trial_grader.GradingFailedError` is not
+        caught here, so it also skips :meth:`_write_artifacts` and leaves the
+        trial out of the run's results entirely. That is deliberate: a trial
+        whose verdict could not be computed has no score to publish, and the
+        orchestrator's per-trial handler records the failure.
         """
         agent_system_prompt = runner.effective_system_prompt or system_prompt
-        trajectory.grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
+        grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
+        trajectory.grade = grade
+        if grade is None:
+            self.logger.info(
+                "Trial not graded",
+                task_id=task_config.task_id,
+                trial_index=setup.trial_idx,
+                termination_reason=(
+                    trajectory.termination_reason.value if trajectory.termination_reason else None
+                ),
+            )
+            return
         self.events.judgment_scored(
             trial_id=setup.trial_id,
-            score=trajectory.grade.score,
-            binary_pass=trajectory.grade.binary_pass,
+            score=grade.score,
+            binary_pass=grade.binary_pass,
         )
         self.logger.info(
             "Trial graded",
             task_id=task_config.task_id,
             trial_index=setup.trial_idx,
-            score=trajectory.grade.score,
-            binary_pass=trajectory.grade.binary_pass,
+            score=grade.score,
+            binary_pass=grade.binary_pass,
         )
 
     def _write_artifacts(

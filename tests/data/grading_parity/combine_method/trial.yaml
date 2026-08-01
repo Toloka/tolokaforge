@@ -1,0 +1,12 @@
+split_components:
+  messages:
+    - role: user
+      content: "Please refund my order."
+    - role: assistant
+      content: "Refund issued for order O1."
+  tool_calls: []
+  state:
+    db:
+      orders:
+        - id: O1
+          status: pending

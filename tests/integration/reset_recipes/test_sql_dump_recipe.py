@@ -22,8 +22,7 @@ from tolokaforge.runtime.reset_recipes import RECIPE_REGISTRY
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
 
 
-COMPOSE = textwrap.dedent(
-    """
+COMPOSE = textwrap.dedent("""
     services:
       postgres:
         image: "postgres:16-alpine"
@@ -36,17 +35,14 @@ COMPOSE = textwrap.dedent(
           interval: 2s
           timeout: 3s
           retries: 30
-    """
-).strip()
+    """).strip()
 
 
-BASELINE_SQL = textwrap.dedent(
-    """
+BASELINE_SQL = textwrap.dedent("""
     DROP TABLE IF EXISTS widgets;
     CREATE TABLE widgets (id INT PRIMARY KEY, name TEXT);
     INSERT INTO widgets (id, name) VALUES (1, 'baseline');
-    """
-).strip()
+    """).strip()
 
 
 def _psql(compose: DockerCompose, sql: str) -> str:

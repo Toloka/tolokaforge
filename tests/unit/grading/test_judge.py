@@ -1151,6 +1151,34 @@ def test_opening_message_gated_omits_agent_policy_section():
     assert "orders: 1 modified" in gated
 
 
+def test_opening_message_ignores_the_tool_call_id_on_the_wire():
+    """The transcript wire carries the provider's call id on every ``tool_calls``
+    entry so grading can join a call to its result. The judge reads only
+    ``function.name`` / ``function.arguments``, so what the judge sees is
+    byte-identical with and without it — the id is grading input, not judge
+    input."""
+    function = {"name": "refund", "arguments": '{"payment_id": "PAY-1"}'}
+    result_message = {"role": "tool", "content": '{"ok": true}', "tool_call_id": "call_A"}
+    without_id = [
+        {"role": "assistant", "content": "", "tool_calls": [{"function": function}]},
+        result_message,
+    ]
+    with_id = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [{"id": "call_A", "function": function}],
+        },
+        result_message,
+    ]
+
+    rendered = _build_opening_message("POLICY", with_id, "orders: 1 modified")
+
+    assert rendered == _build_opening_message("POLICY", without_id, "orders: 1 modified")
+    assert 'tool_call refund({"payment_id": "PAY-1"})' in rendered
+    assert "call_A" not in rendered
+
+
 # ---------------------------------------------------------------------------
 # System-prompt contract tokens: the invariants a future reword must not drop
 # ---------------------------------------------------------------------------

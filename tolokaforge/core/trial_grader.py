@@ -4,20 +4,27 @@ The conductor's job (per ``docs/CLOUD_RUNTIME_ARCHITECTURE.md`` §6.3) is to
 *trigger* grading, not own it. This module defines the swappable seam:
 
 * :class:`TrialGrader` — Protocol with a single method ``grade`` that maps a
-  completed :class:`Trajectory` to a :class:`Grade`. Any conductor holds a
-  ``TrialGrader`` and delegates the phase to it.
+  completed :class:`Trajectory` to a :class:`Grade`, or to ``None`` when there
+  is nothing to grade. Any conductor holds a ``TrialGrader`` and delegates the
+  phase to it.
 * :class:`RunnerRPCTrialGrader` — production implementation. Encapsulates
-  the three grading strategies the conductor previously carried inline:
+  the grading strategies the conductor previously carried inline:
 
-  1. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
-     touching the runner (a 429 or similar terminated the trial before any
-     work could happen; running the judge on an empty transcript would
-     produce a false positive).
-  2. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
+  1. An infrastructure abort (:func:`classify_trial_outcome` returns
+     ``INFRASTRUCTURE_ABORT``) — **no grade at all**. The provider or the
+     substrate killed the trial before the agent could be measured, and any
+     score would describe work that never happened.
+  2. ``TrialStatus.ERROR`` / ``TrialStatus.TIMEOUT`` — auto-fail without
+     touching the runner. The trial did end badly on the agent's watch, but
+     running the judge on a truncated transcript would produce a false
+     positive.
+  3. ``TerminationReason.STUCK_DETECTED`` — auto-fail. A stuck agent fails
      even if the state hash happens to match the golden.
-  3. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
+  4. Otherwise — the runner's ``grade_trial`` gRPC computes state / rule /
      judge components against the golden state and returns a raw dict that
-     is parsed into :class:`Grade`.
+     is parsed into :class:`Grade`. A grading run that could not produce a
+     verdict raises :class:`GradingFailedError`; the verdict is the runner's
+     to compute, so the host has none to substitute.
 
 The Protocol is deliberately narrow. A future :class:`TrialGrader`
 implementation may live inside the runner sandbox (per §6.4), speak to a
@@ -30,6 +37,8 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
     CustomCheckDetail,
@@ -51,9 +60,21 @@ if TYPE_CHECKING:
     from tolokaforge.core.plugin_registry import TrialGraderContext
 
 __all__ = [
+    "GradingFailedError",
     "RunnerRPCTrialGrader",
     "TrialGrader",
 ]
+
+
+class GradingFailedError(Exception):
+    """Grading ran and could not produce a verdict.
+
+    The trial was measured, so its verdict exists to be computed and only the
+    grading substrate can compute it. A host-side stand-in would land in
+    ``success_rate``, ``avg_score``, ``pass@k`` and ``binary_pass`` as an agent
+    failure that no measurement supports, so the failure is raised instead:
+    every published number omits the trial rather than describing it wrongly.
+    """
 
 
 @runtime_checkable
@@ -76,8 +97,9 @@ class TrialGrader(Protocol):
         spec: TrialSpec,
         trajectory: Trajectory,
         agent_system_prompt: str,
-    ) -> Grade:
-        """Return the :class:`Grade` for a completed trial.
+    ) -> Grade | None:
+        """Return the :class:`Grade` for a completed trial, or ``None`` when
+        the trial produced nothing to grade.
 
         ``spec`` carries trial identity, per-trial metadata, and the
         runner-side ``spec.task`` projection needed for dispatch.
@@ -85,15 +107,26 @@ class TrialGrader(Protocol):
         and termination reason. ``agent_system_prompt`` is the
         post-policy system prompt the judge receives as the agent's
         policy for rubric evaluation.
+
+        ``None`` is the answer for a trial the agent never got to run —
+        the absence is not representable as a score, so a caller that
+        forgets to branch fails instead of reading a fabricated zero.
+
+        Raises:
+            GradingFailedError: the trial was measured but grading could
+                not produce a verdict. Distinct from ``None``: there is a
+                verdict to compute and computing it failed.
         """
         ...
 
 
 class RunnerRPCTrialGrader:
     """Production :class:`TrialGrader`. Dispatches to the runner's
-    ``grade_trial`` gRPC for real grading, and short-circuits with an
+    ``grade_trial`` gRPC for real grading, short-circuits with an
     auto-fail :class:`Grade` when the trajectory shape rules out a
-    meaningful judge result.
+    meaningful judge result, returns ``None`` for a trial that never
+    ran, and raises :class:`GradingFailedError` when the RPC could not
+    produce a verdict.
 
     Instantiated per-run with a bound ``runtime_backend`` and the
     per-run :class:`StructuredLogger`. The orchestrator constructs one
@@ -109,8 +142,20 @@ class RunnerRPCTrialGrader:
         spec: TrialSpec,
         trajectory: Trajectory,
         agent_system_prompt: str,
-    ) -> Grade:
+    ) -> Grade | None:
         task_id, trial_idx = _split_trial_id(spec.trial_id)
+
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            self.logger.info(
+                "Trial aborted by infrastructure - not graded",
+                task_id=task_id,
+                trial_index=trial_idx,
+                status=trajectory.status.value,
+                termination_reason=(
+                    trajectory.termination_reason.value if trajectory.termination_reason else None
+                ),
+            )
+            return None
 
         if trajectory.status in (TrialStatus.ERROR, TrialStatus.TIMEOUT):
             self.logger.info(
@@ -140,9 +185,13 @@ class RunnerRPCTrialGrader:
                 reasons="Agent got stuck (repeated actions without progress)",
             )
 
-        llm_messages_json = _build_judge_messages_json(trajectory, agent_system_prompt)
+        llm_messages_json = encode_transcript_wire(trajectory, agent_system_prompt)
         grade_result = self.runtime_backend.grade_trial(
-            trial_id=spec.trial_id, llm_messages_json=llm_messages_json
+            trial_id=spec.trial_id,
+            llm_messages_json=llm_messages_json,
+            termination_reason=(
+                trajectory.termination_reason.value if trajectory.termination_reason else None
+            ),
         )
 
         if not (grade_result["success"] and grade_result["grade"]):
@@ -153,12 +202,7 @@ class RunnerRPCTrialGrader:
                 trial_index=trial_idx,
                 error=error_msg,
             )
-            return Grade(
-                binary_pass=False,
-                score=0.0,
-                components=GradeComponents(state_checks=0.0),
-                reasons=f"Grading RPC failed: {error_msg}",
-            )
+            raise GradingFailedError(f"Grading failed for trial {spec.trial_id!r}: {error_msg}")
 
         grade = _parse_grade_result(grade_result["grade"])
         self.logger.info(
@@ -175,56 +219,6 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     """Return ``(task_id, trial_index)`` from a canonical ``"{task_id}:{idx}"`` id."""
     task_id, idx_s = trial_id.rsplit(":", 1)
     return task_id, int(idx_s)
-
-
-def _build_judge_messages_json(
-    trajectory: Trajectory,
-    agent_system_prompt: str,
-) -> str | None:
-    """Serialise the transcript + agent policy for the runner-side grading.
-
-    The runner decides whether to actually run the rubric judge based on
-    its own grading config; this always serialises the transcript when
-    there is one and returns ``None`` for an empty trace.
-    """
-    if not trajectory.messages and not agent_system_prompt:
-        return None
-
-    messages: list[dict[str, Any]] = []
-    if agent_system_prompt:
-        messages.append({"role": "system", "content": agent_system_prompt})
-    for msg in trajectory.messages:
-        entry: dict[str, Any] = {
-            "role": msg.role.value,
-            "content": msg.content or "",
-        }
-        if msg.tool_calls:
-            entry["tool_calls"] = [
-                {"function": {"name": tc.name, "arguments": json.dumps(tc.arguments)}}
-                for tc in msg.tool_calls
-            ]
-        if msg.tool_call_id:
-            entry["tool_call_id"] = msg.tool_call_id
-        messages.append(entry)
-    return json.dumps(messages)
-
-
-def split_leading_system_message(
-    messages: list[dict[str, Any]],
-) -> tuple[str, list[dict[str, Any]]]:
-    """Split the judge wire messages into ``(agent_system_prompt, transcript)``.
-
-    Inverse of the leading-system-message prepend in
-    :func:`_build_judge_messages_json`: the agent's policy is the transcript's
-    leading ``system`` message, lifted out so it is injected as the judge's
-    view of the agent policy rather than replayed as a conversational turn.
-    Returns ``("", messages)`` unchanged when there is no leading system
-    message. Shared by the runner's grading path and the offline judge replay
-    so both reconstruct the judge's ``run()`` inputs identically.
-    """
-    if messages and str(messages[0].get("role", "")).lower() == "system":
-        return str(messages[0].get("content", "") or ""), list(messages[1:])
-    return "", list(messages)
 
 
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:

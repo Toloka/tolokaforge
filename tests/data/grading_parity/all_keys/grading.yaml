@@ -1,0 +1,70 @@
+combine:
+  method: all
+  weights:
+    state_checks: 0.5
+    transcript_rules: 0.5
+  pass_threshold: 0.5
+
+state_checks:
+  hash:
+    enabled: true
+    expected_state_hash: "0000000000000000000000000000000000000000000000000000000000000000"
+    weight: 0.75
+    golden_actions:
+      - name: close_widget
+        kwargs:
+          widget_id: W1
+  jsonpaths:
+    - path: "$.db.widgets[0].status"
+      equals: closed
+      description: widget W1 is closed
+  numeric_string_fields:
+    - refund_amount
+  id_fields:
+    widgets: widget_id
+  relaxed_validation: true
+  db_probes:
+    - name: widget_closed
+      dsn: "postgresql://grader:grader_pw@app-db:5432/widgets"
+      query: "SELECT status FROM widgets WHERE widget_id = 'W1'"
+      expect:
+        - path: "$.rows[0].status"
+          equals: closed
+          description: widget row is closed
+      description: the widget row is closed
+
+transcript_rules:
+  must_contain:
+    - "Widget W1 closed"
+  disallow_regex:
+    - 'password:\s*\S+'
+  max_turns: 5
+  tool_expectations:
+    required_tools:
+      - write_file
+    disallowed_tools:
+      - delete_widget
+  required_actions:
+    - action_id: close_widget
+      requestor: assistant
+      name: close_widget
+      arguments:
+        widget_id: W1
+      compare_args:
+        - widget_id
+  communicate_info:
+    - info: "Widget W1 is now closed"
+      required: true
+
+llm_judge:
+  rubric:
+    criteria:
+      - id: closed_the_widget
+        description: The assistant closed widget W1.
+        kind: binary
+        required: true
+        weight: 1.0
+
+custom_checks:
+  enabled: true
+  file: checks.py

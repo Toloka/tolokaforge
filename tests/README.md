@@ -89,6 +89,7 @@ tests/
 │   └── docker/              # Docker foundation layer tests
 ├── data/                    # Test data
 │   ├── tasks/               # Task fixtures (calc_basic, browser_basic, calc_custom_checks)
+│   ├── grading_parity/      # Substrate-parity packs; own glob, outside tasks/**
 │   ├── projects/            # Full project snapshots (food_delivery_2, tau_retail_mini)
 │   └── configs/             # Config fixtures
 └── utils/                   # Shared test utilities
@@ -97,6 +98,11 @@ tests/
     ├── mock_clients.py       # MockAsyncClient — canonical source
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
+    ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
+    ├── recorded_calls.py     # RecordedToolCall builders
+    ├── runner_requests.py    # gRPC request + TaskDescription builders
+    ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
+    ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 
@@ -107,6 +113,9 @@ tests/
 Pure logic tests with no external dependencies. Mock everything.
 
 - Grading checks: hash computation, JSONPath assertions, transcript rules
+- Grading key ledger (`grading/test_grading_ledger.py`) — a failure means either a
+  populated scored `grading.yaml` key reaches `GradeTrial` with no evaluator and no
+  recorded skip, or the ledger rejects a config that grades correctly
 - Tool registry: schema conversion, tool invocation
 - Adapter output: task bundle generation, conversion logic
 - CLI commands: status, validation paths
@@ -119,6 +128,21 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Grading pipeline results
 - Custom checks with real project data (food_delivery_2)
 - Golden-set hash grading verification
+- Grading substrate parity (`test_grading_substrate_parity.py`) — a failure means a
+  `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
+  it, no longer survives adapter translation, or names a `runner_field` the runtime
+  ledger cannot resolve. Fix the manifest entry in
+  `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
+  frozen exemption set in the test module is the deliberate last resort.
+- Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one
+  scripted tool-call sequence driven through each substrate's real recording path
+  must build the same events. A failure means one substrate's recording drifted,
+  so a trace check would mean different things depending on which substrate graded
+  the trial. Both substrates then *grade* off that timeline, so a failure here also
+  means both substrates' transcript rules are reading a trial the two views no
+  longer agree on. Build a coherent message-view/record pair for a grading fixture
+  with `tests/utils/timelines.py`; a record naming a call no message asked for is a
+  reconciliation failure, not a shortcut.
 
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 
@@ -130,6 +154,22 @@ Require Docker daemon, API keys, or both. Auto-skipped when prerequisites are mi
 - End-to-end runner pipeline (tau, tlk_mcp_core, native)
 - LLM-judged grading with real providers
 - Security: container isolation, network segmentation
+
+A test that exercises a runner-side wire field needs `make docker-build-core`
+first, because the field ships inside the image. Only a *missing* image skips: a
+**stale** `tolokaforge-runner:latest` fails at `RegisterTrial` with a pydantic
+extra-forbid error naming the field (the runner config models are
+`extra="forbid"`), which points at the test rather than at the image. The builder
+tags by content hash and does **not** move `:latest`, which is the tag the
+testcontainer fixtures pin, so retag after building:
+`docker tag <fresh-ref> tolokaforge-runner:latest` (#740).
+
+Some suites in this tier are the `enforcing_test` a grading-key manifest entry
+names — `test_docker_grading_hash_composition.py` for the `state_checks.hash`
+family, `test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
+`test_rubric_judge_live.py` for `llm_judge`. `test_grading_substrate_parity.py`
+resolves each nodeid without importing it, so renaming one of those test functions
+fails the canonical tier naming the manifest entry.
 
 Two members of this tier are **Docker-free and keyless** (they need only the `uv`
 CLI): `test_plugin_discovery.py` and `test_external_harness_e2e.py`. Both install

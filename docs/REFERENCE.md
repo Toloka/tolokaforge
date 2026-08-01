@@ -114,7 +114,7 @@ grading: "grading.yaml"
 
 ```yaml
 combine:
-  method: "weighted"
+  method: "weighted"        # weighted | all | any
   weights:
     state_checks: 0.6
     transcript_rules: 0.1
@@ -130,15 +130,17 @@ state_checks:
   hash:
     enabled: true
     expected_state_hash: "abc123..."  # SHA256 of normalized final state
-    weight: 0.5
+    weight: 0.5                       # REQUIRED in exactly this shape: hash source
+                                      # + non-empty jsonpaths. No default; rejected
+                                      # at load without it. See docs/GRADING.md.
 
 transcript_rules:
   must_contain: ["confirmation number"]
   disallow_regex: ["(?i)password"]
   max_turns: 40
-  tool_expectations:
-    required_tools: ["db_update"]
-    disallowed_tools: ["bash"]
+  tool_expectations:                       # graded on both substrates
+    required_tools: ["db_update"]          # must have been called SUCCESSFULLY
+    disallowed_tools: ["bash"]             # must not be called at ANY status
 
 llm_judge:                                 # judge MODEL is run-level (models.judge), not here
   rubric:                                  # structured Rubric (NOT free text)

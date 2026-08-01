@@ -2,16 +2,11 @@
 
 This package provides the grading infrastructure for TolokaForge tasks.
 
-Modules:
-- state_checks: Environment state validation (jsonpaths, hash)
-- transcript: Transcript analysis and tool usage checks
-- judge: LLM-based evaluation
-- combine: Combines multiple grading methods
-- checks_interface: Custom Python checks Pydantic models and decorators
-- checks_helpers: Generic helper functions for custom checks
-- check_runner: :class:`CheckExecutor` Protocol + :class:`CheckRunner` prod impl
-  + :class:`InMemoryCheckExecutor` fixture (see ADR-0012)
-- fuzzy_compare: Field-level fuzzy state comparison
+The entry points are :mod:`~tolokaforge.core.grading.combine` (the in-process
+core substrate) and the names re-exported below; every author-facing
+``grading.yaml`` key and the substrate that evaluates it are enumerated in
+:mod:`~tolokaforge.core.grading.key_manifest`, which is the map worth reading
+first.
 """
 
 from tolokaforge.core.grading.check_runner import (

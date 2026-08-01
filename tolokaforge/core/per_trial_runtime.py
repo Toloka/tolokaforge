@@ -431,6 +431,8 @@ class PerTrialRuntimeBackend:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         return self._client_for(trial_id).execute_tool(
             trial_id=trial_id,
@@ -438,6 +440,7 @@ class PerTrialRuntimeBackend:
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             executor=executor,
+            call_id=call_id,
         )
 
     def grade_trial(
@@ -445,11 +448,13 @@ class PerTrialRuntimeBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict[str, Any]:
         return self._client_for(trial_id).grade_trial(
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
+            termination_reason=termination_reason,
         )
 
     def get_state(

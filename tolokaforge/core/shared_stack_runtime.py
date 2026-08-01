@@ -59,6 +59,7 @@ from tolokaforge.runner import (
     runner_pb2,
     runner_pb2_grpc,
 )
+from tolokaforge.runner.protocol import ENGINE_PROTOCOL_VERSION, RECORDED_STATUS_BY_PROTO
 from tolokaforge.tools.registry import ToolResult
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports for provisioning surface
@@ -145,6 +146,8 @@ class RunnerClient(Protocol):
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult: ...
 
     def grade_trial(
@@ -152,6 +155,7 @@ class RunnerClient(Protocol):
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict: ...
 
     def get_state(
@@ -370,6 +374,7 @@ class GrpcRunnerClient:
                 trial_id=trial_id,
                 trial_spec_json=trial_spec_json,
                 default_tool_timeout_s=default_tool_timeout_s,
+                engine_protocol_version=ENGINE_PROTOCOL_VERSION,
             )
 
             response = self.stub.RegisterTrial(request)
@@ -425,6 +430,8 @@ class GrpcRunnerClient:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         """
         Execute a tool call
@@ -435,6 +442,7 @@ class GrpcRunnerClient:
             arguments: Tool arguments as dict
             timeout_seconds: Execution timeout
             executor: Which environment is making the call ("agent" or "user")
+            call_id: Provider tool-call id the runner records with the call
 
         Returns:
             ToolResult with execution results
@@ -449,6 +457,7 @@ class GrpcRunnerClient:
                 arguments_json=json.dumps(arguments),
                 timeout_seconds=timeout_seconds,
                 executor=executor,
+                call_id=call_id,
             )
 
             response = self.stub.ExecuteTool(request)
@@ -459,7 +468,18 @@ class GrpcRunnerClient:
             if not success:
                 error = response.error_message or self._status_to_error(response.status)
 
-            return ToolResult(success=success, output=response.output, error=error)
+            # The fine-grained status the runner reported, carried through rather
+            # than collapsed to ``success`` — it is what makes TIMEOUT /
+            # TOOL_NOT_FOUND / INVALID_ARGUMENTS recordable on the docker path.
+            # ``None`` for a status no trial records (a trial-not-found response
+            # names no tool outcome); the recorder then resolves ERROR, which is
+            # the truth stated less specifically.
+            return ToolResult(
+                success=success,
+                output=response.output,
+                error=error,
+                status=RECORDED_STATUS_BY_PROTO.get(response.status),
+            )
 
         except grpc.RpcError as e:
             logger.error(f"gRPC error in execute_tool: {e}")
@@ -482,6 +502,7 @@ class GrpcRunnerClient:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict:
         """
         Grade a completed trial
@@ -490,6 +511,8 @@ class GrpcRunnerClient:
             trial_id: Trial ID
             llm_messages_json: Optional LLM messages for transcript rules grading
             grading_components: Which components to compute (empty = all)
+            termination_reason: TerminationReason value naming how the trial
+                ended; empty on the wire when the caller reports none
 
         Returns:
             dict with keys:
@@ -505,6 +528,7 @@ class GrpcRunnerClient:
                 trial_id=trial_id,
                 llm_messages_json=llm_messages_json or "",
                 grading_components=grading_components or [],
+                termination_reason=termination_reason or "",
             )
 
             response = self.stub.GradeTrial(request)
@@ -1238,6 +1262,8 @@ class SharedStackRuntimeBackend:
         arguments: dict[str, Any],
         timeout_seconds: float = 30.0,
         executor: str = "agent",
+        *,
+        call_id: str,
     ) -> ToolResult:
         return self.runner_client.execute_tool(
             trial_id=trial_id,
@@ -1245,6 +1271,7 @@ class SharedStackRuntimeBackend:
             arguments=arguments,
             timeout_seconds=timeout_seconds,
             executor=executor,
+            call_id=call_id,
         )
 
     def grade_trial(
@@ -1252,11 +1279,13 @@ class SharedStackRuntimeBackend:
         trial_id: str,
         llm_messages_json: str | None = None,
         grading_components: list[str] | None = None,
+        termination_reason: str | None = None,
     ) -> dict:
         return self.runner_client.grade_trial(
             trial_id=trial_id,
             llm_messages_json=llm_messages_json,
             grading_components=grading_components,
+            termination_reason=termination_reason,
         )
 
     def get_state(

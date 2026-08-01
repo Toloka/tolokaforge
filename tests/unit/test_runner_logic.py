@@ -30,9 +30,7 @@ pytestmark = pytest.mark.unit
 
 def _make_tool_executor() -> MagicMock:
     """Create a mock ToolExecutor."""
-    executor = MagicMock()
-    executor.get_logs.return_value = []
-    return executor
+    return MagicMock()
 
 
 def _make_user_simulator() -> MagicMock:
@@ -263,34 +261,32 @@ class TestNormalizeToolArguments:
 
 @pytest.mark.unit
 class TestIsDone:
-    """Tests for agent completion signal detection.
+    """The completion marker is matched whatever case the agent emitted it in."""
 
-    Note: The current implementation lowercases the text but compares
-    against uppercase marker '###STOP###', so the marker never matches
-    in the lowered text. Tests reflect actual behavior.
-    """
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Here is the result. ###STOP###",
+            "###STOP###",
+            "###stop###",
+            "###Stop###",
+            "###STOP### and some trailing chatter",
+        ],
+    )
+    def test_marker_present_in_any_case(self, text: str) -> None:
+        assert _make_runner()._is_done(text) is True
 
-    def test_stop_marker_case_mismatch(self) -> None:
-        runner = _make_runner()
-        # done_markers=["###STOP###"], text.lower()="...###stop###"
-        # "###STOP###" not in "...###stop###" → False
-        assert runner._is_done("Here is the result. ###STOP###") is False
-
-    def test_lowercase_input(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("###stop###") is False
-
-    def test_no_marker(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("Task is complete, all done.") is False
-
-    def test_empty_text(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("") is False
-
-    def test_partial_marker(self) -> None:
-        runner = _make_runner()
-        assert runner._is_done("###STOP") is False
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "Task is complete, all done.",
+            "",
+            "###STOP",
+            "##STOP##",
+        ],
+    )
+    def test_no_marker(self, text: str) -> None:
+        assert _make_runner()._is_done(text) is False
 
 
 # ===================================================================
@@ -303,11 +299,7 @@ class TestTrialRunnerRun:
     """Tests for the main run() method."""
 
     def test_agent_response_then_user_stop(self) -> None:
-        """Agent responds, user sends ###STOP### → USER_STOP termination.
-
-        Note: _is_done never fires due to case mismatch in done_markers,
-        so the flow always reaches the user simulator.
-        """
+        """Agent responds without a completion marker, user sends ###STOP###."""
         agent = _make_agent_client(
             [
                 GenerationResult(
@@ -576,7 +568,7 @@ class TestTrialRunnerRun:
         assert traj.termination_reason == TerminationReason.USER_STOP
         assert traj.metrics.api_calls == 2
         assert traj.metrics.tool_calls >= 1
-        tool_exec.execute.assert_called_once_with("search", {"q": "test"})
+        tool_exec.execute.assert_called_once_with("search", {"q": "test"}, call_id="tc1")
 
     def test_stuck_detection(self) -> None:
         """StuckDetector triggers → terminates with STUCK."""
@@ -660,7 +652,29 @@ class TestTrialRunnerRun:
         assert traj.termination_reason == TerminationReason.ERROR
 
     def test_rate_limit_error_classification(self) -> None:
-        """Rate limit errors get correct termination reason."""
+        """A provider's typed 429 → RATE_LIMIT, reached through the wrapper the
+        client re-raises it inside."""
+        from litellm.exceptions import RateLimitError
+
+        inner = RateLimitError(
+            message="Rate limit exceeded", llm_provider="openrouter", model="anthropic/claude"
+        )
+        wrapped = RuntimeError(f"LLM API call failed: {inner}")
+        wrapped.__cause__ = inner
+        agent = MagicMock()
+        agent.generate.side_effect = wrapped
+
+        runner = _make_runner(agent_client=agent)
+        traj = runner.run("System", "Task")
+
+        assert traj.status == TrialStatus.ERROR
+        assert traj.termination_reason == TerminationReason.RATE_LIMIT
+
+    def test_untyped_429_text_is_not_a_rate_limit(self) -> None:
+        """A 429-shaped message with no typed exception behind it is counted,
+        not excused: ``RATE_LIMIT`` takes the trial out of every rate, and prose
+        cannot tell a provider's throttle from a transcript that discusses one.
+        The trial records why it was not treated as one."""
         agent = MagicMock()
         agent.generate.side_effect = Exception("429 Too Many Requests")
 
@@ -668,7 +682,8 @@ class TestTrialRunnerRun:
         traj = runner.run("System", "Task")
 
         assert traj.status == TrialStatus.ERROR
-        assert traj.termination_reason == TerminationReason.RATE_LIMIT
+        assert traj.termination_reason == TerminationReason.ERROR
+        assert "no typed provider exception" in traj.messages[-1].content
 
     def test_api_timeout_classification(self) -> None:
         """``LLMApiTimeoutError`` raised by the client → API_TIMEOUT."""

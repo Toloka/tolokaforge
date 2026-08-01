@@ -23,6 +23,9 @@ optional user turn, error classification, max-turns), and delegates every
 * :class:`MetricsSink` — accumulates per-call usage/cost/tool counts. The agent
   threads its trial :class:`~tolokaforge.core.models.Metrics`; the judge will
   thread its own.
+* :class:`~tolokaforge.core.models.ToolCallRecorder` — OPTIONAL. The trial's
+  ordered tool-call record. The agent threads the trial's recorder; the judge
+  threads none, so its own tool calls stay out of the graded record.
 * :data:`ErrorClassifier` — maps a raised exception to a terminal reason +
   message. :func:`classify_loop_error` reproduces the agent's exact
   classification and is the default both paths use.
@@ -38,16 +41,23 @@ from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any, Protocol
 
-from tolokaforge.core.llm.client import GenerationResult, LLMApiTimeoutError
+from tolokaforge.core.llm.client import (
+    GenerationResult,
+    LLMApiTimeoutError,
+    is_typed_rate_limit_exception,
+    matches_rate_limit_text,
+)
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Message,
     MessageRole,
     TerminationReason,
+    ToolCallRecorder,
+    ToolExecutorIdentity,
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
-from tolokaforge.tools.registry import ToolExecutor
+from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
 
 
 class LoopLLMClient(Protocol):
@@ -157,9 +167,17 @@ ErrorClassifier = Callable[[Exception], TerminationDecision]
 def classify_loop_error(exc: Exception) -> TerminationDecision:
     """Classify a turn-loop exception into a terminal reason + message.
 
-    Reproduces the agent's exact classification. ``LLMApiTimeoutError`` is
-    matched by *type* — substring matching on "timeout" would mis-classify
-    tool / sandbox / browser timeouts that are not upstream-LLM timeouts.
+    ``API_TIMEOUT`` and ``RATE_LIMIT`` are matched by *type* — through the
+    ``__cause__`` chain for the rate limit, since the client re-raises every
+    provider error wrapped. Both reasons exclude the trial from the measured
+    denominator, and a substring is not strong enough evidence to spend that:
+    "timeout" also names tool / sandbox / browser timeouts, and a 429 shape can
+    appear inside a provider response body that echoes request content.
+
+    An exception whose *text* looks like a rate limit but carries no typed
+    evidence terminates as ``ERROR``. Something in the stack stringified a
+    provider exception instead of chaining it — our defect, so the trial counts
+    and the message says why it was not treated as a rate limit.
     """
     error_str = str(exc)
     if isinstance(exc, LLMApiTimeoutError):
@@ -168,11 +186,20 @@ def classify_loop_error(exc: Exception) -> TerminationDecision:
             system_message=f"API timeout: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
         )
-    lowered = error_str.lower()
-    if "429" in error_str or "RateLimitError" in error_str or "rate limit" in lowered:
+    if is_typed_rate_limit_exception(exc):
         return TerminationDecision(
             reason=TerminationReason.RATE_LIMIT,
             system_message=f"Rate limit error: {error_str}. Dialogue terminated.",
+            status=TrialStatus.ERROR,
+        )
+    if matches_rate_limit_text(error_str):
+        return TerminationDecision(
+            reason=TerminationReason.ERROR,
+            system_message=(
+                "Rate-limit-shaped error with no typed provider exception behind it, "
+                f"so the trial is counted rather than excluded: {error_str}. "
+                "Dialogue terminated."
+            ),
             status=TrialStatus.ERROR,
         )
     if "API" in error_str or "OpenAI" in error_str or "Anthropic" in error_str:
@@ -220,6 +247,10 @@ class ToolCallingLoop:
     should_terminate: TerminationPolicy
     logger: StructuredLogger
     user_turn: UserTurn | None = None
+    # The trial's ordered tool-call record. Injected rather than owned: the
+    # rubric judge runs this same loop over its own read-only tools, and a
+    # grading-time tool call must never enter the trial's record.
+    recorder: ToolCallRecorder | None = None
     request_limiter: Any | None = None
     normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
         None
@@ -345,9 +376,20 @@ class ToolCallingLoop:
         for tc in result.tool_calls:
             self._maybe_recover_arguments(tc, result.text)
             tool_start = time.time()
-            tool_result = self.tool_executor.execute(tc.name, tc.arguments)
+            tool_result = self.tool_executor.execute(tc.name, tc.arguments, call_id=tc.id)
             tool_duration = time.time() - tool_start
             self.metrics.record_tool_call()
+
+            if self.recorder is not None:
+                self.recorder.record(
+                    call_id=tc.id,
+                    tool_name=tc.name,
+                    arguments=tc.arguments or {},
+                    executor=ToolExecutorIdentity.AGENT,
+                    status=resolve_tool_status(tool_result),
+                    output=resolve_tool_output(tool_result),
+                    latency_seconds=tool_duration,
+                )
 
             if tool_result.success:
                 self.logger.debug(

@@ -3,8 +3,7 @@ Pydantic Models for Runner Service
 
 This module contains all Pydantic models used by the Runner service:
 - TaskDescription and related models (from TASK_DESCRIPTION_SCHEMA.md)
-- TrialContext for per-trial runtime state
-- ToolCallRecord for tool execution history
+- RecordedToolCall and the ToolCallRecorder contract for tool execution history
 - DB client response models
 - Grading result models
 
@@ -18,7 +17,7 @@ import re
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
-from typing import Any, Literal
+from typing import Any, Literal, Protocol
 
 import yaml
 from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_validator
@@ -28,7 +27,16 @@ from tolokaforge.core.deprecations import (
     coerce_network_policy_case,
     coerce_security_context_aliases,
 )
+from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
+from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
+
+# ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
+# ``tolokaforge.tools.registry`` (zero first-party imports), because a
+# ``ToolResult`` is what produces a status. Importing it here is the only legal
+# direction: declaring it in this module would make that leaf — which every
+# layer imports — depend on the runner's models.
+from tolokaforge.tools.registry import ToolExecutionStatus
 
 # =============================================================================
 # Enums (from TASK_DESCRIPTION_SCHEMA.md)
@@ -255,22 +263,6 @@ class GoldenAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class EnvAssertion(BaseModel):
-    """
-    Assertion on environment state after trial.
-
-    Used by Native adapter for checking device state.
-    """
-
-    env_type: Literal["assistant", "user"]
-    func_name: str
-    arguments: dict[str, Any] = Field(default_factory=dict)
-    assert_value: Any = True
-    message: str | None = None
-
-    model_config = {"extra": "forbid"}
-
-
 class RequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
 
@@ -301,6 +293,9 @@ class DbProbe(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+_HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
+
+
 class StateChecksConfig(BaseModel):
     """State-based grading configuration."""
 
@@ -308,6 +303,8 @@ class StateChecksConfig(BaseModel):
     hash_enabled: bool = False
     expected_hash: str | None = None  # Pre-computed (if available)
     golden_actions: list[GoldenAction] = Field(default_factory=list)
+    # None means the author declared no weight — never "fall back to a default".
+    hash_weight: float | None = None
     # Opt-in, PER-FIELD: record field names whose numeric-looking STRING values
     # fold ("130.00" == "130.0") when hashing state. Per-field (not a global
     # switch) because a numeric-looking string can carry meaning in its exact
@@ -326,9 +323,6 @@ class StateChecksConfig(BaseModel):
     # JSONPath assertions
     jsonpath_checks: list[dict[str, Any]] = Field(default_factory=list)
 
-    # Environment assertions (Native adapter)
-    env_assertions: list[EnvAssertion] = Field(default_factory=list)
-
     # Substrate SQL assertions against a task-declared postgres DSN
     db_probes: list[DbProbe] = Field(default_factory=list)
 
@@ -345,6 +339,56 @@ class StateChecksConfig(BaseModel):
                 )
         return value
 
+    @field_validator("hash_weight", mode="before")
+    @classmethod
+    def _validate_hash_weight_domain(cls, value: object) -> float | None:
+        """Reject what core rejects, before Pydantic coerces it into range.
+
+        ``mode="before"`` is load-bearing: Pydantic's lax coercion turns ``true``
+        into ``1.0`` and ``"0.5"`` into ``0.5``, so any validator running after it —
+        or a declarative ``ge``/``le`` constraint — sees a clean float and can no
+        longer tell that the wire carried a bool or a string. ``hash_weight: true``
+        would then silently mean "the hash decides outright".
+        """
+        if value is None:
+            return None
+        return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
+
+    @model_validator(mode="after")
+    def _validate_hash_weight_declaration(self) -> StateChecksConfig:
+        """Reject the one shape whose ``state_checks`` score is undecidable.
+
+        Calls the same predicate the core config calls, over this model's flattened
+        naming, so the two substrates cannot disagree about which configs are
+        gradeable. An engine that dropped ``hash.weight`` on the way to the wire is
+        therefore rejected at ``RegisterTrial`` rather than having its trial graded
+        by a fold rule the author never chose.
+        """
+        resolve_hash_weight(
+            {
+                "enabled": self.hash_enabled,
+                "expected_state_hash": self.expected_hash,
+                "golden_actions": self.golden_actions,
+                "weight": self.hash_weight,
+            },
+            jsonpaths=self.jsonpath_checks,
+            context=_HASH_WEIGHT_CONTEXT,
+        )
+        return self
+
+    model_config = {"extra": "forbid"}
+
+
+class ToolExpectations(BaseModel):
+    """Tools the agent must use and tools it must not touch.
+
+    ``extra="forbid"`` inside the ``extra="ignore"`` core parent so a
+    ``required_toolz`` typo fails at load instead of grading as an empty list.
+    """
+
+    required_tools: list[str] = Field(default_factory=list)
+    disallowed_tools: list[str] = Field(default_factory=list)
+
     model_config = {"extra": "forbid"}
 
 
@@ -354,6 +398,7 @@ class TranscriptRulesConfig(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
+    tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)
     communicate_info: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -582,9 +627,16 @@ class GradingConfig(BaseModel):
     Supports multiple methods combined with weights.
     """
 
-    combine_method: Literal["weighted", "all_pass", "any_pass", "all"] = "weighted"
+    combine_method: CombineMethod = "weighted"
     weights: dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
     pass_threshold: float = 0.8
+
+    @field_validator("combine_method", mode="before")
+    @classmethod
+    def _validate_combine_method(cls, value: Any) -> Any:
+        # Before the Literal, which would answer a retired alias with a bare
+        # literal_error naming no replacement.
+        return validate_combine_method(value, context="TaskDescription grading.combine_method")
 
     # Declarative grading dispatch — adapters tell the runner *how* to grade in data,
     # so the runner never infers it from the adapter's identity.
@@ -1518,22 +1570,71 @@ class TaskDescription(BaseModel):
 
 
 # =============================================================================
-# Tool Call Record (for transcript grading)
+# Recorded Tool Call (for transcript grading)
 # =============================================================================
 
 
-class ToolCallRecord(BaseModel):
-    """Record of a single tool call for transcript grading."""
+class ToolExecutorIdentity(str, Enum):
+    """Which side of the dialogue made a tool call.
 
+    ``USER`` is unreachable in every run today because no code path constructs
+    a user-side tool executor (#688) — equally on both substrates.
+    """
+
+    AGENT = "agent"
+    USER = "user"
+
+
+class RecordedToolCall(BaseModel):
+    """One tool call as the trial recorded it.
+
+    The single recorded-tool-call type on both grading substrates. Produced
+    once per call, in true execution order across every executor, by the
+    trial's :class:`ToolCallRecorder`.
+    """
+
+    # The provider's tool-call id, carried on ExecuteToolRequest. Two calls to
+    # the same tool with identical arguments differ only here and in ``sequence``.
+    call_id: str = Field(min_length=1)
+    # Trial-wide, 0-based, stamped by the recorder at append time.
+    sequence: int
     tool_name: str
     arguments: dict[str, Any]
-    executor: str  # "agent" or "user"
+    executor: ToolExecutorIdentity
+    status: ToolExecutionStatus
+    # Untruncated. On a failed call this is the failure text the executing layer
+    # produced, which is not the text the ``role: tool`` message carries.
     output: str
-    status: str  # "success", "error", "timeout", "tool_not_found", "invalid_arguments"
+    # Wall time measured by the recording caller around the call.
     latency_seconds: float
-    timestamp: str  # ISO format
+    timestamp: datetime
 
     model_config = {"extra": "forbid"}
+
+
+class ToolCallRecorder(Protocol):
+    """The trial's ordered tool-call record.
+
+    One recorder per trial, shared by every executor, so ``sequence`` is
+    execution order across executors rather than position within one of them.
+    Implementations stamp ``sequence`` themselves — a caller cannot supply a
+    wrong index.
+    """
+
+    def record(
+        self,
+        *,
+        call_id: str,
+        tool_name: str,
+        arguments: dict[str, Any],
+        executor: ToolExecutorIdentity,
+        status: ToolExecutionStatus,
+        output: str,
+        latency_seconds: float,
+    ) -> None: ...
+
+    @property
+    def recorded(self) -> tuple[RecordedToolCall, ...]: ...
 
 
 # =============================================================================
@@ -1548,78 +1649,6 @@ class ReconstructedTools(BaseModel):
     user_tool_names: list[str] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
-
-
-# =============================================================================
-# Trial Context (per-trial runtime state)
-# =============================================================================
-
-
-class TrialContext(BaseModel):
-    """
-    Per-trial runtime state in the Runner.
-
-    This holds all the information needed to execute tools and grade a trial,
-    including the parsed task description, reconstructed tools, and execution history.
-
-    Note: agent_tools and user_tools are stored as Dict[str, Any] because
-    Pydantic cannot serialize callables. The actual ToolWrapper objects are
-    stored in a separate non-Pydantic dict in the service.
-    """
-
-    trial_id: str
-    task_description: TaskDescription
-    tool_call_history: list[ToolCallRecord] = Field(default_factory=list)
-    default_timeout: float = 30.0
-
-    # Note: We can't store callables in Pydantic, so tools are managed separately
-    # in the service layer. These fields track which tools are available.
-    agent_tool_names: list[str] = Field(default_factory=list)
-    user_tool_names: list[str] = Field(default_factory=list)
-
-    model_config = {"extra": "forbid", "arbitrary_types_allowed": True}
-
-    @property
-    def grading_config(self) -> GradingConfig:
-        """Get grading config from task description."""
-        return self.task_description.grading
-
-    def record_tool_call(
-        self,
-        tool_name: str,
-        arguments: dict[str, Any],
-        output: str,
-        status: str,
-        executor: str,
-        latency_seconds: float,
-    ) -> None:
-        """
-        Record a tool call in the history for transcript grading.
-
-        Args:
-            tool_name: Name of the tool called
-            arguments: Tool arguments
-            output: Tool output or error message
-            status: Execution status
-            executor: "agent" or "user"
-            latency_seconds: Execution time
-        """
-        from datetime import timezone
-
-        record = ToolCallRecord(
-            tool_name=tool_name,
-            arguments=arguments,
-            executor=executor,
-            output=output,
-            status=status,
-            latency_seconds=latency_seconds,
-            timestamp=datetime.now(timezone.utc).isoformat(),
-        )
-        self.tool_call_history.append(record)
-
-    def clear_history(self) -> None:
-        """Clear tool call history (used on reset)."""
-        self.tool_call_history.clear()
 
 
 # =============================================================================
@@ -1795,13 +1824,47 @@ class TranscriptRuleResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class KeyAccounting(str, Enum):
+    """What a recording site in the grading path did with its author key."""
+
+    EVALUATED = "evaluated"
+    SKIPPED = "skipped"
+
+
+class KeyAccountingRecord(BaseModel):
+    """One recording site's outcome for one author-facing ``grading.yaml`` key.
+
+    A skip renders into ``Grade.reasons`` as ``<author_key> skipped: <detail>``,
+    so ``detail`` is what a task author reads to learn why a key they populated
+    contributed nothing.
+    """
+
+    outcome: KeyAccounting
+    detail: str = ""
+
+    model_config = {"extra": "forbid", "frozen": True}
+
+    @model_validator(mode="after")
+    def _skip_states_a_reason(self) -> KeyAccountingRecord:
+        if self.outcome is KeyAccounting.SKIPPED and not self.detail.strip():
+            raise ValueError("a skipped key must carry the detail rendered into Grade.reasons")
+        return self
+
+
 class TranscriptEvaluationResult(BaseModel):
-    """Result of evaluating all transcript rules."""
+    """Result of evaluating all transcript rules.
+
+    ``accounted_keys`` names the author-facing ``transcript_rules.*`` keys this
+    evaluation decomposed. The runtime ledger (``runner/grading_ledger.py``) reads
+    it rather than re-deriving which fields the evaluator "should have" branched
+    on, so a populated key the evaluator never decomposes stays unaccounted.
+    """
 
     # Use 'passed' as the field name (not 'pass' which is a Python keyword)
     passed: bool = False
     score: float = 0.0
     details: list[TranscriptRuleResult] = Field(default_factory=list)
+    accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}
 

@@ -1,7 +1,10 @@
 # 0014. `TrialGrader` Protocol — swappable trial-grading strategy
 
-- **Status:** Accepted
+- **Status:** Accepted (amended)
 - **Date:** 2026-07-02
+- **Amended:** 2026-07-30 — the transcript serialisation is no longer a helper
+  inside this module: it lives in `core/grading/transcript_wire.py`, paired with
+  its decoder (#676).
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -64,6 +67,25 @@ The `Orchestrator._build_conductor` helper constructs `RunnerRPCTrialGrader(runt
 **C. Extract grading with a functional API (not a Protocol).** Rejected: constructor injection of a `TrialGrader` instance is what makes the seam swappable. A module-level function couples to the current `RuntimeBackend` implicitly.
 
 **D. Also extract `_build_judge_messages_json` as its own component.** Rejected as premature — it's ~20 LoC of pure serialisation that has no substitution story today. Lives as a module-level helper in `tolokaforge/core/trial_grader.py`.
+
+## Amendment — 2026-07-30: the transcript wire is its own module (#676)
+
+The `TrialGrader` seam above is unchanged. What moved is where the transcript
+serialisation lives, and the driver was not substitutability — alternative D's
+reasoning on that point still holds — but the missing inverse.
+
+The serialisation had no decoder anywhere, so nothing could compare the two
+directions, and the encoder silently omitted the provider's tool-call id from
+every assistant `tool_calls` entry it wrote. Grading received a transcript in
+which a call could only be matched to its result by position, which is ambiguous
+precisely for parallel calls to one tool with identical arguments.
+
+`tolokaforge/core/grading/transcript_wire.py` now holds
+`encode_transcript_wire`, `decode_transcript_wire` and
+`split_leading_system_message` together, so the round trip is one testable
+property. `RunnerRPCTrialGrader.grade` calls the encoder; the runner's grading
+path and the offline judge replay call the splitter; the placement under
+`core/grading/*` is what lets the runner import it at all.
 
 ## Refs
 

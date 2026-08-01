@@ -49,15 +49,11 @@ class _RecordingExecutor:
     """Minimal ToolExecutor-shaped fake."""
 
     def __init__(self) -> None:
-        self.executed: list[tuple[str, dict]] = []
-        self.logs: list[dict] = []
+        self.executed: list[tuple[str, dict, str]] = []
 
-    def execute(self, tool_name, arguments):
-        self.executed.append((tool_name, arguments))
+    def execute(self, tool_name, arguments, *, call_id):
+        self.executed.append((tool_name, arguments, call_id))
         return ToolResult(success=True, output=f"ran {tool_name}")
-
-    def get_logs(self):
-        return self.logs
 
 
 class _CountingSink(MetricsSink):
@@ -146,7 +142,7 @@ def test_terminates_on_specific_tool_call():
 
     assert outcome.termination_reason == TerminationReason.AGENT_DONE
     # submit_report terminates BEFORE its own tool execution; only get_state ran.
-    assert executor.executed == [("get_state", {})]
+    assert executor.executed == [("get_state", {}, "t1")]
     assert messages[-1].role == MessageRole.SYSTEM
     assert messages[-1].content == "report submitted"
 
@@ -178,6 +174,36 @@ def test_tool_calls_executed_and_counted_then_loop_continues():
     # Each tool call produced a TOOL message after the assistant message.
     tool_msgs = [m for m in messages if m.role == MessageRole.TOOL]
     assert len(tool_msgs) == 2
+
+
+def test_each_executed_call_carries_its_own_provider_call_id():
+    """The executor is handed ``ToolCall.id``, and the result message keys on the
+    same id — so a call and its result join on the id, never on position. The two
+    calls here differ only in that id and their arguments."""
+    executor = _RecordingExecutor()
+    client = _ScriptedClient(
+        [
+            GenerationResult(
+                text="refund twice",
+                tool_calls=[
+                    ToolCall(id="toolu_A", name="refund", arguments={"payment_id": "PAY-1"}),
+                    ToolCall(id="toolu_B", name="refund", arguments={"payment_id": "PAY-1"}),
+                ],
+                usage=Usage(prompt_tokens=5),
+            ),
+            GenerationResult(text="done", usage=Usage(prompt_tokens=5)),
+        ]
+    )
+    messages: list[Message] = []
+    _loop(client, should_terminate=_never_terminate, executor=executor, max_turns=2).run(
+        "sys", messages, time.time()
+    )
+
+    assert [call_id for _, _, call_id in executor.executed] == ["toolu_A", "toolu_B"]
+    assert [m.tool_call_id for m in messages if m.role == MessageRole.TOOL] == [
+        "toolu_A",
+        "toolu_B",
+    ]
 
 
 def test_episode_timeout_terminates_before_first_generation():

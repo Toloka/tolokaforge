@@ -1,0 +1,592 @@
+"""Load-time schema rejection of removed / malformed ``grading.yaml`` blocks.
+
+Every contract here surfaces at load time (``validate`` /
+``validate_grading_yaml``), not deferred to run time, and each rejection is
+asserted on its **remediation text** — for a removal, the message *is* the
+migration:
+
+* ``llm_judge``: the removed free-text ``rubric: str`` (+ ignored
+  ``output_schema``) shape and the relocated ``model_ref`` are intentional,
+  non-back-compatible breaks (docs/RUBRIC_GRADING_DESIGN.md), rejected with a
+  message naming the field and showing the new shape.
+* ``state_checks``: ``env_assertions`` and ``db_hash_check`` are removed —
+  neither ever produced grading signal on either substrate — and are rejected
+  naming the check that replaces each.
+* The ``llm_judge.customization`` block (and its project-defaults twin
+  ``grading_defaults.llm_judge.customization``) rejects malformed values and
+  unknown keys, the message naming the offending field.
+* ``combine``: the aggregation ``method`` is a closed set, and the two retired
+  names that were declared but never dispatched are rejected naming the rule each
+  one meant; a block that is not a mapping is rejected naming the file, the key and
+  the shape received.
+"""
+
+from __future__ import annotations
+
+import textwrap
+from pathlib import Path
+
+import pytest
+import yaml
+from click.testing import CliRunner
+
+from tolokaforge.adapters._task_loader import validate_grading_yaml
+from tolokaforge.core.grading.combine_method import (
+    COMBINE_METHODS,
+    RETIRED_COMBINE_METHOD_ALIASES,
+)
+from tolokaforge.core.models import GradingDefaults, StateChecksConfig
+from tolokaforge.dx.cli.main import cli
+
+pytestmark = pytest.mark.unit
+
+
+_TASK_YAML = textwrap.dedent("""
+    task_id: rubric_migration_probe
+    name: "Rubric migration probe"
+    category: test
+    description: "Probe task for rubric migration validation."
+    initial_state:
+      json_db: null
+    tools:
+      agent:
+        enabled: []
+      user:
+        enabled: []
+    user_simulator:
+      mode: "scripted"
+      scripted_flow:
+        - role: "user"
+          content: "hi"
+    grading: "grading.yaml"
+    """).strip()
+
+
+def _write_task(task_dir: Path, grading_yaml: str) -> Path:
+    task_dir.mkdir(parents=True, exist_ok=True)
+    (task_dir / "task.yaml").write_text(_TASK_YAML)
+    (task_dir / "grading.yaml").write_text(textwrap.dedent(grading_yaml).strip())
+    return task_dir / "task.yaml"
+
+
+def test_validate_rejects_legacy_rubric_str(tmp_path: Path):
+    task_file = _write_task(
+        tmp_path / "legacy_rubric",
+        """
+        combine:
+          method: weighted
+          weights:
+            llm_judge: 1.0
+        llm_judge:
+          rubric: "Grade the reply for correctness and tone."
+          output_schema:
+            type: object
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    # validate reports per-task pass/fail via the shared stderr console and
+    # exits 0; the task must be flagged invalid with the migration message
+    # naming rubric + the new shape.
+    out = result.stderr
+    assert "1 valid, 0 invalid" not in out
+    assert "0 valid, 1 invalid" in out
+    assert "rubric is now a structured Rubric" in out
+    assert "criteria:" in out
+
+
+def test_validate_rejects_legacy_model_ref(tmp_path: Path):
+    """The judge model relocated to the run config (models.judge); a stray
+    ``llm_judge.model_ref`` in grading.yaml must fail validate with a migration
+    message that names where the model now lives."""
+    task_file = _write_task(
+        tmp_path / "legacy_model_ref",
+        """
+        combine:
+          method: weighted
+          weights:
+            llm_judge: 1.0
+        llm_judge:
+          model_ref: "openai/gpt-4o-mini"
+          rubric:
+            criteria:
+              - id: refund_amount
+                description: "Reply quotes the correct refund amount"
+                kind: binary
+                weight: 1.0
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "model_ref moved to the run config" in out
+
+
+def test_validate_accepts_structured_rubric(tmp_path: Path):
+    task_file = _write_task(
+        tmp_path / "structured_rubric",
+        """
+        combine:
+          method: weighted
+          weights:
+            llm_judge: 1.0
+        llm_judge:
+          rubric:
+            reference: "Correct refund is $328.50."
+            criteria:
+              - id: refund_amount
+                description: "Reply quotes the correct refund amount"
+                expected: "$328.50"
+                kind: binary
+                required: true
+                weight: 1.0
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+    assert "1 valid, 0 invalid" in result.stderr
+
+
+def test_validate_rejects_env_assertions(tmp_path: Path):
+    """``state_checks.env_assertions`` is removed; validate must name the replacements."""
+    task_file = _write_task(
+        tmp_path / "removed_env_assertions",
+        """
+        combine:
+          method: weighted
+          weights:
+            state_checks: 1.0
+        state_checks:
+          env_assertions:
+            - env_type: user
+              func_name: assert_order_cancelled
+              arguments:
+                order_id: O1
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "state_checks.env_assertions has been removed" in out
+    # The message is the migration: every replacement is named.
+    assert "jsonpaths" in out
+    assert "hash" in out
+    assert "db_probes" in out
+
+
+def test_validate_rejects_db_hash_check(tmp_path: Path):
+    """``state_checks.db_hash_check`` is removed; validate must name hash grading."""
+    task_file = _write_task(
+        tmp_path / "removed_db_hash_check",
+        """
+        combine:
+          method: weighted
+          weights:
+            state_checks: 1.0
+        state_checks:
+          db_hash_check: true
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "state_checks.db_hash_check has been removed" in out
+    assert "enabled: true" in out
+
+
+def test_removed_state_check_keys_are_rejected_at_grading_load(tmp_path: Path):
+    """The rejection lives on the model, so the run path fails too — not just validate.
+
+    ``StateChecksConfig`` is ``extra="ignore"``, so without this the populated key
+    would be dropped in silence on the very path that grades a trial.
+    """
+    with pytest.raises(ValueError, match="env_assertions has been removed"):
+        StateChecksConfig(env_assertions=[{"env_type": "user", "func_name": "assert_x"}])
+    with pytest.raises(ValueError, match="db_hash_check has been removed"):
+        StateChecksConfig(db_hash_check=True)
+
+
+def test_inert_removed_keys_still_load(tmp_path: Path):
+    """An empty declaration requests nothing, so it is ignored rather than rejected.
+
+    Recorded trial bundles serialize the full grading config, including these keys at
+    their old defaults; re-reading such a bundle must not raise.
+    """
+    config = StateChecksConfig(env_assertions=[], db_hash_check=False, jsonpaths=[])
+
+    assert not hasattr(config, "env_assertions")
+    assert not hasattr(config, "db_hash_check")
+
+
+def test_validate_accepts_customization_block(tmp_path: Path):
+    """A well-formed ``llm_judge.customization`` block passes ``tolokaforge validate``."""
+    task_file = _write_task(
+        tmp_path / "customized_rubric",
+        """
+        combine:
+          method: weighted
+          weights:
+            llm_judge: 1.0
+        llm_judge:
+          customization:
+            disable_knowledge_search: true
+            system_prompt: "Grade strictly against the policy handbook."
+          rubric:
+            criteria:
+              - id: refund_amount
+                description: "Reply quotes the correct refund amount"
+                kind: binary
+                weight: 1.0
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+    assert "1 valid, 0 invalid" in result.stderr
+
+
+def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
+    """The output_schema field is gone; its presence is a loud migration error."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(textwrap.dedent("""
+            llm_judge:
+              rubric:
+                criteria:
+                  - id: a
+                    description: d
+              output_schema:
+                type: object
+            """).strip())
+
+    with pytest.raises(ValueError, match="output_schema has been removed"):
+        validate_grading_yaml(grading)
+
+
+# ---------------------------------------------------------------------------
+# llm_judge.customization schema rejection — task + project layers
+# ---------------------------------------------------------------------------
+
+
+def _grading_with_customization(customization_block: str) -> str:
+    """A valid rubric grading.yaml carrying a customization sub-block. The rubric
+    is REQUIRED: ``validate_grading_yaml`` constructs ``LLMJudgeConfig`` only when a
+    rubric (or ``model_ref``) is present, so without it the malformed block is never
+    validated and the check false-greens."""
+    return f"""
+    llm_judge:
+      rubric:
+        criteria:
+          - id: a
+            description: d
+            kind: binary
+            weight: 1.0
+      customization:
+    {textwrap.indent(textwrap.dedent(customization_block).strip(), "        ")}
+    """
+
+
+@pytest.mark.parametrize(
+    "customization_block, match",
+    [
+        ("disable_knowledge_search: sometimes", "disable_knowledge_search"),
+        ("typo_key: true", "typo_key"),
+        ("system_prompt: 123", "system_prompt"),
+        ('system_prompt: ""', "empty"),
+        ("include_agent_system_prompt: sometimes", "include_agent_system_prompt"),
+    ],
+    ids=[
+        "malformed_value",
+        "unknown_key",
+        "malformed_system_prompt_type",
+        "empty_system_prompt",
+        "malformed_include_agent_system_prompt_type",
+    ],
+)
+def test_validate_grading_yaml_rejects_malformed_customization(
+    tmp_path: Path, customization_block: str, match: str
+):
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(textwrap.dedent(_grading_with_customization(customization_block)).strip())
+
+    with pytest.raises(Exception, match=match):
+        validate_grading_yaml(grading)
+
+
+def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path):
+    """Without a rubric, ``validate_grading_yaml`` never constructs ``LLMJudgeConfig``,
+    so a malformed customization is NOT caught here — the reason the rejection
+    fixtures above must carry a valid rubric to avoid a false green."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(textwrap.dedent("""
+            llm_judge:
+              customization:
+                disable_knowledge_search: sometimes
+            """).strip())
+
+    validate_grading_yaml(grading)  # no rubric/model_ref → no validation, no raise
+
+
+@pytest.mark.parametrize(
+    "customization, match",
+    [
+        ({"disable_knowledge_search": "sometimes"}, "disable_knowledge_search"),
+        ({"typo_key": True}, "typo_key"),
+        ({"system_prompt": 123}, "system_prompt"),
+        ({"system_prompt": ""}, "empty"),
+        ({"include_agent_system_prompt": "sometimes"}, "include_agent_system_prompt"),
+    ],
+    ids=[
+        "malformed_value",
+        "unknown_key",
+        "malformed_system_prompt_type",
+        "empty_system_prompt",
+        "malformed_include_agent_system_prompt_type",
+    ],
+)
+def test_project_grading_defaults_reject_malformed_customization(customization: dict, match: str):
+    """The project-defaults layer (``grading_defaults.llm_judge.customization``) is
+    locked at project-config parse time. ``GradingDefaults`` has no ``extra="forbid"``,
+    so the rejection rests entirely on ``LLMJudgeDefaults`` / ``JudgeCustomization``
+    each carrying it."""
+    with pytest.raises(Exception, match=match):
+        GradingDefaults(llm_judge={"customization": customization})
+
+
+# ---------------------------------------------------------------------------
+# state_checks.hash.weight — rejected at validate time, not at grade time
+# ---------------------------------------------------------------------------
+
+
+_ASSERTIONS = [{"path": "$.db.widgets[0].status", "equals": "closed"}]
+_GOLDEN_ACTIONS = [{"name": "close_widget"}]
+
+
+def _write_grading(tmp_path: Path, state_checks: dict) -> Path:
+    """Serialise the block rather than indenting a string: a mis-indented ``hash``
+    lands as a sibling of ``state_checks`` and every rejection here false-greens."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        yaml.safe_dump(
+            {
+                "combine": {
+                    "method": "weighted",
+                    "weights": {"state_checks": 1.0},
+                    "pass_threshold": 1.0,
+                },
+                "state_checks": state_checks,
+            }
+        )
+    )
+    return grading
+
+
+@pytest.mark.parametrize(
+    "hash_block",
+    [
+        {"enabled": True, "expected_state_hash": "aaaa"},
+        {"enabled": True, "golden_actions": _GOLDEN_ACTIONS},
+    ],
+    ids=["expected_state_hash", "golden_actions"],
+)
+def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_block: dict):
+    """Validate is where an author hears this: the engine's own model is not
+    constructed until artifacts are written, so a run-time-only gate would report
+    an undecidable score after the trial had already been paid for."""
+    grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
+    with pytest.raises(ValueError, match="state_checks.hash.weight is required"):
+        validate_grading_yaml(grading)
+
+
+@pytest.mark.parametrize(
+    "state_checks",
+    [
+        {
+            "jsonpaths": _ASSERTIONS,
+            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 0.6},
+        },
+        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": True}},
+        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        {
+            "jsonpaths": _ASSERTIONS,
+            "hash": {"enabled": False, "expected_state_hash": "aaaa", "weight": 0.6},
+        },
+        {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTIONS}},
+        {
+            "jsonpaths": [],
+            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 1.0},
+        },
+    ],
+    ids=[
+        "weight_declared",
+        "hash_on_with_no_source",
+        "hash_off_with_a_source",
+        "hash_off_with_an_inert_weight",
+        "no_assertions_to_weigh",
+        "recorded_tau_bundle_shape",
+    ],
+)
+def test_validate_accepts_every_shape_the_weight_cannot_decide(tmp_path: Path, state_checks: dict):
+    """The gate must stay narrow. Each shape here would demand a number the
+    composer never reads, and the last one is the recorded tau bundle: rejecting
+    it would make three committed trial bundles unloadable."""
+    validate_grading_yaml(_write_grading(tmp_path, state_checks))
+
+
+@pytest.mark.parametrize("weight", [2.0, -0.1])
+def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, weight: float):
+    grading = _write_grading(
+        tmp_path,
+        {
+            "jsonpaths": _ASSERTIONS,
+            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": weight},
+        },
+    )
+    with pytest.raises(ValueError, match=r"state_checks.hash.weight must be a real number"):
+        validate_grading_yaml(grading)
+
+
+def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Path):
+    """Without a ``hash`` block, ``StateChecksConfig`` is never constructed here — the
+    reason every fixture above declares one rather than relying on jsonpaths alone."""
+    validate_grading_yaml(
+        _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}})
+    )
+
+
+# ---------------------------------------------------------------------------
+# combine.method — the aggregation an author names, rejected at validate time
+#
+# This gate closes the bad-*value* half of the combine typo space. A misspelled
+# *key* (``combine: {methd: any}``) is a different defect, tracked in #745.
+# ---------------------------------------------------------------------------
+
+
+_WEIGHTS = {"state_checks": 1.0}
+
+
+def _write_combine(tmp_path: Path, combine: object) -> Path:
+    """Serialise the block: an indented string fixture lands ``method`` outside
+    ``combine`` and every rejection below false-greens."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(yaml.safe_dump({"combine": combine}))
+    return grading
+
+
+@pytest.mark.parametrize(("alias", "replacement"), tuple(RETIRED_COMBINE_METHOD_ALIASES.items()))
+def test_validate_rejects_a_retired_combine_method_naming_its_replacement(
+    tmp_path: Path, alias: str, replacement: str
+):
+    """Asserted on the two things a bare ``Literal`` cannot say.
+
+    Pydantic's own ``literal_error`` already quotes the offending value and the whole
+    permitted set, so an assertion on those would pass with this gate's alias-aware
+    validator deleted.
+    """
+    grading = _write_combine(tmp_path, {"method": alias, "weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    assert f"Use {replacement!r}" in message, message
+    assert "never worked" in message, message
+
+
+@pytest.mark.parametrize("method", ["bogus_method_xyz", "min", "Weighted", ""])
+def test_validate_rejects_an_unsupported_combine_method_listing_the_supported_set(
+    tmp_path: Path, method: str
+):
+    grading = _write_combine(tmp_path, {"method": method, "weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    for supported in COMBINE_METHODS:
+        assert repr(supported) in message, message
+
+
+@pytest.mark.parametrize("method", COMBINE_METHODS)
+def test_validate_accepts_every_declared_combine_method(tmp_path: Path, method: str):
+    validate_grading_yaml(_write_combine(tmp_path, {"method": method, "weights": _WEIGHTS}))
+
+
+def test_validate_accepts_a_combine_block_that_names_no_method(tmp_path: Path):
+    """A partial block declares only what it overrides, and the field keeps its default.
+
+    ``examples/native/example-microservices-pack/tasks/long_debugging_session`` ships
+    exactly this shape over a project-level default, so a gate reading the key instead
+    of constructing the block would reject a pack that grades today.
+    """
+    validate_grading_yaml(_write_combine(tmp_path, {"pass_threshold": 0.7}))
+
+
+@pytest.mark.parametrize(
+    "combine",
+    [
+        {"method": "weighted", "pass_threshold": "high"},
+        {"method": "weighted", "weights": {"state_checks": "most"}},
+    ],
+    ids=["pass_threshold", "weights"],
+)
+def test_validate_rejects_a_malformed_combine_block_beside_a_valid_method(
+    tmp_path: Path, combine: dict
+):
+    """The gate constructs the whole block, so its siblings are validated too.
+
+    A gate narrowed to the one field would leave these two loading, which is what
+    makes this the lock for constructing ``GradingCombineConfig`` rather than
+    reaching past it to ``method``.
+    """
+    with pytest.raises(ValueError):
+        validate_grading_yaml(_write_combine(tmp_path, combine))
+
+
+@pytest.mark.parametrize(
+    "combine",
+    [[{"method": "all_pass"}], "weighted", 3],
+    ids=["list", "string", "number"],
+)
+def test_validate_rejects_a_combine_block_that_is_not_a_mapping(tmp_path: Path, combine: object):
+    """The shape half of the same typo space, which the value gate reads past.
+
+    A block skipped here reports the pack valid and then fails the run inside
+    ``deep_merge`` with ``'list' object has no attribute 'items'``, naming neither the
+    file nor the key — and a retired method inside such a block never gets read at all.
+    """
+    grading = _write_combine(tmp_path, combine)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "'combine'" in message, message
+    assert type(combine).__name__ in message, message
+
+
+def test_validate_accepts_a_combine_key_with_nothing_under_it(tmp_path: Path):
+    """``combine:`` alone is the absent block, not a malformed one: every field falls
+    through to its default, which is what the loader's own merge does with it."""
+    validate_grading_yaml(_write_combine(tmp_path, None))
+
+
+def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path):
+    """The author-facing gate: ``tolokaforge validate`` is where a typo is heard."""
+    task_file = _write_task(
+        tmp_path / "retired_combine_method",
+        yaml.safe_dump({"combine": {"method": "all_pass", "weights": _WEIGHTS}}),
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "Use 'all'" in out
+    assert "never worked" in out

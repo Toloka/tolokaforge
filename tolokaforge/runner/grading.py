@@ -3,7 +3,7 @@ Grading Helper Functions for Runner Service
 
 This module provides helper functions for the GradeTrial RPC implementation:
 - compute_state_diff: Compute human-readable diff between two stable states
-- evaluate_transcript_rules: Evaluate transcript rules against conversation history
+- evaluate_transcript_rules: Evaluate transcript rules against the trial's event timeline
 - combine_grade_components: Combine component scores into final grade
 
 See docs/GRPC_PROTOCOL.md for grading algorithm specification.
@@ -12,15 +12,43 @@ See docs/GRPC_PROTOCOL.md for grading algorithm specification.
 import glob
 import logging
 import re
+from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.combine_method import (
+    combine_by_method,
+    validate_combine_method,
+)
+from tolokaforge.core.grading.state_composition import (
+    compose_state_checks_score,
+    inert_hash_weight_reason,
+)
+from tolokaforge.core.grading.trace_timeline import (
+    AttemptedCall,
+    TrialTimeline,
+    assistant_texts,
+    attempted_calls,
+)
 from tolokaforge.core.hash import canonical_number
+from tolokaforge.runner.grading_ledger import (
+    COMMUNICATE_INFO_KEY,
+    DISALLOW_REGEX_KEY,
+    EVALUATED,
+    MAX_TURNS_KEY,
+    MUST_CONTAIN_KEY,
+    REQUIRED_ACTIONS_KEY,
+    TOOL_EXPECTATIONS_KEY,
+)
 from tolokaforge.runner.models import (
+    KeyAccountingRecord,
     StateDiff,
     TableDiff,
+    ToolExecutionStatus,
+    ToolExecutorIdentity,
     TranscriptEvaluationResult,
     TranscriptRuleResult,
 )
@@ -203,12 +231,12 @@ def _get_field_diffs(expected: dict[str, Any], actual: dict[str, Any]) -> list[d
 
 
 def evaluate_transcript_rules(
-    messages: list[dict[str, Any]],
-    tool_history: list[dict[str, Any]],
+    timeline: TrialTimeline,
     rules: dict[str, Any],
 ) -> TranscriptEvaluationResult:
     """
-    Evaluate the author-facing ``TranscriptRulesConfig`` against a trajectory.
+    Evaluate the author-facing ``TranscriptRulesConfig`` against the trial's
+    event timeline.
 
     ``rules`` is a single ``TranscriptRulesConfig.model_dump()`` dict — the
     schema task authors actually write in ``grading.yaml``. It is decomposed
@@ -221,8 +249,14 @@ def evaluate_transcript_rules(
       assistant message → one sub-check per regex.
     - ``max_turns`` (int | None): the number of assistant turns must be within
       the limit → one sub-check when set.
+    - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
+      per declared tool. A required tool must have been called *successfully*; a
+      disallowed tool must not have run at **any** status, because an attempted
+      forbidden call is itself the violation. Both fail on a timeline that carries
+      no records for a call the message view declared — whether it ran is then
+      unknown, and a "did not run" reading would pass every forbidden call.
     - ``required_actions`` (list[RequiredAction]): each declared tool call must
-      appear in the tool history, matched by ``tool_name`` + ``requestor`` and
+      appear on the timeline, matched by ``tool_name`` + ``requestor`` and
       by the argument subset named in ``compare_args`` (``None`` = compare all
       declared args, ``[]`` = compare none) → one sub-check per action.
     - ``communicate_info`` (list[{info, required}]): each ``required`` info
@@ -240,85 +274,125 @@ def evaluate_transcript_rules(
     passed (AGENTS.md: surface failures explicitly).
 
     Args:
-        messages: LLM conversation messages (role, content)
-        tool_history: List of tool call records (ToolCallRecord.model_dump())
+        timeline: The trial's event timeline, built by
+            :func:`~tolokaforge.core.grading.trace_timeline.build_trial_timeline`
         rules: A single ``TranscriptRulesConfig.model_dump()`` dict
 
     Returns:
-        TranscriptEvaluationResult with passed, score, and per-sub-check details
+        TranscriptEvaluationResult with passed, score, per-sub-check details, and
+        the author keys this call decomposed
     """
     details: list[TranscriptRuleResult] = []
+    accounted_keys: dict[str, KeyAccountingRecord] = {}
 
     must_contain: list[str] = rules.get("must_contain", []) or []
     disallow_regex: list[str] = rules.get("disallow_regex", []) or []
     max_turns: int | None = rules.get("max_turns")
+    tool_expectations: dict[str, Any] = rules.get("tool_expectations") or {}
+    required_tools: list[str] = tool_expectations.get("required_tools") or []
+    disallowed_tools: list[str] = tool_expectations.get("disallowed_tools") or []
     required_actions: list[dict[str, Any]] = rules.get("required_actions", []) or []
     communicate_info: list[dict[str, Any]] = rules.get("communicate_info", []) or []
 
-    assistant_messages = _assistant_message_texts(messages)
+    assistant_messages = assistant_texts(timeline)
+    calls = attempted_calls(timeline)
+    records_present = timeline.records_present
 
-    for text in must_contain:
-        details.append(_check_must_contain(text, assistant_messages))
+    if must_contain:
+        accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
+        for text in must_contain:
+            details.append(_check_must_contain(text, assistant_messages))
 
-    for pattern in disallow_regex:
-        details.append(_check_disallow_regex(pattern, assistant_messages))
+    if disallow_regex:
+        accounted_keys[DISALLOW_REGEX_KEY] = EVALUATED
+        for pattern in disallow_regex:
+            details.append(_check_disallow_regex(pattern, assistant_messages))
 
     if max_turns is not None:
-        details.append(_check_max_turns(max_turns, messages))
+        accounted_keys[MAX_TURNS_KEY] = EVALUATED
+        details.append(_check_max_turns(max_turns, len(assistant_messages)))
 
-    for action in required_actions:
-        details.append(_check_required_action(action, tool_history))
+    if required_tools or disallowed_tools:
+        accounted_keys[TOOL_EXPECTATIONS_KEY] = EVALUATED
+        for tool_name in required_tools:
+            details.append(_check_required_tool(tool_name, calls, records_present=records_present))
+        for tool_name in disallowed_tools:
+            details.append(
+                _check_disallowed_tool(tool_name, calls, records_present=records_present)
+            )
 
-    for info in communicate_info:
-        check = _check_communicate_info(info, assistant_messages)
-        if check is not None:
-            details.append(check)
+    if required_actions:
+        accounted_keys[REQUIRED_ACTIONS_KEY] = EVALUATED
+        for action in required_actions:
+            details.append(_check_required_action(action, calls, records_present=records_present))
+
+    if communicate_info:
+        accounted_keys[COMMUNICATE_INFO_KEY] = EVALUATED
+        for info in communicate_info:
+            check = _check_communicate_info(info, assistant_messages)
+            if check is not None:
+                details.append(check)
 
     if not details:
         # No rules configured — nothing can be violated.
-        return TranscriptEvaluationResult(passed=True, score=1.0, details=[])
+        return TranscriptEvaluationResult(
+            passed=True, score=1.0, details=[], accounted_keys=accounted_keys
+        )
 
     passed_count = sum(1 for d in details if d.passed)
     total_count = len(details)
     score = passed_count / total_count
     all_passed = passed_count == total_count
 
-    return TranscriptEvaluationResult(passed=all_passed, score=score, details=details)
+    return TranscriptEvaluationResult(
+        passed=all_passed, score=score, details=details, accounted_keys=accounted_keys
+    )
 
 
 # Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
-# author-facing role names) onto the ToolCallRecord.executor vocabulary
-# ("agent"/"user", what the runtime records). They name the same actor.
-_REQUESTOR_TO_EXECUTOR = {"assistant": "agent", "user": "user"}
+# author-facing role names) onto the recorded executor identity. They name the
+# same actor.
+_REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
+    "assistant": ToolExecutorIdentity.AGENT,
+    "user": ToolExecutorIdentity.USER,
+}
 
 
-def _assistant_message_texts(messages: list[dict[str, Any]]) -> list[str]:
-    """Extract assistant message text content as a list of strings.
+_UNRECORDED = (
+    "the trial carries no tool-call record, so nothing knows whether the calls it "
+    "declared ran. A timeline rebuilt from a recorded bundle is in that state, "
+    "because tool_log is not written to trajectory.yaml"
+)
 
-    Content may be a plain string or the structured-content list shape
-    (``[{"type": "text", "text": ...}, ...]``); both are flattened to text so
-    text rules work regardless of how the trajectory was serialized.
+
+def _declared(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
+    """Every call to ``tool_name`` the agent asked for, whether or not it ran."""
+    return [call for call in calls if call.tool_name == tool_name]
+
+
+def _executed(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
+    """The calls to ``tool_name`` that actually ran, so carry an outcome.
+
+    Separates ran from did-not-run only while the timeline carries records.
+    Without them every call reads as un-run, so callers ask
+    :func:`_outcome_unknown` first instead of reading absent evidence as a fact.
     """
-    texts: list[str] = []
-    for m in messages:
-        if m.get("role") != "assistant":
-            continue
-        content = m.get("content")
-        if content is None:
-            continue
-        if isinstance(content, str):
-            texts.append(content)
-        elif isinstance(content, list):
-            parts = [
-                block.get("text", "")
-                for block in content
-                if isinstance(block, dict) and block.get("type") == "text"
-            ]
-            texts.append("".join(parts))
-    return texts
+    return [call for call in _declared(calls, tool_name) if call.status is not None]
 
 
-def _check_must_contain(text: str, assistant_messages: list[str]) -> TranscriptRuleResult:
+def _outcome_unknown(
+    calls: Sequence[AttemptedCall], tool_name: str, *, records_present: bool
+) -> bool:
+    """Whether the timeline can say if the declared calls to ``tool_name`` ran.
+
+    A record can only name a call the message view declared, so a tool the agent
+    never asked for never ran — knowable from the message view alone. Whatever it
+    did ask for is unknown the moment the record view is missing.
+    """
+    return not records_present and bool(_declared(calls, tool_name))
+
+
+def _check_must_contain(text: str, assistant_messages: Sequence[str]) -> TranscriptRuleResult:
     """Each required string must appear (case-insensitive) in some assistant message."""
     needle = text.lower()
     found = any(needle in content.lower() for content in assistant_messages)
@@ -334,7 +408,7 @@ def _check_must_contain(text: str, assistant_messages: list[str]) -> TranscriptR
     )
 
 
-def _check_disallow_regex(pattern: str, assistant_messages: list[str]) -> TranscriptRuleResult:
+def _check_disallow_regex(pattern: str, assistant_messages: Sequence[str]) -> TranscriptRuleResult:
     """No assistant message may match the disallowed regex.
 
     An invalid regex is an author error — surface it as a FAIL rather than
@@ -366,14 +440,13 @@ def _check_disallow_regex(pattern: str, assistant_messages: list[str]) -> Transc
     )
 
 
-def _check_max_turns(max_turns: int, messages: list[dict[str, Any]]) -> TranscriptRuleResult:
+def _check_max_turns(max_turns: int, turn_count: int) -> TranscriptRuleResult:
     """Assistant turn count must be within the limit.
 
-    A "turn" is one assistant message (one model response). This counts the
-    agent's responses rather than user messages so the limit caps the agent's
-    activity, which is what authors intend to bound.
+    A "turn" is one assistant generation. This counts the agent's responses
+    rather than user messages so the limit caps the agent's activity, which is
+    what authors intend to bound.
     """
-    turn_count = sum(1 for m in messages if m.get("role") == "assistant")
     within = turn_count <= max_turns
     return TranscriptRuleResult(
         rule_type="max_turns",
@@ -387,10 +460,74 @@ def _check_max_turns(max_turns: int, messages: list[dict[str, Any]]) -> Transcri
     )
 
 
-def _check_required_action(
-    action: dict[str, Any], tool_history: list[dict[str, Any]]
+def _check_required_tool(
+    tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
 ) -> TranscriptRuleResult:
-    """A declared tool call must appear in the tool history.
+    """A required tool must have been called successfully at least once.
+
+    Same "a failed call did not happen" rule ``_check_required_action`` applies:
+    an errored call did not accomplish the work the author required.
+    """
+    if _outcome_unknown(calls, tool_name, records_present=records_present):
+        return TranscriptRuleResult(
+            rule_type="required_tool",
+            rule={"required_tool": tool_name},
+            passed=False,
+            message=f"Required tool {tool_name!r}: {_UNRECORDED}",
+        )
+    called = any(call.status is ToolExecutionStatus.SUCCESS for call in _executed(calls, tool_name))
+    return TranscriptRuleResult(
+        rule_type="required_tool",
+        rule={"required_tool": tool_name},
+        passed=called,
+        message=(
+            f"Required tool {tool_name!r} was called successfully"
+            if called
+            else f"Required tool {tool_name!r} was never called successfully"
+        ),
+    )
+
+
+def _check_disallowed_tool(
+    tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
+) -> TranscriptRuleResult:
+    """A disallowed tool must not have run, at any status.
+
+    Status-insensitive on purpose: attempting a forbidden call is the violation,
+    so an errored attempt fails the check just like a successful one. A call the
+    agent declared on a terminating turn never reached the substrate and is not
+    counted; naming intent as a violation is a matcher question, tracked on #678.
+    That exclusion needs the record view, so a declared call the timeline holds no
+    records for fails the check instead of reading as one that never ran.
+    """
+    if _outcome_unknown(calls, tool_name, records_present=records_present):
+        return TranscriptRuleResult(
+            rule_type="disallowed_tool",
+            rule={"disallowed_tool": tool_name},
+            passed=False,
+            message=f"Disallowed tool {tool_name!r}: {_UNRECORDED}",
+        )
+    offending = _executed(calls, tool_name)
+    if not offending:
+        message = f"Disallowed tool {tool_name!r} was never called"
+    else:
+        statuses = ", ".join(sorted({call.status.value for call in offending if call.status}))
+        message = (
+            f"Disallowed tool {tool_name!r} was called {len(offending)} "
+            f"time(s) (statuses: {statuses})"
+        )
+    return TranscriptRuleResult(
+        rule_type="disallowed_tool",
+        rule={"disallowed_tool": tool_name},
+        passed=not offending,
+        message=message,
+    )
+
+
+def _check_required_action(
+    action: dict[str, Any], calls: Sequence[AttemptedCall], *, records_present: bool
+) -> TranscriptRuleResult:
+    """A declared tool call must appear on the timeline.
 
     Matching:
     - ``tool_name`` must match exactly;
@@ -424,15 +561,22 @@ def _check_required_action(
             message=f"{label}: no tool_name declared",
         )
 
-    for call in tool_history:
-        if call.get("tool_name") != tool_name:
+    if _outcome_unknown(calls, tool_name, records_present=records_present):
+        return TranscriptRuleResult(
+            rule_type="required_action",
+            rule=action,
+            passed=False,
+            message=f"{label}: {_UNRECORDED}",
+        )
+
+    for call in calls:
+        if call.tool_name != tool_name:
             continue
-        if expected_executor is not None and call.get("executor") != expected_executor:
+        if expected_executor is not None and call.executor is not expected_executor:
             continue
-        if call.get("status") != "success":
+        if call.status is not ToolExecutionStatus.SUCCESS:
             continue
-        call_args = call.get("arguments", {}) or {}
-        if all(call_args.get(k) == declared_args.get(k) for k in keys_to_compare):
+        if all(call.arguments.get(k) == declared_args.get(k) for k in keys_to_compare):
             return TranscriptRuleResult(
                 rule_type="required_action",
                 rule=action,
@@ -452,7 +596,7 @@ def _check_required_action(
 
 
 def _check_communicate_info(
-    info: dict[str, Any], assistant_messages: list[str]
+    info: dict[str, Any], assistant_messages: Sequence[str]
 ) -> TranscriptRuleResult | None:
     """A required info string must appear in an assistant message.
 
@@ -794,6 +938,59 @@ def evaluate_jsonpath_checks(
     return score, reasons
 
 
+@dataclass(frozen=True)
+class StateChecksOutcome:
+    """The runner's ``state_checks`` slot, and what its declared weight decided.
+
+    ``component`` is ``None`` when no state source produced a score, which the
+    combine treats differently from a ``0.0`` it would fold in as a failure.
+    ``inert_weight_reason`` carries the author-facing note for a weight the fold
+    never consulted, so the runner reports the skip the way the core engine does.
+    """
+
+    component: float | None
+    inert_weight_reason: str | None
+
+
+def resolve_state_checks_component(
+    *,
+    hash_score: float,
+    jsonpath_score: float,
+    db_probe_score: float,
+    hash_weight: float | None,
+) -> StateChecksOutcome:
+    """Fold the runner's three state sources into one ``state_checks`` score.
+
+    Translates the runner's ``-1.0``-means-not-evaluated sentinel into the ``None``
+    the shared composer reads. ``db_probes`` is the sole state source for the tasks
+    that declare it (mixing it with hash/jsonpath in one task is out of scope), so
+    its score fills the slot outright and hides whatever the other two produced —
+    which is why the probe branch reports the weight as unconsulted too.
+
+    Raises ``ValueError`` when a hash verdict and a JSONPath score are both real and
+    no ``hash_weight`` says how to fold them.
+    """
+    probes_decide = db_probe_score >= 0
+    hash_source = None if probes_decide or hash_score < 0 else hash_score
+    jsonpath_source = None if probes_decide or jsonpath_score < 0 else jsonpath_score
+    return StateChecksOutcome(
+        component=(
+            db_probe_score
+            if probes_decide
+            else compose_state_checks_score(
+                hash_score=hash_source,
+                jsonpath_score=jsonpath_source,
+                hash_weight=hash_weight,
+            )
+        ),
+        inert_weight_reason=inert_hash_weight_reason(
+            hash_score=hash_source,
+            jsonpath_score=jsonpath_source,
+            hash_weight=hash_weight,
+        ),
+    )
+
+
 def combine_grade_components(
     components: dict[str, Any], grading_config: dict[str, Any]
 ) -> tuple[float, bool]:
@@ -817,36 +1014,39 @@ def combine_grade_components(
             {
                 "combine_method": "all" | "weighted" | "any",
                 "weights": {"state_checks": 1.0, "transcript_rules": 0.5},
-                "pass_threshold": 1.0
+                "pass_threshold": 1.0,
+                "state_checks": {"hash_weight": 0.6}
             }
 
     Returns:
         Tuple of (score: float, binary_pass: bool)
+
+    Raises:
+        ValueError: a hash verdict and a JSONPath score are both real and
+            ``state_checks.hash_weight`` does not say how to fold them; or
+            ``combine_method`` is missing or names no supported aggregation.
     """
-    method = grading_config.get("combine_method", "all")
+    # Ahead of the zero-active-components return below, which never reaches the fold:
+    # a request naming no supported aggregation must fail the grade rather than take
+    # that path's verdict.
+    method = validate_combine_method(
+        grading_config.get("combine_method"), context="grading config combine_method"
+    )
     weights = grading_config.get("weights", {})
     threshold = grading_config.get("pass_threshold", 1.0)
 
-    # Extract component scores
-    hash_score = components.get("hash_score", -1.0)
-    jsonpath_score = components.get("jsonpath_score", -1.0)
     transcript_score = components.get("transcript_score", -1.0)
 
     # Determine which components are active (score >= 0 means evaluated)
     active_components: dict[str, float] = {}
-    # state_checks: combine hash and jsonpath scores if both are available
-    if hash_score >= 0 and jsonpath_score >= 0:
-        # Both evaluated — use product for strictness
-        active_components["state_checks"] = hash_score * jsonpath_score
-    elif hash_score >= 0:
-        active_components["state_checks"] = hash_score
-    elif jsonpath_score >= 0:
-        active_components["state_checks"] = jsonpath_score
-    # db_probes is the sole state source for its tasks (mixing with hash/jsonpath
-    # in one task is out of scope), so it fills the state_checks slot directly.
-    db_probe_score = components.get("db_probe_score", -1.0)
-    if db_probe_score >= 0:
-        active_components["state_checks"] = db_probe_score
+    state_checks_slot = resolve_state_checks_component(
+        hash_score=components.get("hash_score", -1.0),
+        jsonpath_score=components.get("jsonpath_score", -1.0),
+        db_probe_score=components.get("db_probe_score", -1.0),
+        hash_weight=(grading_config.get("state_checks") or {}).get("hash_weight"),
+    )
+    if state_checks_slot.component is not None:
+        active_components["state_checks"] = state_checks_slot.component
     if transcript_score >= 0:
         active_components["transcript_rules"] = transcript_score
 
@@ -887,44 +1087,26 @@ def combine_grade_components(
         # Truly no grading configured at all — pass by default
         return 1.0, True
 
-    if method == "all":
-        # All components must pass (score >= threshold)
-        all_pass = all(score >= threshold for score in active_components.values())
-        # Score is minimum of all component scores
-        final_score = min(active_components.values())
-        return final_score, all_pass
+    # Computed for every method, read only by ``weighted``: the shared dispatch
+    # decides the aggregation and this substrate keeps its own mean.
+    total_weight = 0.0
+    weighted_sum = 0.0
+    for component_name, score in active_components.items():
+        weight = weights.get(component_name, 1.0)
+        weighted_sum += score * weight
+        total_weight += weight
 
-    elif method == "weighted":
-        # Weighted average of component scores
-        total_weight = 0.0
-        weighted_sum = 0.0
-
-        for component_name, score in active_components.items():
-            weight = weights.get(component_name, 1.0)
-            weighted_sum += score * weight
-            total_weight += weight
-
-        if total_weight > 0:
-            final_score = weighted_sum / total_weight
-        else:
-            final_score = 1.0
-
-        binary_pass = final_score >= threshold
-        return final_score, binary_pass
-
-    elif method == "any":
-        # Any component passing is sufficient
-        any_pass = any(score >= threshold for score in active_components.values())
-        # Score is maximum of all component scores
-        final_score = max(active_components.values())
-        return final_score, any_pass
-
+    if total_weight > 0:
+        weighted_mean = weighted_sum / total_weight
     else:
-        # Unknown method - default to "all" behavior
-        logger.warning(f"Unknown combine_method '{method}', defaulting to 'all'")
-        all_pass = all(score >= threshold for score in active_components.values())
-        final_score = min(active_components.values())
-        return final_score, all_pass
+        weighted_mean = 1.0
+
+    return combine_by_method(
+        method=method,
+        component_scores=active_components,
+        weighted_mean=weighted_mean,
+        pass_threshold=threshold,
+    )
 
 
 def build_grade_reasons(
@@ -983,13 +1165,20 @@ def build_grade_reasons(
     transcript_score = components.get("transcript_score", -1.0)
     if transcript_score >= 0:
         if transcript_result:
-            passed = sum(1 for d in transcript_result.get("details", []) if d.get("passed"))
-            total = len(transcript_result.get("details", []))
-            if passed == total:
+            details = transcript_result.get("details", [])
+            failures = [d for d in details if not d.get("passed")]
+            total = len(details)
+            if not failures:
                 reasons.append(f"Transcript: all {total} rules passed")
             else:
-                failed = total - passed
-                reasons.append(f"Transcript: {failed} of {total} rules failed")
+                # Name every failing sub-check: "2 of 5 failed" alone leaves the
+                # author guessing which rule and why.
+                failure_text = "; ".join(
+                    str(d.get("message", d.get("rule_type"))) for d in failures
+                )
+                reasons.append(
+                    f"Transcript: {len(failures)} of {total} rules failed — {failure_text}"
+                )
         else:
             if components.get("transcript_pass", False):
                 reasons.append("Transcript: passed")
