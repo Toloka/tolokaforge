@@ -226,6 +226,7 @@ start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
+grading_error: null                                   # why grading produced no verdict, or null
 messages:
   - role: "user"
     content: "..."
@@ -253,6 +254,7 @@ messages:
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
 | `simulator_schema_version` | `int` | always `1` today | Monotonic; bump whenever the simulator prompt shape changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 
 ### `messages[*].reasoning.summary` — when populated
 
@@ -359,10 +361,11 @@ included for forensics. Each LLM API call is also recorded in
 `latency_s` — the trial-level `cost_usd` is the sum of those entries.
 
 To help analytics consumers detect schema evolution, every trial-level
-metrics file includes a root-level `schema_version: 2` marker. Generation 2
-bundles carry no `grade.yaml` when the trial was aborted by infrastructure — the
-agent never ran, so there is no verdict to write — so a reader must not assume
-the file is there.
+metrics file includes a root-level `schema_version: 3` marker. Generation 3
+bundles carry no `grade.yaml` in two cases — the trial was aborted by
+infrastructure before the agent ran, or grading ran and refused to produce a
+verdict — so a reader must not assume the file is there, and must read
+`trajectory.yaml`'s `grading_error` to tell the two apart.
 
 ```yaml
 latency_total_s: 174.14
@@ -685,9 +688,9 @@ written (no resolved model config, no environment state, no per-trial logger for
 a run that never happened).
 
 * `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
-  empty `messages`.
+  `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 2`, empty `tool_usage`) plus two top-level failure-signal
+  `schema_version: 3`, empty `tool_usage`) plus two top-level failure-signal
   keys:
 
   ```yaml
@@ -1212,7 +1215,7 @@ an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
-| `metrics.yaml` | `schema_version` | `2` | The per-trial bundle's file set or field semantics change |
+| `metrics.yaml` | `schema_version` | `3` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `2` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |

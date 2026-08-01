@@ -376,14 +376,19 @@ what it replaced: a normally-terminated trial classifies `MEASURED`, so the zero
 would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
 failure reported against evidence that was never read.
 
-The consequence is that such a trial appears in **no** published number. The
-exception propagates out of the conductor's grading phase, so the trial's bundle is
-not written and the trajectory never reaches the run's results — `total_trials`
-does not count it. It is loud where it happens: the failure is logged, the
-orchestrator retries the attempt and then records it in `run_state.json`, and a
-`trial_failed` event fires. Whether an ungradeable trial should instead be counted
-as a `HARNESS_ERROR` is an open published-numbers question, not something this
-behaviour decides.
+The consequence is that such a trial is **counted but unscored**. The conductor's
+grading phase catches the exception, records the reason on
+`Trajectory.grading_error`, and lets the trial finish its normal path: its
+`status` and `termination_reason` still describe how the trial itself ended, its
+bundle is written with the cause in `trajectory.yaml` and no `grade.yaml`, and it
+reaches `total_trials` and `measured_trials` while staying out of `scored_trials`.
+The failure is logged at `error` level where it happens.
+
+Because the attempt terminates normally, it is **not retried** — retryability
+reads the trajectory's own status and reason, which grading's failure does not
+touch. A grading failure that a second attempt would have got past is therefore
+recorded ungradeable on the first: the price of never fabricating a verdict and
+never counting one attempt twice.
 
 **One key is still evaluated from different sources.** The core engine evaluates
 `transcript_rules.required_actions` and `transcript_rules.communicate_info`

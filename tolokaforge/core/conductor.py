@@ -63,7 +63,7 @@ from tolokaforge.core.runtime import RuntimeBackend
 from tolokaforge.core.stuck import StuckDetector
 from tolokaforge.core.system_prompt import build_system_prompt
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, TrialResult, TrialSpec
-from tolokaforge.core.trial_grader import TrialGrader
+from tolokaforge.core.trial_grader import GradingFailedError, TrialGrader
 
 if TYPE_CHECKING:
     from tolokaforge.core.logging import StructuredLogger
@@ -830,14 +830,24 @@ class InProcessConductor:
         An ungraded trial scores nothing: no ``judgment_scored`` event
         fires, because there is no judgment to report.
 
-        A :class:`~tolokaforge.core.trial_grader.GradingFailedError` is not
-        caught here, so it also skips :meth:`_write_artifacts` and leaves the
-        trial out of the run's results entirely. That is deliberate: a trial
-        whose verdict could not be computed has no score to publish, and the
-        orchestrator's per-trial handler records the failure.
+        A :class:`~tolokaforge.core.trial_grader.GradingFailedError` is caught
+        and recorded on ``trajectory.grading_error``, leaving ``grade`` unset.
+        The trial then completes its normal path — ``termination_reason`` and
+        ``status`` still say how the trial itself ended, the bundle is written,
+        and the run counts the attempt with the cause recoverable from disk.
         """
         agent_system_prompt = runner.effective_system_prompt or system_prompt
-        grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
+        try:
+            grade = self.trial_grader.grade(spec, trajectory, agent_system_prompt)
+        except GradingFailedError as e:
+            trajectory.grading_error = str(e)
+            self.logger.error(
+                "Trial could not be graded",
+                task_id=task_config.task_id,
+                trial_index=setup.trial_idx,
+                error=str(e),
+            )
+            return
         trajectory.grade = grade
         if grade is None:
             self.logger.info(
