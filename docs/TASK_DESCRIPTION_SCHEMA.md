@@ -248,6 +248,7 @@ class TranscriptRulesConfig(BaseModel):
     must_contain: List[str] = Field(default_factory=list)
     disallow_regex: List[str] = Field(default_factory=list)
     max_turns: Optional[int] = None
+    min_assistant_turns: Optional[int] = Field(default=None, ge=1)  # gate: unmet → component 0.0
     tool_expectations: Optional[ToolExpectations] = None
     required_actions: List[RequiredAction] = Field(default_factory=list)
     communicate_info: List[Dict[str, Any]] = Field(default_factory=list)

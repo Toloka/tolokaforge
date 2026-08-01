@@ -2040,6 +2040,9 @@ class TranscriptRulesConfig(BaseModel):
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
+    # A floor of 0 asserts nothing, and the runtime key ledger tests a declared
+    # key by truthiness, so 0 would be an unpoliced declaration.
+    min_assistant_turns: int | None = Field(default=None, ge=1)
     tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW

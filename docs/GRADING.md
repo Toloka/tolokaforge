@@ -92,8 +92,9 @@ Three properties keep the ledger from rejecting configs that grade correctly:
 - **A key counts as populated only when it is non-empty.** An explicitly written
   `disallowed_tools: []` is indistinguishable from unset, and either way has
   nothing to evaluate.
-- **Every skip is recorded, not silent.** `transcript_rules` is skipped when the
-  trial's timeline carries no events, `llm_judge` when it has no
+- **Every skip is recorded, not silent.** The `transcript_rules` keys other than
+  `min_assistant_turns` are skipped when the trial's timeline carries no events,
+  `llm_judge` when it has no
   messages, `custom_checks` when the pack wrote the block but left
   `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
   reads when `hash.enabled` is not set. `state_checks.hash.expected_state_hash` is a
@@ -103,6 +104,13 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   its reason, which appears in `grade.reasons` whenever the skipped key was
   populated: a degenerate trial scores badly rather than erroring the RPC, but the
   reason it scored badly is visible.
+
+  A declared `min_assistant_turns` is the one transcript rule **evaluated** on an
+  events-less timeline, because absence is exactly the answer that key asks for: a
+  trial that left no trace made no assistant turn. It scores the whole
+  `transcript_rules` component `0.0` there and its siblings still record the skip,
+  so the component enters the combine rather than dropping out of it. See
+  [Turn bounds](#turn-bounds).
 
   "No events" is narrower than "no messages": `role: system` messages are harness
   annotations and never become events (N3), so a trial whose only messages are a
@@ -188,6 +196,24 @@ something weak; the enforcement axis is where the weakness belongs, and it says 
 The two `BOTH_SIGNAL_PARITY` rows above are the opposite case — there the score
 claim itself is false for a source shape, so the coverage axis is the honest place
 for it. `state_checks.db_probes` sits at the same enforcement tier.
+
+### Score-parity keys outside the hash family
+
+| Key | kind | coverage | enforcement |
+|---|---|---|---|
+| `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+
+This is the only `transcript_rules` key claiming score parity — the other six are
+`BOTH_SIGNAL_PARITY` (#685), because the core engine averages four always-present
+buckets where the runner takes a fraction of decomposed sub-checks, so the two
+magnitudes differ on a mixed pack. **Its parity rests on a different mechanism than
+`state_checks.hash.golden_actions`'.** That key agrees because both substrates fold
+their inputs through one shared composer, so the aggregation itself is common code.
+`min_assistant_turns` has no shared code path at all: it agrees because it
+contributes *nothing* when met and forces `0.0` on **both** substrates when unmet, so
+it can never itself be the source of a disagreement. On a pack that also declares
+phrase or tool rules any divergence in the component belongs to those keys'
+aggregation, which is #685's territory, not the floor's.
 
 `state_checks.hash.weight` is proven at `DIFFERENTIAL_CANONICAL` by a composition
 sweep in the same suite: a fixture pack configuring both state sources — a
@@ -875,6 +901,48 @@ otherwise (G6b), so re-grading a recorded bundle still reads tool output. Neithe
 substrate can see the harness's `role: system` annotations — a termination notice
 cannot satisfy a required phrase (N3).
 
+### Turn bounds
+
+`max_turns` and `min_assistant_turns` bound one counter from two sides — the
+number of **assistant generations** the trial produced:
+
+```yaml
+transcript_rules:
+  max_turns: 18            # the agent must not take more than 18 turns
+  min_assistant_turns: 1   # opt-in: the agent must have taken at least 1
+```
+
+**`max_turns` alone passes a trial that produced nothing.** A do-nothing agent
+took zero turns, which is within any limit, so the check passes vacuously. On a
+refusal-style task — where the expected final state equals the initial state — that
+trial also matches the expected state hash, and the whole trial passes without the
+agent having acted. `min_assistant_turns` is the assertion that it acted at all;
+`docs/TASKS.md` covers when a task should declare one.
+
+**The floor is a gate on the whole `transcript_rules` component, not a sub-check
+inside it.** Unmet, the component is `0.0` on both substrates whatever the other
+keys scored. Met, it contributes nothing at all — no sub-check row runner-side, no
+extra bucket core-side — so a pack that declares it and satisfies it scores exactly
+what the other keys score. That is deliberate: as a fifth core-side bucket a failed
+floor would score `(1+1+1+1+0)/5 = 0.8`, which is the default `pass_threshold`, and
+as one more runner sub-check alongside two passing keys it would score `0.667`,
+which any `pass_threshold` at or below that swallows. Either way the bound would be
+declarable and unable to fail a trial.
+
+**It counts generations, not answers.** Three tool-call-only turns with no prose
+satisfy `min_assistant_turns: 3`. The sharper "did the agent actually *answer*"
+check — a non-empty assistant message after the last tool call — is **#678**'s trace
+checks; do not read a green floor as evidence the agent replied.
+
+**A declared floor is evaluated on an events-less timeline**, where every other
+transcript rule is skipped — see [The runtime ledger](#the-runtime-ledger).
+
+**Runner-engine version lock**: `min_assistant_turns` is declared on the
+runner-side `TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting
+the key requires a runner image built from the same release — `RegisterTrial`
+rejects it otherwise. Old engine + new runner is safe **for this key** (core-side
+`extra="ignore"`).
+
 ### `tool_expectations`
 
 Names the tools the agent must use and the tools it must not touch:
@@ -888,9 +956,10 @@ transcript_rules:
 
 **One sub-check per declared tool** on the runner path, the same decomposition
 `must_contain` and `disallow_regex` get: the component score is the fraction of
-sub-checks that passed, and every failure is named in `grade.reasons`. A task
-declaring two required and two disallowed tools yields four independent
-sub-checks.
+sub-checks that passed — unless a declared `min_assistant_turns` floor is unmet,
+which forces the component to `0.0` — and every failure is named in
+`grade.reasons`. A task declaring two required and two disallowed tools yields four
+independent sub-checks.
 
 **The two lists treat call status differently, deliberately.** A `required_tools`
 entry is satisfied only by a call with `status == "success"` — an errored call did

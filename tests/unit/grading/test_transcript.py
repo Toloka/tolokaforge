@@ -6,7 +6,7 @@ from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
-from tolokaforge.core.models import Message, MessageRole, ToolCall
+from tolokaforge.core.models import Message, MessageRole, ToolCall, TranscriptRulesConfig
 
 pytestmark = pytest.mark.unit
 
@@ -180,6 +180,77 @@ class TestMaxTurns:
         assert score == 0.0
         assert "Exceeded max turns" in reason
         assert "3 > 2" in reason
+
+
+@pytest.mark.unit
+class TestMinAssistantTurns:
+    """The opt-in activity floor, which `max_turns` alone cannot express.
+
+    A trial that produced nothing satisfies any `max_turns`, so a refusal-style
+    task passes a do-nothing agent. The floor closes that, and it is a **gate on
+    the whole component** rather than a fifth averaged bucket: a fifth zero bucket
+    scores 0.8, the default `pass_threshold`, so a declared floor could not fail.
+    """
+
+    @pytest.fixture
+    def checker(self):
+        return TranscriptChecker()
+
+    @pytest.fixture
+    def did_nothing(self):
+        """A trial with a user request and no assistant turn at all."""
+        return build_timeline([("user", "Cancel order O1.")])
+
+    def test_met_floor_contributes_nothing(self, checker):
+        timeline = build_timeline([("user", "Cancel order O1."), ("assistant", "Cancelled O1.")])
+
+        assert checker.check_min_assistant_turns(timeline, min_assistant_turns=1) == (1.0, "")
+
+    def test_unmet_floor_scores_zero(self, checker, did_nothing):
+        score, reason = checker.check_min_assistant_turns(did_nothing, min_assistant_turns=1)
+
+        assert score == 0.0
+        assert reason == "Assistant turn count 0 below min_assistant_turns of 1"
+
+    def test_an_unmet_floor_gates_every_other_passing_rule(self, checker):
+        """Three of four buckets satisfied still scores 0.0 — the floor is a gate.
+
+        Scored as a fifth bucket instead, this trial would come out at 0.8 and
+        pass the default threshold.
+        """
+        timeline = build_timeline(
+            [("user", "Cancel order O1."), ("assistant", "Working on it.")],
+            [recorded_call("db_update", sequence=0)],
+        )
+
+        score, reasons = checker.grade(
+            timeline=timeline,
+            must_contain=["Working"],
+            max_turns=10,
+            min_assistant_turns=3,
+            required_tools=["db_update"],
+        )
+
+        assert score == 0.0
+        assert reasons == "Assistant turn count 1 below min_assistant_turns of 3"
+
+    def test_a_zero_activity_trial_passes_when_no_floor_is_declared(self, checker, did_nothing):
+        """Opt-in: a pack that declares no floor grades as it did before.
+
+        The value is read off `TranscriptRulesConfig`, so that model's default is
+        what makes the key opt-in — a default of 1 would fail every pack shipping
+        today. The config is threaded through here for that reason.
+        """
+        rules = TranscriptRulesConfig(max_turns=18)
+
+        score, reasons = checker.grade(
+            timeline=did_nothing,
+            max_turns=rules.max_turns,
+            min_assistant_turns=rules.min_assistant_turns,
+        )
+
+        assert score == 1.0
+        assert reasons == "All checks passed"
 
 
 @pytest.mark.unit

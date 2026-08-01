@@ -39,6 +39,7 @@ from tolokaforge.runner.grading_ledger import (
     DISALLOW_REGEX_KEY,
     EVALUATED,
     MAX_TURNS_KEY,
+    MIN_ASSISTANT_TURNS_KEY,
     MUST_CONTAIN_KEY,
     REQUIRED_ACTIONS_KEY,
     TOOL_EXPECTATIONS_KEY,
@@ -249,6 +250,10 @@ def evaluate_transcript_rules(
       assistant message → one sub-check per regex.
     - ``max_turns`` (int | None): the number of assistant turns must be within
       the limit → one sub-check when set.
+    - ``min_assistant_turns`` (int | None): the trial must have produced at least
+      this many assistant turns. A **gate on the whole component**, not a
+      sub-check: an unmet floor appends one failing row and forces ``score`` to
+      ``0.0``, and a met floor appends no row so it never dilutes the fraction.
     - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
       per declared tool. A required tool must have been called *successfully*; a
       disallowed tool must not have run at **any** status, because an attempted
@@ -263,8 +268,10 @@ def evaluate_transcript_rules(
       string must appear in an assistant message → one sub-check per required
       entry (non-required entries are advisory and not scored).
 
-    Scoring: ``score`` is the fraction of sub-checks that passed and ``passed``
-    is True iff every sub-check passed. The component score feeds
+    Scoring: ``score`` is the fraction of sub-checks that passed — unless a
+    declared ``min_assistant_turns`` floor is unmet, in which case it is ``0.0``
+    whatever the other sub-checks did. ``passed`` is True iff every sub-check
+    passed. The component score feeds
     ``combine_grade_components`` where ``pass_threshold`` is applied, so a
     fraction (rather than all-or-nothing) lets authors set partial-credit
     thresholds (e.g. ``pass_threshold: 0.75``). An empty config (no fields set)
@@ -288,6 +295,7 @@ def evaluate_transcript_rules(
     must_contain: list[str] = rules.get("must_contain", []) or []
     disallow_regex: list[str] = rules.get("disallow_regex", []) or []
     max_turns: int | None = rules.get("max_turns")
+    min_assistant_turns: int | None = rules.get("min_assistant_turns")
     tool_expectations: dict[str, Any] = rules.get("tool_expectations") or {}
     required_tools: list[str] = tool_expectations.get("required_tools") or []
     disallowed_tools: list[str] = tool_expectations.get("disallowed_tools") or []
@@ -297,6 +305,13 @@ def evaluate_transcript_rules(
     assistant_messages = assistant_texts(timeline)
     calls = attempted_calls(timeline)
     records_present = timeline.records_present
+
+    unmet_floor: TranscriptRuleResult | None = None
+    if min_assistant_turns is not None:
+        accounted_keys[MIN_ASSISTANT_TURNS_KEY] = EVALUATED
+        unmet_floor = _check_min_assistant_turns(min_assistant_turns, len(assistant_messages))
+        if unmet_floor is not None:
+            details.append(unmet_floor)
 
     if must_contain:
         accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
@@ -341,7 +356,10 @@ def evaluate_transcript_rules(
 
     passed_count = sum(1 for d in details if d.passed)
     total_count = len(details)
-    score = passed_count / total_count
+    # An unmet activity floor vetoes the whole component: a trial that did not act
+    # makes the other sub-checks' verdicts evidence of nothing, and a fraction
+    # would let any pass_threshold at or below it swallow the violation.
+    score = 0.0 if unmet_floor is not None else passed_count / total_count
     all_passed = passed_count == total_count
 
     return TranscriptEvaluationResult(
@@ -456,6 +474,26 @@ def _check_max_turns(max_turns: int, turn_count: int) -> TranscriptRuleResult:
             f"Assistant turn count {turn_count} within limit of {max_turns}"
             if within
             else f"Assistant turn count {turn_count} exceeds limit of {max_turns}"
+        ),
+    )
+
+
+def _check_min_assistant_turns(
+    min_assistant_turns: int, turn_count: int
+) -> TranscriptRuleResult | None:
+    """The failing row for an unmet activity floor, or ``None`` when it is met.
+
+    A met floor emits no row at all. The floor is a gate on the whole component,
+    so a passing row would dilute the fraction the other sub-checks produce.
+    """
+    if turn_count >= min_assistant_turns:
+        return None
+    return TranscriptRuleResult(
+        rule_type="min_assistant_turns",
+        rule={"min_assistant_turns": min_assistant_turns},
+        passed=False,
+        message=(
+            f"Assistant turn count {turn_count} below min_assistant_turns of {min_assistant_turns}"
         ),
     )
 
