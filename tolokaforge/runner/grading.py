@@ -672,8 +672,7 @@ def evaluate_jsonpath_file_checks(
     checks). It does not handle ``path:``-style JSONPath assertions on env state
     (those are evaluated host-side by ``StateChecker.check_jsonpaths``). An
     assertion missing ``path_glob:`` is treated as **failed** with an actionable
-    reason — previously such assertions were silently skipped, which made
-    misrouted assertions vanish from grading without notice.
+    reason, so a misrouted assertion is named rather than vanishing from grading.
 
     Each check has:
     - path_glob: glob pattern for files (e.g., "/env/fs/agent-visible/submissions/*")
@@ -700,10 +699,8 @@ def evaluate_jsonpath_file_checks(
         description = check.get("description", f"Check: {contains_ci}")
 
         if not path_pattern:
-            # Fail loud — historically this branch silently skipped (effectively
-            # counting as not-passed in the score, but presenting as SKIP in
-            # the reasons text, so misrouted assertions were invisible). Name
-            # what the evaluator actually accepts so the author can fix it.
+            # Named rather than skipped: a skip scores as not-passed while reading
+            # as SKIP, which is how a misrouted assertion goes unnoticed.
             other_path = check.get("path")
             if other_path:
                 reasons_parts.append(

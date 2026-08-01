@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from urllib.parse import urlparse
 
 import pytest
 import yaml
@@ -50,6 +51,21 @@ def _load_compose() -> dict:
 
 def _load_grading() -> GradingConfig:
     return GradingConfig.model_validate(yaml.safe_load((_TASK_DIR / "grading.yaml").read_text()))
+
+
+def _matched_calls(node: object) -> set[tuple[str, str]]:
+    """Every ``(url, method)`` a matcher compares against, at any nesting depth."""
+    if isinstance(node, dict):
+        args = node.get("args") or {}
+        found = (
+            {(args["url"]["equals"], args["method"]["equals"])}
+            if "url" in args and "method" in args
+            else set()
+        )
+        return found.union(*(_matched_calls(value) for value in node.values()), set())
+    if isinstance(node, list):
+        return set().union(*(_matched_calls(item) for item in node), set())
+    return set()
 
 
 class TestPackLayoutOnDisk:
@@ -212,7 +228,7 @@ class TestGradingWiring:
     def test_parses_to_grading_config(self) -> None:
         grading = _load_grading()
         assert grading.state_checks is not None
-        assert grading.transcript_rules is not None
+        assert grading.trace_checks is not None
         assert grading.llm_judge is not None
 
     def test_db_probes_present_with_exact_shape(self) -> None:
@@ -225,24 +241,20 @@ class TestGradingWiring:
         assert deliv_expect["path"] == "$.rows[0].resolution_path"
         assert deliv_expect["equals"] == "reschedule"
 
-    def test_required_actions_present_with_exact_urls(self) -> None:
+    def test_trace_constraints_address_the_packs_own_endpoints(self) -> None:
         grading = _load_grading()
-        actions = {a.action_id: a for a in grading.transcript_rules.required_actions}
-        assert set(actions) == {"search_policy", "create_case", "annotate_deliv"}
-        expected = {
-            "search_policy": ("http://policy-search:8000/search", "POST"),
-            "create_case": ("http://crm:8000/cases", "POST"),
-            "annotate_deliv": ("http://delivery-tracker:8000/deliveries/4021", "PATCH"),
+        matched = _matched_calls(grading.trace_checks.model_dump())
+        assert matched == {
+            ("http://policy-search:8000/search", "POST"),
+            ("http://crm:8000/cases", "POST"),
+            ("http://delivery-tracker:8000/deliveries/4021", "PATCH"),
         }
-        for action_id, (url, method) in expected.items():
-            action = actions[action_id]
-            assert action.arguments["url"] == url
-            assert action.arguments["method"] == method
-            assert set(action.compare_args) == {"url", "method"}
+        unknown = {urlparse(url).netloc for url, _ in matched} - _APP_HOSTS
+        assert not unknown, f"constraints address {unknown}, which this pack has no service for"
 
     def test_weights_sum_and_threshold(self) -> None:
         grading = _load_grading()
         weights = grading.combine.weights
-        assert weights == {"state_checks": 0.6, "transcript_rules": 0.15, "llm_judge": 0.25}
+        assert weights == {"state_checks": 0.6, "trace_checks": 0.25, "llm_judge": 0.15}
         assert abs(sum(weights.values()) - 1.0) < 1e-9
         assert grading.combine.pass_threshold == 0.6

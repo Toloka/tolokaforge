@@ -130,9 +130,8 @@ class StateChecker:
         - ``contains_ci``: substring (case-insensitive)
 
         Assertions with an unrecognized operator (e.g. ``op: gte`` /
-        ``expected: 5``) are treated as **failed** with an actionable reason —
-        previously they silently satisfied as long as the path existed, turning
-        strict-looking assertions into no-ops.
+        ``expected: 5``) are treated as **failed** with an actionable reason,
+        because a strict-looking assertion that cannot fail is worse than none.
 
         Args:
             state: Final environment state
@@ -259,12 +258,10 @@ class StateChecker:
                         )
 
                 else:
-                    # No recognized operator — treat as FAILED with an actionable
-                    # reason. Previously this branch silently satisfied any assertion
-                    # whose JSONPath existed, so a misspelled or unsupported operator
-                    # (e.g. ``op: gte`` / ``expected: 5``) turned a strict-looking
-                    # assertion into a no-op. Fail loud and name which operators the
-                    # checker actually consumes so the author can fix it.
+                    # A misspelled or unsupported operator (``op: gte`` /
+                    # ``expected: 5``) would otherwise turn a strict-looking assertion
+                    # into one that passes wherever the path exists, so name the
+                    # operators the checker consumes and fail.
                     unknown_keys = sorted(
                         k for k in assertion if k not in {"path", "path_glob", "description"}
                     )

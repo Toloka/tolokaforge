@@ -298,10 +298,11 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 
 ## Grading Tips
 
-- Prefer `state_checks.jsonpaths` for deterministic, objective checks.
+- Prefer `state_checks.jsonpaths` for deterministic, objective checks — four operators, exactly one per assertion ([vocabulary](GRADING.md#the-jsonpaths-assertion-vocabulary)).
 - Use `transcript_rules` to enforce tool usage patterns.
-- Use `trace_checks` when the condition is about **order, scoped absence, or an argument the flat presence checks cannot express** — see [Trace Checks](GRADING.md#trace-checks).
-- Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks).
+- Use `trace_checks` when the condition is about **order, scoped absence, or an argument the flat presence checks cannot express** — see [Trace Checks](GRADING.md#trace-checks). The worked pack is [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence.
+- Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs.
+- **Weight every component the pack configures.** A configured component missing from `combine.weights` is dropped by one substrate and folded in at an invented `1.0` by the other (#744).
 - For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding — unless an idle agent already satisfies the state, in which case `transcript_rules` needs a weight of its own (below).
 
 See `docs/REFERENCE.md` for full schemas.

@@ -801,7 +801,7 @@ runner is safe **for this key** (core-side `extra="ignore"`).
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Four keys carry the lock:
+being dropped. Five keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -812,22 +812,25 @@ being dropped. Four keys carry the lock:
 - `transcript_rules.min_assistant_turns`, which a runner image older than this release
   does not declare: the current engine emits it (as `null` when the pack declares no
   floor), so a **new engine against an old runner image** is rejected the same way.
+- `trace_checks`, a whole grading section a runner image older than this release does
+  not declare: the current engine emits it (as `null` when the pack declares no
+  constraints) on **every** pack, so a **new engine against an old runner image** is
+  rejected the same way, whether or not the pack grades a trajectory.
 - `combine_method`, whose declared value domain both gained and lost members in this
   release. The runner `GradingConfig` validates it against the closed set in
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
   rejected by an older image, and an **old engine** translating a name the set no
   longer holds is rejected by a current one.
 
-The first two bite on **every** pack carrying a non-empty `state_checks:` block and
-`min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, whether
-or not the pack declares the key, because the adapter emits all three
-unconditionally. `combine_method` bites only on a pack declaring an affected value —
-`weighted` and `all` cross in either direction. So `state_checks` and
-`transcript_rules` each require engine and runner image from the same release, and
-`make docker-build-core` is part of every engine upgrade that touches either block or
-runs a pack declaring `any`. (`db_hash_check` was never declared on the runner config
-at all, so no engine ever emitted it and it is not part of this lock — a populated
-`db_hash_check` is rejected core-side at config load.)
+The first two bite on **every** pack carrying a non-empty `state_checks:` block,
+`min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
+`trace_checks` on **every** pack at all — whether or not the pack declares the key,
+because the adapter emits all four unconditionally. `combine_method` bites only on a
+pack declaring an affected value — `weighted` and `all` cross in either direction. So
+a new engine requires a runner image from the same release for any pack, and
+`make docker-build-core` is part of every engine upgrade. (`db_hash_check` was never
+declared on the runner config at all, so no engine ever emitted it and it is not part
+of this lock — a populated `db_hash_check` is rejected core-side at config load.)
 
 **This lock is narrower than the proto3 rule that governs the rest of registration.**
 `engine_protocol_version` and `call_id` are proto message fields, which an older
@@ -844,6 +847,34 @@ narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
 pack configuring a hash source *and* non-empty `jsonpaths` reaches the runner with
 nothing saying how to fold them, and the presence gate rejects it. That rejection is
 correct — the alternative is grading the trial by a rule the author never chose.
+
+### The `jsonpaths` assertion vocabulary
+
+One assertion names a `path` and **exactly one** comparison from a closed set of
+four:
+
+| operator | holds when |
+|---|---|
+| `equals` / `equals_ci` | the value at the path is equal, case-sensitively or not |
+| `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
+
+The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
+narrower than the fifteen [`trace_checks` operators](#operators): a second comparison
+at one path has no conjunctive reading and is almost always a typo, so **two
+operators on one assertion is a failed check**, not a conjunction. So is **no**
+operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
+passing as an existence check, because a strict-looking assertion that silently
+cannot fail is worse than none. A path that resolves to nothing is a failed check
+too. A path resolving to several values holds when **any** of them satisfies the
+comparison.
+
+**`path_glob` is a different assertion with a narrower vocabulary.** It matches
+written files by shell glob rather than the state by JSONPath — the way a
+file-writing task avoids asserting on a filename the agent chose — and the two
+substrates read it differently: core-side it applies any of the four operators to the
+matched entries of `state["filesystem"]`, while the runner routes it to a
+file-content evaluator that reads only `contains_ci`. Write `path_glob` with
+`contains_ci` for a check that means the same thing wherever the trial was graded.
 
 ### Folding the hash verdict with `jsonpaths`
 
@@ -1162,25 +1193,44 @@ grading must not depend on it.
 ### Operators
 
 A predicate is the **conjunction of its operators**: every one it declares must
-hold, so `{ gt: 0, lt: 100 }` is a range. An operator counts as declared when its
-value is present; `{ equals: null }` therefore expresses nothing, which costs
-nothing, because a `None` field is unmatched anyway.
+hold, so `{ gt: 0, lt: 100 }` is a range. Fifteen operators:
 
 | operator | holds when |
 |---|---|
 | `equals` / `not_equals` | the value is (is not) equal |
-| `equals_ci` | equal, case-insensitively |
+| `equals_ci` | a string equal to it, case-insensitively |
 | `contains` / `contains_ci` | the value contains it, case-sensitively or not |
-| `regex` | the pattern searches the value |
-| `gt` / `gte` / `lt` / `lte` | the numeric comparison holds |
+| `regex` | the pattern **searches** the value — unanchored, and only a string matches |
+| `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
 | `in_` / `not_in` | the value is (is not) a member of the list |
-| `len_gt` / `len_gte` | the value's length exceeds the bound |
+| `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
 | `exists` | the field is present (`exists: false` is the absence primitive) |
 
-`contains` **recurses**: against a list or a set it holds when any element
-contains the needle, against a dict when any value does, and against two
-non-strings it falls back to equality. So `args: { items: { contains: W1 } }`
-matches a list holding `W1` and a dict holding it as a value.
+`contains` **recurses**: against a list, tuple or set it holds when any element
+contains the needle, against a dict when any **value** does — keys are never
+searched — and against two non-strings it falls back to equality. So
+`args: { items: { contains: W1 } }` matches a list holding `W1` and a dict holding
+it as a value.
+
+**The numeric comparisons read a real number and nothing else.** A `bool` is not a
+number here and neither is a numeric *string*, so `{ gt: 0 }` is false against
+`true` and against `"5"` — a JSON body that quotes its numbers needs `equals` on the
+string, not a range. `len_gt` / `len_gte` are the same shape one level up: they hold
+only where the value has a length (a string, list, dict), so `{ len_gt: 0 }` reads
+"non-empty" and is false against a number.
+
+Two limits worth meeting here rather than in a silently ignored predicate:
+
+- **`equals: null` is not expressible.** An operator counts as declared when its
+  value is not `null`, which is what keeps a predicate meaning the same thing after
+  the gRPC round trip that writes every unset field as `null`. So "this argument is
+  JSON `null`" cannot be written; `exists: false` covers the far commoner "the
+  argument is absent".
+- **There is no `not_contains` / `not_regex`.** A predicate cannot negate a
+  substring or pattern match — `negate` operates on a whole constraint, not on one
+  predicate — so "select the calls whose url does *not* contain `/admin`" is not a
+  *selection*. "Never another customer's record" is `not_equals` on the argument,
+  which does ship.
 
 There is no `absent` operator — it is `exists: false`, and an operator named
 `absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
@@ -1387,6 +1437,50 @@ agent satisfy half of one route and half of another: `any_of: [A_step1, B_step1]
 combined with `any_of: [A_step2, B_step2]` passes for an agent that did `A_step1`
 and `B_step2`, which is neither route. Grading genuinely alternative routes needs
 the paths declared as wholes, which is #680's `alternatives`.
+
+**Every component the pack configures needs a weight of its own.** A configured
+component absent from `combine.weights` is dropped from the core engine's fold and
+folded in by the runner at an invented `1.0` (#744), so the two substrates grade the
+same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` holds
+every shipped example pack to that, reading the combine that is *effective* after
+the project layer merges.
+
+### A worked pack
+
+[`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
+grades the process alongside the substrate. Its three constraints are the three
+shapes an author reaches for most, and each one is written so a plausible wrong
+trajectory fails it and the other two pass:
+
+| constraint | kind | the wrong process it catches |
+|---|---|---|
+| the query rides in the `POST /search` body | `present` over `args: { json.q: { len_gt: 0 } }` | the query went somewhere other than the body the service reads |
+| the policy is read before the case is written | `before`, `first` / `first` | the resolution was recorded first and justified afterwards |
+| the delivery is not annotated before the policy read | `absent_before` | the agent guessed the path and wrote it onto the delivery |
+
+The first is the assertion `transcript_rules` cannot express at all: it matches a
+**nested argument path** inside the request body, where `required_actions` compares
+whole argument values for exact equality.
+
+### Declared limits, and what owns each
+
+Named here so an author meets them in the docs rather than in a check that quietly
+does nothing. Each is a separate issue's to close; none is worked around in the
+evaluator.
+
+| limit | owner |
+|---|---|
+| Tool names are not checked against the task's tool set, argument names not against the tool's JSON schema, and a `regex` is not compiled until grading | #679 |
+| `severity: gate` and `alternatives` — a check that must hold without being scored, and genuinely alternative routes | #680 |
+| Two arguments on two different calls cannot be correlated (`this call's id equals that call's id`) | #681 |
+| A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
+| Migrating an existing rubric criterion into a constraint | #683 |
+| `executor` never distinguishes a user-side call, because no code path builds one | #688 |
+| A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
+| A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
+
+Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable
+and stays so, because it is not compared across substrates.
 
 ---
 
@@ -1900,8 +1994,8 @@ empty where the runner's is scored. The canonical differential therefore proves 
 dispatch over deterministic components, which is the whole of what is provable for
 this key.
 
-`combine_method` is one of the three keys that lock an engine to a runner image built
-from the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
+`combine_method` is one of the keys that lock an engine to a runner image built from
+the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
 § "Runner-engine version lock (both directions)".
 
 The `weighted` mean:
