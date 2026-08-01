@@ -34,21 +34,35 @@ from tolokaforge.core.run_display_events import (
     DEFAULT_PROBE_MAX_BUCKETS,
 )
 
-# Rubric / Criterion / LLMJudgeConfig / ToolExpectations have a single canonical
-# home in tolokaforge.runner.models — they cross both the YAML grading block and
-# the gRPC wire (serialized inside TrialSpec). Re-exported here so existing
-# ``core.models`` references (e.g. GradingConfig.llm_judge) resolve without a
-# second, drifting definition. CriterionResult is the judge's per-criterion
-# output and is consumed by the host-side Grade model below.
+# Rubric / Criterion / LLMJudgeConfig / ToolExpectations and the whole trace-checks
+# vocabulary have a single canonical home in tolokaforge.runner.models — they cross
+# both the YAML grading block and the gRPC wire (serialized inside TrialSpec).
+# Re-exported here so existing ``core.models`` references (e.g.
+# GradingConfig.llm_judge) resolve without a second, drifting definition.
+# CriterionResult is the judge's per-criterion output and is consumed by the
+# host-side Grade model below.
 #
 # The direction is forced: this import is top-of-file, so declaring any of these
 # core-side and importing it runner-side raises on a partially-initialised module.
+from tolokaforge.runner.models import AbsentBeforeConstraint as AbsentBeforeConstraint
+from tolokaforge.runner.models import AbsentBetweenConstraint as AbsentBetweenConstraint
+from tolokaforge.runner.models import AbsentConstraint as AbsentConstraint
+from tolokaforge.runner.models import AdjacencyView as AdjacencyView
+from tolokaforge.runner.models import AnchorQuantifier as AnchorQuantifier
+from tolokaforge.runner.models import AnchorSide as AnchorSide
+from tolokaforge.runner.models import BeforeConstraint as BeforeConstraint
+from tolokaforge.runner.models import CountConstraint as CountConstraint
 from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
 from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
+from tolokaforge.runner.models import ImmediatelyBeforeConstraint as ImmediatelyBeforeConstraint
 from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import MatcherSide as MatcherSide
+from tolokaforge.runner.models import OnMissing as OnMissing
+from tolokaforge.runner.models import PresentConstraint as PresentConstraint
+from tolokaforge.runner.models import Quantifier as Quantifier
 from tolokaforge.runner.models import RecordedToolCall as RecordedToolCall
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
@@ -59,6 +73,12 @@ from tolokaforge.runner.models import StackPatch as StackPatch
 from tolokaforge.runner.models import ToolCallRecorder as ToolCallRecorder
 from tolokaforge.runner.models import ToolExecutorIdentity as ToolExecutorIdentity
 from tolokaforge.runner.models import ToolExpectations as ToolExpectations
+from tolokaforge.runner.models import TraceChecksConfig as TraceChecksConfig
+from tolokaforge.runner.models import TraceConstraint as TraceConstraint
+from tolokaforge.runner.models import TraceConstraintExpr as TraceConstraintExpr
+from tolokaforge.runner.models import TraceMatcher as TraceMatcher
+from tolokaforge.runner.models import TurnWindow as TurnWindow
+from tolokaforge.runner.models import ValuePredicate as ValuePredicate
 
 # Declared in the ``tolokaforge.tools.registry`` leaf beside ``ToolResult``;
 # re-exported here so core-side callers reach one module for the whole
@@ -2090,6 +2110,7 @@ class GradingConfig(BaseModel):
     combine: GradingCombineConfig
     state_checks: StateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
+    trace_checks: TraceChecksConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
 

@@ -57,6 +57,20 @@ transcript_rules:
     - info: "Widget W1 is now closed"
       required: true
 
+trace_checks:
+  constraints:
+    - id: wrote_the_file_before_closing
+      description: the report is written before widget W1 is closed
+      require:
+        before:
+          left: { quantifier: any, match: { kind: tool_call, tool: { equals: write_file } } }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: close_widget }
+              args: { widget_id: { equals: W1 } }
+
 llm_judge:
   rubric:
     criteria:

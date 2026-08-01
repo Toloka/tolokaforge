@@ -206,8 +206,10 @@ _CONTAINER_FIELDS = frozenset(
         "core:GradingConfig.combine",
         "core:GradingConfig.state_checks",
         "core:GradingConfig.transcript_rules",
+        "core:GradingConfig.trace_checks",
         "runner:GradingConfig.state_checks",
         "runner:GradingConfig.transcript_rules",
+        "runner:GradingConfig.trace_checks",
     }
 )
 
@@ -795,7 +797,12 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
 def test_adapter_translation_carries_every_runner_key(test_data_dir):
     pack = test_data_dir / "grading_parity" / _ALL_KEYS_TASK
     declared = _declared_author_keys(yaml.safe_load((pack / "grading.yaml").read_text()))
-    authorable = {item.author_key for item in GRADING_KEYS if item.core_field is not None}
+    # A family root carries no field of its own — its leaves do — so authorability
+    # is "the core config accepts this key", which a root satisfies by being the
+    # block its leaves live under.
+    authorable = {
+        item.author_key for item in GRADING_KEYS if item.core_field is not None or item.family_root
+    }
     assert declared == authorable, (
         f"{pack / 'grading.yaml'} must declare every manifest key the core config "
         f"accepts; missing {sorted(authorable - declared)}"
@@ -806,6 +813,7 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
         "GradingConfig": grading,
         "StateChecksConfig": grading.state_checks,
         "TranscriptRulesConfig": grading.transcript_rules,
+        "TraceChecksConfig": grading.trace_checks,
     }
 
     for item in GRADING_KEYS:

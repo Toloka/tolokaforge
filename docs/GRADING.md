@@ -1023,6 +1023,197 @@ otherwise. Old engine + new runner is safe **for this key** (core-side
 
 ---
 
+## Trace Checks
+
+`trace_checks` states conditions on **what the agent did and in what order**,
+evaluated over the [trial event timeline](#trial-event-timeline). Where
+`transcript_rules` asks flat, unordered, exact-equality presence questions,
+`trace_checks` expresses ordering, scoped negation, non-equality argument
+predicates, nested argument paths, counting, and a call's status or result.
+
+**Not yet scored.** The block is validated at load and crosses to both substrates
+as one model; no evaluator reads it yet, so it contributes no component score.
+Tracked by **#678**.
+
+### The config surface
+
+```yaml
+trace_checks:
+  constraints:
+    - id: lookup_before_denial                  # unique within the pack
+      description: "payment looked up before the duplicate-refund case is denied"
+      weight: 2.0                               # default 1.0
+      on_missing: fail                          # fail (default) | pass
+      within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
+      require:
+        before:
+          left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: billing_api_get_payment },
+                                               args: { payment_id: { equals: "PAY-664306" } } } }
+          right: { quantifier: first, match: { kind: tool_call, tool: { equals: servicenow_csm_update_case },
+                                               args: { u_resolution_code: { equals: denied_ineligible } } } }
+```
+
+`require` carries **exactly one** constraint kind, and each kind's value is that
+kind's own payload. Two conditions are an `all_of` over two expressions. Every
+model is `extra="forbid"`, so a misspelled operator, kind or matcher field fails
+at `tolokaforge validate` rather than grading as unset.
+
+### Matchers
+
+`kind` is required on every matcher and nothing is inferred from which predicates
+are present, so what a matcher selects is readable from the YAML. Which fields
+each kind may carry a predicate on:
+
+| `kind` | matchable |
+|---|---|
+| `tool_call` | `tool`, `executor`, `args` (nested paths), and `status` / `result` **read from the paired tool result** |
+| `tool_result` | `tool`, `executor`, `status`, `result` |
+| `assistant_message` | `text` |
+| `user_message` | `text` |
+
+A predicate on a field the kind never carries is a **load error**. That is what
+makes the timeline's rule — a predicate over a `None` field is unmatched, never
+vacuously true — safe: without it an author's typo produces a silently unmatchable
+matcher, and the default `on_missing` reports that as the agent's failure.
+
+`kind: tool_call` selecting on its own outcome is the only way to write "a failed
+call to X with argument Y", because `arguments` live on the call event and
+`status` on its result. A matched `tool_call` contributes the **call event's**
+position to ordering, so `before` means "requested before".
+
+`args` addresses nested argument paths by dotted segments, so
+`args: { body.resolution_path: { exists: true } }` reaches inside a request body.
+
+**`latency_seconds` is not matchable.** Wall time is not compared across
+substrates — it is excluded from the timeline parity suite's compared fields — so
+grading must not depend on it.
+
+### Operators
+
+A predicate is the **conjunction of its operators**: every one it declares must
+hold, so `{ gt: 0, lt: 100 }` is a range. An operator counts as declared when its
+value is present; `{ equals: null }` therefore expresses nothing, which costs
+nothing, because a `None` field is unmatched anyway.
+
+| operator | holds when |
+|---|---|
+| `equals` / `not_equals` | the value is (is not) equal |
+| `equals_ci` | equal, case-insensitively |
+| `contains` / `contains_ci` | the value contains it, case-sensitively or not |
+| `regex` | the pattern searches the value |
+| `gt` / `gte` / `lt` / `lte` | the numeric comparison holds |
+| `in_` / `not_in` | the value is (is not) a member of the list |
+| `len_gt` / `len_gte` | the value's length exceeds the bound |
+| `exists` | the field is present (`exists: false` is the absence primitive) |
+
+`contains` **recurses**: against a list or a set it holds when any element
+contains the needle, against a dict when any value does, and against two
+non-strings it falls back to equality. So `args: { items: { contains: W1 } }`
+matches a list holding `W1` and a dict holding it as a value.
+
+There is no `absent` operator — it is `exists: false`, and an operator named
+`absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
+not need. A predicate declaring **no** operator is rejected at load.
+
+### The constraint vocabulary — ten members
+
+| kind | payload, by position | meaning | `on_missing` anchor |
+|---|---|---|---|
+| `present` | `match` | at least one event matches (LTLf `F A`) | the match |
+| `absent` | `match` | no event matches (`G ¬A`) | rejected |
+| `count` | `match`, `min`, `max` | the match count is within the bounds | rejected |
+| `before` | `left`, `right` | ordering under both quantifiers | both sides |
+| `immediately_before` | `left`, `right`, `among` | adjacency in the named view (`A ∧ X B`) | both sides |
+| `absent_before` | `forbidden`, `anchor` | `¬A U B` — the no-prefill primitive | `anchor` |
+| `absent_between` | `forbidden`, `start`, `end` | nothing forbidden inside the window | `start`, `end` |
+| `all_of` | `list` of expressions | conjunction | delegated |
+| `any_of` | `list` of expressions | disjunction | delegated |
+| `negate` | one expression | negation | delegated |
+
+`on_missing` is rejected on `absent` and `count`: their verdict *is* about
+matching nothing, so a policy for "the matcher found nothing" would answer the
+question the constraint asks.
+
+There is no `after`, because it reduces exactly:
+
+> `after(left = L:qL, right = R:qR)` ≡ `before(left = R:qR, right = L:qL)`
+>
+> The two sides swap position; each quantifier **rides with its own matcher** and
+> is *not* swapped.
+
+### Quantifiers, and the closed form
+
+`Quantifier = {any, all, first, last}`, required on every side of `before` and
+`immediately_before`. `first` / `last` reduce a side to its earliest / latest
+match; `any` / `all` quantify over the side's matched set. Every combination
+reduces to one comparison of extremes:
+
+| `left` | `right` | `before` holds iff |
+|---|---|---|
+| `any` | `any` | `min(L) < max(R)` |
+| `any` | `all` | `min(L) < min(R)` |
+| `all` | `any` | `max(L) < max(R)` |
+| `all` | `all` | `max(L) < min(R)` |
+| `first` | *q* | as `any`/*q* with `L := {min(L)}` |
+| `last` | *q* | as `all`/*q* with `L := {max(L)}` |
+
+and symmetrically on the right: `right: first` reduces `R := {min(R)}`,
+`right: last` reduces `R := {max(R)}`.
+
+**Two side types.** A quantifier is a per-side field, never fused into the kind:
+
+- `MatcherSide` = `{quantifier: any | all | first | last, match}` — the two sides
+  of `before` and `immediately_before`, where the position is genuinely
+  quantified.
+- `AnchorSide` = `{quantifier: first | last, match}` — a window anchor. `any` and
+  `all` are **rejected at load**: over a prefix or an interval `any` collapses
+  onto `first` and `all` onto `last`, so admitting all four would ship two
+  verdicts under four spellings. One selected anchor is also what makes a window
+  a single interval rather than a cross-product of every start against every end.
+- `forbidden` is a **bare matcher with no quantifier**: "no A occurs in the
+  window" is inherently universal over A, so a quantifier there names nothing.
+
+**The window rules:**
+
+- `absent_before` — the window is `[0, anchor.position)`, every position strictly
+  before the selected anchor.
+- `absent_between` — the window is `(start.position, end.position)`, strictly
+  between the selected anchors.
+- An **inverted or empty** window (`start.position >= end.position`) is
+  *unmatched*, not vacuously true: the anchors did not occur in the declared
+  order, so `on_missing` decides and defaults to a named failure.
+
+### `immediately_before` requires an explicit `among`
+
+Closed set: `tool_calls`, `tool_results`, `messages`, `events`. **There is no
+default.** Events interleave inside a turn — a call's own result sits between it
+and the next call — so every candidate default is wrong for some common intent:
+`tool_calls` cannot express confirm-before-acting, where one side is a message,
+and `events` cannot express two consecutive calls.
+
+### `within` — the turn window
+
+`{first_turn, last_turn}`, inclusive, over the timeline's `turn_index`,
+restricting every matcher in that constraint. The opening user prompt **shares
+turn 0** with the first assistant turn, so `first_turn: 0` includes it. "Before
+the first user message" is therefore not expressible as a window — that window is
+always empty — and the intent is `absent_before`.
+
+### Matching a result is scoped to successful calls (#717)
+
+A matcher carrying a `result` predicate must also carry a `status` predicate whose
+**only** operator is `equals`, valued `success`. Any other status predicate —
+`not_equals: error`, `in_: [success, timeout]`, `exists: true`, or none at all —
+is rejected at load naming #717.
+
+A successful call's result text is byte-identical across substrates and pinned by
+the timeline parity suite. A **failed** call's text is not: the two substrates
+word the same failure differently (#717). So a result predicate is admitted only
+where portability holds. To assert that a call failed, match on `status` — which
+agrees everywhere — rather than on the failure text.
+
+---
+
 ## LLM Judge (Rubric Grading)
 
 The `llm_judge` component grades subjective quality against a **structured

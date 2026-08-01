@@ -35,6 +35,7 @@ from tolokaforge.runner.models import (
     KeyAccounting,
     KeyAccountingRecord,
     StateChecksConfig,
+    TraceChecksConfig,
     TranscriptRulesConfig,
 )
 
@@ -79,6 +80,7 @@ CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
 _RUNNER_CONFIG_MODELS: dict[str, tuple[type[BaseModel], tuple[str, ...]]] = {
     "GradingConfig": (GradingConfig, ()),
     "StateChecksConfig": (StateChecksConfig, ("state_checks",)),
+    "TraceChecksConfig": (TraceChecksConfig, ("trace_checks",)),
     "TranscriptRulesConfig": (TranscriptRulesConfig, ("transcript_rules",)),
 }
 

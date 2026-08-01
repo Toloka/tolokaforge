@@ -205,6 +205,14 @@ _TRANSCRIPT_PHRASE_REASON = (
     "than an oversight, and #685 must reconcile the evidence sets and not only the averaging"
 )
 
+_TRACE_CHECKS_UNSCORED_REASON = (
+    "both substrates load and carry the block — one model crosses the adapter "
+    "unchanged, with no per-key translation to drift — but no evaluator reads it yet, "
+    "so the key carries no component score. CONFIG_INPUT is what that is: claiming "
+    "SCORED_CHECK would put the key in the runtime ledger, which would then require a "
+    "recording site for a component nothing produces"
+)
+
 GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="combine.method",
@@ -459,6 +467,27 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
             "required tool's call to have succeeded"
         ),
         tracking_issue=685,
+    ),
+    GradingKey(
+        author_key="trace_checks",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field=None,
+        runner_field=None,
+        reason=_TRACE_CHECKS_UNSCORED_REASON,
+        tracking_issue=678,
+        family_root=True,
+    ),
+    GradingKey(
+        author_key="trace_checks.constraints",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field="TraceChecksConfig.constraints",
+        runner_field="TraceChecksConfig.constraints",
+        reason=_TRACE_CHECKS_UNSCORED_REASON,
+        tracking_issue=678,
     ),
     GradingKey(
         author_key="llm_judge",

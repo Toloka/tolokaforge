@@ -300,6 +300,7 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 
 - Prefer `state_checks.jsonpaths` for deterministic, objective checks.
 - Use `transcript_rules` to enforce tool usage patterns.
+- Use `trace_checks` when the condition is about **order, scoped absence, or an argument the flat presence checks cannot express** — see [Trace Checks](GRADING.md#trace-checks).
 - Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks).
 - For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding — unless an idle agent already satisfies the state, in which case `transcript_rules` needs a weight of its own (below).
 

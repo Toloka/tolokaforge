@@ -20,9 +20,13 @@ from __future__ import annotations
 
 from collections.abc import Sequence
 from dataclasses import dataclass
-from enum import Enum
 from typing import Any
 
+# Declared in the leaf ``trace_event_kind`` and re-exported here so the timeline
+# and the matcher vocabulary that selects on it name one enum. This module cannot
+# own it: ``runner.models`` declares ``TraceMatcher`` and reaching in here for the
+# kind would close a cycle through ``core.models``.
+from tolokaforge.core.grading.trace_event_kind import TraceEventKind as TraceEventKind
 from tolokaforge.core.models import (
     Message,
     MessageRole,
@@ -43,15 +47,6 @@ __all__ = [
     "attempted_calls",
     "build_trial_timeline",
 ]
-
-
-class TraceEventKind(str, Enum):
-    """What a timeline event is."""
-
-    ASSISTANT_MESSAGE = "assistant_message"
-    USER_MESSAGE = "user_message"
-    TOOL_CALL = "tool_call"
-    TOOL_RESULT = "tool_result"
 
 
 @dataclass(frozen=True)
