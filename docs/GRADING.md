@@ -58,11 +58,18 @@ author-facing key is one `GradingKey` entry declaring three axes:
 
 `trace_checks` is the one component where parity is structural rather than
 maintained: both substrates call the same `evaluate_trace_checks` over the same
-timeline, so there is no second implementation to keep in step. The canonical
-suite still drives the two *integration points* — the core engine's
-`grade_trajectory` and the runner's `GradeTrial` — against one authored pack,
-because a substrate can reach a shared evaluator with a differently translated
-config, or not reach it at all.
+timeline, so there is no second implementation to keep in step, and both sides of
+every entry in the family name that one function. The canonical suite still drives
+the two *integration points* — the core engine's `grade_trajectory` and the
+runner's `GradeTrial` — against one authored pack, because a substrate can reach a
+shared evaluator with a differently translated config, or not reach it at all.
+
+**The family is enumerated at leaf granularity**, one entry per constraint kind
+plus one for each per-constraint field, because the ten kinds are independently
+implementable: a kind evaluated on one substrate and skipped on the other is the
+realistic drift shape, and a single `trace_checks.constraints` entry would not
+see it. Each kind owns a fixture pack that must discriminate on both substrates,
+so partial per-constraint coverage cannot land green.
 
 [`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
 makes the manifest load-bearing. Adding a grading field to either substrate's
@@ -230,6 +237,17 @@ on a citation:
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
   [Score Combination](#score-combination).
+- `trace_checks.constraints.weight`, `.on_missing`, `.within` — each still names a
+  pack in the parametrisation that drives its differential, so a key escaping the
+  scored-key lock without one is caught here. Each pack is authored so a build
+  that ignored the field would score its two trials *identically*: the weight pack
+  passes one of two differently-weighted constraints in each trial, the
+  `on_missing` pack pairs an unmatched anchor against a definite wrong order, and
+  the `within` pack moves one call in and out of the turn window.
+- `trace_checks` — the family root declares no field on either substrate, so it
+  has no differential of its own; what its enforcement rests on is its leaves',
+  and the clause asserts at least one member of the family is still reached by the
+  scored-key lock.
 
 Core's verdict there is its own: the fixture commits the `expected_state_hash` of its
 matching state, so `check_hash` produces the verdict in process. **The runner's is
@@ -257,8 +275,21 @@ declared without one.
 | Key | kind | coverage | enforcement |
 |---|---|---|---|
 | `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints.weight` / `.on_missing` / `.within` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
-This is the only `transcript_rules` key claiming score parity — the other six are
+The `trace_checks` rows are the only scored family where **every** member is
+differentially proven in-process, which is what one shared evaluator buys: there
+is no second implementation whose agreement has to be measured, only two
+integration points and one pack per leaf. The ten kinds are
+`present`, `absent`, `count`, `before`, `immediately_before`, `absent_before`,
+`absent_between`, `all_of`, `any_of`, `negate` — the same closed set the evaluator
+and the runtime ledger read, asserted equal across all three sources.
+
+`transcript_rules.min_assistant_turns` is the only `transcript_rules` key claiming
+score parity — the other six are
 `BOTH_SIGNAL_PARITY` (#685), because the core engine averages four always-present
 buckets where the runner takes a fraction of decomposed sub-checks, so the two
 magnitudes differ on a mixed pack. **Its parity rests on a different mechanism than
@@ -280,6 +311,21 @@ are structurally outside the enumeration — the manifest records nested dict ke
 as **declared data**, verified only to live inside a dict-typed field. And a green
 parity suite proves each key *discriminates*, not that its discrimination is
 *correct*.
+
+An author key living inside the **elements** of a `list[SomeModel]` field is the
+one nested position that is *not* declared data. The field walker treats such a
+field as a single leaf — its elements are the shape of one key's value, not
+separate keys — so an entry there names the list in `*_field` and a dotted
+`*_element_path` walked from the element model: `trace_checks.constraints.before`
+is `TraceChecksConfig.constraints` addressed at `require.before`. The canonical
+suite resolves every segment against the model the one before it holds, so a path
+naming a field of the wrong model fails naming that model. Several entries then
+share one field, which is why an element-addressed entry is not counted as
+*claiming* it — the claim is the position inside. Reading declaredness off an
+authored `grading.yaml` follows the same path and descends through the composite
+kinds, so a constraint kind written only inside an `all_of` counts as declared;
+descent stops outside a constraint kind, because a matcher's `args` keys are the
+author's own argument names.
 
 It also cannot see a key the two substrates read from **different evidence**. The
 manifest freezes config keys and field paths, not evaluation sources, so

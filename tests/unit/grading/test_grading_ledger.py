@@ -321,6 +321,26 @@ def test_every_constraint_kind_the_evaluation_reaches_is_accounted_for():
     }
 
 
+def test_only_the_kinds_a_block_declares_have_to_be_accounted_for():
+    """Eleven ledger keys name one list field, so populated is read per element path.
+
+    The block below declares three of the ten kinds. Reading the ``constraints``
+    field alone would mark all ten populated and demand a recording site for
+    seven kinds nothing evaluated, failing every task that writes less than the
+    whole vocabulary.
+    """
+    config = GradingConfig(trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK))
+    accounted = evaluate_trace_checks(_inspected_then_shipped(), config.trace_checks).accounted_keys
+
+    assert audit_accounted_keys(config, accounted).error is None
+
+    # The other half, so the pass above is not the ledger looking at nothing: with
+    # the accounting dropped the audit names the kinds the block does declare.
+    starved = audit_accounted_keys(config, {})
+    assert TRACE_CONSTRAINT_KEY_BY_KIND["before"] in starved.error
+    assert TRACE_CONSTRAINT_KEY_BY_KIND["present"] not in starved.error
+
+
 def test_a_trial_with_no_events_accounts_every_declared_kind_as_skipped():
     """Nothing is evaluated there, and every key the block declares says so."""
     result = evaluate_trace_checks(
@@ -676,44 +696,78 @@ def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_gr
     assert response.grade.components.trace_checks == -1.0
     assert list(response.grade.trace_checks) == []
     assert response.grade.binary_pass is False
+    # The skip is asserted together with the unscored component: a component the
+    # runner silently declined to score is as opaque to the task author as one it
+    # never accounted for.
+    assert (
+        f"{TRACE_CONSTRAINTS_KEY} skipped: the trial's timeline carries no events"
+        in response.grade.reasons
+    )
+    assert (
+        f"{TRACE_CONSTRAINT_KEY_BY_KIND['all_of']} skipped: the trial's timeline carries no "
+        "events" in response.grade.reasons
+    )
 
 
+@pytest.mark.parametrize(
+    ("evaluator_name", "grading", "unaccounted_key", "message"),
+    [
+        (
+            "evaluate_transcript_rules",
+            {
+                "combine_method": "weighted",
+                "weights": {"transcript_rules": 1.0},
+                "pass_threshold": 0.7,
+                "transcript_rules": {"must_contain": ["done"]},
+            },
+            "transcript_rules.must_contain",
+            [{"role": "assistant", "content": "All done"}],
+        ),
+        (
+            "evaluate_trace_checks",
+            _TRACE_CHECKS_GRADING,
+            TRACE_CONSTRAINT_KEY_BY_KIND["all_of"],
+            [{"role": "assistant", "content": "The widget was shipped"}],
+        ),
+    ],
+)
 def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
-    runner_service, mock_grpc_context, monkeypatch
+    evaluator_name,
+    grading,
+    unaccounted_key,
+    message,
+    runner_service,
+    mock_grpc_context,
+    monkeypatch,
 ):
     """Fault injection: the drift the ledger exists to catch, end to end.
 
     The real evaluator still runs and still scores; only its per-author-key
-    accounting is dropped — what a future ``TranscriptRulesConfig`` key that
-    nothing decomposes would look like on the wire.
+    accounting is dropped — what a key that nothing decomposes would look like on
+    the wire. The trace-checks row is the leaf-granular case: the block key alone
+    being accounted would leave a kind evaluated by neither substrate invisible,
+    so the key the error must name is the kind's.
     """
     from tolokaforge.runner import service as service_module
 
-    real = service_module.evaluate_transcript_rules
+    real = getattr(service_module, evaluator_name)
 
     def drifted(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
 
-    monkeypatch.setattr(service_module, "evaluate_transcript_rules", drifted)
-
-    grading = {
-        "combine_method": "weighted",
-        "weights": {"transcript_rules": 1.0},
-        "pass_threshold": 0.7,
-        "transcript_rules": {"must_contain": ["done"]},
-    }
+    monkeypatch.setattr(service_module, evaluator_name, drifted)
 
     response = _grade(
         runner_service,
         mock_grpc_context,
-        "ledger_drift:0",
+        f"ledger_drift_{evaluator_name}:0",
         grading,
-        llm_messages=[{"role": "assistant", "content": "All done"}],
+        llm_messages=message,
     )
 
     assert response.success is False
-    assert "transcript_rules.must_contain" in response.error
-    assert entry("transcript_rules.must_contain").runner_evaluator in response.error
+    assert unaccounted_key in response.error
+    assert entry(unaccounted_key).runner_evaluator in response.error
     assert not response.HasField("grade")
 
 

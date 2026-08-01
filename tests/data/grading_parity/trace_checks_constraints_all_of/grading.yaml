@@ -1,0 +1,23 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# The violating trial satisfies the first sub-term and fails the second, so a
+# conjunction that stopped at its first sub-expression would score the pack's two
+# trials identically.
+trace_checks:
+  constraints:
+    - id: the_case_was_written_up_and_closed
+      description: "the agent both files the report and closes the case"
+      require:
+        all_of:
+          - present:
+              match:
+                kind: tool_call
+                tool: { equals: write_report }
+          - present:
+              match:
+                kind: tool_call
+                tool: { equals: close_case }

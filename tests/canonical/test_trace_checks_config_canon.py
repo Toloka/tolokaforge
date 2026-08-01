@@ -99,5 +99,8 @@ def test_the_block_reaches_the_runner_as_the_object_the_engine_holds(test_data_d
     )
     assert runner_grading.trace_checks == core_config.trace_checks
     assert [item.id for item in runner_grading.trace_checks.constraints] == [
-        "wrote_the_file_before_closing"
+        "wrote_the_file_before_closing",
+        "closed_the_widget_exactly_once",
+        "never_deleted_a_widget_unannounced",
+        "closed_straight_after_writing_and_told_nobody_meanwhile",
     ]

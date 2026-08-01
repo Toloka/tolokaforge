@@ -1,0 +1,57 @@
+# The two trials make the same three calls with the same arguments and differ
+# only in where the second payment lookup sits. The violating one still has *a*
+# lookup before the denial, so a reading that quantified the left side any rather
+# than all would score the two identically.
+satisfying:
+  messages:
+    - role: user
+      content: "The customer says this refund is a duplicate. Deny it."
+    - role: assistant
+      content: "Checking both payments first."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "amount": 42.0}'
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664307" }
+          output: '{"payment_id": "PAY-664307", "amount": 42.0}'
+    - role: assistant
+      content: "They are duplicates — denying the case."
+      tool_calls:
+        - tool_name: servicenow_csm_update_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-1042", u_resolution_code: denied_ineligible }
+          output: '{"case_id": "CS-1042", "state": "closed"}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "The customer says this refund is a duplicate. Deny it."
+    - role: assistant
+      content: "Checking one payment, then denying."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "amount": 42.0}'
+        - tool_name: servicenow_csm_update_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-1042", u_resolution_code: denied_ineligible }
+          output: '{"case_id": "CS-1042", "state": "closed"}'
+    - role: assistant
+      content: "Checking the second payment after the fact."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664307" }
+          output: '{"payment_id": "PAY-664307", "amount": 42.0}'
+  state: {}

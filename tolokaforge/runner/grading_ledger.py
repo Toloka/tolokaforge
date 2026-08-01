@@ -31,6 +31,7 @@ from tolokaforge.core.grading.key_manifest import (
     scored_keys_claiming_runner,
 )
 from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
     GradingConfig,
     KeyAccounting,
     KeyAccountingRecord,
@@ -77,27 +78,25 @@ CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
 TRACE_CONSTRAINTS_KEY = _manifest_key("trace_checks.constraints")
 
 TRACE_CONSTRAINT_KEY_BY_KIND: Mapping[str, str] = {
-    "present": f"{TRACE_CONSTRAINTS_KEY}.present",
-    "absent": f"{TRACE_CONSTRAINTS_KEY}.absent",
-    "count": f"{TRACE_CONSTRAINTS_KEY}.count",
-    "before": f"{TRACE_CONSTRAINTS_KEY}.before",
-    "immediately_before": f"{TRACE_CONSTRAINTS_KEY}.immediately_before",
-    "absent_before": f"{TRACE_CONSTRAINTS_KEY}.absent_before",
-    "absent_between": f"{TRACE_CONSTRAINTS_KEY}.absent_between",
-    "all_of": f"{TRACE_CONSTRAINTS_KEY}.all_of",
-    "any_of": f"{TRACE_CONSTRAINTS_KEY}.any_of",
-    "negate": f"{TRACE_CONSTRAINTS_KEY}.negate",
+    "present": _manifest_key("trace_checks.constraints.present"),
+    "absent": _manifest_key("trace_checks.constraints.absent"),
+    "count": _manifest_key("trace_checks.constraints.count"),
+    "before": _manifest_key("trace_checks.constraints.before"),
+    "immediately_before": _manifest_key("trace_checks.constraints.immediately_before"),
+    "absent_before": _manifest_key("trace_checks.constraints.absent_before"),
+    "absent_between": _manifest_key("trace_checks.constraints.absent_between"),
+    "all_of": _manifest_key("trace_checks.constraints.all_of"),
+    "any_of": _manifest_key("trace_checks.constraints.any_of"),
+    "negate": _manifest_key("trace_checks.constraints.negate"),
 }
 """The author key each constraint kind is accounted under, one line per kind.
 
 Written out rather than comprehended over
 :data:`~tolokaforge.runner.models.TRACE_CONSTRAINT_KINDS`, so the lock comparing
 the two compares two sources: a comprehension would assert the vocabulary against
-itself and pass with a kind nothing accounts for.
-
-The manifest addresses the constraint list as one key and carries no entry per
-kind, so — unlike the constants above — these are built from the block's key
-rather than resolved through :func:`_manifest_key`.
+itself and pass with a kind nothing accounts for. Each value is resolved through
+:func:`_manifest_key`, so a kind the manifest stops carrying an entry for raises
+at import instead of accounting against a key nothing enumerates.
 """
 
 # Every model the runner's GradingConfig reaches, with where its fields sit in
@@ -283,7 +282,7 @@ def audit_accounted_keys(
     unaccounted: list[str] = []
     skip_notes: list[str] = []
     for item in LEDGER_KEYS:
-        if item.runner_field is None or not _dumped_value(dumped, runner_dump_path(item)):
+        if item.runner_field is None or not _populated(dumped, item):
             continue
         record = accounted_keys.get(item.author_key)
         if record is None:
@@ -297,6 +296,57 @@ def audit_accounted_keys(
             f"recorded a skip for: {'; '.join(unaccounted)}"
         )
     return LedgerAudit(error=error, skip_notes=tuple(skip_notes))
+
+
+def _populated(dumped: dict[str, Any], item: GradingKey) -> bool:
+    """Whether the request's config carries a value for ``item``.
+
+    Several entries name one ``list[BaseModel]`` field and are told apart by their
+    element path, so for those the list being non-empty is not the question — a
+    block declaring one ``before`` constraint populates the ``before`` key and none
+    of the other nine, and reading the field alone would demand a recording site
+    for every kind of every task.
+    """
+    value = _dumped_value(dumped, runner_dump_path(item))
+    if item.runner_element_path is None:
+        return bool(value)
+    return _element_declares(value, item.runner_element_path)
+
+
+def _element_declares(elements: Any, element_path: str) -> bool:
+    """Whether some element of a dumped list field carries ``element_path``.
+
+    A path a composite constraint nests counts, because the evaluator reaches it
+    and accounts for it: an ``all_of`` holding a ``before`` populates the ``before``
+    key. Descent therefore follows the values held under a constraint kind, and
+    stops anywhere else — a matcher's ``args`` keys are the author's own argument
+    names, so ``args: {before: ...}`` is a predicate on an argument called
+    ``before``, not a nested ordering constraint.
+    """
+    if not isinstance(elements, list):
+        return False
+    segments = tuple(element_path.split("."))
+    return any(_element_segment_declared(element, segments) for element in elements)
+
+
+def _element_segment_declared(node: Any, segments: tuple[str, ...]) -> bool:
+    if not segments:
+        return bool(node)
+    if not isinstance(node, dict):
+        return False
+    if segments[0] in node:
+        return _element_segment_declared(node[segments[0]], segments[1:])
+    return any(
+        _element_segment_declared(nested, segments)
+        for kind in TRACE_CONSTRAINT_KINDS
+        if kind in node
+        for nested in _nested_expressions(node[kind])
+    )
+
+
+def _nested_expressions(payload: Any) -> tuple[Any, ...]:
+    """A constraint payload's own sub-expressions, list-valued or single."""
+    return tuple(payload) if isinstance(payload, list) else (payload,)
 
 
 def _dumped_value(dumped: dict[str, Any], path: tuple[str, ...]) -> Any:

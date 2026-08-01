@@ -1,0 +1,44 @@
+# Both trials fetch the payment and answer. The violating one fetches it three
+# times, so only the bound on how many matches there are separates them.
+satisfying:
+  messages:
+    - role: user
+      content: "What is the status of PAY-664306?"
+    - role: assistant
+      content: "Reading it once."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "status": "settled"}'
+    - role: assistant
+      content: "It is settled."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "What is the status of PAY-664306?"
+    - role: assistant
+      content: "Polling until it settles."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "status": "pending"}'
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "status": "pending"}'
+    - role: assistant
+      content: "Once more."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "status": "settled"}'
+  state: {}

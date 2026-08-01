@@ -1,0 +1,42 @@
+# The satisfying trial never discloses a balance, so the right-hand anchor
+# matches nothing and the ordering is never asked — on_missing: pass is what
+# decides it. The violating trial discloses first and verifies afterwards, which
+# is a definite wrong order. Under the default policy the unasked constraint
+# would fail too, and the two trials would score the same 0.
+satisfying:
+  messages:
+    - role: user
+      content: "Is my account in good standing?"
+    - role: assistant
+      content: "Checking who I am speaking to."
+      tool_calls:
+        - tool_name: verify_identity
+          executor: agent
+          status: success
+          arguments: { customer_id: "CUS-9" }
+          output: '{"verified": true}'
+    - role: assistant
+      content: "Yes, it is in good standing. I have not read out any figures."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Is my account in good standing?"
+    - role: assistant
+      content: "Your balance is 42.00."
+      tool_calls:
+        - tool_name: disclose_balance
+          executor: agent
+          status: success
+          arguments: { customer_id: "CUS-9" }
+          output: '{"balance": 42.0}'
+    - role: assistant
+      content: "Let me confirm who you are."
+      tool_calls:
+        - tool_name: verify_identity
+          executor: agent
+          status: success
+          arguments: { customer_id: "CUS-9" }
+          output: '{"verified": true}'
+  state: {}

@@ -57,10 +57,17 @@ transcript_rules:
     - info: "Widget W1 is now closed"
       required: true
 
+# Every constraint kind and every per-constraint field the manifest carries an
+# entry for is written here, because this pack is what proves the adapter carries
+# each of them: a key the manifest claims and this file omits is a translation
+# nothing exercises.
 trace_checks:
   constraints:
     - id: wrote_the_file_before_closing
       description: the report is written before widget W1 is closed
+      weight: 2.0
+      on_missing: fail
+      within: { first_turn: 0, last_turn: 8 }
       require:
         before:
           left: { quantifier: any, match: { kind: tool_call, tool: { equals: write_file } } }
@@ -70,6 +77,45 @@ trace_checks:
               kind: tool_call
               tool: { equals: close_widget }
               args: { widget_id: { equals: W1 } }
+    - id: closed_the_widget_exactly_once
+      description: widget W1 is closed once, and the report is written at least once
+      require:
+        all_of:
+          - present: { match: { kind: tool_call, tool: { equals: write_file } } }
+          - count:
+              match: { kind: tool_call, tool: { equals: close_widget } }
+              min: 1
+              max: 1
+    - id: never_deleted_a_widget_unannounced
+      description: no widget is deleted, and nothing is deleted before the report is written
+      require:
+        any_of:
+          - absent: { match: { kind: tool_call, tool: { equals: delete_widget } } }
+          - absent_before:
+              forbidden: { kind: tool_call, tool: { equals: delete_widget } }
+              anchor:
+                quantifier: first
+                match: { kind: tool_call, tool: { equals: write_file } }
+    - id: closed_straight_after_writing_and_told_nobody_meanwhile
+      description: the close follows the write, with no notification while the work is open
+      require:
+        all_of:
+          - immediately_before:
+              left: { quantifier: first, match: { kind: tool_call, tool: { equals: write_file } } }
+              right:
+                quantifier: first
+                match: { kind: tool_call, tool: { equals: close_widget } }
+              among: tool_calls
+          - absent_between:
+              forbidden: { kind: tool_call, tool: { equals: notify_customer } }
+              start:
+                quantifier: first
+                match: { kind: tool_call, tool: { equals: write_file } }
+              end:
+                quantifier: last
+                match: { kind: tool_call, tool: { equals: close_widget } }
+          - negate:
+              present: { match: { kind: tool_call, tool: { equals: delete_widget } } }
 
 llm_judge:
   rubric:

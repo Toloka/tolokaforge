@@ -1,0 +1,26 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# among: tool_calls, because the two calls sit on one assistant turn and the
+# first call's own result event lies between them. Read among events this
+# constraint would be unsatisfiable for the commonest thing an author writes.
+trace_checks:
+  constraints:
+    - id: the_policy_search_immediately_precedes_the_case
+      description: "the case is created straight off the policy the agent just read"
+      require:
+        immediately_before:
+          left:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: search_policy }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: create_case }
+          among: tool_calls

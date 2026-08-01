@@ -1,0 +1,27 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# Quantified all/first, so the constraint reads max(left) < min(right). The
+# violating trial below satisfies the any/first reading of the same two matchers,
+# which is what makes this pack about the quantifier as well as the ordering.
+trace_checks:
+  constraints:
+    - id: every_payment_was_read_before_the_case_was_denied
+      description: "no payment is looked up after the duplicate-refund case is denied"
+      require:
+        before:
+          left:
+            quantifier: all
+            match:
+              kind: tool_call
+              tool: { equals: billing_api_get_payment }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: servicenow_csm_update_case }
+              args:
+                u_resolution_code: { equals: denied_ineligible }

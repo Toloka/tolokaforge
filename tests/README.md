@@ -176,6 +176,18 @@ authorable — wall time is not compared across substrates, so a pinned value wo
 be one nothing reads. Any other key fails the load naming itself, because a
 fixture key the loader ignores expresses less than its author wrote.
 
+The pack directory is the author key with its dots replaced by underscores, so a
+leaf key inside a list field gets its own pack:
+`trace_checks.constraints.absent_before` is
+`tests/data/grading_parity/trace_checks_constraints_absent_before/`. A pack under
+test for one constraint kind authors **that kind alone** at the top level — a
+second constraint beside it is a second check the violating trial could be
+discriminated by — while the sub-terms of a composite kind belong inside its own
+expression, where they are part of the constraint under test rather than next to
+it. Write the two trials so that a build ignoring the thing under test would score
+them *identically*: that is what makes discrimination evidence for the key rather
+than for the pack.
+
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 
 ### Integration Tests (`tests/integration/`)
