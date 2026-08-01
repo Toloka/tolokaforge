@@ -40,6 +40,26 @@ on:
         description: "what triggered it (e.g. slack); informational only"
         required: false
         default: manual
+      route:
+        description: >-
+          transport for EVERY openrouter/openai call this run makes -- the candidate's probes
+          AND the wire-probes' user simulator (openrouter/anthropic/claude-sonnet-4.6). "litellm"
+          needs the ARENA_AUTOMATION_LLM_PROXY_* secrets AND a gateway that serves both models;
+          without the secrets the run falls back to OpenRouter rather than failing.
+        required: false
+        default: openrouter
+        type: choice
+        options:
+          - openrouter
+          - litellm
+
+# Optional workspace restyling: a JSON map from icon ROLE to the emoji the
+# workspace uploaded, e.g. {"observe_started":":tf-observe-started:"}. Keyed on
+# the role, so icons that share a default today stay separately settable. Unset
+# means every message keeps its default. Declared workflow-level so it reaches
+# every notifier step without each one repeating it.
+env:
+  ARENA_AUTOMATION_SLACK_ICON_OVERRIDE: ${{ vars.ARENA_AUTOMATION_SLACK_ICON_OVERRIDE }}
 
 permissions:
   contents: write
@@ -158,7 +178,7 @@ jobs:
               "Could not parse the candidate model from the PR title. Expected the convention \`integrate: <openrouter-model-slug>\` (e.g. \`integrate: anthropic/claude-opus-4.8\`). Marked \`automation:integrate-needs-human\`." || true)"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --mention \
-              --text ':warning: Needs human: PR title did not match `integrate: <slug>` (could not parse model)' \
+              --icon needs_human --text 'Needs human: PR title did not match `integrate: <slug>` (could not parse model)' \
               --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "::error::PR title does not match 'integrate: <slug>'."
@@ -180,14 +200,34 @@ jobs:
             --channel "$SLACK_CHANNEL" --model "$CANDIDATE_NAME" --pr "$PR" || true
           uv run automation slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
-            --text ':arrow_forward: Observe started' --run-url "$RUN_URL" || true
+            --icon observe_started --text 'Observe started' --run-url "$RUN_URL" || true
 
       - name: Create .env (candidate model + user-sim run on the pipeline key)
         # printf from an env var, not echo-interpolation, so a value containing shell
         # metacharacters can never be command-substituted.
         env:
           ARENA_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
-        run: printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+          ROUTE: ${{ inputs.route || 'openrouter' }}
+          PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
+          PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
+        # OPENROUTER_API_KEY is always written: it is what the non-gateway route uses, and the
+        # OpenRouter pricing/catalog HTTP calls need it on either route. LLM_PROXY_* is added
+        # only when the gateway route was requested AND configured -- writing a base URL without
+        # a key would silently forward the OpenRouter key to the gateway host (see
+        # docs/LLM_LAYER.md § proxy). Note this is job-wide, not per-role: it routes the user
+        # simulator too, so the gateway must serve BOTH models.
+        run: |
+          set -euo pipefail
+          printf '%s\n' "OPENROUTER_API_KEY=$ARENA_KEY" > .env
+          if [ "$ROUTE" = "litellm" ]; then
+            if [ -n "$PROXY_BASE_URL" ] && [ -n "$PROXY_API_KEY" ]; then
+              printf '%s\n' "LLM_PROXY_BASE_URL=$PROXY_BASE_URL" >> .env
+              printf '%s\n' "LLM_PROXY_API_KEY=$PROXY_API_KEY" >> .env
+              echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
+            else
+              echo "::warning title=Gateway route unavailable::route=litellm was requested but ARENA_AUTOMATION_LLM_PROXY_BASE_URL / _API_KEY are not set; probing over OpenRouter instead"
+            fi
+          fi
 
       - name: Resolve candidate model_id slug
         id: slug
@@ -359,7 +399,7 @@ jobs:
             echo "clean=no" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --text ':warning: Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' \
+              --icon needs_human --text 'Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "no findings.json -> needs human"; exit 0
@@ -371,7 +411,7 @@ jobs:
             echo "clean=yes" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
-              --text ':white_check_mark: Observe clean, chaining to resolve' --run-url "$RUN_URL" || true
+              --icon observe_clean --text 'Observe clean, chaining to resolve' --run-url "$RUN_URL" || true
             echo "observe clean -> resolve"
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
@@ -379,7 +419,7 @@ jobs:
             echo "clean=no" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --text ':warning: Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
+              --icon needs_human --text 'Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
             echo "observe infra-dirty or did-not-run -> needs human"
@@ -393,7 +433,7 @@ jobs:
         run: |
           uv run automation slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" \
-            --text ':wrench: Resolve started' --run-url "$RUN_URL" || true
+            --icon resolve_started --text 'Resolve started' --run-url "$RUN_URL" || true
 
       - name: Configure git identity
         if: steps.gate.outputs.clean == 'yes'
@@ -673,7 +713,7 @@ jobs:
               --add-label 'automation:integrate-needs-human' || true
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
-              --text "$(printf '%s\n%s' ':warning: Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.')" \
+              --icon needs_human --text "$(printf '%s\n%s' 'Needs human: integrated but a data-scope review is required (free-form array recovery)' 'Fix is committed; a human must verify the recovery scope across all domains before merge.')" \
               --pr-comment "${WARN_URL:-$RECORD_URL}" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           else
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:resolve-running' \
@@ -708,15 +748,18 @@ jobs:
             # defaulted so it is set -u safe.
             SETTINGS_URL="${GITHUB_SERVER_URL:-https://github.com}/$REPO/settings/variables/actions"
             if [ "$MERGED" = "yes" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"
+              ICON_ROLE=integrated_merged
+              MSG="$(printf '%s\n%s' 'Integrated + auto-merged (squash): preset + cert landed on the base branch.' "Auto-merge is on - squash-merged automatically on success (configure <$SETTINGS_URL|here>).")"
             elif [ "$AUTO_MERGE" = "true" ]; then
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (configure <$SETTINGS_URL|here>).")"
+              ICON_ROLE=integrated
+              MSG="$(printf '%s\n%s' 'Integrated: preset + cert committed to the PR branch.' "Auto-merge is on but did NOT complete (disposable test branch, missing pricing, branch protection, draft, or a merge error) - PR left open (configure <$SETTINGS_URL|here>).")"
             else
-              MSG="$(printf '%s\n%s' ':white_check_mark: Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (configure <$SETTINGS_URL|here>).")"
+              ICON_ROLE=integrated
+              MSG="$(printf '%s\n%s' 'Integrated: preset + cert committed to the PR branch.' "Human review gate - auto-merge off (configure <$SETTINGS_URL|here>).")"
             fi
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$TF_NAME" --mention \
-              --text "$MSG" \
+              --icon "$ICON_ROLE" --text "$MSG" \
               --pr-comment "$RECORD_URL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           fi
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
@@ -736,17 +779,19 @@ jobs:
           if [ "${NEEDS_HUMAN:-}" = "yes" ]; then
             # The agent itself requested a human: it lacked the data for a correct policy.
             BODY="The resolve agent requested human review: ${NEEDS_HUMAN_REASON}. It judged it cannot produce a correct policy from the observe data alone (a data-bound quirk) and did not fabricate a fix. Marked \`automation:integrate-needs-human\`. Latest artifacts are on the run. Run: ${RUN_URL}"
-            SLACK=":raising_hand: Needs human (agent-requested): ${NEEDS_HUMAN_REASON}"
+            ICON_ROLE=needs_human_agent
+            SLACK="Needs human (agent-requested): ${NEEDS_HUMAN_REASON}"
           else
             REPORT="$(uv run automation resolve-report --dir observation/resolve --max-iter "${MAX_ITER}" 2>/dev/null || true)"
             [ -n "$REPORT" ] || REPORT="Resolve did not converge within ${MAX_ITER} iterations, or converged but finalize failed (agent hit max-turns, wrote no changes, a broken/divergent policy failed the staged verification, or the push failed)."
             BODY="$(printf '%s\n\nMarked automation:integrate-needs-human. Latest overlay + reprobe are in the run artifacts. Run: %s' "$REPORT" "${RUN_URL}")"
-            SLACK=":warning: Needs human: resolve did not converge within ${MAX_ITER} iterations (or finalize failed)"
+            ICON_ROLE=needs_human
+            SLACK="Needs human: resolve did not converge within ${MAX_ITER} iterations (or finalize failed)"
           fi
           CURL="$(gh pr comment "$PR" -R "$REPO" --body "$BODY" || true)"
           uv run automation slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-            --text "$SLACK" \
+            --icon "$ICON_ROLE" --text "$SLACK" \
             --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
 
@@ -764,5 +809,5 @@ jobs:
           fi
           uv run automation slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-            --text ':rotating_light: Pipeline error: unexpected failure, PR left mid-state' \
+            --icon pipeline_error --text 'Pipeline error: unexpected failure, PR left mid-state' \
             --pr-url "$PR_URL" --run-url "$RUN_URL" || true

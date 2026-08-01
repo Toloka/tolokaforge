@@ -42,6 +42,7 @@ from tenacity.wait import wait_base
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
+from tolokaforge.core.llm.proxy import UNROUTABLE_PROVIDERS, resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
 from tolokaforge.core.logging import get_logger
@@ -644,14 +645,47 @@ class LLMClient:
         # Load API key chain for rotation on key exhaustion
         self._api_keys = self._load_api_keys()
         self._current_key_index = 0
-        if self.provider.startswith("openrouter"):
-            self._openrouter_headers = self._configure_openrouter_headers()
-            self._configure_openrouter_base_url()
-        elif self.provider == "nova":
-            self._configure_nova_base_url()
+
+        # Optional OpenAI-compatible gateway in front of every provider. Held
+        # as ``None`` both when unconfigured and when configured but out of
+        # scope for this provider, so downstream checks are a single
+        # ``is None`` test. See ``tolokaforge/core/llm/proxy.py``.
+        self._proxy = resolve_proxy_config()
+        if self._proxy is not None and not self._proxy.applies_to(self.provider):
+            if self.provider.split("/")[0] not in UNROUTABLE_PROVIDERS:
+                # Warn rather than drop quietly: a deployment that configured a
+                # gateway for compliance reasons needs to see which roles still
+                # reach providers directly.
+                self.logger.warning(
+                    "Gateway configured but this provider is out of scope; "
+                    "calling provider directly",
+                    base_url=self._proxy.base_url,
+                    provider=self.provider,
+                )
+            self._proxy = None
+
         self._openrouter_headers = (
             self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
         )
+        if self._proxy is not None:
+            self.logger.info(
+                "Routing LLM calls through gateway",
+                base_url=self._proxy.base_url,
+                provider=self.provider,
+                static_header_count=len(self._proxy.headers),
+                request_id_header=self._proxy.request_id_header,
+            )
+            if self._proxy.api_key is None:
+                self.logger.warning(
+                    "Gateway has no LLM_PROXY_API_KEY; litellm will forward the "
+                    "PROVIDER credential to the gateway host. Set LLM_PROXY_API_KEY "
+                    "unless this gateway authenticates by network position.",
+                    base_url=self._proxy.base_url,
+                )
+        elif self.provider.startswith("openrouter"):
+            self._configure_openrouter_base_url()
+        elif self.provider == "nova":
+            self._configure_nova_base_url()
 
         self._api_call_timeout_s = self._load_api_timeout()
         self._api_timeout_retries = self._load_api_timeout_retries()
@@ -1704,6 +1738,22 @@ class LLMClient:
                     "allow_fallbacks": or_cfg.allow_fallbacks,
                 }
 
+        if self._proxy is not None:
+            # Transport swap only. ``model`` keeps its ``<provider>/<name>``
+            # shape so preset resolution and pricing normalisation are
+            # untouched — see the module docstring in ``llm/proxy.py``.
+            kwargs["api_base"] = self._proxy.base_url
+            if self._proxy.api_key:
+                kwargs["api_key"] = self._proxy.api_key
+            existing_headers = kwargs.get("extra_headers")
+            merged_headers = dict(existing_headers) if isinstance(existing_headers, dict) else {}
+            # Gateway headers win on a name collision: they are explicit
+            # operator configuration, whereas the headers already in the dict
+            # are this engine's own provider defaults (OpenRouter's
+            # ``HTTP-Referer`` / ``X-Title`` / opt-out trio).
+            merged_headers.update(self._proxy.request_headers())
+            kwargs["extra_headers"] = merged_headers
+
         return kwargs
 
     def _is_timeout_error(self, exc: BaseException) -> bool:
@@ -1886,6 +1936,27 @@ class LLMClient:
                     or '"code":403' in error_str
                     or '"code":402' in error_str
                 ):
+                    if self._proxy is not None and self._proxy.api_key:
+                        # Rotation cannot help *when a gateway key is pinned*:
+                        # ``_rotate_key`` republishes ``OPENROUTER_API_KEY``
+                        # into the environment, but the pinned ``api_key``
+                        # kwarg takes precedence in litellm. Rotating would
+                        # resend byte-identical requests and then report an
+                        # exhausted key chain that was never in play. The
+                        # condition mirrors exactly where ``_build_kwargs``
+                        # pins the key — without a gateway key litellm reads
+                        # the provider env var, so rotation still works and
+                        # must be left alone.
+                        self.logger.error(
+                            "Gateway rejected the request as over quota or unauthorized",
+                            base_url=self._proxy.base_url,
+                        )
+                        raise RuntimeError(
+                            f"LLM gateway at {self._proxy.base_url} rejected the request "
+                            f"(quota or authorization). Provider key rotation does not apply "
+                            f"to gateway-routed calls; check the gateway credential and its "
+                            f"budget: {e}"
+                        ) from e
                     if self._rotate_key():
                         self.logger.warning(
                             "API key exhausted, rotated to next key",

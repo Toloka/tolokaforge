@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import automation.model_resolver as model_resolver
 import pytest
+from automation import gateway_catalog
 
 pytestmark = pytest.mark.unit
 
@@ -176,3 +177,209 @@ class TestFormatReply:
         assert "is ambiguous (6 matches)" in text  # the GPT 5.6 one
         for slug in GPT_56:
             assert f"`{slug}`" in text
+
+
+# --- the live incident -----------------------------------------------------------------------
+#
+# Request: "@arena-automation Integrate azure_ai/cohere-command-a-plus-05-2026". Two independent
+# defects hit the same message, and each on its own made it unanswerable:
+#   1. `\bplus\b` split the phrase INSIDE the slug (a hyphen is a regex word boundary), so the
+#      resolver was handed 'azure_ai/cohere-command-a-' and '-05-2026';
+#   2. only the OpenRouter catalog was searched, so a model served solely by the deployment's
+#      gateway could not resolve however it was spelled.
+
+#: A gateway route id that OpenRouter does not carry - the shape at the heart of the incident.
+GATEWAY_ONLY = "azure_ai/cohere-command-a-plus-05-2026"
+
+#: A realistic gateway catalog: the gateway-only route, a passthrough wildcard, an OpenRouter slug
+#: under a route prefix, and a plain duplicate of an OpenRouter slug.
+GATEWAY_ENTRIES = [
+    GATEWAY_ONLY,
+    "x-ai/*",
+    "openrouter/x-ai/grok-4.5",
+    "anthropic/claude-sonnet-5",
+]
+
+
+class TestConnectorInsideAModelName:
+    """A connector word must be a word BETWEEN phrases, never a syllable inside one."""
+
+    def test_plus_inside_a_slug_is_not_a_connector(self):
+        assert parse_command(f"<@U1> Integrate {GATEWAY_ONLY}") == [GATEWAY_ONLY]
+
+    def test_trailing_plus_is_kept_not_dropped(self):
+        # The worse half of the bug: no error, just a silently DIFFERENT model name, which could
+        # then match something real.
+        assert parse_command("<@U1> integrate cohere/command-a-plus") == ["cohere/command-a-plus"]
+
+    def test_and_inside_a_slug_is_not_a_connector(self):
+        assert parse_command("<@U1> integrate vendor/command-and-conquer-2") == [
+            "vendor/command-and-conquer-2"
+        ]
+
+    @pytest.mark.parametrize(
+        "text",
+        [
+            "<@U1> integrate grok 4.5 and gpt 5.6 sol",
+            "<@U1> integrate grok 4.5 plus gpt 5.6 sol",
+            "<@U1> integrate grok 4.5, gpt 5.6 sol",
+            "<@U1> integrate grok 4.5,gpt 5.6 sol",
+            "<@U1> integrate grok 4.5 & gpt 5.6 sol",
+            # Punctuation carrying a word connector: how English writes a list, and the form a
+            # whitespace-only word rule silently swallows into the model phrase, since the comma
+            # has already consumed the space to the left of "and".
+            "<@U1> integrate grok 4.5, and gpt 5.6 sol",
+            "<@U1> integrate grok 4.5, plus gpt 5.6 sol",
+            "<@U1> integrate grok 4.5 & and gpt 5.6 sol",
+        ],
+    )
+    def test_real_connectors_still_split(self, text):
+        assert parse_command(text) == ["grok 4.5", "gpt 5.6 sol"]
+
+    def test_an_oxford_comma_list_keeps_every_phrase(self):
+        assert parse_command("<@U1> integrate grok 4.5, gpt 5.6 sol, and sonnet 5") == [
+            "grok 4.5",
+            "gpt 5.6 sol",
+            "sonnet 5",
+        ]
+
+    @pytest.mark.parametrize("tail", ["and", "and ", "plus", ","])
+    def test_a_dangling_connector_is_not_a_model_phrase(self, tail):
+        assert parse_command(f"<@U1> integrate grok 4.5 {tail}") == ["grok 4.5"]
+
+
+class TestGatewayFallback:
+    """OpenRouter first, the gateway only for what OpenRouter cannot match at all."""
+
+    def test_gateway_only_model_resolves(self):
+        r = resolve(GATEWAY_ONLY, CATALOG, gateway_entries=GATEWAY_ENTRIES)
+        assert (r.status, r.slug, r.source) == (
+            "resolved",
+            GATEWAY_ONLY,
+            model_resolver.SOURCE_GATEWAY,
+        )
+
+    def test_a_loose_phrase_reaches_a_gateway_route_by_token_match(self):
+        # Resolution only: through a real request this spelling is two phrases, because ` plus `
+        # between words IS a connector. See TestConnectorInsideAModelName for that half.
+        r = resolve("cohere command a 05 2026", CATALOG, gateway_entries=GATEWAY_ENTRIES)
+        assert (r.slug, r.source) == (GATEWAY_ONLY, model_resolver.SOURCE_GATEWAY)
+
+    def test_a_space_separated_plus_is_still_a_connector_in_a_request(self):
+        # The honest end-to-end outcome for the spaced spelling: two phrases, one of which is a
+        # bare version and resolves to nothing. Typing the slug is what works.
+        assert parse_command("<@U1> integrate cohere command a plus 05 2026") == [
+            "cohere command a",
+            "05 2026",
+        ]
+
+    def test_only_real_model_names_become_candidates(self):
+        # A gateway catalog is a routing table: a wildcard is not a model, and an OpenRouter slug
+        # (bare or under a route prefix) is not a NEW model - keeping either would let a phrase
+        # resolve to a second name for a model that already resolved, or to a passthrough.
+        assert model_resolver._gateway_candidates(GATEWAY_ENTRIES, set(CATALOG)) == [GATEWAY_ONLY]
+
+    def test_an_openrouter_hit_is_never_disturbed(self):
+        r = resolve("sonnet 5", CATALOG, gateway_entries=GATEWAY_ENTRIES)
+        assert (r.slug, r.source) == (
+            "anthropic/claude-sonnet-5",
+            model_resolver.SOURCE_OPENROUTER,
+        )
+
+    def test_openrouter_ambiguity_does_not_fall_through(self):
+        # Falling through on "ambiguous" would turn a clarify reply into a wrong resolution.
+        assert resolve("GPT 5.6", CATALOG, gateway_entries=GATEWAY_ENTRIES).status == "ambiguous"
+
+    @pytest.mark.parametrize("entries", [None, [], ["x-ai/*"]])
+    def test_without_a_usable_gateway_the_answer_is_unchanged(self, entries):
+        assert resolve(GATEWAY_ONLY, CATALOG, gateway_entries=entries).status == "none"
+
+    @pytest.mark.parametrize(
+        "entry",
+        [
+            "claude sonnet 5 (azure)",  # a LiteLLM model_name alias: spaces and parentheses
+            "vendor/model:free",  # a variant suffix the shell must never receive
+            "vendor/model;rm -rf",  # a shell metacharacter
+        ],
+    )
+    def test_an_unusable_route_id_is_not_offered_as_a_candidate(self, entry):
+        # A candidate outside the safe charset cannot be integrated, and offering it back as
+        # "re-request with this exact slug" is a clarification nobody can satisfy: the same
+        # request would resolve to the same unusable id every time.
+        assert model_resolver._gateway_candidates([entry], set(CATALOG)) == []
+
+    def test_an_alias_to_a_gateway_route_is_routed_there(self):
+        r = resolve(
+            "cohere-a-plus",
+            CATALOG,
+            aliases={"cohere-a-plus": GATEWAY_ONLY},
+            gateway_entries=GATEWAY_ENTRIES,
+        )
+        assert (r.slug, r.source) == (GATEWAY_ONLY, model_resolver.SOURCE_GATEWAY)
+
+
+class TestRouteFor:
+    def test_gateway_only_pins_the_gateway(self):
+        r = resolve(GATEWAY_ONLY, CATALOG, gateway_entries=GATEWAY_ENTRIES)
+        assert model_resolver.route_for(r) == gateway_catalog.ROUTE_GATEWAY
+        # ... even against an explicit "via openrouter", which cannot be honoured at all.
+        assert (
+            model_resolver.route_for(r, gateway_catalog.ROUTE_OPENROUTER)
+            == gateway_catalog.ROUTE_GATEWAY
+        )
+
+    def test_an_alias_off_openrouter_pins_the_gateway_even_when_it_is_unreadable(self):
+        # Membership of the OPENROUTER catalog decides the route: a slug OpenRouter does not
+        # carry cannot run there whatever the gateway says, so an unreadable gateway must not
+        # send it down the OpenRouter path.
+        r = resolve(
+            "cohere-a-plus",
+            CATALOG,
+            aliases={"cohere-a-plus": GATEWAY_ONLY},
+            gateway_entries=None,
+        )
+        assert (r.slug, r.source) == (GATEWAY_ONLY, model_resolver.SOURCE_GATEWAY)
+        assert model_resolver.route_for(r) == gateway_catalog.ROUTE_GATEWAY
+
+    def test_openrouter_model_keeps_the_calibrated_default(self):
+        r = resolve("sonnet 5", CATALOG, gateway_entries=GATEWAY_ENTRIES)
+        assert model_resolver.route_for(r) == gateway_catalog.DEFAULT_ROUTE
+        assert (
+            model_resolver.route_for(r, gateway_catalog.ROUTE_GATEWAY)
+            == gateway_catalog.ROUTE_GATEWAY
+        )
+
+
+class TestFailureNamesWhatWasSearched:
+    def test_gateway_unreadable_says_so(self):
+        resolutions = model_resolver.resolve_all("<@U1> integrate nope/nothing-9", CATALOG)
+        text = model_resolver.format_resolution_reply("U1", resolutions, gateway_searched=False)
+        assert "no matching model on OpenRouter" in text
+        assert "no gateway catalog was readable" in text
+
+    def test_gateway_searched_names_both(self):
+        resolutions = model_resolver.resolve_all(
+            "<@U1> integrate nope/nothing-9", CATALOG, gateway_entries=GATEWAY_ENTRIES
+        )
+        text = model_resolver.format_resolution_reply("U1", resolutions, gateway_searched=True)
+        assert "no matching model on OpenRouter or the gateway" in text
+        assert "no gateway catalog was readable" not in text
+
+    def test_gateway_only_resolution_says_where_it_runs(self):
+        resolutions = model_resolver.resolve_all(
+            f"<@U1> Integrate {GATEWAY_ONLY}", CATALOG, gateway_entries=GATEWAY_ENTRIES
+        )
+        text = model_resolver.format_resolution_reply(
+            "U1", resolutions, gateway_searched=True, requested_route=None
+        )
+        assert f"`{GATEWAY_ONLY}`" in text
+        assert f"via *{gateway_catalog.ROUTE_GATEWAY}*" in text
+        # Deliberately a claim about the NAME: a gateway route can be the same model under
+        # another vendor prefix, so "not on OpenRouter" would not always be true.
+        assert "no OpenRouter slug matched this name" in text
+
+    def test_the_live_request_resolves_end_to_end(self):
+        resolutions = model_resolver.resolve_all(
+            f"<@U0AB1948PC0> Integrate {GATEWAY_ONLY}", CATALOG, gateway_entries=GATEWAY_ENTRIES
+        )
+        assert [(r.status, r.slug) for r in resolutions] == [("resolved", GATEWAY_ONLY)]

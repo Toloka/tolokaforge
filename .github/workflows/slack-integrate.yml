@@ -3,8 +3,9 @@ name: Slack-triggered integration poller
 # Turns a Slack request ("@delivery-tech-bot integrate Grok 4.5 and Hy3") into integration
 # runs, with NO new app and NO PAT - only the github-actions[bot] GITHUB_TOKEN. A bot token
 # cannot be reached from outside GitHub, so the initiative comes from INSIDE: this workflow
-# POLLS the channel (the existing bot token, read-only history), resolves each model phrase to
-# an OpenRouter slug DETERMINISTICALLY (automation.model_resolver - no LLM guessing), and:
+# POLLS the channel (the existing bot token, read-only history), resolves each model phrase
+# DETERMINISTICALLY (automation.model_resolver - no LLM guessing) against the OpenRouter catalog
+# and, for a phrase OpenRouter cannot match, the deployment's gateway catalog, and:
 #   * clearly-identified model  -> opens a draft integration PR + dispatches integrate-model.yml
 #   * ambiguous / unknown model -> replies in-thread asking for an exact slug (no run started)
 #
@@ -33,6 +34,14 @@ on:
     - cron: "*/30 * * * 0,6" # all weekend (Sat/Sun) -> every 30 min
   workflow_dispatch: {}
 
+# Optional workspace restyling: a JSON map from icon ROLE to the emoji the
+# workspace uploaded, e.g. {"observe_started":":tf-observe-started:"}. Keyed on
+# the role, so icons that share a default today stay separately settable. Unset
+# means every message keeps its default. Declared workflow-level so it reaches
+# every notifier step without each one repeating it.
+env:
+  ARENA_AUTOMATION_SLACK_ICON_OVERRIDE: ${{ vars.ARENA_AUTOMATION_SLACK_ICON_OVERRIDE }}
+
 permissions:
   contents: write # push the seed branch
   pull-requests: write # open the draft integration PR (the poller adds no labels)
@@ -58,6 +67,11 @@ jobs:
       # Optional comma-separated Slack user-id allowlist. Empty => anyone in the channel may
       # trigger (channel membership is the authz gate; GitHub only ever sees github-actions[bot]).
       ALLOWED_USERS: ${{ vars.ARENA_AUTOMATION_SLACK_ALLOWED_USERS }}
+      # LLM gateway, both optional. Present => the poller reports whether each resolved model
+      # is ALSO reachable there, and honours an explicit "via litellm" in the request. Absent
+      # => availability is "unknown" and every request integrates over OpenRouter as before.
+      LLM_PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
+      LLM_PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -73,7 +87,9 @@ jobs:
 
       - name: Poll the channel and resolve requests
         # Reads history, resolves each @bot integrate request, posts one threaded reply per
-        # request, and writes plan.json = [{slug, requester, message_ts}] for the resolved models.
+        # request, and writes plan.json = [{slug, requester, message_ts, route, gateway}] for the
+        # resolved models. `route` is PER MODEL: the requested route (default openrouter), except
+        # a model that exists only on the gateway, which can run nowhere else.
         run: |
           uv run automation slack-poll \
             --channel "$SLACK_CHANNEL" \
@@ -114,17 +130,18 @@ jobs:
             git push -q -u origin "$BRANCH" || return 1
             PR_URL="$(gh pr create -R "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
               --title "integrate: ${SLUG}" \
-              --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically against the OpenRouter catalog; this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
+              --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically (OpenRouter catalog first, then the LLM gateway's); this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
             PR_NUM="$(printf '%s' "$PR_URL" | grep -oE '[0-9]+$')"
             [ -n "$PR_NUM" ] || { echo "could not parse PR number from '$PR_URL'"; return 1; }
             echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"
             gh workflow run integrate-model.yml -R "$REPO" --ref "$BASE_REF" \
-              -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack || return 1
+              -f pr="$PR_NUM" -f head_ref="$BRANCH" -f model="$SLUG" -f source=slack \
+              -f route="$ROUTE" || return 1
             echo "dispatched integrate-model.yml for PR #${PR_NUM} (${SLUG})"
             # Confirm in the requester's own thread, WITH the PR link (the poll-step reply was
             # posted before the PR existed; the engine's progress thread is a separate root).
             uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
-              --text ":rocket: Opened <${PR_URL}|PR #${PR_NUM}> for ${SLUG} - the integration run has started." || true
+              --icon pr_opened --text "Opened <${PR_URL}|PR #${PR_NUM}> for ${SLUG} - the integration run has started." || true
           }
 
           mapfile -t ROWS < <(jq -c '.[]' plan.json)
@@ -133,6 +150,9 @@ jobs:
             SLUG="$(printf '%s' "$row" | jq -r '.slug')"
             REQUESTER="$(printf '%s' "$row" | jq -r '.requester')"
             TS="$(printf '%s' "$row" | jq -r '.message_ts')"
+            # Default in the reader too, so a plan written by an older poller still dispatches.
+            ROUTE="$(printf '%s' "$row" | jq -r '.route // "openrouter"')"
+            case "$ROUTE" in openrouter|litellm) ;; *) ROUTE=openrouter ;; esac
             git checkout -q "$BASE_REF" 2>/dev/null || git checkout -q -B "$BASE_REF" "origin/${BASE_REF}"
             if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
               echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"
@@ -140,7 +160,7 @@ jobs:
               # requester in-thread that it did NOT, and to re-request (the reply marker means it
               # will not auto-retry).
               uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
-                --text ":x: I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
+                --icon dispatch_failed --text "I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
               FAIL=1
             fi
           done

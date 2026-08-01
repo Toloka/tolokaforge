@@ -26,6 +26,7 @@ from tolokaforge.core.llm.params_policy import GenerationParams, ParamPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
+    RefResolvingDictMapHints,
     SystemPromptPolicy,
 )
 from tolokaforge.core.llm.reasoning import (
@@ -119,6 +120,7 @@ __all__ = [
     "SystemPromptPolicy",
     "NoPromptEnrichment",
     "DictMapHints",
+    "RefResolvingDictMapHints",
     "ToolContentPolicy",
     "OpenAIContent",
     "AnthropicContent",

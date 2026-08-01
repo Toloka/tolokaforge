@@ -112,6 +112,14 @@ Both the AGENT and the CANDIDATE run on the OpenRouter budget (`ARENA_AUTOMATION
 | `RESOLVE_WIRE_K` | 10 | reserved for the final wire-verification pass (not yet wired) |
 | `ARENA_AUTOMATION_AUTO_MERGE_ENABLED` | (unset = off) | When `true` (case-insensitive), squash-merge the integration PR on a clean success. Never merges a `test/*` de-integration branch; a data-scope needs-human path never merges; any merge error (branch protection, draft, perms, conflict) leaves the PR open. `false` / missing / error => nothing merges. |
 
+Two **secrets** gate the optional gateway route (both, or neither — a base URL without a key
+would forward the OpenRouter key to the gateway host):
+
+| Secret | Meaning |
+|---|---|
+| `ARENA_AUTOMATION_LLM_PROXY_BASE_URL` | Gateway base URL, including the path its OpenAI-compatible route lives under (commonly `/v1`). A secret rather than a variable because the hostname is usually internal and this repo is public. |
+| `ARENA_AUTOMATION_LLM_PROXY_API_KEY` | Gateway credential. |
+
 ## Labels (the state machine)
 
 `automation:integrate-model` (trigger) -> `automation:integrate-running` (observe) ->
@@ -126,10 +134,12 @@ Instead of opening the PR by hand, tag the bot in the automation channel:
 
 ```
 @delivery-tech-bot integrate <model>       e.g. "integrate Grok 4.5 and GPT 5.6"
+@delivery-tech-bot integrate <model> via litellm      route the probes through the gateway
+@delivery-tech-bot integrate <model> via openrouter   the default, stated explicitly
 ```
 
 A scheduled workflow (`.github/workflows/slack-integrate.yml`) polls the channel and, per
-request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTICALLY
+request, resolves each free-text model phrase to a model slug DETERMINISTICALLY
 (`automation resolve-models` / `model_resolver`, no LLM guessing - strict version discipline, so
 "Grok 4.5" never resolves to `grok-4` or `grok-4.3`), then:
 
@@ -137,7 +147,87 @@ request, resolves each free-text model phrase to an OpenRouter slug DETERMINISTI
   commit carrying the request metadata - no artifact is committed) and dispatches
   `integrate-model.yml` on it via `workflow_dispatch`, then replies in-thread with the PR link;
 - **ambiguous** (several slugs match) -> replies in-thread with the exact slugs to choose from;
-- **unknown** (no catalog match) -> replies that it could not find the model.
+- **unknown** (no match in either catalog) -> replies that it could not find the model, naming
+  which catalogs were actually searched.
+
+**Two catalogs, OpenRouter first.** A phrase is matched against the OpenRouter catalog and, only
+if that matches NOTHING, against the deployment's gateway catalog. A fallback rather than a union,
+deliberately: a phrase that resolves (or is ambiguous) against OpenRouter is unaffected by the
+gateway, so the calibrated default route cannot move and a gateway that lists the same model under
+a second route name cannot turn a working request into a clarify reply. The fallback is what makes
+a gateway-ONLY model such as `azure_ai/cohere-command-a-plus-05-2026` requestable.
+
+A gateway catalog is a routing table rather than a model list, so only part of it is a candidate: a
+wildcard (`x-ai/*`) is a passthrough, an id the OpenRouter catalog already carries (bare or under
+one route prefix) is the same model under a second name, and an id outside the slug charset can
+never be integrated because a slug reaches the shell.
+
+**Known limits of the gateway-only path.** Two things do not follow automatically, and both surface
+in the reply rather than being discovered mid-run:
+
+- `automation ensure-pricing` resolves a price by exact id against the OpenRouter catalog, so a
+  gateway-only id never matches. Without a `pricing.json` entry, `COST_USD_POPULATED` (a
+  non-opt-out CORE capability) fails in observe.
+- the run's gateway `.env` is job-wide, so the gateway must also serve the wire probes' user
+  simulator (`anthropic/claude-sonnet-4.6`). The poller checks it and downgrades an explicit
+  `via litellm` when it is missing; a gateway-only model has no route to downgrade to, so it is
+  warned about instead.
+
+### Integration route (OpenRouter vs the LLM gateway)
+
+**OpenRouter is the default and stays it.** The leaderboard is calibrated on the OpenRouter
+serving path, so a request that does not name a route must never change it.
+
+When the gateway secrets are configured (`ARENA_AUTOMATION_LLM_PROXY_BASE_URL` +
+`ARENA_AUTOMATION_LLM_PROXY_API_KEY`), the poller additionally reports, per resolved model,
+whether that model is **also** reachable through the gateway — see
+[`automation/gateway_catalog.py`](../tools/automation/src/automation/gateway_catalog.py). It is
+advisory on purpose: a gateway route may be backed by a *different upstream* for the same model
+name, which is a comparability decision for a human, not a transport detail the automaton should
+take on itself.
+
+The name looked up is the one that actually reaches the gateway: litellm strips exactly one
+provider prefix, so this run's `provider: openrouter` + `name: <slug>` config puts the **bare
+slug** on the wire. An `openrouter/<slug>` (or `openrouter/*`) catalog entry is therefore *not*
+evidence for this run — reaching a prefixed route needs the gateway-named config in
+[`docs/LLM_LAYER.md` § the model name must be the gateway's route name](LLM_LAYER.md#the-model-name-must-be-the-gateways-route-name),
+which this workflow does not use.
+
+The report distinguishes two strengths, because they are not equally trustworthy:
+
+| Reply says | Means |
+|---|---|
+| `also on the gateway as <route>` | an explicit catalog entry for the bare slug — someone configured this model |
+| `probably reachable … (matched a passthrough)` | only a wildcard over the slug's own namespace (`x-ai/*`, or a bare `*`) covers it; a live call is the real proof |
+| `not on the gateway` | the catalog was read and does not cover it |
+
+A requester can choose the route with `via litellm` / `via openrouter` (also `through the
+gateway`, `using the proxy`, `via OR`). The directive is stripped before model-phrase parsing,
+so `integrate Grok 4.5 via litellm` still resolves the model as `Grok 4.5`. The chosen route
+travels in `plan.json` and is passed to `integrate-model.yml` as its `route` input; on the
+gateway route that workflow adds `LLM_PROXY_*` to the candidate's `.env`. That is **job-wide,
+not per-role**: `proxy.py` routes every `openrouter`/`openai` call, so the wire probes' user
+simulator (`openrouter/anthropic/claude-sonnet-4.6`) is proxied too and the gateway must serve
+it as well — otherwise observe goes infra-dirty in the user simulator, not in the candidate
+(see [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway)).
+
+The route is chosen **per model, not per message**, because the two sides of one request can
+disagree. A model that resolved only from the gateway catalog pins the gateway: OpenRouter does
+not carry it, so the calibrated default is not an option and an explicit `via openrouter` for it
+is reported as not honourable instead of being dispatched onto a name OpenRouter would reject.
+Everything else in the same message keeps the default. This is not a comparability loophole: a
+model OpenRouter carries is never moved to the gateway unless a human asks with `via litellm`.
+
+With no gateway configured the flow is OpenRouter-only: the availability lookup returns
+"unknown", nothing is reported, resolution searches OpenRouter alone (and says so when it fails),
+and `route` stays `openrouter`.
+A `via litellm` request the poller cannot confirm (availability `unknown` or `not on the
+gateway`, for any model in the message that OpenRouter *does* carry - a gateway-only model is not
+evidence against the gateway) is **downgraded to `openrouter` with a warning in the
+reply** rather than dispatched — a run over a gateway that does not serve the model would fail
+every probe and read as a model failure. On a manual `workflow_dispatch` with `route: litellm`
+but no secrets, `integrate-model.yml` logs a workflow warning and probes over OpenRouter rather
+than failing the run.
 
 It runs entirely on the `github-actions[bot]` `GITHUB_TOKEN` (no PAT, no GitHub App): a bot
 token cannot be reached from outside GitHub, so the initiative comes from INSIDE (the workflow
@@ -176,6 +266,45 @@ cleanly, and a Slack failure never fails the job.
 | `ARENA_AUTOMATION_SLACK_CHANNEL` | variable | target channel id (both the notifier's thread root and the poller's scan target) |
 | `ARENA_AUTOMATION_SLACK_MENTIONS` | variable | comma-separated Slack user ids to @mention; empty -> no mention |
 | `ARENA_AUTOMATION_SLACK_ALLOWED_USERS` | variable | (poller) comma-separated Slack user-ids allowed to trigger an integration; empty -> anyone in the channel (channel membership is the authz gate, since GitHub only ever sees the bot) |
+| `ARENA_AUTOMATION_SLACK_ICON_OVERRIDE` | variable | OPTIONAL. JSON map from icon ROLE to the emoji the workspace uploaded, e.g. `{"observe_started":":tf-observe-started:","needs_human":":tf-needs-human:"}`. Unset (the default) leaves every message with its default icon |
+
+### Custom icons
+
+`ARENA_AUTOMATION_SLACK_ICON_OVERRIDE` restyles the notifications without a code change. It is
+keyed on the icon ROLE, not on the standard emoji the role defaults to, and that
+is the point: four messages share `:warning:` today and three share
+`:white_check_mark:`, so a map keyed on the standard name could not give any of
+those pairs separate icons - one entry would restyle them all.
+`automation.icons.DEFAULT_ICONS` is the registry, and its defaults reproduce
+exactly what the flow sends today, so an unset variable changes nothing.
+
+Every message site names its role, so no emoji is left in message text: the workflow-driven
+notifications pass `slack reply --icon <role>`, and the messages the poller BUILDS in Python
+(its reply to a request) call `icons.icon(role, overrides)` per line. Both are swept by
+`tools/automation/tests/test_icons.py`, which fails on an emoji literal in either the workflows or
+the automation sources. It is a tripwire rather than a proof: it sees literals and unicode emoji
+characters, so an emoji assembled at runtime would still need catching by review.
+
+Four behaviours worth knowing:
+
+- A partial map is safe: roles you do not list keep their defaults.
+- An UNKNOWN role is reported loudly, with the known roles listed. It is the one
+  error detectable here - whether the icon exists in the workspace is not - and a
+  silently-ignored role looks exactly like a working override that did nothing.
+- Parsing is otherwise fail-soft per entry: unparseable JSON applies nothing, one
+  unusable entry is dropped by name and the rest still apply.
+- **Upload the icons to the workspace first.** Slack renders a name it does not
+  have as literal `:name:` text, so an override pointing at a missing icon
+  degrades to visible raw text rather than an error. Nothing is committed for
+  them: the automation only ever needs the names.
+
+This does not extend to reactions: `reactions.add` fails with `invalid_name` on
+an emoji the workspace lacks, so a reaction vocabulary has to stay standard.
+
+An unknown role costs only the STYLING: the message is sent unstyled and the bad role is raised
+as a workflow annotation. `icons.icon()` itself still raises (a role is written by this codebase,
+so a bad one is a bug here, not a user typo), but the CLI wrappers catch everything and exit 0,
+which would otherwise turn that raise into a silently dropped notification on a green step.
 
 Messages are emoji-prefixed and carry the run URL. `mention` = the `SLACK_MENTIONS` users are
 pinged (terminal / attention states only):
