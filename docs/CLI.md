@@ -417,6 +417,24 @@ Adapters:
 
 The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/test_cli_help_grouping.py::test_every_registered_command_has_a_group` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
 
+## Task validation
+
+`tolokaforge validate --tasks <glob>` loads every matched `task.yaml` and its referenced `grading.yaml`, prints one `✓` / `✗` line per file plus an `N valid, M invalid` summary, and is usable as a gate:
+
+| Outcome | Exit code |
+|---|---|
+| every matched task loads | `0` |
+| any matched task fails to load | `1`, after the per-task lines and the summary |
+| the glob matches no file at all | `1`, naming the pattern; nothing is loaded |
+
+An empty match is an invocation error, not a vacuous success — a pattern that selects nothing validates nothing, and a CI step whose glob has drifted off its packs would otherwise report a clean run.
+
+Each task loads under its enclosing project. `validate` walks up from the `task.yaml` for a `project.yaml` and layers that project's `task_defaults` beneath the task's own fields — the layering the orchestrator applies before a run — so the object validated is the one a run loads. A task with no `project.yaml` above it loads on its own. A `project.yaml` that fails to load fails the tasks beneath it, naming the project file; the rest of the glob is still validated.
+
+`project.default_environment` is not layered: it binds into a `TaskDescription`'s `EnvironmentManifest`, and `validate` builds no `TaskDescription`.
+
+`make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent, instead of failing on an empty glob.
+
 ## Run banner
 
 `tolokaforge run` frames every invocation with two banners on stderr. Both banners write through the shared `console`, so the semantic palette, soft-wrapping, and stream posture from [§ Display layer](#display-layer) apply.
@@ -567,14 +585,14 @@ observability:
 | `tolokaforge prepare`                        | Absolute run-dir path (single line).  | Queue summary, log records.                                  |
 | `tolokaforge worker`                         | (empty)                               | "Worker complete" summary, log records.                      |
 | `tolokaforge status`                         | (empty)                               | Run summary, queue ETA, cost totals.                         |
-| `tolokaforge validate`                       | (empty)                               | Per-task validity lines, `N valid, M invalid` summary.       |
+| `tolokaforge validate`                       | (empty)                               | Per-task validity lines, `N valid, M invalid` summary, and the failure message when it exits `1`. See [§ Task validation](#task-validation). |
 | `tolokaforge config validate`                | (empty)                               | Per-config validity lines, error / warning counts.           |
 | `tolokaforge assets stamp`                   | (empty)                               | Digest-check summary or `--check` diff output.               |
 | `tolokaforge adapter convert`                | (empty)                               | Per-task conversion lines, `Converted N tasks` summary.      |
 | `tolokaforge analyze`                        | (empty)                               | Trajectory summary, tool-failure / log-error breakdown.      |
 | `tolokaforge docker build` / `up` / `down` / `status` | (empty)                      | Build progress, stack status, error text.                    |
 
-On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch exits with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch and every `tolokaforge validate` failure exit with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
 
 The emitted path is `Path.resolve()`'d: symlinks are canonicalised and the line is always absolute, regardless of the caller's cwd or how the config expressed `evaluation.output_dir`.
 

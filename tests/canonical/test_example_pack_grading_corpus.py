@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and the flagship pack discriminates.
 
-Two claims over the packs an author reads as the reference:
+Three claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -13,6 +13,9 @@ Two claims over the packs an author reads as the reference:
    ungradeable by any other rule**, and each of its three constraints can fail on
    its own. A trajectory that reaches the right database state by a wrong process
    fails the constraint that names that process and no other.
+3. **``tolokaforge validate`` is a gate over that corpus**: it partitions the same 30
+   task files into the 28 it loads under their project's ``task_defaults`` and the two
+   it rejects, and exits non-zero because of them.
 """
 
 from __future__ import annotations
@@ -21,6 +24,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+from click.testing import CliRunner
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
@@ -29,6 +33,7 @@ from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.models import GradingConfig, RecordedToolCall
 from tolokaforge.core.project_loader import load_project_config
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -119,6 +124,30 @@ def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
         if _enclosing_project(task_yaml) is None
     )
     assert orphans == _TASKS_WITHOUT_A_PROJECT
+
+
+def test_validate_gates_the_example_corpus_on_its_two_invalid_tasks() -> None:
+    """The corpus proof that layering the project defaults rejects nothing new.
+
+    ``COLUMNS`` is set wide so the per-task lines carry a whole path each and the
+    partition can be read off the output rather than inferred from the counts.
+    """
+    result = CliRunner(mix_stderr=False).invoke(
+        cli,
+        ["validate", "--tasks", str(_EXAMPLES / "**" / "task.yaml")],
+        env={"COLUMNS": "400"},
+    )
+    lines = result.stderr.splitlines()
+    valid = {Path(line.removeprefix("✓ ")) for line in lines if line.startswith("✓ ")}
+    invalid = {
+        Path(line.removeprefix("✗ ").split(":", 1)[0]) for line in lines if line.startswith("✗ ")
+    }
+
+    assert result.exit_code == 1, result.stderr
+    assert invalid == set(_TASKS_WITHOUT_A_PROJECT)
+    assert valid == set(_EXAMPLES.rglob("task.yaml")) - invalid
+    assert len(valid) == _GRADED_TASK_COUNT
+    assert f"{_GRADED_TASK_COUNT} valid, {len(_TASKS_WITHOUT_A_PROJECT)} invalid" in result.stderr
 
 
 _HELPDESK_TASK = (

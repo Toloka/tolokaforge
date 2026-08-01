@@ -82,10 +82,18 @@ docker-status:
 run:
 	uv run tolokaforge run --config examples/native/coding/run_configs/dev.yaml
 
-TASKS_GLOB ?= tasks/**/task.yaml
+TASKS_DIR ?= tasks
+TASKS_GLOB ?= $(TASKS_DIR)/**/task.yaml
 
+# `tolokaforge validate` fails on a glob matching nothing, and task packs are
+# cloned separately — so skipping is the deliberate answer when TASKS_DIR is
+# absent, not an invocation error.
 validate:
-	uv run tolokaforge validate --tasks "$(TASKS_GLOB)"
+	@if [ -d "$(TASKS_DIR)" ]; then \
+		uv run tolokaforge validate --tasks "$(TASKS_GLOB)"; \
+	else \
+		echo "validate: skipped — task directory '$(TASKS_DIR)' is not present (task packs are cloned separately; see README)"; \
+	fi
 
 # =============================================================================
 # Claude Code tooling (per-engineer, opt-in)

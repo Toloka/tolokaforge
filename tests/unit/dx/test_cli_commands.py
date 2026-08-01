@@ -16,6 +16,7 @@ from tolokaforge.dx.cli.main import (
     _extract_log_errors,
     _extract_tool_failures,
     _format_eta,
+    _load_task_under_its_project,
     cli,
 )
 
@@ -61,6 +62,15 @@ class TestCLIGroup:
 # ===================================================================
 
 
+def _write_task_pack(directory: Path) -> Path:
+    """Write a minimal loadable task pack and return its ``task.yaml``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "grading.yaml").write_text("{}\n")
+    task_file = directory / "task.yaml"
+    task_file.write_text(yaml.dump({"task_id": directory.name, "description": "A task."}))
+    return task_file
+
+
 @pytest.mark.unit
 class TestValidateCommand:
     """Tests for 'tolokaforge validate' command."""
@@ -77,29 +87,80 @@ class TestValidateCommand:
         combined = (result.output or "") + (result.stderr or "")
         assert "Missing" in combined or "required" in combined.lower() or result.exit_code == 2
 
-    def test_validate_nonexistent_glob(self, runner: CliRunner, tmp_path: Path) -> None:
-        # Glob pattern matching no files → 0 valid, 0 invalid
-        result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "*.xyz")])
-        assert result.exit_code == 0
-        assert "0 valid" in result.stderr
+    def test_validate_fails_on_a_glob_that_matches_nothing(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """A pattern selecting no file is an invocation error, not a vacuous pass.
 
-    def test_validate_valid_task_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Validate a minimal valid task.yaml file."""
-        task_data = {
-            "task_id": "test-001",
-            "description": "Test task",
-            "tools": ["search"],
-            "grading": {
-                "method": "state_check",
-                "expected_state": {"key": "value"},
-            },
-        }
-        task_file = tmp_path / "task.yaml"
-        task_file.write_text(yaml.dump(task_data))
+        The degenerate input a sweep over real packs never produces, and the
+        shape a CI glob silently drifts into (#764).
+        """
+        pattern = str(tmp_path / "*.xyz")
+
+        result = runner.invoke(cli, ["validate", "--tasks", pattern])
+
+        assert result.exit_code == 1
+        assert pattern in result.stderr
+
+    def test_validate_exits_zero_when_every_task_is_valid(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        task_file = _write_task_pack(tmp_path / "good")
 
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
-        # Either valid or shows validation result
-        assert result.exit_code == 0 or "invalid" in result.stderr.lower()
+
+        assert result.exit_code == 0, result.stderr
+        assert "1 valid, 0 invalid" in result.stderr
+
+    def test_validate_exits_one_and_still_reports_every_task(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """One malformed task fails the command without hiding the valid one."""
+        _write_task_pack(tmp_path / "good")
+        (tmp_path / "bad").mkdir()
+        (tmp_path / "bad" / "task.yaml").write_text("description: no task_id here\n")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "**" / "task.yaml")])
+
+        assert result.exit_code == 1
+        assert "✓" in result.stderr
+        assert "✗" in result.stderr
+        assert "1 valid, 1 invalid" in result.stderr
+
+    def test_validate_loads_a_task_under_its_projects_task_defaults(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """The validate path layers ``project.task_defaults`` the way a run does."""
+        (tmp_path / "project.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "layered",
+                    "task_defaults": {"max_turns": 7, "system_prompt": "voice.md"},
+                }
+            )
+        )
+        task_file = _write_task_pack(tmp_path / "tasks" / "inherits")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
+        assert result.exit_code == 0, result.stderr
+
+        task_config, _ = _load_task_under_its_project(task_file)
+        assert task_config.max_turns == 7
+        # Anchored to the project directory the default was declared in.
+        assert task_config.system_prompt == str(tmp_path / "voice.md")
+
+    def test_validate_reports_a_project_that_fails_to_load_against_its_task(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """A broken ``project.yaml`` fails its tasks, naming the file — not the glob."""
+        (tmp_path / "project.yaml").write_text("- not a mapping\n")
+        task_file = _write_task_pack(tmp_path / "tasks" / "orphaned")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
+
+        assert result.exit_code == 1
+        assert "project.yaml" in result.stderr
+        assert "0 valid, 1 invalid" in result.stderr
 
     def test_validate_invalid_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
         """Validate a file with invalid YAML."""
@@ -107,13 +168,9 @@ class TestValidateCommand:
         task_file.write_text("not: valid: yaml: [broken")
 
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
-        # Should handle the error gracefully — Rich output routes to
-        # stderr via the shared display console.
-        assert (
-            "invalid" in result.stderr.lower()
-            or result.exit_code != 0
-            or "0 valid" in result.stderr
-        )
+
+        assert result.exit_code == 1
+        assert "0 valid, 1 invalid" in result.stderr
 
 
 # ===================================================================
