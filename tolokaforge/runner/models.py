@@ -13,6 +13,7 @@ All models use Pydantic v2 BaseModel for validation and serialization.
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
 from collections import Counter
 from datetime import datetime
@@ -874,12 +875,36 @@ class TraceConstraint(BaseModel):
 
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    weight: float = Field(default=1.0, ge=0.0)
+    weight: float = 1.0
     on_missing: OnMissing | None = None
     within: TurnWindow | None = None
     require: TraceConstraintExpr
 
     model_config = {"extra": "forbid"}
+
+    @field_validator("weight")
+    @classmethod
+    def _require_a_weight_that_scores(cls, value: float) -> float:
+        """A positive weight, so the component's fold has a denominator.
+
+        Every weight being positive makes ``Σ(weight) > 0`` an invariant of a
+        populated constraint list, which is what lets the fold divide without a
+        zero-denominator branch and an invented convention for what an all-zero
+        weight set should score.
+        """
+        if not math.isfinite(value):
+            raise ValueError(
+                f"weight {value} is not a finite number, so the share of the score it "
+                "scales has no value. Write a positive weight"
+            )
+        if value <= 0.0:
+            raise ValueError(
+                f"weight {value} scores nothing: a zero-weight constraint is evaluated and "
+                "reported while contributing to neither the numerator nor the denominator "
+                "of the component score, and a negative one inverts the fold. A check that "
+                "must hold without being scored is severity: gate (#680)"
+            )
+        return value
 
     @model_validator(mode="after")
     def _reject_an_unmatched_anchor_policy_where_nothing_is_anchored(self) -> TraceConstraint:
@@ -2372,6 +2397,55 @@ class TranscriptEvaluationResult(BaseModel):
     passed: bool = False
     score: float = 0.0
     details: list[TranscriptRuleResult] = Field(default_factory=list)
+    accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
+class TraceConstraintResult(BaseModel):
+    """The verdict one declared trace constraint reached.
+
+    ``message`` is empty on a pass and names what went wrong otherwise — an
+    unmatched anchor, a failed condition, or the evidence the trial does not carry.
+    ``matched_positions`` holds timeline positions rather than events, so a grade
+    stays readable and serialisable; an event is looked up by position against
+    ``trajectory.yaml``.
+    """
+
+    id: str = Field(min_length=1)
+    kind: str
+    passed: bool
+    weight: float
+    message: str = ""
+    matched_positions: list[int] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("kind")
+    @classmethod
+    def _require_a_kind_from_the_vocabulary(cls, value: str) -> str:
+        if value not in TRACE_CONSTRAINT_KINDS:
+            raise ValueError(
+                f"{value!r} is not a trace constraint kind. A result names one of "
+                f"{sorted(TRACE_CONSTRAINT_KINDS)}"
+            )
+        return value
+
+
+class TraceChecksResult(BaseModel):
+    """What evaluating a pack's ``trace_checks`` block produced.
+
+    ``accounted_keys`` names the author-facing ``trace_checks.*`` keys the
+    evaluation decomposed, so the runtime ledger reads what was evaluated rather
+    than re-deriving it — the ``TranscriptEvaluationResult`` contract.
+
+    A result with no ``constraints`` is the trial that left no trace of itself: the
+    component is not scored there and the caller records the skip.
+    """
+
+    passed: bool = False
+    score: float = 0.0
+    constraints: list[TraceConstraintResult] = Field(default_factory=list)
     accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}

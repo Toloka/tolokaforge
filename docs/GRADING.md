@@ -1032,9 +1032,9 @@ evaluated over the [trial event timeline](#trial-event-timeline). Where
 predicates, nested argument paths, counting, and a call's status or result.
 
 **Not yet scored.** The block is validated at load, crosses to both substrates as
-one model, and its matchers resolve against the timeline — but no substrate folds a
-`trace_checks` score into the grade yet, so it contributes no component score.
-Tracked by **#678**.
+one model, and `evaluate_trace_checks` reaches a verdict and a weighted score for
+it — but no substrate calls that evaluator yet, so the block contributes no
+component score to a grade. Tracked by **#678**.
 
 ### The config surface
 
@@ -1195,6 +1195,17 @@ reduces to one comparison of extremes:
 and symmetrically on the right: `right: first` reduces `R := {min(R)}`,
 `right: last` reduces `R := {max(R)}`.
 
+`immediately_before` reads the same four quantifiers over the same two sides, but
+the relation between a left match and a right match is adjacency in the `among`
+view rather than order, so it has **no** min/max closed form. It is the quantified
+reading of the pairs: `any` / `any` is "some left match is immediately followed by
+some right match", `all` / `any` is "every left match is", `any` / `all` is "one
+left match is immediately followed by every right match" — satisfiable only where
+the right side matched exactly once — and `first` / `last` reduce their side to one
+event before the pair is read. Where ordering and adjacency disagree, adjacency is
+the stricter: `min(L) < max(R)` holds for any interleaving, while adjacency holds
+only for the pairs the view puts side by side.
+
 **Two side types.** A quantifier is a per-side field, never fused into the kind:
 
 - `MatcherSide` = `{quantifier: any | all | first | last, match}` — the two sides
@@ -1246,6 +1257,69 @@ the timeline parity suite. A **failed** call's text is not: the two substrates
 word the same failure differently (#717). So a result predicate is admitted only
 where portability holds. To assert that a call failed, match on `status` — which
 agrees everywhere — rather than on the failure text.
+
+### `on_missing` — what an unmatched anchor decides
+
+A side or anchor that matched **nothing** leaves the constraint's question unasked:
+`before` has no ordering to check, `absent_between` has no window. That is not the
+same as the condition failing, so it is decided by `on_missing`, which defaults to
+**`fail`** — a named failing sub-check saying which position selected no event.
+
+The default is `fail` because the alternative is a vacuous pass, and a matcher that
+selects nothing is far more often an author's typo or an agent that never got
+started than a condition genuinely satisfied. `on_missing: pass` is the explicit
+opt-in for "this constraint only applies when the anchor occurred".
+
+`on_missing` is rejected at load on `absent` and `count`, whose verdicts *are*
+about matching nothing.
+
+**Do not write `on_missing: pass` on a `present` constraint.** `present`'s anchor
+is its own match, and "nothing matched" is the only way it can fail — so the pair
+is a check that holds however the agent behaved. Write the constraint the trial
+should fail, or drop it.
+
+### When a constraint cannot be decided
+
+A matcher yields definitely-matching events and
+[undecidable](#what-a-matcher-resolves-to-matched-and-undecidable) ones. A
+constraint is decided only when **every** completion of the undecidable evidence
+reaches the same verdict; otherwise it is **undecided**, which is a failing
+sub-check naming the constraint and the evidence the trial does not carry.
+
+Worked, over *d* definite matches and *u* undecidable ones:
+
+| constraint | verdict |
+|---|---|
+| `present` | passes at `d >= 1` — **even with undecidables present** — fails at `d = u = 0`, undecided at `d = 0 < u` |
+| `absent` | fails at `d >= 1`, passes at `d = u = 0`, undecided at `d = 0 < u` |
+| `count` | passes when every count in `[d, d + u]` is within the bounds, fails when none is, undecided otherwise |
+| `before`, `immediately_before`, `absent_before`, `absent_between` | decided when every reading of each side agrees; undecided otherwise |
+| `all_of`, `any_of`, `negate` | Kleene: a conjunction with a failing branch fails whatever the undecided branch would have said, a disjunction with a holding branch passes, and otherwise an undecided branch makes the composite undecided |
+
+Undecided is not a pass in the agent's favour and not an over-fail either: definite
+evidence answers the question wherever it can. The usual way to reach it is a
+bundle re-graded without its tool-call record, where every `status` and `executor`
+predicate is unreadable — which is a real limit on grading a `trace_checks` pack
+from a recorded bundle, not a defect to work around.
+
+### Weighting the constraints
+
+The component score is `Σ(weight · passed) / Σ(weight)`, `weight` defaulting to
+`1.0`, so a pack that omits every weight scores the plain fraction of constraints
+that passed. `weight` must be **positive**: a zero weight is a declared check that
+contributes to neither the numerator nor the denominator, and "evaluated but not
+scored" is what `severity: gate` (#680) is for.
+
+Prefer uniform weights. Reach for `weight` when migrating an already-weighted
+criterion, not to express that one condition feels more important — a weight map
+tuned until the numbers look right is a grader fitted to the trajectories it was
+tuned on. The same guidance the rubric weights carry applies here.
+
+**`any_of` is not multi-path grading.** A disjunction over flat constraints lets an
+agent satisfy half of one route and half of another: `any_of: [A_step1, B_step1]`
+combined with `any_of: [A_step2, B_step2]` passes for an agent that did `A_step1`
+and `B_step2`, which is neither route. Grading genuinely alternative routes needs
+the paths declared as wholes, which is #680's `alternatives`.
 
 ---
 

@@ -74,8 +74,10 @@ from tolokaforge.runner.models import ToolCallRecorder as ToolCallRecorder
 from tolokaforge.runner.models import ToolExecutorIdentity as ToolExecutorIdentity
 from tolokaforge.runner.models import ToolExpectations as ToolExpectations
 from tolokaforge.runner.models import TraceChecksConfig as TraceChecksConfig
+from tolokaforge.runner.models import TraceChecksResult as TraceChecksResult
 from tolokaforge.runner.models import TraceConstraint as TraceConstraint
 from tolokaforge.runner.models import TraceConstraintExpr as TraceConstraintExpr
+from tolokaforge.runner.models import TraceConstraintResult as TraceConstraintResult
 from tolokaforge.runner.models import TraceMatcher as TraceMatcher
 from tolokaforge.runner.models import TurnWindow as TurnWindow
 from tolokaforge.runner.models import ValuePredicate as ValuePredicate

@@ -322,7 +322,20 @@ _REJECTIONS: tuple[_Rejection, ...] = (
     _Rejection(
         label="negative_weight",
         block=_block(_constraint({"present": {"match": _TOOL_CALL}}, weight=-1.0)),
-        message="greater than or equal to 0",
+        message="inverts the fold",
+        validator="_require_a_weight_that_scores",
+    ),
+    _Rejection(
+        label="zero_weight",
+        block=_block(_constraint({"present": {"match": _TOOL_CALL}}, weight=0.0)),
+        message="severity: gate (#680)",
+        validator="_require_a_weight_that_scores",
+    ),
+    _Rejection(
+        label="weight_that_is_not_a_number",
+        block=_block(_constraint({"present": {"match": _TOOL_CALL}}, weight=float("nan"))),
+        message="is not a finite number",
+        validator="_require_a_weight_that_scores",
     ),
     _Rejection(
         label="no_constraints",

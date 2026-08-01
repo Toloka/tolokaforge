@@ -1,29 +1,31 @@
-"""Resolving a trace-check matcher against the trial's event timeline.
+"""Scoring a pack's trace checks against the trial's event timeline.
 
 Substrate-neutral and pure — no services, no I/O — over the timeline both
-substrates build, so a matcher selects the same events whichever substrate grades
-the trial.
+substrates build, so a constraint reaches the same verdict whichever substrate
+grades the trial.
 
 :func:`select_events` is the **only** function that resolves a matcher. A
 constraint reads events through it and nothing else, which is what keeps argument
-correlation (#681) a change to one signature.
+correlation (#681) a change to one signature. :func:`evaluate_trace_checks` folds
+the constraint verdicts into the component score.
 
-Resolution is three-valued. An event either definitely matches, definitely does
+Both layers are three-valued. An event either definitely matches, definitely does
 not, or cannot be decided because the evidence a predicate reads was never
 recorded — and the third case is a state the timeline reaches routinely, on every
 bundle re-graded without its tool-call record. Collapsing it into "did not match"
 would satisfy every negative constraint in the agent's favour, which
-``docs/GRADING.md`` G4 names as the hazard to avoid.
+``docs/GRADING.md`` G4 names as the hazard to avoid. A constraint is therefore
+decided only when every completion of the undecidable evidence agrees, and an
+undecided constraint is a failing sub-check that names what could not be read.
 
-The authored vocabulary these predicates come from is documented in
-``docs/GRADING.md`` § "Trace Checks".
+The authored vocabulary is documented in ``docs/GRADING.md`` § "Trace Checks".
 """
 
 from __future__ import annotations
 
 import operator
 import re
-from collections.abc import Callable, Mapping, Sized
+from collections.abc import Callable, Iterable, Mapping, Sequence, Sized
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -34,9 +36,30 @@ from tolokaforge.core.grading.trace_timeline import (
     TraceEventKind,
     TrialTimeline,
 )
-from tolokaforge.core.models import TraceMatcher, ValuePredicate
+from tolokaforge.core.models import (
+    AbsentBeforeConstraint,
+    AbsentBetweenConstraint,
+    AbsentConstraint,
+    AdjacencyView,
+    AnchorQuantifier,
+    BeforeConstraint,
+    CountConstraint,
+    ImmediatelyBeforeConstraint,
+    MatcherSide,
+    OnMissing,
+    PresentConstraint,
+    Quantifier,
+    TraceChecksConfig,
+    TraceChecksResult,
+    TraceConstraint,
+    TraceConstraintExpr,
+    TraceConstraintResult,
+    TraceMatcher,
+    TurnWindow,
+    ValuePredicate,
+)
 
-__all__ = ["MatcherOutcome", "select_events"]
+__all__ = ["MatcherOutcome", "evaluate_trace_checks", "select_events"]
 
 
 @dataclass(frozen=True)
@@ -136,7 +159,7 @@ def _resolve(
         _RECORD_ONLY_FIELDS if outcome is not None else _RECORD_ONLY_FIELDS | {"result"}
     )
     unreadable: set[str] = set()
-    for field, value, predicate in _readings(matcher, event, outcome):
+    for field, value, predicate in _predicate_readings(matcher, event, outcome):
         if value is None and field in unreadable_when_none:
             unreadable.add(field)
         elif not _predicate_holds(predicate, value):
@@ -146,7 +169,7 @@ def _resolve(
     return _Truth.TRUE, frozenset()
 
 
-def _readings(
+def _predicate_readings(
     matcher: TraceMatcher, event: TraceEvent, outcome: TraceEvent | None
 ) -> list[tuple[str, Any, ValuePredicate]]:
     """Every declared predicate paired with the value it reads on this event."""
@@ -264,3 +287,448 @@ _OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
     "len_gte": _by_length(operator.ge),
     "exists": lambda value, expected: (value is not None) is expected,
 }
+
+
+def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) -> TraceChecksResult:
+    """Score ``config``'s constraints against ``timeline``.
+
+    A timeline carrying neither a conversational turn nor a tool call is the trial
+    that left no trace of itself: nothing is evaluated and the caller records the
+    skip, because every constraint would otherwise score against evidence the trial
+    does not carry.
+    """
+    if not timeline.events:
+        return TraceChecksResult()
+    results = [_evaluate_constraint(timeline, constraint) for constraint in config.constraints]
+    return TraceChecksResult(
+        passed=all(result.passed for result in results),
+        score=_weighted_fraction(results),
+        constraints=results,
+    )
+
+
+def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
+    """``Σ(weight · passed) / Σ(weight)`` over the evaluated constraints.
+
+    Every weight is positive and an evaluated constraint list is non-empty, so the
+    denominator is positive by construction. There is deliberately no
+    zero-denominator branch: any score it returned would be a convention no author
+    chose, and the load-time bound is what removes the need for one.
+    """
+    total = sum(result.weight for result in results)
+    earned = sum(result.weight for result in results if result.passed)
+    return earned / total
+
+
+def _evaluate_constraint(
+    timeline: TrialTimeline, constraint: TraceConstraint
+) -> TraceConstraintResult:
+    on_missing = constraint.on_missing or OnMissing.FAIL
+    resolver = _Resolver(timeline, constraint.within)
+    truth = _evaluate(constraint.require, resolver, on_missing)
+    kind = constraint.require.declared_kind()
+    return TraceConstraintResult(
+        id=constraint.id,
+        kind=kind,
+        passed=truth is _Truth.TRUE,
+        weight=constraint.weight,
+        message=_message(truth, kind, resolver, on_missing),
+        matched_positions=resolver.matched_positions(),
+    )
+
+
+@dataclass(frozen=True)
+class _Resolved:
+    """One matcher of one constraint, and what it selected.
+
+    ``anchor`` marks the positions whose emptiness is an *unmatched* constraint
+    rather than an answer: a `before` side that selected nothing leaves the
+    ordering unasked, while an `absent` matcher selecting nothing is the very thing
+    it asserts.
+    """
+
+    label: str
+    outcome: MatcherOutcome
+    anchor: bool
+
+
+class _Resolver:
+    """Resolves one constraint's matchers, remembering what each one found."""
+
+    def __init__(self, timeline: TrialTimeline, within: TurnWindow | None) -> None:
+        self.timeline = timeline
+        self._within = within
+        self._resolved: list[_Resolved] = []
+
+    def resolve(self, label: str, matcher: TraceMatcher, *, anchor: bool) -> MatcherOutcome:
+        outcome = _restricted(select_events(self.timeline, matcher), self._within)
+        self._resolved.append(_Resolved(label, outcome, anchor))
+        return outcome
+
+    def matched_positions(self) -> list[int]:
+        return sorted({event.position for item in self._resolved for event in item.outcome.matched})
+
+    def undecided(self) -> list[str]:
+        """Why each matcher that could not be decided could not be decided."""
+        return [
+            f"{item.label}: {item.outcome.indeterminate_reason}"
+            for item in self._resolved
+            if item.outcome.indeterminate_reason is not None
+        ]
+
+    def unmatched_anchors(self) -> list[str]:
+        return [
+            item.label
+            for item in self._resolved
+            if item.anchor and not item.outcome.matched and not item.outcome.undecidable
+        ]
+
+
+def _restricted(outcome: MatcherOutcome, within: TurnWindow | None) -> MatcherOutcome:
+    """``outcome`` with every event outside the constraint's turn window dropped.
+
+    The window narrows what a matcher selects, not what the timeline contains, so
+    positions stay the trial's own and an adjacency view is still read over the
+    whole trial.
+    """
+    if within is None:
+        return outcome
+    matched = tuple(event for event in outcome.matched if _inside(event, within))
+    undecidable = tuple(event for event in outcome.undecidable if _inside(event, within))
+    return MatcherOutcome(matched, undecidable, outcome.unreadable_fields if undecidable else ())
+
+
+def _inside(event: TraceEvent, window: TurnWindow) -> bool:
+    below = window.first_turn is not None and event.turn_index < window.first_turn
+    above = window.last_turn is not None and event.turn_index > window.last_turn
+    return not below and not above
+
+
+def _evaluate(expr: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    kind = expr.declared_kind()
+    return _HANDLERS[kind](getattr(expr, kind), resolver, on_missing)
+
+
+def _present(payload: PresentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=True))
+    return _decide((None if count == 0 else True for count in counts), on_missing)
+
+
+def _absent(payload: AbsentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=False))
+    return _decide((count == 0 for count in counts), on_missing)
+
+
+def _count(payload: CountConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=False))
+    return _decide(
+        (_within_bounds(count, payload.min, payload.max) for count in counts), on_missing
+    )
+
+
+def _reachable_counts(outcome: MatcherOutcome) -> range:
+    """Every match count some completion of the undecidable evidence produces.
+
+    The whole interval, not its two ends: ``count: {min: 1, max: 1}`` over no
+    definite matches and two undecidables is satisfied by exactly one of them
+    matching, while neither end of ``[0, 2]`` satisfies it — so a rule reading only
+    the ends would answer "definitely false" where a completion says otherwise.
+    """
+    definite = len(outcome.matched)
+    return range(definite, definite + len(outcome.undecidable) + 1)
+
+
+def _within_bounds(count: int, minimum: int | None, maximum: int | None) -> bool:
+    return (minimum is None or count >= minimum) and (maximum is None or count <= maximum)
+
+
+def _before(payload: BeforeConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    return _ordering(payload.left, payload.right, resolver, on_missing, operator.lt)
+
+
+def _immediately_before(
+    payload: ImmediatelyBeforeConstraint, resolver: _Resolver, on_missing: OnMissing
+) -> _Truth:
+    adjacent = _adjacency(resolver.timeline, payload.among)
+    return _ordering(payload.left, payload.right, resolver, on_missing, adjacent)
+
+
+def _ordering(
+    left: MatcherSide,
+    right: MatcherSide,
+    resolver: _Resolver,
+    on_missing: OnMissing,
+    relation: Callable[[int, int], bool],
+) -> _Truth:
+    lefts = _side_readings(resolver.resolve("left", left.match, anchor=True), left.quantifier)
+    rights = _side_readings(resolver.resolve("right", right.match, anchor=True), right.quantifier)
+    return _decide(
+        (
+            _relation_holds(chosen_left, left.quantifier, chosen_right, right.quantifier, relation)
+            for chosen_left in lefts
+            for chosen_right in rights
+        ),
+        on_missing,
+    )
+
+
+def _relation_holds(
+    left: _Reading,
+    left_quantifier: Quantifier,
+    right: _Reading,
+    right_quantifier: Quantifier,
+    relation: Callable[[int, int], bool],
+) -> bool | None:
+    """Whether the relation holds over this pair of readings, quantifier by quantifier.
+
+    ``first`` / ``last`` have already reduced their side to one position, so an
+    existential and a universal reading of it answer the same.
+    """
+    if not left or not right:
+        return None
+    return _quantified(
+        left_quantifier,
+        (
+            _quantified(right_quantifier, (relation(position, other) for other in right))
+            for position in left
+        ),
+    )
+
+
+def _quantified(quantifier: Quantifier, values: Iterable[bool]) -> bool:
+    return all(values) if quantifier is Quantifier.ALL else any(values)
+
+
+def _absent_before(
+    payload: AbsentBeforeConstraint, resolver: _Resolver, on_missing: OnMissing
+) -> _Truth:
+    anchors = _side_readings(
+        resolver.resolve("anchor", payload.anchor.match, anchor=True), payload.anchor.quantifier
+    )
+    forbidden = _side_readings(resolver.resolve("forbidden", payload.forbidden, anchor=False), None)
+    return _decide(
+        (
+            _nothing_inside(_prefix_window(anchor), blocked)
+            for anchor in anchors
+            for blocked in forbidden
+        ),
+        on_missing,
+    )
+
+
+def _absent_between(
+    payload: AbsentBetweenConstraint, resolver: _Resolver, on_missing: OnMissing
+) -> _Truth:
+    starts = _side_readings(
+        resolver.resolve("start", payload.start.match, anchor=True), payload.start.quantifier
+    )
+    ends = _side_readings(
+        resolver.resolve("end", payload.end.match, anchor=True), payload.end.quantifier
+    )
+    forbidden = _side_readings(resolver.resolve("forbidden", payload.forbidden, anchor=False), None)
+    return _decide(
+        (
+            _nothing_inside(_between_window(start, end), blocked)
+            for start in starts
+            for end in ends
+            for blocked in forbidden
+        ),
+        on_missing,
+    )
+
+
+def _prefix_window(anchor: _Reading) -> tuple[int, int] | None:
+    """``[0, anchor)`` as an exclusive interval, or ``None`` where nothing anchors it."""
+    return (-1, anchor[0]) if anchor else None
+
+
+def _between_window(start: _Reading, end: _Reading) -> tuple[int, int] | None:
+    """``(start, end)``, or ``None`` where the trial holds no such window.
+
+    An inverted or empty window is unmatched rather than vacuously satisfied: the
+    author's anchors did not occur in the declared order, so ``on_missing`` decides
+    and defaults to a named failure.
+    """
+    if not start or not end or start[0] >= end[0]:
+        return None
+    return (start[0], end[0])
+
+
+def _nothing_inside(window: tuple[int, int] | None, forbidden: _Reading) -> bool | None:
+    if window is None:
+        return None
+    low, high = window
+    return not any(low < position < high for position in forbidden)
+
+
+def _all_of(
+    payload: list[TraceConstraintExpr], resolver: _Resolver, on_missing: OnMissing
+) -> _Truth:
+    return _conjunction(_evaluate(expr, resolver, on_missing) for expr in payload)
+
+
+def _any_of(
+    payload: list[TraceConstraintExpr], resolver: _Resolver, on_missing: OnMissing
+) -> _Truth:
+    return _disjunction(_evaluate(expr, resolver, on_missing) for expr in payload)
+
+
+def _negate(payload: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    return _NEGATED[_evaluate(payload, resolver, on_missing)]
+
+
+def _conjunction(verdicts: Iterable[_Truth]) -> _Truth:
+    seen = set(verdicts)
+    if _Truth.FALSE in seen:
+        return _Truth.FALSE
+    return _Truth.UNKNOWN if _Truth.UNKNOWN in seen else _Truth.TRUE
+
+
+def _disjunction(verdicts: Iterable[_Truth]) -> _Truth:
+    seen = set(verdicts)
+    if _Truth.TRUE in seen:
+        return _Truth.TRUE
+    return _Truth.UNKNOWN if _Truth.UNKNOWN in seen else _Truth.FALSE
+
+
+_NEGATED: Mapping[_Truth, _Truth] = {
+    _Truth.TRUE: _Truth.FALSE,
+    _Truth.FALSE: _Truth.TRUE,
+    _Truth.UNKNOWN: _Truth.UNKNOWN,
+}
+
+_HANDLERS: Mapping[str, Callable[[Any, _Resolver, OnMissing], _Truth]] = {
+    "present": _present,
+    "absent": _absent,
+    "count": _count,
+    "before": _before,
+    "immediately_before": _immediately_before,
+    "absent_before": _absent_before,
+    "absent_between": _absent_between,
+    "all_of": _all_of,
+    "any_of": _any_of,
+    "negate": _negate,
+}
+
+# One reading of one side: the positions it holds under one completion of the
+# undecidable evidence. Empty means the side matched nothing, which is an
+# unmatched constraint rather than a verdict.
+_Reading = tuple[int, ...]
+
+
+def _side_readings(
+    outcome: MatcherOutcome, quantifier: Quantifier | AnchorQuantifier | None
+) -> list[_Reading]:
+    """Every position set this side could hold once the missing evidence is known.
+
+    Two readings bound a side quantified ``any`` or ``all``: existential
+    quantification is monotone in the matched set and universal quantification
+    antitone, whatever relation the constraint applies, so the definitely-matched
+    set and the everything-matched set bracket every completion between them.
+
+    A ``first`` / ``last`` side instead **selects** one event, and every
+    undecidable event ahead of the earliest (behind the latest) definite match is a
+    selection some completion makes. Those are enumerated rather than bracketed,
+    because two extremes bound a verdict only where the relation reading the
+    selection is monotone in it, and two of the kinds are not: an undecidable event
+    landing between two matches turns an unsatisfied ``immediately_before`` into a
+    satisfied one, and an undecidable anchor can be the one that makes an
+    ``absent_between`` window exist at all rather than widening it.
+    """
+    matched = tuple(event.position for event in outcome.matched)
+    unknown = tuple(event.position for event in outcome.undecidable)
+    selecting = quantifier is not None and quantifier.value in _SELECTING_QUANTIFIERS
+    if selecting:
+        return _selections(matched, unknown, earliest=quantifier.value == "first")
+    if not unknown:
+        return [matched]
+    return [matched, tuple(sorted(matched + unknown))]
+
+
+_SELECTING_QUANTIFIERS = frozenset({"first", "last"})
+
+
+def _selections(matched: _Reading, unknown: _Reading, *, earliest: bool) -> list[_Reading]:
+    """Every single event a ``first`` / ``last`` side could end up selecting."""
+    if not matched:
+        return [(), *((position,) for position in unknown)]
+    chosen = min(matched) if earliest else max(matched)
+    ahead = [
+        position for position in unknown if (position < chosen if earliest else position > chosen)
+    ]
+    return [(position,) for position in [*ahead, chosen]]
+
+
+def _decide(values: Iterable[bool | None], on_missing: OnMissing) -> _Truth:
+    """The verdict every reachable reading agrees on, or ``UNKNOWN``.
+
+    ``None`` is an unmatched anchor — a question the trial answered by not
+    containing the anchor at all, not one the missing record left open — so
+    ``on_missing`` resolves it before the readings are compared.
+    """
+    unmatched_verdict = on_missing is OnMissing.PASS
+    agreed = {unmatched_verdict if value is None else value for value in values}
+    if agreed == {True}:
+        return _Truth.TRUE
+    if agreed == {False}:
+        return _Truth.FALSE
+    return _Truth.UNKNOWN
+
+
+_VIEW_KINDS: Mapping[AdjacencyView, frozenset[TraceEventKind]] = {
+    AdjacencyView.TOOL_CALLS: frozenset({TraceEventKind.TOOL_CALL}),
+    AdjacencyView.TOOL_RESULTS: frozenset({TraceEventKind.TOOL_RESULT}),
+    AdjacencyView.MESSAGES: frozenset(
+        {TraceEventKind.ASSISTANT_MESSAGE, TraceEventKind.USER_MESSAGE}
+    ),
+    AdjacencyView.EVENTS: frozenset(TraceEventKind),
+}
+
+
+def _adjacency(timeline: TrialTimeline, among: AdjacencyView) -> Callable[[int, int], bool]:
+    """Whether one position immediately precedes another in the named view.
+
+    An event the view does not contain is adjacent to nothing: ``among:
+    tool_calls`` over a matched message names a sequence that message has no place
+    in.
+    """
+    kinds = _VIEW_KINDS[among]
+    ranks = {
+        event.position: rank
+        for rank, event in enumerate(event for event in timeline.events if event.kind in kinds)
+    }
+
+    def immediately_precedes(left: int, right: int) -> bool:
+        if left not in ranks or right not in ranks:
+            return False
+        return ranks[right] == ranks[left] + 1
+
+    return immediately_precedes
+
+
+# Why a definite failure failed, per kind — the sentence a task author reads
+# beside the constraint's id in the grade.
+_FAILURE_DETAIL: Mapping[str, str] = {
+    "present": "no event matched",
+    "absent": "an event matched",
+    "count": "the number of matching events is outside the declared bounds",
+    "before": "no match is ordered before the other side under the declared quantifiers",
+    "immediately_before": "no match is immediately followed by the other side in that view",
+    "absent_before": "a forbidden event occurs before the anchor",
+    "absent_between": "a forbidden event occurs inside the window",
+    "all_of": "a nested expression does not hold",
+    "any_of": "no nested expression holds",
+    "negate": "the negated expression holds",
+}
+
+
+def _message(truth: _Truth, kind: str, resolver: _Resolver, on_missing: OnMissing) -> str:
+    """What the grade says about this constraint — empty when it passed."""
+    if truth is _Truth.TRUE:
+        return ""
+    if truth is _Truth.UNKNOWN:
+        return f"{kind} cannot be decided — " + "; ".join(resolver.undecided())
+    unmatched = resolver.unmatched_anchors() if on_missing is OnMissing.FAIL else []
+    if unmatched:
+        return f"{kind} is unmatched: {' and '.join(unmatched)} selected no event"
+    return f"{kind}: {_FAILURE_DETAIL[kind]}"

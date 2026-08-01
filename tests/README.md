@@ -103,6 +103,7 @@ tests/
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
+    ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
@@ -143,7 +144,9 @@ Compare output against committed golden snapshots in `snapshots/`.
   means both substrates' transcript rules are reading a trial the two views no
   longer agree on. Build a coherent message-view/record pair for a grading fixture
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a
-  reconciliation failure, not a shortcut.
+  reconciliation failure, not a shortcut. `build_timeline` lands every call on the
+  last assistant turn, while `build_turn_timeline` takes the calls per turn — which
+  is what an ordering or turn-window property needs.
 
 Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
 authors a `task.yaml` and a `grading.yaml`. A pack that drives a differential adds
