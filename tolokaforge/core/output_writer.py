@@ -12,12 +12,14 @@ import yaml
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, ToolExecutionStatus, Trajectory
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 2
+TRIAL_BUNDLE_SCHEMA_VERSION = 3
 """The per-trial bundle generation stamped into ``metrics.yaml``.
 
-Version 2 bundles omit ``grade.yaml`` for a trial the infrastructure aborted —
-there is no verdict to write — so a consumer can tell an absent grade from a
-truncated bundle without guessing.
+Version 3 bundles omit ``grade.yaml`` for two different trials — one the
+infrastructure aborted before the agent ran, and one whose grading refused to
+produce a verdict. The discriminator is ``trajectory.yaml``'s ``grading_error``:
+populated for the second, ``null`` for the first. An absent grade alone no
+longer says which happened.
 """
 
 
@@ -100,6 +102,10 @@ class OutputWriter:
         *shape* of the message trace (when the simulator prompt was
         revised, the on-disk shape may have changed too).
 
+        ``grading_error`` is the only record of why a trial carries no
+        ``grade.yaml`` because grading refused, so it lives in the bundle
+        rather than only in the run's logs.
+
         Args:
             trajectory: Trajectory object containing messages and metadata
         """
@@ -113,6 +119,7 @@ class OutputWriter:
             "termination_reason": (
                 trajectory.termination_reason.value if trajectory.termination_reason else None
             ),
+            "grading_error": trajectory.grading_error,
             "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
         }
 
@@ -135,8 +142,6 @@ class OutputWriter:
             trajectory: Trajectory object containing metrics
         """
         metrics_data = trajectory.metrics.model_dump(mode="json")
-        # Generation 2 of the trial bundle: a trial the infrastructure aborted
-        # carries no ``grade.yaml``, so a reader cannot assume one is there.
         metrics_data["schema_version"] = TRIAL_BUNDLE_SCHEMA_VERSION
 
         # Add detailed tool usage breakdown from tool_log

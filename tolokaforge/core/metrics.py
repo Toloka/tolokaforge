@@ -47,9 +47,11 @@ class TrialOutcomePartition:
     """A task's trajectories split by :func:`classify_trial_outcome`.
 
     ``measured_trials + sum(infrastructure_aborts.values()) == total_trials``.
-    ``harness_errors`` overlaps ``measured`` rather than partitioning against
-    it: our own defects are counted like any other failure, and the count is a
-    run-health signal on its own.
+    ``harness_errors`` and ``ungradeable`` overlap ``measured`` rather than
+    partitioning against it: our own defects are counted like any other failure,
+    and each count is a run-health signal on its own. A trial is classified
+    once, so the two never count the same trial and their sum still fits inside
+    ``measured_trials``.
     """
 
     total_trials: int
@@ -57,24 +59,31 @@ class TrialOutcomePartition:
     outcomes_by_reason: dict[str, OutcomeCount]
     infrastructure_aborts: dict[str, int]
     harness_errors: int
+    ungradeable: int
 
     @property
     def measured_trials(self) -> int:
         return len(self.measured)
 
 
-def _outcome_key(trajectory: Trajectory) -> str:
-    """The ``outcomes_by_reason`` key for *trajectory*.
+def _outcome_key(trajectory: Trajectory, outcome: TrialOutcomeClass) -> str:
+    """The ``outcomes_by_reason`` key for *trajectory*, counted as *outcome*.
 
     A termination reason is its own key. A trial that recorded none is keyed by
     its status instead, so every key maps to exactly one outcome class — a
     reason-less trial is ``MEASURED`` when it completed and ``HARNESS_ERROR``
     when it did not.
+
+    An ungradeable trial terminates the way any graded trial does, ``agent_done``
+    most often of all, so the reason alone would file it in the graded trial's
+    row and leave that row's class last-write-wins. Prefixing keeps one key to
+    one class without hiding which reason it was.
     """
     reason = trajectory.termination_reason
-    if reason is not None:
-        return reason.value
-    return f"unset_{trajectory.status.value}"
+    key = reason.value if reason is not None else f"unset_{trajectory.status.value}"
+    if outcome is TrialOutcomeClass.UNGRADEABLE:
+        return f"ungradeable_{key}"
+    return key
 
 
 def partition_trial_outcomes(trajectories: Sequence[Trajectory]) -> TrialOutcomePartition:
@@ -89,15 +98,14 @@ def partition_trial_outcomes(trajectories: Sequence[Trajectory]) -> TrialOutcome
     # key is a fact about the key rather than about the trial that first set it.
     counts: Counter[str] = Counter()
     classes: dict[str, TrialOutcomeClass] = {}
-    harness_errors = 0
+    per_class: Counter[TrialOutcomeClass] = Counter()
 
     for trajectory in trajectories:
         outcome = classify_trial_outcome(trajectory)
-        key = _outcome_key(trajectory)
+        key = _outcome_key(trajectory, outcome)
         counts[key] += 1
         classes[key] = outcome
-        if outcome is TrialOutcomeClass.HARNESS_ERROR:
-            harness_errors += 1
+        per_class[outcome] += 1
         if outcome is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
             measured.append(trajectory)
 
@@ -116,7 +124,8 @@ def partition_trial_outcomes(trajectories: Sequence[Trajectory]) -> TrialOutcome
             for key, count in counts.items()
         },
         infrastructure_aborts=infrastructure_aborts,
-        harness_errors=harness_errors,
+        harness_errors=per_class[TrialOutcomeClass.HARNESS_ERROR],
+        ungradeable=per_class[TrialOutcomeClass.UNGRADEABLE],
     )
 
 
@@ -313,9 +322,9 @@ def _measured_averages(measured: Sequence[Trajectory]) -> dict[str, Any]:
     numerator by an unfiltered count — the arithmetic that made one ungraded
     trial halve a task's average score. ``scored_trials`` is that average's own
     denominator, counted from the same list, so the run-level micro can rebuild
-    the numerator instead of assuming every measured trial was graded. A
-    ``HARNESS_ERROR`` trial is measured and never reaches grading, so the two
-    counts differ on any run that hit one.
+    the numerator instead of assuming every measured trial was graded. The two
+    counts differ on any run that hit a ``HARNESS_ERROR`` trial, which never
+    reaches grading, or an ``UNGRADEABLE`` one, whose grading refused.
     """
     scores = [t.grade.score for t in measured if t.grade is not None]
     return {
@@ -358,6 +367,7 @@ def calculate_task_metrics(trajectories: list[Trajectory]) -> dict[str, Any]:
         "measured_trials": partition.measured_trials,
         "infrastructure_aborts": partition.infrastructure_aborts,
         "harness_errors": partition.harness_errors,
+        "ungradeable": partition.ungradeable,
         "outcomes_by_reason": {
             key: row.as_wire_row() for key, row in partition.outcomes_by_reason.items()
         },
@@ -443,6 +453,7 @@ def calculate_aggregate_metrics(
         "measured_trials": measured_trials,
         "scored_trials": scored_trials,
         "harness_errors": sum(m["harness_errors"] for m in task_metrics),
+        "ungradeable": sum(m["ungradeable"] for m in task_metrics),
         "infrastructure_aborts": _merge_abort_counts(task_metrics),
         "outcomes_by_reason": _merge_outcomes_by_reason(task_metrics),
     }

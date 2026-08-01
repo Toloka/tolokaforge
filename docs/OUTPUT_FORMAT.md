@@ -226,6 +226,7 @@ start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
+grading_error: null                                   # why grading produced no verdict, or null
 messages:
   - role: "user"
     content: "..."
@@ -253,6 +254,7 @@ messages:
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
 | `simulator_schema_version` | `int` | always `1` today | Monotonic; bump whenever the simulator prompt shape changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 
 ### `messages[*].reasoning.summary` — when populated
 
@@ -359,10 +361,11 @@ included for forensics. Each LLM API call is also recorded in
 `latency_s` — the trial-level `cost_usd` is the sum of those entries.
 
 To help analytics consumers detect schema evolution, every trial-level
-metrics file includes a root-level `schema_version: 2` marker. Generation 2
-bundles carry no `grade.yaml` when the trial was aborted by infrastructure — the
-agent never ran, so there is no verdict to write — so a reader must not assume
-the file is there.
+metrics file includes a root-level `schema_version: 3` marker. Generation 3
+bundles carry no `grade.yaml` in two cases — the trial was aborted by
+infrastructure before the agent ran, or grading ran and refused to produce a
+verdict — so a reader must not assume the file is there, and must read
+`trajectory.yaml`'s `grading_error` to tell the two apart.
 
 ```yaml
 latency_total_s: 174.14
@@ -685,9 +688,9 @@ written (no resolved model config, no environment state, no per-trial logger for
 a run that never happened).
 
 * `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
-  empty `messages`.
+  `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 2`, empty `tool_usage`) plus two top-level failure-signal
+  `schema_version: 3`, empty `tool_usage`) plus two top-level failure-signal
   keys:
 
   ```yaml
@@ -1184,15 +1187,16 @@ to be readable:
 | Key | Meaning |
 |---|---|
 | `total_trials` | Every attempt the run made |
-| `measured_trials` | The attempts that measured the agent — the denominator of every rate in the row except `avg_score` |
+| `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
-| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}` |
+| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error` |
+| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}` |
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`,
-`0 <= scored_trials <= measured_trials`, and
-`0 <= harness_errors <= measured_trials`.
+`0 <= scored_trials <= measured_trials`, and — a trial being classified once —
+`0 <= harness_errors + ungradeable <= measured_trials`.
 
 `success_rate`, `avg_latency_s`, `avg_turns`, `avg_tool_calls`, `stuck_rate`,
 `pass@k` and `pass_hat@k` — and their `_micro` / `_macro` aggregates — are over
@@ -1204,7 +1208,9 @@ counters and the latency percentiles cover **every** attempt: an aborted trial
 really did buy its tokens.
 
 A trial leaves the denominator only when its termination reason was produced from
-an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
+an exception type — `rate_limit`, `api_timeout`, `provision_error`. A grading
+refusal never buys a trial out of it, whatever the trial terminated as: it is
+evidence about us, and our own defects stay counted. See
 [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
 
 ## Schema Version Stamps
@@ -1212,8 +1218,8 @@ an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
-| `metrics.yaml` | `schema_version` | `2` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `2` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over |
+| `metrics.yaml` | `schema_version` | `3` | The per-trial bundle's file set or field semantics change |
+| `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |

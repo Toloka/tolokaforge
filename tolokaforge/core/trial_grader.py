@@ -72,8 +72,12 @@ class GradingFailedError(Exception):
     The trial was measured, so its verdict exists to be computed and only the
     grading substrate can compute it. A host-side stand-in would land in
     ``success_rate``, ``avg_score``, ``pass@k`` and ``binary_pass`` as an agent
-    failure that no measurement supports, so the failure is raised instead:
-    every published number omits the trial rather than describing it wrongly.
+    failure that no measurement supports, so the failure is raised instead.
+
+    The conductor's grading phase catches it, records the reason on
+    ``Trajectory.grading_error`` and leaves ``grade`` unset. The trial keeps its
+    own ``termination_reason``, writes its bundle, and counts as an attempt that
+    scored nothing — never as an attempt the agent failed.
     """
 
 

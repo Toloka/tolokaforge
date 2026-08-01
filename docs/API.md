@@ -61,13 +61,18 @@ def run_trial(
 
 Reading the result:
 
-- **`result.trajectory.grade` is `Grade | None`.** It is `None` for a trial the
-  infrastructure aborted — a provider rate limit, an LLM API timeout, a
+- **`result.trajectory.grade` is `Grade | None`.** It is `None` in two cases: a
+  trial the infrastructure aborted — a provider rate limit, an LLM API timeout, a
   provisioning failure — because the agent never ran and any score would describe
-  work that never happened. The `print` above therefore prints `None` on a
-  rate-limited trial, and a consumer that reads `.score` without branching raises
-  `AttributeError` rather than reading a fabricated zero. See
-  [ANALYTICS.md](ANALYTICS.md) § The denominator: measured trials.
+  work that never happened; and a trial whose grading ran and could not produce a
+  verdict. The `print` above therefore prints `None` on a rate-limited trial, and
+  a consumer that reads `.score` without branching raises `AttributeError` rather
+  than reading a fabricated zero. See [ANALYTICS.md](ANALYTICS.md) § The
+  denominator: measured trials.
+- **`result.trajectory.grading_error` is `str | None`** and tells those two cases
+  apart: non-`None` is the reason the grading substrate gave, and the trial keeps
+  its own `status` / `termination_reason`. A trajectory carrying both a `grade`
+  and a `grading_error` is rejected at construction and at `model_validate`.
 - **`result.trajectory.tool_log` is `list[RecordedToolCall]`**, one entry per
   attempted call in trial-wide execution order, carrying `call_id`, `sequence`,
   `tool_name`, `arguments`, `executor`, `status`, untruncated `output`,

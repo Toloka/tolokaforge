@@ -64,9 +64,11 @@ For each task, c = passing reps, n = **measured** reps — `measured_trials` in
 `per_task_metrics.json`, NOT `total_trials`. A rep the infrastructure aborted (provider rate
 limit, LLM API timeout, provisioning failure) produced no grade and is out of every
 denominator; the gap `total_trials - measured_trials` is exactly
-`sum(infrastructure_aborts.values())`. Report `measured_trials` and
-`infrastructure_aborts` alongside any rate, so a `null` pass@k reads as lost coverage
-rather than as a missing task.
+`sum(infrastructure_aborts.values())`. A rep whose grading refused is the other way
+around — it is inside `measured_trials`, counted as a non-pass, and reported as
+`ungradeable`. Report `measured_trials`, `infrastructure_aborts` and `ungradeable`
+alongside any rate, so a `null` pass@k reads as lost coverage rather than as a missing
+task, and a depressed rate reads as our grading bug rather than as the model's.
 - pass@1 = mean over tasks of `c/n`. The per-task `c/n` is `success_rate` in
   `per_task_metrics.json` (per-task rows live there, NOT in `aggregate.json`).
 - pass@5 (ceiling, any-of-k) = mean over tasks of `1 - C(n-c,5)/C(n,5)`, tasks with n>=5.

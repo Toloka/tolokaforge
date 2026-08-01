@@ -738,9 +738,11 @@ touches the trial's state.
 
 The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
 `GradingFailedError` on any `success = false`, so the trial is published with no
-score rather than with one the runner never computed. See
-[`GRADING.md`](GRADING.md#trial-event-timeline) for what that costs the run's
-counts.
+score rather than with one the runner never computed. The conductor catches that
+exception and records the `error` string on `Trajectory.grading_error`, so the
+trial is still counted and its bundle still written, with the cause recoverable
+from `trajectory.yaml`. See [`GRADING.md`](GRADING.md#trial-event-timeline) for
+what that costs the run's counts.
 
 | `error` | Cause |
 |---|---|
