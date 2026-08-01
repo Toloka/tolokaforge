@@ -1123,9 +1123,10 @@ The harness owns grading **mechanics**; adapters own grading
 **semantics**. Harness core owns:
 
 - **The combine algebra** — `combine.method`: `all` | `weighted`
-  | `any`. An unknown method **must** fail the grade loud
-  (`ERRORED`), never silently default. (Today the runner
-  warns-and-defaults to `all`; #218 tracks the fix.)
+  | `any`, one closed set both substrates dispatch on. Anything
+  else is refused at load — by `tolokaforge validate` and by
+  either substrate's config model, naming what may be written
+  instead — never silently defaulted.
 - **Transcript rules and JSONPath state checks** — generic over
   the transcript and the DB-service state.
 - **Golden-action replay** — the expected end state is recomputed

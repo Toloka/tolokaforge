@@ -141,7 +141,7 @@ a list of records or a dict of records keyed by ID:
 
 ```yaml
 combine:
-  method: weighted                       # weighted | min | all
+  method: weighted                       # weighted | all | any
   weights:
     state_checks: 0.70
     transcript_rules: 0.30

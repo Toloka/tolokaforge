@@ -30,8 +30,15 @@ author-facing key is one `GradingKey` entry declaring three axes:
 
 - **`kind`** — `SCORED_CHECK` (produces a component score), `CONFIG_INPUT`
   (shapes another check; no score of its own), `AGGREGATION` (combines component
-  scores). Only `SCORED_CHECK` keys have a violating trajectory, so only they can
-  be differentially tested.
+  scores). Only a `SCORED_CHECK` key has a violating trajectory, so the
+  fixture-pack differential over
+  [`tests/data/grading_parity/`](../tests/data/grading_parity/) selects that kind
+  alone. A `CONFIG_INPUT` or `AGGREGATION` key can still be proven at
+  `DIFFERENTIAL_CANONICAL`, by a differential over the property the key governs
+  rather than over a trajectory, and two are — `state_checks.hash.weight` and
+  `combine.method`. Both escape that lock, so a frozen set in the test module
+  enumerates every claim it does not reach and asserts, per entry, the property
+  that entry's own differential rests on (below).
 - **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
   same component score), `BOTH_SIGNAL_PARITY` (both consume it and both
   discriminate; the magnitudes differ because the two substrates aggregate
@@ -107,7 +114,6 @@ declared `reason`.
 
 | Key | kind | coverage | enforcement | Why only one substrate | Tracked |
 |---|---|---|---|---|---|
-| `combine.method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | the core engine always computes a weighted average and never reads the key, so `method: all_pass` scores 0.5 core-side and 0.0 runner-side for the same components | #692 |
 | `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
@@ -191,11 +197,19 @@ construction even if that composer ignored its arguments.
 That differential is a `CONFIG_INPUT` key, and the lock that runs the
 `DIFFERENTIAL_CANONICAL` fixtures selects `SCORED_CHECK` keys only, so the claim
 would otherwise be reached by no lock at all. A frozen set in the test module
-enumerates every `DIFFERENTIAL_CANONICAL` entry outside that lock's reach, and
-asserts that the sweep still spans two weights strictly inside `(0, 1)` — the
-weights at which a fold that merely *selects* the dominant source is
-distinguishable from one that mixes them. Both halves are what stop the enforcement
-level from resting on a citation.
+enumerates every `DIFFERENTIAL_CANONICAL` entry outside that lock's reach, and for
+each one asserts the property that entry's own differential rests on. Membership in
+the set enforces nothing by itself — a differential deleted wholesale leaves the set
+unchanged — so the per-entry clause is what stops the enforcement level from resting
+on a citation:
+
+- `state_checks.hash.weight` — the sweep still spans two weights strictly inside
+  `(0, 1)`, the weights at which a fold that merely *selects* the dominant source is
+  distinguishable from one that mixes them.
+- `combine.method` — the method differential's hand-written answer table still
+  covers every declared method, with a distinct score each, so an implementation
+  returning one aggregation for all three cannot satisfy it. See
+  [Score Combination](#score-combination).
 
 Core's verdict there is its own: the fixture commits the `expected_state_hash` of its
 matching state, so `check_hash` produces the verdict in process. **The runner's is
@@ -1227,8 +1241,8 @@ benchmark.
 
 `outcomes_by_reason` records every observed reason with the class it was counted
 as, so any of these judgements can be recomputed from a finished run's aggregate
-without a rerun. See [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md:1) § Run-level
-metric denominators and [`docs/ANALYTICS.md`](ANALYTICS.md:1) § The denominator:
+without a rerun. See [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Run-level
+metric denominators and [`docs/ANALYTICS.md`](ANALYTICS.md) § The denominator:
 measured trials.
 
 ## pass@k Metrics
@@ -1361,9 +1375,40 @@ closed set — anything else fails the load, naming what an author may write ins
 > and `any` gives `(1.0, True)`. Declare it only when one satisfied component is
 > genuinely the whole objective.
 
-`all` and `any` compare each component to `pass_threshold` and never consult
-`combine.weights`: for those two methods the weights decide only **which** components
-enter the fold, not how much each counts.
+`all` and `any` compare each component to `pass_threshold` and never scale it by
+`combine.weights` — measured, weights of `0.9`/`0.1` and of `1.0`/`1.0` give both
+methods the same answer on the same components. What they aggregate is the map of
+components, and **which components the map holds is a substrate-scoped question**:
+
+- **Core** admits a scored component only when `combine.weights` declares a weight
+  for it.
+- **The runner** admits every component it evaluated, weighting an undeclared one at
+  an invented `1.0`.
+
+That is why `combine.method` and `combine.weights` are both `BOTH_SIGNAL_PARITY`
+tracked by **#744**. Under `weighted` the gap is a magnitude; under `all` and `any`
+the map *is* the whole input, so it is a verdict flip. Measured on
+`state_checks: 0.0` and `transcript_rules: 1.0` at `pass_threshold: 0.8` with only
+`state_checks` weighted, `any` gives `(0.0, False)` core-side and `(1.0, True)`
+runner-side. **Declare a weight for every component the pack scores** and this
+divergence closes: on the same trial with both weighted, all three methods answer
+identically on both substrates.
+
+One asymmetry survives #744, because it is architectural rather than a defect: core
+produces no `llm_judge` component and cannot produce a `state_checks.db_probes` one —
+both `RUNNER_ONLY` by design — so on a judge- or probe-graded pack core's map is
+empty where the runner's is scored. The canonical differential therefore proves the
+dispatch over deterministic components, which is the whole of what is provable for
+this key.
+
+**Runner-engine version lock (both directions)**: the runner-side `GradingConfig`
+validates `combine_method` against this closed set, and the set both gained and lost
+members in this release. A **new engine** translating `any` is rejected at
+`RegisterTrial` by a runner image older than it; an **old engine** translating a name
+this set no longer holds is rejected by a current image. Unlike the `state_checks`
+lock, this one bites only on a pack declaring an affected value — `weighted` and
+`all` cross in either direction — so `make docker-build-core` is part of any upgrade
+that runs a pack declaring `any`.
 
 The `weighted` mean:
 
