@@ -59,6 +59,7 @@ from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -103,7 +104,7 @@ from tolokaforge.runner.grading_ledger import (
     JSONPATHS_KEY,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
-    NO_TRANSCRIPT_INPUT_SKIP,
+    NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
     transcript_rules_author_keys,
@@ -121,6 +122,8 @@ from tolokaforge.runner.models import (
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
+    TraceChecksConfig,
+    TraceChecksResult,
     TranscriptEvaluationResult,
     TranscriptRulesConfig,
 )
@@ -1437,6 +1440,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
 
+        # B.1) TRACE CHECKS — declarative constraints over the event timeline,
+        # scored by the same function the core engine calls.
+        trace_checks_result = TraceChecksResult()
+        if grading_config.trace_checks:
+            trace_checks_result = self._grade_trace_checks(
+                trial_id, grading_config.trace_checks, timeline
+            )
+            accounted_keys.update(trace_checks_result.accounted_keys)
+            if trace_checks_result.constraints:
+                components.trace_checks_score = trace_checks_result.score
+
         # B.2) LLM JUDGE GRADING (if llm_judge configured) — runner-side read-only
         # rubric judge on the shared ToolCallingLoop. Returns per-criterion results
         # + a weighted score, or ERRORED (no score) on its own malfunction. Never a
@@ -1609,6 +1623,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 ],
                 judge_status=judge_status,
                 judge_report=judge_report,
+                trace_checks=[
+                    pb2.TraceConstraintResult(
+                        id=item.id,
+                        kind=item.kind,
+                        passed=item.passed,
+                        weight=item.weight,
+                        message=item.message,
+                        matched_positions=item.matched_positions,
+                    )
+                    for item in trace_checks_result.constraints
+                ],
             ),
         )
 
@@ -1678,7 +1703,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.info(
                 f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
             )
-            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
+            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
         else:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
@@ -1686,11 +1711,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             rules_dict = TranscriptRulesConfig(min_assistant_turns=activity_floor).model_dump()
             skipped_siblings = dict.fromkeys(
-                transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP
+                transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
             )
 
         result = evaluate_transcript_rules(timeline, rules_dict)
         return result, {**skipped_siblings, **result.accounted_keys}
+
+    def _grade_trace_checks(
+        self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
+    ) -> TraceChecksResult:
+        """Score the pack's trace checks over the timeline both substrates build.
+
+        A result carrying no constraint verdicts is the trial that left no trace
+        of itself — a timeline with neither a conversational turn nor a tool call
+        — where every constraint would score against evidence the trial does not
+        have. The component is then left out of the combine, and the evaluator's
+        own accounting records the skip against each kind the block declared.
+        """
+        result = evaluate_trace_checks(timeline, config)
+        if not result.constraints:
+            logger.info(
+                f"GradeTrial: {trial_id} - Skipping trace checks (no messages or tool calls)"
+            )
+            return result
+        logger.info(f"GradeTrial: {trial_id} - Trace checks: score={result.score:.2f}")
+        return result
 
     async def _grade_llm_judge(
         self,

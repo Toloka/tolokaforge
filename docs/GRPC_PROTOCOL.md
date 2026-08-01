@@ -340,6 +340,22 @@ message Grade {
   // judge ran). The Runner runs the judge's LLM, so this is grading spend,
   // separate from the agent's usage.
   JudgeReport judge_report = 9;
+
+  // Per-constraint trace-check verdicts (empty unless the pack declared
+  // trace_checks and the timeline carried events). Small and scannable, so the
+  // Host writes it inline in grade.yaml rather than to a sidecar. A payload the
+  // Host cannot read fails the grade parse instead of being dropped: nothing
+  // else records which constraint failed.
+  repeated TraceConstraintResult trace_checks = 10;
+}
+
+message TraceConstraintResult {
+  string id = 1;                        // unique within the pack's trace_checks block
+  string kind = 2;                      // one of the ten constraint kinds
+  bool passed = 3;
+  double weight = 4;                    // the author's weight, as it entered the fold
+  string message = 5;                   // empty on a pass
+  repeated int32 matched_positions = 6; // timeline positions, resolved in trajectory.yaml
 }
 
 message CriterionResult {

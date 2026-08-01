@@ -269,6 +269,12 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_reject_the_quantifiers_a_window_cannot_read",
     ),
     _Rejection(
+        label="on_missing_on_present",
+        block=_block(_constraint({"present": {"match": _TOOL_CALL}}, on_missing="pass")),
+        message="nothing to decide",
+        validator="_reject_an_unmatched_anchor_policy_where_nothing_is_anchored",
+    ),
+    _Rejection(
         label="on_missing_on_absent",
         block=_block(_constraint({"absent": {"match": _TOOL_CALL}}, on_missing="pass")),
         message="nothing to decide",

@@ -58,6 +58,7 @@ from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
 from tolokaforge.runner.models import ImmediatelyBeforeConstraint as ImmediatelyBeforeConstraint
 from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
+from tolokaforge.runner.models import KeyAccountingRecord as KeyAccountingRecord
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import MatcherSide as MatcherSide
 from tolokaforge.runner.models import OnMissing as OnMissing
@@ -596,6 +597,12 @@ class Grade(BaseModel):
     reasons: str | dict[str, list[str]] = ""
     state_diff: dict[str, Any] | None = None
     custom_checks_details: list[CustomCheckDetail] | None = None
+    # Per-constraint trace-check verdicts, serialized inline in ``grade.yaml``:
+    # small and scannable, so a reviewer reads which constraint failed and which
+    # timeline positions it selected without opening a sidecar. Empty when the
+    # pack declared no trace checks, or when the timeline carried no events for
+    # them to read. See docs/OUTPUT_FORMAT.md.
+    trace_check_results: list[TraceConstraintResult] = Field(default_factory=list)
     # Per-criterion rubric-judge breakdown. ``None`` when no LLM judge ran;
     # an empty list is distinct (judge ran, rubric had no scorable criteria).
     criterion_results: list[CriterionResult] | None = None

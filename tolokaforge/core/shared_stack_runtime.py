@@ -593,6 +593,20 @@ class GrpcRunnerClient:
                         }
                         for cr in grade.criterion_results
                     ],
+                    # Per-constraint trace-check verdicts, carried through to the
+                    # Pydantic Grade.trace_check_results so grade.yaml shows which
+                    # constraint failed and on which timeline positions.
+                    "trace_checks": [
+                        {
+                            "id": tc.id,
+                            "kind": tc.kind,
+                            "passed": tc.passed,
+                            "weight": tc.weight,
+                            "message": tc.message,
+                            "matched_positions": list(tc.matched_positions),
+                        }
+                        for tc in grade.trace_checks
+                    ],
                     "judge_status": grade.judge_status,
                     # Judge accounting + audit transcript. The judge runs its own
                     # LLM in the Runner; its usage/cost and message transcript are

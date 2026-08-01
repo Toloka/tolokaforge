@@ -13,10 +13,12 @@ from __future__ import annotations
 import json
 
 import pytest
+import yaml
 
 from tests.utils.wire_grades import lower_wire_grade
 from tolokaforge.core.models import JudgeStatus
-from tolokaforge.core.trial_grader import _parse_grade_result
+from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.trial_grader import GradingFailedError, _parse_grade_result
 from tolokaforge.runner import runner_pb2
 
 pytestmark = pytest.mark.unit
@@ -196,3 +198,84 @@ def test_a_runner_scored_zero_is_not_confused_with_an_absent_field():
     )
     assert lowered_zero["components"]["trace_checks"] == 0.0
     assert _parse_grade_result(lowered_zero).components.trace_checks == 0.0
+
+
+def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
+    """The verdicts the runner reached are what a reviewer reads off the bundle.
+
+    Carried one step past the wire seam the rest of this module pins, because the
+    component score alone says a trace check failed without saying which: the
+    payload is asserted whole, so a field the wire lowering or the writer drops —
+    ``matched_positions`` above all, the only pointer back into
+    ``trajectory.yaml`` — fails rather than thinning the record.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.5,
+            components=runner_pb2.GradeComponents(
+                state_checks=-1.0,
+                transcript_rules=-1.0,
+                llm_judge=-1.0,
+                custom_checks=-1.0,
+                trace_checks=0.5,
+            ),
+            trace_checks=[
+                runner_pb2.TraceConstraintResult(
+                    id="lookup_before_denial",
+                    kind="before",
+                    passed=False,
+                    weight=2.0,
+                    message="before: no match is ordered before the other side",
+                    matched_positions=[2, 4],
+                ),
+                runner_pb2.TraceConstraintResult(
+                    id="no_prefill", kind="absent_before", passed=True, weight=1.0
+                ),
+            ],
+        )
+    )
+
+    FileArtifactWriter().write_grade(tmp_path, _parse_grade_result(lowered))
+
+    written = yaml.safe_load((tmp_path / "grade.yaml").read_text())
+    assert written["trace_check_results"] == [
+        {
+            "id": "lookup_before_denial",
+            "kind": "before",
+            "passed": False,
+            "weight": 2.0,
+            "message": "before: no match is ordered before the other side",
+            "matched_positions": [2, 4],
+        },
+        {
+            "id": "no_prefill",
+            "kind": "absent_before",
+            "passed": True,
+            "weight": 1.0,
+            "message": "",
+            "matched_positions": [],
+        },
+    ]
+
+
+def test_a_trace_check_verdict_the_host_cannot_read_fails_the_grade():
+    """Version skew rejects rather than degrading into a grade with unknown sub-checks.
+
+    A ``kind`` outside this engine's vocabulary is what a newer runner's payload
+    looks like here. The three JSON decode sites beside this one drop what they
+    cannot read (#759), which is right where "absent" is a state the harness
+    itself produces; for a deterministic per-constraint verdict it is not.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.0,
+            trace_checks=[
+                runner_pb2.TraceConstraintResult(id="eventually", kind="eventually", weight=1.0)
+            ],
+        )
+    )
+
+    with pytest.raises(GradingFailedError, match="Grade.trace_checks"):
+        _parse_grade_result(lowered)

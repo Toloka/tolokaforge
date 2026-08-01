@@ -773,9 +773,11 @@ TRACE_CONSTRAINT_KINDS: frozenset[str] = frozenset(
 """The closed constraint vocabulary, written out rather than read off
 :class:`TraceConstraintExpr`, so the totality lock compares two sources."""
 
-# Kinds whose verdict is "nothing matched", for which an unmatched-anchor policy
-# would decide the very thing the constraint asserts.
-_KINDS_WITHOUT_AN_ANCHOR: frozenset[str] = frozenset({"absent", "count"})
+# Kinds whose verdict is about the match itself, for which an unmatched-anchor
+# policy would decide the very thing the constraint asserts. On ``present`` the
+# pair is worse than redundant: unmatched would pass by the policy and matched by
+# the constraint, so the check could not fail.
+_KINDS_WITHOUT_AN_ANCHOR: frozenset[str] = frozenset({"present", "absent", "count"})
 
 
 class TraceConstraintExpr(BaseModel):
@@ -912,8 +914,8 @@ class TraceConstraint(BaseModel):
         if self.on_missing is not None and kind in _KINDS_WITHOUT_AN_ANCHOR:
             raise ValueError(
                 f"{self.id}: on_missing has nothing to decide on a {kind!r} constraint, "
-                f"whose verdict is about matching nothing. Setting it would answer the "
-                "very question the constraint asks"
+                "whose verdict is the match itself. Setting it would answer the very "
+                "question the constraint asks"
             )
         return self
 

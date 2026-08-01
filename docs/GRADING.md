@@ -56,6 +56,14 @@ author-facing key is one `GradingKey` entry declaring three axes:
   against the module's own AST so naming a file that merely contains a test is
   rejected. `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
 
+`trace_checks` is the one component where parity is structural rather than
+maintained: both substrates call the same `evaluate_trace_checks` over the same
+timeline, so there is no second implementation to keep in step. The canonical
+suite still drives the two *integration points* — the core engine's
+`grade_trajectory` and the runner's `GradeTrial` — against one authored pack,
+because a substrate can reach a shared evaluator with a differently translated
+config, or not reach it at all.
+
 [`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
 makes the manifest load-bearing. Adding a grading field to either substrate's
 config model without a manifest entry fails that suite naming the field; a scored
@@ -94,9 +102,10 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   nothing to evaluate.
 - **Every skip is recorded, not silent.** The `transcript_rules` keys other than
   `min_assistant_turns` are skipped when the trial's timeline carries no events,
-  `llm_judge` when it has no messages, `custom_checks` when the pack wrote the block
-  but left `enabled` off, and the `state_checks.hash` members the runner's hash
-  evaluator reads when `hash.enabled` is not set.
+  every `trace_checks.constraints.<kind>` key on that same timeline, `llm_judge`
+  when it has no messages, `custom_checks` when the pack wrote the block but left
+  `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
+  reads when `hash.enabled` is not set.
   `state_checks.hash.expected_state_hash` is a standing skip: it is declared
   `CORE_ONLY` because no runner path reads it (#693), so it is recorded as such
   whether or not hash grading ran — folding it into the family's outcome would report
@@ -1031,10 +1040,25 @@ evaluated over the [trial event timeline](#trial-event-timeline). Where
 `trace_checks` expresses ordering, scoped negation, non-equality argument
 predicates, nested argument paths, counting, and a call's status or result.
 
-**Not yet scored.** The block is validated at load, crosses to both substrates as
-one model, and `evaluate_trace_checks` reaches a verdict and a weighted score for
-it — but no substrate calls that evaluator yet, so the block contributes no
-component score to a grade. Tracked by **#678**.
+**Both substrates score it through one function.** `evaluate_trace_checks`
+(`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
+`grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
+already builds, so the component score does not depend on which substrate graded
+the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks` and
+are written inline in `grade.yaml` under `trace_check_results`.
+
+**A trial whose timeline carries no events leaves the component unscored.** Every
+constraint would otherwise be answered by evidence the trial does not have. The
+runner records that as a skip against each declared constraint kind, and — since
+a component the pack configures but nothing scores is not folded in — a pack
+weighted entirely on `trace_checks` fails such a trial rather than passing it.
+The guard against a trial that *does* carry events but should not have counted as
+work is `transcript_rules.min_assistant_turns`, which is a separate declaration.
+
+**Records-less bundles read fewer fields.** `status` and `executor` come from the
+tool-call record alone, so on a bundle re-graded without one a matcher reading
+either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatched
+— a named failing sub-check, never a pass in the agent's favour.
 
 ### The config surface
 
@@ -1154,7 +1178,7 @@ Undecidability is scoped **to the matcher**, never to the event kind:
 
 | kind | payload, by position | meaning | `on_missing` anchor |
 |---|---|---|---|
-| `present` | `match` | at least one event matches (LTLf `F A`) | the match |
+| `present` | `match` | at least one event matches (LTLf `F A`) | rejected |
 | `absent` | `match` | no event matches (`G ¬A`) | rejected |
 | `count` | `match`, `min`, `max` | the match count is within the bounds | rejected |
 | `before` | `left`, `right` | ordering under both quantifiers | both sides |
@@ -1165,9 +1189,9 @@ Undecidability is scoped **to the matcher**, never to the event kind:
 | `any_of` | `list` of expressions | disjunction | delegated |
 | `negate` | one expression | negation | delegated |
 
-`on_missing` is rejected on `absent` and `count`: their verdict *is* about
-matching nothing, so a policy for "the matcher found nothing" would answer the
-question the constraint asks.
+`on_missing` is rejected on `present`, `absent` and `count`: their verdict *is*
+the match, so a policy for "the matcher found nothing" would answer the question
+the constraint asks.
 
 There is no `after`, because it reduces exactly:
 
@@ -1270,13 +1294,10 @@ selects nothing is far more often an author's typo or an agent that never got
 started than a condition genuinely satisfied. `on_missing: pass` is the explicit
 opt-in for "this constraint only applies when the anchor occurred".
 
-`on_missing` is rejected at load on `absent` and `count`, whose verdicts *are*
-about matching nothing.
-
-**Do not write `on_missing: pass` on a `present` constraint.** `present`'s anchor
-is its own match, and "nothing matched" is the only way it can fail — so the pair
-is a check that holds however the agent behaved. Write the constraint the trial
-should fail, or drop it.
+`on_missing` is rejected at load on `present`, `absent` and `count`, whose
+verdicts *are* the match. On `present` the pair would be an always-pass check —
+unmatched passes by the policy, matched passes by the constraint — so the load
+error is what stops a declaration that cannot fail from being written.
 
 ### When a constraint cannot be decided
 

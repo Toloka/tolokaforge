@@ -102,8 +102,8 @@ EVERY_CONSTRAINT_KIND: dict[str, dict[str, Any]] = {
 }
 
 
-# ``on_missing`` is rejected on the two kinds whose verdict is about matching
-# nothing, so the block carries it on one kind that does anchor.
+# ``on_missing`` is rejected on the three kinds whose verdict is the match
+# itself, so the block carries it on one kind that does anchor.
 _ON_MISSING_KIND = "before"
 
 

@@ -58,6 +58,7 @@ from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
+from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
@@ -83,6 +84,7 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.runner import models as runner_models
+from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading import (
     combine_grade_components,
     evaluate_jsonpath_checks,
@@ -1350,6 +1352,119 @@ def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_d
     assert (core.score, core.binary_pass) == (runner.score, runner.binary_pass), (
         f"the substrates disagree on {method!r}: core {(core.score, core.binary_pass)} vs "
         f"runner {(runner.score, runner.binary_pass)}"
+    )
+
+
+# --------------------------------------------------------------------------
+# 10. Both substrates score trace_checks through one shared evaluator
+# --------------------------------------------------------------------------
+
+_TRACE_CHECKS_TASK = "trace_checks_constraints"
+
+
+def _replay_authored_calls(
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, case: _TrialCase
+) -> None:
+    """Execute each authored call through the runner, in the order it was written.
+
+    Nothing stands in for the runner's own recording: the trial's calls arrive as
+    ``ExecuteTool`` requests under the call ids the message view declares, so
+    ``GradeTrial`` reads a record the runner wrote rather than one handed to it.
+    """
+    trial = servicer.trials[trial_id]
+    for record in case.core_trajectory.tool_log:
+        output = record.output
+
+        async def run(_arguments: dict[str, Any], answer: str = output) -> str:
+            return answer
+
+        trial.agent_tools[record.tool_name] = run
+        executed = servicer.ExecuteTool(
+            execute_request(
+                trial_id,
+                record.tool_name,
+                json.dumps(record.arguments),
+                executor=record.executor.value,
+                call_id=record.call_id,
+            ),
+            context,
+        )
+        assert executed.status == pb2.EXECUTION_STATUS_SUCCESS, executed.error_message
+
+
+def _runner_trace_checks_grade(
+    servicer: RunnerServiceImpl,
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    trial_id: str,
+    context: Any,
+) -> pb2.Grade:
+    """The runner's own ``GradeTrial`` verdict on ``case``, over real gRPC handlers."""
+    registered = servicer.RegisterTrial(
+        register_request(
+            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
+            trial_id=trial_id,
+        ),
+        context,
+    )
+    assert registered.success is True, registered.error
+    _replay_authored_calls(servicer, context, trial_id, case)
+    response = servicer.GradeTrial(
+        pb2.GradeTrialRequest(
+            trial_id=trial_id, llm_messages_json=json.dumps(case.runner_messages)
+        ),
+        context,
+    )
+    assert response.success is True, response.error
+    return response.grade
+
+
+def test_both_substrates_score_trace_checks_through_their_own_grading_path(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """One authored pack, two substrates, one component score — each via its own path.
+
+    The core engine's ``grade_trajectory`` and the runner's ``GradeTrial`` are
+    driven separately, so the claim is about the two integration points rather
+    than about the shared evaluator called twice: a substrate that never reaches
+    it, or reaches it with a differently translated config, scores differently
+    here. The two trials call the same tools with the same arguments and differ
+    only in the order, so the ordering constraint is the only thing that can move
+    the score.
+    """
+    pack = test_data_dir / "grading_parity" / _TRACE_CHECKS_TASK
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_TRACE_CHECKS_TASK)
+    task_description = adapter.to_task_description(_TRACE_CHECKS_TASK)
+    satisfying = _load_case(pack, "satisfying")
+    violating = _load_case(pack, "violating")
+
+    core_ok, _ = _core_verdict("trace_checks", core_config, satisfying, tmp_path)
+    core_bad, _ = _core_verdict("trace_checks", core_config, violating, tmp_path)
+    runner_ok = _runner_trace_checks_grade(
+        runner_service, task_description, satisfying, "trace_ok:0", mock_grpc_context
+    )
+    runner_bad = _runner_trace_checks_grade(
+        runner_service, task_description, violating, "trace_bad:0", mock_grpc_context
+    )
+
+    assert (core_ok, core_bad) == (1.0, 0.0), (
+        "the core engine does not discriminate the ordering constraint: satisfying "
+        f"{core_ok} vs violating {core_bad}"
+    )
+    assert runner_ok.components.HasField("trace_checks"), (
+        "the runner produced no trace_checks component, so the parity comparison "
+        "below would hold on a component neither substrate scored"
+    )
+    assert runner_ok.components.trace_checks == pytest.approx(core_ok)
+    assert runner_bad.components.trace_checks == pytest.approx(core_bad)
+    # The per-constraint verdicts cross the wire beside the score, so the reviewer
+    # reading grade.yaml learns which constraint moved it.
+    (crossed,) = runner_bad.trace_checks
+    assert (crossed.id, crossed.kind, crossed.passed) == (
+        "payment_looked_up_before_the_case_is_denied",
+        "before",
+        False,
     )
 
 

@@ -777,6 +777,7 @@ score: 0.0
 components:
   state_checks: 0.0
   transcript_rules: null
+  trace_checks: null
   llm_judge: null
   custom_checks: null
 reasons: "State: State hash mismatch. Diff: ..."
@@ -789,6 +790,13 @@ state_diff:  # Present when state check fails
   diff_lines: 200
   has_diff: true
 custom_checks_details: null     # list[CustomCheckDetail] or null
+trace_check_results:            # one entry per declared trace constraint; [] when none ran
+  - id: lookup_before_denial
+    kind: before
+    passed: false
+    weight: 2.0
+    message: "before: no match is ordered before the other side under the declared quantifiers"
+    matched_positions: [2, 4]
 criterion_results:              # per-criterion rubric breakdown; null unless an LLM judge ran
   - id: refund_amount
     met: true
@@ -818,6 +826,24 @@ judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
 pass/fail; `score` is a fractional pass rate (used for tasks with partial
 credit).
+
+### Trace-check verdicts
+
+`trace_check_results` carries one entry per constraint the pack's `trace_checks`
+block declared, in declaration order, and is `[]` when the pack declared none or
+when the trial's timeline carried no events for them to read. It is written
+inline rather than to a sidecar: the block is small, and the component score
+alone says a trace check failed without saying which.
+
+* `id` / `kind` — the author's constraint id and which of the ten constraint
+  kinds it states. See [`docs/GRADING.md`](GRADING.md#trace-checks).
+* `passed` / `weight` — the verdict and the weight it carried into the component
+  fold, so a reader can reproduce `components.trace_checks` from the entries.
+* `message` — empty on a pass; otherwise names the unmatched anchor, the failed
+  condition, or the evidence the trial does not carry.
+* `matched_positions` — the timeline positions the constraint's matchers
+  selected, resolved against `trajectory.yaml`. Positions rather than events, so
+  the grade stays scannable.
 
 ### Rubric-judge fields
 

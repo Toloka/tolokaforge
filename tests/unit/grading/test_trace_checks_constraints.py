@@ -250,22 +250,6 @@ def test_an_unmatched_side_fails_by_name_unless_the_author_opted_out():
     assert permitted.passed is True
 
 
-def test_present_reads_its_own_match_as_the_anchor_on_missing_decides():
-    """``present``'s anchor is the match itself, which is what the vocabulary says.
-
-    So ``on_missing: pass`` makes a ``present`` constraint hold however the agent
-    behaved — nothing matched is the one case it could have failed on. The
-    vocabulary rejects ``on_missing`` on ``absent`` and ``count`` for the mirror
-    reason and admits it here, so the field is honoured rather than silently
-    ignored; the docs warn against writing it.
-    """
-    timeline = _one_turn_timeline(_LOOKUP)
-    require = {"present": {"match": _call_of(_DENIAL)}}
-
-    assert evaluate_constraint(timeline, require).passed is False
-    assert evaluate_constraint(timeline, require, on_missing="pass").passed is True
-
-
 def test_an_inverted_window_is_unmatched_rather_than_vacuously_satisfied():
     """The anchors did not occur in the declared order, so ``on_missing`` decides."""
     timeline = _one_turn_timeline(_DENIAL, _LOOKUP)

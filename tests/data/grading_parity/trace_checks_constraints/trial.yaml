@@ -1,0 +1,46 @@
+# The two cases call the same two tools with the same arguments and differ only
+# in the order the agent placed them, so the ordering constraint is the only
+# thing that can discriminate them.
+satisfying:
+  messages:
+    - role: user
+      content: "The customer says this refund is a duplicate. Deny it."
+    - role: assistant
+      content: "Checking the payment first."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "amount": 42.0}'
+    - role: assistant
+      content: "It is a duplicate — denying the case."
+      tool_calls:
+        - tool_name: servicenow_csm_update_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-1042", u_resolution_code: denied_ineligible }
+          output: '{"case_id": "CS-1042", "state": "closed"}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "The customer says this refund is a duplicate. Deny it."
+    - role: assistant
+      content: "Denying the case."
+      tool_calls:
+        - tool_name: servicenow_csm_update_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-1042", u_resolution_code: denied_ineligible }
+          output: '{"case_id": "CS-1042", "state": "closed"}'
+    - role: assistant
+      content: "Checking the payment after the fact."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "amount": 42.0}'
+  state: {}

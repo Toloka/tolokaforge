@@ -44,7 +44,7 @@ EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
 HASH_DISABLED_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="hash grading not enabled"
 )
-NO_TRANSCRIPT_INPUT_SKIP = KeyAccountingRecord(
+NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
@@ -74,6 +74,31 @@ JSONPATHS_KEY = _manifest_key("state_checks.jsonpaths")
 DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
 LLM_JUDGE_KEY = _manifest_key("llm_judge")
 CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
+TRACE_CONSTRAINTS_KEY = _manifest_key("trace_checks.constraints")
+
+TRACE_CONSTRAINT_KEY_BY_KIND: Mapping[str, str] = {
+    "present": f"{TRACE_CONSTRAINTS_KEY}.present",
+    "absent": f"{TRACE_CONSTRAINTS_KEY}.absent",
+    "count": f"{TRACE_CONSTRAINTS_KEY}.count",
+    "before": f"{TRACE_CONSTRAINTS_KEY}.before",
+    "immediately_before": f"{TRACE_CONSTRAINTS_KEY}.immediately_before",
+    "absent_before": f"{TRACE_CONSTRAINTS_KEY}.absent_before",
+    "absent_between": f"{TRACE_CONSTRAINTS_KEY}.absent_between",
+    "all_of": f"{TRACE_CONSTRAINTS_KEY}.all_of",
+    "any_of": f"{TRACE_CONSTRAINTS_KEY}.any_of",
+    "negate": f"{TRACE_CONSTRAINTS_KEY}.negate",
+}
+"""The author key each constraint kind is accounted under, one line per kind.
+
+Written out rather than comprehended over
+:data:`~tolokaforge.runner.models.TRACE_CONSTRAINT_KINDS`, so the lock comparing
+the two compares two sources: a comprehension would assert the vocabulary against
+itself and pass with a kind nothing accounts for.
+
+The manifest addresses the constraint list as one key and carries no entry per
+kind, so — unlike the constants above — these are built from the block's key
+rather than resolved through :func:`_manifest_key`.
+"""
 
 # Every model the runner's GradingConfig reaches, with where its fields sit in
 # ``GradingConfig.model_dump()``.
@@ -186,8 +211,9 @@ def accountable_author_keys() -> frozenset[str]:
     claims fails the canonical suite rather than failing ``GradeTrial`` in
     production for every task that populates it.
 
-    Every member is therefore named per site, or derived from the two hash-family
-    tuples the one hash recording site is handed. Comprehending any member from
+    Every member is therefore named per site, or derived from a hand-written
+    mapping that same site is handed — the two hash-family tuples, and the
+    per-kind trace-constraint keys. Comprehending any member from
     :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
     tautological assertion is worse than a missing one, because the next reader
     trusts its message and stops looking.
@@ -196,6 +222,8 @@ def accountable_author_keys() -> frozenset[str]:
         {
             *_RUNNER_HASH_FAMILY,
             *_CORE_ONLY_HASH_FAMILY,
+            *TRACE_CONSTRAINT_KEY_BY_KIND.values(),
+            TRACE_CONSTRAINTS_KEY,
             MUST_CONTAIN_KEY,
             DISALLOW_REGEX_KEY,
             MAX_TURNS_KEY,

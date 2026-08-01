@@ -18,6 +18,13 @@ would satisfy every negative constraint in the agent's favour, which
 decided only when every completion of the undecidable evidence agrees, and an
 undecided constraint is a failing sub-check that names what could not be read.
 
+The result carries the author keys this evaluation decomposed, per constraint
+kind, for the runner's accounted-keys ledger. Recording them here rather than in
+the runner phase is what makes the account honest: a kind the evaluation never
+reaches — one nested inside a composite the walk stopped descending into, say —
+is never recorded, where a runner-side walk of the *config* would report it as
+evaluated whatever the evaluator did.
+
 The authored vocabulary is documented in ``docs/GRADING.md`` § "Trace Checks".
 """
 
@@ -45,6 +52,7 @@ from tolokaforge.core.models import (
     BeforeConstraint,
     CountConstraint,
     ImmediatelyBeforeConstraint,
+    KeyAccountingRecord,
     MatcherSide,
     OnMissing,
     PresentConstraint,
@@ -57,6 +65,12 @@ from tolokaforge.core.models import (
     TraceMatcher,
     TurnWindow,
     ValuePredicate,
+)
+from tolokaforge.runner.grading_ledger import (
+    EVALUATED,
+    NO_TIMELINE_EVENTS_SKIP,
+    TRACE_CONSTRAINT_KEY_BY_KIND,
+    TRACE_CONSTRAINTS_KEY,
 )
 
 __all__ = ["MatcherOutcome", "evaluate_trace_checks", "select_events"]
@@ -293,18 +307,57 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
     """Score ``config``'s constraints against ``timeline``.
 
     A timeline carrying neither a conversational turn nor a tool call is the trial
-    that left no trace of itself: nothing is evaluated and the caller records the
-    skip, because every constraint would otherwise score against evidence the trial
-    does not carry.
+    that left no trace of itself: no constraint is evaluated and every declared
+    kind is accounted as skipped, because every constraint would otherwise score
+    against evidence the trial does not carry. A caller reads ``constraints`` to
+    tell the two apart — empty is the trial that left no trace.
     """
     if not timeline.events:
-        return TraceChecksResult()
-    results = [_evaluate_constraint(timeline, constraint) for constraint in config.constraints]
+        return TraceChecksResult(
+            accounted_keys=_accounting(_declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
+        )
+    visited: set[str] = set()
+    results = [
+        _evaluate_constraint(timeline, constraint, visited) for constraint in config.constraints
+    ]
     return TraceChecksResult(
         passed=all(result.passed for result in results),
         score=_weighted_fraction(results),
         constraints=results,
+        accounted_keys=_accounting(visited, EVALUATED),
     )
+
+
+def _accounting(
+    kinds: Iterable[str], record: KeyAccountingRecord
+) -> dict[str, KeyAccountingRecord]:
+    """``record`` filed against the block's key and each kind's own."""
+    return {
+        TRACE_CONSTRAINTS_KEY: record,
+        **{TRACE_CONSTRAINT_KEY_BY_KIND[kind]: record for kind in kinds},
+    }
+
+
+def _declared_kinds(config: TraceChecksConfig) -> set[str]:
+    """Every kind the block declares, including those nested inside a composite."""
+    return {kind for item in config.constraints for kind in _expression_kinds(item.require)}
+
+
+def _expression_kinds(expr: TraceConstraintExpr) -> set[str]:
+    """``expr``'s own kind, and recursively those of the expressions it holds.
+
+    Nesting is read off the payload's shape rather than from a second list of
+    which kinds compose, so a future composite kind is walked into by existing
+    code instead of being silently treated as a leaf.
+    """
+    kind = expr.declared_kind()
+    payload = getattr(expr, kind)
+    nested = payload if isinstance(payload, list) else [payload]
+    kinds = {kind}
+    for item in nested:
+        if isinstance(item, TraceConstraintExpr):
+            kinds |= _expression_kinds(item)
+    return kinds
 
 
 def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
@@ -321,10 +374,10 @@ def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
 
 
 def _evaluate_constraint(
-    timeline: TrialTimeline, constraint: TraceConstraint
+    timeline: TrialTimeline, constraint: TraceConstraint, visited: set[str]
 ) -> TraceConstraintResult:
     on_missing = constraint.on_missing or OnMissing.FAIL
-    resolver = _Resolver(timeline, constraint.within)
+    resolver = _Resolver(timeline, constraint.within, visited)
     truth = _evaluate(constraint.require, resolver, on_missing)
     kind = constraint.require.declared_kind()
     return TraceConstraintResult(
@@ -353,10 +406,18 @@ class _Resolved:
 
 
 class _Resolver:
-    """Resolves one constraint's matchers, remembering what each one found."""
+    """Resolves one constraint's matchers, remembering what each one found.
 
-    def __init__(self, timeline: TrialTimeline, within: TurnWindow | None) -> None:
+    ``visited_kinds`` is the block's accumulator rather than this constraint's:
+    every expression the evaluation reaches adds its kind to it, and the block's
+    accounting is what the set holds once every constraint has been evaluated.
+    """
+
+    def __init__(
+        self, timeline: TrialTimeline, within: TurnWindow | None, visited_kinds: set[str]
+    ) -> None:
         self.timeline = timeline
+        self.visited_kinds = visited_kinds
         self._within = within
         self._resolved: list[_Resolved] = []
 
@@ -406,6 +467,7 @@ def _inside(event: TraceEvent, window: TurnWindow) -> bool:
 
 def _evaluate(expr: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
     kind = expr.declared_kind()
+    resolver.visited_kinds.add(kind)
     return _HANDLERS[kind](getattr(expr, kind), resolver, on_missing)
 
 
