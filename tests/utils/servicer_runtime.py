@@ -4,16 +4,25 @@
 proto→dict mapping against a real servicer, so the host grader sees the dict
 production builds — no Docker, no gRPC channel.
 :func:`register_collided_trial` stages the cheapest deterministic refusal that
-servicer can be made to produce.
+servicer can be made to produce, and :func:`produce_grading_refusal` drives the
+production grader against it and hands back what it raised — so a test that
+needs the text of a grading failure never writes one by hand.
 """
 
 from __future__ import annotations
 
 import json
+from itertools import count
 from typing import Any
 
-from tests.canonical._factories import make_trajectory
-from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
+from tests.canonical._factories import make_trajectory, make_trial_spec
+from tests.utils.runner_requests import (
+    execute_request,
+    register_request,
+    simple_task_description,
+    trial_spec_json,
+)
+from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Message,
     MessageRole,
@@ -23,10 +32,13 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
 from tolokaforge.runner import runner_pb2 as pb2
 
 DUPLICATE_CALL_ID = "toolu_dup"
 """The ``call_id`` :func:`register_collided_trial` records twice."""
+
+_REFUSAL_TASK_IDS = count()
 
 
 class ServicerStub:
@@ -96,6 +108,31 @@ def register_collided_trial(
     history = service.trials[trial_id].tool_call_history
     assert [record.call_id for record in history] == [DUPLICATE_CALL_ID, DUPLICATE_CALL_ID]
     return trial_id
+
+
+def produce_grading_refusal(service: Any, context: Any) -> str:
+    """Stage a collision, drive the production grader at it, return its message.
+
+    The task id is minted fresh on every call: the in-process DB service keeps
+    every registered trial for the life of the process, so a reused id makes the
+    second registration fail.
+    """
+    task_id = f"refusal_{next(_REFUSAL_TASK_IDS)}"
+    trial_id = f"{task_id}:0"
+    register_collided_trial(service, context, simple_task_description(), trial_id=trial_id)
+    grader = RunnerRPCTrialGrader(
+        runtime_backend=ServicerBackend(service, context),
+        logger=StructuredLogger("test-grading-refusal"),
+    )
+    try:
+        grader.grade(
+            make_trial_spec(trial_id=trial_id, task_id=task_id),
+            collided_trajectory(task_id=task_id),
+            "You are a test assistant.",
+        )
+    except GradingFailedError as exc:
+        return str(exc)
+    raise AssertionError(f"{trial_id!r} graded cleanly — the staged collision no longer refuses")
 
 
 def collided_trajectory(*, task_id: str, trial_index: int = 0) -> Trajectory:

@@ -6,7 +6,7 @@ This guide explains Tolokaforge metrics outputs, failure attribution, and progra
 
 After a run, Tolokaforge writes analytics artifacts in `evaluation.output_dir`:
 
-- `aggregate.json`: run-level aggregate metrics (`schema_version: 2`)
+- `aggregate.json`: run-level aggregate metrics (`schema_version: 3`)
 - `per_task_metrics.json`: per-task metrics across trials
 - `metadata_slices.json`: aggregates sliced by benchmark type, complexity, tags, expected failure modes
 - `failure_attribution.json`: failed-attempt attribution summary + per-attempt evidence
@@ -80,29 +80,44 @@ the roll-up simply omits what it cannot parse.
 
 ### The denominator: measured trials
 
-Every rate is computed over the trials that **measured the agent**. A trial the
-provider or the substrate killed produced no grade and no performance to
-describe, so it is not in any rate; the counts that say so sit in the same row:
+`measured_trials` is **the denominator we hold ourselves accountable for** — not
+"the attempts where we observed the agent". The two readings agree on most runs
+and part company on the attempts that are our own fault: a trial our harness
+broke, and a trial that ran to a normal end and whose grading then refused to
+produce a verdict, are both counted, because a denominator that dropped our
+defects would report a cleaner benchmark than the run earned. What genuinely
+never happened — the attempts the provider or the substrate killed — is excluded.
+The counts that say which is which sit in the same row:
 
 - `total_trials`: every attempt the run made
-- `measured_trials`: the attempts that measured the agent — **the denominator of
+- `measured_trials`: the attempts inside that denominator — **the denominator of
   every rate below except `avg_score`**
 - `scored_trials`: the measured attempts that produced a grade — **`avg_score`'s
-  denominator**, and the weight `avg_score_micro` uses. A `harness_error` trial is
-  measured and never reaches grading, so `scored_trials < measured_trials` on any
-  run that hit one
+  denominator**, and the weight `avg_score_micro` uses. A `harness_error` trial
+  never reaches grading and an `ungradeable` one reaches it and comes back
+  without a verdict, so `scored_trials < measured_trials` on any run that hit
+  either
 - `infrastructure_aborts`: per reason, the attempts excluded from that
   denominator (`{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`). All
   three keys are always present, so a zero is distinguishable from a missing key
 - `harness_errors`: attempts that failed on a defect of ours. **Inside**
   `measured_trials`, not excluded from it — our own bugs stay in the denominator.
   A non-zero value is a run-health signal
+- `ungradeable`: attempts whose grading refused. Also **inside**
+  `measured_trials`, also a defect of ours, and a non-pass in `success_rate` and
+  `pass@k` — so a grading regression deflates the run visibly rather than
+  vanishing from it. The reason grading gave is in that trial's
+  `trajectory.yaml` under `grading_error`
 - `outcomes_by_reason`: every termination reason the run observed, with the class
-  it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`
+  it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An
+  ungradeable attempt terminates the way a graded one does, so its row is keyed
+  `ungradeable_<reason>` — `{"ungradeable_agent_done": {"class": "ungradeable",
+  "count": 1}}` — which keeps one key mapping to exactly one class
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`, and
-`0 <= scored_trials <= measured_trials`, and
-`0 <= harness_errors <= measured_trials`.
+`0 <= scored_trials <= measured_trials`, and — a trial being classified once, so
+the two diagnostic counts never cover the same attempt —
+`0 <= harness_errors + ungradeable <= measured_trials`.
 
 **Which direction the numbers move, if you are comparing against older figures.**
 Every rate here is **weakly higher** than the same run's figures under the previous
@@ -198,16 +213,22 @@ Deterministic classes currently emitted:
 - `tool_arguments`
 - `tool_execution`
 - `grader_contract`
+- `grading_failure`
 - `timeout_or_resource`
 
 Fallback class:
 
 - `model_reasoning`
 
+`grading_failure` is the attempt whose grading refused. It has its own class
+because the fallback would otherwise attribute it to `model_reasoning` — the
+agent blamed, in an artifact whose whole purpose is naming the right cause, for a
+fault of ours.
+
 Every attribution record also carries `outcome_class` (`measured` /
-`harness_error` / `infrastructure_abort`), so a reader of a single record can see
-whether the attempt counted, and the summary carries `by_outcome_class` for the
-same split run-wide.
+`harness_error` / `infrastructure_abort` / `ungradeable`), so a reader of a single
+record can see whether the attempt counted, and the summary carries
+`by_outcome_class` for the same split run-wide.
 
 Evidence payloads include tool name/index, error strings, state-diff keys, and termination reasons when available.
 

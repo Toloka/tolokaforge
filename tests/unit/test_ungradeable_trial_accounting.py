@@ -39,6 +39,7 @@ from tests.utils.servicer_runtime import (
     DUPLICATE_CALL_ID,
     ServicerBackend,
     collided_trajectory,
+    produce_grading_refusal,
     register_collided_trial,
 )
 from tolokaforge.core.conductor import ConductorContext, InProcessConductor, _TrialSetup
@@ -235,15 +236,9 @@ def refusing_grader(runner_service, mock_grpc_context, collided_task_id: str):
 
 
 @pytest.fixture
-def real_refusal(refusing_grader, collided_task_id: str) -> str:
-    """The message a real ``GradeTrial`` refusal carries, produced once."""
-    with pytest.raises(GradingFailedError) as excinfo:
-        refusing_grader.grade(
-            make_trial_spec(trial_id=f"{collided_task_id}:0", task_id=collided_task_id),
-            collided_trajectory(task_id=collided_task_id),
-            "You are a test assistant.",
-        )
-    return str(excinfo.value)
+def real_refusal(runner_service, mock_grpc_context) -> str:
+    """The message a real ``GradeTrial`` refusal carries, produced not typed."""
+    return produce_grading_refusal(runner_service, mock_grpc_context)
 
 
 class TestGradingRefusalIsRecordedNotRaised:
@@ -399,6 +394,14 @@ class TestTheRunCountsTheUngradeableAttempt:
         assert metrics["avg_score"] == 1.0
         assert metrics["success_rate"] == 0.5
         assert metrics["pass@1"] == 0.5
+
+        # Counted as ours, and its own row: the graded trial terminated
+        # ``agent_done`` too, so a reason-keyed row would have swallowed it.
+        assert metrics["ungradeable"] == 1
+        assert metrics["outcomes_by_reason"] == {
+            "agent_done": {"class": "measured", "count": 1},
+            "ungradeable_agent_done": {"class": "ungradeable", "count": 1},
+        }
 
         bundle = run_dir / "trials" / "TASK-A" / "1" / "trajectory.yaml"
         assert DUPLICATE_CALL_ID in yaml.safe_load(bundle.read_text())["grading_error"]

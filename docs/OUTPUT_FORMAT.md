@@ -1187,15 +1187,16 @@ to be readable:
 | Key | Meaning |
 |---|---|
 | `total_trials` | Every attempt the run made |
-| `measured_trials` | The attempts that measured the agent — the denominator of every rate in the row except `avg_score` |
+| `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
-| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}` |
+| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error` |
+| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}` |
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`,
-`0 <= scored_trials <= measured_trials`, and
-`0 <= harness_errors <= measured_trials`.
+`0 <= scored_trials <= measured_trials`, and — a trial being classified once —
+`0 <= harness_errors + ungradeable <= measured_trials`.
 
 `success_rate`, `avg_latency_s`, `avg_turns`, `avg_tool_calls`, `stuck_rate`,
 `pass@k` and `pass_hat@k` — and their `_micro` / `_macro` aggregates — are over
@@ -1207,7 +1208,9 @@ counters and the latency percentiles cover **every** attempt: an aborted trial
 really did buy its tokens.
 
 A trial leaves the denominator only when its termination reason was produced from
-an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
+an exception type — `rate_limit`, `api_timeout`, `provision_error`. A grading
+refusal never buys a trial out of it, whatever the trial terminated as: it is
+evidence about us, and our own defects stay counted. See
 [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
 
 ## Schema Version Stamps
@@ -1216,7 +1219,7 @@ an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
 | `metrics.yaml` | `schema_version` | `3` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `2` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over |
+| `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
