@@ -1,0 +1,45 @@
+# Both trials read the policy and update the case exactly once. Only the order
+# differs, so the window before the anchor is the whole of what separates them.
+satisfying:
+  messages:
+    - role: user
+      content: "Resolve the refund request on CS-1042."
+    - role: assistant
+      content: "Reading the refund policy first."
+      tool_calls:
+        - tool_name: search_policy
+          executor: agent
+          status: success
+          arguments: { query: "refund eligibility" }
+          output: '{"policy": "refund within 30 days"}'
+    - role: assistant
+      content: "Recording the resolution."
+      tool_calls:
+        - tool_name: servicenow_csm_update_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-1042", u_resolution_code: refunded }
+          output: '{"case_id": "CS-1042", "state": "closed"}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Resolve the refund request on CS-1042."
+    - role: assistant
+      content: "Recording the resolution."
+      tool_calls:
+        - tool_name: servicenow_csm_update_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-1042", u_resolution_code: refunded }
+          output: '{"case_id": "CS-1042", "state": "closed"}'
+    - role: assistant
+      content: "Checking the refund policy after the fact."
+      tool_calls:
+        - tool_name: search_policy
+          executor: agent
+          status: success
+          arguments: { query: "refund eligibility" }
+          output: '{"policy": "refund within 30 days"}'
+  state: {}

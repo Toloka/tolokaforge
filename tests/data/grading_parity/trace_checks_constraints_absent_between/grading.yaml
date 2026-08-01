@@ -1,0 +1,25 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+trace_checks:
+  constraints:
+    - id: the_customer_was_not_told_before_the_case_closed
+      description: "no notification goes out while the case is still open"
+      require:
+        absent_between:
+          forbidden:
+            kind: tool_call
+            tool: { equals: notify_customer }
+          start:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: open_case }
+          end:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: close_case }

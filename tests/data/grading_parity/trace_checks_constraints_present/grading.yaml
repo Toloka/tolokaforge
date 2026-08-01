@@ -1,0 +1,15 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+trace_checks:
+  constraints:
+    - id: the_payment_was_looked_up
+      description: "the agent fetched the payment before answering about it"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: billing_api_get_payment }

@@ -115,10 +115,11 @@ grading: "grading.yaml"
 ```yaml
 combine:
   method: "weighted"        # weighted | all | any
-  weights:
-    state_checks: 0.6
+  weights:                  # every component the pack configures needs a weight here
+    state_checks: 0.5
     transcript_rules: 0.1
-    llm_judge: 0.3
+    trace_checks: 0.2
+    llm_judge: 0.2
   pass_threshold: 0.8
 
 state_checks:
@@ -142,6 +143,18 @@ transcript_rules:
   tool_expectations:                       # graded on both substrates
     required_tools: ["db_update"]          # must have been called SUCCESSFULLY
     disallowed_tools: ["bash"]             # must not be called at ANY status
+
+trace_checks:                              # ordering / scoped absence / counting over the timeline
+  constraints:                             # closed ten-kind vocabulary; see docs/GRADING.md
+    - id: lookup_before_denial             # unique within the pack
+      description: "payment looked up before the case is denied"
+      weight: 2.0                          # default 1.0; must be > 0
+      on_missing: fail                     # fail (default) | pass — decides an unmatched anchor
+      within: { first_turn: 0, last_turn: 5 }   # optional inclusive turn window
+      require:                             # exactly one constraint kind
+        before:
+          left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: get_payment } } }
+          right: { quantifier: first, match: { kind: tool_call, tool: { equals: deny_case } } }
 
 llm_judge:                                 # judge MODEL is run-level (models.judge), not here
   rubric:                                  # structured Rubric (NOT free text)

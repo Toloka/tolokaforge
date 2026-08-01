@@ -1,0 +1,33 @@
+# Both trials answer the customer and call one tool. Only the tool differs, so
+# nothing but the presence of the required call can tell them apart.
+satisfying:
+  messages:
+    - role: user
+      content: "Was PAY-664306 charged twice?"
+    - role: assistant
+      content: "Let me pull that payment up."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-664306" }
+          output: '{"payment_id": "PAY-664306", "amount": 42.0}'
+    - role: assistant
+      content: "It was charged once, for 42.00."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Was PAY-664306 charged twice?"
+    - role: assistant
+      content: "Let me check the policy."
+      tool_calls:
+        - tool_name: search_policy
+          executor: agent
+          status: success
+          arguments: { query: "duplicate charge" }
+          output: '{"policy": "refund duplicates within 30 days"}'
+    - role: assistant
+      content: "It was charged once, for 42.00."
+  state: {}

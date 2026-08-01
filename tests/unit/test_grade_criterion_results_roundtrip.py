@@ -1,73 +1,27 @@
-"""A proto Grade carrying criterion_results round-trips to the Pydantic Grade.
+"""A proto Grade round-trips to the Pydantic Grade the orchestrator records.
 
-Pins the data-plane seam: the runner returns per-criterion rubric
-results on the proto ``Grade``; ``RunnerClient.grade_trial`` lowers that proto
-into the dict the orchestrator consumes; the orchestrator then builds the
-Pydantic ``Grade`` from that dict. This test drives the real proto→dict path
-(via a stubbed gRPC stub) and the real dict→Pydantic build, so the new
-``criterion_results`` field survives the whole trip without loss.
+Pins the data-plane seam: the runner answers ``GradeTrial`` with a proto
+``Grade``; ``RunnerClient.grade_trial`` lowers that proto into a dict; and
+``_parse_grade_result`` builds the Pydantic ``Grade`` from that dict. Both
+production halves run here — a stubbed gRPC stub supplies the wire message and
+nothing else is stood in for, so a field that survives one half and is dropped
+by the other fails.
 """
 
 from __future__ import annotations
 
 import json
-from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
-from tolokaforge.core.models import (
-    CriterionResult,
-    Grade,
-    GradeComponents,
-    JudgeStatus,
-    JudgeUsage,
-)
-from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient
+from tests.utils.wire_grades import lower_wire_grade
+from tolokaforge.core.models import JudgeStatus
+from tolokaforge.core.output.artifacts import FileArtifactWriter
+from tolokaforge.core.trial_grader import GradingFailedError, _parse_grade_result
 from tolokaforge.runner import runner_pb2
 
 pytestmark = pytest.mark.unit
-
-
-def _grade_from_dict(g: dict) -> Grade:
-    """Mirror the orchestrator's dict→Pydantic Grade construction."""
-    criterion_results = None
-    raw = g.get("criterion_results")
-    if raw:
-        criterion_results = [CriterionResult(**cr) for cr in raw]
-
-    judge_usage = None
-    judge_transcript = None
-    report = g.get("judge_report")
-    if report:
-        judge_usage = JudgeUsage(
-            calls=report.get("calls", 0),
-            prompt_tokens=report.get("prompt_tokens", 0),
-            completion_tokens=report.get("completion_tokens", 0),
-            reasoning_tokens=report.get("reasoning_tokens", 0),
-            cost_usd=report.get("cost_usd", 0.0),
-            tool_calls=report.get("tool_calls", 0),
-            consistency_rejections=report.get("consistency_rejections", 0),
-        )
-        if report.get("transcript_json"):
-            parsed = json.loads(report["transcript_json"])
-            if isinstance(parsed, list):
-                judge_transcript = parsed
-
-    return Grade(
-        binary_pass=g["binary_pass"],
-        score=g["score"],
-        components=GradeComponents(
-            state_checks=g["components"].get("state_checks", -1.0),
-            transcript_rules=g["components"].get("transcript_rules", -1.0),
-            llm_judge=g["components"].get("llm_judge", -1.0),
-            custom_checks=g["components"].get("custom_checks", -1.0),
-        ),
-        reasons=g.get("reasons", ""),
-        criterion_results=criterion_results,
-        judge_status=JudgeStatus.from_proto(g.get("judge_status", 0)),
-        judge_usage=judge_usage,
-        judge_transcript=judge_transcript,
-    )
 
 
 def test_proto_grade_criterion_results_round_trip():
@@ -97,20 +51,12 @@ def test_proto_grade_criterion_results_round_trip():
         ],
         judge_status=runner_pb2.JUDGE_STATUS_COMPLETED,
     )
-    response = runner_pb2.GradeTrialResponse(success=True, grade=proto_grade)
+    lowered = lower_wire_grade(proto_grade)
 
-    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
-    client.stub = MagicMock()
-    client.stub.GradeTrial.return_value = response
+    assert [c["id"] for c in lowered["criterion_results"]] == ["refund_amount", "tone"]
+    assert lowered["judge_status"] == runner_pb2.JUDGE_STATUS_COMPLETED
 
-    result = client.grade_trial(trial_id="t:0")
-
-    assert result["success"] is True
-    raw = result["grade"]["criterion_results"]
-    assert [c["id"] for c in raw] == ["refund_amount", "tone"]
-    assert result["grade"]["judge_status"] == runner_pb2.JUDGE_STATUS_COMPLETED
-
-    grade = _grade_from_dict(result["grade"])
+    grade = _parse_grade_result(lowered)
     assert grade.criterion_results is not None
     assert len(grade.criterion_results) == 2
     refund, tone = grade.criterion_results
@@ -121,20 +67,13 @@ def test_proto_grade_criterion_results_round_trip():
 
 def test_proto_grade_without_criterion_results_yields_none():
     """No rubric judge ⇒ empty proto repeated field ⇒ Pydantic None (not [])."""
-    proto_grade = runner_pb2.Grade(binary_pass=False, score=0.0)
-    response = runner_pb2.GradeTrialResponse(success=True, grade=proto_grade)
+    lowered = lower_wire_grade(runner_pb2.Grade(binary_pass=False, score=0.0))
+    assert lowered["criterion_results"] == []
 
-    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
-    client.stub = MagicMock()
-    client.stub.GradeTrial.return_value = response
-
-    result = client.grade_trial(trial_id="t:0")
-    assert result["grade"]["criterion_results"] == []
-
-    grade = _grade_from_dict(result["grade"])
+    grade = _parse_grade_result(lowered)
     assert grade.criterion_results is None
     # No judge_report set on the proto ⇒ None all the way through.
-    assert result["grade"]["judge_report"] is None
+    assert lowered["judge_report"] is None
     assert grade.judge_usage is None
     assert grade.judge_transcript is None
 
@@ -170,22 +109,16 @@ def test_proto_grade_judge_report_round_trip():
             transcript_json=json.dumps(transcript),
         ),
     )
-    response = runner_pb2.GradeTrialResponse(success=True, grade=proto_grade)
+    lowered = lower_wire_grade(proto_grade)
 
-    client = GrpcRunnerClient.__new__(GrpcRunnerClient)
-    client.stub = MagicMock()
-    client.stub.GradeTrial.return_value = response
-
-    result = client.grade_trial(trial_id="t:0")
-
-    report = result["grade"]["judge_report"]
+    report = lowered["judge_report"]
     assert report["calls"] == 3
     assert report["prompt_tokens"] == 4120
     assert report["cost_usd"] == pytest.approx(0.0142)
     assert report["tool_calls"] == 4
     assert report["consistency_rejections"] == 2
 
-    grade = _grade_from_dict(result["grade"])
+    grade = _parse_grade_result(lowered)
     assert grade.judge_status is JudgeStatus.COMPLETED
     assert grade.judge_usage is not None
     assert grade.judge_usage.calls == 3
@@ -197,3 +130,152 @@ def test_proto_grade_judge_report_round_trip():
     assert len(grade.judge_transcript) == 3
     assert grade.judge_transcript[1]["tool_calls"][0]["name"] == "get_db_state"
     assert grade.judge_transcript[2]["tool_call_id"] == "c1"
+
+
+def test_runner_graded_trace_checks_score_reaches_the_host_grade():
+    """A component the runner scored arrives as that score, not as the -1.0 default.
+
+    ``_parse_grade_result`` defaults a missing component key to ``-1.0``, so a
+    component the wire lowering forgets is recorded as a score no grader can
+    produce rather than as the runner's answer.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.6,
+            components=runner_pb2.GradeComponents(
+                state_checks=-1.0,
+                transcript_rules=-1.0,
+                llm_judge=-1.0,
+                custom_checks=-1.0,
+                trace_checks=0.6,
+            ),
+        )
+    )
+
+    # The parsed grade first: a key the lowering dropped surfaces here as the -1.0
+    # default, which is the silent form of the failure and the one worth naming.
+    assert _parse_grade_result(lowered).components.trace_checks == pytest.approx(0.6)
+    assert lowered["components"]["trace_checks"] == pytest.approx(0.6)
+
+
+def test_runner_without_the_trace_checks_field_reads_as_not_evaluated():
+    """An older runner omits field 5 entirely; proto3 would decode that as a scored 0.0."""
+    older_runner_grade = runner_pb2.Grade(
+        binary_pass=True,
+        score=1.0,
+        components=runner_pb2.GradeComponents(
+            state_checks=1.0, transcript_rules=-1.0, llm_judge=-1.0, custom_checks=-1.0
+        ),
+    )
+    assert older_runner_grade.components.HasField("trace_checks") is False
+
+    lowered = lower_wire_grade(older_runner_grade)
+
+    assert lowered["components"]["trace_checks"] is None
+    assert _parse_grade_result(lowered).components.trace_checks is None
+
+
+def test_a_runner_scored_zero_is_not_confused_with_an_absent_field():
+    """The counterpart: present-and-0.0 is a real failing score and must survive."""
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.0,
+            components=runner_pb2.GradeComponents(
+                state_checks=-1.0, transcript_rules=-1.0, llm_judge=-1.0, custom_checks=-1.0
+            ),
+        )
+    )
+    assert lowered["components"]["trace_checks"] is None
+
+    scored_zero = runner_pb2.GradeComponents(
+        state_checks=-1.0, transcript_rules=-1.0, llm_judge=-1.0, custom_checks=-1.0
+    )
+    scored_zero.trace_checks = 0.0
+    lowered_zero = lower_wire_grade(
+        runner_pb2.Grade(binary_pass=False, score=0.0, components=scored_zero)
+    )
+    assert lowered_zero["components"]["trace_checks"] == 0.0
+    assert _parse_grade_result(lowered_zero).components.trace_checks == 0.0
+
+
+def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
+    """The verdicts the runner reached are what a reviewer reads off the bundle.
+
+    Carried one step past the wire seam the rest of this module pins, because the
+    component score alone says a trace check failed without saying which: the
+    payload is asserted whole, so a field the wire lowering or the writer drops —
+    ``matched_positions`` above all, the only pointer back into
+    ``trajectory.yaml`` — fails rather than thinning the record.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.5,
+            components=runner_pb2.GradeComponents(
+                state_checks=-1.0,
+                transcript_rules=-1.0,
+                llm_judge=-1.0,
+                custom_checks=-1.0,
+                trace_checks=0.5,
+            ),
+            trace_checks=[
+                runner_pb2.TraceConstraintResult(
+                    id="lookup_before_denial",
+                    kind="before",
+                    passed=False,
+                    weight=2.0,
+                    message="before: no match is ordered before the other side",
+                    matched_positions=[2, 4],
+                ),
+                runner_pb2.TraceConstraintResult(
+                    id="no_prefill", kind="absent_before", passed=True, weight=1.0
+                ),
+            ],
+        )
+    )
+
+    FileArtifactWriter().write_grade(tmp_path, _parse_grade_result(lowered))
+
+    written = yaml.safe_load((tmp_path / "grade.yaml").read_text())
+    assert written["trace_check_results"] == [
+        {
+            "id": "lookup_before_denial",
+            "kind": "before",
+            "passed": False,
+            "weight": 2.0,
+            "message": "before: no match is ordered before the other side",
+            "matched_positions": [2, 4],
+        },
+        {
+            "id": "no_prefill",
+            "kind": "absent_before",
+            "passed": True,
+            "weight": 1.0,
+            "message": "",
+            "matched_positions": [],
+        },
+    ]
+
+
+def test_a_trace_check_verdict_the_host_cannot_read_fails_the_grade():
+    """Version skew rejects rather than degrading into a grade with unknown sub-checks.
+
+    A ``kind`` outside this engine's vocabulary is what a newer runner's payload
+    looks like here. The three JSON decode sites beside this one drop what they
+    cannot read (#759), which is right where "absent" is a state the harness
+    itself produces; for a deterministic per-constraint verdict it is not.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.0,
+            trace_checks=[
+                runner_pb2.TraceConstraintResult(id="eventually", kind="eventually", weight=1.0)
+            ],
+        )
+    )
+
+    with pytest.raises(GradingFailedError, match="Grade.trace_checks"):
+        _parse_grade_result(lowered)

@@ -22,6 +22,7 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.combine_method import combine_by_method
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import (
     GoldenReplayError,
     StateChecker,
@@ -32,6 +33,7 @@ from tolokaforge.core.grading.state_composition import (
     inert_hash_weight_reason,
     resolve_hash_weight,
 )
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import (
@@ -40,6 +42,7 @@ from tolokaforge.core.models import (
     GradeComponents,
     GradingConfig,
     InitialStateConfig,
+    TraceChecksResult,
     Trajectory,
 )
 
@@ -170,6 +173,21 @@ class GradingEngine:
             transcript_score = action_score * comm_score * legacy_score
             components.transcript_rules = transcript_score
 
+        # Trace checks — the same function the runner's GradeTrial calls, over the
+        # same timeline, so the component score does not depend on which substrate
+        # graded the trial. A result with no constraint verdicts is the trial whose
+        # timeline carries no events: the component stays unscored.
+        trace_checks_result = TraceChecksResult()
+        if self.config.trace_checks:
+            trace_checks_result = evaluate_trace_checks(timeline, self.config.trace_checks)
+            if trace_checks_result.constraints:
+                components.trace_checks = trace_checks_result.score
+                reasons_parts.extend(
+                    f"Trace check {item.id}: {item.message}"
+                    for item in trace_checks_result.constraints
+                    if not item.passed
+                )
+
         # LLM Judge — NOT computed here. The rubric judge runs runner-side on the
         # shared ToolCallingLoop (runner/service.py GradeTrial → core/grading/judge.py).
         # This engine intentionally leaves ``components.llm_judge`` unset.
@@ -194,6 +212,7 @@ class GradingEngine:
             reasons=" | ".join(reasons_parts) if reasons_parts else "All checks passed",
             state_diff=state_diff_result,
             custom_checks_details=custom_checks_details,
+            trace_check_results=trace_checks_result.constraints,
         )
 
     def _combine(self, components: GradeComponents) -> tuple[float, bool]:
@@ -208,17 +227,13 @@ class GradingEngine:
         component_scores: dict[str, float] = {}
         final_score = 0.0
         total_weight = 0.0
-        for name, score in (
-            ("state_checks", components.state_checks),
-            ("transcript_rules", components.transcript_rules),
-            ("llm_judge", components.llm_judge),
-            ("custom_checks", components.custom_checks),
-        ):
-            if score is None or name not in weights:
+        for spec in GRADE_COMPONENTS:
+            score = getattr(components, spec.core_field)
+            if score is None or spec.name not in weights:
                 continue
-            component_scores[name] = score
-            final_score += score * weights[name]
-            total_weight += weights[name]
+            component_scores[spec.name] = score
+            final_score += score * weights[spec.name]
+            total_weight += weights[spec.name]
 
         if total_weight > 0:
             final_score = final_score / total_weight

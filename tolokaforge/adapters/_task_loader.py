@@ -163,6 +163,23 @@ def validate_grading_yaml(grading_path: Path) -> None:
             "it."
         )
 
+    # The whole trace_checks block, on any declared one: every rejection the matcher
+    # vocabulary makes — an unmatchable field for the kind, a predicate asserting
+    # nothing, two constraint kinds under one require — is a check that would
+    # otherwise select nothing and read as an agent failure at grade time.
+    trace_checks = grading_data.get("trace_checks")
+    if isinstance(trace_checks, dict):
+        from tolokaforge.core.models import TraceChecksConfig
+
+        TraceChecksConfig(**trace_checks)
+    elif trace_checks is not None:
+        raise RuntimeError(
+            f"Grading file {grading_path}: 'trace_checks' must be a mapping carrying a "
+            f"'constraints' list, got {type(trace_checks).__name__} ({trace_checks!r}). "
+            "A constraint written directly under 'trace_checks:' makes the block a list. "
+            "Write 'trace_checks:' then 'constraints:' indented beneath it."
+        )
+
 
 def load_task_yaml(
     task_path: Path,

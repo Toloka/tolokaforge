@@ -295,7 +295,9 @@ class GradingConfig(BaseModel):
     
     state_checks: Optional[StateChecksConfig] = None
     transcript_rules: Optional[TranscriptRulesConfig] = None
+    trace_checks: Optional[TraceChecksConfig] = None
     llm_judge: Optional[LLMJudgeConfig] = None
+    custom_checks: Optional[CustomChecksConfig] = None
 
 
 # =============================================================================

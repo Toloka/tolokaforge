@@ -1,0 +1,29 @@
+satisfying:
+  messages:
+    - role: user
+      content: "Can you sort out my double charge?"
+    - role: assistant
+      content: "I can resolve this myself."
+      tool_calls:
+        - tool_name: resolve_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-5001", resolution: refunded }
+          output: '{"case_id": "CS-5001", "state": "resolved"}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Can you sort out my double charge?"
+    - role: assistant
+      content: "Let me look at the policy."
+      tool_calls:
+        - tool_name: search_policy
+          executor: agent
+          status: success
+          arguments: { query: "double charge" }
+          output: '{"policy": "refund duplicates within 30 days"}'
+    - role: assistant
+      content: "You should hear back soon."
+  state: {}

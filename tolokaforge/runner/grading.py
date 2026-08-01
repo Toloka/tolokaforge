@@ -23,6 +23,8 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
     inert_hash_weight_reason,
@@ -534,8 +536,8 @@ def _check_disallowed_tool(
     Status-insensitive on purpose: attempting a forbidden call is the violation,
     so an errored attempt fails the check just like a successful one. A call the
     agent declared on a terminating turn never reached the substrate and is not
-    counted; naming intent as a violation is a matcher question, tracked on #678.
-    That exclusion needs the record view, so a declared call the timeline holds no
+    counted; a ``trace_checks`` matcher over the call event is where that intent is
+    nameable. That exclusion needs the record view, so a declared call the timeline holds no
     records for fails the check instead of reading as one that never ran.
     """
     if _outcome_unknown(calls, tool_name, records_present=records_present):
@@ -670,8 +672,7 @@ def evaluate_jsonpath_file_checks(
     checks). It does not handle ``path:``-style JSONPath assertions on env state
     (those are evaluated host-side by ``StateChecker.check_jsonpaths``). An
     assertion missing ``path_glob:`` is treated as **failed** with an actionable
-    reason — previously such assertions were silently skipped, which made
-    misrouted assertions vanish from grading without notice.
+    reason, so a misrouted assertion is named rather than vanishing from grading.
 
     Each check has:
     - path_glob: glob pattern for files (e.g., "/env/fs/agent-visible/submissions/*")
@@ -698,10 +699,8 @@ def evaluate_jsonpath_file_checks(
         description = check.get("description", f"Check: {contains_ci}")
 
         if not path_pattern:
-            # Fail loud — historically this branch silently skipped (effectively
-            # counting as not-passed in the score, but presenting as SKIP in
-            # the reasons text, so misrouted assertions were invisible). Name
-            # what the evaluator actually accepts so the author can fix it.
+            # Named rather than skipped: a skip scores as not-passed while reading
+            # as SKIP, which is how a misrouted assertion goes unnoticed.
             other_path = check.get("path")
             if other_path:
                 reasons_parts.append(
@@ -754,16 +753,6 @@ def evaluate_jsonpath_file_checks(
     score = passed / total if total > 0 else 0.0
     reasons = "; ".join(reasons_parts)
     return score, reasons
-
-
-def _contains(haystack: Any, needle: Any, ci: bool = False) -> bool:
-    if isinstance(haystack, str) and isinstance(needle, str):
-        return needle.casefold() in haystack.casefold() if ci else needle in haystack
-    if isinstance(haystack, list | tuple | set):
-        return any(_contains(item, needle, ci=ci) for item in haystack)
-    if isinstance(haystack, dict):
-        return any(_contains(value, needle, ci=ci) for value in haystack.values())
-    return haystack == needle
 
 
 def evaluate_jsonpath_state_checks(
@@ -839,10 +828,10 @@ def evaluate_jsonpath_state_checks(
                 if value.casefold() == expected.casefold():
                     found = True
                     break
-            if op_name == "contains" and _contains(value, expected):
+            if op_name == "contains" and contains(value, expected):
                 found = True
                 break
-            if op_name == "contains_ci" and _contains(value, expected, ci=True):
+            if op_name == "contains_ci" and contains(value, expected, ci=True):
                 found = True
                 break
 
@@ -1073,8 +1062,6 @@ def combine_grade_components(
     weights = grading_config.get("weights", {})
     threshold = grading_config.get("pass_threshold", 1.0)
 
-    transcript_score = components.get("transcript_score", -1.0)
-
     # Determine which components are active (score >= 0 means evaluated)
     active_components: dict[str, float] = {}
     state_checks_slot = resolve_state_checks_component(
@@ -1085,41 +1072,30 @@ def combine_grade_components(
     )
     if state_checks_slot.component is not None:
         active_components["state_checks"] = state_checks_slot.component
-    if transcript_score >= 0:
-        active_components["transcript_rules"] = transcript_score
-
-    # LLM judge
-    llm_judge_score = components.get("llm_judge_score", -1.0)
-    if llm_judge_score >= 0:
-        active_components["llm_judge"] = llm_judge_score
-
-    # Custom Python checks
-    custom_checks_score = components.get("custom_checks_score", -1.0)
-    if custom_checks_score >= 0:
-        active_components["custom_checks"] = custom_checks_score
+    for spec in GRADE_COMPONENTS:
+        # state_checks is the composed slot resolved above; it has no single field here.
+        if spec.runner_score_field is None:
+            continue
+        score = components.get(spec.runner_score_field, -1.0)
+        if score >= 0:
+            active_components[spec.name] = score
 
     # If no components are active but grading was configured, fail explicitly.
     # This prevents refusal tasks (empty golden_actions) or misconfigured
-    # grading from silently passing with score=1.0.
-    #
-    # A component is "actually configured" when:
-    #   1. It appears in weights, AND
-    #   2. Its config section exists in grading_config (not just a model default)
+    # grading from silently passing with score=1.0. A component counts as
+    # configured only when it is both weighted AND carries a config section
+    # (a section present in the model by default says nothing about the author).
     if not active_components:
-        actually_configured: set[str] = set()
-        if "state_checks" in weights and grading_config.get("state_checks") is not None:
-            actually_configured.add("state_checks")
-        if "transcript_rules" in weights and grading_config.get("transcript_rules") is not None:
-            actually_configured.add("transcript_rules")
-        if "llm_judge" in weights and grading_config.get("llm_judge") is not None:
-            actually_configured.add("llm_judge")
-        if "custom_checks" in weights and grading_config.get("custom_checks") is not None:
-            actually_configured.add("custom_checks")
+        configured = {
+            spec.name
+            for spec in GRADE_COMPONENTS
+            if spec.name in weights and grading_config.get(spec.config_section) is not None
+        }
 
-        if actually_configured:
+        if configured:
             logger.warning(
                 "Grading configured for %s but no components were evaluated — failing",
-                actually_configured,
+                configured,
             )
             return 0.0, False
         # Truly no grading configured at all — pass by default
@@ -1152,6 +1128,7 @@ def build_grade_reasons(
     state_diff: dict[str, Any] | None = None,
     transcript_result: dict[str, Any] | None = None,
     judge_reasons: str | None = None,
+    trace_checks_result: dict[str, Any] | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -1160,6 +1137,7 @@ def build_grade_reasons(
         components: Component scores dict
         state_diff: State diff if hash comparison failed
         transcript_result: Transcript evaluation result
+        trace_checks_result: Trace checks evaluation result
 
     Returns:
         Human-readable reasons string
@@ -1222,6 +1200,17 @@ def build_grade_reasons(
                 reasons.append("Transcript: passed")
             else:
                 reasons.append("Transcript: failed")
+
+    # Trace checks reason — the score, then every failing constraint by name, the
+    # same lines core's engine emits so a grade reads the same on both substrates.
+    trace_checks_score = components.get("trace_checks_score", -1.0)
+    if trace_checks_score >= 0:
+        reasons.append(f"Trace checks: score={trace_checks_score:.2f}")
+        reasons.extend(
+            f"Trace check {item['id']}: {item['message']}"
+            for item in (trace_checks_result or {}).get("constraints", [])
+            if not item["passed"]
+        )
 
     # LLM judge reason
     llm_judge_score = components.get("llm_judge_score", -1.0)

@@ -48,14 +48,22 @@ agent  ──http──▶ ├── client-locations:8000 ─┤──▶ postg
   | Component | Weight | What it checks |
   |---|---|---|
   | `state_checks.db_probes` | 0.60 | the CRM case **and** the delivery annotation both carry `reschedule` for the right customer |
-  | `transcript_rules` | 0.15 | the agent searched policy, created the case, and annotated the delivery over `http_request`, within 18 turns |
-  | `llm_judge` | 0.25 | the CRM summary names the customer + delivery and justifies the reschedule from policy |
+  | `trace_checks` | 0.25 | the query rode in the `POST /search` body, policy was read before the case was written, and the delivery was not annotated ahead of that policy read |
+  | `llm_judge` | 0.15 | the CRM summary names the customer + delivery and justifies the reschedule from policy |
 
   Because `state_checks` carries 0.60 against a `0.6` pass threshold, a
-  wrong-path run cannot pass even with full `transcript_rules` + `llm_judge`
+  wrong-path run cannot pass even with full `trace_checks` + `llm_judge`
   credit — and a correct run still passes if the `llm_judge` errors and is
-  dropped from the combine (`state_checks` 0.60 + `transcript_rules` 0.15 =
-  0.75 of the surviving weight clears the threshold).
+  dropped from the combine, since the two deterministic components are then the
+  whole surviving weight.
+
+- **The process is graded deterministically, not by rubric.** Every condition on
+  *how* the agent worked is a `trace_checks` constraint, so the judge is left the
+  one question only a reader can answer — whether the case note reads as a
+  justified, customer-facing summary. Each constraint is written so a plausible
+  wrong trajectory fails it and the other two pass: writing the CRM case before
+  reading policy fails the ordering constraint alone, annotating the delivery
+  first fails the scoped-absence constraint alone.
 
 - **Five application services, no custom image.** Each service is a small
   FastAPI app run straight from `tolokaforge-runner:local` — that image already
@@ -83,10 +91,23 @@ policy-correct value.
 ### Why policy search is `POST /search`
 
 The query rides in the JSON body of a fixed-URL `POST /search`, not a
-`GET /search?q=…` query string. `transcript_rules.required_actions` matches a
-tool call by **exact** URL + method equality (no substring, regex, or ordering),
-so a per-query `GET` URL could not be asserted; a fixed `POST` URL can. The
-`search_policy` required action matches on `{url, method}` alone.
+`GET /search?q=…` query string, so the URL is the same on every trial and the
+query itself is an argument grading can read. The `policy_query_rides_in_the_body`
+constraint asserts exactly that — the nested path `args.json.q` is non-empty on a
+call to the fixed URL — which is what makes "the agent actually searched" a check
+rather than an assumption:
+
+```yaml
+require:
+  present:
+    match:
+      kind: tool_call
+      tool: { equals: http_request }
+      args:
+        url: { equals: "http://policy-search:8000/search" }
+        method: { equals: "POST" }
+        json.q: { len_gt: 0 }
+```
 
 ## The user-simulator persona pattern
 
@@ -147,7 +168,7 @@ examples/native/multi_service_helpdesk_workflow/
 │       └── init.sql              # schema + seed + policy corpus + app/grader roles
 └── dataset/tasks/helpdesk_01/
     ├── task.yaml                 # env manifest + http_request/write_file tools + persona
-    └── grading.yaml              # db_probes + transcript_rules + llm_judge
+    └── grading.yaml              # db_probes + trace_checks + llm_judge
 ```
 
 ## Design notes
@@ -161,6 +182,9 @@ examples/native/multi_service_helpdesk_workflow/
   `resolution_path = reschedule` — the value policy selects — in both
   `crm_cases` and `deliveries`, not just that a row exists. See
   [`docs/GRADING.md`](../../../docs/GRADING.md) § Substrate Grading.
+- **The turn budget is `task.yaml`'s, not grading's.** `max_turns: 18` caps the
+  loop, so a nineteenth assistant turn cannot be produced and a grading check on
+  the count could never fail. The budget is enforced where it binds.
 - **Task-local throwaway credentials.** The DSN in `grading.yaml` and the
   compose passwords are disposable, task-scoped credentials for a local
   container. Real secrets always go through `SecretManager`.
@@ -172,7 +196,9 @@ examples/native/multi_service_helpdesk_workflow/
 - [`docs/MULTI_CONTAINER_GUIDE.md`](../../../docs/MULTI_CONTAINER_GUIDE.md)
   — authoring guide for multi-container tasks
 - [`docs/GRADING.md`](../../../docs/GRADING.md) — grading families, including
-  `state_checks.db_probes`
+  `state_checks.db_probes` and the
+  [`trace_checks`](../../../docs/GRADING.md#trace-checks) vocabulary this pack's
+  constraints are written in
 - [`docs/TASKS.md`](../../../docs/TASKS.md) — task authoring, including the
   user-simulator persona pattern
 - [`../multi_service_lot_ops/README.md`](../multi_service_lot_ops/README.md)
