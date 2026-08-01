@@ -24,7 +24,8 @@ Nine locks over :mod:`tolokaforge.core.grading.key_manifest`:
    lock 6's canonical-tier hash inputs the only values that path yields rather
    than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
-   enumerated here, and the weight sweep lock 6 rests on stays substantive;
+   enumerated here, and the two tables those claims rest on — lock 6's weight sweep
+   and lock 9's method answers — stay substantive;
 9. both substrates aggregate one split pair of deterministic components by the
    author's ``combine.method``, each method pinned to a score written out here.
 
@@ -136,9 +137,9 @@ COMBINE_METHOD_VERDICTS: dict[str, tuple[float, bool]] = {
 
 Written out rather than recomputed: one shared dispatch makes the two substrates
 agree however wrong that dispatch is, so what carries lock 9 is each cell's pinned
-value and the three scores being distinct. Keyed by method, and the key set is
-asserted against :data:`COMBINE_METHODS`, so a fourth declared method cannot land
-without an answer here.
+value and the three scores being distinct. Keyed by method, and lock 8 asserts the
+key set against :data:`COMBINE_METHODS` — a human-written table against the declared
+domain — so a fourth declared method cannot land without an answer here.
 """
 
 _HASH_SCORE_NAME = "hash_score"
@@ -173,12 +174,7 @@ _ARCHITECTURAL_EXEMPTIONS = frozenset(
 )
 
 # Non-BOTH keys that should be both and are not yet. tracking_issue is required.
-_DRIFT_EXEMPTIONS = frozenset(
-    {
-        "combine.method",
-        "state_checks.hash.expected_state_hash",
-    }
-)
+_DRIFT_EXEMPTIONS = frozenset({"state_checks.hash.expected_state_hash"})
 
 # Scored keys that claim both substrates but are not differentially proven
 # in-process. A key added here is a key whose parity claim rests on field
@@ -194,13 +190,17 @@ _NON_DIFFERENTIAL_SCORED_KEYS = frozenset(
 # DIFFERENTIAL_CANONICAL entries lock 3's predicate does not reach, because it
 # selects kind: SCORED_CHECK and these carry no component score of their own. Each
 # one needs a differential of its own in this module; lock 8 holds the set.
-_CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset({"state_checks.hash.weight"})
+_CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
+    {
+        "state_checks.hash.weight",
+        "combine.method",
+    }
+)
 
 # FIELD_RESOLUTION_ONLY entries that need no tracking issue: aggregation and
 # load-time config inputs, which have no violating trajectory by construction.
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
-        "combine.weights",
         "combine.pass_threshold",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
@@ -1128,13 +1128,15 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
 
 
 def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive():
-    """Lock 3 selects ``kind: SCORED_CHECK``, so a ``CONFIG_INPUT`` claim escapes it.
+    """Lock 3 selects ``kind: SCORED_CHECK``, so ``CONFIG_INPUT`` and ``AGGREGATION`` escape it.
 
     Naming the test that proves such a claim would be a citation rather than a
     proof — the enforcement level would rest on a nodeid resolving while the test it
-    names asserted nothing. So this asserts the property the escaped claim depends
+    names asserted nothing. So this asserts the property each escaped claim depends
     on instead: that lock 6's sweep still spans the weights where a fold rule is
-    distinguishable at all.
+    distinguishable at all, and that lock 9's answer table still spans the declared
+    combine methods with one distinct score each. Membership alone enforces nothing:
+    a differential deleted wholesale leaves the escaped set unchanged.
     """
     reached = {item.author_key for item in _differential_entries()}
     escaped = {
@@ -1152,8 +1154,21 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     assert len(set(interior)) >= 2, (
         f"COMPOSITION_PARITY_WEIGHTS {COMPOSITION_PARITY_WEIGHTS} holds fewer than two "
         "distinct weights strictly inside (0, 1). At 0.0 and 1.0 the blend collapses onto a "
-        f"single source, so {sorted(_CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3)} would claim a "
-        "canonical differential that a fold merely selecting the dominant source passes"
+        f"single source, so {_COMPOSITION_KEY} would claim a canonical differential that a "
+        "fold merely selecting the dominant source passes"
+    )
+
+    assert set(COMBINE_METHOD_VERDICTS) == set(COMBINE_METHODS), (
+        f"COMBINE_METHOD_VERDICTS answers for {sorted(COMBINE_METHOD_VERDICTS)} but "
+        f"COMBINE_METHODS declares {sorted(COMBINE_METHODS)}. A declared method with no "
+        f"row here is a method with no cross-substrate evidence, so {_METHOD_KEY}'s "
+        "canonical differential would span less than the domain it claims"
+    )
+    scores = {score for score, _ in COMBINE_METHOD_VERDICTS.values()}
+    assert len(scores) == len(COMBINE_METHODS), (
+        f"the declared methods are pinned to {sorted(scores)} — fewer scores than methods. "
+        "An implementation returning one aggregation for every method satisfies a table "
+        "whose rows agree"
     )
 
 
@@ -1253,18 +1268,6 @@ def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_d
     score nothing core-side, so the two component maps would differ before any method
     was read and the cell would measure that instead.
     """
-    assert set(COMBINE_METHOD_VERDICTS) == set(COMBINE_METHODS), (
-        f"COMBINE_METHOD_VERDICTS answers for {sorted(COMBINE_METHOD_VERDICTS)} but "
-        f"COMBINE_METHODS declares {sorted(COMBINE_METHODS)}. A declared method with no "
-        "row here is a method with no cross-substrate evidence"
-    )
-    scores = {score for score, _ in COMBINE_METHOD_VERDICTS.values()}
-    assert len(scores) == len(COMBINE_METHODS), (
-        f"the declared methods are pinned to {sorted(scores)} — fewer scores than methods. "
-        "An implementation returning one aggregation for every method satisfies a table "
-        "whose rows agree"
-    )
-
     expected_score, expected_pass = COMBINE_METHOD_VERDICTS[method]
     root = tmp_path / f"method_{method}"
     _author_method(test_data_dir, root, method=method)

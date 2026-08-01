@@ -163,6 +163,30 @@ _HASH_SOURCE_SHAPE_REASON = (
     "corpus measurement"
 )
 
+_COMBINE_METHOD_PARITY_REASON = (
+    "both substrates read combine.method and both discriminate on it, but their final "
+    "scores agree only when the two build the same component set. Two things prevent that. "
+    "#744 — combine.weights drops a scored component core-side and invents 1.0 for it "
+    "runner-side — is fixable. The other is architectural and permanent: core produces no "
+    "llm_judge component (GradingEngine.grade_trajectory leaves it unset) and cannot "
+    "produce a db_probes one, both RUNNER_ONLY by design, so on a judge- or probe-graded "
+    "pack core's component map is empty where the runner's is scored. Since all and any "
+    "aggregate that map alone, the disagreement is a verdict flip, not a magnitude. The "
+    "canonical differential proves the dispatch over deterministic components, which is "
+    "the whole of what is provable here"
+)
+
+_COMBINE_WEIGHTS_MEMBERSHIP_REASON = (
+    "both substrates scale the components they fold by the author's weights, but they "
+    "disagree on which components the map holds at all: a scored component with no "
+    "declared weight is dropped from core's numerator, its denominator and its "
+    "aggregation, while the runner includes it at an invented weight of 1.0. Measured on "
+    "state_checks 0.0 and transcript_rules 1.0 with only state_checks weighted, at "
+    "pass_threshold 0.8 — weighted scores 0.0 core-side and 0.5 runner-side, and the same "
+    "config under any flips the verdict rather than scaling it: core (0.0, False) against "
+    "runner (1.0, True)"
+)
+
 _TRANSCRIPT_AGGREGATION_REASON = (
     "core averages four fixed buckets while the runner scores one sub-check per "
     "declared entry, so the two component scores differ in magnitude"
@@ -185,27 +209,26 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="combine.method",
         kind=KeyKind.AGGREGATION,
-        coverage=SubstrateCoverage.RUNNER_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="GradingCombineConfig.method",
         runner_field="GradingConfig.combine_method",
+        core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
         runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
-        reason=(
-            "the core engine always computes a weighted average and never reads "
-            "combine.method, so `method: all_pass` scores 0.5 core-side and 0.0 "
-            "runner-side for the same components"
-        ),
-        tracking_issue=692,
+        reason=_COMBINE_METHOD_PARITY_REASON,
+        tracking_issue=744,
     ),
     GradingKey(
         author_key="combine.weights",
         kind=KeyKind.AGGREGATION,
-        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="GradingCombineConfig.weights",
         runner_field="GradingConfig.weights",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
         runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
+        reason=_COMBINE_WEIGHTS_MEMBERSHIP_REASON,
+        tracking_issue=744,
     ),
     GradingKey(
         author_key="combine.pass_threshold",
