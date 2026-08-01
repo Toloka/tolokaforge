@@ -195,7 +195,7 @@ transcript_rules:
 | `hash` | Replays `golden_actions` on a fresh DB copy, hashes the result, compares to agent's final state. All-or-nothing. |
 | `jsonpaths` | Per-assertion checks against the agent's final DB state. Partial credit. |
 | `transcript_rules` | Checks tool call sequence and agent messages in the conversation transcript. |
-| `combine` | Weighted blend of component scores. Pass when result ≥ `pass_threshold`. |
+| `combine` | Folds the component scores by `method` — `weighted` reports their weighted mean, `all` the weakest component, `any` the strongest. See [GRADING.md § Score Combination](GRADING.md#score-combination) for each method's pass rule. |
 
 ---
 

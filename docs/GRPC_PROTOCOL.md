@@ -399,9 +399,11 @@ message GradeComponents {
 //      shared tool-calling loop, returning criterion_results + the llm_judge
 //      component score (or JUDGE_STATUS_ERRORED with no score), plus a
 //      JudgeReport (judge usage + transcript).
-//   3. The Runner combines all component scores using grading.weights and
-//      returns the final Grade. (An earlier protocol revision left the judge to
-//      the Host; the Runner now owns it — see docs/RUBRIC_GRADING_DESIGN.md.)
+//   3. The Runner folds all component scores by grading.combine_method — one of
+//      "weighted" (their mean, scaled by grading.weights), "all" (the weakest)
+//      or "any" (the strongest) — and returns the final Grade. (An earlier
+//      protocol revision left the judge to the Host; the Runner now owns it —
+//      see docs/RUBRIC_GRADING_DESIGN.md.)
 
 message CustomCheckResult {
   string check_name = 1;
@@ -567,6 +569,11 @@ The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/c
 }
 ```
 
+`grading.combine_method` is a closed set — `weighted`, `all` or `any`. The runner
+validates it while decoding this payload, so any other value fails `RegisterTrial`
+with a `ValidationError` naming the value and the three it may be. Which score each
+one returns is in [GRADING.md](GRADING.md#score-combination) § Score Combination.
+
 ### ExecuteToolRequest/Response
 
 The tool execution flow:
@@ -692,11 +699,18 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     # 6. Evaluate transcript rules off the timeline
     transcript_score = evaluate_transcript_rules(timeline, grading_config.transcript_rules)
     
-    # 7. Combine scores
-    final_score = weighted_combine(state_score, transcript_score, ...)
+    # 7. Fold the components by the method the pack declared. "weighted" returns
+    #    their mean scaled by grading_config.weights, "all" the weakest component,
+    #    "any" the strongest; anything else raises and the RPC returns success=false.
+    final_score, binary_pass = combine_by_method(
+        method=grading_config.combine_method,
+        component_scores={"state_checks": state_score, "transcript_rules": transcript_score},
+        weighted_mean=weighted_mean(state_score, transcript_score, grading_config.weights),
+        pass_threshold=pass_threshold,
+    )
     
     return Grade(
-        binary_pass=final_score >= pass_threshold,
+        binary_pass=binary_pass,
         score=final_score,
         components=GradeComponents(state_checks=state_score, transcript_rules=transcript_score),
         state_diff_json=json.dumps(state_diff) if state_diff else ""

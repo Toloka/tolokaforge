@@ -1026,6 +1026,9 @@ def combine_grade_components(
             ``state_checks.hash_weight`` does not say how to fold them; or
             ``combine_method`` is missing or names no supported aggregation.
     """
+    # Ahead of the zero-active-components return below, which never reaches the fold:
+    # a request naming no supported aggregation must fail the grade rather than take
+    # that path's verdict.
     method = validate_combine_method(
         grading_config.get("combine_method"), context="grading config combine_method"
     )

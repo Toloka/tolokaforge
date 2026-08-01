@@ -58,7 +58,7 @@ def validate_combine_method(value: object, *, context: str) -> CombineMethod:
 
 def combine_by_method(
     *,
-    method: CombineMethod,
+    method: object,
     component_scores: Mapping[str, float],
     weighted_mean: float,
     pass_threshold: float,
@@ -67,16 +67,19 @@ def combine_by_method(
 
     ``all`` scores the weakest component and passes only if every one clears
     ``pass_threshold``; ``any`` scores the strongest and passes if one does;
-    ``weighted`` reports the caller's mean and compares that. Raises ``ValueError``
-    on an unsupported method and on an empty ``component_scores``.
+    ``weighted`` reports the caller's mean and compares that.
+
+    Total over whatever a caller holds: the method is validated here, before the
+    components are read, so an author who wrote a retired alias hears the rule it
+    meant rather than that nothing was scored. An empty ``component_scores`` raises
+    — min, max and a mean over nothing have no answer.
     """
+    aggregation = validate_combine_method(method, context="combine.method")
     if not component_scores:
         raise ValueError(_EMPTY_COMPONENT_SCORES)
     scores = tuple(component_scores.values())
-    if method == "weighted":
+    if aggregation == "weighted":
         return weighted_mean, weighted_mean >= pass_threshold
-    if method == "all":
+    if aggregation == "all":
         return min(scores), all(score >= pass_threshold for score in scores)
-    if method == "any":
-        return max(scores), any(score >= pass_threshold for score in scores)
-    raise ValueError(_unsupported_message(method, context="combine.method"))
+    return max(scores), any(score >= pass_threshold for score in scores)

@@ -90,6 +90,7 @@ def validate_grading_yaml(grading_path: Path) -> None:
 
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
+        RuntimeError: If the file or a block this gate constructs is not a mapping.
     """
     if not grading_path.exists():
         return
@@ -109,6 +110,14 @@ def validate_grading_yaml(grading_path: Path) -> None:
     combine = grading_data.get("combine")
     if isinstance(combine, dict):
         GradingCombineConfig(**combine)
+    elif combine is not None:
+        raise RuntimeError(
+            f"Grading file {grading_path}: 'combine' must be a mapping of method / "
+            f"weights / pass_threshold, got {type(combine).__name__} ({combine!r}). "
+            "A key indented one level too far under 'combine:' makes the block a list; "
+            "a method written next to the key makes it a string. Write the method as "
+            "'combine:' then 'method:' indented beneath it."
+        )
 
     # The rubric migration lives on the canonical LLMJudgeConfig, so validate the
     # llm_judge block directly — independent of the surrounding grading schema,

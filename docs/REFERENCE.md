@@ -114,7 +114,7 @@ grading: "grading.yaml"
 
 ```yaml
 combine:
-  method: "weighted"
+  method: "weighted"        # weighted | all | any
   weights:
     state_checks: 0.6
     transcript_rules: 0.1

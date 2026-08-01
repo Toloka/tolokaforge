@@ -16,11 +16,12 @@ method returns the same score and nothing here could fail. Both components carry
 declared weight and neither is judge- nor probe-graded, so the trial is one both
 substrates score the same way and the method is the only variable.
 
-The expected verdicts are :data:`COMBINE_METHOD_VERDICTS`, imported rather than
-restated: it is the canonical differential's hand-written answer table, so the wire
-is held to the same prediction the in-process differential makes. The sweep below
-is over ``COMBINE_METHODS``, so a fourth declared method arrives here graded and
-without an answer rather than quietly unswept.
+The components, the threshold and the expected verdicts come from
+``tests/utils/combine_method_verdicts.py``, which the in-process differential reads
+too: one hand-written table, so the wire is held to the prediction the canonical tier
+makes rather than to a copy of it that can drift green. The sweep below is over
+``COMBINE_METHODS``, so a fourth declared method arrives here graded and without an
+answer rather than quietly unswept.
 
 **``binary_pass`` is asserted alongside the score but is not separate evidence.**
 ``min(s) >= t`` is ``all(s >= t)`` and ``max(s) >= t`` is ``any(s >= t)``, so a
@@ -35,7 +36,11 @@ from typing import Any
 
 import pytest
 
-from tests.canonical.test_grading_substrate_parity import COMBINE_METHOD_VERDICTS
+from tests.utils.combine_method_verdicts import (
+    COMBINE_METHOD_COMPONENTS,
+    COMBINE_METHOD_PASS_THRESHOLD,
+    COMBINE_METHOD_VERDICTS,
+)
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
@@ -56,12 +61,6 @@ _ORDER_ID = "O1"
 _TRIAL_STATUS = "pending"
 _ASSERTED_STATUS = "shipped"
 _REFUND_SENTENCE = "Refund issued"
-
-# What each component owes on this trial, asserted on every graded cell: the
-# answer table below is only the right answer for these two inputs.
-_EXPECTED_COMPONENTS: dict[str, float] = {"state_checks": 0.0, "transcript_rules": 1.0}
-
-_PASS_THRESHOLD = 0.8
 
 # No tool calls, so the timeline is a message view with no records to join.
 _TRANSCRIPT: list[dict[str, Any]] = [
@@ -95,7 +94,7 @@ def _task_description() -> dict[str, Any]:
         "grading": {
             "combine_method": "weighted",
             "weights": {"state_checks": 1.0, "transcript_rules": 1.0},
-            "pass_threshold": _PASS_THRESHOLD,
+            "pass_threshold": COMBINE_METHOD_PASS_THRESHOLD,
             "state_checks": {
                 "hash_enabled": False,
                 "golden_actions": [],
@@ -205,19 +204,19 @@ def test_the_declared_combine_method_aggregates_the_wire_trial(
     is checked alongside the score and is the same evidence, not a second piece.
     """
     grade = graded_by_method[method]
-    components = {name: grade["components"][name] for name in sorted(_EXPECTED_COMPONENTS)}
-    assert components == pytest.approx(_EXPECTED_COMPONENTS), (
-        f"the runner scored the components {components}, not {_EXPECTED_COMPONENTS} — "
+    components = {name: grade["components"][name] for name in sorted(COMBINE_METHOD_COMPONENTS)}
+    assert components == pytest.approx(COMBINE_METHOD_COMPONENTS), (
+        f"the runner scored the components {components}, not {COMBINE_METHOD_COMPONENTS} — "
         f"the verdict {verdict} owed for {method!r} is the answer to different inputs"
     )
 
     expected_score, expected_pass = verdict
     assert grade["score"] == pytest.approx(expected_score), (
-        f"the runner aggregated {_EXPECTED_COMPONENTS} by {method!r} into "
+        f"the runner aggregated {COMBINE_METHOD_COMPONENTS} by {method!r} into "
         f"{grade['score']}, not {expected_score}"
     )
     assert grade["binary_pass"] is expected_pass, (
-        f"{method!r} scored {grade['score']} against pass_threshold {_PASS_THRESHOLD} "
+        f"{method!r} scored {grade['score']} against pass_threshold {COMBINE_METHOD_PASS_THRESHOLD} "
         f"and reported binary_pass {grade['binary_pass']}, not {expected_pass}"
     )
 

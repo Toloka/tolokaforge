@@ -46,6 +46,11 @@ import pytest
 import yaml
 from pydantic import BaseModel
 
+from tests.utils.combine_method_verdicts import (
+    COMBINE_METHOD_COMPONENTS,
+    COMBINE_METHOD_PASS_THRESHOLD,
+    COMBINE_METHOD_VERDICTS,
+)
 from tests.utils.timelines import declare_calls
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
@@ -117,30 +122,6 @@ _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
 
 _METHOD_KEY = "combine.method"
 _METHOD_CASE = "split_components"
-
-# What the combine-method pack's two deterministic components score, on both
-# substrates. Their min, mean and max are three different numbers: on equal
-# components every method returns the same one and the table below could not tell
-# the aggregations apart.
-_METHOD_COMPONENTS: dict[str, float] = {"state_checks": 0.0, "transcript_rules": 1.0}
-
-# The pack's authored combine.pass_threshold, asserted against the loaded config so
-# the flags written out below are the answers to the threshold the author wrote.
-_METHOD_PASS_THRESHOLD = 0.8
-
-COMBINE_METHOD_VERDICTS: dict[str, tuple[float, bool]] = {
-    "weighted": (0.5, False),
-    "all": (0.0, False),
-    "any": (1.0, True),
-}
-"""``(score, binary_pass)`` each declared method owes on :data:`_METHOD_COMPONENTS`.
-
-Written out rather than recomputed: one shared dispatch makes the two substrates
-agree however wrong that dispatch is, so what carries lock 9 is each cell's pinned
-value and the three scores being distinct. Keyed by method, and lock 8 asserts the
-key set against :data:`COMBINE_METHODS` — a human-written table against the declared
-domain — so a fourth declared method cannot land without an answer here.
-"""
 
 _HASH_SCORE_NAME = "hash_score"
 _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
@@ -1207,9 +1188,9 @@ def _core_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _Me
         f"the core config loaded combine.method {grading_config.combine.method!r} from a "
         f"grading.yaml declaring {method!r}, so this cell measures a method nobody wrote"
     )
-    assert grading_config.combine.pass_threshold == _METHOD_PASS_THRESHOLD, (
+    assert grading_config.combine.pass_threshold == COMBINE_METHOD_PASS_THRESHOLD, (
         f"the pack's authored pass_threshold is {grading_config.combine.pass_threshold}, so "
-        f"the flags pinned against {_METHOD_PASS_THRESHOLD} answer a different question"
+        f"the flags pinned against {COMBINE_METHOD_PASS_THRESHOLD} answer a different question"
     )
     case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     grade = GradingEngine(grading_config, task_dir=_pack_dir(root, _METHOD_KEY)).grade_trajectory(
@@ -1235,6 +1216,10 @@ def _runner_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _
     assert grading.combine_method == method, (
         f"the adapter translated combine.method {method!r} into combine_method "
         f"{grading.combine_method!r}, so this cell measures a method nobody wrote"
+    )
+    assert grading.pass_threshold == COMBINE_METHOD_PASS_THRESHOLD, (
+        f"the adapter translated pass_threshold {grading.pass_threshold}, so "
+        f"the flags pinned against {COMBINE_METHOD_PASS_THRESHOLD} answer a different question"
     )
     case = _load_case(_pack_dir(test_data_dir, _METHOD_KEY), _METHOD_CASE)
     jsonpath_score, _ = evaluate_jsonpath_checks(
@@ -1274,16 +1259,16 @@ def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_d
     core = _core_method_verdict(test_data_dir, root, method=method)
     runner = _runner_method_verdict(test_data_dir, root, method=method)
     for substrate, verdict in (("core", core), ("runner", runner)):
-        assert verdict.components == _METHOD_COMPONENTS, (
+        assert verdict.components == COMBINE_METHOD_COMPONENTS, (
             f"the {substrate} substrate scored the pack's components {verdict.components}, "
-            f"not {_METHOD_COMPONENTS} — the answers pinned below aggregate other numbers"
+            f"not {COMBINE_METHOD_COMPONENTS} — the answers pinned below aggregate other numbers"
         )
         assert verdict.score == pytest.approx(expected_score), (
-            f"the {substrate} substrate aggregated {_METHOD_COMPONENTS} by {method!r} into "
+            f"the {substrate} substrate aggregated {COMBINE_METHOD_COMPONENTS} by {method!r} into "
             f"{verdict.score}, not {expected_score}"
         )
         assert verdict.binary_pass is expected_pass, (
-            f"the {substrate} substrate aggregated {_METHOD_COMPONENTS} by {method!r} to "
+            f"the {substrate} substrate aggregated {COMBINE_METHOD_COMPONENTS} by {method!r} to "
             f"binary_pass {verdict.binary_pass}, not {expected_pass}"
         )
 

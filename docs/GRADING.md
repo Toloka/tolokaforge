@@ -10,7 +10,10 @@ Tolokaforge evaluates agent performance across four dimensions:
    over final state, transcript patterns tied to computed values). See
    [custom_checks.md](custom_checks.md).
 
-Scores are weighted and combined into a final score. See [REFERENCE.md](REFERENCE.md) for `grading.yaml` schema.
+`combine.method` folds the component scores into one score and one pass flag — their
+weighted mean, the weakest of them or the strongest, as the pack declares. See
+[Score Combination](#score-combination) for the three rules and
+[REFERENCE.md](REFERENCE.md) for the `grading.yaml` schema.
 
 ---
 
@@ -30,13 +33,14 @@ author-facing key is one `GradingKey` entry declaring three axes:
 
 - **`kind`** — `SCORED_CHECK` (produces a component score), `CONFIG_INPUT`
   (shapes another check; no score of its own), `AGGREGATION` (combines component
-  scores). Only a `SCORED_CHECK` key has a violating trajectory, so the
-  fixture-pack differential over
-  [`tests/data/grading_parity/`](../tests/data/grading_parity/) selects that kind
-  alone. A `CONFIG_INPUT` or `AGGREGATION` key can still be proven at
-  `DIFFERENTIAL_CANONICAL`, by a differential over the property the key governs
-  rather than over a trajectory, and two are — `state_checks.hash.weight` and
-  `combine.method`. Both escape that lock, so a frozen set in the test module
+  scores). The satisfying/violating **pair** sweep selects `SCORED_CHECK` alone,
+  because only a scored key has a violating trajectory that moves a *component*.
+  A `CONFIG_INPUT` or `AGGREGATION` key still reaches `DIFFERENTIAL_CANONICAL`
+  through a differential over what it does govern — each one over a
+  [`tests/data/grading_parity/`](../tests/data/grading_parity/) pack of its own:
+  `state_checks.hash.weight` by sweeping the weight across one pack's two hash
+  cases, `combine.method` by re-authoring the method over one pack's split
+  components. Both escape the pair sweep, so a frozen set in the test module
   enumerates every claim it does not reach and asserts, per entry, the property
   that entry's own differential rests on (below).
 - **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
@@ -697,25 +701,32 @@ on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitt
 these keys requires a runner image built from the same release. Old engine + new
 runner is safe **for this key** (core-side `extra="ignore"`).
 
-**Runner-engine version lock (both directions)**: the runner-side
-`StateChecksConfig` is `extra="forbid"`, and the trial spec crosses the wire as a
-plain `model_dump_json()` — so a field either side does not declare fails
-validation rather than being dropped. Two keys make the lock bite on **every** pack
-carrying a non-empty `state_checks:` block, whether or not the pack declares them,
-because the adapter emits both unconditionally:
+**Runner-engine version lock (both directions)**: the trial spec crosses the wire as
+a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
+a field *value*, that the receiving side does not declare fails validation rather than
+being dropped. Three keys carry the lock:
 
-- `env_assertions`, which the current runner config does not declare: an engine
-  older than this release translates it onto that field, so an **old engine against
-  a new runner image** is rejected at `RegisterTrial`.
-- `hash_weight`, which a runner image older than this release does not declare: the
-  current engine emits it (as `null` when the pack declares no weight), so a **new
-  engine against an old runner image** is rejected the same way.
+- `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
+  declare: an engine older than this release translates it onto that field, so an
+  **old engine against a new runner image** is rejected at `RegisterTrial`.
+- `state_checks.hash_weight`, which a runner image older than this release does not
+  declare: the current engine emits it (as `null` when the pack declares no weight),
+  so a **new engine against an old runner image** is rejected the same way.
+- `combine_method`, whose declared value domain both gained and lost members in this
+  release. The runner `GradingConfig` validates it against the closed set in
+  [§ Score Combination](#score-combination): a **new engine** translating `any` is
+  rejected by an older image, and an **old engine** translating a name the set no
+  longer holds is rejected by a current one.
 
-`state_checks` therefore requires engine and runner image from the same release in
-both directions, and `make docker-build-core` is part of every engine upgrade that
-touches it. (`db_hash_check` was never declared on the runner config at all, so no
-engine ever emitted it and it is not part of this lock — a populated
-`db_hash_check` is rejected core-side at config load.)
+The first two bite on **every** pack carrying a non-empty `state_checks:` block,
+whether or not the pack declares them, because the adapter emits both
+unconditionally. `combine_method` bites only on a pack declaring an affected value —
+`weighted` and `all` cross in either direction. So `state_checks` requires engine and
+runner image from the same release in both directions, and `make docker-build-core` is
+part of every engine upgrade that touches `state_checks` or runs a pack declaring
+`any`. (`db_hash_check` was never declared on the runner config at all, so no engine
+ever emitted it and it is not part of this lock — a populated `db_hash_check` is
+rejected core-side at config load.)
 
 **This lock is narrower than the proto3 rule that governs the rest of registration.**
 `engine_protocol_version` and `call_id` are proto message fields, which an older
@@ -1401,14 +1412,9 @@ empty where the runner's is scored. The canonical differential therefore proves 
 dispatch over deterministic components, which is the whole of what is provable for
 this key.
 
-**Runner-engine version lock (both directions)**: the runner-side `GradingConfig`
-validates `combine_method` against this closed set, and the set both gained and lost
-members in this release. A **new engine** translating `any` is rejected at
-`RegisterTrial` by a runner image older than it; an **old engine** translating a name
-this set no longer holds is rejected by a current image. Unlike the `state_checks`
-lock, this one bites only on a pack declaring an affected value — `weighted` and
-`all` cross in either direction — so `make docker-build-core` is part of any upgrade
-that runs a pack declaring `any`.
+`combine_method` is one of the three keys that lock an engine to a runner image built
+from the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
+§ "Runner-engine version lock (both directions)".
 
 The `weighted` mean:
 
@@ -1425,9 +1431,11 @@ binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion 
 A component that was not evaluated is **excluded** from both the numerator and
 the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
-as a `0.0`. A `custom_checks`-only pack whose score comes back absent still
-fails loud (empty active set with a configured `custom_checks` weight ⇒
-`(0.0, False)`, not a silent `(1.0, True)`).
+as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
+declares no weight for, where the runner includes it at an invented `1.0` — the
+divergence tracked by #744 above. A `custom_checks`-only pack whose score comes
+back absent still fails loud (empty active set with a configured `custom_checks`
+weight ⇒ `(0.0, False)`, not a silent `(1.0, True)`).
 
 ### Weighting Strategies
 

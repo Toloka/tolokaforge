@@ -21,7 +21,7 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
-from tolokaforge.core.grading.combine_method import combine_by_method, validate_combine_method
+from tolokaforge.core.grading.combine_method import combine_by_method
 from tolokaforge.core.grading.state_checks import (
     GoldenReplayError,
     StateChecker,
@@ -203,9 +203,6 @@ class GradingEngine:
         denominator and the aggregation. With nothing in the map there is nothing to
         aggregate, and the trial's verdict is the threshold comparison alone.
         """
-        method = validate_combine_method(
-            self.config.combine.method, context="grading.yaml combine.method"
-        )
         weights = self.config.combine.weights
         component_scores: dict[str, float] = {}
         final_score = 0.0
@@ -229,7 +226,7 @@ class GradingEngine:
             return final_score, final_score >= self.config.combine.pass_threshold
 
         return combine_by_method(
-            method=method,
+            method=self.config.combine.method,
             component_scores=component_scores,
             weighted_mean=final_score,
             pass_threshold=self.config.combine.pass_threshold,

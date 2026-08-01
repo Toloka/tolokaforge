@@ -102,6 +102,7 @@ tests/
     ├── recorded_calls.py     # RecordedToolCall builders
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
+    ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 

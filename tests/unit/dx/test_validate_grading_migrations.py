@@ -17,7 +17,8 @@ migration:
   unknown keys, the message naming the offending field.
 * ``combine``: the aggregation ``method`` is a closed set, and the two retired
   names that were declared but never dispatched are rejected naming the rule each
-  one meant.
+  one meant; a block that is not a mapping is rejected naming the file, the key and
+  the shape received.
 """
 
 from __future__ import annotations
@@ -469,7 +470,7 @@ def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Pat
 _WEIGHTS = {"state_checks": 1.0}
 
 
-def _write_combine(tmp_path: Path, combine: dict) -> Path:
+def _write_combine(tmp_path: Path, combine: object) -> Path:
     """Serialise the block: an indented string fixture lands ``method`` outside
     ``combine`` and every rejection below false-greens."""
     grading = tmp_path / "grading.yaml"
@@ -545,6 +546,35 @@ def test_validate_rejects_a_malformed_combine_block_beside_a_valid_method(
     """
     with pytest.raises(ValueError):
         validate_grading_yaml(_write_combine(tmp_path, combine))
+
+
+@pytest.mark.parametrize(
+    "combine",
+    [[{"method": "all_pass"}], "weighted", 3],
+    ids=["list", "string", "number"],
+)
+def test_validate_rejects_a_combine_block_that_is_not_a_mapping(tmp_path: Path, combine: object):
+    """The shape half of the same typo space, which the value gate reads past.
+
+    A block skipped here reports the pack valid and then fails the run inside
+    ``deep_merge`` with ``'list' object has no attribute 'items'``, naming neither the
+    file nor the key — and a retired method inside such a block never gets read at all.
+    """
+    grading = _write_combine(tmp_path, combine)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "'combine'" in message, message
+    assert type(combine).__name__ in message, message
+
+
+def test_validate_accepts_a_combine_key_with_nothing_under_it(tmp_path: Path):
+    """``combine:`` alone is the absent block, not a malformed one: every field falls
+    through to its default, which is what the loader's own merge does with it."""
+    validate_grading_yaml(_write_combine(tmp_path, None))
 
 
 def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path):

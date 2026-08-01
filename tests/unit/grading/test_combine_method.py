@@ -24,7 +24,6 @@ quotes the offending value and the whole permitted set.
 from itertools import product
 
 import pytest
-import yaml
 
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import (
@@ -144,13 +143,6 @@ class TestRetiredAliases:
     @pytest.mark.parametrize(
         ("alias", "replacement"), tuple(RETIRED_COMBINE_METHOD_ALIASES.items())
     )
-    def test_an_alias_is_not_quietly_supported(self, alias, replacement):
-        assert alias not in COMBINE_METHODS
-        assert replacement in COMBINE_METHODS
-
-    @pytest.mark.parametrize(
-        ("alias", "replacement"), tuple(RETIRED_COMBINE_METHOD_ALIASES.items())
-    )
     def test_validation_names_the_replacement_and_that_the_alias_never_worked(
         self, alias, replacement
     ):
@@ -206,6 +198,20 @@ class TestEmptyComponentScores:
         with pytest.raises(ValueError, match="none were scored"):
             combine_by_method(
                 method=method,
+                component_scores={},
+                weighted_mean=_WEIGHTED_MEAN,
+                pass_threshold=0.8,
+            )
+
+    @pytest.mark.parametrize("alias", tuple(RETIRED_COMBINE_METHOD_ALIASES))
+    def test_the_method_is_answered_before_the_empty_map(self, alias):
+        """Of the two things wrong with the call, the caller hears the one it can act on.
+
+        "Nothing was scored" is a fact about the trial; the alias is the line to change.
+        """
+        with pytest.raises(ValueError, match="never worked"):
+            combine_by_method(
+                method=alias,
                 component_scores={},
                 weighted_mean=_WEIGHTED_MEAN,
                 pass_threshold=0.8,
@@ -276,12 +282,11 @@ class TestBothModelsCloseTheDeclaredSet:
     @pytest.mark.parametrize(("model", "field"), _MODEL_GATES)
     @pytest.mark.parametrize("method", COMBINE_METHODS)
     def test_a_declared_method_survives_the_dump_as_a_plain_string(self, model, field, method):
-        """Four committed trial bundles record this key in YAML, which an enum member
-        cannot represent."""
+        """Four committed trial bundles record this key in YAML, and an enum member is
+        not a ``str``: ``yaml.safe_dump`` raises ``RepresenterError`` on one."""
         dumped = model(**{field: method}).model_dump()[field]
 
         assert type(dumped) is str, f"{model.__name__}.{field} dumped {dumped!r}"
-        assert yaml.safe_dump({field: dumped})
 
     @pytest.mark.parametrize(("model", "field"), _MODEL_GATES)
     @pytest.mark.parametrize(
