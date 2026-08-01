@@ -119,17 +119,19 @@ runner also ignores, so calls are recorded without the id grading joins on.
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,
 parsed by `extra="forbid"` Pydantic models, so a field the older image does not
 declare is a validation error rather than a dropped byte — and the engine emits
-`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block. A
-newer engine against an older image is therefore rejected at `RegisterTrial` for
-every such pack, with a Pydantic `extra_forbidden` error naming the field. See
+`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block and
+`transcript_rules.min_assistant_turns` on every pack with a `transcript_rules:`
+block. A newer engine against an older image is therefore rejected at
+`RegisterTrial` for every such pack, with a Pydantic `extra_forbidden` error naming
+the field. See
 [`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible) § "Runner-engine
 version lock (both directions)" for the full list of keys that bite and in which
 direction.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
-any `state_checks`-bearing pack — inside a registration failure the JSON payload will
-raise anyway.
+any pack bearing `state_checks` or `transcript_rules` — inside a registration failure
+the JSON payload will raise anyway.
 
 That is what an engine upgrade needs: rebuild the image from the same tree
 (`make docker-build-core`) or pin an image tag that matches. The gate sits at

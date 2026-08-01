@@ -121,6 +121,7 @@ from tolokaforge.runner.models import (
     TaskDescription,
     ToolExecutorIdentity,
     TranscriptEvaluationResult,
+    TranscriptRulesConfig,
 )
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
@@ -1427,28 +1428,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
         if transcript_rules_config:
-            # A timeline with no events is a trial that left no trace of itself:
-            # neither a conversational turn nor a tool call. Every rule would
-            # score 0.0 against evidence we do not have, so the keys are recorded
-            # as skipped and the component is left out of the combine.
-            if timeline.events:
-                logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-                # Pass the author-facing TranscriptRulesConfig as a dict; the
-                # grader decomposes its fields (must_contain / disallow_regex /
-                # max_turns / required_actions / communicate_info) into per-field
-                # sub-checks.
-                rules_dict = transcript_rules_config.model_dump()
-                transcript_result = evaluate_transcript_rules(timeline, rules_dict)
+            transcript_result, transcript_accounting = self._grade_transcript_rules(
+                trial_id, transcript_rules_config, timeline
+            )
+            accounted_keys.update(transcript_accounting)
+            if transcript_result is not None:
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
-                accounted_keys.update(transcript_result.accounted_keys)
-            else:
-                logger.info(
-                    f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
-                )
-                accounted_keys.update(
-                    dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
-                )
 
         # B.2) LLM JUDGE GRADING (if llm_judge configured) — runner-side read-only
         # rubric judge on the shared ToolCallingLoop. Returns per-criterion results
@@ -1656,6 +1642,52 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return llm_messages, build_trial_timeline(
             decode_transcript_wire(transcript), trial_context.recorded, termination_reason
         )
+
+    def _grade_transcript_rules(
+        self,
+        trial_id: str,
+        transcript_rules_config: TranscriptRulesConfig,
+        timeline: TrialTimeline,
+    ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
+        """Score the pack's transcript rules, returning ``(result, accounted keys)``.
+
+        A ``None`` result is the trial that left no trace of itself — a timeline
+        carrying neither a conversational turn nor a tool call — and declared no
+        activity floor: nothing is evaluated and the component is left out of the
+        combine.
+
+        A declared floor *is* evaluated on that timeline, because no events is
+        precisely the answer it asks for, while every other rule would score
+        against evidence the trial does not carry. So the floor alone reaches the
+        evaluator there and its siblings are recorded as skipped — the blanket skip
+        goes down first so the floor's own record survives it.
+        """
+        activity_floor = transcript_rules_config.min_assistant_turns
+        skipped_siblings: dict[str, KeyAccountingRecord] = {}
+        if timeline.events:
+            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
+            # The author-facing TranscriptRulesConfig as a dict; the grader
+            # decomposes its fields (must_contain / disallow_regex / max_turns /
+            # min_assistant_turns / required_actions / communicate_info) into
+            # per-field sub-checks.
+            rules_dict = transcript_rules_config.model_dump()
+        elif activity_floor is None:
+            logger.info(
+                f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
+            )
+            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
+        else:
+            logger.info(
+                f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
+                "(no messages or tool calls)"
+            )
+            rules_dict = TranscriptRulesConfig(min_assistant_turns=activity_floor).model_dump()
+            skipped_siblings = dict.fromkeys(
+                transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP
+            )
+
+        result = evaluate_transcript_rules(timeline, rules_dict)
+        return result, {**skipped_siblings, **result.accounted_keys}
 
     async def _grade_llm_judge(
         self,

@@ -774,14 +774,15 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 
 | Skip | Condition | Keys covered |
 |---|---|---|
-| `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so every rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key |
+| `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so the rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key **except** `min_assistant_turns`, which is evaluated there because absence is that key's answer |
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
 | `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
 | `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
 | `skipped: custom checks not enabled` | The pack wrote a `custom_checks` block but left `enabled` false, so the executor never runs | `custom_checks` |
 
 A degenerate trial therefore **scores badly rather than erroring** — the skip
-suppresses the component, and the recorded reason says why.
+suppresses the component unless a declared `transcript_rules.min_assistant_turns`
+scores it `0.0`, and the recorded reason says why either way.
 
 The ledger covers scored checks, so one skip is reported beside it rather than
 through it: a `state_checks.hash_weight` the fold never consulted — because only one

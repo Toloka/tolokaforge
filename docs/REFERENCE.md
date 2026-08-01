@@ -138,6 +138,7 @@ transcript_rules:
   must_contain: ["confirmation number"]
   disallow_regex: ["(?i)password"]
   max_turns: 40
+  min_assistant_turns: 1                   # opt-in floor: 0 turns fails the component
   tool_expectations:                       # graded on both substrates
     required_tools: ["db_update"]          # must have been called SUCCESSFULLY
     disallowed_tools: ["bash"]             # must not be called at ANY status

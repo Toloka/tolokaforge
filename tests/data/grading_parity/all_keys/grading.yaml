@@ -39,6 +39,7 @@ transcript_rules:
   disallow_regex:
     - 'password:\s*\S+'
   max_turns: 5
+  min_assistant_turns: 1
   tool_expectations:
     required_tools:
       - write_file

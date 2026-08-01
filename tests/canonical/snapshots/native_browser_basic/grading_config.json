@@ -21,6 +21,7 @@
     "communicate_info": [],
     "disallow_regex": [],
     "max_turns": 15,
+    "min_assistant_turns": null,
     "must_contain": [],
     "required_actions": [],
     "tool_expectations": {

@@ -310,6 +310,10 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
 
     Pins each author key the evaluators record: a typo in one of them would leave
     that key unaccounted and fail the RPC instead of grading.
+
+    The `5 / 6` fraction is also what pins the activity floor's "no row when met"
+    rule. The trial carries one assistant turn, so the declared floor of 1 is met
+    and contributes no seventh sub-check — a passing row would move this to 6 / 7.
     """
     grading = {
         "combine_method": "weighted",
@@ -320,6 +324,7 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
             "must_contain": ["shipped"],
             "disallow_regex": ["password"],
             "max_turns": 5,
+            "min_assistant_turns": 1,
             "tool_expectations": {"required_tools": [], "disallowed_tools": ["delete_widget"]},
             "required_actions": [
                 {
@@ -361,6 +366,38 @@ def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service,
     assert response.success is True, response.error
     assert response.grade.binary_pass is False
     assert response.grade.score == pytest.approx(0.0)
+    assert (
+        "transcript_rules.must_contain skipped: the trial's timeline carries no events"
+        in response.grade.reasons
+    )
+
+
+def test_degenerate_trial_still_grades_a_declared_activity_floor(runner_service, mock_grpc_context):
+    """The most degenerate trial there is must not escape a declared floor.
+
+    No messages and no tool history is exactly the answer `min_assistant_turns`
+    asks for, so the floor is evaluated where its siblings are skipped: the
+    component is `0.0` rather than absent from the combine, the reason names the
+    bound, the floor itself is never recorded as skipped, and the sibling's skip
+    note survives the split.
+    """
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"transcript_rules": 1.0},
+        "pass_threshold": 0.7,
+        "transcript_rules": {"min_assistant_turns": 1, "must_contain": ["done"]},
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_degenerate_floor:0", grading)
+
+    assert response.success is True, response.error
+    assert response.grade.binary_pass is False
+    assert response.grade.components.transcript_rules == pytest.approx(0.0)
+    assert "Assistant turn count 0 below min_assistant_turns of 1" in response.grade.reasons
+    # The blanket skip sweeps the whole subtree by key prefix, so the floor is the one
+    # member that must be carved out of it. Left in, the reasons would say the floor
+    # drove the verdict *and* was never evaluated.
+    assert "transcript_rules.min_assistant_turns skipped" not in response.grade.reasons
     assert (
         "transcript_rules.must_contain skipped: the trial's timeline carries no events"
         in response.grade.reasons

@@ -65,6 +65,7 @@ def _manifest_key(author_key: str) -> str:
 MUST_CONTAIN_KEY = _manifest_key("transcript_rules.must_contain")
 DISALLOW_REGEX_KEY = _manifest_key("transcript_rules.disallow_regex")
 MAX_TURNS_KEY = _manifest_key("transcript_rules.max_turns")
+MIN_ASSISTANT_TURNS_KEY = _manifest_key("transcript_rules.min_assistant_turns")
 TOOL_EXPECTATIONS_KEY = _manifest_key("transcript_rules.tool_expectations")
 REQUIRED_ACTIONS_KEY = _manifest_key("transcript_rules.required_actions")
 COMMUNICATE_INFO_KEY = _manifest_key("transcript_rules.communicate_info")
@@ -162,11 +163,13 @@ def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, Key
 
 
 def transcript_rules_author_keys() -> tuple[str, ...]:
-    """Every ledger key under ``transcript_rules``, for the blanket degenerate skip.
+    """Every ledger key under ``transcript_rules``, for the degenerate skip.
 
-    A trial whose timeline carries no events runs no per-field sub-check, so the
-    whole subtree is skipped as a unit. A site that did run records the per-key
-    constant instead.
+    A trial whose timeline carries no events is evidence for exactly one
+    transcript rule — the activity floor, whose answer absence supplies — so the
+    sole caller evaluates a declared ``min_assistant_turns`` and records the skip
+    over the rest. The whole subtree is returned regardless: a helper that
+    silently omitted a key would leave a future caller's skip incomplete.
     """
     return tuple(
         item.author_key for item in LEDGER_KEYS if item.author_key.startswith("transcript_rules.")
@@ -194,6 +197,7 @@ def accountable_author_keys() -> frozenset[str]:
             MUST_CONTAIN_KEY,
             DISALLOW_REGEX_KEY,
             MAX_TURNS_KEY,
+            MIN_ASSISTANT_TURNS_KEY,
             REQUIRED_ACTIONS_KEY,
             TOOL_EXPECTATIONS_KEY,
             COMMUNICATE_INFO_KEY,
