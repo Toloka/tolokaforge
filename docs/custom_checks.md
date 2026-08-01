@@ -5,9 +5,9 @@ declares a `checks.py` next to `task.yaml`, wires it in via `grading.yaml`,
 and the runner executes those checks over the trial's `CheckContext`
 (initial/final state + transcript + task metadata). Per-check results and
 an aggregate score land on the grade next to `state_checks`,
-`transcript_rules`, and `llm_judge`; the weight declared in
+`transcript_rules`, `trace_checks`, and `llm_judge`; the weight declared in
 `combine.weights.custom_checks` scales that score in the weighted final.
-See [GRADING.md](GRADING.md#custom-checks) for how the four components
+See [GRADING.md](GRADING.md#custom-checks) for how the five components
 combine.
 
 Use `custom_checks` for the scoring shape no declarative primitive
@@ -23,7 +23,7 @@ most tasks) and reserve `custom_checks` for the deterministic-Python gap.
 ## Schema
 
 `custom_checks:` is a sibling of `state_checks:` / `transcript_rules:` /
-`llm_judge:` under `grading.yaml`.
+`trace_checks:` / `llm_judge:` under `grading.yaml`.
 
 ```yaml
 custom_checks:

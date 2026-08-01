@@ -1,0 +1,22 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# The no-prefill primitive, LTLf not-A-until-B: nothing is written to the case
+# until the policy that governs it has been read.
+trace_checks:
+  constraints:
+    - id: nothing_was_written_before_the_policy_was_read
+      description: "the agent reads the refund policy before touching the case"
+      require:
+        absent_before:
+          forbidden:
+            kind: tool_call
+            tool: { equals: servicenow_csm_update_case }
+          anchor:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: search_policy }

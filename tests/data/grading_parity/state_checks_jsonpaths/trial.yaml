@@ -2,7 +2,6 @@ satisfying:
   messages:
     - role: assistant
       content: "Order O1 has been shipped."
-  tool_calls: []
   state:
     db:
       orders:
@@ -17,7 +16,6 @@ violating:
   messages:
     - role: assistant
       content: "Order O1 has been shipped."
-  tool_calls: []
   state:
     db:
       orders:

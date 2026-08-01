@@ -56,6 +56,21 @@ author-facing key is one `GradingKey` entry declaring three axes:
   against the module's own AST so naming a file that merely contains a test is
   rejected. `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
 
+`trace_checks` is the one component where parity is structural rather than
+maintained: both substrates call the same `evaluate_trace_checks` over the same
+timeline, so there is no second implementation to keep in step, and both sides of
+every entry in the family name that one function. The canonical suite still drives
+the two *integration points* — the core engine's `grade_trajectory` and the
+runner's `GradeTrial` — against one authored pack, because a substrate can reach a
+shared evaluator with a differently translated config, or not reach it at all.
+
+**The family is enumerated at leaf granularity**, one entry per constraint kind
+plus one for each per-constraint field, because the ten kinds are independently
+implementable: a kind evaluated on one substrate and skipped on the other is the
+realistic drift shape, and a single `trace_checks.constraints` entry would not
+see it. Each kind owns a fixture pack that must discriminate on both substrates,
+so partial per-constraint coverage cannot land green.
+
 [`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py)
 makes the manifest load-bearing. Adding a grading field to either substrate's
 config model without a manifest entry fails that suite naming the field; a scored
@@ -94,9 +109,10 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   nothing to evaluate.
 - **Every skip is recorded, not silent.** The `transcript_rules` keys other than
   `min_assistant_turns` are skipped when the trial's timeline carries no events,
-  `llm_judge` when it has no messages, `custom_checks` when the pack wrote the block
-  but left `enabled` off, and the `state_checks.hash` members the runner's hash
-  evaluator reads when `hash.enabled` is not set.
+  every `trace_checks.constraints.<kind>` key on that same timeline, `llm_judge`
+  when it has no messages, `custom_checks` when the pack wrote the block but left
+  `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
+  reads when `hash.enabled` is not set.
   `state_checks.hash.expected_state_hash` is a standing skip: it is declared
   `CORE_ONLY` because no runner path reads it (#693), so it is recorded as such
   whether or not hash grading ran — folding it into the family's outcome would report
@@ -221,6 +237,17 @@ on a citation:
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
   [Score Combination](#score-combination).
+- `trace_checks.constraints.weight`, `.on_missing`, `.within` — each still names a
+  pack in the parametrisation that drives its differential, so a key escaping the
+  scored-key lock without one is caught here. Each pack is authored so a build
+  that ignored the field would score its two trials *identically*: the weight pack
+  passes one of two differently-weighted constraints in each trial, the
+  `on_missing` pack pairs an unmatched anchor against a definite wrong order, and
+  the `within` pack moves one call in and out of the turn window.
+- `trace_checks` — the family root declares no field on either substrate, so it
+  has no differential of its own; what its enforcement rests on is its leaves',
+  and the clause asserts at least one member of the family is still reached by the
+  scored-key lock.
 
 Core's verdict there is its own: the fixture commits the `expected_state_hash` of its
 matching state, so `check_hash` produces the verdict in process. **The runner's is
@@ -248,8 +275,21 @@ declared without one.
 | Key | kind | coverage | enforcement |
 |---|---|---|---|
 | `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints.weight` / `.on_missing` / `.within` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
-This is the only `transcript_rules` key claiming score parity — the other six are
+The `trace_checks` rows are the only scored family where **every** member is
+differentially proven in-process, which is what one shared evaluator buys: there
+is no second implementation whose agreement has to be measured, only two
+integration points and one pack per leaf. The ten kinds are
+`present`, `absent`, `count`, `before`, `immediately_before`, `absent_before`,
+`absent_between`, `all_of`, `any_of`, `negate` — the same closed set the evaluator
+and the runtime ledger read, asserted equal across all three sources.
+
+`transcript_rules.min_assistant_turns` is the only `transcript_rules` key claiming
+score parity — the other six are
 `BOTH_SIGNAL_PARITY` (#685), because the core engine averages four always-present
 buckets where the runner takes a fraction of decomposed sub-checks, so the two
 magnitudes differ on a mixed pack. **Its parity rests on a different mechanism than
@@ -271,6 +311,21 @@ are structurally outside the enumeration — the manifest records nested dict ke
 as **declared data**, verified only to live inside a dict-typed field. And a green
 parity suite proves each key *discriminates*, not that its discrimination is
 *correct*.
+
+An author key living inside the **elements** of a `list[SomeModel]` field is the
+one nested position that is *not* declared data. The field walker treats such a
+field as a single leaf — its elements are the shape of one key's value, not
+separate keys — so an entry there names the list in `*_field` and a dotted
+`*_element_path` walked from the element model: `trace_checks.constraints.before`
+is `TraceChecksConfig.constraints` addressed at `require.before`. The canonical
+suite resolves every segment against the model the one before it holds, so a path
+naming a field of the wrong model fails naming that model. Several entries then
+share one field, which is why an element-addressed entry is not counted as
+*claiming* it — the claim is the position inside. Reading declaredness off an
+authored `grading.yaml` follows the same path and descends through the composite
+kinds, so a constraint kind written only inside an `all_of` counts as declared;
+descent stops outside a constraint kind, because a matcher's `args` keys are the
+author's own argument names.
 
 It also cannot see a key the two substrates read from **different evidence**. The
 manifest freezes config keys and field paths, not evaluation sources, so
@@ -746,7 +801,7 @@ runner is safe **for this key** (core-side `extra="ignore"`).
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Four keys carry the lock:
+being dropped. Five keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -757,22 +812,25 @@ being dropped. Four keys carry the lock:
 - `transcript_rules.min_assistant_turns`, which a runner image older than this release
   does not declare: the current engine emits it (as `null` when the pack declares no
   floor), so a **new engine against an old runner image** is rejected the same way.
+- `trace_checks`, a whole grading section a runner image older than this release does
+  not declare: the current engine emits it (as `null` when the pack declares no
+  constraints) on **every** pack, so a **new engine against an old runner image** is
+  rejected the same way, whether or not the pack grades a trajectory.
 - `combine_method`, whose declared value domain both gained and lost members in this
   release. The runner `GradingConfig` validates it against the closed set in
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
   rejected by an older image, and an **old engine** translating a name the set no
   longer holds is rejected by a current one.
 
-The first two bite on **every** pack carrying a non-empty `state_checks:` block and
-`min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, whether
-or not the pack declares the key, because the adapter emits all three
-unconditionally. `combine_method` bites only on a pack declaring an affected value —
-`weighted` and `all` cross in either direction. So `state_checks` and
-`transcript_rules` each require engine and runner image from the same release, and
-`make docker-build-core` is part of every engine upgrade that touches either block or
-runs a pack declaring `any`. (`db_hash_check` was never declared on the runner config
-at all, so no engine ever emitted it and it is not part of this lock — a populated
-`db_hash_check` is rejected core-side at config load.)
+The first two bite on **every** pack carrying a non-empty `state_checks:` block,
+`min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
+`trace_checks` on **every** pack at all — whether or not the pack declares the key,
+because the adapter emits all four unconditionally. `combine_method` bites only on a
+pack declaring an affected value — `weighted` and `all` cross in either direction. So
+a new engine requires a runner image from the same release for any pack, and
+`make docker-build-core` is part of every engine upgrade. (`db_hash_check` was never
+declared on the runner config at all, so no engine ever emitted it and it is not part
+of this lock — a populated `db_hash_check` is rejected core-side at config load.)
 
 **This lock is narrower than the proto3 rule that governs the rest of registration.**
 `engine_protocol_version` and `call_id` are proto message fields, which an older
@@ -789,6 +847,34 @@ narrower reason: such an engine drops `hash.weight` on the way to the wire, so a
 pack configuring a hash source *and* non-empty `jsonpaths` reaches the runner with
 nothing saying how to fold them, and the presence gate rejects it. That rejection is
 correct — the alternative is grading the trial by a rule the author never chose.
+
+### The `jsonpaths` assertion vocabulary
+
+One assertion names a `path` and **exactly one** comparison from a closed set of
+four:
+
+| operator | holds when |
+|---|---|
+| `equals` / `equals_ci` | the value at the path is equal, case-sensitively or not |
+| `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
+
+The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
+narrower than the fifteen [`trace_checks` operators](#operators): a second comparison
+at one path has no conjunctive reading and is almost always a typo, so **two
+operators on one assertion is a failed check**, not a conjunction. So is **no**
+operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
+passing as an existence check, because a strict-looking assertion that silently
+cannot fail is worse than none. A path that resolves to nothing is a failed check
+too. A path resolving to several values holds when **any** of them satisfies the
+comparison.
+
+**`path_glob` is a different assertion with a narrower vocabulary.** It matches
+written files by shell glob rather than the state by JSONPath — the way a
+file-writing task avoids asserting on a filename the agent chose — and the two
+substrates read it differently: core-side it applies any of the four operators to the
+matched entries of `state["filesystem"]`, while the runner routes it to a
+file-content evaluator that reads only `contains_ci`. Write `path_glob` with
+`contains_ci` for a check that means the same thing wherever the trial was graded.
 
 ### Folding the hash verdict with `jsonpaths`
 
@@ -1020,6 +1106,389 @@ call status. See [Substrate Parity](#substrate-parity).
 requires a runner image built from the same release — `RegisterTrial` rejects it
 otherwise. Old engine + new runner is safe **for this key** (core-side
 `extra="ignore"`).
+
+---
+
+## Trace Checks
+
+`trace_checks` states conditions on **what the agent did and in what order**,
+evaluated over the [trial event timeline](#trial-event-timeline). Where
+`transcript_rules` asks flat, unordered, exact-equality presence questions,
+`trace_checks` expresses ordering, scoped negation, non-equality argument
+predicates, nested argument paths, counting, and a call's status or result.
+
+**Both substrates score it through one function.** `evaluate_trace_checks`
+(`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
+`grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
+already builds, so the component score does not depend on which substrate graded
+the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks` and
+are written inline in `grade.yaml` under `trace_check_results`.
+
+**A trial whose timeline carries no events leaves the component unscored.** Every
+constraint would otherwise be answered by evidence the trial does not have. The
+runner records that as a skip against each declared constraint kind, and — since
+a component the pack configures but nothing scores is not folded in — a pack
+weighted entirely on `trace_checks` fails such a trial rather than passing it.
+The guard against a trial that *does* carry events but should not have counted as
+work is `transcript_rules.min_assistant_turns`, which is a separate declaration.
+
+**Records-less bundles read fewer fields.** `status` and `executor` come from the
+tool-call record alone, so on a bundle re-graded without one a matcher reading
+either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatched
+— a named failing sub-check, never a pass in the agent's favour.
+
+### The config surface
+
+```yaml
+trace_checks:
+  constraints:
+    - id: lookup_before_denial                  # unique within the pack
+      description: "payment looked up before the duplicate-refund case is denied"
+      weight: 2.0                               # default 1.0
+      on_missing: fail                          # fail (default) | pass
+      within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
+      require:
+        before:
+          left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: billing_api_get_payment },
+                                               args: { payment_id: { equals: "PAY-664306" } } } }
+          right: { quantifier: first, match: { kind: tool_call, tool: { equals: servicenow_csm_update_case },
+                                               args: { u_resolution_code: { equals: denied_ineligible } } } }
+```
+
+`require` carries **exactly one** constraint kind, and each kind's value is that
+kind's own payload. Two conditions are an `all_of` over two expressions. Every
+model is `extra="forbid"`, so a misspelled operator, kind or matcher field fails
+at `tolokaforge validate` rather than grading as unset.
+
+### Matchers
+
+`kind` is required on every matcher and nothing is inferred from which predicates
+are present, so what a matcher selects is readable from the YAML. Which fields
+each kind may carry a predicate on:
+
+| `kind` | matchable |
+|---|---|
+| `tool_call` | `tool`, `executor`, `args` (nested paths), and `status` / `result` **read from the paired tool result** |
+| `tool_result` | `tool`, `executor`, `status`, `result` |
+| `assistant_message` | `text` |
+| `user_message` | `text` |
+
+A predicate on a field the kind never carries is a **load error**. That is what
+makes the timeline's rule — a predicate over a `None` field is unmatched, never
+vacuously true — safe: without it an author's typo produces a silently unmatchable
+matcher, and the default `on_missing` reports that as the agent's failure.
+
+`kind: tool_call` selecting on its own outcome is the only way to write "a failed
+call to X with argument Y", because `arguments` live on the call event and
+`status` on its result. A matched `tool_call` contributes the **call event's**
+position to ordering, so `before` means "requested before".
+
+`args` addresses nested argument paths by dotted segments, so
+`args: { body.resolution_path: { exists: true } }` reaches inside a request body.
+
+**`latency_seconds` is not matchable.** Wall time is not compared across
+substrates — it is excluded from the timeline parity suite's compared fields — so
+grading must not depend on it.
+
+### Operators
+
+A predicate is the **conjunction of its operators**: every one it declares must
+hold, so `{ gt: 0, lt: 100 }` is a range. Fifteen operators:
+
+| operator | holds when |
+|---|---|
+| `equals` / `not_equals` | the value is (is not) equal |
+| `equals_ci` | a string equal to it, case-insensitively |
+| `contains` / `contains_ci` | the value contains it, case-sensitively or not |
+| `regex` | the pattern **searches** the value — unanchored, and only a string matches |
+| `gt` / `gte` / `lt` / `lte` | the value is a real number and the comparison holds |
+| `in_` / `not_in` | the value is (is not) a member of the list |
+| `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
+| `exists` | the field is present (`exists: false` is the absence primitive) |
+
+`contains` **recurses**: against a list, tuple or set it holds when any element
+contains the needle, against a dict when any **value** does — keys are never
+searched — and against two non-strings it falls back to equality. So
+`args: { items: { contains: W1 } }` matches a list holding `W1` and a dict holding
+it as a value.
+
+**The numeric comparisons read a real number and nothing else.** A `bool` is not a
+number here and neither is a numeric *string*, so `{ gt: 0 }` is false against
+`true` and against `"5"` — a JSON body that quotes its numbers needs `equals` on the
+string, not a range. `len_gt` / `len_gte` are the same shape one level up: they hold
+only where the value has a length (a string, list, dict), so `{ len_gt: 0 }` reads
+"non-empty" and is false against a number.
+
+Two limits worth meeting here rather than in a silently ignored predicate:
+
+- **`equals: null` is not expressible.** An operator counts as declared when its
+  value is not `null`, which is what keeps a predicate meaning the same thing after
+  the gRPC round trip that writes every unset field as `null`. So "this argument is
+  JSON `null`" cannot be written; `exists: false` covers the far commoner "the
+  argument is absent".
+- **There is no `not_contains` / `not_regex`.** A predicate cannot negate a
+  substring or pattern match — `negate` operates on a whole constraint, not on one
+  predicate — so "select the calls whose url does *not* contain `/admin`" is not a
+  *selection*. "Never another customer's record" is `not_equals` on the argument,
+  which does ship.
+
+There is no `absent` operator — it is `exists: false`, and an operator named
+`absent` beside a *constraint* named `absent` is an ambiguity the vocabulary does
+not need. A predicate declaring **no** operator is rejected at load.
+
+### What a matcher resolves to: matched, and undecidable
+
+Resolving a matcher yields two sets — the events that **definitely** match, and the
+events **nobody can decide**. Three rules govern them.
+
+**A predicate over a `None` field is unmatched, never vacuously true.** Only
+`exists` reads a `None`; every other operator is false there. So
+`args: { refund_id: { not_equals: R-1 } }` does **not** hold for a call that carried
+no `refund_id` at all — an absent argument satisfies no negative predicate. Write
+`exists: false` for "the argument is absent".
+
+**A `tool_call` matcher reads `status` and `result` through the result paired to it
+by `call_id`.** The call event carries neither of its own — a `tool_call` event
+always has `status: None` — so the pairing is what decides a status predicate, and
+a call the trial recorded no result for has no outcome to read at all.
+
+**Evidence only the tool-call record could supply makes an event undecidable.**
+`executor` and `status` come from that record alone. An event whose every other
+predicate passes, but whose record-only evidence is missing, is neither a match nor
+a definite miss: one completion of the record would select it and another would
+not. Two ordinary states reach it — a bundle re-graded without its tool-call record,
+and a call the agent declared that never executed. **Nothing may read an
+undecidable event as a pass in the agent's favour** — the hazard
+[G4](#guarantees) names when it says dropping an attempted call makes an `absent`
+or `count` constraint wrong in the agent's favour.
+
+Undecidability is scoped **to the matcher**, never to the event kind:
+
+- an event whose other predicates already fail is *decided* — it cannot match at
+  any status — so an unexecuted call to a tool the matcher does not name changes
+  nothing;
+- a matcher over a fully recorded call is *decided*, because the pairing answers
+  it.
+
+### The constraint vocabulary — ten members
+
+| kind | payload, by position | meaning | `on_missing` anchor |
+|---|---|---|---|
+| `present` | `match` | at least one event matches (LTLf `F A`) | rejected |
+| `absent` | `match` | no event matches (`G ¬A`) | rejected |
+| `count` | `match`, `min`, `max` | the match count is within the bounds | rejected |
+| `before` | `left`, `right` | ordering under both quantifiers | both sides |
+| `immediately_before` | `left`, `right`, `among` | adjacency in the named view (`A ∧ X B`) | both sides |
+| `absent_before` | `forbidden`, `anchor` | `¬A U B` — the no-prefill primitive | `anchor` |
+| `absent_between` | `forbidden`, `start`, `end` | nothing forbidden inside the window | `start`, `end` |
+| `all_of` | `list` of expressions | conjunction | delegated |
+| `any_of` | `list` of expressions | disjunction | delegated |
+| `negate` | one expression | negation | delegated |
+
+`on_missing` is rejected on `present`, `absent` and `count`: their verdict *is*
+the match, so a policy for "the matcher found nothing" would answer the question
+the constraint asks.
+
+There is no `after`, because it reduces exactly:
+
+> `after(left = L:qL, right = R:qR)` ≡ `before(left = R:qR, right = L:qL)`
+>
+> The two sides swap position; each quantifier **rides with its own matcher** and
+> is *not* swapped.
+
+### Quantifiers, and the closed form
+
+`Quantifier = {any, all, first, last}`, required on every side of `before` and
+`immediately_before`. `first` / `last` reduce a side to its earliest / latest
+match; `any` / `all` quantify over the side's matched set. Every combination
+reduces to one comparison of extremes:
+
+| `left` | `right` | `before` holds iff |
+|---|---|---|
+| `any` | `any` | `min(L) < max(R)` |
+| `any` | `all` | `min(L) < min(R)` |
+| `all` | `any` | `max(L) < max(R)` |
+| `all` | `all` | `max(L) < min(R)` |
+| `first` | *q* | as `any`/*q* with `L := {min(L)}` |
+| `last` | *q* | as `all`/*q* with `L := {max(L)}` |
+
+and symmetrically on the right: `right: first` reduces `R := {min(R)}`,
+`right: last` reduces `R := {max(R)}`.
+
+`immediately_before` reads the same four quantifiers over the same two sides, but
+the relation between a left match and a right match is adjacency in the `among`
+view rather than order, so it has **no** min/max closed form. It is the quantified
+reading of the pairs: `any` / `any` is "some left match is immediately followed by
+some right match", `all` / `any` is "every left match is", `any` / `all` is "one
+left match is immediately followed by every right match" — satisfiable only where
+the right side matched exactly once — and `first` / `last` reduce their side to one
+event before the pair is read. Where ordering and adjacency disagree, adjacency is
+the stricter: `min(L) < max(R)` holds for any interleaving, while adjacency holds
+only for the pairs the view puts side by side.
+
+**Two side types.** A quantifier is a per-side field, never fused into the kind:
+
+- `MatcherSide` = `{quantifier: any | all | first | last, match}` — the two sides
+  of `before` and `immediately_before`, where the position is genuinely
+  quantified.
+- `AnchorSide` = `{quantifier: first | last, match}` — a window anchor. `any` and
+  `all` are **rejected at load**: over a prefix or an interval `any` collapses
+  onto `first` and `all` onto `last`, so admitting all four would ship two
+  verdicts under four spellings. One selected anchor is also what makes a window
+  a single interval rather than a cross-product of every start against every end.
+- `forbidden` is a **bare matcher with no quantifier**: "no A occurs in the
+  window" is inherently universal over A, so a quantifier there names nothing.
+
+**The window rules:**
+
+- `absent_before` — the window is `[0, anchor.position)`, every position strictly
+  before the selected anchor.
+- `absent_between` — the window is `(start.position, end.position)`, strictly
+  between the selected anchors.
+- An **inverted or empty** window (`start.position >= end.position`) is
+  *unmatched*, not vacuously true: the anchors did not occur in the declared
+  order, so `on_missing` decides and defaults to a named failure.
+
+### `immediately_before` requires an explicit `among`
+
+Closed set: `tool_calls`, `tool_results`, `messages`, `events`. **There is no
+default.** Events interleave inside a turn — a call's own result sits between it
+and the next call — so every candidate default is wrong for some common intent:
+`tool_calls` cannot express confirm-before-acting, where one side is a message,
+and `events` cannot express two consecutive calls.
+
+### `within` — the turn window
+
+`{first_turn, last_turn}`, inclusive, over the timeline's `turn_index`,
+restricting every matcher in that constraint. The opening user prompt **shares
+turn 0** with the first assistant turn, so `first_turn: 0` includes it. "Before
+the first user message" is therefore not expressible as a window — that window is
+always empty — and the intent is `absent_before`.
+
+### Matching a result is scoped to successful calls
+
+This scoping exists because of #717. A matcher carrying a `result` predicate must
+also carry a `status` predicate whose **only** operator is `equals`, valued
+`success`. Any other status predicate —
+`not_equals: error`, `in_: [success, timeout]`, `exists: true`, or none at all —
+is rejected at load naming #717.
+
+A successful call's result text is byte-identical across substrates and pinned by
+the timeline parity suite. A **failed** call's text is not: the two substrates
+word the same failure differently (#717). So a result predicate is admitted only
+where portability holds. To assert that a call failed, match on `status` — which
+agrees everywhere — rather than on the failure text.
+
+### `on_missing` — what an unmatched anchor decides
+
+A side or anchor that matched **nothing** leaves the constraint's question unasked:
+`before` has no ordering to check, `absent_between` has no window. That is not the
+same as the condition failing, so it is decided by `on_missing`, which defaults to
+**`fail`** — a named failing sub-check saying which position selected no event.
+
+The default is `fail` because the alternative is a vacuous pass, and a matcher that
+selects nothing is far more often an author's typo or an agent that never got
+started than a condition genuinely satisfied. `on_missing: pass` is the explicit
+opt-in for "this constraint only applies when the anchor occurred".
+
+`on_missing` is rejected at load on `present`, `absent` and `count`, whose
+verdicts *are* the match. On `present` the pair would be an always-pass check —
+unmatched passes by the policy, matched passes by the constraint — so the load
+error is what stops a declaration that cannot fail from being written.
+
+### When a constraint cannot be decided
+
+A matcher yields definitely-matching events and
+[undecidable](#what-a-matcher-resolves-to-matched-and-undecidable) ones. A
+constraint is decided only when **every** completion of the undecidable evidence
+reaches the same verdict; otherwise it is **undecided**, which is a failing
+sub-check naming the constraint and the evidence the trial does not carry.
+
+Worked, over *d* definite matches and *u* undecidable ones:
+
+| constraint | verdict |
+|---|---|
+| `present` | passes at `d >= 1` — **even with undecidables present** — fails at `d = u = 0`, undecided at `d = 0 < u` |
+| `absent` | fails at `d >= 1`, passes at `d = u = 0`, undecided at `d = 0 < u` |
+| `count` | passes when every count in `[d, d + u]` is within the bounds, fails when none is, undecided otherwise |
+| `before`, `immediately_before`, `absent_before`, `absent_between` | decided when every reading of each side agrees; undecided otherwise |
+| `all_of`, `any_of`, `negate` | Kleene: a conjunction with a failing branch fails whatever the undecided branch would have said, a disjunction with a holding branch passes, and otherwise an undecided branch makes the composite undecided |
+
+Undecided is not a pass in the agent's favour and not an over-fail either: definite
+evidence answers the question wherever it can. The usual way to reach it is a
+bundle re-graded without its tool-call record, where every `status` and `executor`
+predicate is unreadable — which is a real limit on grading a `trace_checks` pack
+from a recorded bundle, not a defect to work around.
+
+### Weighting the constraints
+
+The component score is `Σ(weight · passed) / Σ(weight)`, `weight` defaulting to
+`1.0`, so a pack that omits every weight scores the plain fraction of constraints
+that passed. `weight` must be **positive**: a zero weight is a declared check that
+contributes to neither the numerator nor the denominator, and "evaluated but not
+scored" is what `severity: gate` (#680) is for.
+
+Prefer uniform weights. Reach for `weight` when migrating an already-weighted
+criterion, not to express that one condition feels more important — a weight map
+tuned until the numbers look right is a grader fitted to the trajectories it was
+tuned on. The same guidance the rubric weights carry applies here.
+
+**`any_of` is not multi-path grading.** A disjunction over flat constraints lets an
+agent satisfy half of one route and half of another: `any_of: [A_step1, B_step1]`
+combined with `any_of: [A_step2, B_step2]` passes for an agent that did `A_step1`
+and `B_step2`, which is neither route. Grading genuinely alternative routes needs
+the paths declared as wholes, which is #680's `alternatives`.
+
+**Every component the pack configures needs a weight of its own.** A configured
+component absent from `combine.weights` is dropped from the core engine's fold and
+folded in by the runner at an invented `1.0` (#744), so the two substrates grade the
+same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` holds
+every shipped example pack to that, reading the combine that is *effective* after
+the project layer merges.
+
+### A worked pack
+
+[`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
+grades the process alongside the substrate. Its three constraints are the three
+shapes an author reaches for most, and each one is written so a plausible wrong
+trajectory fails it and the other two pass:
+
+| constraint | kind | the wrong process it catches |
+|---|---|---|
+| the query rides in the `POST /search` body | `present` over `args: { json.q: { len_gt: 0 } }` | the query went somewhere other than the body the service reads |
+| the policy is read before the case is written | `before`, `first` / `first` | the resolution was recorded first and justified afterwards |
+| the delivery is not annotated before the policy read | `absent_before` | the agent guessed the path and wrote it onto the delivery |
+
+The first is the assertion `transcript_rules` cannot express at all: it matches a
+**nested argument path** inside the request body, where `required_actions` compares
+whole argument values for exact equality.
+
+### Declared limits, and what owns each
+
+Named here so an author meets them in the docs rather than in a check that quietly
+does nothing. Each is a separate issue's to close; none is worked around in the
+evaluator.
+
+| limit | owner |
+|---|---|
+| Tool names are not checked against the task's tool set, argument names not against the tool's JSON schema, and a `regex` is not compiled until grading | #679 |
+| `severity: gate` and `alternatives` — a check that must hold without being scored, and genuinely alternative routes | #680 |
+| Two arguments on two different calls cannot be correlated (`this call's id equals that call's id`) | #681 |
+| A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
+| Migrating an existing rubric criterion into a constraint | #683 |
+| `executor` never distinguishes a user-side call, because no code path builds one | #688 |
+| A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
+| A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
+
+Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable
+and stays so, because it is not compared across substrates.
+
+One cost shape worth knowing when authoring: `absent_between` evaluates the
+product of its `start` readings, its `end` readings and its `forbidden` readings,
+so on a timeline where all three matchers are undecidable its work grows cubically
+in the number of undecidable events. Trials in the size range the harness produces
+stay well inside that, and a records-present timeline has no undecidable events at
+all.
 
 ---
 
@@ -1258,8 +1727,7 @@ Weights act at **two distinct levels**, and they compose multiplicatively:
    `Σ(weight · score) / Σ(weight)` → a single `llm_judge` score in `[0, 1]`.
    Required criteria are gates, not weighted contributors.
 2. **`weights.llm_judge`** (top-level `combine`) — scales that whole judge
-   component against `state_checks`, `transcript_rules`, and `custom_checks` in
-   the final-score formula below.
+   component against the other components in the final-score formula below.
 
 So a criterion's pull on the final score is `(its weight / Σ judge weights) ×
 weights.llm_judge / Σ all weights`. Tune *within-rubric* importance with
@@ -1289,7 +1757,7 @@ scored as it was). See [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md).
 
 The `custom_checks` component runs author-written Python `@check`
 functions from a pack's `checks.py`. It's the deterministic-Python gap
-the other three components don't express: arithmetic over final DB
+the other four components don't express: arithmetic over final DB
 rows, invariants that span multiple tables, transcript patterns tied to
 computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
 `CheckSkipped`; per-check results ride the wire as `CustomCheckResult`
@@ -1534,8 +2002,8 @@ empty where the runner's is scored. The canonical differential therefore proves 
 dispatch over deterministic components, which is the whole of what is provable for
 this key.
 
-`combine_method` is one of the three keys that lock an engine to a runner image built
-from the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
+`combine_method` is one of the keys that lock an engine to a runner image built from
+the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
 § "Runner-engine version lock (both directions)".
 
 The `weighted` mean:
@@ -1543,9 +2011,10 @@ The `weighted` mean:
 ```
 final_score = (state_score       * W_state
              + transcript_score  * W_transcript
+             + trace_score       * W_trace
              + judge_score       * W_judge
              + custom_score      * W_custom)
-              / (W_state + W_transcript + W_judge + W_custom)
+              / (W_state + W_transcript + W_trace + W_judge + W_custom)
 
 binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion gated)
 ```
@@ -1555,9 +2024,36 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
 as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
 declares no weight for, where the runner includes it at an invented `1.0` — the
-divergence tracked by #744 above. A `custom_checks`-only pack whose score comes
-back absent still fails loud (empty active set with a configured `custom_checks`
-weight ⇒ `(0.0, False)`, not a silent `(1.0, True)`).
+divergence tracked by #744 above.
+
+**Configured but unevaluated fails loud, for every component.** A component is
+configured when `combine.weights` gives it a weight **and** the pack writes its
+`grading.yaml` section. If every configured component then comes back
+unevaluated, the trial scores `(0.0, False)` rather than a silent `(1.0, True)` —
+so a pack weighted entirely on one component that never ran fails instead of
+passing on nothing. A weight with no matching section is a different case: that
+pack is read as declaring no grading at all and passes by default, and the two
+substrates disagree on it (**#758**).
+
+### What a component is
+
+`GRADE_COMPONENTS` in
+[`tolokaforge/core/grading/grade_components.py`](../tolokaforge/core/grading/grade_components.py)
+is the single enumeration of the grading components, and every site that has to
+name them all reads it: the weighted fold on both substrates, the
+configured-but-unevaluated check, the wire message, and the lowering of a wire
+grade back into scores. Each entry declares four names for one component — the
+`combine.weights` key (which is also the proto field and the wire dict key), the
+`grading.yaml` section that configures it, the core `GradeComponents` attribute,
+and the runner's `*_score` attribute. `state_checks` declares no runner
+attribute: the runner has no single field for it, because hash, JSONPath and DB
+probes are folded into that slot first (see
+[Substrate Grading](#substrate-grading-state_checksdb_probes)).
+
+The five components are `state_checks`, `transcript_rules`, `trace_checks`,
+`llm_judge` and `custom_checks`. Adding a sixth means adding an entry; the
+canonical suite fails a registry that disagrees with the core model, the wire
+descriptor, the runner's fields or the config sections.
 
 ### Weighting Strategies
 

@@ -340,6 +340,22 @@ message Grade {
   // judge ran). The Runner runs the judge's LLM, so this is grading spend,
   // separate from the agent's usage.
   JudgeReport judge_report = 9;
+
+  // Per-constraint trace-check verdicts (empty unless the pack declared
+  // trace_checks and the timeline carried events). Small and scannable, so the
+  // Host writes it inline in grade.yaml rather than to a sidecar. A payload the
+  // Host cannot read fails the grade parse instead of being dropped: nothing
+  // else records which constraint failed.
+  repeated TraceConstraintResult trace_checks = 10;
+}
+
+message TraceConstraintResult {
+  string id = 1;                        // unique within the pack's trace_checks block
+  string kind = 2;                      // one of the ten constraint kinds
+  bool passed = 3;
+  double weight = 4;                    // the author's weight, as it entered the fold
+  string message = 5;                   // empty on a pass
+  repeated int32 matched_positions = 6; // timeline positions, resolved in trajectory.yaml
 }
 
 message CriterionResult {
@@ -380,6 +396,10 @@ message GradeComponents {
 
   // Custom Python checks score
   double custom_checks = 4;
+
+  // Trace checks score (temporal constraints over the trial's event timeline).
+  // Explicit presence, unlike the four fields above — see the note below.
+  optional double trace_checks = 5;
 }
 
 // =============================================================================
@@ -727,6 +747,29 @@ return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 ```
 
 All components (DB Service, adapters, grading engine) MUST use this exact algorithm for hash comparison to work correctly.
+
+### Component scores on the wire
+
+`GradeComponents` carries one score per grading component, and "not evaluated"
+has to be distinguishable from a real `0.0` — a scored zero is a failing trial,
+an unevaluated component is excluded from the fold entirely.
+
+`state_checks`, `transcript_rules`, `llm_judge` and `custom_checks` encode it as
+the sentinel **`-1.0`**. `trace_checks` uses **explicit presence** (proto3
+`optional`) instead: it was added after those four, so a runner image predating
+it omits the field, and proto3 would decode that omission as `0.0` — recording a
+scored zero for a runner that cannot evaluate trace checks at all. The
+`RegisterTrial` version lock does not cover this direction, because a newer
+engine registers happily against an older runner. `include_agent_system_prompt`
+on `JudgeReport` carries the same reasoning for the same reason.
+
+The host reads presence, not just the value, so three things all reach `None`:
+the `-1.0` sentinel, an absent `components` submessage, and a presence-carrying
+field the sending runner never set. A `trace_checks` that is *present* and `0.0`
+is a real failing score and survives as `0.0`. Which field carries which score
+is declared once in
+[`GRADE_COMPONENTS`](../tolokaforge/core/grading/grade_components.py); see
+[GRADING.md § What a component is](GRADING.md#what-a-component-is).
 
 ### GradeTrial Error Semantics
 

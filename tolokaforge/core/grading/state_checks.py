@@ -9,6 +9,7 @@ from typing import Any, Union
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import canonical_number
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
@@ -110,27 +111,6 @@ class StateChecker:
             return actual.casefold() == expected.casefold()
         return actual == expected
 
-    def _contains(self, haystack: Any, needle: Any, ci: bool = False) -> bool:
-        """
-        Recursive contains check used by `contains` and `contains_ci`.
-        - Strings: substring match
-        - Lists/Tuples/Sets: any element recursively contains/matches
-        - Dicts: any value recursively contains/matches
-        - Scalars: exact match
-        """
-        if isinstance(haystack, str) and isinstance(needle, str):
-            if ci:
-                return needle.casefold() in haystack.casefold()
-            return needle in haystack
-
-        if isinstance(haystack, (list, tuple, set)):
-            return any(self._contains(item, needle, ci) for item in haystack)
-
-        if isinstance(haystack, dict):
-            return any(self._contains(v, needle, ci) for v in haystack.values())
-
-        return self._eq(haystack, needle, ci=ci)
-
     def check_jsonpaths(
         self, state: dict[str, Any], assertions: list[dict[str, Any]]
     ) -> tuple[float, list[str]]:
@@ -150,9 +130,8 @@ class StateChecker:
         - ``contains_ci``: substring (case-insensitive)
 
         Assertions with an unrecognized operator (e.g. ``op: gte`` /
-        ``expected: 5``) are treated as **failed** with an actionable reason —
-        previously they silently satisfied as long as the path existed, turning
-        strict-looking assertions into no-ops.
+        ``expected: 5``) are treated as **failed** with an actionable reason,
+        because a strict-looking assertion that cannot fail is worse than none.
 
         Args:
             state: Final environment state
@@ -253,7 +232,7 @@ class StateChecker:
                 elif expected_contains is not None:
                     # Contains check (case-sensitive)
                     for value in match_values:
-                        if self._contains(value, expected_contains, ci=False):
+                        if contains(value, expected_contains, ci=False):
                             found_match = True
                             satisfied += 1
                             break
@@ -267,7 +246,7 @@ class StateChecker:
                 elif expected_contains_ci is not None:
                     # Contains check (case-insensitive string compare)
                     for value in match_values:
-                        if self._contains(value, expected_contains_ci, ci=True):
+                        if contains(value, expected_contains_ci, ci=True):
                             found_match = True
                             satisfied += 1
                             break
@@ -279,12 +258,10 @@ class StateChecker:
                         )
 
                 else:
-                    # No recognized operator — treat as FAILED with an actionable
-                    # reason. Previously this branch silently satisfied any assertion
-                    # whose JSONPath existed, so a misspelled or unsupported operator
-                    # (e.g. ``op: gte`` / ``expected: 5``) turned a strict-looking
-                    # assertion into a no-op. Fail loud and name which operators the
-                    # checker actually consumes so the author can fix it.
+                    # A misspelled or unsupported operator (``op: gte`` /
+                    # ``expected: 5``) would otherwise turn a strict-looking assertion
+                    # into one that passes wherever the path exists, so name the
+                    # operators the checker consumes and fail.
                     unknown_keys = sorted(
                         k for k in assertion if k not in {"path", "path_glob", "description"}
                     )

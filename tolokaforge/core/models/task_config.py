@@ -21,6 +21,7 @@ from tolokaforge.runner.models import (
     JudgeCustomization,
     LLMJudgeConfig,
     ToolExpectations,
+    TraceChecksConfig,
 )
 
 __all__ = [
@@ -475,6 +476,7 @@ class GradingConfig(BaseModel):
     combine: GradingCombineConfig
     state_checks: StateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
+    trace_checks: TraceChecksConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
 

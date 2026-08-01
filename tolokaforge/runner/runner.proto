@@ -261,6 +261,11 @@ message Grade {
   // failed and account for grading cost. Populated for both COMPLETED and
   // ERRORED runs (an errored judge still burned tokens worth recording).
   JudgeReport judge_report = 9;
+
+  // Per-constraint trace-check verdicts (empty unless the pack declared
+  // trace_checks and the timeline carried events). Small and scannable, so the
+  // host writes it inline in grade.yaml rather than to a sidecar.
+  repeated TraceConstraintResult trace_checks = 10;
 }
 
 // The rubric judge's own accounting + audit transcript (see docs/RUBRIC_GRADING_DESIGN.md
@@ -362,6 +367,33 @@ message GradeComponents {
 
   // Custom Python checks score
   double custom_checks = 4;
+
+  // Trace checks score (temporal constraints over the trial's event timeline).
+  // Explicit presence (optional) rather than the -1.0 sentinel the four fields
+  // above use: proto3 scalars have no presence, so a runner image predating
+  // this field would decode as 0.0 and the host would record a scored zero
+  // where the truth is "this runner cannot evaluate trace checks". The
+  // RegisterTrial version gate does not cover this direction — a new engine
+  // registers happily against an older runner. Absent means not evaluated;
+  // present -1.0 also means not evaluated (a runner that has the field but
+  // scored nothing).
+  optional double trace_checks = 5;
+}
+
+message TraceConstraintResult {
+  // Constraint id, unique within the pack's trace_checks block
+  string id = 1;
+  // Which of the ten constraint kinds this result is for
+  string kind = 2;
+  bool passed = 3;
+  // The author's weight on this constraint, as it entered the component fold
+  double weight = 4;
+  // Empty on a pass; names the unmatched anchor, the failed condition, or the
+  // evidence the trial does not carry
+  string message = 5;
+  // Timeline positions the constraint's matchers selected — an event is looked
+  // up by position against trajectory.yaml
+  repeated int32 matched_positions = 6;
 }
 
 message CustomCheckResult {

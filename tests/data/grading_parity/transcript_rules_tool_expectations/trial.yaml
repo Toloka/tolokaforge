@@ -2,22 +2,22 @@ satisfying:
   messages:
     - role: assistant
       content: "Cancelled order O1."
-  tool_calls:
-    - tool_name: cancel_order
-      executor: agent
-      status: success
-      arguments:
-        order_id: O1
+      tool_calls:
+        - tool_name: cancel_order
+          executor: agent
+          status: success
+          arguments:
+            order_id: O1
   state: {}
 
 violating:
   messages:
     - role: assistant
       content: "Removed the customer record instead."
-  tool_calls:
-    - tool_name: delete_customer
-      executor: agent
-      status: success
-      arguments:
-        customer_id: C1
+      tool_calls:
+        - tool_name: delete_customer
+          executor: agent
+          status: success
+          arguments:
+            customer_id: C1
   state: {}

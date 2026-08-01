@@ -1,0 +1,31 @@
+# One constraint passes in each trial, and they are not the same one. A fold
+# that ignored the authored weights would score both 0.5 and discriminate nothing.
+satisfying:
+  messages:
+    - role: user
+      content: "What is my balance?"
+    - role: assistant
+      content: "Verifying who I am speaking to first."
+      tool_calls:
+        - tool_name: verify_identity
+          executor: agent
+          status: success
+          arguments: { customer_id: "CUS-9" }
+          output: '{"verified": true}'
+    - role: assistant
+      content: "Your balance is 42.00."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "What is my balance?"
+    - role: assistant
+      content: "Your balance is 42.00. Noting the contact."
+      tool_calls:
+        - tool_name: log_contact_note
+          executor: agent
+          status: success
+          arguments: { customer_id: "CUS-9", note: "balance query" }
+          output: '{"logged": true}'
+  state: {}

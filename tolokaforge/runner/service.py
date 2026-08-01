@@ -54,10 +54,12 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -102,7 +104,7 @@ from tolokaforge.runner.grading_ledger import (
     JSONPATHS_KEY,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
-    NO_TRANSCRIPT_INPUT_SKIP,
+    NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
     transcript_rules_author_keys,
@@ -120,6 +122,8 @@ from tolokaforge.runner.models import (
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
+    TraceChecksConfig,
+    TraceChecksResult,
     TranscriptEvaluationResult,
     TranscriptRulesConfig,
 )
@@ -1452,6 +1456,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
 
+        # B.1) TRACE CHECKS — declarative constraints over the event timeline,
+        # scored by the same function the core engine calls.
+        trace_checks_result = TraceChecksResult()
+        if grading_config.trace_checks:
+            trace_checks_result = self._grade_trace_checks(
+                trial_id, grading_config.trace_checks, timeline
+            )
+            accounted_keys.update(trace_checks_result.accounted_keys)
+            if trace_checks_result.constraints:
+                components.trace_checks_score = trace_checks_result.score
+
         # B.2) LLM JUDGE GRADING (if llm_judge configured) — runner-side read-only
         # rubric judge on the shared ToolCallingLoop. Returns per-criterion results
         # + a weighted score, or ERRORED (no score) on its own malfunction. Never a
@@ -1572,6 +1587,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_diff_dict,
             transcript_result_dict,
             judge_reasons=judge_reasons or None,
+            trace_checks_result=trace_checks_result.model_dump(mode="json"),
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"
@@ -1596,21 +1612,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"termination_reason={termination_reason.value if termination_reason else 'none'}"
         )
 
+        # -1.0 is the wire's not-evaluated sentinel for a component.
+        wire_component_scores = {
+            spec.name: getattr(components, spec.runner_score_field)
+            for spec in GRADE_COMPONENTS
+            if spec.runner_score_field is not None
+        }
+        wire_component_scores["state_checks"] = (
+            -1.0 if state_checks_slot.component is None else state_checks_slot.component
+        )
+
         return pb2.GradeTrialResponse(
             success=True,
             error="",
             grade=pb2.Grade(
                 binary_pass=binary_pass,
                 score=score,
-                components=pb2.GradeComponents(
-                    # -1.0 is the wire's not-evaluated sentinel for a component.
-                    state_checks=(
-                        -1.0 if state_checks_slot.component is None else state_checks_slot.component
-                    ),
-                    transcript_rules=components.transcript_score,
-                    llm_judge=components.llm_judge_score,
-                    custom_checks=components.custom_checks_score,
-                ),
+                components=pb2.GradeComponents(**wire_component_scores),
                 reasons=reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
                 custom_checks=custom_check_wire_results,
@@ -1622,6 +1640,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 ],
                 judge_status=judge_status,
                 judge_report=judge_report,
+                trace_checks=[
+                    pb2.TraceConstraintResult(
+                        id=item.id,
+                        kind=item.kind,
+                        passed=item.passed,
+                        weight=item.weight,
+                        message=item.message,
+                        matched_positions=item.matched_positions,
+                    )
+                    for item in trace_checks_result.constraints
+                ],
             ),
         )
 
@@ -1691,7 +1720,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.info(
                 f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
             )
-            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
+            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
         else:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
@@ -1699,11 +1728,31 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             rules_dict = TranscriptRulesConfig(min_assistant_turns=activity_floor).model_dump()
             skipped_siblings = dict.fromkeys(
-                transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP
+                transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
             )
 
         result = evaluate_transcript_rules(timeline, rules_dict)
         return result, {**skipped_siblings, **result.accounted_keys}
+
+    def _grade_trace_checks(
+        self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
+    ) -> TraceChecksResult:
+        """Score the pack's trace checks over the timeline both substrates build.
+
+        A result carrying no constraint verdicts is the trial that left no trace
+        of itself — a timeline with neither a conversational turn nor a tool call
+        — where every constraint would score against evidence the trial does not
+        have. The component is then left out of the combine, and the evaluator's
+        own accounting records the skip against each kind the block declared.
+        """
+        result = evaluate_trace_checks(timeline, config)
+        if not result.constraints:
+            logger.info(
+                f"GradeTrial: {trial_id} - Skipping trace checks (no messages or tool calls)"
+            )
+            return result
+        logger.info(f"GradeTrial: {trial_id} - Trace checks: score={result.score:.2f}")
+        return result
 
     async def _grade_llm_judge(
         self,

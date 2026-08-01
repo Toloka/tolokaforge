@@ -1,0 +1,20 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# Both trials send the email. The window is the only reason one of them counts:
+# without it the matcher selects the call in either trial and both score 0.
+trace_checks:
+  constraints:
+    - id: nothing_was_emailed_in_the_opening_exchange
+      description: "the agent does not email the customer before the case is understood"
+      within:
+        first_turn: 0
+        last_turn: 1
+      require:
+        absent:
+          match:
+            kind: tool_call
+            tool: { equals: send_email }

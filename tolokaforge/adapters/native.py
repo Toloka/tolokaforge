@@ -448,6 +448,7 @@ class NativeAdapter(BaseAdapter):
             ToolExpectations,
             ToolSchema,
             ToolSource,
+            TraceChecksConfig,
         )
         from tolokaforge.runner.tool_factory import create_search_kb_schema
 
@@ -736,12 +737,14 @@ class NativeAdapter(BaseAdapter):
             self._project_combine_defaults(), combine_data
         )
         custom_checks_data = grading_data.get("custom_checks") if grading_data else None
+        trace_checks_data = grading_data.get("trace_checks") if grading_data else None
         grading_config = RunnerGradingConfig(
             combine_method=effective_combine.method,
             weights=effective_combine.weights,
             pass_threshold=effective_combine.pass_threshold,
             state_checks=state_checks,
             transcript_rules=transcript_rules,
+            trace_checks=TraceChecksConfig(**trace_checks_data) if trace_checks_data else None,
             llm_judge=llm_judge_config,
             custom_checks=custom_checks_data,
         )

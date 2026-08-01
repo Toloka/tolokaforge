@@ -37,7 +37,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from pydantic import ValidationError
+
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
@@ -49,6 +52,7 @@ from tolokaforge.core.models import (
     JudgeStatus,
     JudgeUsage,
     TerminationReason,
+    TraceConstraintResult,
     Trajectory,
     TrialStatus,
 )
@@ -225,6 +229,24 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     return task_id, int(idx_s)
 
 
+def _parse_trace_check_results(payload: list[dict[str, Any]]) -> list[TraceConstraintResult]:
+    """The runner's per-constraint trace-check verdicts, or a grading failure.
+
+    Unlike the judge transcript and the state diff, nothing else in the bundle
+    records which trace constraint failed, and an empty payload already means "no
+    trace checks ran" — so a payload the host cannot read is a grade it cannot
+    report, not an absent artifact. A ``kind`` outside the vocabulary is the
+    version-skew shape this catches: it rejects rather than degrading into a
+    grade whose sub-checks name conditions this engine does not have.
+    """
+    try:
+        return [TraceConstraintResult(**item) for item in payload]
+    except (TypeError, ValidationError) as exc:
+        raise GradingFailedError(
+            f"the runner's Grade.trace_checks payload is not readable: {exc}"
+        ) from exc
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
@@ -274,6 +296,8 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
                 )
             )
 
+    trace_check_results = _parse_trace_check_results(raw_grade.get("trace_checks") or [])
+
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
     judge_kb_gating: JudgeKbGating | None = None
@@ -319,10 +343,10 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         binary_pass=raw_grade["binary_pass"],
         score=raw_grade["score"],
         components=GradeComponents(
-            state_checks=raw_grade["components"].get("state_checks", -1.0),
-            transcript_rules=raw_grade["components"].get("transcript_rules", -1.0),
-            llm_judge=raw_grade["components"].get("llm_judge", -1.0),
-            custom_checks=raw_grade["components"].get("custom_checks", -1.0),
+            **{
+                spec.core_field: raw_grade["components"].get(spec.name, -1.0)
+                for spec in GRADE_COMPONENTS
+            }
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
@@ -335,6 +359,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs=judge_inputs,
         judge_custom_prompt=judge_custom_prompt,
         judge_agent_prompt_included=judge_agent_prompt_included,
+        trace_check_results=trace_check_results,
     )
 
 

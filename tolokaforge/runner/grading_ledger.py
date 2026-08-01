@@ -20,31 +20,34 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.key_manifest import EVALUATED as EVALUATED
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     RUNNER_HASH_EVALUATOR,
+    TRACE_CONSTRAINT_KEY_BY_KIND,
+    TRACE_CONSTRAINTS_KEY,
     GradingKey,
     KeyKind,
     SubstrateCoverage,
-    entry,
+    checked_author_key,
     family_author_keys,
     scored_keys_claiming_runner,
 )
+from tolokaforge.core.grading.key_manifest import (
+    NO_TIMELINE_EVENTS_SKIP as NO_TIMELINE_EVENTS_SKIP,
+)
 from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
     KeyAccounting,
     KeyAccountingRecord,
     RunnerGradingConfig,
     RunnerStateChecksConfig,
     RunnerTranscriptRulesConfig,
+    TraceChecksConfig,
 )
-
-EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
 
 HASH_DISABLED_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="hash grading not enabled"
-)
-NO_TRANSCRIPT_INPUT_SKIP = KeyAccountingRecord(
-    outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="no transcript messages"
@@ -57,22 +60,17 @@ CUSTOM_CHECKS_DISABLED_SKIP = KeyAccountingRecord(
 )
 
 
-def _manifest_key(author_key: str) -> str:
-    """``author_key`` itself, raising at import when the manifest no longer has it."""
-    return entry(author_key).author_key
-
-
-MUST_CONTAIN_KEY = _manifest_key("transcript_rules.must_contain")
-DISALLOW_REGEX_KEY = _manifest_key("transcript_rules.disallow_regex")
-MAX_TURNS_KEY = _manifest_key("transcript_rules.max_turns")
-MIN_ASSISTANT_TURNS_KEY = _manifest_key("transcript_rules.min_assistant_turns")
-TOOL_EXPECTATIONS_KEY = _manifest_key("transcript_rules.tool_expectations")
-REQUIRED_ACTIONS_KEY = _manifest_key("transcript_rules.required_actions")
-COMMUNICATE_INFO_KEY = _manifest_key("transcript_rules.communicate_info")
-JSONPATHS_KEY = _manifest_key("state_checks.jsonpaths")
-DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
-LLM_JUDGE_KEY = _manifest_key("llm_judge")
-CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
+MUST_CONTAIN_KEY = checked_author_key("transcript_rules.must_contain")
+DISALLOW_REGEX_KEY = checked_author_key("transcript_rules.disallow_regex")
+MAX_TURNS_KEY = checked_author_key("transcript_rules.max_turns")
+MIN_ASSISTANT_TURNS_KEY = checked_author_key("transcript_rules.min_assistant_turns")
+TOOL_EXPECTATIONS_KEY = checked_author_key("transcript_rules.tool_expectations")
+REQUIRED_ACTIONS_KEY = checked_author_key("transcript_rules.required_actions")
+COMMUNICATE_INFO_KEY = checked_author_key("transcript_rules.communicate_info")
+JSONPATHS_KEY = checked_author_key("state_checks.jsonpaths")
+DB_PROBES_KEY = checked_author_key("state_checks.db_probes")
+LLM_JUDGE_KEY = checked_author_key("llm_judge")
+CUSTOM_CHECKS_KEY = checked_author_key("custom_checks")
 
 # Every model the runner's RunnerGradingConfig reaches, with where its fields sit
 # in ``RunnerGradingConfig.model_dump()``. Keys match the Python class names so a
@@ -81,6 +79,7 @@ _RUNNER_CONFIG_MODELS: dict[str, tuple[type[BaseModel], tuple[str, ...]]] = {
     "RunnerGradingConfig": (RunnerGradingConfig, ()),
     "RunnerStateChecksConfig": (RunnerStateChecksConfig, ("state_checks",)),
     "RunnerTranscriptRulesConfig": (RunnerTranscriptRulesConfig, ("transcript_rules",)),
+    "TraceChecksConfig": (TraceChecksConfig, ("trace_checks",)),
 }
 
 # ``scored_keys_claiming_runner()`` widened by the scored keys the manifest
@@ -185,8 +184,9 @@ def accountable_author_keys() -> frozenset[str]:
     claims fails the canonical suite rather than failing ``GradeTrial`` in
     production for every task that populates it.
 
-    Every member is therefore named per site, or derived from the two hash-family
-    tuples the one hash recording site is handed. Comprehending any member from
+    Every member is therefore named per site, or derived from a hand-written
+    mapping that same site is handed — the two hash-family tuples, and the
+    per-kind trace-constraint keys. Comprehending any member from
     :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
     tautological assertion is worse than a missing one, because the next reader
     trusts its message and stops looking.
@@ -195,6 +195,8 @@ def accountable_author_keys() -> frozenset[str]:
         {
             *_RUNNER_HASH_FAMILY,
             *_CORE_ONLY_HASH_FAMILY,
+            *TRACE_CONSTRAINT_KEY_BY_KIND.values(),
+            TRACE_CONSTRAINTS_KEY,
             MUST_CONTAIN_KEY,
             DISALLOW_REGEX_KEY,
             MAX_TURNS_KEY,
@@ -254,7 +256,7 @@ def audit_accounted_keys(
     unaccounted: list[str] = []
     skip_notes: list[str] = []
     for item in LEDGER_KEYS:
-        if item.runner_field is None or not _dumped_value(dumped, runner_dump_path(item)):
+        if item.runner_field is None or not _populated(dumped, item):
             continue
         record = accounted_keys.get(item.author_key)
         if record is None:
@@ -268,6 +270,57 @@ def audit_accounted_keys(
             f"recorded a skip for: {'; '.join(unaccounted)}"
         )
     return LedgerAudit(error=error, skip_notes=tuple(skip_notes))
+
+
+def _populated(dumped: dict[str, Any], item: GradingKey) -> bool:
+    """Whether the request's config carries a value for ``item``.
+
+    Several entries name one ``list[BaseModel]`` field and are told apart by their
+    element path, so for those the list being non-empty is not the question — a
+    block declaring one ``before`` constraint populates the ``before`` key and none
+    of the other nine, and reading the field alone would demand a recording site
+    for every kind of every task.
+    """
+    value = _dumped_value(dumped, runner_dump_path(item))
+    if item.runner_element_path is None:
+        return bool(value)
+    return _element_declares(value, item.runner_element_path)
+
+
+def _element_declares(elements: Any, element_path: str) -> bool:
+    """Whether some element of a dumped list field carries ``element_path``.
+
+    A path a composite constraint nests counts, because the evaluator reaches it
+    and accounts for it: an ``all_of`` holding a ``before`` populates the ``before``
+    key. Descent therefore follows the values held under a constraint kind, and
+    stops anywhere else — a matcher's ``args`` keys are the author's own argument
+    names, so ``args: {before: ...}`` is a predicate on an argument called
+    ``before``, not a nested ordering constraint.
+    """
+    if not isinstance(elements, list):
+        return False
+    segments = tuple(element_path.split("."))
+    return any(_element_segment_declared(element, segments) for element in elements)
+
+
+def _element_segment_declared(node: Any, segments: tuple[str, ...]) -> bool:
+    if not segments:
+        return bool(node)
+    if not isinstance(node, dict):
+        return False
+    if segments[0] in node:
+        return _element_segment_declared(node[segments[0]], segments[1:])
+    return any(
+        _element_segment_declared(nested, segments)
+        for kind in TRACE_CONSTRAINT_KINDS
+        if kind in node
+        for nested in _nested_expressions(node[kind])
+    )
+
+
+def _nested_expressions(payload: Any) -> tuple[Any, ...]:
+    """A constraint payload's own sub-expressions, list-valued or single."""
+    return tuple(payload) if isinstance(payload, list) else (payload,)
 
 
 def _dumped_value(dumped: dict[str, Any], path: tuple[str, ...]) -> Any:

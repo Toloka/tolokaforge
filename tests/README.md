@@ -103,6 +103,7 @@ tests/
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
+    ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
@@ -143,7 +144,49 @@ Compare output against committed golden snapshots in `snapshots/`.
   means both substrates' transcript rules are reading a trial the two views no
   longer agree on. Build a coherent message-view/record pair for a grading fixture
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a
-  reconciliation failure, not a shortcut.
+  reconciliation failure, not a shortcut. `build_timeline` lands every call on the
+  last assistant turn, while `build_turn_timeline` takes the calls per turn — which
+  is what an ordering or turn-window property needs.
+
+Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
+authors a `task.yaml` and a `grading.yaml`. A pack that drives a differential adds
+a `trial.yaml` holding one named case per trial it grades — conventionally
+`satisfying` and `violating` — in the one shape its loader reads:
+
+```yaml
+satisfying:
+  messages:
+    - { role: user, content: "Refund PAY-1 if it is a duplicate." }
+    - role: assistant
+      content: "Looking that up."
+      tool_calls:
+        - tool_name: billing_api_get_payment
+          executor: agent
+          status: success
+          arguments: { payment_id: "PAY-1" }
+          output: '{"amount": 10}'
+  state: {}
+```
+
+A tool call belongs to the message that requested it, so a case places its calls
+across the turns that made them and the timeline's `turn_index` follows what the
+author wrote. `output` is that call's own result text and defaults to `""`. Call
+ids and `sequence` are assigned in document order, and `latency_seconds` is not
+authorable — wall time is not compared across substrates, so a pinned value would
+be one nothing reads. Any other key fails the load naming itself, because a
+fixture key the loader ignores expresses less than its author wrote.
+
+The pack directory is the author key with its dots replaced by underscores, so a
+leaf key inside a list field gets its own pack:
+`trace_checks.constraints.absent_before` is
+`tests/data/grading_parity/trace_checks_constraints_absent_before/`. A pack under
+test for one constraint kind authors **that kind alone** at the top level — a
+second constraint beside it is a second check the violating trial could be
+discriminated by — while the sub-terms of a composite kind belong inside its own
+expression, where they are part of the constraint under test rather than next to
+it. Write the two trials so that a build ignoring the thing under test would score
+them *identically*: that is what makes discrimination evidence for the key rather
+than for the pack.
 
 Use `--update-canon` flag to regenerate snapshots after intentional changes.
 

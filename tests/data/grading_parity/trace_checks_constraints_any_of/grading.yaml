@@ -1,0 +1,23 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# The satisfying trial takes the *second* branch and neither trial takes the
+# first, so a disjunction that stopped at its first sub-expression would score
+# the pack's two trials identically.
+trace_checks:
+  constraints:
+    - id: the_ticket_reached_an_ending
+      description: "the agent either resolved the ticket or escalated it to a human"
+      require:
+        any_of:
+          - present:
+              match:
+                kind: tool_call
+                tool: { equals: escalate_to_human }
+          - present:
+              match:
+                kind: tool_call
+                tool: { equals: resolve_case }

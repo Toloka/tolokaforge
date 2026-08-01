@@ -138,11 +138,11 @@ runner also ignores, so calls are recorded without the id grading joins on.
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,
 parsed by `extra="forbid"` Pydantic models, so a field the older image does not
 declare is a validation error rather than a dropped byte — and the engine emits
-`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block and
+`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block,
 `transcript_rules.min_assistant_turns` on every pack with a `transcript_rules:`
-block. A newer engine against an older image is therefore rejected at
-`RegisterTrial` for every such pack, with a Pydantic `extra_forbidden` error naming
-the field. See
+block, and the whole `trace_checks` section on **every** pack. A newer engine
+against an older image is therefore rejected at `RegisterTrial` for any pack at all,
+with a Pydantic `extra_forbidden` error naming the field. See
 [`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible) § "Runner-engine
 version lock (both directions)" for the full list of keys that bite and in which
 direction.

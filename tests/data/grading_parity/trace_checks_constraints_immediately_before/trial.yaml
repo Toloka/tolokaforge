@@ -1,0 +1,50 @@
+# Both trials search the policy and then create the case, on one assistant turn,
+# so each has a tool_result event sitting between the two calls. The violating
+# one slips a third call in between, which is the only difference: adjacency in
+# the tool_calls view is all that separates them.
+satisfying:
+  messages:
+    - role: user
+      content: "Open a case for the delayed delivery."
+    - role: assistant
+      content: "Reading the policy, then opening the case."
+      tool_calls:
+        - tool_name: search_policy
+          executor: agent
+          status: success
+          arguments: { query: "delayed delivery" }
+          output: '{"policy": "open a case within 48h"}'
+        - tool_name: create_case
+          executor: agent
+          status: success
+          arguments: { subject: "delayed delivery" }
+          output: '{"case_id": "CS-2001"}'
+    - role: assistant
+      content: "Case CS-2001 is open."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Open a case for the delayed delivery."
+    - role: assistant
+      content: "Reading the policy, checking the order, then opening the case."
+      tool_calls:
+        - tool_name: search_policy
+          executor: agent
+          status: success
+          arguments: { query: "delayed delivery" }
+          output: '{"policy": "open a case within 48h"}'
+        - tool_name: order_api_get_order
+          executor: agent
+          status: success
+          arguments: { order_id: "ORD-7" }
+          output: '{"order_id": "ORD-7", "state": "in_transit"}'
+        - tool_name: create_case
+          executor: agent
+          status: success
+          arguments: { subject: "delayed delivery" }
+          output: '{"case_id": "CS-2001"}'
+    - role: assistant
+      content: "Case CS-2001 is open."
+  state: {}

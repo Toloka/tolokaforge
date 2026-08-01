@@ -22,6 +22,9 @@ migration:
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
   its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
   substrates' models naming both keys and both values.
+* ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
+  that could only ever select nothing is rejected before a trial is paid for; a
+  block that is not a mapping is rejected naming the file, the key and the shape.
 """
 
 from __future__ import annotations
@@ -33,6 +36,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
+from tests.utils.trace_checks_configs import every_kind_block
 from tolokaforge.adapters._task_loader import validate_grading_yaml
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
@@ -767,3 +771,96 @@ def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: 
     assert "0 valid, 1 invalid" in out
     assert "min_assistant_turns (5)" in out
     assert "max_turns (3)" in out
+
+
+# ---------------------------------------------------------------------------
+# trace_checks — the block is constructed, so the whole matcher vocabulary is
+# validated at validate time
+#
+# The rejection wording is locked per rule in
+# tests/unit/grading/test_trace_checks_config.py. What belongs here is the gate
+# itself: that validate reaches the block at all, and that a block which is not a
+# mapping is rejected naming the file, the key and the shape received.
+# ---------------------------------------------------------------------------
+
+
+def _write_trace_checks(tmp_path: Path, trace_checks: object) -> Path:
+    """Serialise the block beside a valid ``combine``, so a rejection below is the
+    trace gate's and not the combine gate's."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"trace_checks": 1.0}},
+                "trace_checks": trace_checks,
+            }
+        )
+    )
+    return grading
+
+
+def test_validate_accepts_a_well_formed_trace_checks_block(tmp_path: Path):
+    validate_grading_yaml(_write_trace_checks(tmp_path, every_kind_block()))
+
+
+@pytest.mark.parametrize(
+    ("trace_checks", "match"),
+    [
+        (
+            {"constraints": [{"id": "a", "description": "d", "require": {}}]},
+            "exactly one",
+        ),
+        (
+            {
+                "constraints": [
+                    {
+                        "id": "a",
+                        "description": "d",
+                        "require": {
+                            "present": {"match": {"kind": "user_message", "tool": {"equals": "x"}}}
+                        },
+                    }
+                ]
+            },
+            "carries no",
+        ),
+        ({"constraints": []}, "at least 1 item"),
+    ],
+    ids=["no_constraint_kind", "field_the_kind_never_carries", "no_constraints"],
+)
+def test_validate_rejects_a_malformed_trace_checks_block(
+    tmp_path: Path, trace_checks: dict, match: str
+):
+    """Validate is where an author hears this.
+
+    Without the gate the pack loads clean and the matcher selects nothing at grade
+    time, which the default ``on_missing`` reports as the agent failing — after the
+    tokens are spent.
+    """
+    with pytest.raises(ValueError, match=match):
+        validate_grading_yaml(_write_trace_checks(tmp_path, trace_checks))
+
+
+@pytest.mark.parametrize(
+    "trace_checks",
+    [[{"id": "a"}], "constraints: []", 3],
+    ids=["list", "string", "number"],
+)
+def test_validate_rejects_a_trace_checks_block_that_is_not_a_mapping(
+    tmp_path: Path, trace_checks: object
+):
+    """A constraint written directly under ``trace_checks:`` makes the block a list.
+
+    ``isinstance(..., dict)`` alone reports such a pack valid and every constraint
+    the block was meant to carry grades as unset. The same shape ``combine`` and
+    ``transcript_rules`` carry.
+    """
+    grading = _write_trace_checks(tmp_path, trace_checks)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        validate_grading_yaml(grading)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "'trace_checks'" in message, message
+    assert type(trace_checks).__name__ in message, message

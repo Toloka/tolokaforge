@@ -18,6 +18,7 @@ pytestmark = pytest.mark.unit
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
 from tolokaforge.core.grading.trace_timeline import TrialTimeline
 from tolokaforge.core.hash import compute_stable_hash
@@ -45,6 +46,18 @@ from tolokaforge.runner.models import (
     RunnerTranscriptRulesConfig,
     ToolExpectations,
 )
+
+# One written-out ``grading.yaml`` section per component, keyed by the section
+# name the registry declares. Indexed rather than iterated, so a component added
+# to the registry without a section here fails on the missing key instead of
+# going untested.
+_MINIMAL_CONFIG_SECTIONS: dict[str, dict] = {
+    "state_checks": {"hash_enabled": True, "golden_actions": []},
+    "transcript_rules": {"required_actions": []},
+    "trace_checks": {"constraints": []},
+    "llm_judge": {"rubric": {"criteria": []}},
+    "custom_checks": {"file": "checks.py"},
+}
 
 
 class TestGoldenMatchScoresOne:
@@ -237,6 +250,37 @@ class TestGoldenMismatchScoresZero:
 
         assert "mismatch" in reasons.lower() or "State:" in reasons
 
+    def test_build_grade_reasons_names_a_scored_trace_checks_component(self):
+        """A scored component absent from the prose is a verdict an author cannot read."""
+        reasons = build_grade_reasons({"trace_checks_score": 0.75})
+
+        assert "Trace checks: score=0.75" in reasons
+
+    def test_build_grade_reasons_omits_an_unevaluated_trace_checks_component(self):
+        reasons = build_grade_reasons({"trace_checks_score": -1.0})
+
+        assert "Trace checks" not in reasons
+
+    def test_build_grade_reasons_names_each_failing_trace_constraint(self):
+        """The runner emits the per-constraint lines core's engine emits.
+
+        A score alone says how much was lost, never which constraint lost it, so a
+        grade produced by the runner would answer less than the same grade produced
+        by core — a substrate difference in what the author reads.
+        """
+        reasons = build_grade_reasons(
+            {"trace_checks_score": 0.5},
+            trace_checks_result={
+                "constraints": [
+                    {"id": "lookup_before_denial", "passed": False, "message": "before: no match"},
+                    {"id": "no_prefill", "passed": True, "message": ""},
+                ]
+            },
+        )
+
+        assert "Trace check lookup_before_denial: before: no match" in reasons
+        assert "no_prefill" not in reasons, "a passing constraint has nothing to report"
+
 
 class TestErrorTrialDetected:
     """Test that technical errors are properly detected and marked"""
@@ -388,14 +432,17 @@ class TestLLMJudgePlaceholderStatus:
         assert score == 1.0
         assert binary_pass is True
 
-    def test_combine_grade_components_fails_when_configured_but_unevaluated(self):
+    @pytest.mark.parametrize("spec", GRADE_COMPONENTS, ids=lambda spec: spec.name)
+    def test_combine_grade_components_fails_when_configured_but_unevaluated(self, spec):
         """
-        Verify combine_grade_components fails when grading is configured
-        (weights include state_checks) but no components were actually evaluated.
+        Verify combine_grade_components fails when a component is configured
+        (weighted, with its config section written) but was never evaluated.
 
         This catches the refusal-task bug: golden_actions=[] caused hash grading
-        to be skipped, leaving hash_score=-1.0. Previously this silently returned
-        (1.0, True) — a false pass. Now it must return (0.0, False).
+        to be skipped, leaving hash_score=-1.0, and the trial silently returned
+        (1.0, True) — a false pass. Every component must return (0.0, False)
+        there; a component missing from the check is a whole task family that
+        passes on nothing.
         """
         components = {
             "hash_match": None,
@@ -406,15 +453,15 @@ class TestLLMJudgePlaceholderStatus:
 
         grading_config = {
             "combine_method": "weighted",
-            "weights": {"state_checks": 1.0},
+            "weights": {spec.name: 1.0},
             "pass_threshold": 1.0,
-            "state_checks": {"hash_enabled": True, "golden_actions": []},
+            spec.config_section: _MINIMAL_CONFIG_SECTIONS[spec.config_section],
         }
 
         score, binary_pass = combine_grade_components(components, grading_config)
 
-        assert score == 0.0, f"configured grading with nothing evaluated scored {score}, not 0.0"
-        assert binary_pass is False, "configured grading with nothing evaluated must not pass"
+        assert score == 0.0, f"{spec.name} configured but unevaluated scored {score}, not 0.0"
+        assert binary_pass is False, f"{spec.name} configured with nothing evaluated must not pass"
 
     def test_combine_grade_components_passes_when_nothing_configured(self):
         """

@@ -4,7 +4,6 @@ satisfying:
       content: "Cancel order O1."
     - role: assistant
       content: "Cancelled order O1."
-  tool_calls: []
   state: {}
 
 # A do-nothing agent: the user asked, the trial produced no assistant turn at all.
@@ -12,5 +11,4 @@ violating:
   messages:
     - role: user
       content: "Cancel order O1."
-  tool_calls: []
   state: {}

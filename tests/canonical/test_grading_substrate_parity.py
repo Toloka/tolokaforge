@@ -1,6 +1,6 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Nine locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Twelve locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
@@ -27,15 +27,30 @@ Nine locks over :mod:`tolokaforge.core.grading.key_manifest`:
    enumerated here, and the two tables those claims rest on — lock 6's weight sweep
    and lock 9's method answers — stay substantive;
 9. both substrates aggregate one split pair of deterministic components by the
-   author's ``combine.method``, each method pinned to a score written out here.
+   author's ``combine.method``, each method pinned to a score written out here;
+10. both substrates score one ``trace_checks`` pack to the same component through
+    their own grading path — the core engine's ``grade_trajectory``, and the
+    runner's ``GradeTrial`` over its real gRPC handlers;
+11. both substrates read each per-constraint field that shapes how a kind scores
+    without carrying a score itself, over packs a build ignoring the field would
+    score identically;
+12. the constraint vocabulary the manifest addresses, the one the evaluator and
+    the runtime ledger read, and the one an author can write are the same set.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
+
+Locks 3, 6, 7, 9, 10 and 11 drive a real trial, and each reads it through one fixture
+loader, so what a ``grading_parity`` pack can express bounds what they can prove.
+That loader's contract — a tool call belongs to the message that requested it, and
+carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
 import importlib
+import json
+import re
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
@@ -51,7 +66,7 @@ from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_PASS_THRESHOLD,
     COMBINE_METHOD_VERDICTS,
 )
-from tests.utils.timelines import declare_calls
+from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
@@ -67,15 +82,18 @@ from tolokaforge.core.grading.key_manifest import (
     family_author_keys,
 )
 from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
 from tolokaforge.core.models import (
     Message,
     RecordedToolCall,
+    ToolCall,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
 )
 from tolokaforge.runner import models as runner_models
+from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading import (
     combine_grade_components,
     evaluate_jsonpath_checks,
@@ -87,7 +105,12 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     runner_dump_path,
 )
-from tolokaforge.runner.service import RunnerServiceImpl, TrialContextRuntime
+from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS, TraceConstraintExpr
+from tolokaforge.runner.service import (
+    RunnerServiceImpl,
+    TrialContextRuntime,
+    _build_runner_check_transcript,
+)
 
 pytestmark = pytest.mark.canonical
 
@@ -175,7 +198,20 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
         "combine.method",
+        "trace_checks",
+        "trace_checks.constraints.weight",
+        "trace_checks.constraints.on_missing",
+        "trace_checks.constraints.within",
     }
+)
+
+# The three per-constraint fields that shape how a kind scores without scoring
+# anything themselves. Each owns a pack whose two trials a build ignoring the
+# field would score identically, so discrimination is the field being read.
+_TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
+    "trace_checks.constraints.weight",
+    "trace_checks.constraints.on_missing",
+    "trace_checks.constraints.within",
 )
 
 # FIELD_RESOLUTION_ONLY entries that need no tracking issue: aggregation and
@@ -195,8 +231,10 @@ _CONTAINER_FIELDS = frozenset(
         "core:GradingConfig.combine",
         "core:GradingConfig.state_checks",
         "core:GradingConfig.transcript_rules",
+        "core:GradingConfig.trace_checks",
         "runner:RunnerGradingConfig.state_checks",
         "runner:RunnerGradingConfig.transcript_rules",
+        "runner:RunnerGradingConfig.trace_checks",
     }
 )
 
@@ -219,12 +257,25 @@ def _dict_key_of(item: GradingKey, substrate: str) -> str | None:
     return item.core_dict_key if substrate == "core" else item.runner_dict_key
 
 
+def _element_path_of(item: GradingKey, substrate: str) -> str | None:
+    return item.core_element_path if substrate == "core" else item.runner_element_path
+
+
 def _claimed_fields(substrate: str) -> dict[str, list[str]]:
-    """Model field paths claimed directly (not via a dict key) -> author keys."""
+    """Model field paths claimed directly -> author keys.
+
+    An entry addressing a dict key or an element path is not claiming the field:
+    it claims one place *inside* it, and several such entries share the field.
+    Counting them as claims would report the shared field as claimed twice over.
+    """
     claims: dict[str, list[str]] = {}
     for item in GRADING_KEYS:
         field = _field_of(item, substrate)
-        if field is None or _dict_key_of(item, substrate) is not None:
+        addressed_inside = (
+            _dict_key_of(item, substrate) is not None
+            or _element_path_of(item, substrate) is not None
+        )
+        if field is None or addressed_inside:
             continue
         claims.setdefault(field, []).append(item.author_key)
     return claims
@@ -256,6 +307,45 @@ def _is_dict_field(annotation: Any) -> bool:
     return any(get_origin(option) is dict for option in _union_options(annotation))
 
 
+def _element_model(annotation: Any) -> type[BaseModel] | None:
+    """The element model of a ``list[SomeModel]`` field, which ``_direct_model`` skips.
+
+    That skip is what makes an element path necessary: the walker treats such a
+    field as one leaf, so several author keys living inside its elements have no
+    address it can resolve until the manifest names one.
+    """
+    for option in _union_options(annotation):
+        if get_origin(option) is not list:
+            continue
+        (element,) = get_args(option)
+        if isinstance(element, type) and issubclass(element, BaseModel):
+            return element
+    return None
+
+
+def _resolve_element_path(model: type[BaseModel], element_path: str, *, what: str) -> None:
+    """Walk ``element_path`` from ``model``, asserting every segment is a declared field.
+
+    Each segment resolves against the model the one before it holds, so a path
+    naming a field of the wrong model fails here rather than addressing nothing.
+    A ``list[SomeModel]`` segment continues into its element model, which is how
+    ``all_of``'s nested expressions stay walkable.
+    """
+    segments = element_path.split(".")
+    current: type[BaseModel] | None = model
+    for index, segment in enumerate(segments):
+        assert current is not None, (
+            f"{what}: element path {element_path!r} reads {segment!r} out of "
+            f"{segments[index - 1]!r}, which holds no model to resolve it against"
+        )
+        field = current.model_fields.get(segment)
+        assert field is not None, (
+            f"{what}: element path {element_path!r} does not resolve — {current.__name__} "
+            f"declares no field {segment!r}. It declares {sorted(current.model_fields)}"
+        )
+        current = _direct_model(field.annotation) or _element_model(field.annotation)
+
+
 def _walk(substrate: str) -> tuple[set[str], set[str], dict[str, type[BaseModel]]]:
     """Walk a substrate's grading config from its root ``GradingConfig``.
 
@@ -281,6 +371,33 @@ def _walk(substrate: str) -> tuple[set[str], set[str], dict[str, type[BaseModel]
                 continue
             leaves.add(qualified)
     return leaves, containers, registry
+
+
+def _assert_element_paths_resolve(substrate: str, registry: dict[str, type[BaseModel]]) -> None:
+    """Every element-addressed entry names a list of models and a path inside it."""
+    for item in GRADING_KEYS:
+        element_path = _element_path_of(item, substrate)
+        field = _field_of(item, substrate)
+        if element_path is None or field is None:
+            continue
+        what = f"{item.author_key} ({substrate})"
+        model_name, _, field_name = field.partition(".")
+        model = registry.get(model_name)
+        assert model is not None, (
+            f"{what}: {substrate}_field {field!r} names {model_name!r}, which is not "
+            f"reachable from the {substrate} GradingConfig"
+        )
+        declared = model.model_fields.get(field_name)
+        assert declared is not None, (
+            f"{what}: {substrate}_field {field!r} does not resolve — {model_name} has no "
+            f"field {field_name!r}"
+        )
+        element = _element_model(declared.annotation)
+        assert element is not None, (
+            f"{what}: {substrate}_element_path {element_path!r} is walked from the element "
+            f"model of {field!r}, which is not a list of models"
+        )
+        _resolve_element_path(element, element_path, what=what)
 
 
 def _differential_entries() -> tuple[GradingKey, ...]:
@@ -375,6 +492,14 @@ def _declared_hash_verdict_producers() -> frozenset[tuple[str, str]]:
 # Fixture-pack helpers
 # --------------------------------------------------------------------------
 
+# The one shape a ``trial.yaml`` case may take. Every key is read; anything else
+# is rejected, so a pack cannot carry a field the loader silently drops.
+_CASE_KEYS = frozenset({"messages", "state"})
+_MESSAGE_KEYS = frozenset({"role", "content", "tool_calls"})
+_CALL_KEYS = frozenset({"tool_name", "executor", "status", "arguments", "output"})
+
+_FIXTURE_TIMESTAMP = "2026-01-01T00:00:00+00:00"
+
 
 @dataclass(frozen=True)
 class _TrialCase:
@@ -398,55 +523,190 @@ def _parity_adapter(test_data_dir: Path) -> NativeAdapter:
     return NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": _PARITY_GLOB})
 
 
-def _yaml_declares(data: Any, dotted_path: str) -> bool:
+_MISSING = object()
+
+
+def _yaml_node(data: Any, dotted_path: str) -> Any:
+    """What ``dotted_path`` holds in an authored ``grading.yaml``, or ``_MISSING``."""
     node = data
     for segment in dotted_path.split("."):
         if not isinstance(node, dict) or segment not in node:
-            return False
+            return _MISSING
         node = node[segment]
-    return True
+    return node
+
+
+def _yaml_declares(data: Any, dotted_path: str) -> bool:
+    return _yaml_node(data, dotted_path) is not _MISSING
+
+
+def _yaml_element_declares(node: Any, segments: tuple[str, ...]) -> bool:
+    """Whether ``segments`` resolves inside one authored list element.
+
+    A kind written inside a composite counts as declared: where a segment is not
+    at this level the walk follows the expressions the kinds hold, so an ``all_of``
+    holding a ``before`` declares ``before``. Descent stops outside a constraint
+    kind, because a matcher's ``args`` keys are the author's own argument names.
+    """
+    if not segments:
+        return True
+    if not isinstance(node, dict):
+        return False
+    if segments[0] in node:
+        return _yaml_element_declares(node[segments[0]], segments[1:])
+    return any(
+        _yaml_element_declares(nested, segments)
+        for kind in TRACE_CONSTRAINT_KINDS
+        if kind in node
+        for nested in (node[kind] if isinstance(node[kind], list) else [node[kind]])
+    )
 
 
 def _declared_author_keys(grading_yaml: dict[str, Any]) -> set[str]:
-    return {key for key in author_keys() if _yaml_declares(grading_yaml, key)}
+    """Every manifest key an authored ``grading.yaml`` declares.
+
+    An element-addressed key lives inside the elements of the list its parent key
+    names, so its declaredness is read there rather than at a dotted path of its
+    own — a kind is not a YAML key under ``constraints``, it is a key on one of the
+    constraints.
+    """
+    declared: set[str] = set()
+    for key in author_keys():
+        element_path = entry(key).core_element_path
+        if element_path is None:
+            if _yaml_declares(grading_yaml, key):
+                declared.add(key)
+            continue
+        elements = _yaml_node(grading_yaml, key.rsplit(".", 1)[0])
+        if isinstance(elements, list) and any(
+            _yaml_element_declares(element, tuple(element_path.split("."))) for element in elements
+        ):
+            declared.add(key)
+    return declared
+
+
+_CONSTRAINT_KIND_KEYS = frozenset(
+    f"trace_checks.constraints.{kind.value}" for kind in TRACE_CONSTRAINT_KINDS
+)
+
+
+def _authoring_the_same_key(declared_key: str, author_key: str) -> bool:
+    """Whether ``declared_key`` is part of writing ``author_key`` down.
+
+    Three structural cases, none of them a second check. The ancestors a leaf
+    lives under: a constraint kind needs the block and the list around it. The
+    leaves of a key standing for a list: writing something in the list is what
+    authoring the list looks like. And another kind beside a kind — a composite
+    is an expression over other kinds and cannot be written without them, which
+    is why the sharper assertion on what a pack authors at *top level* is the one
+    that keeps a kind's pack about that kind.
+    """
+    return (
+        declared_key == author_key
+        or author_key.startswith(f"{declared_key}.")
+        or declared_key.startswith(f"{author_key}.")
+        or {declared_key, author_key} <= _CONSTRAINT_KIND_KEYS
+    )
+
+
+def _top_level_constraint_kinds(grading_yaml: dict[str, Any]) -> set[str]:
+    """The kind each authored constraint *is*, ignoring what its composites nest."""
+    constraints = _yaml_node(grading_yaml, "trace_checks.constraints")
+    if not isinstance(constraints, list):
+        return set()
+    return {
+        kind
+        for element in constraints
+        if isinstance(element, dict) and isinstance(element.get("require"), dict)
+        for kind in element["require"]
+        if kind in TRACE_CONSTRAINT_KINDS
+    }
+
+
+def _reject_unknown(authored: dict[str, Any], allowed: frozenset[str], *, what: str) -> None:
+    """A fixture key nothing reads expresses less than its author wrote — so it is an error."""
+    unknown = sorted(set(authored) - allowed)
+    assert not unknown, f"{what} declares {unknown}; the loader reads only {sorted(allowed)}"
+
+
+def _authored_call(raw_call: dict[str, Any], *, sequence: int) -> tuple[ToolCall, RecordedToolCall]:
+    """One authored call, as the message view declares it and as the record kept it.
+
+    ``latency_seconds`` is not authorable and is pinned at ``0.0``: wall time is
+    not compared across substrates, so a fixture varying it would pin a number no
+    parity claim reads.
+    """
+    call_id = f"call_{sequence}"
+    return (
+        ToolCall(id=call_id, name=raw_call["tool_name"], arguments=raw_call["arguments"]),
+        RecordedToolCall(
+            call_id=call_id,
+            sequence=sequence,
+            tool_name=raw_call["tool_name"],
+            arguments=raw_call["arguments"],
+            executor=ToolExecutorIdentity(raw_call["executor"]),
+            output=raw_call.get("output", ""),
+            status=ToolExecutionStatus(raw_call["status"]),
+            latency_seconds=0.0,
+            timestamp=_FIXTURE_TIMESTAMP,
+        ),
+    )
+
+
+def _wire_message(message: Message) -> dict[str, Any]:
+    """One turn as the runner receives it, in ``llm_messages_json``'s OpenAI shape."""
+    wire: dict[str, Any] = {"role": message.role.value, "content": message.content}
+    if message.tool_calls:
+        wire["tool_calls"] = [
+            {
+                "id": call.id,
+                "type": "function",
+                "function": {"name": call.name, "arguments": json.dumps(call.arguments)},
+            }
+            for call in message.tool_calls
+        ]
+    return wire
 
 
 def _load_case(pack_dir: Path, case: str) -> _TrialCase:
+    """One authored trial, in the input shape each substrate really takes.
+
+    A call is authored inside the message that requested it, so a fixture places
+    its calls across turns and the timeline's ``turn_index`` and event order follow
+    what the author wrote.
+    """
     fixture = yaml.safe_load((pack_dir / "trial.yaml").read_text())[case]
-    messages = [Message(role=raw["role"], content=raw["content"]) for raw in fixture["messages"]]
-    now = "2026-01-01T00:00:00+00:00"
+    where = f"{pack_dir.name}/trial.yaml case {case!r}"
+    _reject_unknown(fixture, _CASE_KEYS, what=where)
+
     # One recorded-tool-call list feeds both substrates: the core engine holds it
     # on the Trajectory, the runner's evaluators read its dump. A per-substrate
     # fixture could disagree with itself, which is the divergence this suite exists
-    # to catch.
-    recorded = [
-        RecordedToolCall(
-            call_id=f"call_{index}",
-            sequence=index,
-            tool_name=call["tool_name"],
-            arguments=call["arguments"],
-            executor=ToolExecutorIdentity(call["executor"]),
-            output="",
-            status=ToolExecutionStatus(call["status"]),
-            latency_seconds=0.0,
-            timestamp=now,
-        )
-        for index, call in enumerate(fixture["tool_calls"])
-    ]
-    # The assistant turn that made the calls must declare them, or the trial's two
-    # views of itself disagree and neither substrate will grade it.
-    view = declare_calls(messages, recorded)
+    # to catch. The message view declares every one of them, or the trial's two
+    # views disagree and neither substrate will grade it.
+    view: list[Message] = []
+    recorded: list[RecordedToolCall] = []
+    for index, raw in enumerate(fixture["messages"]):
+        _reject_unknown(raw, _MESSAGE_KEYS, what=f"{where} message {index}")
+        declared: list[ToolCall] = []
+        for raw_call in raw.get("tool_calls", ()):
+            _reject_unknown(raw_call, _CALL_KEYS, what=f"{where} message {index} tool call")
+            call, record = _authored_call(raw_call, sequence=len(recorded))
+            declared.append(call)
+            recorded.append(record)
+        view.append(Message(role=raw["role"], content=raw["content"], tool_calls=declared or None))
+
     trajectory = Trajectory(
         task_id=pack_dir.name,
         trial_index=0,
-        start_ts=now,
-        end_ts=now,
+        start_ts=_FIXTURE_TIMESTAMP,
+        end_ts=_FIXTURE_TIMESTAMP,
         messages=view,
         tool_log=recorded,
     )
     return _TrialCase(
         core_trajectory=trajectory,
-        runner_messages=fixture["messages"],
+        runner_messages=[_wire_message(message) for message in view],
         runner_timeline=build_trial_timeline(view, recorded, None),
         state=fixture["state"],
     )
@@ -527,6 +787,14 @@ def _runner_verdict(
     elif family == "custom_checks":
         component = _runner_custom_checks_score(task_description, case)
         components = {"custom_checks_score": component}
+    elif family == "trace_checks":
+        # One evaluator serves both substrates, so the equality this lock ends on
+        # holds by construction; what a cell proves is that the pack loads through
+        # the adapter onto the runner's own model and that the kind discriminates
+        # there. That the runner's GradeTrial really reaches this evaluator is a
+        # separate claim, driven over real gRPC by lock 10.
+        component = evaluate_trace_checks(case.runner_timeline, grading.trace_checks).score
+        components = {"trace_checks_score": component}
     else:
         pytest.fail(
             f"no runner differential driver for the {family!r} family — add one rather "
@@ -581,6 +849,8 @@ def test_manifest_covers_every_declared_config_field():
                 f"{item.author_key}: {substrate}_dict_key {dict_key!r} requires "
                 f"{field!r} to be a dict field, got {annotation}"
             )
+
+        _assert_element_paths_resolve(substrate, registry)
 
     assert containers == _CONTAINER_FIELDS, (
         "the set of grading config fields walked into as containers changed. Every "
@@ -672,22 +942,29 @@ def test_exemption_sets_are_frozen_and_classified(test_data_dir):
 # --------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("author_key", [item.author_key for item in _differential_entries()])
-def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_data_dir, tmp_path):
-    item = entry(author_key)
+@dataclass(frozen=True)
+class _SubstrateDifferential:
+    """One key's pack, graded on both substrates in both of its two trials."""
+
+    core_ok: float
+    core_bad: float
+    core_ok_total: float
+    core_bad_total: float
+    runner_ok: float
+    runner_bad: float
+    runner_ok_total: float
+    runner_bad_total: float
+
+
+def _drive_both_substrates(
+    author_key: str, test_data_dir: Path, tmp_path: Path
+) -> _SubstrateDifferential:
+    """Grade a key's satisfying and violating trials through each substrate's own path."""
     family = author_key.split(".")[0]
-    task_id = _task_id_for(author_key)
     pack = _pack_dir(test_data_dir, author_key)
     adapter = _parity_adapter(test_data_dir)
-
-    declared = _declared_author_keys(yaml.safe_load((pack / "grading.yaml").read_text()))
-    assert {key for key in declared if not key.startswith("combine.")} == {author_key}, (
-        f"{author_key}'s fixture declares more than the key under test, so a violating "
-        f"trial could discriminate without that key being read: {sorted(declared)}"
-    )
-
-    core_config = adapter.get_grading_config(task_id)
-    task_description = adapter.to_task_description(task_id)
+    core_config = adapter.get_grading_config(_task_id_for(author_key))
+    task_description = adapter.to_task_description(_task_id_for(author_key))
     satisfying = _load_case(pack, "satisfying")
     violating = _load_case(pack, "violating")
     # The core engine imports the pack's ``checks.py`` from its task dir, which
@@ -700,24 +977,74 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
     core_bad, core_bad_total = _core_verdict(family, core_config, violating, core_task_dir)
     runner_ok, runner_ok_total = _runner_verdict(family, task_description, satisfying)
     runner_bad, runner_bad_total = _runner_verdict(family, task_description, violating)
+    return _SubstrateDifferential(
+        core_ok=core_ok,
+        core_bad=core_bad,
+        core_ok_total=core_ok_total,
+        core_bad_total=core_bad_total,
+        runner_ok=runner_ok,
+        runner_bad=runner_bad,
+        runner_ok_total=runner_ok_total,
+        runner_bad_total=runner_bad_total,
+    )
 
-    assert core_ok > core_bad, (
+
+def _assert_both_substrates_discriminate(author_key: str, verdict: _SubstrateDifferential) -> None:
+    assert verdict.core_ok > verdict.core_bad, (
         f"the core substrate does not discriminate {author_key}: satisfying "
-        f"{core_ok} vs violating {core_bad}"
+        f"{verdict.core_ok} vs violating {verdict.core_bad}"
     )
-    assert runner_ok > runner_bad, (
+    assert verdict.runner_ok > verdict.runner_bad, (
         f"the runner substrate does not discriminate {author_key}: satisfying "
-        f"{runner_ok} vs violating {runner_bad}"
+        f"{verdict.runner_ok} vs violating {verdict.runner_bad}"
     )
-    assert core_ok_total > core_bad_total
-    assert runner_ok_total > runner_bad_total
+
+
+def _assert_the_substrates_agree(author_key: str, verdict: _SubstrateDifferential) -> None:
+    assert verdict.core_ok == pytest.approx(verdict.runner_ok)
+    assert verdict.core_bad == pytest.approx(verdict.runner_bad), (
+        f"{author_key} claims BOTH_SCORE_PARITY but the substrates score the "
+        f"violating trial differently: core {verdict.core_bad} vs runner "
+        f"{verdict.runner_bad}"
+    )
+
+
+@pytest.mark.parametrize("author_key", [item.author_key for item in _differential_entries()])
+def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_data_dir, tmp_path):
+    item = entry(author_key)
+    pack = _pack_dir(test_data_dir, author_key)
+
+    authored = yaml.safe_load((pack / "grading.yaml").read_text())
+    declared = _declared_author_keys(authored)
+    unrelated = sorted(
+        key
+        for key in declared
+        if not key.startswith("combine.") and not _authoring_the_same_key(key, author_key)
+    )
+    assert not unrelated and author_key in declared, (
+        f"{author_key}'s fixture declares {unrelated or 'nothing'} beside the key under "
+        f"test, so a violating trial could discriminate without that key being read. It "
+        f"declares {sorted(declared)}"
+    )
+
+    kind_under_test = author_key.removeprefix("trace_checks.constraints.")
+    if kind_under_test in TRACE_CONSTRAINT_KINDS:
+        top_level = _top_level_constraint_kinds(authored)
+        assert top_level == {kind_under_test}, (
+            f"{author_key}'s fixture authors the top-level constraints {sorted(top_level)}. "
+            "A kind's pack authors that kind alone — another beside it is a second check "
+            "the violating trial could be discriminated by, and a composite's sub-terms "
+            "belong inside its own expression rather than next to it"
+        )
+
+    verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
+    _assert_both_substrates_discriminate(author_key, verdict)
+
+    assert verdict.core_ok_total > verdict.core_bad_total
+    assert verdict.runner_ok_total > verdict.runner_bad_total
 
     if item.coverage is SubstrateCoverage.BOTH_SCORE_PARITY:
-        assert core_ok == pytest.approx(runner_ok)
-        assert core_bad == pytest.approx(runner_bad), (
-            f"{author_key} claims BOTH_SCORE_PARITY but the substrates score the "
-            f"violating trial differently: core {core_bad} vs runner {runner_bad}"
-        )
+        _assert_the_substrates_agree(author_key, verdict)
 
 
 # --------------------------------------------------------------------------
@@ -728,7 +1055,12 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
 def test_adapter_translation_carries_every_runner_key(test_data_dir):
     pack = test_data_dir / "grading_parity" / _ALL_KEYS_TASK
     declared = _declared_author_keys(yaml.safe_load((pack / "grading.yaml").read_text()))
-    authorable = {item.author_key for item in GRADING_KEYS if item.core_field is not None}
+    # A family root carries no field of its own — its leaves do — so authorability
+    # is "the core config accepts this key", which a root satisfies by being the
+    # block its leaves live under.
+    authorable = {
+        item.author_key for item in GRADING_KEYS if item.core_field is not None or item.family_root
+    }
     assert declared == authorable, (
         f"{pack / 'grading.yaml'} must declare every manifest key the core config "
         f"accepts; missing {sorted(authorable - declared)}"
@@ -739,11 +1071,19 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
         "RunnerGradingConfig": grading,
         "RunnerStateChecksConfig": grading.state_checks,
         "RunnerTranscriptRulesConfig": grading.transcript_rules,
+        "TraceChecksConfig": grading.trace_checks,
     }
 
+    # Several element-addressed entries name one field, and the assertion below is
+    # about the field arriving — so it is made once per field rather than once per
+    # entry, which would report the same translation ten times over.
+    carried: set[str] = set()
     for item in GRADING_KEYS:
         if item.core_field is None or item.runner_field is None:
             continue
+        if item.runner_field in carried:
+            continue
+        carried.add(item.runner_field)
         model_name, _, field_name = item.runner_field.partition(".")
         owner = owners.get(model_name)
         assert owner is not None, (
@@ -763,11 +1103,33 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
 # 5. Every ledger key resolves in the runner config dump and has a recording site
 # --------------------------------------------------------------------------
 
+_LEDGER_PROBE_TRACE_CHECKS = runner_models.TraceChecksConfig(
+    constraints=[
+        runner_models.TraceConstraint(
+            id="the_agent_said_something",
+            description="a populated block, so the dump carries the constraints field",
+            require=TraceConstraintExpr(
+                present=runner_models.PresentConstraint(
+                    match=runner_models.TraceMatcher(kind="assistant_message")
+                )
+            ),
+        )
+    ]
+)
+"""A populated ``trace_checks`` block for the dump the resolution below walks.
+
+The block is optional and its constraint list is required, so an unset
+``trace_checks`` dumps as ``None`` and the walk would resolve the family's keys
+against nothing at all — reporting the field as absent from a config that never
+declared it.
+"""
+
 
 def test_every_ledger_key_resolves_in_the_runner_config_dump():
     runner_dump = runner_models.RunnerGradingConfig(
         state_checks=runner_models.RunnerStateChecksConfig(),
         transcript_rules=runner_models.RunnerTranscriptRulesConfig(),
+        trace_checks=_LEDGER_PROBE_TRACE_CHECKS,
     ).model_dump()
 
     resolvable = [item for item in LEDGER_KEYS if item.runner_field is not None]
@@ -1131,6 +1493,19 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "that reaches neither lock 3 nor a lock named here is enforced by nothing"
     )
 
+    assert {key for key in escaped if key.startswith("trace_checks.")} == set(
+        _TRACE_CONFIG_INPUT_KEYS
+    ), (
+        "a per-constraint config input escaped lock 3 without joining the "
+        "parametrisation that drives its differential, so its claim rests on the "
+        "membership above and nothing else"
+    )
+    assert set(family_author_keys("trace_checks")) & reached, (
+        "no member of the trace_checks family is differentially proven, so the "
+        "field-less family root claims a canonical differential that its leaves — the "
+        "only entries carrying a field to run one on — no longer run"
+    )
+
     interior = _interior_composition_weights()
     assert len(set(interior)) >= 2, (
         f"COMPOSITION_PARITY_WEIGHTS {COMPOSITION_PARITY_WEIGHTS} holds fewer than two "
@@ -1276,3 +1651,333 @@ def test_both_substrates_aggregate_by_the_declared_combine_method(method, test_d
         f"the substrates disagree on {method!r}: core {(core.score, core.binary_pass)} vs "
         f"runner {(runner.score, runner.binary_pass)}"
     )
+
+
+# --------------------------------------------------------------------------
+# 10. Both substrates score trace_checks through one shared evaluator
+# --------------------------------------------------------------------------
+
+_TRACE_CHECKS_TASK = "trace_checks_constraints"
+
+
+def _replay_authored_calls(
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, case: _TrialCase
+) -> None:
+    """Execute each authored call through the runner, in the order it was written.
+
+    Nothing stands in for the runner's own recording: the trial's calls arrive as
+    ``ExecuteTool`` requests under the call ids the message view declares, so
+    ``GradeTrial`` reads a record the runner wrote rather than one handed to it.
+    """
+    trial = servicer.trials[trial_id]
+    for record in case.core_trajectory.tool_log:
+        output = record.output
+
+        async def run(_arguments: dict[str, Any], answer: str = output) -> str:
+            return answer
+
+        trial.agent_tools[record.tool_name] = run
+        executed = servicer.ExecuteTool(
+            execute_request(
+                trial_id,
+                record.tool_name,
+                json.dumps(record.arguments),
+                executor=record.executor.value,
+                call_id=record.call_id,
+            ),
+            context,
+        )
+        assert executed.status == pb2.EXECUTION_STATUS_SUCCESS, executed.error_message
+
+
+def _runner_trace_checks_grade(
+    servicer: RunnerServiceImpl,
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    trial_id: str,
+    context: Any,
+) -> pb2.Grade:
+    """The runner's own ``GradeTrial`` verdict on ``case``, over real gRPC handlers."""
+    registered = servicer.RegisterTrial(
+        register_request(
+            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
+            trial_id=trial_id,
+        ),
+        context,
+    )
+    assert registered.success is True, registered.error
+    _replay_authored_calls(servicer, context, trial_id, case)
+    response = servicer.GradeTrial(
+        pb2.GradeTrialRequest(
+            trial_id=trial_id, llm_messages_json=json.dumps(case.runner_messages)
+        ),
+        context,
+    )
+    assert response.success is True, response.error
+    return response.grade
+
+
+def test_both_substrates_score_trace_checks_through_their_own_grading_path(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """One authored pack, two substrates, one component score — each via its own path.
+
+    The core engine's ``grade_trajectory`` and the runner's ``GradeTrial`` are
+    driven separately, so the claim is about the two integration points rather
+    than about the shared evaluator called twice: a substrate that never reaches
+    it, or reaches it with a differently translated config, scores differently
+    here. The two trials call the same tools with the same arguments and differ
+    only in the order, so the ordering constraint is the only thing that can move
+    the score.
+    """
+    pack = test_data_dir / "grading_parity" / _TRACE_CHECKS_TASK
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_TRACE_CHECKS_TASK)
+    task_description = adapter.to_task_description(_TRACE_CHECKS_TASK)
+    satisfying = _load_case(pack, "satisfying")
+    violating = _load_case(pack, "violating")
+
+    core_ok, _ = _core_verdict("trace_checks", core_config, satisfying, tmp_path)
+    core_bad, _ = _core_verdict("trace_checks", core_config, violating, tmp_path)
+    runner_ok = _runner_trace_checks_grade(
+        runner_service, task_description, satisfying, "trace_ok:0", mock_grpc_context
+    )
+    runner_bad = _runner_trace_checks_grade(
+        runner_service, task_description, violating, "trace_bad:0", mock_grpc_context
+    )
+
+    assert (core_ok, core_bad) == (1.0, 0.0), (
+        "the core engine does not discriminate the ordering constraint: satisfying "
+        f"{core_ok} vs violating {core_bad}"
+    )
+    assert runner_ok.components.HasField("trace_checks"), (
+        "the runner produced no trace_checks component, so the parity comparison "
+        "below would hold on a component neither substrate scored"
+    )
+    assert runner_ok.components.trace_checks == pytest.approx(core_ok)
+    assert runner_bad.components.trace_checks == pytest.approx(core_bad)
+    # The per-constraint verdicts cross the wire beside the score, so the reviewer
+    # reading grade.yaml learns which constraint moved it.
+    (crossed,) = runner_bad.trace_checks
+    assert (crossed.id, crossed.kind, crossed.passed) == (
+        "payment_looked_up_before_the_case_is_denied",
+        "before",
+        False,
+    )
+
+
+# --------------------------------------------------------------------------
+# 11. Both substrates read every per-constraint config input
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize("author_key", _TRACE_CONFIG_INPUT_KEYS)
+def test_both_substrates_read_each_per_constraint_config_input(author_key, test_data_dir, tmp_path):
+    """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
+
+    Lock 3 selects ``SCORED_CHECK``, so these three escape it — they carry no
+    component of their own, they change what one does. Each pack is authored so
+    that a build ignoring the field scores its two trials *identically*: the
+    weights are the only thing telling one from the other, or the unmatched
+    anchor's policy is, or the turn window is. Discrimination here is therefore
+    the field being read, not the constraint around it working.
+    """
+    verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
+    _assert_both_substrates_discriminate(author_key, verdict)
+    _assert_the_substrates_agree(author_key, verdict)
+
+
+# --------------------------------------------------------------------------
+# 12. The manifest addresses the whole constraint vocabulary and nothing else
+# --------------------------------------------------------------------------
+
+
+def test_the_manifest_addresses_every_constraint_kind_and_no_other():
+    """Three sources for the closed vocabulary, two equalities between them.
+
+    The manifest's element paths are what makes a kind's parity claim enforceable,
+    ``TRACE_CONSTRAINT_KINDS`` is what the evaluator and the runtime ledger read,
+    and ``TraceConstraintExpr``'s fields are what an author can write. A kind
+    added to the model alone is a check no fixture pack proves parity for and no
+    recording site accounts for; a manifest entry with no field behind it
+    addresses nothing.
+    """
+    addressed: set[str] = set()
+    for item in GRADING_KEYS:
+        if item.kind is not KeyKind.SCORED_CHECK or not item.author_key.startswith(
+            "trace_checks.constraints."
+        ):
+            continue
+        assert item.core_element_path is not None and item.core_element_path.startswith(
+            "require."
+        ), (
+            f"{item.author_key}: a scored constraint kind is addressed under a "
+            f"constraint's require expression, not at {item.core_element_path!r}"
+        )
+        addressed.add(item.core_element_path.removeprefix("require."))
+
+    assert addressed == set(TRACE_CONSTRAINT_KINDS), (
+        f"the manifest addresses {sorted(addressed)} where the vocabulary is "
+        f"{sorted(kind.value for kind in TRACE_CONSTRAINT_KINDS)}. A kind with no entry has "
+        f"no fixture pack "
+        "and no parity claim; an entry with no kind addresses a payload nothing evaluates"
+    )
+    assert set(TraceConstraintExpr.model_fields) == set(TRACE_CONSTRAINT_KINDS), (
+        f"TraceConstraintExpr declares {sorted(TraceConstraintExpr.model_fields)} where "
+        f"the vocabulary is {sorted(kind.value for kind in TRACE_CONSTRAINT_KINDS)}. Every "
+        f"field on that model "
+        "is a constraint kind an author can write, so the two are the same set"
+    )
+
+
+# --------------------------------------------------------------------------
+# The fixture loader every lock above reads its trials through
+# --------------------------------------------------------------------------
+
+_MULTI_TURN_CASE = "two_turns"
+
+_MULTI_TURN_FIXTURE: dict[str, Any] = {
+    _MULTI_TURN_CASE: {
+        "messages": [
+            {"role": "user", "content": "Refund PAY-1 if it is a duplicate."},
+            {
+                "role": "assistant",
+                "content": "Looking that up.",
+                "tool_calls": [
+                    {
+                        "tool_name": "billing_api_get_payment",
+                        "executor": "agent",
+                        "status": "success",
+                        "arguments": {"payment_id": "PAY-1"},
+                        "output": '{"amount": 10}',
+                    }
+                ],
+            },
+            {
+                "role": "assistant",
+                "content": "Denying it.",
+                "tool_calls": [
+                    {
+                        "tool_name": "servicenow_csm_update_case",
+                        "executor": "agent",
+                        "status": "success",
+                        "arguments": {"u_resolution_code": "denied_ineligible"},
+                    }
+                ],
+            },
+        ],
+        "state": {},
+    }
+}
+
+# What the fixture above must build, event by event. The two calls sit on
+# different assistant turns, so a loader gathering them onto one turn produces
+# different ``turn_index`` values here; the first call authors an ``output`` and
+# the second omits one, so the two result rows pin the text read and the default.
+_MULTI_TURN_EVENTS: tuple[tuple[int, int, str, str | None, str | None], ...] = (
+    (0, 0, "user_message", None, None),
+    (1, 0, "assistant_message", None, None),
+    (2, 0, "tool_call", "billing_api_get_payment", None),
+    (3, 0, "tool_result", "billing_api_get_payment", '{"amount": 10}'),
+    (4, 1, "assistant_message", None, None),
+    (5, 1, "tool_call", "servicenow_csm_update_case", None),
+    (6, 1, "tool_result", "servicenow_csm_update_case", ""),
+)
+
+
+def _write_pack(tmp_path: Path, fixture: dict[str, Any]) -> Path:
+    pack = tmp_path / "authored_pack"
+    pack.mkdir()
+    (pack / "trial.yaml").write_text(yaml.safe_dump(fixture))
+    return pack
+
+
+def _produced_events(
+    timeline: TrialTimeline,
+) -> tuple[tuple[int, int, str, str | None, str | None], ...]:
+    return tuple(
+        (event.position, event.turn_index, event.kind.value, event.tool_name, event.result)
+        for event in timeline.events
+    )
+
+
+def test_the_fixture_loader_places_each_turns_calls_where_the_author_wrote_them(tmp_path):
+    """A call authored under a turn is that turn's call, with its own result text.
+
+    Every lock above reads its trial through this loader, so what a pack can say is
+    the limit of what they can prove. A loader that gathered a trial's calls onto
+    one turn would leave ordering across turns — and any window over ``turn_index``
+    — with no expressible fixture at all.
+    """
+    pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
+    trial = _load_case(pack, _MULTI_TURN_CASE)
+
+    assert _produced_events(trial.runner_timeline) == _MULTI_TURN_EVENTS
+
+    assert [
+        (message.role.value, [call.name for call in message.tool_calls or []])
+        for message in trial.core_trajectory.messages
+    ] == [
+        ("user", []),
+        ("assistant", ["billing_api_get_payment"]),
+        ("assistant", ["servicenow_csm_update_case"]),
+    ], "the core substrate's trajectory does not carry the placement the timeline shows"
+
+
+def test_the_fixture_loader_hands_the_runner_wire_shaped_tool_calls(tmp_path):
+    """The runner's own decoder reads the authored calls back off ``runner_messages``.
+
+    ``_grade_custom_checks`` takes the wire ``llm_messages``, so a fixture-shaped
+    call there decodes to an empty tool name and a check reads a trial that made no
+    call — the parity suite's own silent divergence.
+    """
+    pack = _write_pack(tmp_path, _MULTI_TURN_FIXTURE)
+    transcript = _build_runner_check_transcript(_load_case(pack, _MULTI_TURN_CASE).runner_messages)
+
+    assert [
+        (call.name, call.arguments)
+        for message in transcript.messages
+        for call in message.tool_calls
+    ] == [
+        ("billing_api_get_payment", {"payment_id": "PAY-1"}),
+        ("servicenow_csm_update_case", {"u_resolution_code": "denied_ineligible"}),
+    ]
+
+
+@pytest.mark.parametrize(
+    ("what", "mutate", "rejected"),
+    [
+        (
+            "a trial-wide call list",
+            lambda case: case.update(
+                tool_calls=[{"tool_name": "cancel_order", "executor": "agent", "status": "success"}]
+            ),
+            "['tool_calls']",
+        ),
+        (
+            "a misspelled message key",
+            lambda case: case["messages"][1].update(
+                tool_call=case["messages"][1].pop("tool_calls")
+            ),
+            "['tool_call']",
+        ),
+        (
+            "an authored latency",
+            lambda case: case["messages"][1]["tool_calls"][0].update(latency_seconds=1.5),
+            "['latency_seconds']",
+        ),
+    ],
+)
+def test_the_fixture_loader_rejects_a_key_it_would_not_read(what, mutate, rejected, tmp_path):
+    """One shape, no modes: a key the loader does not read fails the pack that wrote it.
+
+    The trial-wide list is the shape this loader replaced, and it is the one a pack
+    copied from an older fixture would carry — accepted silently, it would place
+    every call on the last assistant turn again.
+    """
+    fixture = yaml.safe_load(yaml.safe_dump(_MULTI_TURN_FIXTURE))
+    mutate(fixture[_MULTI_TURN_CASE])
+    pack = _write_pack(tmp_path, fixture)
+
+    with pytest.raises(AssertionError, match=re.escape(rejected)):
+        _load_case(pack, _MULTI_TURN_CASE)

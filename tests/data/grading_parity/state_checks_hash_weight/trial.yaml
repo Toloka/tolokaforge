@@ -4,7 +4,6 @@ hash_matching:
   messages:
     - role: assistant
       content: "Order O1 is on its way with SlowShip."
-  tool_calls: []
   state:
     db:
       orders:
@@ -19,7 +18,6 @@ hash_diverging:
   messages:
     - role: assistant
       content: "Order O1 is on its way with SlowShip."
-  tool_calls: []
   state:
     db:
       orders:

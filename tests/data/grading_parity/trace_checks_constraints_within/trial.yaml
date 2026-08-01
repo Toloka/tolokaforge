@@ -1,0 +1,62 @@
+# The opening user prompt shares turn 0 with the first assistant turn, so the
+# window covers the first two assistant turns. The satisfying trial emails on the
+# third, the violating one on the second, and nothing else about them differs.
+satisfying:
+  messages:
+    - role: user
+      content: "My order never arrived."
+    - role: assistant
+      content: "Let me look at the order."
+      tool_calls:
+        - tool_name: order_api_get_order
+          executor: agent
+          status: success
+          arguments: { order_id: "ORD-7" }
+          output: '{"order_id": "ORD-7", "state": "lost"}'
+    - role: assistant
+      content: "It was lost in transit. Raising a replacement."
+      tool_calls:
+        - tool_name: create_case
+          executor: agent
+          status: success
+          arguments: { subject: "lost parcel" }
+          output: '{"case_id": "CS-6001"}'
+    - role: assistant
+      content: "Emailing you the confirmation."
+      tool_calls:
+        - tool_name: send_email
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-6001", template: replacement_raised }
+          output: '{"sent": true}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "My order never arrived."
+    - role: assistant
+      content: "Let me look at the order."
+      tool_calls:
+        - tool_name: order_api_get_order
+          executor: agent
+          status: success
+          arguments: { order_id: "ORD-7" }
+          output: '{"order_id": "ORD-7", "state": "lost"}'
+    - role: assistant
+      content: "Emailing you already."
+      tool_calls:
+        - tool_name: send_email
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-6001", template: replacement_raised }
+          output: '{"sent": true}'
+    - role: assistant
+      content: "Raising the replacement."
+      tool_calls:
+        - tool_name: create_case
+          executor: agent
+          status: success
+          arguments: { subject: "lost parcel" }
+          output: '{"case_id": "CS-6001"}'
+  state: {}

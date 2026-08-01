@@ -1,0 +1,17 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+trace_checks:
+  constraints:
+    - id: the_payment_was_fetched_once
+      description: "the agent read the payment once rather than polling the billing API"
+      require:
+        count:
+          match:
+            kind: tool_call
+            tool: { equals: billing_api_get_payment }
+          min: 1
+          max: 1
