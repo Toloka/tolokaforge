@@ -1549,10 +1549,9 @@ every name's value is equal **and of the same type**, so `True` and `1` are two
 candidates.
 
 A bound constraint costs one evaluation of its `require` tree per distinct
-candidate. Distinct-value counts on real trajectories are a handful per
-`(tool, argument)`, so this is not a size to author around; the shape worth knowing
-is that it multiplies the [`absent_between` cost](#declared-limits-and-what-owns-each)
-rather than adding to it.
+candidate, so it multiplies whatever the tree already costs rather than adding to
+it — [measured](#declared-limits-and-what-owns-each) beside the `absent_between`
+shape it compounds with.
 
 #### `on_unbound` — the trial where the binder selected nothing
 
@@ -1566,8 +1565,48 @@ invented" is satisfied by an agent that quoted no figure, and failing it charges
 second time for a gap another check already charges.
 
 This is a policy over **decidable** evidence: the candidate set is genuinely empty,
-not unreadable. `on_unbound: pass` beside `severity: gate` is a load error, since a
-gate carries no weight for the second charge to be avoided on.
+not unreadable — the unreadable case is
+[below](#a-candidate-set-the-trial-cannot-determine). `on_unbound: pass` beside
+`severity: gate` is a load error, since a gate carries no weight for the second
+charge to be avoided on.
+
+#### A candidate set the trial cannot determine
+
+The binder resolves through the same matcher machinery every predicate does, so it
+has [undecidable](#what-a-matcher-resolves-to-matched-and-undecidable) events of its
+own: a `bind.match` reading `status` on a call the trial recorded no outcome for
+cannot say whether that call is a candidate. An extraction can go unread the same
+way — a `field: result` on a call with no recorded outcome is a candidate whose
+*value* the trial does not carry, where a `field: args.<path>` naming an argument the
+call simply did not pass binds nothing at all. Absent value, absent evidence: the
+same distinction a predicate over the field draws.
+
+So the candidate set is three-valued too, and the constraint is decided only where
+every completion of it agrees. Writing `D` for the definite candidates and `U` for
+the undecidable ones, the readings compared are the **empty** one, `D ∪ {u}` for
+**each** `u` in `U`, and `D ∪ U`.
+
+The singletons are not redundant beside the two ends. With `D` empty the empty
+reading is `on_unbound` rather than a vacuous pass, so both ends can read *fail*
+where a completion binding one satisfied candidate holds — measured, at `D = {}`,
+`U = {u₀ holds, u₁ fails}`, `on_unbound: fail`:
+
+| reading | verdict |
+|---|---|
+| `{}` | fails — nothing bound, and `on_unbound` is `fail` |
+| `{u₀}` | **passes** |
+| `{u₁}` | fails |
+| `{u₀, u₁}` | fails |
+
+Comparing the two ends alone reports a definite failure there, on evidence the trial
+does not carry. That is the same over-fail the `count` bound guards against by
+reading the whole reachable interval rather than its endpoints, met one level up.
+
+An undecidable candidate set that changes no verdict is not reported: where the
+completions agree, the missing evidence changed nothing an author can act on. Where
+they disagree the constraint is undecided and says which evidence is missing and
+where, and a value the trial definitely binds absorbs an undecidable reading of the
+same value — it is in the set whatever the missing evidence says.
 
 #### `negate`, and `within`
 
@@ -1618,13 +1657,15 @@ Worked, over *d* definite matches and *u* undecidable ones:
 | `count` | passes when every count in `[d, d + u]` is within the bounds, fails when none is, undecided otherwise |
 | `before`, `immediately_before`, `absent_before`, `absent_between` | decided when every reading of each side agrees; undecided otherwise |
 | `all_of`, `any_of`, `negate` | Kleene: a conjunction with a failing branch fails whatever the undecided branch would have said, a disjunction with a holding branch passes, and otherwise an undecided branch makes the composite undecided |
+| any of the above declaring [`bind`](#correlating-arguments-across-matchers) | the **candidate set is itself subject to the rule**: decided where the empty reading, each single undecidable candidate beside the definite ones, and all of them together agree — undecided otherwise, and `on_unbound` supplies the empty reading rather than a vacuous pass. [Worked](#a-candidate-set-the-trial-cannot-determine) |
 | any of the above carrying [`severity: gate`](#severity--a-check-that-must-hold) | undecided **trips the gate** — a scored constraint forfeits its weight there, and a gate's forfeit is the trial |
 
 Undecided is not a pass in the agent's favour and not an over-fail either: definite
 evidence answers the question wherever it can. The usual way to reach it is a
 bundle re-graded without its tool-call record, where every `status` and `executor`
-predicate is unreadable — which is a real limit on grading a `trace_checks` pack
-from a recorded bundle, not a defect to work around.
+predicate is unreadable, every `result` on an unanswered call with it, and so is any
+binder that reads one — which is a real limit on grading a `trace_checks` pack from a
+recorded bundle, not a defect to work around.
 
 ### Weighting the constraints
 
@@ -1862,8 +1903,20 @@ so on a timeline where all three matchers are undecidable its work grows cubical
 in the number of undecidable events. Trials in the size range the harness produces
 stay well inside that, and a records-present timeline has no undecidable events at
 all. A [`bind`](#correlating-arguments-across-matchers) multiplies whatever its
-`require` tree costs by the number of distinct candidates, so the two compose — and
-neither is a reason to author around at these sizes.
+`require` tree costs by the number of distinct candidates, so the two compose.
+Measured over a bound `absent_between`, the worst combination the vocabulary allows:
+
+| calls on the timeline | distinct candidates | one reading | the bound constraint |
+|---|---|---|---|
+| 20 | 5 | 0.97 ms | 4.8 ms |
+| 60 | 15 | 2.3 ms | 34 ms |
+| 200 | 40 | 4.9 ms | 211 ms |
+| 600 | 100 | 15 ms | 1.4 s |
+
+The multiplier is the candidate count and nothing worse — the readings do not
+compound each other. Distinct-value counts on real trajectories are a handful per
+`(tool, argument)`, so none of this is a reason to author around at the sizes the
+harness produces.
 
 ---
 

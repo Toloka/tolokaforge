@@ -121,12 +121,24 @@ class MatcherOutcome:
         """
         if not self.undecidable:
             return None
-        label = "position" if len(self.undecidable) == 1 else "positions"
-        positions = ", ".join(str(event.position) for event in self.undecidable)
-        return (
-            f"the matcher cannot be decided: the trial records no "
-            f"{' or '.join(self.unreadable_fields)} at {label} {positions}"
+        return "the matcher cannot be decided: " + _missing_evidence(
+            self.unreadable_fields, (event.position for event in self.undecidable)
         )
+
+
+def _missing_evidence(fields: Iterable[str], positions: Iterable[int]) -> str:
+    """Which record-only evidence the trial does not carry, and where.
+
+    One phrasing for both places evidence goes missing — a predicate that could not
+    be read and an extraction that could not be read — so the two cannot drift into
+    two vocabularies for the same gap.
+    """
+    where = sorted(positions)
+    label = "position" if len(where) == 1 else "positions"
+    return (
+        f"the trial records no {' or '.join(sorted(fields))} at "
+        f"{label} {', '.join(str(position) for position in where)}"
+    )
 
 
 class _Truth(str, Enum):
@@ -181,6 +193,22 @@ def select_events(
 _RECORD_ONLY_FIELDS = frozenset({"executor", "status"})
 
 
+def _unreadable_when_none(outcome: TraceEvent | None) -> frozenset[str]:
+    """The fields whose ``None`` on this event is missing evidence, not an answer.
+
+    With no outcome event at all — a call the trial never recorded a result for —
+    the text that call would have returned is unrecorded rather than empty, so a
+    ``result`` reading is as undecidable there as a ``status`` one. An outcome that
+    exists and carries no ``result`` is a definite absence instead.
+
+    The one rule for both readings of a field: a matcher's predicate over it and a
+    binding's extraction out of it.
+    """
+    if outcome is not None:
+        return _RECORD_ONLY_FIELDS
+    return _RECORD_ONLY_FIELDS | {"result"}
+
+
 def _resolve(
     matcher: TraceMatcher,
     event: TraceEvent,
@@ -201,12 +229,7 @@ def _resolve(
     behind whichever predicate happened to fail first.
     """
     outcome = _outcome_of(event, results)
-    # With no outcome event at all — a call the trial never recorded a result for —
-    # the text that call would have returned is unrecorded rather than empty, so a
-    # ``result`` predicate is as undecidable there as a ``status`` one.
-    unreadable_when_none = (
-        _RECORD_ONLY_FIELDS if outcome is not None else _RECORD_ONLY_FIELDS | {"result"}
-    )
+    unreadable_when_none = _unreadable_when_none(outcome)
     readings = _predicate_readings(matcher, event, outcome)
     unmakeable.update(
         dict.fromkeys(
@@ -600,28 +623,78 @@ def _evaluate_constraint(
     inside a bound constraint reads "no candidate satisfies", not "not every
     candidate does", and a constraint with one candidate scores exactly as the same
     constraint with that value written as a literal.
+
+    The candidate set is itself three-valued, so the fold runs over the completions
+    of the undecidable candidates rather than over one set — and a candidate whose
+    value the trial does not record is read as ``UNKNOWN`` without entering the
+    ``require`` tree, since there is no environment to enter it under.
     """
     kind = constraint.require.declared_kind()
     candidates = _candidates(timeline, constraint)
-    if not candidates.assignments:
-        ledger.unevaluated |= _expression_kinds(constraint.require)
-        return _unbound_result(constraint, kind, candidates)
     on_missing = constraint.on_missing or OnMissing.FAIL
-    readings = [
+    definite = [
         _read_under(timeline, constraint, environment, ledger.visited, on_missing)
-        for environment in candidates.assignments
+        for environment in candidates.definite
     ]
+    possible = [
+        _read_under(timeline, constraint, environment, ledger.visited, on_missing)
+        for environment in candidates.undecidable
+    ]
+    if not definite and not possible:
+        ledger.unevaluated |= _expression_kinds(constraint.require)
+        if not candidates.unnamed:
+            return _unbound_result(constraint, kind, candidates)
+    readings = definite + possible
     unmakeable = list(dict.fromkeys(item for reading in readings for item in reading.unmakeable))
-    truth = _Truth.FALSE if unmakeable else _conjunction(reading.truth for reading in readings)
+    truth = (
+        _Truth.FALSE
+        if unmakeable
+        else _folded_truth(
+            [reading.truth for reading in definite],
+            [reading.truth for reading in possible]
+            + ([_Truth.UNKNOWN] if candidates.unnamed else []),
+            _unbound_truth(constraint.bind),
+        )
+    )
     return TraceConstraintResult(
         id=constraint.id,
         kind=kind,
         passed=truth is _Truth.TRUE,
         weight=constraint.weight,
         severity=constraint.severity,
-        message="; ".join(unmakeable) if unmakeable else _folded_message(readings, truth),
+        message=(
+            "; ".join(unmakeable)
+            if unmakeable
+            else _folded_message(readings, truth, kind, candidates.undetermined)
+        ),
         matched_positions=sorted({item for reading in readings for item in reading.positions}),
     )
+
+
+def _folded_truth(
+    definite: Sequence[_Truth], undecidable: Sequence[_Truth], unbound: _Truth
+) -> _Truth:
+    """The verdict every completion of the candidate set agrees on, or ``UNKNOWN``.
+
+    Kleene AND over a set is its minimum under ``FALSE < UNKNOWN < TRUE``, so over
+    the completions ``D ∪ S`` for ``S ⊆ U`` the reachable verdicts are exactly those
+    of the empty ``S``, of each singleton, and of ``U`` itself — a minimum over any
+    larger ``S`` equals one of its members'. Enumerating only the two ends drops the
+    singletons, which is sound while the empty reading is vacuously true and wrong
+    the moment ``D`` is empty: there the empty reading is ``on_unbound``, and a
+    completion binding one satisfied candidate can hold where both ends fail. That
+    over-fail is the hazard :func:`_reachable_counts` already names one level down.
+    """
+    inside = _conjunction(definite)
+    empty_reading = inside if definite else unbound
+    if not undecidable:
+        return empty_reading
+    readings = {
+        empty_reading,
+        *(_conjunction((inside, truth)) for truth in undecidable),
+        _conjunction((inside, *undecidable)),
+    }
+    return readings.pop() if len(readings) == 1 else _Truth.UNKNOWN
 
 
 @dataclass(frozen=True)
@@ -653,21 +726,38 @@ def _read_under(
     )
 
 
-def _folded_message(readings: list[_CandidateReading], truth: _Truth) -> str:
+def _folded_message(
+    readings: list[_CandidateReading],
+    truth: _Truth,
+    kind: TraceConstraintKind,
+    undetermined: str,
+) -> str:
     """What the grade says about a constraint folded over its candidates.
 
     The sentence is the one the first candidate that reached the folded verdict
-    wrote, and the assignments named beside it are **every** candidate that reached
-    it. Naming them is the only way an author learns which record failed to
-    correlate: the per-kind detail sentence is the same whichever value it failed
-    under, so a bound constraint without them reports a failure the author cannot
-    act on. A constraint that binds nothing names none, since its one reading holds
-    the empty environment.
+    wrote — the reading whose truth *is* the folded truth, so a definite failure
+    beside an undecided candidate reports the failure rather than the doubt. The
+    assignments named beside it are **every** candidate that reached it. Naming them
+    is the only way an author learns which record failed to correlate: the per-kind
+    detail sentence is the same whichever value it failed under, so a bound
+    constraint without them reports a failure the author cannot act on. A constraint
+    that binds nothing names none, since its one reading holds the empty
+    environment.
+
+    ``undetermined`` is reported only where the completions of the candidate set
+    disagreed, as a matcher's own missing evidence is: where they agree the evidence
+    the trial lacks changed nothing an author can act on. It is the whole
+    explanation where no single candidate reached the verdict, which is the shape a
+    set whose completions disagree among themselves takes.
     """
     if truth is _Truth.TRUE:
         return ""
+    clause = undetermined if truth is _Truth.UNKNOWN else ""
     responsible = [item for item in readings if item.truth is truth]
-    return responsible[0].message + _naming(responsible, truth)
+    if not responsible:
+        return f"{kind.value} cannot be decided — {clause}"
+    sentence = responsible[0].message + _naming(responsible, truth)
+    return f"{sentence}; {clause}" if clause else sentence
 
 
 def _naming(readings: list[_CandidateReading], truth: _Truth) -> str:
@@ -694,17 +784,25 @@ _FOLD_PHRASE: Mapping[_Truth, str] = {
 }
 
 
-def _unbound_result(
-    constraint: TraceConstraint, kind: TraceConstraintKind, candidates: _Candidates
-) -> TraceConstraintResult:
-    """The verdict of a bound constraint whose binder yielded no assignment at all.
+def _unbound_truth(bind: TraceBinding | None) -> _Truth:
+    """What the empty reading of the candidate set decides.
 
     The universal reading is vacuously true over an empty candidate set, so the
     author's ``on_unbound`` supplies the verdict instead — defaulting to a failure,
     because a binder that never fired usually means the agent never did the thing
-    the constraint is about.
+    the constraint is about. A constraint declaring no binder never reads this: its
+    one candidate is the empty environment, so its set is never empty.
     """
-    passed = constraint.bind is not None and constraint.bind.on_unbound is OnUnbound.PASS
+    if bind is not None and bind.on_unbound is OnUnbound.PASS:
+        return _Truth.TRUE
+    return _Truth.FALSE
+
+
+def _unbound_result(
+    constraint: TraceConstraint, kind: TraceConstraintKind, candidates: _Candidates
+) -> TraceConstraintResult:
+    """The verdict of a bound constraint whose binder yielded no assignment at all."""
+    passed = _unbound_truth(constraint.bind) is _Truth.TRUE
     return TraceConstraintResult(
         id=constraint.id,
         kind=kind,
@@ -718,15 +816,41 @@ def _unbound_result(
 
 @dataclass(frozen=True)
 class _Candidates:
-    """The assignments a constraint's binder yields, and why it yielded none.
+    """The assignments a constraint's binder yields, and what it left undetermined.
+
+    ``definite`` are the assignments the trial binds whatever its missing evidence
+    would have said; ``undecidable`` are the ones some completion of that evidence
+    binds and another does not. ``unnamed`` marks a binder event whose extracted
+    value the trial does not record at all — a candidate under some completion, with
+    no value this trial can name, so it decides nothing and leaves the fold undecided.
+
+    ``missing`` maps the position of each event that left the set undetermined to the
+    evidence the trial does not carry there, and holds only events that contributed:
+    one whose membership is unsettled and that carried no value to bind either way
+    changes no reading of the set.
 
     ``emptiness`` separates the two ways a candidate set is empty — no event
     selected, or events selected that carried no value to bind — because they are
     different author mistakes and a single "no match" tells neither.
     """
 
-    assignments: list[Mapping[str, Any]]
+    definite: list[Mapping[str, Any]]
+    undecidable: list[Mapping[str, Any]]
+    unnamed: bool
+    missing: Mapping[int, frozenset[str]]
     emptiness: str
+
+    @property
+    def undetermined(self) -> str:
+        """Why the candidate set itself could not be determined, empty when it was.
+
+        Non-empty exactly where the binder left something open — an event whose
+        membership the trial cannot settle, or one whose value it does not record.
+        """
+        if not self.missing:
+            return ""
+        fields = frozenset[str]().union(*self.missing.values())
+        return "the candidate set cannot be determined: " + _missing_evidence(fields, self.missing)
 
 
 _UNBOUND_ENVIRONMENT: Mapping[str, Any] = {}
@@ -734,24 +858,55 @@ _UNBOUND_ENVIRONMENT: Mapping[str, Any] = {}
 
 
 def _candidates(timeline: TrialTimeline, constraint: TraceConstraint) -> _Candidates:
-    """Every distinct assignment the binder yields, in the order its events occur."""
+    """Every distinct assignment the binder yields, in the order its events occur.
+
+    The binder resolves through :func:`select_events` like every other matcher, so
+    it has an undecidable set of its own: an event whose membership the trial cannot
+    settle yields a candidate the constraint must be decided *without* assuming, and
+    one whose extraction reads unrecorded evidence yields a candidate with no value.
+    """
     if constraint.bind is None:
-        return _Candidates([_UNBOUND_ENVIRONMENT], "")
+        return _Candidates([_UNBOUND_ENVIRONMENT], [], False, {}, "")
     outcome = _restricted(
         select_events(timeline, constraint.bind.match, _UNBOUND_ENVIRONMENT), constraint.within
     )
     results = _results_by_call_id(timeline)
-    assignments = _distinct(
-        [
-            assignment
-            for event in outcome.matched
-            for assignment in _assignments_from(constraint.bind, event, results)
-        ]
+    bound: list[Mapping[str, Any]] = []
+    possible: list[Mapping[str, Any]] = []
+    missing: dict[int, frozenset[str]] = {}
+    unnamed = False
+    for event, settled in _selected(outcome):
+        reading = _bound_event(constraint.bind, event, results)
+        (bound if settled else possible).extend(reading.assignments)
+        unnamed = unnamed or bool(reading.unreadable)
+        membership = frozenset() if settled else frozenset(outcome.unreadable_fields)
+        # Only an event that contributed puts the set in doubt: one whose membership
+        # the binder could not settle and that carried no value to bind either way
+        # changes no reading of the set.
+        if reading.unreadable or (reading.assignments and not settled):
+            missing[event.position] = reading.unreadable | membership
+    definite = _distinct(bound)
+    undecidable = _distinct(possible, definite)
+    return _Candidates(
+        definite,
+        undecidable,
+        unnamed,
+        missing,
+        "" if definite or undecidable or unnamed else _emptiness(outcome),
     )
-    return _Candidates(assignments, _emptiness(outcome, assignments))
 
 
-def _distinct(assignments: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+def _selected(outcome: MatcherOutcome) -> list[tuple[TraceEvent, bool]]:
+    """Every event the binder drew a candidate from, and whether it definitely did."""
+    return [
+        *((event, True) for event in outcome.matched),
+        *((event, False) for event in outcome.undecidable),
+    ]
+
+
+def _distinct(
+    assignments: Sequence[Mapping[str, Any]], already: Sequence[Mapping[str, Any]] = ()
+) -> list[Mapping[str, Any]]:
     """``assignments`` with the repeats dropped, keeping the first of each.
 
     Candidates are distinct *values*, not events: ten calls naming one record are
@@ -760,12 +915,19 @@ def _distinct(assignments: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
     list with duplicates in it. A linear scan rather than a set because an
     assignment is a dict and a bound value may itself be a list or a dict — nothing
     here is hashable.
+
+    ``already`` are assignments the caller has resolved ahead of these, and drops an
+    undecidable candidate a definite one already binds: a value the trial definitely
+    binds is in the set whatever the missing evidence says, so a second undecidable
+    copy of it enumerates a reading already read and names the value twice.
     """
-    distinct: list[Mapping[str, Any]] = []
+    distinct = list(already)
+    kept: list[Mapping[str, Any]] = []
     for assignment in assignments:
         if not any(_same_assignment(assignment, seen) for seen in distinct):
             distinct.append(assignment)
-    return distinct
+            kept.append(assignment)
+    return kept
 
 
 def _same_assignment(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
@@ -779,30 +941,52 @@ def _same_assignment(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
     return all(type(left[name]) is type(right[name]) and left[name] == right[name] for name in left)
 
 
-def _emptiness(outcome: MatcherOutcome, assignments: list[Mapping[str, Any]]) -> str:
-    if assignments:
-        return ""
-    if not outcome.matched:
+def _emptiness(outcome: MatcherOutcome) -> str:
+    selected = len(outcome.matched) + len(outcome.undecidable)
+    if not selected:
         return "the binding selected no event"
-    return (
-        f"the binding selected {len(outcome.matched)} events, none of which carried "
-        "every value it extracts"
-    )
+    return f"the binding selected {selected} events, none of which carried every value it extracts"
 
 
-def _assignments_from(
+@dataclass(frozen=True)
+class _BoundEvent:
+    """What one event the binder selected contributes to the candidate set.
+
+    ``unreadable`` names the evidence some completion of the record would have bound
+    a value out of and this trial does not carry. It is non-empty only where
+    ``assignments`` is empty, since a name reading nothing empties the product: the
+    event is a candidate whose value the trial cannot name, which is missing evidence
+    rather than an event carrying no value.
+    """
+
+    assignments: list[Mapping[str, Any]]
+    unreadable: frozenset[str]
+
+
+def _bound_event(
     binding: TraceBinding, event: TraceEvent, results: Mapping[str, TraceEvent]
-) -> list[Mapping[str, Any]]:
+) -> _BoundEvent:
     """One assignment per element of the cross product of the names' extracted values.
 
     A plain ``field`` reads one value and a ``pattern`` one per capture, so a name
     reading nothing empties the product — the event binds no assignment at all
-    rather than an assignment with a hole in it.
+    rather than an assignment with a hole in it. Which emptiness that is follows
+    :func:`_unreadable_when_none`, the same rule a predicate over the field reads:
+    an absent argument is an absent value, and a ``result`` on a call the trial
+    recorded no outcome for is evidence the trial does not carry.
     """
     outcome = _outcome_of(event, results)
     names = sorted(binding.values)
     extracted = [_extracted(binding.values[name], event, outcome) for name in names]
-    return [dict(zip(names, values, strict=True)) for values in itertools.product(*extracted)]
+    unreadable = _unreadable_when_none(outcome).intersection(
+        binding.values[name].head_segment()
+        for name, values in zip(names, extracted, strict=True)
+        if not values
+    )
+    return _BoundEvent(
+        [dict(zip(names, values, strict=True)) for values in itertools.product(*extracted)],
+        unreadable,
+    )
 
 
 def _extracted(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> list[Any]:

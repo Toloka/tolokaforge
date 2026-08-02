@@ -728,8 +728,12 @@ NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 
+# Every way a binder leaves its constraint's ``require`` tree unentered: no event
+# selected, events carrying no value to bind, and an event whose value the trial does
+# not record. One detail rather than one per reason, because the record answers "was
+# this kind evaluated" and the constraint's own message answers why it was not.
 UNBOUND_BINDING_SKIP = KeyAccountingRecord(
-    outcome=KeyAccounting.SKIPPED, detail="the binding selected no event"
+    outcome=KeyAccounting.SKIPPED, detail="the binding yielded no assignment"
 )
 
 TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")

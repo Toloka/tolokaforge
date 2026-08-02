@@ -29,6 +29,7 @@ from tolokaforge.core.grading.key_manifest import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TrialTimeline
+from tolokaforge.core.models import ToolCall
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
@@ -527,6 +528,65 @@ def test_a_constraint_whose_binder_selected_nothing_accounts_its_kinds_as_skippe
 
     assert audit_accounted_keys(beside_an_evaluated_sibling, both).error is None
     assert both[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == EVALUATED
+
+
+def test_a_binder_whose_value_the_trial_never_recorded_accounts_its_kinds_as_skipped():
+    """The other way a ``require`` tree goes unentered: no assignment to enter it under.
+
+    The binder selects the call and the trial records no outcome for it, so the value
+    it extracts is unreadable rather than absent — a candidate with no name. There is
+    nothing to evaluate the tree under, so the kind reaches the ledger no more than an
+    unbound binder's does, and left unaccounted the RPC fails on a key the config
+    populates. The constraint itself is a failing sub-check, not a silent resolution.
+    """
+    config = GradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[
+                {
+                    "id": "quoted_only_what_a_tool_returned",
+                    "description": "every grade the agent quoted came out of an inspection",
+                    "bind": {
+                        "match": {
+                            "kind": "tool_call",
+                            "tool": {"equals": "inspect_widget"},
+                            "status": {"equals": "success"},
+                        },
+                        "values": {"grade": {"field": "result"}},
+                    },
+                    "require": {
+                        "present": {
+                            "match": {
+                                "kind": "assistant_message",
+                                "text": {"contains_binding": "grade"},
+                            }
+                        }
+                    },
+                }
+            ]
+        )
+    )
+    timeline = build_turn_timeline(
+        [
+            Turn("user", "Inspect widget w1 and tell me its grade."),
+            Turn(
+                "assistant",
+                "Widget w1 is grade A.",
+                unexecuted=[ToolCall(id="never_ran", name="inspect_widget", arguments={})],
+            ),
+        ]
+    )
+
+    result = evaluate_trace_checks(timeline, config.trace_checks)
+    audit = audit_accounted_keys(config, result.accounted_keys)
+
+    assert timeline.records_present is False
+    assert audit.error is None
+    assert audit.skip_notes == (
+        f"{TRACE_CONSTRAINT_KEY_BY_KIND['present']} skipped: {UNBOUND_BINDING_SKIP.detail}",
+    )
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP
+    assert result.constraints[0].passed is False
+    assert "cannot be decided" in result.constraints[0].message
 
 
 # --------------------------------------------------------------------------
