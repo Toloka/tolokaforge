@@ -1239,6 +1239,23 @@ class HarnessAdapterConfig(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class GradingValidationConfig(BaseModel):
+    """How strictly the pre-run gate reads the selected packs' grading blocks.
+
+    A sub-object rather than a bare flag so a second severity class does not
+    need a second top-level key.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    advisory: bool = True
+    """Whether a finding no schema can prove wrong fails the run too.
+
+    Errors are unconditional and take no input from here, and the ``unchecked``
+    channel is not reachable from this block at all.
+    """
+
+
 class EvaluationConfig(BaseModel):
     """Evaluation configuration.
 
@@ -1257,6 +1274,14 @@ class EvaluationConfig(BaseModel):
     output_dir: str
     cache_images: bool = True
     harness_adapter: HarnessAdapterConfig | None = None
+    grading_validation: GradingValidationConfig = Field(default_factory=GradingValidationConfig)
+    """Severity policy for the pre-run grading gate.
+
+    ``extra="ignore"`` on this model means a misspelled *block* name —
+    ``grading_validaton:`` — is dropped without a word and the defaults stand.
+    The sub-object's own ``extra="forbid"`` catches a misspelled field inside a
+    correctly-named block. Documented in ``docs/CONFIG.md``.
+    """
 
     @model_validator(mode="before")
     @classmethod

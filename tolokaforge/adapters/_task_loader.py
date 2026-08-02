@@ -451,6 +451,23 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     return ToolInventory(declared=declared, parameters=parameters, known=True)
 
 
+def tool_inventory_under_adapter(
+    task: TaskConfig, task_dir: Path, adapter_type: str
+) -> ToolInventory:
+    """The inventory to check *task*'s grading against, under *adapter_type*.
+
+    ``tools.agent`` is the native reading of a task's tool set. For a task an
+    external adapter owns it is not necessarily the set the run builds, so
+    :meth:`ToolInventory.unresolvable` is the honest answer — checking names
+    against a reading the adapter does not use would reject packs that run fine.
+    """
+    from tolokaforge.runner.models import AdapterType
+
+    if adapter_type != AdapterType.NATIVE.value:
+        return ToolInventory.unresolvable()
+    return build_tool_inventory(task, task_dir)
+
+
 def _builtin_tool_schemas(
     tool_names: list[str], tool_configs: dict[str, dict] | None = None
 ) -> dict[str, dict]:

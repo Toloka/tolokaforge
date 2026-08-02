@@ -17,7 +17,6 @@ from tolokaforge.core.budgets import LimitHitMarker, make_budget
 from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
-from tolokaforge.core.grading.config_validation import ToolInventory
 from tolokaforge.core.grading.replay import (
     KnowledgeSearchMode,
     ReplayOutcomeStatus,
@@ -1221,22 +1220,6 @@ def _load_task_under_its_project(task_file: Path) -> tuple[TaskConfig, Path]:
     )
 
 
-def _task_tool_inventory(task_config: TaskConfig, task_dir: Path) -> ToolInventory:
-    """The tool set to check the task's grading against, or the not-checkable value.
-
-    ``validate`` reads every task through the native loader, so for a task an
-    external adapter owns, ``tools.agent`` is not necessarily the tool set the run
-    would build. Reporting that as unchecked is the honest answer; checking names
-    against a reading the adapter does not use would reject packs that run fine.
-    """
-    from tolokaforge.adapters._task_loader import build_tool_inventory
-    from tolokaforge.runner.models import AdapterType
-
-    if task_config.adapter_type != AdapterType.NATIVE.value:
-        return ToolInventory.unresolvable()
-    return build_tool_inventory(task_config, task_dir)
-
-
 @cli.command()
 @click.option("--tasks", required=True, help="Glob pattern for task files")
 def validate(tasks: str):
@@ -1245,7 +1228,10 @@ def validate(tasks: str):
 
     import glob
 
-    from tolokaforge.adapters._task_loader import validate_grading_yaml
+    from tolokaforge.adapters._task_loader import (
+        tool_inventory_under_adapter,
+        validate_grading_yaml,
+    )
 
     task_files = glob.glob(tasks, recursive=True)
     if not task_files:
@@ -1264,7 +1250,9 @@ def validate(tasks: str):
             # migration message rather than only at run time.
             report = validate_grading_yaml(
                 task_dir / task_config.grading,
-                inventory=_task_tool_inventory(task_config, task_dir),
+                inventory=tool_inventory_under_adapter(
+                    task_config, task_dir, task_config.adapter_type
+                ),
             )
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:

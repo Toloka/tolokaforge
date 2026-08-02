@@ -70,10 +70,16 @@ evaluation:
   harness_adapter:
     type: "native"
     params: {}
+  # Optional: how strictly the pre-run gate reads each selected pack's grading
+  # block. Omit the whole block for the default below.
+  grading_validation:
+    advisory: true
 ```
 
 Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
+- `evaluation.grading_validation.advisory` (default `true`) decides whether the pre-run gate's advisory findings fail the run. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). Errors are fatal whatever this is set to, and `unchecked` entries are fatal under neither setting — they are logged so a gate that could check nothing does not read as a clean bill of health.
+- **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated operator override for backend selection; when unset, selection is task-driven. It accepts any name registered in the `tolokaforge.runtime_backends` entry-point group (built-in `shared` / `per_trial` / `in_memory`, or a plug-in's name), resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).

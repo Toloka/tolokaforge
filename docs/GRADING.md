@@ -1471,7 +1471,10 @@ a `present` matcher scores the component `0.0` with the message a genuine agent
 failure carries, the same typo under `absent` passes every trial, and an
 uncompilable `regex` raises inside the evaluator once the tokens are spent. So the
 block is checked against the task's tools before anything is paid for — by
-`tolokaforge validate`, which exits non-zero, and by the run's pre-flight.
+`tolokaforge validate`, which exits non-zero, and by the run's own pre-flight, which
+makes one pass over every selected task before it schedules the first trial and
+aborts naming **every** offending task. The same pass runs at `tolokaforge prepare`,
+so a distributed enqueue is rejected once rather than by every worker identically.
 
 Findings come in three classes:
 
@@ -1487,17 +1490,19 @@ Findings come in three classes:
 | an `args` path on a tool whose schema did not resolve | unchecked | per matcher |
 | an `args` path below its first segment | unchecked | per path |
 
-An **error** always fails the pack. An **advisory** fails it unless the run config
-turns advisories off: an MCP tool's schema declares its properties but permits
-others, so an unknown argument name there is a probable typo rather than a
-certainty, and hard-failing would enforce a claim the schema does not make.
+An **error** always fails the pack. An **advisory** fails it unless
+`evaluation.grading_validation.advisory: false` is set on the run config: an MCP
+tool's schema declares its properties but permits others, so an unknown argument
+name there is a probable typo rather than a certainty, and hard-failing would
+enforce a claim the schema does not make.
 
 **`unchecked` never fails anything.** It is a separate channel, not a third
 severity: nothing reads it to decide whether to raise, so the gate has no
-false-reject mode. It is printed beside the task all the same — a gate that could
-check nothing must not read as a clean bill of health. A task whose tool set the
-validate path cannot resolve, an MCP pack that commits no `fixtures/tools.json`, and
-an `args` path below its first segment all land here.
+false-reject mode. It is surfaced beside the task all the same — `validate` prints
+it, a run logs it — because a gate that could check nothing must not read as a clean
+bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
+commits no `fixtures/tools.json`, and an `args` path below its first segment all
+land here.
 
 Only the first segment of an `args` path is checked, and only against `properties`.
 `json.q` on `http_request` is checked at `json` and stops, because `json`'s own
