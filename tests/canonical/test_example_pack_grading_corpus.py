@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and its packs discriminate.
 
-Eight claims over the packs an author reads as the reference:
+Nine claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -43,6 +43,11 @@ Eight claims over the packs an author reads as the reference:
    only the message trace. Without the record its flagship correlation cannot read
    ``status`` and the same trajectory scores ``0.5``, which is a replay blaming the
    author for evidence nobody wrote down.
+9. **The replay engine reproduces a recorded verdict rather than re-deriving one.**
+   Two ``cache_debug`` bundles written with their live grades re-check, through
+   ``run_trace_replay_batch``, to the per-constraint verdicts and the winning route
+   their own ``grade.yaml`` recorded — one bundle per route, one with the shared gate
+   shut, so neither column is a constant.
 """
 
 from __future__ import annotations
@@ -55,7 +60,7 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
-from tests.canonical._factories import make_trajectory
+from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
@@ -64,19 +69,23 @@ from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
+from tolokaforge.core.grading.trace_replay import (
+    ConstraintProvenance,
+    TraceReplayOutcomeStatus,
+    read_trace_replay_inputs,
+    run_trace_replay_batch,
+)
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
     GradingConfig,
-    Message,
-    MessageRole,
     RecordedToolCall,
-    ToolCall,
     ToolExecutionStatus,
     TraceChecksConfig,
     TraceChecksResult,
     TraceConstraintKind,
+    TraceConstraintResult,
     TraceConstraintSeverity,
     Trajectory,
 )
@@ -601,33 +610,6 @@ def _root_cause_note(sequence: int, text: str = _NOTE_TEXT) -> RecordedToolCall:
     )
 
 
-def _trial_messages(calls: Sequence[RecordedToolCall], turns: tuple[str, str]) -> list[Message]:
-    """The message view a trial leaves behind, as ``ToolCallingLoop`` writes it.
-
-    A user turn, an assistant turn declaring every call, and then one ``role: tool``
-    message per executed call carrying that call's output and keyed by its id. The
-    last part is what a bundle persists and what the timeline falls back to for
-    ``result`` text, so a view that omits it understates what a re-graded bundle can
-    still decide.
-    """
-    user, assistant = turns
-    return [
-        Message(role=MessageRole.USER, content=user),
-        Message(
-            role=MessageRole.ASSISTANT,
-            content=assistant,
-            tool_calls=[
-                ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments)
-                for call in calls
-            ],
-        ),
-        *[
-            Message(role=MessageRole.TOOL, content=call.output, tool_call_id=call.call_id)
-            for call in calls
-        ],
-    ]
-
-
 _ROUTE_A_IN_FULL = (_read(0, _SERVED), _read(1, _SOURCE), _root_cause_note(2))
 _ROUTE_B_IN_FULL = (
     _read(0, _SERVED),
@@ -830,7 +812,7 @@ def test_the_cache_debug_gate_fails_a_trial_whose_winning_route_scored_in_full()
     grade = GradingEngine(_grading_config(_CACHE_DEBUG_TASK)[1]).grade_trajectory(
         make_trajectory(
             task_id="cache_debug",
-            messages=_trial_messages(_MUTATING_RUN, _CACHE_DEBUG_TURNS),
+            messages=make_trial_messages(_MUTATING_RUN, _CACHE_DEBUG_TURNS),
             tool_log=list(_MUTATING_RUN),
         ),
         _NOTE_ON_DISK,
@@ -1039,7 +1021,7 @@ def _lot_ops_grade(calls: Sequence[RecordedToolCall]) -> Grade:
     return GradingEngine(_lot_ops_grading()).grade_trajectory(
         make_trajectory(
             task_id="lot_ops_01",
-            messages=_trial_messages(calls, _LOT_OPS_TURNS),
+            messages=make_trial_messages(calls, _LOT_OPS_TURNS),
             tool_log=list(calls),
         ),
         {"filesystem": {"/env/fs/agent-visible/submissions/report.md": "CAPA-01 on LOT-1007"}},
@@ -1179,7 +1161,7 @@ def test_the_lot_ops_correct_run_regrades_from_its_own_bundle_to_the_live_verdic
         trial_dir,
         make_trajectory(
             task_id="lot_ops_01",
-            messages=_trial_messages(calls, _LOT_OPS_TURNS),
+            messages=make_trial_messages(calls, _LOT_OPS_TURNS),
             tool_log=list(calls),
         ),
         {"task_id": "lot_ops_01", "trial_index": 0},
@@ -1199,3 +1181,67 @@ def test_the_lot_ops_correct_run_regrades_from_its_own_bundle_to_the_live_verdic
     assert result.gate_failed is False
     assert _failed(result) == []
     assert timeline.records_present is True
+
+
+# Which route each of the two bundles below was scored on, in the order they are
+# written. The mutating run loses route A on the reads it never made, so the pair
+# varies the winner rather than reproducing one constant.
+_CACHE_DEBUG_REPLAY_RUNS = (
+    (_ROUTE_A_IN_FULL, "divergence_between_the_api_layers"),
+    (_MUTATING_RUN, "divergence_against_the_cache"),
+)
+
+
+def _verdicts(constraints: Sequence[TraceConstraintResult]) -> set[tuple[str, bool, bool]]:
+    return {(item.id, item.passed, item.undecided) for item in constraints}
+
+
+def _write_cache_debug_bundle(trial_dir: Path, calls: Sequence[RecordedToolCall]) -> None:
+    """A bundle for one ``cache_debug`` trajectory, graded the way a real run grades it."""
+    config = _grading_config(_CACHE_DEBUG_TASK)[1]
+    trajectory = make_trajectory(
+        task_id="cache_debug",
+        messages=make_trial_messages(calls, _CACHE_DEBUG_TURNS),
+        tool_log=list(calls),
+    )
+    grade = GradingEngine(config).grade_trajectory(trajectory, _NOTE_ON_DISK)
+    FileArtifactWriter().write_trial_bundle(
+        trial_dir,
+        trajectory.model_copy(update={"grade": grade}),
+        {"task_id": "cache_debug", "grading_config": config.model_dump(mode="json")},
+        {},
+        StructuredLogger(f"cache_debug-{trial_dir.name}"),
+    )
+
+
+def test_a_cache_debug_bundle_re_checks_to_the_verdict_its_own_grade_recorded(
+    tmp_path: Path,
+) -> None:
+    """A recorded run is re-checkable against itself, and the two sides are independent.
+
+    One side is the live fold, evaluated by ``GradingEngine`` and frozen into
+    ``grade.yaml`` at write time; the other is the recomputation the replay engine
+    performs now over the bundle it reads back. Both bundles are written from one
+    pack, so the pair varies the two things a constant would fake: the winning route,
+    and whether the shared gate shut.
+    """
+    for index, (calls, _) in enumerate(_CACHE_DEBUG_REPLAY_RUNS):
+        _write_cache_debug_bundle(tmp_path / "trials" / "cache_debug" / str(index), calls)
+
+    outcomes = run_trace_replay_batch(tmp_path, replay_id="parity")
+    recorded = [read_trace_replay_inputs(outcome.bundle) for outcome in outcomes]
+
+    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.REPLAYED] * 2
+    for outcome, inputs, (_, route) in zip(
+        outcomes, recorded, _CACHE_DEBUG_REPLAY_RUNS, strict=True
+    ):
+        assert outcome.result is not None
+        assert inputs.recorded_constraints is not None
+        assert inputs.recorded_summary is not None
+        assert _verdicts(outcome.result.constraints) == _verdicts(inputs.recorded_constraints)
+        assert len(outcome.result.constraints) == 5
+        assert outcome.result.winning_path == inputs.recorded_summary.winning_path == route
+
+    assert [inputs.provenance for inputs in recorded] == [ConstraintProvenance.RECORDED] * 2
+    assert [inputs.recorded_summary.gate_failed for inputs in recorded] == [False, True]
+    assert [outcome.result.gate_failed for outcome in outcomes] == [False, True]

@@ -8,6 +8,7 @@ as keyword overrides.
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -17,11 +18,13 @@ from tolokaforge.core.models import (
     ActorSpec,
     InitialStateConfig,
     Message,
+    MessageRole,
     Metrics,
     ModelConfig,
     RecordedToolCall,
     TaskConfig,
     TerminationReason,
+    ToolCall,
     ToolsConfig,
     Trajectory,
     TrialStatus,
@@ -106,6 +109,33 @@ def write_yaml_file(path: Path, data: dict) -> None:
     """
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False))
+
+
+def make_trial_messages(calls: Sequence[RecordedToolCall], turns: tuple[str, str]) -> list[Message]:
+    """The message view a trial leaves behind, as ``ToolCallingLoop`` writes it.
+
+    A user turn, an assistant turn declaring every call, and then one ``role: tool``
+    message per executed call carrying that call's output and keyed by its id. The
+    last part is what a bundle persists and what the timeline falls back to for
+    ``result`` text, so a view that omits it understates what a re-graded bundle can
+    still decide.
+    """
+    user, assistant = turns
+    return [
+        Message(role=MessageRole.USER, content=user),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content=assistant,
+            tool_calls=[
+                ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments)
+                for call in calls
+            ],
+        ),
+        *[
+            Message(role=MessageRole.TOOL, content=call.output, tool_call_id=call.call_id)
+            for call in calls
+        ],
+    ]
 
 
 def make_trajectory(
