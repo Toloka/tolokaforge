@@ -2649,6 +2649,24 @@ class TracePathResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class TraceChecksSummary(BaseModel):
+    """Which route a trial was scored on and whether a gate shut it.
+
+    The part of :class:`TraceChecksResult` that survives onto the ``Grade``: the
+    per-constraint verdicts ride ``Grade.trace_check_results`` beside it, and the
+    accounting is the runner's own. ``None`` on a ``Grade`` means the runner that
+    produced it predates the field, which is a different statement from a summary
+    saying no gate failed.
+    """
+
+    winning_path: str = ""
+    gate_failed: bool = False
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    paths: list[TracePathResult] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
 class TraceChecksResult(BaseModel):
     """What evaluating a pack's ``trace_checks`` block produced.
 

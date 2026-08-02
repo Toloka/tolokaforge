@@ -1131,8 +1131,14 @@ predicates, nested argument paths, counting, and a call's status or result.
 (`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
-the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks` and
-are written inline in `grade.yaml` under `trace_check_results`.
+the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
+each carrying its `severity`, and are written inline in `grade.yaml` under
+`trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
+gates that shut and one line per alternative, and lands beside them under
+`trace_checks_summary`. **A tripped gate fails the trial on both substrates** —
+the core engine's combine and the runner's `GradeTrial` each force `binary_pass`
+false, the same act the runner already performs on the judge's
+[required-criterion gate](#required-gate-semantics).
 
 **A trial whose timeline carries no events leaves the component unscored.** Every
 constraint would otherwise be answered by evidence the trial does not have. The

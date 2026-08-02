@@ -266,6 +266,15 @@ message Grade {
   // trace_checks and the timeline carried events). Small and scannable, so the
   // host writes it inline in grade.yaml rather than to a sidecar.
   repeated TraceConstraintResult trace_checks = 10;
+
+  // Which alternative route won and whether a trace gate shut. Always set by a
+  // runner that has the field, empty-valued when the pack declared no
+  // alternatives and no gate — the same "present but empty" shape trace_checks
+  // above uses. A message rather than four scalars because proto3 scalars carry
+  // no presence: gate_failed = false decoded from a runner predating this field
+  // is a gate silently opening, and the host must tell that apart from a runner
+  // that evaluated the gate and found it held.
+  TraceChecksSummary trace_checks_summary = 11;
 }
 
 // The rubric judge's own accounting + audit transcript (see docs/RUBRIC_GRADING_DESIGN.md
@@ -394,6 +403,34 @@ message TraceConstraintResult {
   // Timeline positions the constraint's matchers selected — an event is looked
   // up by position against trajectory.yaml
   repeated int32 matched_positions = 6;
+  // "scored" or "gate". Empty from a runner predating the field; such a runner
+  // rejects a pack declaring severity at RegisterTrial (the config model forbids
+  // unknown keys), so every verdict it can produce is scored.
+  string severity = 7;
+}
+
+// One alternative route's own outcome, whether or not it won. score is the
+// route's normalised score over the shared constraints and its own, never zeroed
+// by a gate — only the component is — so the grade shows whether the winner won
+// by a mile or a hair.
+message TracePathResult {
+  string id = 1;
+  double score = 2;
+  bool gate_failed = 3;
+}
+
+// Which route the trial was scored on and whether a gate shut it.
+message TraceChecksSummary {
+  // The winning route's id; "" when the pack declared no alternatives.
+  string winning_path = 1;
+  // A gate in the winning decision set did not hold. The trial fails outright,
+  // independent of pass_threshold.
+  bool gate_failed = 2;
+  // The gates that did not hold, in declaration order.
+  repeated string failed_gate_ids = 3;
+  // One line per declared alternative, in declaration order, so the max the
+  // component took is auditable from the grade alone.
+  repeated TracePathResult paths = 4;
 }
 
 message CustomCheckResult {

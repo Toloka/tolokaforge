@@ -347,6 +347,13 @@ message Grade {
   // Host cannot read fails the grade parse instead of being dropped: nothing
   // else records which constraint failed.
   repeated TraceConstraintResult trace_checks = 10;
+
+  // Which alternative route the component was scored on and whether a trace
+  // gate shut the trial. A message, not four scalars: proto3 scalars carry no
+  // presence, and a false gate_failed decoded from a Runner predating the field
+  // is a gate silently opening. A payload the Host cannot read fails the grade
+  // parse, for the reason trace_checks above does.
+  TraceChecksSummary trace_checks_summary = 11;
 }
 
 message TraceConstraintResult {
@@ -356,6 +363,20 @@ message TraceConstraintResult {
   double weight = 4;                    // the author's weight, as it entered the fold
   string message = 5;                   // empty on a pass
   repeated int32 matched_positions = 6; // timeline positions, resolved in trajectory.yaml
+  string severity = 7;                  // "scored" | "gate"; empty from an older Runner
+}
+
+message TracePathResult {
+  string id = 1;
+  double score = 2;      // the route's own score, never zeroed by a gate
+  bool gate_failed = 3;
+}
+
+message TraceChecksSummary {
+  string winning_path = 1;           // "" when the pack declared no alternatives
+  bool gate_failed = 2;              // the trial fails outright, whatever the score
+  repeated string failed_gate_ids = 3;
+  repeated TracePathResult paths = 4;  // one per alternative, in declaration order
 }
 
 message CriterionResult {
@@ -761,7 +782,10 @@ it omits the field, and proto3 would decode that omission as `0.0` — recording
 scored zero for a runner that cannot evaluate trace checks at all. The
 `RegisterTrial` version lock does not cover this direction, because a newer
 engine registers happily against an older runner. `include_agent_system_prompt`
-on `JudgeReport` carries the same reasoning for the same reason.
+on `JudgeReport` and `Grade.trace_checks_summary` carry the same reasoning: the
+summary is a *message* so that an absent one is distinguishable from one
+reporting that no gate failed, which is the difference between "this runner
+cannot evaluate a gate" and "the gate held".
 
 The host reads presence, not just the value, so three things all reach `None`:
 the `-1.0` sentinel, an absent `components` submessage, and a presence-carrying

@@ -44,7 +44,7 @@ from tolokaforge.core.compose_materialisation import (
     write_capture_manifest,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.models import SeedRef
+from tolokaforge.core.models import SeedRef, TraceConstraintSeverity
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
     ComponentSnapshot,
@@ -604,9 +604,34 @@ class GrpcRunnerClient:
                             "weight": tc.weight,
                             "message": tc.message,
                             "matched_positions": list(tc.matched_positions),
+                            # A proto3 string carries no presence and "" is not a
+                            # severity, so an empty one is a runner predating the
+                            # field. Such a runner rejects a pack declaring severity
+                            # at RegisterTrial, so its verdicts are all scored.
+                            "severity": tc.severity or TraceConstraintSeverity.SCORED.value,
                         }
                         for tc in grade.trace_checks
                     ],
+                    # Which route won and whether a gate shut. Absent — not empty —
+                    # from a runner predating the field, and the host keeps that
+                    # apart from a summary saying no gate failed.
+                    "trace_checks_summary": (
+                        {
+                            "winning_path": grade.trace_checks_summary.winning_path,
+                            "gate_failed": grade.trace_checks_summary.gate_failed,
+                            "failed_gate_ids": list(grade.trace_checks_summary.failed_gate_ids),
+                            "paths": [
+                                {
+                                    "id": path.id,
+                                    "score": path.score,
+                                    "gate_failed": path.gate_failed,
+                                }
+                                for path in grade.trace_checks_summary.paths
+                            ],
+                        }
+                        if grade.HasField("trace_checks_summary")
+                        else None
+                    ),
                     "judge_status": grade.judge_status,
                     # Judge accounting + audit transcript. The judge runs its own
                     # LLM in the Runner; its usage/cost and message transcript are

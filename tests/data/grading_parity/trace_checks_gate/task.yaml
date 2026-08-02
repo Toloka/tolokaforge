@@ -1,0 +1,26 @@
+task_id: trace_checks_gate
+name: "Substrate differential: trace_checks_gate"
+category: test
+description: |
+  Substrate-parity fixture for the trace gate. The pack passes at any score, so
+  the only thing that can fail a trial here is the gate.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled: []
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml
