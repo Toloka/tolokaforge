@@ -9,8 +9,15 @@ view, ``tool_log.yaml`` for the tool-call record — and scores the pack's
 
 Nothing here runs an agent, an environment or a judge, so a replay costs no
 tokens and starts no container. That is a structural property of the imports, not
-a promise: this module reaches the evaluator and the bundle reader and stops
-there.
+a promise: this module reaches the evaluator, the bundle reader and the authoring
+gate, and stops there.
+
+Constraints can come from a supplied file instead of the bundle, which is how an
+author iterates on one without editing the pack. Such a block is checked against
+each bundle's recorded tool set — through the same
+:func:`~tolokaforge.core.grading.config_validation.inspect_grading_authoring` a
+pack meets before a run — *before* any trial is re-checked, so a misspelled tool
+is one defect in one file rather than a corpus of trials that all failed.
 
 The source run is left as it was found. Artifacts land under
 ``<source>/trace_replay/<replay_id>/…``, a sibling of judge replay's ``replays/``
@@ -19,7 +26,8 @@ so neither command's discovery walks the other's output.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -28,6 +36,11 @@ import yaml
 from pydantic import ValidationError
 from pydantic_core import ErrorDetails
 
+from tolokaforge.core.grading.config_validation import (
+    AuthoringReport,
+    ToolInventory,
+    inspect_grading_authoring,
+)
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -49,15 +62,19 @@ __all__ = [
     "BundleEvidence",
     "ConstraintProvenance",
     "MissingTraceReplayInputError",
+    "TraceChecksOverride",
+    "TraceChecksOverrideError",
     "TraceReplayEligibility",
     "TraceReplayInputs",
     "TraceReplayOutcomeStatus",
     "TrialTraceReplayOutcome",
     "classify_trace_trial",
     "discover_trace_bundles",
+    "load_trace_checks_override",
     "read_trace_replay_inputs",
     "replay_trace_checks",
     "run_trace_replay_batch",
+    "tool_inventory_from_bundle",
 ]
 
 #: Subdirectory replay artifacts are written under; excluded from discovery so a
@@ -68,6 +85,7 @@ TRACE_REPLAY_DIRNAME = "trace_replay"
 TRACE_CHECKS_RESULT_FILENAME = "trace_checks_result.yaml"
 
 _BUNDLE_MARKERS = ("task.yaml", "trajectory.yaml")
+_TOOLS_SCHEMAS_FILENAME = "tools_schemas.yaml"
 
 
 class TraceReplayEligibility(str, Enum):
@@ -112,6 +130,120 @@ class MissingTraceReplayInputError(ValueError):
     The message names the file and the defect. Never raised for a bundle that
     declares no ``trace_checks`` — that is a declared skip.
     """
+
+
+class TraceChecksOverrideError(ValueError):
+    """An operator-supplied constraint file cannot be used, and the message says why.
+
+    Distinct from :class:`MissingTraceReplayInputError`, which is a defect in a
+    recorded bundle: a bundle defect fails that trial and the batch runs on, while
+    an override is wrong for every trial at once, so it stops the batch before
+    anything is re-checked against a block already known to be mis-authored.
+    """
+
+
+@dataclass(frozen=True)
+class TraceChecksOverride:
+    """A constraint block supplied on the command line, and the file it came from.
+
+    ``block`` is the mapping as authored, because the authoring gate addresses a
+    defect by where the operator wrote it; ``config`` is that same mapping
+    validated, derived here so the two cannot drift. The block's own rejections
+    describe what is wrong with a ``trace_checks`` block but not *which* file
+    carries it, so they are re-raised naming the path.
+    """
+
+    path: Path
+    block: Mapping[str, Any]
+    config: TraceChecksConfig = field(init=False)
+
+    def __post_init__(self) -> None:
+        try:
+            config = TraceChecksConfig.model_validate(self.block)
+        except ValidationError as exc:
+            raise TraceChecksOverrideError(
+                f"constraint override {self.path} cannot be used as written: {exc}"
+            ) from exc
+        object.__setattr__(self, "config", config)
+
+
+def load_trace_checks_override(path: Path) -> TraceChecksOverride:
+    """Read a constraint block off an operator-supplied file.
+
+    Accepts a grading document carrying a ``trace_checks:`` key or the bare block,
+    so the file can be a pack's ``grading.yaml`` or a snippet written to iterate on
+    one constraint. Whichever it is, it replaces a bundle's block wholesale —
+    nothing is merged, because two constraint lists folded together assert
+    something neither was written to assert.
+    """
+    path = Path(path)
+    if not path.exists():
+        raise TraceChecksOverrideError(f"constraint override {path} does not exist")
+    try:
+        document = _load_yaml_mapping(path)
+    except MissingTraceReplayInputError as exc:
+        raise TraceChecksOverrideError(f"constraint override {path} is unreadable: {exc}") from exc
+    if document is None:
+        raise TraceChecksOverrideError(f"constraint override {path} is not a YAML mapping")
+    block = document.get("trace_checks")
+    if isinstance(block, Mapping):
+        return TraceChecksOverride(path=path, block=block)
+    if "constraints" in document or "alternatives" in document:
+        return TraceChecksOverride(path=path, block=document)
+    raise TraceChecksOverrideError(
+        f"constraint override {path} declares nothing to re-check: it carries neither a "
+        "'trace_checks:' block nor a top-level 'constraints:' / 'alternatives:' list"
+    )
+
+
+def tool_inventory_from_bundle(bundle: Path) -> ToolInventory:
+    """The tool set a recorded trial actually had, read off its wire record.
+
+    ``tools_schemas.yaml`` is the post-policy list handed to the provider, so it is
+    what the trial's actor could call whichever adapter assembled it — a stronger
+    reading than the pack's declaration, which says what the task asked for. A
+    bundle that recorded none is :meth:`ToolInventory.unresolvable`, which routes
+    every schema-dependent rule into the report's ``unchecked`` channel: absent is
+    not empty, and an empty inventory would make every tool name in an override
+    wrong.
+    """
+    path = Path(bundle) / _TOOLS_SCHEMAS_FILENAME
+    if not path.exists():
+        return ToolInventory.unresolvable()
+    try:
+        recorded = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except yaml.YAMLError as exc:
+        raise MissingTraceReplayInputError(f"unreadable YAML at {path}: {exc}") from exc
+    if not isinstance(recorded, list):
+        raise MissingTraceReplayInputError(
+            f"{path} holds {type(recorded).__name__} where the recorded wire tool list "
+            "belongs, so the trial cannot say which tools its actor could call"
+        )
+    recorded_tools = [_recorded_tool(path, index, entry) for index, entry in enumerate(recorded)]
+    return ToolInventory(
+        declared=frozenset(name for name, _ in recorded_tools),
+        parameters={name: schema for name, schema in recorded_tools if schema is not None},
+        known=True,
+    )
+
+
+def _recorded_tool(path: Path, index: int, entry: Any) -> tuple[str, Mapping[str, Any] | None]:
+    """One recorded tool: its name, and its parameter schema where it recorded one.
+
+    Both sit under ``function`` — the conductor builds the OpenAI function envelope
+    for every provider, so that is the one shape a bundle carries. A tool recording
+    no parameters mapping is left out of the inventory's schemas rather than given
+    an empty one, so its argument names classify as unknown rather than as wrong.
+    """
+    function = entry.get("function") if isinstance(entry, Mapping) else None
+    name = function.get("name") if isinstance(function, Mapping) else None
+    if not isinstance(name, str) or not name:
+        raise MissingTraceReplayInputError(
+            f"{path} entry {index} records no function.name, so the tool it stands for "
+            "cannot be matched against a constraint"
+        )
+    schema = function.get("parameters")
+    return name, schema if isinstance(schema, Mapping) else None
 
 
 @dataclass(frozen=True)
@@ -160,6 +292,13 @@ class TrialTraceReplayOutcome:
     ``evidence`` is ``None`` exactly where the bundle was never read — a declared
     skip or a failure — which is a different statement from an unstamped,
     record-less bundle.
+
+    ``override_authoring`` is what the authoring gate found checking the supplied
+    block against this bundle's recorded tool set, ``None`` where no override was
+    supplied. Errors never reach here — they stop the batch — so it carries the
+    advisories and the rules the bundle's tool record could not answer. A caller
+    that reports the outcome without it reports a block checked against nothing as
+    a block checked and found clean.
     """
 
     bundle: Path
@@ -169,6 +308,7 @@ class TrialTraceReplayOutcome:
     evidence: BundleEvidence | None = None
     result: TraceChecksResult | None = None
     artifacts_dir: Path | None = None
+    override_authoring: AuthoringReport | None = None
 
 
 def _load_yaml_mapping(path: Path) -> dict[str, Any] | None:
@@ -207,7 +347,7 @@ def discover_trace_bundles(source: Path) -> list[Path]:
 
 
 def classify_trace_trial(
-    bundle: Path, *, override: TraceChecksConfig | None = None
+    bundle: Path, *, override: TraceChecksOverride | None = None
 ) -> TraceReplayEligibility:
     """Classify a recorded trial as having constraints to re-check, or not.
 
@@ -232,10 +372,10 @@ def _declared_trace_checks(task: dict[str, Any] | None) -> Any:
 
 
 def _resolve_trace_checks(
-    bundle: Path, task: dict[str, Any] | None, override: TraceChecksConfig | None
+    bundle: Path, task: dict[str, Any] | None, override: TraceChecksOverride | None
 ) -> tuple[TraceChecksConfig, ConstraintProvenance]:
     if override is not None:
-        return override, ConstraintProvenance.OVERRIDE
+        return override.config, ConstraintProvenance.OVERRIDE
     declared = _declared_trace_checks(task)
     if declared is None:
         raise MissingTraceReplayInputError(
@@ -333,7 +473,7 @@ def _schema_version(bundle: Path) -> int | None:
 
 
 def read_trace_replay_inputs(
-    bundle: Path, *, override: TraceChecksConfig | None = None
+    bundle: Path, *, override: TraceChecksOverride | None = None
 ) -> TraceReplayInputs:
     """Reconstruct one bundle's re-check inputs from what it persisted.
 
@@ -399,13 +539,73 @@ def _write_trace_checks_result(destination: Path, result: TraceChecksResult) -> 
         )
 
 
+def _failed(bundle: Path, reason: str) -> TrialTraceReplayOutcome:
+    return TrialTraceReplayOutcome(
+        bundle=bundle, status=TraceReplayOutcomeStatus.FAILED, reason=reason
+    )
+
+
+def _check_override_against_bundles(
+    override: TraceChecksOverride, bundles: Sequence[Path]
+) -> tuple[dict[Path, AuthoringReport], dict[Path, str]]:
+    """Check the supplied block against every bundle's recorded tool set.
+
+    Once per *distinct* recorded tool list rather than once per bundle: the gate's
+    answer is a function of the inventory alone, and a run repeats one task's list
+    byte for byte across its trials. A bundle whose list is present but unreadable
+    is returned as a failure instead — its tool set is unknown, not unresolvable,
+    and treating the two alike would report an unchecked block as checked.
+    """
+    grading = {"trace_checks": override.block}
+    checked: dict[str | None, AuthoringReport] = {}
+    reports: dict[Path, AuthoringReport] = {}
+    unreadable: dict[Path, str] = {}
+    for bundle in bundles:
+        recorded = _recorded_tool_schemas(bundle)
+        if recorded in checked:
+            reports[bundle] = checked[recorded]
+            continue
+        try:
+            inventory = tool_inventory_from_bundle(bundle)
+        except MissingTraceReplayInputError as exc:
+            unreadable[bundle] = str(exc)
+            continue
+        reports[bundle] = checked[recorded] = inspect_grading_authoring(grading, inventory)
+    return reports, unreadable
+
+
+def _recorded_tool_schemas(bundle: Path) -> str | None:
+    path = bundle / _TOOLS_SCHEMAS_FILENAME
+    return path.read_text(encoding="utf-8") if path.exists() else None
+
+
+def _refuse_mis_authored_override(
+    override: TraceChecksOverride, reports: Mapping[Path, AuthoringReport]
+) -> None:
+    """Stop the batch on a block that cannot be graded against a bundle's tools.
+
+    Before any trial is re-checked, and carrying every finding that tool set raised
+    rather than the first: a misspelled tool name is one defect in one file, and a
+    batch that ran anyway would report it as every trial failing the constraint.
+    """
+    for bundle, report in reports.items():
+        if not report.errors:
+            continue
+        written = "\n".join(f"  - {item.where}: {item.message}" for item in report.errors)
+        raise TraceChecksOverrideError(
+            f"constraint override {override.path} cannot be graded against the tools "
+            f"{bundle} recorded:\n{written}"
+        )
+
+
 def _replay_one_bundle(
     source: Path,
     bundle: Path,
     *,
     replay_id: str,
-    override: TraceChecksConfig | None,
+    override: TraceChecksOverride | None,
     dry_run: bool,
+    authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
         if classify_trace_trial(bundle, override=override) is TraceReplayEligibility.NOT_APPLICABLE:
@@ -414,9 +614,7 @@ def _replay_one_bundle(
             )
         inputs = read_trace_replay_inputs(bundle, override=override)
     except (MissingTraceReplayInputError, TimelineInconsistencyError) as exc:
-        return TrialTraceReplayOutcome(
-            bundle=bundle, status=TraceReplayOutcomeStatus.FAILED, reason=str(exc)
-        )
+        return _failed(bundle, str(exc))
 
     if dry_run:
         return TrialTraceReplayOutcome(
@@ -424,6 +622,7 @@ def _replay_one_bundle(
             status=TraceReplayOutcomeStatus.WOULD_REPLAY,
             provenance=inputs.provenance,
             evidence=inputs.evidence,
+            override_authoring=authoring,
         )
 
     result = replay_trace_checks(inputs)
@@ -436,6 +635,7 @@ def _replay_one_bundle(
         evidence=inputs.evidence,
         result=result,
         artifacts_dir=destination,
+        override_authoring=authoring,
     )
 
 
@@ -444,10 +644,15 @@ def run_trace_replay_batch(
     *,
     replay_id: str,
     trial: Path | None = None,
-    override: TraceChecksConfig | None = None,
+    override: TraceChecksOverride | None = None,
     dry_run: bool = False,
 ) -> list[TrialTraceReplayOutcome]:
     """Re-check every eligible trial under ``source`` sequentially.
+
+    An ``override`` is checked against every discovered bundle's recorded tool set
+    first and raises :class:`TraceChecksOverrideError` on a defect, so a
+    mis-authored block stops the batch rather than arriving as a corpus of failing
+    trials. What the gate could not check travels on each outcome.
 
     A bundle declaring no ``trace_checks`` and given no override is reported
     skipped; one that cannot be read or reconstructed is a named per-trial failure
@@ -459,7 +664,25 @@ def run_trace_replay_batch(
     """
     source = Path(source)
     bundles = [Path(trial)] if trial is not None else discover_trace_bundles(source)
-    return [
-        _replay_one_bundle(source, bundle, replay_id=replay_id, override=override, dry_run=dry_run)
-        for bundle in bundles
-    ]
+    reports: dict[Path, AuthoringReport] = {}
+    unreadable: dict[Path, str] = {}
+    if override is not None:
+        reports, unreadable = _check_override_against_bundles(override, bundles)
+        _refuse_mis_authored_override(override, reports)
+
+    outcomes: list[TrialTraceReplayOutcome] = []
+    for bundle in bundles:
+        if bundle in unreadable:
+            outcomes.append(_failed(bundle, unreadable[bundle]))
+            continue
+        outcomes.append(
+            _replay_one_bundle(
+                source,
+                bundle,
+                replay_id=replay_id,
+                override=override,
+                dry_run=dry_run,
+                authoring=reports.get(bundle),
+            )
+        )
+    return outcomes

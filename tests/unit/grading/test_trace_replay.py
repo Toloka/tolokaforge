@@ -12,10 +12,14 @@ Locks the contract of :mod:`tolokaforge.core.grading.trace_replay`:
   zero-call bundle from a bundle written before the record existed;
 * every unreadable input is a named per-trial failure that leaves the batch
   running, and a bundle predating call-id threading says that rather than handing
-  the operator a pydantic traceback.
+  the operator a pydantic traceback;
+* an override is read off a file that says which file it was, so a block the
+  vocabulary refuses is reported against the path the operator supplied rather
+  than as an anonymous validation error.
 
 Bundles are written by the real :class:`FileArtifactWriter`, so the tests read the
-same on-disk contract the eval flow produces.
+same on-disk contract the eval flow produces, and every override travels through
+the real :func:`load_trace_checks_override`.
 """
 
 from __future__ import annotations
@@ -31,12 +35,15 @@ from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.trace_replay import (
     TRACE_REPLAY_DIRNAME,
     ConstraintProvenance,
+    TraceChecksOverride,
+    TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
     discover_trace_bundles,
+    load_trace_checks_override,
     read_trace_replay_inputs,
     run_trace_replay_batch,
 )
-from tolokaforge.core.models import TraceChecksConfig, Trajectory
+from tolokaforge.core.models import Trajectory
 from tolokaforge.core.output.artifacts import FileArtifactWriter, read_recorded_tool_log
 from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION
 
@@ -53,7 +60,6 @@ _TRACE_CHECKS: dict[str, Any] = {
         }
     ]
 }
-_OVERRIDE = TraceChecksConfig.model_validate(_TRACE_CHECKS)
 # The same check with the one field no message can express, so deciding it needs the
 # bundle's tool-call record and nothing the message view preserved will do.
 _STATUS_TRACE_CHECKS: dict[str, Any] = {
@@ -74,6 +80,19 @@ _STATUS_TRACE_CHECKS: dict[str, Any] = {
     ]
 }
 _TURNS = ("I want a refund for order O-1.", "Reading the order.")
+
+
+def _override(tmp_path: Path, block: Any = _TRACE_CHECKS) -> TraceChecksOverride:
+    """An override as an operator supplies one — written to a file and loaded back.
+
+    Never hand-constructed: the path the loader records is what every rejection
+    message is judged on, so a fixture that skipped the loader would test a value
+    the command never builds.
+    """
+    path = tmp_path / "constraints.yaml"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(block, sort_keys=False), encoding="utf-8")
+    return load_trace_checks_override(path)
 
 
 def _looked_up_the_order() -> Trajectory:
@@ -175,7 +194,7 @@ def test_a_bundle_declaring_no_trace_checks_is_skipped_until_an_override_supplie
     assert skipped.result is None
     assert not (tmp_path / TRACE_REPLAY_DIRNAME).exists()
 
-    (replayed,) = run_trace_replay_batch(tmp_path, replay_id="r2", override=_OVERRIDE)
+    (replayed,) = run_trace_replay_batch(tmp_path, replay_id="r2", override=_override(tmp_path))
     assert replayed.status is TraceReplayOutcomeStatus.REPLAYED
     assert replayed.provenance is ConstraintProvenance.OVERRIDE
     assert replayed.result is not None
@@ -206,9 +225,10 @@ def test_a_zero_call_bundle_is_recorded_even_though_its_timeline_carries_no_reco
     assert read_recorded_tool_log(recorded) == ([], True)
     assert read_recorded_tool_log(unrecorded) == ([], False)
 
-    outcomes = run_trace_replay_batch(tmp_path, replay_id="r1", override=_OVERRIDE)
+    override = _override(tmp_path)
+    outcomes = run_trace_replay_batch(tmp_path, replay_id="r1", override=override)
     timelines = [
-        read_trace_replay_inputs(bundle, override=_OVERRIDE).timeline
+        read_trace_replay_inputs(bundle, override=override).timeline
         for bundle in (recorded, unrecorded)
     ]
 
@@ -338,3 +358,200 @@ def test_a_named_trial_replaces_discovery(tmp_path: Path) -> None:
 
     assert [outcome.bundle for outcome in outcomes] == [named]
     assert outcomes[0].status is TraceReplayOutcomeStatus.REPLAYED
+
+
+def test_a_grading_document_and_a_bare_block_supply_the_same_constraints(
+    tmp_path: Path,
+) -> None:
+    """Both authoring shapes reach the evaluator as one block, and it is the inner one.
+
+    A pack's ``grading.yaml`` nests the block under ``trace_checks:`` and a snippet
+    written to iterate on one constraint does not, so ``--constraints`` accepts
+    either. What the two must agree on is the block itself: a document form that
+    kept its wrapper would hand the authoring gate ``trace_checks.trace_checks`` and
+    find no constraint to check.
+    """
+    document = _override(tmp_path / "doc", {"trace_checks": _TRACE_CHECKS})
+    bare = _override(tmp_path / "bare", _TRACE_CHECKS)
+
+    assert document.block == bare.block == _TRACE_CHECKS
+    assert document.config == bare.config
+    assert [item.id for item in bare.config.constraints] == ["the_order_was_looked_up"]
+
+
+def test_an_override_carrying_no_constraint_block_names_the_file(tmp_path: Path) -> None:
+    """Pointing ``--constraints`` at the wrong document says which document it was.
+
+    A rubric file is the near miss — same directory, same ``grading.yaml`` name in
+    a pack — and the operator's next move is to look at the file, so the message
+    has to carry it.
+    """
+    path = tmp_path / "grading.yaml"
+    path.write_text(yaml.safe_dump({"llm_judge": {"rubric": {}}}), encoding="utf-8")
+
+    with pytest.raises(TraceChecksOverrideError) as raised:
+        load_trace_checks_override(path)
+
+    assert str(path) in str(raised.value)
+    assert "declares nothing to re-check" in str(raised.value)
+
+
+def test_an_empty_override_document_is_refused_at_load_naming_the_file(
+    tmp_path: Path,
+) -> None:
+    """A file that wrote nothing is told what to write, not that its block is empty.
+
+    Standing single case at the degenerate boundary. ``{}`` could be routed to
+    ``TraceChecksConfig``, which does refuse it — but its message ends "or drop the
+    block", advice with no meaning for a file supplied on the command line. The
+    loader answers first and names both keys the file could have carried.
+    """
+    path = tmp_path / "constraints.yaml"
+    path.write_text(yaml.safe_dump({}), encoding="utf-8")
+
+    with pytest.raises(TraceChecksOverrideError) as raised:
+        load_trace_checks_override(path)
+
+    assert str(path) in str(raised.value)
+    assert "declares nothing to re-check" in str(raised.value)
+
+
+def test_a_zero_constraint_override_is_refused_at_load_naming_the_file(
+    tmp_path: Path,
+) -> None:
+    """The block model already refuses this; what is new is that the file is named.
+
+    Standing single case at the degenerate boundary. ``constraints: []`` asserts
+    nothing and scores nothing, and ``TraceChecksConfig`` says so — but it says it
+    about "a trace_checks block", which is every block in the repo. An operator who
+    supplied a file needs the file back, so the loader re-raises with the path and
+    the model's own reason.
+    """
+    path = tmp_path / "constraints.yaml"
+    path.write_text(yaml.safe_dump({"constraints": []}), encoding="utf-8")
+
+    with pytest.raises(TraceChecksOverrideError) as raised:
+        load_trace_checks_override(path)
+
+    assert str(path) in str(raised.value)
+    assert "declares neither constraints nor alternatives" in str(raised.value)
+
+
+def test_a_route_less_alternatives_override_is_refused_at_load_naming_the_file(
+    tmp_path: Path,
+) -> None:
+    """The second degenerate block reaches a different rule, and still names the file.
+
+    Standing single case at the degenerate boundary. ``alternatives: []`` clears the
+    neither-constraints-nor-alternatives rule — an alternatives list *is* declared —
+    and is refused one rule later for holding fewer than the two routes a choice
+    between routes needs. Locking the two messages apart is what stops the path
+    assertion from passing on whichever rejection happens to fire.
+    """
+    path = tmp_path / "constraints.yaml"
+    path.write_text(yaml.safe_dump({"alternatives": []}), encoding="utf-8")
+
+    with pytest.raises(TraceChecksOverrideError) as raised:
+        load_trace_checks_override(path)
+
+    assert str(path) in str(raised.value)
+    assert "declares fewer than the two paths" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("recorded", "said"),
+    [
+        pytest.param("- function:\n  name: [\n", "unreadable YAML", id="not_yaml_at_all"),
+        pytest.param("get_order: {}\n", "holds dict where", id="a_mapping_where_a_list_belongs"),
+        pytest.param(
+            "- type: function\n  function: {}\n",
+            "records no function.name",
+            id="an_entry_naming_no_tool",
+        ),
+    ],
+)
+def test_a_bundle_whose_recorded_tool_list_is_unreadable_fails_without_stopping_the_batch(
+    tmp_path: Path, recorded: str, said: str
+) -> None:
+    """An unreadable tool record is that bundle's defect, not the override's.
+
+    The two failure modes meet here and must not be folded together: an override
+    the tools refuse stops everything, while a bundle that cannot say which tools
+    it had is one named failure the batch replays around. Folding either into
+    ``ToolInventory.unresolvable`` would be worse than both — the block would be
+    reported as checked against a tool set nothing read.
+
+    Three unreadable shapes, because they are three separate refusals over one
+    file and each says something the others do not: broken YAML, a well-formed
+    document of the wrong shape, and a well-formed entry standing for no tool.
+    """
+    broken = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    healthy = _write_bundle(tmp_path / "trials" / "refund_task" / "1")
+    (broken / "tools_schemas.yaml").write_text(recorded, encoding="utf-8")
+
+    failed, replayed = run_trace_replay_batch(
+        tmp_path, replay_id="r1", override=_override(tmp_path)
+    )
+
+    assert failed.status is TraceReplayOutcomeStatus.FAILED
+    assert str(broken / "tools_schemas.yaml") in (failed.reason or "")
+    assert said in (failed.reason or "")
+    assert replayed.bundle == healthy
+    assert replayed.status is TraceReplayOutcomeStatus.REPLAYED
+    assert not (tmp_path / TRACE_REPLAY_DIRNAME / "r1" / "trials" / "refund_task" / "0").exists()
+
+
+@pytest.mark.parametrize(
+    ("written", "said"),
+    [
+        pytest.param(None, "does not exist", id="a_path_nothing_is_at"),
+        pytest.param("- constraints\n", "is not a YAML mapping", id="a_list_where_a_block_belongs"),
+        pytest.param("constraints: [\n", "is unreadable", id="not_yaml_at_all"),
+    ],
+)
+def test_an_override_file_that_cannot_be_read_says_which_file_and_why(
+    tmp_path: Path, written: str | None, said: str
+) -> None:
+    """Every refusal the loader makes carries the path, including the shape ones.
+
+    Three ways a supplied file is not a constraint block before its contents are
+    even in question. Each is told apart from the others, because "is not a YAML
+    mapping" for a path nothing is at would send the operator to inspect a file
+    that was never there.
+    """
+    path = tmp_path / "constraints.yaml"
+    if written is not None:
+        path.write_text(written, encoding="utf-8")
+
+    with pytest.raises(TraceChecksOverrideError) as raised:
+        load_trace_checks_override(path)
+
+    assert str(path) in str(raised.value)
+    assert said in str(raised.value)
+
+
+def test_bundles_with_different_recorded_tool_sets_get_their_own_gate_answers(
+    tmp_path: Path,
+) -> None:
+    """The gate runs once per distinct tool set, and each bundle gets *its* answer.
+
+    A source spans tasks, so one batch can hold several inventories. The reuse that
+    keeps the gate from running once per trial is keyed on the recorded list itself;
+    keyed on anything coarser, every bundle would carry whichever answer was
+    computed first, and a bundle whose tools were never resolvable would report the
+    findings of one whose tools were.
+    """
+    writer = FileArtifactWriter()
+    resolvable = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    unresolvable = _write_bundle(tmp_path / "trials" / "refund_task" / "1")
+    writer.write_tools_schemas(
+        resolvable, [{"type": "function", "function": {"name": "get_order", "parameters": {}}}]
+    )
+
+    checked, skipped = run_trace_replay_batch(
+        tmp_path, replay_id="r1", override=_override(tmp_path)
+    )
+
+    assert (checked.bundle, skipped.bundle) == (resolvable, unresolvable)
+    assert checked.override_authoring.unchecked == ()
+    assert [skip.where for skip in skipped.override_authoring.unchecked] == ["grading"]
