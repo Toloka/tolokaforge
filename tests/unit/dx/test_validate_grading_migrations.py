@@ -25,6 +25,14 @@ migration:
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
   that could only ever select nothing is rejected before a trial is paid for; a
   block that is not a mapping is rejected naming the file, the key and the shape.
+
+Every gate here is about the block's own shape, so the calls pass an unresolvable
+tool inventory: none of these rejections has anything to do with the task's tools,
+and the value that reports "nothing about the tools is checkable" is what makes that
+explicit. The calls outside a ``pytest.raises`` are the standing lock that an
+unresolvable inventory fails nothing — folding ``unchecked`` into the fatal channels
+reddens every one of them. What a *resolvable* inventory rejects is locked in
+``tests/unit/grading/test_grading_authoring_gate.py``.
 """
 
 from __future__ import annotations
@@ -42,12 +50,15 @@ from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
 )
+from tolokaforge.core.grading.config_validation import ToolInventory
 from tolokaforge.core.models import GradingDefaults, StateChecksConfig
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.models import TranscriptRulesConfig as RunnerTranscriptRules
 
 pytestmark = pytest.mark.unit
+
+_UNRESOLVED = ToolInventory.unresolvable()
 
 
 _TASK_YAML = textwrap.dedent("""
@@ -274,7 +285,7 @@ def test_validate_grading_yaml_rejects_removed_output_schema(tmp_path: Path):
             """).strip())
 
     with pytest.raises(ValueError, match="output_schema has been removed"):
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +335,7 @@ def test_validate_grading_yaml_rejects_malformed_customization(
     grading.write_text(textwrap.dedent(_grading_with_customization(customization_block)).strip())
 
     with pytest.raises(Exception, match=match):
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path):
@@ -338,7 +349,9 @@ def test_validate_grading_yaml_skips_customization_without_rubric(tmp_path: Path
                 disable_knowledge_search: sometimes
             """).strip())
 
-    validate_grading_yaml(grading)  # no rubric/model_ref → no validation, no raise
+    # No rubric and no model_ref, so LLMJudgeConfig is never constructed and the
+    # malformed customization is never seen.
+    validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize(
@@ -409,7 +422,7 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
     an undecidable score after the trial had already been paid for."""
     grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
     with pytest.raises(ValueError, match="state_checks.hash.weight is required"):
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize(
@@ -420,11 +433,8 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
             "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 0.6},
         },
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": True}},
-        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "expected_state_hash": "aaaa"}},
-        {
-            "jsonpaths": _ASSERTIONS,
-            "hash": {"enabled": False, "expected_state_hash": "aaaa", "weight": 0.6},
-        },
+        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False}},
+        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "weight": 0.6}},
         {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTIONS}},
         {
             "jsonpaths": [],
@@ -434,7 +444,7 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
     ids=[
         "weight_declared",
         "hash_on_with_no_source",
-        "hash_off_with_a_source",
+        "hash_off",
         "hash_off_with_an_inert_weight",
         "no_assertions_to_weigh",
         "recorded_tau_bundle_shape",
@@ -444,7 +454,33 @@ def test_validate_accepts_every_shape_the_weight_cannot_decide(tmp_path: Path, s
     """The gate must stay narrow. Each shape here would demand a number the
     composer never reads, and the last one is the recorded tau bundle: rejecting
     it would make three committed trial bundles unloadable."""
-    validate_grading_yaml(_write_grading(tmp_path, state_checks))
+    validate_grading_yaml(_write_grading(tmp_path, state_checks), inventory=_UNRESOLVED)
+
+
+@pytest.mark.parametrize(
+    "hash_block",
+    [
+        {"enabled": False, "expected_state_hash": "aaaa"},
+        {"enabled": False, "expected_state_hash": "aaaa", "weight": 0.6},
+        {"expected_state_hash": "aaaa"},
+    ],
+    ids=["flag_off", "flag_off_with_an_inert_weight", "flag_absent"],
+)
+def test_validate_rejects_a_hash_the_flag_stops_anything_from_reading(
+    tmp_path: Path, hash_block: dict
+):
+    """A declared expectation nothing compares against is graded as if unwritten.
+
+    Both substrates test ``enabled`` before reading the hash, so the pack scores its
+    state on the JSONPath assertions alone and the author is never told. The weight
+    rule is untouched: the same block still constructs, which is what makes this the
+    file gate's rejection rather than a widening of the model's.
+    """
+    StateChecksConfig(jsonpaths=_ASSERTIONS, hash=hash_block)
+
+    grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
+    with pytest.raises(ValueError, match="the comparison never runs"):
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize("weight", [2.0, -0.1])
@@ -457,14 +493,15 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
         },
     )
     with pytest.raises(ValueError, match=r"state_checks.hash.weight must be a real number"):
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Path):
     """Without a ``hash`` block, ``StateChecksConfig`` is never constructed here — the
     reason every fixture above declares one rather than relying on jsonpaths alone."""
     validate_grading_yaml(
-        _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}})
+        _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}}),
+        inventory=_UNRESOLVED,
     )
 
 
@@ -500,7 +537,7 @@ def test_validate_rejects_a_retired_combine_method_naming_its_replacement(
     grading = _write_combine(tmp_path, {"method": alias, "weights": _WEIGHTS})
 
     with pytest.raises(ValueError) as excinfo:
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
     message = str(excinfo.value)
     assert f"Use {replacement!r}" in message, message
@@ -514,7 +551,7 @@ def test_validate_rejects_an_unsupported_combine_method_listing_the_supported_se
     grading = _write_combine(tmp_path, {"method": method, "weights": _WEIGHTS})
 
     with pytest.raises(ValueError) as excinfo:
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
     message = str(excinfo.value)
     for supported in COMBINE_METHODS:
@@ -523,7 +560,9 @@ def test_validate_rejects_an_unsupported_combine_method_listing_the_supported_se
 
 @pytest.mark.parametrize("method", COMBINE_METHODS)
 def test_validate_accepts_every_declared_combine_method(tmp_path: Path, method: str):
-    validate_grading_yaml(_write_combine(tmp_path, {"method": method, "weights": _WEIGHTS}))
+    validate_grading_yaml(
+        _write_combine(tmp_path, {"method": method, "weights": _WEIGHTS}), inventory=_UNRESOLVED
+    )
 
 
 def test_validate_accepts_a_combine_block_that_names_no_method(tmp_path: Path):
@@ -533,7 +572,7 @@ def test_validate_accepts_a_combine_block_that_names_no_method(tmp_path: Path):
     exactly this shape over a project-level default, so a gate reading the key instead
     of constructing the block would reject a pack that grades today.
     """
-    validate_grading_yaml(_write_combine(tmp_path, {"pass_threshold": 0.7}))
+    validate_grading_yaml(_write_combine(tmp_path, {"pass_threshold": 0.7}), inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize(
@@ -554,7 +593,7 @@ def test_validate_rejects_a_malformed_combine_block_beside_a_valid_method(
     reaching past it to ``method``.
     """
     with pytest.raises(ValueError):
-        validate_grading_yaml(_write_combine(tmp_path, combine))
+        validate_grading_yaml(_write_combine(tmp_path, combine), inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize(
@@ -572,7 +611,7 @@ def test_validate_rejects_a_combine_block_that_is_not_a_mapping(tmp_path: Path, 
     grading = _write_combine(tmp_path, combine)
 
     with pytest.raises(RuntimeError) as excinfo:
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
     message = str(excinfo.value)
     assert str(grading) in message, message
@@ -583,7 +622,7 @@ def test_validate_rejects_a_combine_block_that_is_not_a_mapping(tmp_path: Path, 
 def test_validate_accepts_a_combine_key_with_nothing_under_it(tmp_path: Path):
     """``combine:`` alone is the absent block, not a malformed one: every field falls
     through to its default, which is what the loader's own merge does with it."""
-    validate_grading_yaml(_write_combine(tmp_path, None))
+    validate_grading_yaml(_write_combine(tmp_path, None), inventory=_UNRESOLVED)
 
 
 def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path):
@@ -702,12 +741,13 @@ def test_validate_rejects_a_pack_whose_turn_window_admits_nothing(tmp_path: Path
     grading = _write_transcript_rules(tmp_path, {"min_assistant_turns": 5, "max_turns": 3})
 
     with pytest.raises(ValueError, match="unsatisfiable turn window"):
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
 def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
     validate_grading_yaml(
-        _write_transcript_rules(tmp_path, {"min_assistant_turns": 1, "max_turns": 5})
+        _write_transcript_rules(tmp_path, {"min_assistant_turns": 1, "max_turns": 5}),
+        inventory=_UNRESOLVED,
     )
 
 
@@ -729,7 +769,7 @@ def test_validate_rejects_a_transcript_rules_block_that_is_not_a_mapping(
     grading = _write_transcript_rules(tmp_path, transcript_rules)
 
     with pytest.raises(RuntimeError) as excinfo:
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
     message = str(excinfo.value)
     assert str(grading) in message, message
@@ -756,7 +796,9 @@ def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     as an empty list.
     """
     with pytest.raises(ValueError, match=match):
-        validate_grading_yaml(_write_transcript_rules(tmp_path, transcript_rules))
+        validate_grading_yaml(
+            _write_transcript_rules(tmp_path, transcript_rules), inventory=_UNRESOLVED
+        )
 
 
 def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: Path):
@@ -800,7 +842,7 @@ def _write_trace_checks(tmp_path: Path, trace_checks: object) -> Path:
 
 
 def test_validate_accepts_a_well_formed_trace_checks_block(tmp_path: Path):
-    validate_grading_yaml(_write_trace_checks(tmp_path, every_kind_block()))
+    validate_grading_yaml(_write_trace_checks(tmp_path, every_kind_block()), inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize(
@@ -838,7 +880,7 @@ def test_validate_rejects_a_malformed_trace_checks_block(
     tokens are spent.
     """
     with pytest.raises(ValueError, match=match):
-        validate_grading_yaml(_write_trace_checks(tmp_path, trace_checks))
+        validate_grading_yaml(_write_trace_checks(tmp_path, trace_checks), inventory=_UNRESOLVED)
 
 
 @pytest.mark.parametrize(
@@ -858,7 +900,7 @@ def test_validate_rejects_a_trace_checks_block_that_is_not_a_mapping(
     grading = _write_trace_checks(tmp_path, trace_checks)
 
     with pytest.raises(RuntimeError) as excinfo:
-        validate_grading_yaml(grading)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
     message = str(excinfo.value)
     assert str(grading) in message, message

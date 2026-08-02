@@ -40,12 +40,14 @@ When a ``task.yaml`` carries a ``domain:`` ref, :func:`load_task_yaml`:
 A flat ``<task>/task.yaml`` without a ``domain:`` ref returns
 ``(TaskConfig, task_path.parent)`` — the legacy behaviour.
 
-This module composes existing types only — :class:`Path`, :mod:`yaml`,
-:class:`TaskConfig`. It does **not** introduce a new abstraction.
+It is also the single producer of a task's agent tool set and the JSON schemas
+behind it (:func:`resolve_agent_tool_schemas`), so the ``TaskDescription`` a run
+puts on the wire and the inventory a validation gate reads cannot drift apart.
 """
 
 from __future__ import annotations
 
+import json
 import os
 from collections.abc import Callable
 from pathlib import Path
@@ -58,8 +60,21 @@ from tolokaforge.core.deprecations import (
     source_context,
     warn_deprecated,
 )
-from tolokaforge.core.models import GradingCombineConfig, TaskConfig, TaskDefaults
+from tolokaforge.core.grading.config_validation import (
+    AuthoringReport,
+    ToolInventory,
+    inspect_grading_authoring,
+)
+from tolokaforge.core.logging import get_logger
+from tolokaforge.core.models import (
+    GradingCombineConfig,
+    GradingFindingSeverity,
+    TaskConfig,
+    TaskDefaults,
+)
 from tolokaforge.core.project_loader import construct_config, deep_merge
+
+logger = get_logger(__name__)
 
 # Keys that live on ``project.task_defaults`` but are not ``TaskConfig`` fields.
 # They reach the engine through their own seams (``grading_defaults`` via
@@ -70,7 +85,12 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 )
 
 
-def validate_grading_yaml(grading_path: Path) -> None:
+def validate_grading_yaml(
+    grading_path: Path,
+    *,
+    inventory: ToolInventory,
+    fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
+) -> AuthoringReport:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
@@ -84,16 +104,32 @@ def validate_grading_yaml(grading_path: Path) -> None:
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
     which point the trial has already been paid for.
 
+    Once the shapes hold, the block is checked against the tools the task gives its
+    actors. Every finding is named in one raise rather than the first one found,
+    because an author fixing a pack wants the list.
+
     A missing grading file is not an error here: ``load_task_yaml`` already
     validates the ``grading`` path field, and some adapters synthesise grading
     config without an on-disk file.
+
+    Args:
+        grading_path: The task's grading file.
+        inventory: The task's tool set. A caller that cannot resolve one passes
+            :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
+            into the returned report's ``unchecked`` and fails nothing.
+        fail_on: The least severe finding class that raises.
+
+    Returns:
+        The authoring report, whose ``unchecked`` entries the caller is expected to
+        surface: they never raise, and a gate that checked nothing must not read as
+        a clean bill of health.
 
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
         RuntimeError: If the file or a block this gate constructs is not a mapping.
     """
     if not grading_path.exists():
-        return
+        return AuthoringReport()
 
     with open(grading_path) as f:
         grading_data = yaml.safe_load(f) or {}
@@ -179,6 +215,13 @@ def validate_grading_yaml(grading_path: Path) -> None:
             "A constraint written directly under 'trace_checks:' makes the block a list. "
             "Write 'trace_checks:' then 'constraints:' indented beneath it."
         )
+
+    report = inspect_grading_authoring(grading_data, inventory)
+    fatal = report.fatal(fail_on)
+    if fatal:
+        written = "\n".join(f"  - {finding.where}: {finding.message}" for finding in fatal)
+        raise ValueError(f"Grading file {grading_path} cannot be graded as written:\n{written}")
+    return report
 
 
 def load_task_yaml(
@@ -320,6 +363,265 @@ def load_task(
     """
     task, _ = load_task_yaml(Path(path), project_task_defaults=project_task_defaults)
     return task
+
+
+def agent_tool_configs(task: TaskConfig) -> dict[str, dict]:
+    """Per-tool init kwargs lifted from the ``tools.agent.<name>`` blocks.
+
+    Only enabled tools are read. The kwargs reach the runner via
+    ``ToolSchema.tool_config`` and drive the builtin instantiation whose schema
+    depends on them (``MobileTool(apps={…})`` populates
+    ``actions[].app_name.enum``).
+
+    Raises:
+        ValueError: If a block is present but is not a mapping — an author typo
+            that would otherwise surface at trial registration as a ``TypeError``
+            with no task in the message.
+    """
+    configs: dict[str, dict] = {}
+    for tool_name in task.tools.agent.get("enabled", []):
+        raw = task.tools.agent.get(tool_name)
+        if raw is None:
+            continue
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"tools.agent.{tool_name} must be a mapping of init kwargs "
+                f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
+            )
+        configs[tool_name] = dict(raw)
+    return configs
+
+
+def resolve_agent_tool_schemas(
+    task: TaskConfig, task_dir: Path, *, allow_subprocess: bool
+) -> dict[str, dict]:
+    """Resolve ``{tool_name: {"description", "parameters"}}`` for the agent's tools.
+
+    An MCP task's schemas come from ``<task_dir>/fixtures/tools.json``; a task
+    without an ``mcp_server`` gets them from the builtin registry.
+
+    Args:
+        task: The loaded task config.
+        task_dir: The effective task dir, i.e. the second element of
+            :func:`load_task_yaml`'s return.
+        allow_subprocess: When ``True``, an MCP task with no readable fixture is
+            resolved by starting its server and querying ``tools/list``, and the
+            answer is cached into the task tree. When ``False`` the resolution is
+            strictly read-only and that task resolves to no schemas at all — the
+            mode a pre-run gate uses, because a gate must not mutate the tree it
+            is validating.
+
+    Raises:
+        RuntimeError: If a live ``tools/list`` query is reached and fails.
+        ValueError: If a ``tools.agent.<name>`` block is not a mapping.
+    """
+    enabled: list[str] = task.tools.agent.get("enabled", [])
+    mcp_server_ref = task.tools.agent.get("mcp_server")
+    if mcp_server_ref:
+        return _load_rich_tool_schemas(
+            task_dir, task_dir / mcp_server_ref, allow_subprocess=allow_subprocess
+        )
+    return _builtin_tool_schemas(enabled, agent_tool_configs(task))
+
+
+def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
+    """The task's declared tool set and resolved schemas, without touching the tree.
+
+    A tool whose schema does not resolve — an MCP task with no committed
+    ``fixtures/tools.json``, a name the builtin registry does not know, a fixture
+    entry carrying no ``parameters`` mapping — is absent from
+    :attr:`ToolInventory.parameters` and so classifies as
+    :attr:`ArgumentSchema.UNKNOWN`. A resolved schema the task does not declare —
+    an MCP fixture listing the harness's own state tool — is dropped too, so one
+    grading block cannot draw an undeclared-tool error and an argument finding
+    from the same name.
+    """
+    declared = frozenset(task.tools.agent.get("enabled", [])) | frozenset(
+        task.tools.user.get("enabled", [])
+    )
+    schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
+    parameters = {
+        name: entry["parameters"]
+        for name, entry in schemas.items()
+        if name in declared and isinstance(entry.get("parameters"), dict)
+    }
+    if "search_kb" in declared:
+        # The runner rebuilds search_kb as a source-less RAG wrapper, so the
+        # canonical schema is what the agent is handed whatever a fixture or the
+        # registry holds. ``NativeAdapter.to_task_description`` reads the same
+        # function for the whole wire object, whose category, timeout and absent
+        # source this projection cannot carry.
+        from tolokaforge.runner.tool_factory import create_search_kb_schema
+
+        parameters["search_kb"] = create_search_kb_schema().parameters
+    return ToolInventory(declared=declared, parameters=parameters, known=True)
+
+
+def tool_inventory_under_adapter(
+    task: TaskConfig, task_dir: Path, adapter_type: str
+) -> ToolInventory:
+    """The inventory to check *task*'s grading against, under *adapter_type*.
+
+    ``tools.agent`` is the native reading of a task's tool set. For a task an
+    external adapter owns it is not necessarily the set the run builds, so
+    :meth:`ToolInventory.unresolvable` is the honest answer — checking names
+    against a reading the adapter does not use would reject packs that run fine.
+    """
+    from tolokaforge.runner.models import AdapterType
+
+    if adapter_type != AdapterType.NATIVE.value:
+        return ToolInventory.unresolvable()
+    return build_tool_inventory(task, task_dir)
+
+
+def _builtin_tool_schemas(
+    tool_names: list[str], tool_configs: dict[str, dict] | None = None
+) -> dict[str, dict]:
+    """Return rich schemas for the builtin tools among *tool_names*.
+
+    Each known name is instantiated with kwargs from ``tool_configs[name]`` and
+    its ``get_schema()`` output reduced to ``{"description", "parameters"}`` so
+    the LLM receives real parameter descriptions. A name the registry does not
+    know, or one whose construction raises, is absent from the result.
+    """
+    from tolokaforge.tools.builtin import registry
+
+    configs = tool_configs or {}
+    schemas: dict[str, dict] = {}
+    for name in tool_names:
+        if not registry.is_builtin(name):
+            continue
+        try:
+            cls = registry.get_class(name)
+            tool = cls(**configs.get(name, {}))
+            raw = tool.get_schema()
+            # get_schema() returns {"type": "function", "function": {…}}
+            func_def = raw.get("function", raw)
+            schemas[name] = {
+                "description": func_def.get("description", f"Builtin tool: {name}"),
+                "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
+            }
+        except Exception as exc:
+            logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))
+    return schemas
+
+
+def _load_rich_tool_schemas(
+    task_dir: Path, mcp_server_path: Path, *, allow_subprocess: bool
+) -> dict[str, dict]:
+    """Load an MCP task's tool schemas, preferring the committed fixture.
+
+    ``task_dir/fixtures/tools.json`` is read first. When it is absent or
+    unreadable, a live ``tools/list`` query fills the gap and its answer is
+    cached back into the fixture — but only under *allow_subprocess*; without it
+    the unresolved task yields ``{}`` and neither the server nor the tree is
+    touched.
+    """
+    tools_json_path = task_dir / "fixtures" / "tools.json"
+
+    if tools_json_path.exists():
+        try:
+            with open(tools_json_path) as f:
+                tools_list = json.load(f)
+            schemas = {t["name"]: t for t in tools_list if isinstance(t, dict) and "name" in t}
+            logger.info(
+                "Loaded tool schemas from fixtures/tools.json",
+                count=len(schemas),
+                path=str(tools_json_path),
+            )
+            return schemas
+        except Exception as exc:
+            logger.warning(
+                "Failed to read fixtures/tools.json",
+                path=str(tools_json_path),
+                error=str(exc),
+            )
+
+    if not allow_subprocess:
+        return {}
+
+    schemas = _fetch_mcp_tool_schemas(mcp_server_path)
+    try:
+        tools_json_path.parent.mkdir(parents=True, exist_ok=True)
+        with open(tools_json_path, "w") as f:
+            json.dump(list(schemas.values()), f, indent=2)
+        logger.info(
+            "Generated and cached fixtures/tools.json",
+            path=str(tools_json_path),
+            count=len(schemas),
+        )
+    except Exception as exc:
+        logger.warning(
+            "Could not write fixtures/tools.json cache",
+            path=str(tools_json_path),
+            error=str(exc),
+        )
+    return schemas
+
+
+def _fetch_mcp_tool_schemas(mcp_server_path: Path) -> dict[str, dict]:
+    """Fetch tool schemas from an MCP server via ``tools/list``.
+
+    Starts the server as a subprocess, performs the MCP handshake, calls
+    ``tools/list``, and converts the response to the ``fixtures/tools.json``
+    format — MCP's ``inputSchema`` becomes ``parameters``, matching what the
+    ``tlk_mcp_core`` adapter writes.
+
+    Raises:
+        RuntimeError: If the server fails to start, the handshake fails,
+            ``tools/list`` errors, or the server returns no tools. A silent
+            ``{}`` here reaches the LLM as parameter-less tool stubs and reads
+            as an agent-reasoning bug.
+    """
+    from tolokaforge.runner.tool_factory import MCPServerProcess
+
+    try:
+        server = MCPServerProcess(script_path=str(mcp_server_path))
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to construct MCPServerProcess for {mcp_server_path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+
+    try:
+        server.start()
+        result = server.send_request("tools/list", {})
+    except Exception as exc:
+        raise RuntimeError(
+            f"Failed to query tools/list from MCP server {mcp_server_path}: "
+            f"{type(exc).__name__}: {exc}"
+        ) from exc
+    finally:
+        try:
+            server.stop()
+        except Exception as stop_exc:
+            logger.warning(
+                "MCP server stop failed after tools/list query",
+                server=str(mcp_server_path),
+                error=str(stop_exc),
+            )
+
+    schemas: dict[str, dict] = {}
+    for tool in result.get("tools", []):
+        name = tool.get("name", "")
+        if not name:
+            continue
+        schemas[name] = {
+            "name": name,
+            "description": tool.get("description", f"Tool: {name}"),
+            "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
+        }
+    if not schemas:
+        raise RuntimeError(
+            f"MCP server {mcp_server_path} returned no tools from tools/list "
+            f"(response keys: {list(result.keys())!r})"
+        )
+    logger.info(
+        "Fetched MCP tool schemas",
+        count=len(schemas),
+        server=str(mcp_server_path),
+    )
+    return schemas
 
 
 def _resolve_environment_manifest_paths(task_data: dict, task_root: Path, task_path: Path) -> None:

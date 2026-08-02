@@ -747,6 +747,20 @@ def _make_task_description_for_run(task_id: str) -> Any:
     )
 
 
+def _adapter_for_run(task_dir: Path) -> Any:
+    """The adapter seam a full ``run()`` reads, over a pack with no grading file.
+
+    *task_dir* is a real directory: the run's pre-flight resolves each task's
+    grading file under it and has nothing to check.
+    """
+    adapter = MagicMock()
+    adapter.to_task_description.side_effect = _make_task_description_for_run
+    adapter.docker_stack_requirements.return_value = None
+    adapter.trial_grader_name = "runner_rpc"
+    adapter.get_task_dir.return_value = task_dir
+    return adapter
+
+
 def test_run_emits_lifecycle_with_distinct_trial_started_total_indices(tmp_path: Path) -> None:
     """Drive a full ``Orchestrator.run()`` with 3 trials against an
     in-memory conductor and runtime backend.
@@ -801,11 +815,7 @@ def test_run_emits_lifecycle_with_distinct_trial_started_total_indices(tmp_path:
     )
     orch.tasks = [_make_task_for_run(tid) for tid in ("TASK-A", "TASK-B", "TASK-C")]
 
-    adapter = MagicMock()
-    adapter.to_task_description.side_effect = _make_task_description_for_run
-    adapter.docker_stack_requirements.return_value = None
-    adapter.trial_grader_name = "runner_rpc"
-    orch.adapter = adapter
+    orch.adapter = _adapter_for_run(tmp_path)
 
     orch.run()
 
@@ -871,11 +881,7 @@ def test_run_with_default_null_events_completes_without_raising(tmp_path: Path) 
     )
     orch.tasks = [_make_task_for_run("TASK-A")]
 
-    adapter = MagicMock()
-    adapter.to_task_description.side_effect = _make_task_description_for_run
-    adapter.docker_stack_requirements.return_value = None
-    adapter.trial_grader_name = "runner_rpc"
-    orch.adapter = adapter
+    orch.adapter = _adapter_for_run(tmp_path)
 
     orch.run()
 
@@ -1140,11 +1146,7 @@ def _run_orch_with_two_role_models(tmp_path: Path, events: _RecordingEvents) -> 
     )
     orch.tasks = [_make_task_for_run("TASK-A")]
 
-    adapter = MagicMock()
-    adapter.to_task_description.side_effect = _make_task_description_for_run
-    adapter.docker_stack_requirements.return_value = None
-    adapter.trial_grader_name = "runner_rpc"
-    orch.adapter = adapter
+    orch.adapter = _adapter_for_run(tmp_path)
 
     orch.run()
 

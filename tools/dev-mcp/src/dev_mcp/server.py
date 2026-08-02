@@ -315,6 +315,25 @@ async def format_check(
 # ---------------------------------------------------------------------------
 
 
+DEFAULT_TASKS_DIR = "tasks"
+DEFAULT_TASKS_GLOB = f"{DEFAULT_TASKS_DIR}/**/task.yaml"
+
+TASKS_DIR_SKIP_REASON = (
+    f"validate: skipped — task directory '{DEFAULT_TASKS_DIR}' is not present "
+    "(task packs are cloned separately; see README)"
+)
+
+
+def _default_glob_has_no_directory(pattern: str) -> bool:
+    """Whether *pattern* is the default one and nothing on disk answers it.
+
+    ``make validate`` skips the same case: ``tolokaforge validate`` treats a glob
+    matching nothing as an invocation error, so the default over an uncloned task
+    tree would report a red that says nothing about the checkout.
+    """
+    return pattern == DEFAULT_TASKS_GLOB and not (REPO_ROOT / DEFAULT_TASKS_DIR).is_dir()
+
+
 @mcp.tool()
 async def validate_tasks(
     glob_pattern: str = "",
@@ -323,11 +342,15 @@ async def validate_tasks(
 
     Args:
         glob_pattern: Glob pattern for task files.
-                      Defaults to "tasks/**/task.yaml".
+                      Defaults to "tasks/**/task.yaml", which is skipped when no
+                      task pack has been cloned there. Name a glob to validate a
+                      pack anywhere.
     """
     _reload_dotenv()
 
-    pattern = glob_pattern or "tasks/**/task.yaml"
+    pattern = glob_pattern or DEFAULT_TASKS_GLOB
+    if _default_glob_has_no_directory(pattern):
+        return TASKS_DIR_SKIP_REASON
     cmd: list[str] = ["uv", "run", "tolokaforge", "validate", "--tasks", pattern]
 
     return await run_command(cmd, cwd=REPO_ROOT, timeout=60, tool_name="validate_tasks")

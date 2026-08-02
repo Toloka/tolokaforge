@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and the flagship pack discriminates.
 
-Two claims over the packs an author reads as the reference:
+Five claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -13,6 +13,17 @@ Two claims over the packs an author reads as the reference:
    ungradeable by any other rule**, and each of its three constraints can fail on
    its own. A trajectory that reaches the right database state by a wrong process
    fails the constraint that names that process and no other.
+3. **``tolokaforge validate`` is a gate over that corpus**: it partitions the same 30
+   task files into the 28 it loads under their project's ``task_defaults`` and the two
+   it rejects, and exits non-zero because of them.
+4. **The tool inventory a gate reads answers for exactly the tools the wire carries.**
+   The inventory resolves schemas read-only while ``to_task_description`` may spawn the
+   task's MCP server; both go through one producer, and this is where a second copy of
+   the resolution would show up.
+5. **No shipped pack fails the authoring gate.** Every ``grading.yaml`` under
+   ``examples/`` and ``tests/data/tasks/`` is checked against its own task's tool
+   inventory and produces no error and no advisory, which is the measured proof that
+   the gate ships green rather than the claim that it does.
 """
 
 from __future__ import annotations
@@ -21,14 +32,19 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import yaml
+from click.testing import CliRunner
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
+from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.models import GradingConfig, RecordedToolCall
 from tolokaforge.core.project_loader import load_project_config
+from tolokaforge.dx.cli.main import cli
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -38,6 +54,9 @@ _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 # passing over the empty set. The two files outside it are the ``terminal_bench``
 # pair, which ship no enclosing project and are the corpus's two known-invalid tasks.
 _GRADED_TASK_COUNT = 28
+# Tool schemas the corpus puts on the wire, across the 23 tasks that declare any, so a
+# parameter comparison that resolved nothing fails instead of passing over empty maps.
+_CORPUS_TOOL_COUNT = 54
 _TASKS_WITHOUT_A_PROJECT = (
     _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
@@ -55,8 +74,8 @@ def _enclosing_project(task_yaml: Path) -> Path | None:
     return None
 
 
-def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
-    """The task's id and its effective grading config, loaded the orchestrator's way.
+def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
+    """The task's id and an adapter over it, wired the orchestrator's way.
 
     The adapter is pointed at this one task file rather than at the project's own
     discovery glob: several packs are run through a glob rooted at ``dataset/``
@@ -78,15 +97,25 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
     )
     task_ids = adapter.get_task_ids()
     assert len(task_ids) == 1, f"{task_yaml} resolved to {task_ids}, not one task"
-    return task_ids[0], adapter.get_grading_config(task_ids[0])
+    return task_ids[0], adapter
+
+
+def _corpus_task_files() -> list[Path]:
+    return [
+        task_yaml
+        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
+        if task_yaml not in _TASKS_WITHOUT_A_PROJECT
+    ]
+
+
+def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
+    """The task's id and its effective grading config."""
+    task_id, adapter = _pack_adapter(task_yaml)
+    return task_id, adapter.get_grading_config(task_id)
 
 
 def _graded_corpus() -> dict[str, GradingConfig]:
-    return dict(
-        _grading_config(task_yaml)
-        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
-        if task_yaml not in _TASKS_WITHOUT_A_PROJECT
-    )
+    return dict(_grading_config(task_yaml) for task_yaml in _corpus_task_files())
 
 
 def test_every_component_an_example_pack_configures_carries_a_weight() -> None:
@@ -111,6 +140,107 @@ def test_every_component_an_example_pack_configures_carries_a_weight() -> None:
     )
 
 
+def test_the_tool_inventory_answers_for_the_tools_the_wire_actually_carries() -> None:
+    """One producer serves both the run and the pre-run gate, so neither can drift.
+
+    The two sides are not the same source: the inventory reads the producer in
+    read-only mode, while ``to_task_description`` assembles ``ToolSchema`` objects
+    around it in subprocess mode. A second copy of the schema lookup inlined into
+    the adapter fails here as soon as the two copies disagree.
+    """
+    divergent_names: dict[str, tuple[list[str], list[str]]] = {}
+    divergent_parameters: dict[str, list[str]] = {}
+    compared = 0
+
+    for task_yaml in _corpus_task_files():
+        task_id, adapter = _pack_adapter(task_yaml)
+        wire = {
+            tool.name: tool.parameters for tool in adapter.to_task_description(task_id).agent_tools
+        }
+        inventory = build_tool_inventory(adapter.get_task(task_id), adapter.get_task_dir(task_id))
+
+        if inventory.declared != set(wire):
+            divergent_names[task_id] = (sorted(inventory.declared), sorted(wire))
+        drifted = sorted(
+            name
+            for name, parameters in wire.items()
+            if name in inventory.parameters and inventory.parameters[name] != parameters
+        )
+        if drifted:
+            divergent_parameters[task_id] = drifted
+        compared += sum(1 for name in wire if name in inventory.parameters)
+
+    assert compared == _CORPUS_TOOL_COUNT, (
+        f"the guard compared {compared} tool schemas, not {_CORPUS_TOOL_COUNT}. Every tool "
+        "the corpus puts on the wire resolves in the inventory too, so a shortfall means "
+        "the read-only mode stopped answering for tools the run still ships"
+    )
+    assert divergent_names == {}, "the inventory and the wire disagree on which tools exist"
+    assert divergent_parameters == {}, "the two modes resolved different schemas for one tool"
+
+
+_TEST_DATA_TASKS = Path(__file__).resolve().parents[1] / "data" / "tasks"
+
+# Every pack under the two roots that ships a grading.yaml, so a guard that
+# enumerated nothing fails instead of passing over the empty set.
+_GATED_PACK_COUNT = 57
+
+# The one pack whose tool inventory cannot be built: it declares
+# ``tools.agent.mobile: true``, a typo fixture whose whole point is that a non-mapping
+# init block fails loud rather than reaching trial registration as a TypeError.
+_PACK_WITH_NO_INVENTORY = "bad_mobile"
+
+
+def _gated_packs() -> list[tuple[Path, Path]]:
+    """Each shipped task file that references a grading file, with that file."""
+    gated: list[tuple[Path, Path]] = []
+    for task_yaml in sorted(_EXAMPLES.rglob("task.yaml")) + sorted(
+        _TEST_DATA_TASKS.rglob("task.yaml")
+    ):
+        if task_yaml in _TASKS_WITHOUT_A_PROJECT:
+            continue
+        task, task_dir = load_task_yaml(task_yaml)
+        grading_path = task_dir / task.grading if task.grading else None
+        if grading_path is not None and grading_path.exists():
+            gated.append((task_yaml, grading_path))
+    return gated
+
+
+def test_no_shipped_pack_fails_the_authoring_gate() -> None:
+    """The corpus proof that the gate rejects nothing that grades today.
+
+    Each block is checked against its own task's inventory, so this is the whole
+    severity table applied to real packs: an argument rule that descended past the
+    first path segment, or an advisory promoted to an error, shows up here as a
+    shipped pack that no longer loads.
+    """
+    findings: dict[str, list[str]] = {}
+    without_an_inventory: list[str] = []
+    gated = _gated_packs()
+
+    for task_yaml, grading_path in gated:
+        task, task_dir = load_task_yaml(task_yaml)
+        grading = yaml.safe_load(grading_path.read_text()) or {}
+        try:
+            inventory = build_tool_inventory(task, task_dir)
+        except ValueError:
+            without_an_inventory.append(task.task_id)
+            continue
+        report = inspect_grading_authoring(grading, inventory)
+        reported = [
+            f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
+        ]
+        if reported:
+            findings[task.task_id] = reported
+
+    assert len(gated) == _GATED_PACK_COUNT, (
+        f"the guard checked {len(gated)} packs, not {_GATED_PACK_COUNT}. A corpus "
+        "proof over a subset says nothing about the packs it skipped"
+    )
+    assert without_an_inventory == [_PACK_WITH_NO_INVENTORY]
+    assert findings == {}
+
+
 def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
     """A native pack losing its project layer would otherwise drop out unnoticed."""
     orphans = tuple(
@@ -119,6 +249,30 @@ def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
         if _enclosing_project(task_yaml) is None
     )
     assert orphans == _TASKS_WITHOUT_A_PROJECT
+
+
+def test_validate_gates_the_example_corpus_on_its_two_invalid_tasks() -> None:
+    """The corpus proof that layering the project defaults rejects nothing new.
+
+    ``COLUMNS`` is set wide so the per-task lines carry a whole path each and the
+    partition can be read off the output rather than inferred from the counts.
+    """
+    result = CliRunner(mix_stderr=False).invoke(
+        cli,
+        ["validate", "--tasks", str(_EXAMPLES / "**" / "task.yaml")],
+        env={"COLUMNS": "400"},
+    )
+    lines = result.stderr.splitlines()
+    valid = {Path(line.removeprefix("✓ ")) for line in lines if line.startswith("✓ ")}
+    invalid = {
+        Path(line.removeprefix("✗ ").split(":", 1)[0]) for line in lines if line.startswith("✗ ")
+    }
+
+    assert result.exit_code == 1, result.stderr
+    assert invalid == set(_TASKS_WITHOUT_A_PROJECT)
+    assert valid == set(_EXAMPLES.rglob("task.yaml")) - invalid
+    assert len(valid) == _GRADED_TASK_COUNT
+    assert f"{_GRADED_TASK_COUNT} valid, {len(_TASKS_WITHOUT_A_PROJECT)} invalid" in result.stderr
 
 
 _HELPDESK_TASK = (

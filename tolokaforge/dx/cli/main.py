@@ -38,9 +38,14 @@ from tolokaforge.core.logging import (
     configure_root_logging,
     silence_root_logging,
 )
-from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig
+from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig, TaskConfig
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
-from tolokaforge.core.project_loader import construct_config, load_effective_run_config
+from tolokaforge.core.project_loader import (
+    construct_config,
+    find_project_yaml,
+    load_effective_run_config,
+    load_project_config,
+)
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.dx._display import (
@@ -1189,6 +1194,32 @@ def _extract_log_errors(logs: list[dict]) -> list[str]:
     return errors
 
 
+def _load_task_under_its_project(task_file: Path) -> tuple[TaskConfig, Path]:
+    """Load a task the way a run loads it — under its enclosing project's defaults.
+
+    The shared-domain merge (a ``task.yaml`` carrying a ``domain:`` ref) happens
+    inside ``load_task_yaml``, so both the flat and the shared-domain layout
+    resolve here.
+
+    ``project.default_environment`` is deliberately not layered: the orchestrator
+    forwards it so the adapter can bind it into a ``TaskDescription``'s
+    ``EnvironmentManifest``, and validation builds no ``TaskDescription``.
+    """
+    from tolokaforge.adapters._task_loader import load_task_yaml
+
+    project_yaml = find_project_yaml(task_file)
+    if project_yaml is None:
+        return load_task_yaml(task_file)
+    try:
+        project = load_project_config(project_yaml)
+    except Exception as exc:
+        raise RuntimeError(f"enclosing project {project_yaml} failed to load: {exc}") from exc
+    return load_task_yaml(
+        task_file,
+        project_task_defaults=project.task_defaults.model_dump(exclude_defaults=True) or None,
+    )
+
+
 @cli.command()
 @click.option("--tasks", required=True, help="Glob pattern for task files")
 def validate(tasks: str):
@@ -1197,31 +1228,43 @@ def validate(tasks: str):
 
     import glob
 
-    from tolokaforge.adapters._task_loader import load_task_yaml, validate_grading_yaml
+    from tolokaforge.adapters._task_loader import (
+        tool_inventory_under_adapter,
+        validate_grading_yaml,
+    )
 
     task_files = glob.glob(tasks, recursive=True)
+    if not task_files:
+        raise click.ClickException(
+            f"no task file matches {tasks!r} — a pattern selecting nothing validates nothing"
+        )
 
     valid = 0
     invalid = 0
 
     for task_file in task_files:
         try:
-            # load_task_yaml applies the shared-domain merge (if the task.yaml
-            # carries a ``domain:`` ref) before TaskConfig validation, so this
-            # CLI accepts both flat and shared-domain layouts.
-            task_config, task_dir = load_task_yaml(Path(task_file))
-            # Also validate the referenced grading.yaml so that schema breaks —
-            # e.g. the removed free-text ``rubric: str`` / ``output_schema`` —
-            # fail loud here with a clear migration message rather than only at
-            # run time.
-            validate_grading_yaml(task_dir / task_config.grading)
+            task_config, task_dir = _load_task_under_its_project(Path(task_file))
+            # Schema breaks in the referenced grading.yaml — e.g. the removed
+            # free-text ``rubric: str`` / ``output_schema`` — fail here with a
+            # migration message rather than only at run time.
+            report = validate_grading_yaml(
+                task_dir / task_config.grading,
+                inventory=tool_inventory_under_adapter(
+                    task_config, task_dir, task_config.adapter_type
+                ),
+            )
             console.print(f"[green]✓ {task_file}[/green]")
+            for skip in report.unchecked:
+                console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")
             valid += 1
         except Exception as e:
             console.print(f"[red]✗ {task_file}: {str(e)}[/red]")
             invalid += 1
 
     console.print(f"\n[bold]Summary:[/bold] {valid} valid, {invalid} invalid")
+    if invalid:
+        raise click.ClickException(f"{invalid} of {len(task_files)} task files failed validation")
 
 
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:

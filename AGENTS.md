@@ -129,9 +129,11 @@ uv run pytest tests/ -v -m canonical
 # Integration tests — require API keys and/or services; run in parallel
 scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
 
-# Validate task definitions (tasks/ must be cloned locally or use a custom TASKS_GLOB)
+# Validate task definitions — exits 1 on an invalid task or on a glob matching nothing
 tolokaforge validate --tasks "tasks/**/task.yaml"
 ```
+
+**`make validate`** runs the same command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target skips with a printed reason when nobody named a target — `TASKS_DIR` absent *and* `TASKS_GLOB` still the default derived from it. Point `TASKS_DIR` (or `TASKS_GLOB`) at your own pack to validate it; either override runs. The dev MCP's `validate_tasks` skips the same default for the same reason. See [`docs/CLI.md`](docs/CLI.md) § Task validation for the exit-code contract and the project layering.
 
 **`scripts/with_env.sh` convention:** Use `scripts/with_env.sh uv run ...` when you need `.env` variables (API keys, service URLs). Use plain `uv run ...` for tasks that don't need environment variables (unit tests, linting).
 

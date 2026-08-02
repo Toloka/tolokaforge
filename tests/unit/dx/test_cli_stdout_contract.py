@@ -301,11 +301,21 @@ class TestReadOnlyCommandsStdoutIsEmpty:
         assert "test_run" in result.stderr
 
     def test_validate_stdout_is_empty(self, runner: CliRunner, tmp_path: Path) -> None:
-        # Empty glob — no task files match, ``validate`` completes with
-        # a "0 valid, 0 invalid" summary on stderr and exits zero.
-        result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "no-such" / "*.yaml")])
+        pack = tmp_path / "pack"
+        pack.mkdir()
+        (pack / "grading.yaml").write_text("{}\n")
+        (pack / "task.yaml").write_text("task_id: t\ndescription: A task.\n")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(pack / "task.yaml")])
 
         assert result.exit_code == 0, result.stderr
+        assert result.stdout == ""
+
+    def test_validate_stdout_is_empty_on_failure(self, runner: CliRunner, tmp_path: Path) -> None:
+        # Empty glob — the failure surface stays entirely on stderr.
+        result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "no-such" / "*.yaml")])
+
+        assert result.exit_code != 0
         assert result.stdout == ""
 
     def test_config_validate_stdout_is_empty(self, runner: CliRunner, tmp_path: Path) -> None:
