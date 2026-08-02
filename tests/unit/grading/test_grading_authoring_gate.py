@@ -55,6 +55,18 @@ _HELPDESK = _EXAMPLES / "multi_service_helpdesk_workflow/dataset/tasks/helpdesk_
 _NOTES = _EXAMPLES / "native_shared_domain/dataset/notes/testcases/add_first_note/task.yaml"
 _NO_TOOLS = _EXAMPLES / "example-microservices-pack/tasks/api_endpoint_add/task.yaml"
 
+# Four more, because a binder's extraction is checked against the *declared type* of
+# an argument and the two packs above type none but strings. Between them these carry
+# every JSON type a correlation against text cannot hold for, plus the property that
+# writes no type at all: ``read_file`` types ``offset`` integer and
+# ``with_line_numbers`` boolean under ``additionalProperties: false``, ``place_order``
+# types ``items`` array under a schema permitting extras, ``search_kb.alpha`` is the
+# corpus's only ``number``, and ``mobile.actions`` is an ``anyOf`` with no ``type``.
+_CODING = _EXAMPLES / "coding/dataset/tasks/coding/coding_public_example_01/task.yaml"
+_SHOP_ORDERS = _REPO / "tests/data/tasks/shop_orders_02/task.yaml"
+_MOBILE = _REPO / "tests/data/tasks/synth_mobile_01/task.yaml"
+_RAG = _EXAMPLES / "rag_search/dataset/tasks/kb_lookup_01/task.yaml"
+
 
 @cache
 def _inventory(task_yaml: Path) -> ToolInventory:
@@ -82,6 +94,29 @@ def _tool_call(tool: str, **args: dict[str, Any]) -> dict[str, Any]:
     if args:
         match["args"] = args
     return match
+
+
+def _bound_block(
+    binder: dict[str, Any], values: dict[str, Any], require: dict[str, Any]
+) -> dict[str, Any]:
+    """One constraint drawing *values* out of *binder* and correlating them in *require*."""
+    return {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "probe",
+                    "description": "a probe constraint",
+                    "bind": {"match": binder, "values": values},
+                    "require": require,
+                }
+            ]
+        }
+    }
+
+
+def _quotes(operator: str, name: str) -> dict[str, Any]:
+    """A ``present`` over an assistant message whose text reads the bound *name*."""
+    return {"present": {"match": {"kind": "assistant_message", "text": {operator: name}}}}
 
 
 @dataclass(frozen=True)
@@ -126,6 +161,30 @@ _RULES: tuple[_Rule, ...] = (
         task=_NOTES,
         grading=_trace_block(_tool_call("add_note", titel={"exists": True})),
         checker="_check_argument_paths",
+        channel="advisories",
+        message="probable typo rather than a certainty",
+    ),
+    _Rule(
+        label="extraction_outside_a_closed_schema",
+        task=_CODING,
+        grading=_bound_block(
+            _tool_call("read_file"),
+            {"start": {"field": "args.ofset"}},
+            _quotes("contains_binding", "start"),
+        ),
+        checker="_check_bound_extractions",
+        channel="errors",
+        message="its schema admits no other",
+    ),
+    _Rule(
+        label="extraction_outside_an_open_schema",
+        task=_SHOP_ORDERS,
+        grading=_bound_block(
+            _tool_call("place_order"),
+            {"ordered": {"field": "args.itms"}},
+            _quotes("contains_binding", "ordered"),
+        ),
+        checker="_check_bound_extractions",
         channel="advisories",
         message="probable typo rather than a certainty",
     ),
@@ -515,6 +574,356 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
         ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
 
     assert ToolInventory.unresolvable().known is False
+
+
+# ---------------------------------------------------------------------------
+# Inside a binding
+# ---------------------------------------------------------------------------
+
+
+def test_a_typo_inside_a_binder_is_reported_at_the_binders_own_matcher() -> None:
+    """A binder's matcher decides which events supply candidates, and can be wrong.
+
+    Boundary case, standing lock: a walk over ``require`` alone reaches no binder,
+    so a misspelled tool there selects no event, the binding yields no assignment,
+    and the default ``on_unbound`` charges that to the agent on every trial. The
+    route form carries the route id for the same reason a matcher finding does.
+    """
+    grading = {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "the_quote_came_from_a_read",
+                    "description": "the note quotes a path the agent read",
+                    "bind": {
+                        "match": _tool_call("read_fil"),
+                        "values": {"read_path": {"field": "args.path"}},
+                    },
+                    "require": _quotes("contains_binding", "read_path"),
+                }
+            ],
+            "alternatives": [
+                {
+                    "id": "by_reading_the_file",
+                    "description": "the answer came from the file",
+                    "constraints": [
+                        {
+                            "id": "the_route_quote_came_from_a_read",
+                            "description": "the note quotes a path this route read",
+                            "bind": {
+                                "match": _tool_call("read_fle"),
+                                "values": {"route_path": {"field": "args.path"}},
+                            },
+                            "require": _quotes("contains_binding", "route_path"),
+                        }
+                    ],
+                },
+                {
+                    "id": "by_running_a_command",
+                    "description": "the answer came from a command",
+                    "constraints": [
+                        {
+                            "id": "the_command_output_was_quoted",
+                            "description": "the note quotes a command the agent ran",
+                            "bind": {
+                                "match": _tool_call("bash"),
+                                "values": {"ran": {"field": "args.command"}},
+                            },
+                            "require": _quotes("contains_binding", "ran"),
+                        }
+                    ],
+                },
+            ],
+        }
+    }
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.the_quote_came_from_a_read.bind.match.tool",
+        "trace_checks.by_reading_the_file.the_route_quote_came_from_a_read.bind.match.tool",
+    ]
+    assert all("is not declared by this task" in finding.message for finding in report.errors)
+
+
+def test_an_uncompilable_capture_pattern_is_reported_at_its_own_address() -> None:
+    """A binder's pattern is compiled by the same evaluator a matcher's ``regex`` is.
+
+    Boundary case, standing lock: it is the one authored pattern that lives outside
+    a ``ValuePredicate``, so a rule walking predicates alone lets it through to
+    grade time, where ``re.error`` costs the trial rather than the constraint.
+    """
+    grading = _bound_block(
+        {"kind": "assistant_message"},
+        {"figure": {"field": "text", "pattern": "([0-9]+"}},
+        {"present": {"match": _tool_call("write_file", content={"contains_binding": "figure"})}},
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.bind.values.figure.pattern"
+    ]
+    assert "does not compile" in report.errors[0].message
+
+
+_UNCHECKED_EXTRACTIONS = (
+    pytest.param(
+        _HELPDESK,
+        _tool_call("http_request"),
+        {"query": {"field": "args.json.q"}},
+        "first segment only",
+        id="extraction_below_a_declared_head",
+    ),
+    pytest.param(
+        _MOBILE,
+        _tool_call("mobile"),
+        {"acts": {"field": "args.actions"}},
+        "declares no type",
+        id="extraction_the_schema_gives_no_type",
+    ),
+)
+
+
+@pytest.mark.parametrize(("task", "binder", "values", "reason"), _UNCHECKED_EXTRACTIONS)
+def test_an_extraction_the_schema_cannot_answer_for_is_unchecked(
+    task: Path, binder: dict[str, Any], values: dict[str, Any], reason: str
+) -> None:
+    """The two residues the tool schema leaves, both reported and neither fatal.
+
+    ``json.q`` on ``http_request`` bottoms out at ``json`` (#765), and ``mobile``
+    writes ``actions`` as an ``anyOf`` with no ``type``, so neither the argument
+    below the first segment nor the type of the value bound out of it is knowable.
+    Both are where the evaluation-time failure is the only backstop, so a gate that
+    stayed silent here would read as a clean bill of health.
+    """
+    name = next(iter(values))
+    grading = _bound_block(binder, values, _quotes("contains_binding", name))
+
+    report = inspect_grading_authoring(grading, _inventory(task))
+
+    assert report.errors == ()
+    assert report.advisories == ()
+    assert [skip.where for skip in report.unchecked] == [
+        f"trace_checks.probe.bind.values.{name}.field"
+    ]
+    assert reason in report.unchecked[0].reason, report.unchecked
+
+
+# The type rule, one case each: what is flagged turns on the type the schema gives
+# the extraction, never on which operator reads it, and each cell below is the
+# smallest edit to its neighbour that changes the answer.
+
+_EXTRACTION_ADDRESS = "trace_checks.probe.bind.values.start.field"
+_INTEGER_ARGUMENT = {"start": {"field": "args.offset"}}
+
+
+def test_a_bound_integer_read_as_text_is_an_error_on_a_closed_schema() -> None:
+    """``contains`` falls back to equality for a non-string pair, which is never true.
+
+    The whole hazard is that the author cannot tell this from the agent failing:
+    the check is red on every trajectory and the message is the one a genuine miss
+    carries. ``read_file`` types ``offset`` as an integer and admits no other
+    argument, so the schema settles it before the run.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"), _INTEGER_ARGUMENT, _quotes("contains_binding", "start")
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_EXTRACTION_ADDRESS]
+    assert "declares as type 'integer'" in report.errors[0].message
+    assert "trace_checks.probe.present.match.text" in report.errors[0].message
+    assert report.advisories == ()
+
+
+def test_a_bound_array_read_as_text_is_an_advisory_on_an_open_schema() -> None:
+    """A schema permitting arguments it does not declare describes its tool loosely.
+
+    The severity is the whole content of the cell: hard-failing here would enforce
+    against an MCP pack a claim its schema does not make, which is the policy the
+    unknown-argument rule already follows.
+    """
+    grading = _bound_block(
+        _tool_call("place_order"),
+        {"ordered": {"field": "args.items"}},
+        _quotes("contains_binding", "ordered"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_SHOP_ORDERS))
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.bind.values.ordered.field"
+    ]
+    assert "declares as type 'array'" in report.advisories[0].message
+
+
+def test_a_capture_pattern_on_the_extraction_is_not_flagged_for_its_type() -> None:
+    """A regex capture is a string whatever field it was taken off.
+
+    Scoped to the type rule's own address rather than to an empty report: the gate
+    answers nothing else about this block, and asserting that would pin the absence
+    of every rule rather than the presence of this exemption.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.offset", "pattern": "([0-9]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    flagged = [finding.where for finding in report.errors + report.advisories]
+    assert _EXTRACTION_ADDRESS not in flagged, flagged
+
+
+def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> None:
+    """Arguments correlate by native equality, which is the point of the feature.
+
+    ``equals_binding`` on an ``args`` predicate compares two values the tool typed
+    the same way, so the integer that cannot be found inside prose is exactly right
+    here — and a rule reading the operator instead of the schema would reject it.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {"present": {"match": _tool_call("read_file", limit={"equals_binding": "start"})}},
+    )
+
+    assert inspect_grading_authoring(grading, _inventory(_CODING)) == AuthoringReport()
+
+
+def test_a_bound_integer_equated_against_text_is_flagged_like_a_containment() -> None:
+    """``equals_binding`` escapes the rule by where it sits, not by being itself.
+
+    ``operator.eq("…offset 40…", 40)`` is False on every trajectory exactly as
+    ``contains`` is, so an ``equals_binding`` on a text field is the same never-true
+    check — and the containment message names ``equals_binding`` as the fix, which
+    steers authors straight here.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"), _INTEGER_ARGUMENT, _quotes("equals_binding", "start")
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_EXTRACTION_ADDRESS]
+    assert "trace_checks.probe.present.match.text" in report.errors[0].message
+
+
+def test_a_bound_integer_read_beside_a_regex_on_an_argument_is_flagged() -> None:
+    """A ``regex`` beside the reference says the argument holds text.
+
+    An argument is exempt because the comparison is native on both sides; a pattern
+    written on the same predicate withdraws that, since a regex only ever holds
+    against a string.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {
+            "present": {
+                "match": _tool_call(
+                    "write_file", content={"regex": "line [0-9]+", "equals_binding": "start"}
+                )
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_EXTRACTION_ADDRESS]
+    assert "trace_checks.probe.present.match.args.content" in report.errors[0].message
+
+
+_DECLARED_TYPES_THAT_ARE_NEVER_TEXT = (
+    pytest.param(_CODING, "read_file", "args.offset", "integer", id="integer"),
+    pytest.param(_CODING, "read_file", "args.with_line_numbers", "boolean", id="boolean"),
+    pytest.param(_RAG, "search_kb", "args.alpha", "number", id="number"),
+    pytest.param(_SHOP_ORDERS, "place_order", "args.items", "array", id="array"),
+    pytest.param(_HELPDESK, "http_request", "args.headers", "object", id="object"),
+)
+
+
+@pytest.mark.parametrize(("task", "tool", "field", "declared"), _DECLARED_TYPES_THAT_ARE_NEVER_TEXT)
+def test_every_json_type_that_is_never_text_is_reported(
+    task: Path, tool: str, field: str, declared: str
+) -> None:
+    """The rule spans every non-string JSON type, not the two the cells above used.
+
+    Each row is a real property of a real tool, so a type dropped from the table is
+    a correlation that silently stops being caught rather than a constant nothing
+    reads. Channels are merged here because the severity is the subject of its own
+    two cells and this one asks only whether the type is answered for at all.
+    """
+    grading = _bound_block(
+        _tool_call(tool), {"start": {"field": field}}, _quotes("contains_binding", "start")
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(task))
+
+    reported = report.errors + report.advisories
+    assert [finding.where for finding in reported] == [_EXTRACTION_ADDRESS]
+    assert f"type {declared!r}" in reported[0].message
+
+
+_REFERENCES_THAT_COMPARE_TEXT = (
+    pytest.param(_quotes("contains_binding", "start"), "text", id="text"),
+    pytest.param(
+        {"present": {"match": {"kind": "tool_call", "tool": {"equals_binding": "start"}}}},
+        "tool",
+        id="tool",
+    ),
+    pytest.param(
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "status": {"equals": "success"},
+                    "result": {"contains_binding": "start"},
+                }
+            }
+        },
+        "result",
+        id="result",
+    ),
+)
+
+
+@pytest.mark.parametrize(("require", "field"), _REFERENCES_THAT_COMPARE_TEXT)
+def test_every_event_field_holding_text_flags_a_binding_of_another_type(
+    require: dict[str, Any], field: str
+) -> None:
+    """``TraceEvent`` declares three fields as ``str | None``, and all three compare text.
+
+    A rule naming only the field a cell happened to use would let the identical
+    never-true check through on the other two.
+    """
+    grading = _bound_block(_tool_call("read_file"), _INTEGER_ARGUMENT, require)
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_EXTRACTION_ADDRESS]
+    assert f"present.match.{field}" in report.errors[0].message
+
+
+def test_a_bound_string_argument_read_as_text_is_not_flagged() -> None:
+    """The correlation the feature exists for, and the one a coarser rule would reject.
+
+    "The note quotes the path the agent read" is a ``contains_binding`` on a text
+    field over an ``args`` extraction — the exact shape flagged above, separated
+    only by the type ``read_file`` gives ``path``.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"read_path": {"field": "args.path"}},
+        _quotes("contains_binding", "read_path"),
+    )
+
+    assert inspect_grading_authoring(grading, _inventory(_CODING)) == AuthoringReport()
 
 
 def test_a_matcher_carrying_no_predicate_at_all_is_not_a_finding() -> None:

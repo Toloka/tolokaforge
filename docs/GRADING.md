@@ -1577,9 +1577,15 @@ has [undecidable](#what-a-matcher-resolves-to-matched-and-undecidable) events of
 own: a `bind.match` reading `status` on a call the trial recorded no outcome for
 cannot say whether that call is a candidate. An extraction can go unread the same
 way — a `field: result` on a call with no recorded outcome is a candidate whose
-*value* the trial does not carry, where a `field: args.<path>` naming an argument the
-call simply did not pass binds nothing at all. Absent value, absent evidence: the
-same distinction a predicate over the field draws.
+*value* the trial does not carry, where a `field: args.<path>` the call simply did
+not pass binds nothing at all. Absent value, absent evidence: the same distinction a
+predicate over the field draws.
+
+That second reading is about an argument the agent omitted, not one the author
+mistyped: an extraction naming an argument the *tool* does not declare is rejected by
+[`tolokaforge validate`](#what-is-validated-before-a-run) before the run, because it
+binds nothing on every trajectory and the default `on_unbound` would charge that to
+the agent.
 
 So the candidate set is three-valued too, and the constraint is decided only where
 every completion of it agrees. Writing `D` for the definite candidates and `U` for
@@ -1634,11 +1640,19 @@ A `contains_binding` between a text field and a value bound out of an integer
 argument is therefore false on **every** trajectory. That is not scored as an agent
 failure: the constraint fails with a message saying the comparison was not made,
 naming the binding, its value, its type, and the two ways to write the intent —
-`equals_binding` to correlate two arguments, or a `pattern` capture to compare
-against text. What the models cannot answer is which of the two it is:
-`args.reason_code` is a string and `args.delivery_id` is an integer, and only the
-tool's own schema tells them apart, so this one is caught at evaluation rather than
-at load.
+`equals_binding` on an `args` predicate to correlate two arguments, or a `pattern`
+capture to compare against text.
+
+**`tolokaforge validate` catches it first, wherever a schema declares the type.**
+The config models cannot: `args.reason_code` is a string and `args.delivery_id` is an
+integer, and `BoundValue` cannot tell them apart, so a model-tier rejection broad
+enough to catch the second would refuse the first. The declared type lives in the
+tool's JSON schema, which the [authoring gate](#what-is-validated-before-a-run) holds
+— so the misuse is an **error** before the trial is paid for, on a schema forbidding
+extras, and an advisory on one permitting them. Both tiers reject and neither warns.
+The gate's residue is where no schema resolved, where the path runs below its first
+segment, and where the property writes no `type`; there the evaluation-time failure
+above is the whole backstop.
 
 ### When a constraint cannot be decided
 
@@ -1936,15 +1950,17 @@ Findings come in three classes:
 
 | rule | class | where |
 |---|---|---|
-| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher, shared and per-route |
+| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
-| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | every `trace_checks` matcher, shared and per-route |
-| an `args` path whose first segment is outside the properties of a tool whose schema permits extras | advisory | as above |
-| a `regex` pattern that does not compile | error | every predicate, plus `transcript_rules.disallow_regex` |
+| an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
+| the same against a tool whose schema permits extras | advisory | as above |
+| a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference that compares text | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
+| a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
-| an `args` path on a tool whose schema did not resolve | unchecked | per matcher |
-| an `args` path below its first segment | unchecked | per path |
+| an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
+| an `args` address below its first segment | unchecked | per path |
+| a `bind.values[*].field` whose property writes no `type` | unchecked | per extraction |
 
 An **error** always fails the pack. An **advisory** fails it unless
 `evaluation.grading_validation.fail_on: error` is set on the run config: an MCP
@@ -1957,22 +1973,47 @@ severity: nothing reads it to decide whether to raise, so the gate has no
 false-reject mode. It is surfaced beside the task all the same — `validate` prints
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
-commits no `fixtures/tools.json`, and an `args` path below its first segment all
-land here.
+commits no `fixtures/tools.json`, an `args` address below its first segment, and a
+property whose schema writes no `type` all land here.
 
-Only the first segment of an `args` path is checked, and only against `properties`.
-`json.q` on `http_request` is checked at `json` and stops, because `json`'s own
-schema declares no properties and nothing below it is answerable. A tool named by
-`regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
-set, not a token.
+Only the first segment of an `args` address is checked, and only against
+`properties`. `json.q` on `http_request` is checked at `json` and stops, because
+`json`'s own schema declares no properties and nothing below it is answerable. A tool
+named by `regex` rather than by `equals` / `in_` produces no finding at all: a pattern
+names a set, not a token.
 
-**Every matcher rule reaches inside [`alternatives`](#alternative-paths).** A route's
-constraints are graded exactly as the shared ones are, so a misspelled tool on one
-route carries the same two hazards it does on a shared constraint, with the route as
-the blast radius: under `present` that route can be walked in full and still score
-below its siblings, and under `absent` it passes on every trajectory. A finding there
-is addressed `trace_checks.<path id>.<constraint id>`, against `trace_checks.<id>` for
-a shared constraint; the block's single id space is what keeps the two apart.
+**Every matcher rule reaches every matcher the block declares.** A matcher lives in
+three places — on a shared constraint's `require` tree, on an
+[alternative route's](#alternative-paths) constraint, and on a
+[binder's](#correlating-arguments-across-matchers) `bind.match` — and all three are
+graded identically, so a misspelled tool is one defect wherever it sits. What differs
+is the blast radius, and the address is what records it: `trace_checks.<id>` for a
+shared constraint against `trace_checks.<path id>.<constraint id>` inside a route,
+the block's single id space keeping those two apart, with `.bind.match` naming the
+binder rather than the `require` tree. Under `present` a route-local typo lets that
+route be walked in full and still score below its siblings; under `absent` it passes
+on every trajectory; inside a binder it selects no event, so the binding yields no
+assignment and the default `on_unbound` charges that to the agent.
+
+**The type a binder extracts is checked wherever the schema declares it.** `contains`
+compares two strings as substrings and falls back to equality for every other pair,
+and `equals_binding` *is* that equality — so a value bound out of an `integer`
+argument and read by a predicate on `tool` / `text` / `result`, or beside a `regex`
+that asserts the same of an argument, is false on **every** trajectory. That is the
+[type limit](#the-bound-values-type-is-load-bearing) answered before the run: the
+declared type lives in the tool's JSON schema, and the gate is the only tier holding
+it. Neither correct way to write the intent is flagged — `equals_binding` on an `args`
+predicate compares two natively-typed values, and a `pattern` on the extraction binds
+a capture, which is a string.
+
+**A binder reading `field: result` makes its pack records-dependent.** The
+[#717 rule](#matching-a-result-is-scoped-to-successful-calls) requires
+`status: { equals: success }` on such a binder's `match`, and `status` is a field only
+the tool-call record carries — so on a bundle re-graded without records the binder's
+own matcher is undecidable and the constraint reports that the candidate set cannot be
+determined, where a binder over `args` stays decidable. Not a finding: the gate reads
+the block, not the bundle it will be graded against. It is stated here because it is
+the kind of consequence a re-graded bundle otherwise surfaces months later.
 
 **A block that scores nothing is rejected.** `trace_checks` declaring neither
 `constraints` nor `alternatives` asserts nothing; `alternatives` carrying fewer than
