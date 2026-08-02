@@ -866,7 +866,7 @@ def test_validate_accepts_a_well_formed_trace_checks_block(tmp_path: Path):
             },
             "carries no",
         ),
-        ({"constraints": []}, "at least 1 item"),
+        ({"constraints": []}, "declares neither constraints nor alternatives"),
     ],
     ids=["no_constraint_kind", "field_the_kind_never_carries", "no_constraints"],
 )
@@ -896,6 +896,10 @@ def test_validate_rejects_a_trace_checks_block_that_is_not_a_mapping(
     ``isinstance(..., dict)`` alone reports such a pack valid and every constraint
     the block was meant to carry grades as unset. The same shape ``combine`` and
     ``transcript_rules`` carry.
+
+    The remediation names **both** keys the block may carry: an author whose
+    alternatives-only pack lost its indentation is told to write the key that pack
+    actually has, not the one it does not.
     """
     grading = _write_trace_checks(tmp_path, trace_checks)
 
@@ -906,3 +910,4 @@ def test_validate_rejects_a_trace_checks_block_that_is_not_a_mapping(
     assert str(grading) in message, message
     assert "'trace_checks'" in message, message
     assert type(trace_checks).__name__ in message, message
+    assert "'constraints:' or 'alternatives:'" in message, message

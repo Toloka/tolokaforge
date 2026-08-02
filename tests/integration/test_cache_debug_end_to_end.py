@@ -16,15 +16,19 @@ distinct behaviours:
   and that the FastAPI + postgres services also produced captured logs —
   **proving multi-service capture on a completed-but-red grade**. No LLM
   key, no agent loop; only the trial outcome is deterministic.
-* **Test B — runnable + two-layer inspection (one Haiku run, ~$0.50-1.50).**
+* **Test B — runnable + a completed comparison (one Haiku run, ~$0.50-1.50).**
   Runs the pack's ``run_configs/dev.yaml`` through ``tolokaforge run`` as a
   subprocess and asserts *infrastructure + traces, not agent correctness*: the
   run exits 0, the per-trial backend was selected (the reset seam ran), the
-  agent reached both the app layer (``orders-api:8000``) and the cache layer
-  (``cache-admin:8000``) with 2xx GETs, wrote a ``submissions/`` note, and the
+  agent completed **one of the two comparisons the pack's ``trace_checks``
+  declare** with 2xx GETs, wrote a ``submissions/`` note, and the
   ``capture_logs_on_success`` ``redis.log`` again carries the RDB-load
-  signature. Deliberately *out of scope*: ``binary_pass``, ``state_checks``,
-  judge success — those are agent-correctness / model-flaky concerns.
+  signature. The comparison assertion is a disjunction because the routes are
+  alternatives: an agent that compares the served read against
+  ``/orders/4021/source`` never touches ``cache-admin`` and is scored in full for
+  it, so the reachable network path this test proves is the one the agent chose.
+  Deliberately *out of scope*: ``binary_pass``, ``state_checks``, judge success —
+  those are agent-correctness / model-flaky concerns.
 
 **Gated.** Both require a real Docker daemon (the per-trial runtime brings up
 the compose stack). Test B additionally needs a real LLM provider key;
@@ -39,6 +43,7 @@ import shutil
 import subprocess
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 import pytest
 import yaml
@@ -74,10 +79,20 @@ _RDB_LOAD_SIGNATURES = ("Loading RDB", "Done loading RDB", "DB loaded from disk"
 # capture (redis is asserted separately for its RDB-load signature).
 _APP_SERVICES = ("orders-api", "cache-admin", "app-db")
 
-# The two service hostnames the agent must reach with a 2xx GET — the app layer
-# and the cache layer (two-layer inspection).
-_APP_LAYER_HOST = "orders-api:8000"
-_CACHE_LAYER_HOST = "cache-admin:8000"
+# The three reads the pack's ``trace_checks`` routes are built from, as
+# ``host`` + path with no scheme. ``/orders/4021`` is a prefix of
+# ``/orders/4021/source``, so these are compared whole rather than by substring.
+_SERVED_READ = "orders-api:8000/orders/4021"
+_SOURCE_READ = "orders-api:8000/orders/4021/source"
+_CACHED_READ = "cache-admin:8000/cache/order:4021"
+
+# The two alternative comparisons the pack declares, by the route id that grades
+# each. Completing either one locates the divergence, so the assertion below is a
+# disjunction: requiring both would fail a correct agent for the route it chose.
+_DECLARED_COMPARISONS = {
+    "divergence_between_the_api_layers": ({_SERVED_READ, _SOURCE_READ},),
+    "divergence_against_the_cache": ({_CACHED_READ, _SERVED_READ}, {_CACHED_READ, _SOURCE_READ}),
+}
 
 
 def _pack_manifest_and_seeds() -> tuple[EnvironmentManifest, dict[str, SeedRef]]:
@@ -175,7 +190,7 @@ class TestCacheDebugRedGradeCapture:
 
 
 # ---------------------------------------------------------------------------
-# Test B — runnable + two-layer inspection (one Haiku run, ~$0.50-1.50)
+# Test B — runnable + a completed comparison (one Haiku run, ~$0.50-1.50)
 # ---------------------------------------------------------------------------
 
 
@@ -203,11 +218,13 @@ def _status_by_tool_call_id(messages: list[dict[str, Any]]) -> dict[str, int]:
     return statuses
 
 
-def _hosts_reached_with_2xx_get(trajectory: dict[str, Any]) -> set[str]:
-    """The set of ``{host}`` fragments the agent hit with a 2xx GET
-    ``http_request`` — each call correlated to its result status by
-    ``tool_call_id``. Proves the agent-in-container -> FastAPI network path per
-    layer."""
+def _reads_answered_with_2xx(trajectory: dict[str, Any]) -> set[str]:
+    """The ``host`` + path of every read the agent made and a 2xx answered.
+
+    Each ``http_request`` is correlated to its result status by ``tool_call_id``,
+    so a URL only lands here when the agent-in-container reached that FastAPI
+    service over the network.
+    """
     messages = trajectory.get("messages") or []
     statuses = _status_by_tool_call_id(messages)
     reached: set[str] = set()
@@ -221,9 +238,18 @@ def _hosts_reached_with_2xx_get(trajectory: dict[str, Any]) -> set[str]:
             status = statuses.get(call.get("id"))
             if status is None or not (200 <= status < 300):
                 continue
-            url = str(args.get("url", ""))
-            reached.update(host for host in (_APP_LAYER_HOST, _CACHE_LAYER_HOST) if host in url)
+            url = urlsplit(str(args.get("url", "")))
+            reached.add(f"{url.netloc}{url.path.rstrip('/')}")
     return reached
+
+
+def _comparisons_completed(reads: set[str]) -> list[str]:
+    """The declared routes whose reads the agent made, by route id."""
+    return sorted(
+        route
+        for route, read_sets in _DECLARED_COMPARISONS.items()
+        if any(required <= reads for required in read_sets)
+    )
 
 
 def _wrote_submissions_note(trajectory: dict[str, Any]) -> bool:
@@ -240,9 +266,9 @@ def _wrote_submissions_note(trajectory: dict[str, Any]) -> bool:
 
 
 def _assert_infrastructure(run_dir: Path) -> None:
-    """Assert the run's artifacts prove the pack's infrastructure, two-layer
-    inspection, the written deliverable, and the redis_dump restore. Split out
-    so the assertions can be dry-run against a preserved run dir."""
+    """Assert the run's artifacts prove the pack's infrastructure, a completed
+    diagnostic comparison, the written deliverable, and the redis_dump restore.
+    Split out so the assertions can be dry-run against a preserved run dir."""
     trial_dir = run_dir / "trials" / _TASK_ID / "0"
     trajectory_path = trial_dir / "trajectory.yaml"
     metrics_path = trial_dir / "metrics.yaml"
@@ -253,12 +279,12 @@ def _assert_infrastructure(run_dir: Path) -> None:
         )
 
     trajectory = yaml.safe_load(trajectory_path.read_text())
-    reached = _hosts_reached_with_2xx_get(trajectory)
-    missing = [host for host in (_APP_LAYER_HOST, _CACHE_LAYER_HOST) if host not in reached]
-    assert not missing, (
-        f"agent did not reach {missing} with a 2xx GET — two-layer inspection "
-        f"(app + cache) did not work.\nreached: {sorted(reached)}\n"
-        f"messages: {trajectory.get('messages')}"
+    reached = _reads_answered_with_2xx(trajectory)
+    assert _comparisons_completed(reached), (
+        "agent completed neither of the two comparisons the pack declares, so no "
+        "route from the agent's container to a FastAPI service was exercised end to "
+        f"end.\ndeclared routes: {sorted(_DECLARED_COMPARISONS)}\n"
+        f"reads answered 2xx: {sorted(reached)}\nmessages: {trajectory.get('messages')}"
     )
 
     assert _wrote_submissions_note(trajectory), (
@@ -289,11 +315,12 @@ def _assert_infrastructure(run_dir: Path) -> None:
     not is_docker_daemon_available(),
     reason="Docker daemon not available (per-trial runtime needs it)",
 )
-def test_cache_debug_infrastructure_and_two_layer_inspection() -> None:
+def test_cache_debug_infrastructure_and_a_completed_comparison() -> None:
     """The full ``tolokaforge run`` exits 0 and its captured traces prove the
-    per-trial backend ran the reset seam, the agent inspected both the app and
-    cache layers (2xx GETs), wrote a submissions/ note, and the redis_dump
-    recipe reloaded the poisoned RDB (``redis.log`` RDB-load signature)."""
+    per-trial backend ran the reset seam, the agent completed one of the two
+    comparisons the pack declares (2xx GETs), wrote a submissions/ note, and the
+    redis_dump recipe reloaded the poisoned RDB (``redis.log`` RDB-load
+    signature)."""
     basename = _output_basename()
     results_root = _REPO_ROOT / "results"
     before = set(results_root.glob(f"{basename}_*")) if results_root.exists() else set()

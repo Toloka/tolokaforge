@@ -1,0 +1,48 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# Two genuinely alternative routes to the same confirmation, each scored as a
+# whole against the shared constraints plus its own. The violating trial takes one
+# step of each route and completes neither, so it scores the best single route —
+# 1/2 — where a flat conjunction over all four constraints, or a per-step
+# disjunction, would score it 1/2 and 1.0 respectively. There is deliberately no
+# top-level constraints list: the routes are everything this pack asserts.
+trace_checks:
+  alternatives:
+    - id: confirmed_against_the_ledger
+      description: "the balance was confirmed against the ledger of record"
+      constraints:
+        - id: the_ledger_was_read
+          description: "the agent read the account ledger"
+          require:
+            present:
+              match:
+                kind: tool_call
+                tool: { equals: read_ledger }
+        - id: the_ledger_total_was_recomputed
+          description: "the agent recomputed the balance from the ledger entries"
+          require:
+            present:
+              match:
+                kind: tool_call
+                tool: { equals: recompute_ledger_total }
+    - id: confirmed_against_the_statement
+      description: "the balance was confirmed against the issued statement"
+      constraints:
+        - id: the_statement_was_fetched
+          description: "the agent fetched the issued statement"
+          require:
+            present:
+              match:
+                kind: tool_call
+                tool: { equals: fetch_statement }
+        - id: the_statement_closing_balance_was_read
+          description: "the agent read the statement's closing balance"
+          require:
+            present:
+              match:
+                kind: tool_call
+                tool: { equals: read_closing_balance }

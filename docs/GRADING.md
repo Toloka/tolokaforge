@@ -1,12 +1,15 @@
 # Grading System
 
-Tolokaforge evaluates agent performance across four dimensions:
+Tolokaforge evaluates agent performance across five dimensions:
 
 1. **State Checks** - Final environment state verification (hash-based or JSONPath)
 2. **Transcript Rules** - Process constraints (required phrases, tool usage, turn limits)
-3. **LLM Judge** - Per-criterion rubric grading by a read-only agentic judge
-4. **Custom Checks** - Author-written Python `@check` functions for the
-   deterministic-Python gap the other three don't express (arithmetic
+3. **Trace Checks** - Declarative conditions on the trial's event timeline: order,
+   scoped absence, counting, and argument-level matching, with alternative routes
+   and checks that must hold without being scored. See [Trace Checks](#trace-checks).
+4. **LLM Judge** - Per-criterion rubric grading by a read-only agentic judge
+5. **Custom Checks** - Author-written Python `@check` functions for the
+   deterministic-Python gap the other four don't express (arithmetic
    over final state, transcript patterns tied to computed values). See
    [custom_checks.md](custom_checks.md).
 
@@ -132,6 +135,14 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   termination notice and which made no tool call is skipped despite having
   messages. That is the point — grading a rule against harness text would let a
   task score itself on strings the harness wrote.
+
+**The guarantee is narrower inside a route.** A manifest entry carries one
+`runner_field`, and the per-constraint entries address
+`TraceChecksConfig.constraints`, so a constraint kind or per-constraint field
+written *only* inside an [`alternatives`](#alternative-paths) path is covered by the
+`trace_checks.alternatives` key rather than by its own leaf — populated-implies-accounted
+holds for the block, not for that leaf (#772). The evaluator's side is unaffected: it
+records every kind the walk reached, wherever the constraint was written.
 
 `grading_method: test_execution` returns before the component phase, so the ledger
 does not apply to that dispatch mode — recorded as the `grading_method` entry's
@@ -1131,8 +1142,14 @@ predicates, nested argument paths, counting, and a call's status or result.
 (`tolokaforge/core/grading/trace_checks.py`) is called by the core engine's
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
-the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks` and
-are written inline in `grade.yaml` under `trace_check_results`.
+the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
+each carrying its `severity`, and are written inline in `grade.yaml` under
+`trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
+gates that shut and one line per alternative, and lands beside them under
+`trace_checks_summary`. **A tripped gate fails the trial on both substrates** —
+the core engine's combine and the runner's `GradeTrial` each force `binary_pass`
+false, the same act the runner already performs on the judge's
+[required-criterion gate](#required-gate-semantics).
 
 **A trial whose timeline carries no events leaves the component unscored.** Every
 constraint would otherwise be answered by evidence the trial does not have. The
@@ -1151,10 +1168,11 @@ either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatche
 
 ```yaml
 trace_checks:
-  constraints:
-    - id: lookup_before_denial                  # unique within the pack
+  constraints:                                  # hold whatever route the agent took
+    - id: lookup_before_denial                  # unique across the whole block
       description: "payment looked up before the duplicate-refund case is denied"
       weight: 2.0                               # default 1.0
+      severity: scored                          # scored (default) | gate
       on_missing: fail                          # fail (default) | pass
       within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
       require:
@@ -1163,12 +1181,33 @@ trace_checks:
                                                args: { payment_id: { equals: "PAY-664306" } } } }
           right: { quantifier: first, match: { kind: tool_call, tool: { equals: servicenow_csm_update_case },
                                                args: { u_resolution_code: { equals: denied_ineligible } } } }
+  alternatives:                                 # optional, two or more routes
+    - id: refund_via_reversal
+      description: "the payment is reversed at the processor"
+      constraints:
+        - id: reversal_requested
+          description: "a reversal is requested for the duplicate charge"
+          require: { present: { match: { kind: tool_call, tool: { equals: billing_api_reverse_payment } } } }
+    - id: refund_via_credit_note
+      description: "a credit note settles the duplicate charge"
+      constraints:
+        - id: credit_note_issued
+          description: "a credit note is issued for the duplicate charge"
+          require: { present: { match: { kind: tool_call, tool: { equals: billing_api_issue_credit } } } }
 ```
 
 `require` carries **exactly one** constraint kind, and each kind's value is that
 kind's own payload. Two conditions are an `all_of` over two expressions. Every
 model is `extra="forbid"`, so a misspelled operator, kind or matcher field fails
 at `tolokaforge validate` rather than grading as unset.
+
+A block declares `constraints`, `alternatives`, or both — but not neither, which
+would score nothing. **Every `id` in the block shares one space**: the path ids and
+every constraint id, shared and per-path alike, because an id is how the grade names
+a sub-check and how [the pre-run gate](#what-is-validated-before-a-run) addresses one
+— `trace_checks.<id>` for a shared constraint and
+`trace_checks.<path id>.<constraint id>` for one inside a route. A repeat anywhere is
+a load error.
 
 ### Matchers
 
@@ -1423,6 +1462,7 @@ Worked, over *d* definite matches and *u* undecidable ones:
 | `count` | passes when every count in `[d, d + u]` is within the bounds, fails when none is, undecided otherwise |
 | `before`, `immediately_before`, `absent_before`, `absent_between` | decided when every reading of each side agrees; undecided otherwise |
 | `all_of`, `any_of`, `negate` | Kleene: a conjunction with a failing branch fails whatever the undecided branch would have said, a disjunction with a holding branch passes, and otherwise an undecided branch makes the composite undecided |
+| any of the above carrying [`severity: gate`](#severity--a-check-that-must-hold) | undecided **trips the gate** — a scored constraint forfeits its weight there, and a gate's forfeit is the trial |
 
 Undecided is not a pass in the agent's favour and not an over-fail either: definite
 evidence answers the question wherever it can. The usual way to reach it is a
@@ -1436,7 +1476,7 @@ The component score is `Σ(weight · passed) / Σ(weight)`, `weight` defaulting 
 `1.0`, so a pack that omits every weight scores the plain fraction of constraints
 that passed. `weight` must be **positive**: a zero weight is a declared check that
 contributes to neither the numerator nor the denominator, and "evaluated but not
-scored" is what `severity: gate` (#680) is for.
+scored" is what [`severity: gate`](#severity--a-check-that-must-hold) is for.
 
 Prefer uniform weights. Reach for `weight` when migrating an already-weighted
 criterion, not to express that one condition feels more important — a weight map
@@ -1447,7 +1487,141 @@ tuned on. The same guidance the rubric weights carry applies here.
 agent satisfy half of one route and half of another: `any_of: [A_step1, B_step1]`
 combined with `any_of: [A_step2, B_step2]` passes for an agent that did `A_step1`
 and `B_step2`, which is neither route. Grading genuinely alternative routes needs
-the paths declared as wholes, which is #680's `alternatives`.
+the paths declared as wholes, which is [`alternatives`](#alternative-paths).
+
+### `severity` — a check that must hold
+
+`severity: gate` marks a constraint that is not scored and must hold. A gate is
+excluded from the weighted average — it enters neither the numerator nor the
+denominator — so writing a `weight` beside one is a load error naming the key
+nothing reads. So is [`on_missing: pass`](#on_missing--what-an-unmatched-anchor-decides):
+it would open the gate on every trial whose anchor matched nothing. That policy earns
+its place on a *scored* constraint, where an unmatched anchor is already charged to
+the check that asked whether the thing happened and charging it again would cost the
+agent the same failure twice; a gate carries no share, so there is no second charge
+to avoid and the pass buys nothing but a check that must hold holding vacuously.
+`severity: scored` is the default and is the constraint that carries a share.
+
+This is the same concept as the rubric judge's
+[required criterion](#required-gate-semantics), reached by the same reasoning: some
+conditions are not worth a fraction of the score, they are the condition the trial
+is allowed to exist under. Reach for a gate where a partial score would be
+misleading rather than merely low — a forbidden tool called, another customer's
+record touched, an order mutated by a diagnose-only agent.
+
+A tripped gate takes the component to `0.0` and fails the trial, whatever the scored
+constraints said, and the grade names the gates that tripped.
+
+**A gate nobody can decide trips.** Undecided is not a pass in the agent's favour
+anywhere in this vocabulary, and a gate is the one check the author said must hold —
+an undecided gate that opened would be a silent pass on exactly that check, and would
+leave a gate *weaker* than the scored constraint it replaced. The consequence is
+sharpest on the case the [declared limits](#declared-limits-and-what-owns-each)
+already name: a bundle re-graded without its tool-call record cannot read `status` or
+`executor` (#682), so a gate reading either fails every re-graded trial. Write gates
+over evidence the message view carries — which tool was called, with which
+arguments, in which order — and keep `status` and `executor` for scored constraints,
+where the same limit costs a weight rather than the trial.
+
+**A block of nothing but gates scores the gate verdict:** `1.0` when every gate held,
+`0.0` otherwise. There is no weighted average to take — every member is excluded from
+it — and this is the same collapse the judge's
+[all-required rubric](#required-gate-semantics) already returns. It applies to a flat
+`constraints` list and to a route's decision set alike.
+
+**A route with nothing scored beside a route that has something scored is a load
+error**, not a collapse. Such a route is `1.0` wherever its gates hold, so it ties or
+beats every scored sibling on every trajectory and the component reports the gate
+instead of the route the agent walked. The gate belongs in the shared `constraints`,
+where it applies whichever route was taken. A block whose routes are *all* gate-only
+is admitted: there is no scored sibling for one to stand in front of, and the block
+asks the gates' own question whichever route the agent walked.
+
+### Alternative paths
+
+`alternatives` declares two or more routes, each a `TracePath` carrying an `id`, a
+`description` and its own `constraints`. A path is a named **whole**, which is what
+separates it from `any_of`: an agent is measured against one route at a time, so
+half of one plus half of another is not a passing trajectory on either.
+
+```yaml
+trace_checks:
+  alternatives:
+    - id: served_vs_source
+      description: "the bug is located by comparing the served body against the source"
+      constraints:
+        - id: source_fetched
+          description: "the source document is read"
+          require: { present: { match: { kind: tool_call, tool: { equals: read_source } } } }
+    - id: cache_inspector
+      description: "the bug is located by reading the cache inspector"
+      constraints:
+        - id: inspector_read
+          description: "the cache inspector is queried"
+          require: { present: { match: { kind: tool_call, tool: { equals: cache_inspect } } } }
+```
+
+`constraints` may be omitted entirely when every check belongs to a route. **Two is
+the floor**: one path is the flat form written the long way round — the best of one
+path is that path — so a single-path block is rejected at load, pointing the author
+at `constraints:`.
+
+#### How a multi-path block scores
+
+Each path is scored over its **decision set**: the shared `constraints` plus that
+path's own. Every path therefore carries the shared checks, and each path's score is
+normalised within its own set — which is why paths need no weights, and why a long
+route is not penalised for being long.
+
+```
+scoreᵢ = Σ(weight · passed) / Σ(weight)   over the non-gate members of Dᵢ
+scoreᵢ = 1.0 if every gate in Dᵢ held else 0.0   when Dᵢ has no non-gate member
+
+winner        = the highest-scoring path; a tie goes to a path whose gate shut,
+                and between clean paths to the first declared
+gate_failed   = some gate in the winner's decision set did not hold
+component     = 0.0 if gate_failed else the winner's score
+```
+
+The grade records the winner by id, and one line per path carrying that path's own
+score and whether its gates held — so "did it win by a mile or a hair" and "do models
+cluster on one route" are answerable from `grade.yaml` alone. A path's recorded score
+is never zeroed by a gate; only the component is.
+
+The argmax runs over **every** path, including ones whose gates did not hold. A path
+is not dropped from contention for failing its own gate: dropping it would let an
+agent violate the gate on the route it scored highest on, fall through to a
+lower-scoring clean route, and pass. For the same reason a **tie goes to the path
+whose gate shut** — otherwise the trial's verdict would turn on which of two
+equal-scoring routes the author happened to write first. Preferring the gated path
+in a tie can only ever shut a component and never rescue one, so it closes a cell
+rather than opening one.
+
+#### Shared gates and path gates: when each is appropriate
+
+A gate in the shared `constraints` is in every decision set, so it applies whichever
+route the agent took. A gate **inside a path** is a *process* gate: it constrains how
+that route must be walked, and it is consulted only on the route the agent actually
+took.
+
+> **A gate that must hold whatever route the agent took belongs in shared
+> `constraints`, never inside a path.**
+
+A forbidden tool called, another customer's record touched, an order mutated by a
+diagnose-only agent — all route-independent, so all shared gates. The last is a
+shipped pack: see [`cache_debug`](#two-worked-packs), whose one gate is shared for
+exactly this reason.
+
+This rule is guidance rather than a guarantee, and the reason is worth stating
+plainly: a path gate has an escape. Trip route A's gate *and* score **strictly below**
+a clean route B, and A's gate is never consulted — the trial passes with the
+forbidden action performed. Scoring merely *level* with B no longer escapes, because
+a tie goes to the gated path, but scoring below it still does and no rule for path
+gates closes that. Preferring a gate-clean
+path is worse in the same place (an agent escapes a gate by violating it on the route
+it scores highest on), and consulting every gate everywhere fails an agent for
+tripping a gate on a route it did not take, which is the premise of the feature. A
+shared gate has no escape, which is why route-independent conditions belong there.
 
 **Every component the pack configures needs a weight of its own.** A configured
 component absent from `combine.weights` is dropped from the core engine's fold and
@@ -1456,7 +1630,7 @@ same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` ho
 every shipped example pack to that, reading the combine that is *effective* after
 the project layer merges.
 
-### A worked pack
+### Two worked packs
 
 [`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
 grades the process alongside the substrate. Its three constraints are the three
@@ -1473,6 +1647,41 @@ The first is the assertion `transcript_rules` cannot express at all: it matches 
 **nested argument path** inside the request body, where `required_actions` compares
 whole argument values for exact equality.
 
+[`examples/native/multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md)
+is the multi-path and gate reference. It is a diagnose-only task whose own rubric
+reference names **two** comparisons as locating the bug, so the two are declared as
+`alternatives` and the component is the better route's:
+
+| check | where | the wrong process it catches |
+|---|---|---|
+| `no_status_was_written` | shared, `severity: gate` | the agent "fixed" the symptom with `POST /orders/4021` instead of diagnosing it |
+| `the_note_was_written` | shared | the trial ended with no root-cause note |
+| `both_api_layer_reads_happened` | route `divergence_between_the_api_layers` | a key listing stood in for the source-of-truth read, so no divergence was observed |
+| `both_api_layer_reads_precede_the_note` | route `divergence_between_the_api_layers` | the note was written first and the source read afterwards |
+| `the_cached_value_and_an_api_read_happened` | route `divergence_against_the_cache` | the cache inspector was never opened |
+| `the_cache_comparison_precedes_the_note` | route `divergence_against_the_cache` | the cached value was read after the note that claims to explain it |
+
+Three authoring choices in it are worth copying:
+
+- **The gate is shared, not per-route.** "Do not mutate on a diagnose-only task"
+  holds whichever comparison the agent chose, and a gate inside a route is consulted
+  only when that route wins — so a route gate here would be escapable by winning on
+  the other one. This is the [rule above](#shared-gates-and-path-gates-when-each-is-appropriate)
+  applied to a real pack.
+- **Each route asks two questions**: were both sides of the comparison read, and did
+  the reads that happened happen before the note. The ordering check carries
+  `on_missing: pass` so a read that never happened is charged once — to the presence
+  check — rather than twice, which is what lets each check fail on its own wrong
+  process rather than cascading. The two are not independent as a result: with
+  neither read performed the ordering check is vacuous and passes, so a trajectory
+  that writes the note and nothing else scores the same `2/3` as one that starts a
+  route and abandons it.
+- **The judge stays dominant.** The routes are not equally probative: the cache
+  inspector shows the stale value itself, while the served-vs-source comparison
+  shows only that the read path serves something the database disagrees with. The
+  deterministic components therefore sum to less than `pass_threshold`, so no trial
+  passes on process alone.
+
 ### Declared limits, and what owns each
 
 Named here so an author meets them in the docs rather than in a check that quietly
@@ -1482,7 +1691,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| `severity: gate` and `alternatives` — a check that must hold without being scored, and genuinely alternative routes | #680 |
 | Two arguments on two different calls cannot be correlated (`this call's id equals that call's id`) | #681 |
 | A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
 | Migrating an existing rubric criterion into a constraint | #683 |
@@ -1518,9 +1726,9 @@ Findings come in three classes:
 
 | rule | class | where |
 |---|---|---|
-| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | `trace_checks` matchers |
+| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher, shared and per-route |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
-| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | `trace_checks` matchers |
+| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | every `trace_checks` matcher, shared and per-route |
 | an `args` path whose first segment is outside the properties of a tool whose schema permits extras | advisory | as above |
 | a `regex` pattern that does not compile | error | every predicate, plus `transcript_rules.disallow_regex` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
@@ -1547,6 +1755,27 @@ Only the first segment of an `args` path is checked, and only against `propertie
 schema declares no properties and nothing below it is answerable. A tool named by
 `regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
 set, not a token.
+
+**Every matcher rule reaches inside [`alternatives`](#alternative-paths).** A route's
+constraints are graded exactly as the shared ones are, so a misspelled tool on one
+route carries the same two hazards it does on a shared constraint, with the route as
+the blast radius: under `present` that route can be walked in full and still score
+below its siblings, and under `absent` it passes on every trajectory. A finding there
+is addressed `trace_checks.<path id>.<constraint id>`, against `trace_checks.<id>` for
+a shared constraint; the block's single id space is what keeps the two apart.
+
+**A block that scores nothing is rejected.** `trace_checks` declaring neither
+`constraints` nor `alternatives` asserts nothing; `alternatives` carrying fewer than
+two paths is the flat form written the long way round; and an `id` repeated anywhere
+in the block's one id space makes two sub-check results indistinguishable. A
+`weight` beside [`severity: gate`](#severity--a-check-that-must-hold) is rejected for
+the neighbouring reason — a gate enters neither the numerator nor the denominator, so
+the weight is a declared key nothing reads. Two more are rejected for what they do to
+the fold rather than to the block: `on_missing: pass` beside a gate, which opens it on
+every trial whose anchor matched nothing; and a route whose decision set — the shared
+constraints plus its own — has no scored member while another route's does, which is a
+constant `1.0` standing in front of every scored sibling. All six are load errors
+naming what to write instead.
 
 **An ordering over one matcher is rejected unless some trajectory decides it.**
 Writing the same matcher on both sides of `before`, or forbidding the very events an
@@ -1801,6 +2030,11 @@ section) is computed over the **non-required criteria only**.
 If **every** criterion is required (no non-required criteria to average), the
 judge score collapses to the gate verdict: `1.0` when all required criteria are
 met, else `0.0`.
+
+`trace_checks` states the same concept as
+[`severity: gate`](#severity--a-check-that-must-hold), with the same semantics. Two
+spellings because the two vocabularies are authored separately; one behaviour,
+because a gate that meant something different in each would be a trap.
 
 ### The two weighting layers
 

@@ -211,9 +211,10 @@ def validate_grading_yaml(
     elif trace_checks is not None:
         raise RuntimeError(
             f"Grading file {grading_path}: 'trace_checks' must be a mapping carrying a "
-            f"'constraints' list, got {type(trace_checks).__name__} ({trace_checks!r}). "
-            "A constraint written directly under 'trace_checks:' makes the block a list. "
-            "Write 'trace_checks:' then 'constraints:' indented beneath it."
+            f"'constraints' list, an 'alternatives' list, or both, got "
+            f"{type(trace_checks).__name__} ({trace_checks!r}). A constraint written "
+            "directly under 'trace_checks:' makes the block a list. Write 'trace_checks:' "
+            "then 'constraints:' or 'alternatives:' indented beneath it."
         )
 
     report = inspect_grading_authoring(grading_data, inventory)

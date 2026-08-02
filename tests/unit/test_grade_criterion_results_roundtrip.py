@@ -207,7 +207,8 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
     component score alone says a trace check failed without saying which: the
     payload is asserted whole, so a field the wire lowering or the writer drops —
     ``matched_positions`` above all, the only pointer back into
-    ``trajectory.yaml`` — fails rather than thinning the record.
+    ``trajectory.yaml`` — fails rather than thinning the record. The summary rides
+    beside it: which route the score came from, and which gate shut.
     """
     lowered = lower_wire_grade(
         runner_pb2.Grade(
@@ -228,11 +229,29 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
                     weight=2.0,
                     message="before: no match is ordered before the other side",
                     matched_positions=[2, 4],
+                    severity="scored",
                 ),
                 runner_pb2.TraceConstraintResult(
                     id="no_prefill", kind="absent_before", passed=True, weight=1.0
                 ),
+                runner_pb2.TraceConstraintResult(
+                    id="order_untouched",
+                    kind="absent",
+                    passed=False,
+                    weight=1.0,
+                    message="absent: a forbidden call was made",
+                    severity="gate",
+                ),
             ],
+            trace_checks_summary=runner_pb2.TraceChecksSummary(
+                winning_path="served_vs_source",
+                gate_failed=True,
+                failed_gate_ids=["order_untouched"],
+                paths=[
+                    runner_pb2.TracePathResult(id="served_vs_source", score=0.5, gate_failed=True),
+                    runner_pb2.TracePathResult(id="cache_inspector", score=0.25, gate_failed=False),
+                ],
+            ),
         )
     )
 
@@ -245,6 +264,7 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "kind": "before",
             "passed": False,
             "weight": 2.0,
+            "severity": "scored",
             "message": "before: no match is ordered before the other side",
             "matched_positions": [2, 4],
         },
@@ -253,10 +273,77 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "kind": "absent_before",
             "passed": True,
             "weight": 1.0,
+            "severity": "scored",
             "message": "",
             "matched_positions": [],
         },
+        {
+            "id": "order_untouched",
+            "kind": "absent",
+            "passed": False,
+            "weight": 1.0,
+            "severity": "gate",
+            "message": "absent: a forbidden call was made",
+            "matched_positions": [],
+        },
     ]
+    assert written["trace_checks_summary"] == {
+        "winning_path": "served_vs_source",
+        "gate_failed": True,
+        "failed_gate_ids": ["order_untouched"],
+        "paths": [
+            {"id": "served_vs_source", "score": 0.5, "gate_failed": True},
+            {"id": "cache_inspector", "score": 0.25, "gate_failed": False},
+        ],
+    }
+
+
+def test_a_runner_without_the_trace_checks_summary_leaves_it_absent():
+    """Absent stays absent, so a gate cannot open by omission.
+
+    A proto3 message field carries presence where its four scalars would not: a
+    runner predating the field sends nothing, and filling that in with an empty
+    summary would read as a gate that was evaluated and held. Such a runner rejects
+    a pack declaring ``severity`` at ``RegisterTrial``, so an unset severity on a
+    verdict is likewise the scored default rather than a value the host invented.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=True,
+            score=1.0,
+            trace_checks=[
+                runner_pb2.TraceConstraintResult(
+                    id="lookup_before_denial", kind="before", passed=True, weight=1.0
+                )
+            ],
+        )
+    )
+
+    assert lowered["trace_checks_summary"] is None
+    grade = _parse_grade_result(lowered)
+    assert grade.trace_checks_summary is None
+    assert [item.severity for item in grade.trace_check_results] == ["scored"]
+
+
+def test_a_trace_checks_summary_the_host_cannot_read_fails_the_grade():
+    """The gate decides whether the trial passed, so an unreadable summary rejects.
+
+    Same reasoning as the per-constraint payload beside it, and the same shape of
+    skew — a newer runner naming something this engine does not have. Injected onto
+    the lowered dict rather than the proto, because the field this engine cannot
+    read is by definition one its own stubs cannot encode.
+    """
+    lowered = lower_wire_grade(
+        runner_pb2.Grade(
+            binary_pass=False,
+            score=0.0,
+            trace_checks_summary=runner_pb2.TraceChecksSummary(gate_failed=True),
+        )
+    )
+    lowered["trace_checks_summary"]["gate_severity"] = "fatal"
+
+    with pytest.raises(GradingFailedError, match="Grade.trace_checks_summary"):
+        _parse_grade_result(lowered)
 
 
 def test_a_trace_check_verdict_the_host_cannot_read_fails_the_grade():

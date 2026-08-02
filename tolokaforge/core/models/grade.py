@@ -14,7 +14,7 @@ from typing import Any
 from pydantic import BaseModel, Field
 
 from tolokaforge.core.models.grade_components import GradeComponents
-from tolokaforge.runner.models import CriterionResult, TraceConstraintResult
+from tolokaforge.runner.models import CriterionResult, TraceChecksSummary, TraceConstraintResult
 
 __all__ = [
     "CustomCheckDetail",
@@ -137,6 +137,12 @@ class Grade(BaseModel):
     # pack declared no trace checks, or when the timeline carried no events for
     # them to read. See docs/OUTPUT_FORMAT.md.
     trace_check_results: list[TraceConstraintResult] = Field(default_factory=list)
+    # Which alternative route the component was scored on and whether a trace gate
+    # shut the trial, serialized inline in ``grade.yaml`` beside the verdicts above.
+    # ``None`` only where the grade came off the wire from a runner predating the
+    # field — a runner that graded the trial reports an empty summary rather than
+    # no summary, so a gate cannot open by omission. See docs/OUTPUT_FORMAT.md.
+    trace_checks_summary: TraceChecksSummary | None = None
     # Per-criterion rubric-judge breakdown. ``None`` when no LLM judge ran;
     # an empty list is distinct (judge ran, rubric had no scorable criteria).
     criterion_results: list[CriterionResult] | None = None

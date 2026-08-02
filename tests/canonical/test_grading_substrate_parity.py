@@ -201,16 +201,18 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
         "trace_checks",
         "trace_checks.constraints.weight",
         "trace_checks.constraints.on_missing",
+        "trace_checks.constraints.severity",
         "trace_checks.constraints.within",
     }
 )
 
-# The three per-constraint fields that shape how a kind scores without scoring
+# The four per-constraint fields that shape how a kind scores without scoring
 # anything themselves. Each owns a pack whose two trials a build ignoring the
 # field would score identically, so discrimination is the field being read.
 _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
     "trace_checks.constraints.weight",
     "trace_checks.constraints.on_missing",
+    "trace_checks.constraints.severity",
     "trace_checks.constraints.within",
 )
 
@@ -1759,10 +1761,149 @@ def test_both_substrates_score_trace_checks_through_their_own_grading_path(
     # The per-constraint verdicts cross the wire beside the score, so the reviewer
     # reading grade.yaml learns which constraint moved it.
     (crossed,) = runner_bad.trace_checks
-    assert (crossed.id, crossed.kind, crossed.passed) == (
+    assert (crossed.id, crossed.kind, crossed.passed, crossed.severity) == (
         "payment_looked_up_before_the_case_is_denied",
         "before",
         False,
+        "scored",
+    )
+
+
+_TRACE_GATE_TASK = "trace_checks_gate"
+_THE_GATE = "the_meter_was_not_reset"
+
+
+def test_a_trace_gate_fails_the_trial_on_both_substrates(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """The gate, not the threshold, and not one substrate only.
+
+    The pack declares ``pass_threshold: 0.0``, so every score clears the bar and
+    nothing but the gate can fail a trial here; and its scored constraint passes in
+    both trials, so nothing but the gate can move the score either. The core
+    engine's ``grade_trajectory`` and the runner's real gRPC ``GradeTrial`` are
+    driven separately over the same pack, so a substrate that honours the gate at
+    only one of the two integration points fails here and names which.
+    """
+    pack = test_data_dir / "grading_parity" / _TRACE_GATE_TASK
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_TRACE_GATE_TASK)
+    task_description = adapter.to_task_description(_TRACE_GATE_TASK)
+    satisfying = _load_case(pack, "satisfying")
+    violating = _load_case(pack, "violating")
+
+    core_ok = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
+        satisfying.core_trajectory, satisfying.state
+    )
+    core_bad = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
+        violating.core_trajectory, violating.state
+    )
+    runner_ok = _runner_trace_checks_grade(
+        runner_service, task_description, satisfying, "trace_gate_ok:0", mock_grpc_context
+    )
+    runner_bad = _runner_trace_checks_grade(
+        runner_service, task_description, violating, "trace_gate_bad:0", mock_grpc_context
+    )
+
+    assert (core_ok.binary_pass, runner_ok.binary_pass) == (True, True), (
+        "the gate-clean trial does not pass, so the failure below would not be the "
+        f"gate: core {core_ok.binary_pass}, runner {runner_ok.binary_pass}"
+    )
+    assert (core_bad.binary_pass, runner_bad.binary_pass) == (False, False), (
+        "a tripped gate did not fail the trial on both substrates: core "
+        f"{core_bad.binary_pass}, runner {runner_bad.binary_pass}"
+    )
+    # The scores are asserted beside the verdict so a substrate that fails the
+    # trial by scoring the component differently is told apart from one honouring
+    # the gate: at this threshold a 0.0 score alone would still pass.
+    assert (core_ok.score, runner_ok.score) == (1.0, 1.0)
+    assert (core_bad.score, runner_bad.score) == (0.0, 0.0)
+
+    assert runner_bad.HasField("trace_checks_summary"), (
+        "the runner sent no trace_checks_summary, so the comparisons below would "
+        "hold against a default-valued message rather than a reported one"
+    )
+    assert core_bad.trace_checks_summary is not None
+    assert (
+        list(runner_bad.trace_checks_summary.failed_gate_ids)
+        == core_bad.trace_checks_summary.failed_gate_ids
+        == [_THE_GATE]
+    )
+    assert not runner_ok.trace_checks_summary.failed_gate_ids
+    assert runner_bad.trace_checks_summary.gate_failed is True
+    # This pack declares no alternatives, so both halves of the summary that name a
+    # route are empty by the documented convention — asserted against the literals
+    # rather than against each other, which two absences would satisfy. The route
+    # halves carrying real values cross the wire in the lock below.
+    assert (
+        runner_bad.trace_checks_summary.winning_path,
+        len(runner_bad.trace_checks_summary.paths),
+    ) == ("", 0)
+    assert (core_bad.trace_checks_summary.winning_path, core_bad.trace_checks_summary.paths) == (
+        "",
+        [],
+    )
+    # A grade that fails a trial has to say why in the field a reviewer reads.
+    assert f"FAILED trace gates: {_THE_GATE}" in core_bad.reasons
+    assert f"FAILED trace gates: {_THE_GATE}" in runner_bad.reasons
+
+    assert [(item.id, item.severity, item.passed) for item in runner_bad.trace_checks] == [
+        ("the_meter_was_read", "scored", True),
+        (_THE_GATE, "gate", False),
+    ], "severity does not ride the per-constraint verdicts across the wire"
+
+
+_TRACE_ALTERNATIVES_TASK = "trace_checks_alternatives"
+
+
+def test_the_winning_route_crosses_the_wire(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """Both substrates name the same winner, and the losing route's score survives.
+
+    Driven on the two-route pack, where the winner and the per-route scores are
+    values a build that synthesised or dropped the summary cannot produce. The
+    violating trial takes one step of each route, so the two tie and the winner is
+    the first declared — the tie-break, asserted where it crosses the wire rather
+    than only inside the evaluator.
+    """
+    pack = test_data_dir / "grading_parity" / _TRACE_ALTERNATIVES_TASK
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_TRACE_ALTERNATIVES_TASK)
+    task_description = adapter.to_task_description(_TRACE_ALTERNATIVES_TASK)
+    ledger, cherry_picked = _load_case(pack, "satisfying"), _load_case(pack, "violating")
+
+    core_won = GradingEngine(core_config, task_dir=tmp_path).grade_trajectory(
+        ledger.core_trajectory, ledger.state
+    )
+    runner_won = _runner_trace_checks_grade(
+        runner_service, task_description, ledger, "trace_alt_ok:0", mock_grpc_context
+    )
+    runner_tied = _runner_trace_checks_grade(
+        runner_service, task_description, cherry_picked, "trace_alt_tied:0", mock_grpc_context
+    )
+
+    assert runner_won.HasField("trace_checks_summary")
+    assert core_won.trace_checks_summary is not None
+    assert (
+        runner_won.trace_checks_summary.winning_path
+        == core_won.trace_checks_summary.winning_path
+        == "confirmed_against_the_ledger"
+    )
+    assert [
+        (path.id, path.score, path.gate_failed) for path in runner_won.trace_checks_summary.paths
+    ] == [
+        ("confirmed_against_the_ledger", 1.0, False),
+        ("confirmed_against_the_statement", 0.0, False),
+    ], "the losing route's own score does not cross the wire, so the max is unauditable"
+
+    assert [(path.id, path.score) for path in runner_tied.trace_checks_summary.paths] == [
+        ("confirmed_against_the_ledger", 0.5),
+        ("confirmed_against_the_statement", 0.5),
+    ]
+    assert runner_tied.trace_checks_summary.winning_path == "confirmed_against_the_ledger", (
+        "the two routes tie and the winner is not the first declared, so the "
+        "tie-break the grade reports depends on something other than declaration order"
     )
 
 
@@ -1775,12 +1916,13 @@ def test_both_substrates_score_trace_checks_through_their_own_grading_path(
 def test_both_substrates_read_each_per_constraint_config_input(author_key, test_data_dir, tmp_path):
     """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
 
-    Lock 3 selects ``SCORED_CHECK``, so these three escape it — they carry no
+    Lock 3 selects ``SCORED_CHECK``, so these four escape it — they carry no
     component of their own, they change what one does. Each pack is authored so
     that a build ignoring the field scores its two trials *identically*: the
     weights are the only thing telling one from the other, or the unmatched
-    anchor's policy is, or the turn window is. Discrimination here is therefore
-    the field being read, not the constraint around it working.
+    anchor's policy is, or the turn window is, or which constraint is the gate is.
+    Discrimination here is therefore the field being read, not the constraint
+    around it working.
     """
     verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
     _assert_both_substrates_discriminate(author_key, verdict)

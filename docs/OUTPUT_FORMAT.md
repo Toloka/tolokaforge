@@ -795,8 +795,20 @@ trace_check_results:            # one entry per declared trace constraint; [] wh
     kind: before
     passed: false
     weight: 2.0
+    severity: scored            # scored | gate
     message: "before: no match is ordered before the other side under the declared quantifiers"
     matched_positions: [2, 4]
+trace_checks_summary:           # which route was scored and whether a gate shut
+  winning_path: served_vs_source  # "" when the pack declared no alternatives
+  gate_failed: false
+  failed_gate_ids: []
+  paths:                        # one line per alternative; [] when none declared
+    - id: served_vs_source
+      score: 1.0
+      gate_failed: false
+    - id: cache_inspector
+      score: 0.5
+      gate_failed: false
 criterion_results:              # per-criterion rubric breakdown; null unless an LLM judge ran
   - id: refund_amount
     met: true
@@ -829,21 +841,47 @@ credit).
 
 ### Trace-check verdicts
 
-`trace_check_results` carries one entry per constraint the pack's `trace_checks`
-block declared, in declaration order, and is `[]` when the pack declared none or
-when the trial's timeline carried no events for them to read. It is written
-inline rather than to a sidecar: the block is small, and the component score
-alone says a trace check failed without saying which.
+`trace_check_results` carries one entry per constraint in the decision set that
+produced the score — the pack's shared `trace_checks.constraints` plus the
+constraints of the alternative route that won — in declaration order. It is `[]`
+when the pack declared no trace checks or when the trial's timeline carried no
+events for them to read. It is written inline rather than to a sidecar: the block
+is small, and the component score alone says a trace check failed without saying
+which.
 
 * `id` / `kind` — the author's constraint id and which of the ten constraint
   kinds it states. See [`docs/GRADING.md`](GRADING.md#trace-checks).
 * `passed` / `weight` — the verdict and the weight it carried into the component
-  fold, so a reader can reproduce `components.trace_checks` from the entries.
+  fold.
+* `severity` — `scored`, or `gate` for a check that must hold without being
+  scored. A gate enters neither side of the weighted fraction, so reproducing
+  `components.trace_checks` from these entries means folding the `scored` ones and
+  reading `0.0` whenever a `gate` did not pass. See
+  [`docs/GRADING.md`](GRADING.md#severity--a-check-that-must-hold).
 * `message` — empty on a pass; otherwise names the unmatched anchor, the failed
   condition, or the evidence the trial does not carry.
 * `matched_positions` — the timeline positions the constraint's matchers
   selected, resolved against `trajectory.yaml`. Positions rather than events, so
   the grade stays scannable.
+
+`trace_checks_summary` is the same evaluation seen from above: which route the
+component score came from, and whether a gate shut the trial. `binary_pass` is
+`false` whenever `gate_failed` is `true`, whatever `score` and `pass_threshold`
+say, and `reasons` carries a `FAILED trace gates: …` segment naming the same ids.
+
+* `winning_path` — the id of the alternative route that scored highest, `""`
+  when the pack declared no `alternatives`.
+* `gate_failed` / `failed_gate_ids` — whether a gate in the winning decision set
+  did not hold, and which, in declaration order.
+* `paths` — one entry per declared alternative, in declaration order, carrying
+  that route's own score and whether its gates held. A path's `score` is never
+  zeroed by a gate — only the component is — so a winner that won by a hair
+  reads differently from one that won by a mile. `[]` when the pack declared no
+  alternatives.
+
+The block is `null` only on a grade produced by a runner image predating the
+field. A runner that graded the trial reports an empty summary rather than none,
+so a gate can never open by omission.
 
 ### Rubric-judge fields
 
