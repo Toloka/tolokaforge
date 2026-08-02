@@ -4,10 +4,12 @@ Substrate-neutral and pure — no services, no I/O — over the timeline both
 substrates build, so a constraint reaches the same verdict whichever substrate
 grades the trial.
 
-:func:`select_events` is the **only** function that resolves a matcher. A
-constraint reads events through it and nothing else, which is what keeps argument
-correlation (#681) a change to one signature. :func:`evaluate_trace_checks` folds
-the constraint verdicts into the component score.
+:func:`select_events` is the **only** function that resolves a matcher, and it
+resolves one under an environment of bound values. A constraint reads events
+through it and nothing else, so a constraint declaring a ``bind`` is the whole
+existing evaluator run once per candidate assignment rather than a second
+evaluator. :func:`evaluate_trace_checks` folds the constraint verdicts into the
+component score.
 
 Both layers are three-valued. An event either definitely matches, definitely does
 not, or cannot be decided because the evidence a predicate reads was never
@@ -30,6 +32,7 @@ The authored vocabulary is documented in ``docs/GRADING.md`` § "Trace Checks".
 
 from __future__ import annotations
 
+import itertools
 import operator
 import re
 from collections.abc import Callable, Iterable, Mapping, Sequence, Sized
@@ -43,6 +46,7 @@ from tolokaforge.core.grading.key_manifest import (
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
+    UNBOUND_BINDING_SKIP,
 )
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.trace_timeline import (
@@ -57,13 +61,16 @@ from tolokaforge.core.models import (
     AdjacencyView,
     AnchorQuantifier,
     BeforeConstraint,
+    BoundValue,
     CountConstraint,
     ImmediatelyBeforeConstraint,
     KeyAccountingRecord,
     MatcherSide,
     OnMissing,
+    OnUnbound,
     PresentConstraint,
     Quantifier,
+    TraceBinding,
     TraceChecksConfig,
     TraceChecksResult,
     TraceConstraint,
@@ -92,11 +99,17 @@ class MatcherOutcome:
     A constraint is decided when every completion of ``undecidable`` yields the same
     verdict, and indeterminate otherwise — so a caller reads both tuples, never
     ``matched`` alone.
+
+    ``unmakeable_comparisons`` names the comparisons a bound value's type put out of
+    reach, which is a property of the matcher and the environment rather than of any
+    one event: a ``contains_binding`` against a text field is unmakeable on every
+    event once the binding holds a non-string.
     """
 
     matched: tuple[TraceEvent, ...]
     undecidable: tuple[TraceEvent, ...]
     unreadable_fields: tuple[str, ...]
+    unmakeable_comparisons: tuple[str, ...]
 
     @property
     def indeterminate_reason(self) -> str | None:
@@ -124,8 +137,10 @@ class _Truth(str, Enum):
     UNKNOWN = "unknown"
 
 
-def select_events(timeline: TrialTimeline, matcher: TraceMatcher) -> MatcherOutcome:
-    """Resolve ``matcher`` against ``timeline``.
+def select_events(
+    timeline: TrialTimeline, matcher: TraceMatcher, bindings: Mapping[str, Any]
+) -> MatcherOutcome:
+    """Resolve ``matcher`` against ``timeline`` under ``bindings``.
 
     ``kind`` selects the event class and nothing is inferred from which predicates
     are present. A ``tool_call`` matcher reads ``status`` and ``result`` from the
@@ -135,21 +150,28 @@ def select_events(timeline: TrialTimeline, matcher: TraceMatcher) -> MatcherOutc
     A predicate over a ``None`` field is unmatched rather than vacuously true, and
     where that ``None`` means "only the tool-call record could have said, and it did
     not" the event is undecidable instead.
+
+    ``bindings`` is the environment the constraint's binder produced for one
+    candidate assignment — the required third argument, so every call site says what
+    it resolves under, and empty for a matcher referencing nothing.
     """
     results = _results_by_call_id(timeline)
     matched: list[TraceEvent] = []
     undecidable: list[TraceEvent] = []
     unreadable: set[str] = set()
+    unmakeable: dict[str, None] = {}
     for event in timeline.events:
         if event.kind is not matcher.kind:
             continue
-        truth, missing = _resolve(matcher, event, results)
+        truth, missing = _resolve(matcher, event, results, bindings, unmakeable)
         if truth is _Truth.TRUE:
             matched.append(event)
         elif truth is _Truth.UNKNOWN:
             undecidable.append(event)
             unreadable |= missing
-    return MatcherOutcome(tuple(matched), tuple(undecidable), tuple(sorted(unreadable)))
+    return MatcherOutcome(
+        tuple(matched), tuple(undecidable), tuple(sorted(unreadable)), tuple(unmakeable)
+    )
 
 
 # Fields only the tool-call record supplies. ``None`` in one of them is the
@@ -160,7 +182,11 @@ _RECORD_ONLY_FIELDS = frozenset({"executor", "status"})
 
 
 def _resolve(
-    matcher: TraceMatcher, event: TraceEvent, results: Mapping[str, TraceEvent]
+    matcher: TraceMatcher,
+    event: TraceEvent,
+    results: Mapping[str, TraceEvent],
+    bindings: Mapping[str, Any],
+    unmakeable: dict[str, None],
 ) -> tuple[_Truth, frozenset[str]]:
     """Kleene conjunction over the matcher's predicates, and the fields left unread.
 
@@ -168,6 +194,11 @@ def _resolve(
     would have said, so it wins over undecidability however the two are ordered —
     which is what keeps an unexecuted call to a tool the matcher does not name out
     of the undecidable set.
+
+    ``unmakeable`` is filled before that conjunction rather than inside it, keyed by
+    message so repeats collapse. An author's type mistake is unconditional, and
+    reading it off only the events that survived the other predicates would hide it
+    behind whichever predicate happened to fail first.
     """
     outcome = _outcome_of(event, results)
     # With no outcome event at all — a call the trial never recorded a result for —
@@ -176,15 +207,48 @@ def _resolve(
     unreadable_when_none = (
         _RECORD_ONLY_FIELDS if outcome is not None else _RECORD_ONLY_FIELDS | {"result"}
     )
+    readings = _predicate_readings(matcher, event, outcome)
+    unmakeable.update(
+        dict.fromkeys(
+            message
+            for field, value, predicate in readings
+            for message in _unmakeable_comparisons(field, value, predicate, bindings)
+        )
+    )
     unreadable: set[str] = set()
-    for field, value, predicate in _predicate_readings(matcher, event, outcome):
+    for field, value, predicate in readings:
         if value is None and field in unreadable_when_none:
             unreadable.add(field)
-        elif not _predicate_holds(predicate, value):
+        elif not _predicate_holds(predicate, value, bindings):
             return _Truth.FALSE, frozenset()
     if unreadable:
         return _Truth.UNKNOWN, frozenset(unreadable)
     return _Truth.TRUE, frozenset()
+
+
+def _unmakeable_comparisons(
+    field: str, value: Any, predicate: ValuePredicate, bindings: Mapping[str, Any]
+) -> Iterable[str]:
+    """Why a ``contains_binding`` on this reading could not be compared at all.
+
+    ``contains`` reads two strings as a substring pair and falls back to equality
+    for any other pairing, so a non-string bound value against a text field is false
+    on every trajectory — indistinguishable from an agent failure to everything that
+    reads the score, and so reported as a comparison rather than folded in as one.
+    """
+    name = predicate.contains_binding
+    if name is None or not isinstance(value, str):
+        return ()
+    bound = bindings[name]
+    if isinstance(bound, str):
+        return ()
+    return (
+        f"the {field} comparison was not made: binding {name!r} holds {bound!r} of type "
+        f"{type(bound).__name__}, and contains_binding reads a text field as text — a "
+        "non-string needle compares equal to the whole value or to nothing, which is "
+        "false on every trajectory. Write equals_binding to correlate two arguments, "
+        "or bind a regex capture to compare against text",
+    )
 
 
 def _predicate_readings(
@@ -233,28 +297,36 @@ def _argument_at(arguments: Mapping[str, Any] | None, path: str) -> Any:
     return value
 
 
-def _predicate_holds(predicate: ValuePredicate, value: Any) -> bool:
+def _predicate_holds(predicate: ValuePredicate, value: Any, bindings: Mapping[str, Any]) -> bool:
     """Whether every operator the predicate declares holds — it is their conjunction.
 
     A predicate declaring no operator is rejected at load, so the conjunction is
     never over the empty set and never vacuously true.
     """
     return all(
-        _operator_holds(name, value, getattr(predicate, name))
+        _operator_holds(name, value, getattr(predicate, name), bindings)
         for name in predicate.declared_operators()
     )
 
 
-def _operator_holds(name: str, value: Any, expected: Any) -> bool:
+def _operator_holds(name: str, value: Any, expected: Any, bindings: Mapping[str, Any]) -> bool:
     """One operator over one value.
 
     Only ``exists`` reads a ``None``. Every other operator is false there rather
     than answering about a value the trial does not have — ``not_equals`` against an
     absent argument would otherwise hold, which is the vacuous truth the timeline
     contract forbids.
+
+    A binding operator substitutes and delegates: ``expected`` is a name rather than
+    a value, and the comparison is the one the literal form makes, so a constraint
+    over a single candidate scores exactly as the same constraint with that value
+    written out. The name is in the environment by construction — a reference to a
+    name the constraint does not bind is a load error.
     """
     if value is None and name != "exists":
         return False
+    if name in _BINDING_OPERATORS:
+        return _BINDING_OPERATORS[name](value, bindings[expected])
     return _OPERATORS[name](value, expected)
 
 
@@ -306,6 +378,13 @@ _OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
     "exists": lambda value, expected: (value is not None) is expected,
 }
 
+# A reference substitutes its bound value into the comparison the literal operator
+# already makes, so the two spellings cannot drift into two readings of one word.
+_BINDING_OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
+    "equals_binding": operator.eq,
+    "contains_binding": contains,
+}
+
 
 def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) -> TraceChecksResult:
     """Score ``config``'s constraints against ``timeline``.
@@ -325,15 +404,15 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
         return TraceChecksResult(
             accounted_keys=_accounting(config, _declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
         )
-    visited: set[TraceConstraintKind] = set()
+    ledger = _KindLedger()
     shared = [
-        _evaluate_constraint(timeline, constraint, visited) for constraint in config.constraints
+        _evaluate_constraint(timeline, constraint, ledger) for constraint in config.constraints
     ]
     if config.alternatives is None:
-        return _component(config, _decision_set(shared), visited, winner_id="", paths=[])
+        return _component(config, _decision_set(shared), ledger, winner_id="", paths=[])
     routes = {
         path.id: _decision_set(
-            shared + [_evaluate_constraint(timeline, item, visited) for item in path.constraints]
+            shared + [_evaluate_constraint(timeline, item, ledger) for item in path.constraints]
         )
         for path in config.alternatives
     }
@@ -342,7 +421,27 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
         TracePathResult(id=path_id, score=route.score, gate_failed=bool(route.failed_gate_ids))
         for path_id, route in routes.items()
     ]
-    return _component(config, routes[winner_id], visited, winner_id=winner_id, paths=paths)
+    return _component(config, routes[winner_id], ledger, winner_id=winner_id, paths=paths)
+
+
+class _KindLedger:
+    """Which constraint kinds the evaluation walked, and which it never entered.
+
+    A kind reaches ``visited`` only by being evaluated — a walk of the *config*
+    would report it as evaluated whatever the evaluator did, which is the accounting
+    dishonesty this module exists to avoid. ``unevaluated`` holds the kinds of the
+    constraints whose ``require`` tree was never entered, a state a binding that
+    selected nothing reaches, and the block files a skip for those no other
+    constraint evaluated.
+    """
+
+    def __init__(self) -> None:
+        self.visited: set[TraceConstraintKind] = set()
+        self.unevaluated: set[TraceConstraintKind] = set()
+
+    def skipped_kinds(self) -> set[TraceConstraintKind]:
+        """The kinds no constraint evaluated, which the block accounts as skipped."""
+        return self.unevaluated - self.visited
 
 
 @dataclass(frozen=True)
@@ -403,7 +502,7 @@ def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
 def _component(
     config: TraceChecksConfig,
     winner: _DecisionSet,
-    visited: set[TraceConstraintKind],
+    ledger: _KindLedger,
     *,
     winner_id: str,
     paths: list[TracePathResult],
@@ -424,7 +523,15 @@ def _component(
         gate_failed=bool(winner.failed_gate_ids),
         failed_gate_ids=winner.failed_gate_ids,
         paths=paths,
-        accounted_keys=_accounting(config, visited, EVALUATED),
+        # The skips are filed per kind and never against the block's own keys: a
+        # constraint that bound nothing leaves its kind unaccounted, while the block
+        # itself was evaluated, and a kind another constraint did evaluate keeps that
+        # record because ``skipped_kinds`` has already subtracted it.
+        accounted_keys=_accounting(config, ledger.visited, EVALUATED)
+        | {
+            TRACE_CONSTRAINT_KEY_BY_KIND[kind]: UNBOUND_BINDING_SKIP
+            for kind in ledger.skipped_kinds()
+        },
     )
 
 
@@ -484,21 +591,180 @@ def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
 
 
 def _evaluate_constraint(
-    timeline: TrialTimeline, constraint: TraceConstraint, visited: set[TraceConstraintKind]
+    timeline: TrialTimeline, constraint: TraceConstraint, ledger: _KindLedger
 ) -> TraceConstraintResult:
-    on_missing = constraint.on_missing or OnMissing.FAIL
-    resolver = _Resolver(timeline, constraint.within, visited)
-    truth = _evaluate(constraint.require, resolver, on_missing)
+    """One constraint's verdict, its ``require`` tree read once per bound candidate.
+
+    Quantification over the candidates is outermost and universal: the constraint
+    holds when it holds under every assignment its binder yields. So ``negate``
+    inside a bound constraint reads "no candidate satisfies", not "not every
+    candidate does", and a constraint with one candidate scores exactly as the same
+    constraint with that value written as a literal.
+    """
     kind = constraint.require.declared_kind()
+    candidates = _candidates(timeline, constraint)
+    if not candidates.assignments:
+        ledger.unevaluated |= _expression_kinds(constraint.require)
+        return _unbound_result(constraint, kind, candidates)
+    on_missing = constraint.on_missing or OnMissing.FAIL
+    readings = [
+        _read_under(timeline, constraint, environment, ledger.visited, on_missing)
+        for environment in candidates.assignments
+    ]
+    unmakeable = list(dict.fromkeys(item for reading in readings for item in reading.unmakeable))
+    truth = _Truth.FALSE if unmakeable else _conjunction(reading.truth for reading in readings)
     return TraceConstraintResult(
         id=constraint.id,
         kind=kind,
         passed=truth is _Truth.TRUE,
         weight=constraint.weight,
         severity=constraint.severity,
-        message=_message(truth, kind, resolver, on_missing),
-        matched_positions=resolver.matched_positions(),
+        message="; ".join(unmakeable) if unmakeable else _folded_message(readings),
+        matched_positions=sorted({item for reading in readings for item in reading.positions}),
     )
+
+
+@dataclass(frozen=True)
+class _CandidateReading:
+    """What one constraint's ``require`` tree decided under one bound assignment."""
+
+    truth: _Truth
+    message: str
+    positions: list[int]
+    unmakeable: list[str]
+
+
+def _read_under(
+    timeline: TrialTimeline,
+    constraint: TraceConstraint,
+    environment: Mapping[str, Any],
+    visited: set[TraceConstraintKind],
+    on_missing: OnMissing,
+) -> _CandidateReading:
+    resolver = _Resolver(timeline, constraint.within, visited, environment)
+    truth = _evaluate(constraint.require, resolver, on_missing)
+    return _CandidateReading(
+        truth=truth,
+        message=_message(truth, constraint.require.declared_kind(), resolver, on_missing),
+        positions=resolver.matched_positions(),
+        unmakeable=resolver.unmakeable_comparisons(),
+    )
+
+
+def _folded_message(readings: list[_CandidateReading]) -> str:
+    """What the grade says about a constraint folded over its candidates."""
+    return next((item.message for item in readings if item.truth is not _Truth.TRUE), "")
+
+
+def _unbound_result(
+    constraint: TraceConstraint, kind: TraceConstraintKind, candidates: _Candidates
+) -> TraceConstraintResult:
+    """The verdict of a bound constraint whose binder yielded no assignment at all.
+
+    The universal reading is vacuously true over an empty candidate set, so the
+    author's ``on_unbound`` supplies the verdict instead — defaulting to a failure,
+    because a binder that never fired usually means the agent never did the thing
+    the constraint is about.
+    """
+    passed = constraint.bind is not None and constraint.bind.on_unbound is OnUnbound.PASS
+    return TraceConstraintResult(
+        id=constraint.id,
+        kind=kind,
+        passed=passed,
+        weight=constraint.weight,
+        severity=constraint.severity,
+        message="" if passed else f"{kind.value} is unbound: {candidates.emptiness}",
+        matched_positions=[],
+    )
+
+
+@dataclass(frozen=True)
+class _Candidates:
+    """The assignments a constraint's binder yields, and why it yielded none.
+
+    ``emptiness`` separates the two ways a candidate set is empty — no event
+    selected, or events selected that carried no value to bind — because they are
+    different author mistakes and a single "no match" tells neither.
+    """
+
+    assignments: list[Mapping[str, Any]]
+    emptiness: str
+
+
+_UNBOUND_ENVIRONMENT: Mapping[str, Any] = {}
+"""What a constraint declaring no binder resolves its matchers under."""
+
+
+def _candidates(timeline: TrialTimeline, constraint: TraceConstraint) -> _Candidates:
+    """Every assignment the binder yields, in the order its events occur."""
+    if constraint.bind is None:
+        return _Candidates([_UNBOUND_ENVIRONMENT], "")
+    outcome = _restricted(
+        select_events(timeline, constraint.bind.match, _UNBOUND_ENVIRONMENT), constraint.within
+    )
+    results = _results_by_call_id(timeline)
+    assignments = [
+        assignment
+        for event in outcome.matched
+        for assignment in _assignments_from(constraint.bind, event, results)
+    ]
+    return _Candidates(assignments, _emptiness(outcome, assignments))
+
+
+def _emptiness(outcome: MatcherOutcome, assignments: list[Mapping[str, Any]]) -> str:
+    if assignments:
+        return ""
+    if not outcome.matched:
+        return "the binding selected no event"
+    return (
+        f"the binding selected {len(outcome.matched)} events, none of which carried "
+        "every value it extracts"
+    )
+
+
+def _assignments_from(
+    binding: TraceBinding, event: TraceEvent, results: Mapping[str, TraceEvent]
+) -> list[Mapping[str, Any]]:
+    """One assignment per element of the cross product of the names' extracted values.
+
+    A plain ``field`` reads one value and a ``pattern`` one per capture, so a name
+    reading nothing empties the product — the event binds no assignment at all
+    rather than an assignment with a hole in it.
+    """
+    outcome = _outcome_of(event, results)
+    names = sorted(binding.values)
+    extracted = [_extracted(binding.values[name], event, outcome) for name in names]
+    return [dict(zip(names, values, strict=True)) for values in itertools.product(*extracted)]
+
+
+def _extracted(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> list[Any]:
+    """The values one name reads off one event, in the order the event carries them."""
+    value = _binder_reading(bound, event, outcome)
+    if value is None:
+        return []
+    if bound.pattern is None:
+        return [value]
+    if not isinstance(value, str):
+        return []
+    return [match.group(1) for match in re.finditer(bound.pattern, value)]
+
+
+def _binder_reading(bound: BoundValue, event: TraceEvent, outcome: TraceEvent | None) -> Any:
+    """The raw value the extraction addresses, before any capture narrows it."""
+    head = bound.head_segment()
+    if head != "args":
+        return _BINDER_FIELDS[head](event, outcome)
+    _, _, path = bound.field.partition(".")
+    return _argument_at(event.arguments, path) if path else event.arguments
+
+
+# ``status`` and ``executor`` are on no row: a binding over a closed vocabulary of a
+# handful of members is rejected at load, so the extraction never reaches here.
+_BINDER_FIELDS: Mapping[str, Callable[[TraceEvent, TraceEvent | None], Any]] = {
+    "tool": lambda event, outcome: event.tool_name,
+    "text": lambda event, outcome: event.text,
+    "result": lambda event, outcome: outcome.result if outcome is not None else None,
+}
 
 
 @dataclass(frozen=True)
@@ -529,16 +795,28 @@ class _Resolver:
         timeline: TrialTimeline,
         within: TurnWindow | None,
         visited_kinds: set[TraceConstraintKind],
+        bindings: Mapping[str, Any],
     ) -> None:
         self.timeline = timeline
         self.visited_kinds = visited_kinds
         self._within = within
+        self._bindings = bindings
         self._resolved: list[_Resolved] = []
 
     def resolve(self, label: str, matcher: TraceMatcher, *, anchor: bool) -> MatcherOutcome:
-        outcome = _restricted(select_events(self.timeline, matcher), self._within)
+        outcome = _restricted(select_events(self.timeline, matcher, self._bindings), self._within)
         self._resolved.append(_Resolved(label, outcome, anchor))
         return outcome
+
+    def unmakeable_comparisons(self) -> list[str]:
+        """Every comparison a bound value's type put out of reach, in matcher order."""
+        return list(
+            dict.fromkeys(
+                message
+                for item in self._resolved
+                for message in item.outcome.unmakeable_comparisons
+            )
+        )
 
     def matched_positions(self) -> list[int]:
         return sorted({event.position for item in self._resolved for event in item.outcome.matched})
@@ -570,7 +848,12 @@ def _restricted(outcome: MatcherOutcome, within: TurnWindow | None) -> MatcherOu
         return outcome
     matched = tuple(event for event in outcome.matched if _inside(event, within))
     undecidable = tuple(event for event in outcome.undecidable if _inside(event, within))
-    return MatcherOutcome(matched, undecidable, outcome.unreadable_fields if undecidable else ())
+    return MatcherOutcome(
+        matched,
+        undecidable,
+        outcome.unreadable_fields if undecidable else (),
+        outcome.unmakeable_comparisons,
+    )
 
 
 def _inside(event: TraceEvent, window: TurnWindow) -> bool:

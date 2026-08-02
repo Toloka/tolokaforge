@@ -870,7 +870,7 @@ four:
 | `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
 
 The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
-narrower than the fifteen [`trace_checks` operators](#operators): a second comparison
+narrower than the seventeen [`trace_checks` operators](#operators): a second comparison
 at one path has no conjunctive reading and is almost always a typo, so **two
 operators on one assertion is a failed check**, not a conjunction. So is **no**
 operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
@@ -1242,7 +1242,7 @@ grading must not depend on it.
 ### Operators
 
 A predicate is the **conjunction of its operators**: every one it declares must
-hold, so `{ gt: 0, lt: 100 }` is a range. Fifteen operators:
+hold, so `{ gt: 0, lt: 100 }` is a range. Seventeen operators:
 
 | operator | holds when |
 |---|---|
@@ -1254,6 +1254,15 @@ hold, so `{ gt: 0, lt: 100 }` is a range. Fifteen operators:
 | `in_` / `not_in` | the value is (is not) a member of the list |
 | `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
 | `exists` | the field is present (`exists: false` is the absence primitive) |
+| `equals_binding` / `contains_binding` | the same, against a value the constraint's `bind` extracted under that name |
+
+**The two binding operators name a value rather than writing one.** Their argument
+is a name declared under the constraint's own `bind.values`, and the comparison
+they make is the one `equals` and `contains` make — so a constraint over a single
+bound value scores exactly as the same constraint with that value written out. A
+name no predicate in the constraint references, and a reference to a name the
+constraint does not bind, are both load errors, which is what scopes a correlation
+to one constraint.
 
 `contains` **recurses**: against a list, tuple or set it holds when any element
 contains the needle, against a dict when any **value** does — keys are never
@@ -1691,7 +1700,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| Two arguments on two different calls cannot be correlated (`this call's id equals that call's id`) | #681 |
 | A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
 | Migrating an existing rubric criterion into a constraint | #683 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |

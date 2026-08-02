@@ -37,6 +37,7 @@ from tolokaforge.runner.grading_ledger import (
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
+    UNBOUND_BINDING_SKIP,
     accountable_author_keys,
     audit_accounted_keys,
     hash_family_accounting,
@@ -425,6 +426,94 @@ def test_a_trial_with_no_events_accounts_every_declared_kind_as_skipped():
     assert {record.detail for record in result.accounted_keys.values()} == {
         "the trial's timeline carries no events"
     }
+
+
+def _bound_before(constraint_id: str, binder_tool: str) -> dict[str, Any]:
+    """A correlated ordering whose binder selects ``binder_tool`` and nothing else."""
+    return {
+        "id": constraint_id,
+        "description": "every widget shipped was inspected first",
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": binder_tool}},
+            "values": {"widget": {"field": "args.widget_id"}},
+        },
+        "require": {
+            "before": {
+                "left": {
+                    "quantifier": "any",
+                    "match": {
+                        "kind": "tool_call",
+                        "tool": {"equals": "inspect_widget"},
+                        "args": {"widget_id": {"equals_binding": "widget"}},
+                    },
+                },
+                "right": {
+                    "quantifier": "any",
+                    "match": {
+                        "kind": "tool_call",
+                        "tool": {"equals": binder_tool},
+                        "args": {"widget_id": {"equals_binding": "widget"}},
+                    },
+                },
+            }
+        },
+    }
+
+
+def _inspected_then_shipped_widget_w1() -> TrialTimeline:
+    """The same trajectory, with the widget named on both calls so a binder can read it."""
+    return build_turn_timeline(
+        [
+            Turn("user", "Ship widget w1 once you have checked it."),
+            Turn(
+                "assistant",
+                "Inspecting it.",
+                recorded=[
+                    recorded_call("inspect_widget", sequence=0, arguments={"widget_id": "w1"})
+                ],
+            ),
+            Turn(
+                "assistant",
+                "Shipping it.",
+                recorded=[recorded_call("ship_widget", sequence=1, arguments={"widget_id": "w1"})],
+            ),
+        ]
+    )
+
+
+def test_a_constraint_whose_binder_selected_nothing_accounts_its_kinds_as_skipped():
+    """A kind reaches the ledger only by being evaluated, and this one never was.
+
+    Left unaccounted the RPC fails on a key the config populates; filed as
+    ``EVALUATED`` the grade claims an evaluation that never happened. The skip is
+    the honest record, and it is subtracted away by a sibling constraint of the same
+    kind that *did* evaluate — otherwise the grade reports a kind as skipped while
+    another constraint scored it.
+    """
+    config = GradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[_bound_before("no_binder_fires", "recall_widget")]
+        )
+    )
+    timeline = _inspected_then_shipped_widget_w1()
+    accounted = evaluate_trace_checks(timeline, config.trace_checks).accounted_keys
+
+    assert audit_accounted_keys(config, accounted).error is None
+    assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == UNBOUND_BINDING_SKIP
+    assert accounted[TRACE_CONSTRAINTS_KEY] == EVALUATED
+
+    beside_an_evaluated_sibling = GradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[
+                _bound_before("no_binder_fires", "recall_widget"),
+                _bound_before("the_binder_fires", "ship_widget"),
+            ]
+        )
+    )
+    both = evaluate_trace_checks(timeline, beside_an_evaluated_sibling.trace_checks).accounted_keys
+
+    assert audit_accounted_keys(beside_an_evaluated_sibling, both).error is None
+    assert both[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == EVALUATED
 
 
 # --------------------------------------------------------------------------

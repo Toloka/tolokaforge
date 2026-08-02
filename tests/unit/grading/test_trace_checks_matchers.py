@@ -15,7 +15,7 @@ matcher could never have selected decides nothing.
 from __future__ import annotations
 
 from collections.abc import Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 import pytest
@@ -69,7 +69,7 @@ def test_a_tool_result_matcher_passes_over_the_message_whose_status_is_none():
     timeline = _timeline(recorded=[_payment_lookup()])
     matcher = TraceMatcher(kind=TraceEventKind.TOOL_RESULT, status=ValuePredicate(equals="success"))
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert _only(timeline, TraceEventKind.ASSISTANT_MESSAGE).status is None
     assert [event.kind for event in outcome.matched] == [TraceEventKind.TOOL_RESULT]
@@ -82,7 +82,7 @@ def test_an_assistant_message_matcher_passes_over_the_call_whose_text_is_none():
         kind=TraceEventKind.ASSISTANT_MESSAGE, text=ValuePredicate(contains="PAY-664306")
     )
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert _only(timeline, TraceEventKind.TOOL_CALL).text is None
     assert _only(timeline, TraceEventKind.USER_MESSAGE).text == "Refund PAY-664306."
@@ -107,6 +107,7 @@ def test_an_absent_argument_is_unmatched_rather_than_vacuously_true():
             kind=TraceEventKind.TOOL_CALL,
             args={"refund_id": ValuePredicate(not_equals="R-1")},
         ),
+        {},
     )
     absent = select_events(
         timeline,
@@ -114,6 +115,7 @@ def test_an_absent_argument_is_unmatched_rather_than_vacuously_true():
             kind=TraceEventKind.TOOL_CALL,
             args={"refund_id": ValuePredicate(exists=False)},
         ),
+        {},
     )
 
     assert negative.matched == ()
@@ -140,10 +142,10 @@ def test_a_nested_argument_path_reaches_inside_a_request_body():
         args={"body.resolution_path": ValuePredicate(equals="policy_exception")},
     )
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert outcome.matched == (_only(timeline, TraceEventKind.TOOL_CALL),)
-    assert select_events(timeline, other_path).matched == ()
+    assert select_events(timeline, other_path, {}).matched == ()
 
 
 @pytest.mark.parametrize(
@@ -171,7 +173,7 @@ def test_a_tool_call_matcher_reads_its_status_from_the_paired_result(
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert call.status is None
     assert _only(timeline, TraceEventKind.TOOL_RESULT).status is status
@@ -192,7 +194,7 @@ def test_a_status_predicate_cannot_be_decided_where_nothing_recorded_the_call():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert timeline.records_present is False
     assert call.status is None
@@ -218,7 +220,7 @@ def test_an_unexecuted_call_to_the_named_tool_cannot_be_decided():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert timeline.records_present is True
     assert unexecuted.arguments == {"amount": 20}
@@ -242,7 +244,7 @@ def test_an_unexecuted_call_to_another_tool_leaves_the_matcher_decided():
         status=ValuePredicate(equals="success"),
     )
 
-    outcome = select_events(timeline, matcher)
+    outcome = select_events(timeline, matcher, {})
 
     assert unexecuted.tool_name == "search_policy"
     assert unexecuted.status is None
@@ -253,11 +255,16 @@ def test_an_unexecuted_call_to_another_tool_leaves_the_matcher_decided():
 
 @dataclass(frozen=True)
 class _OperatorAnswer:
-    """One operator, an argument value it holds for, and one it does not."""
+    """One operator, an argument value it holds for, and one it does not.
+
+    ``bindings`` is the environment the row resolves under, empty for every
+    operator whose expected value is written out rather than named.
+    """
 
     predicate: dict[str, Any]
     holds_for: dict[str, Any]
     fails_for: dict[str, Any]
+    bindings: dict[str, Any] = field(default_factory=dict)
 
 
 # One row per declared operator, the arguments written as a real call carries them.
@@ -281,6 +288,15 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
     "len_gt": _OperatorAnswer({"len_gt": 2}, {"probe": "abc"}, {"probe": "ab"}),
     "len_gte": _OperatorAnswer({"len_gte": 2}, {"probe": "ab"}, {"probe": "a"}),
     "exists": _OperatorAnswer({"exists": True}, {"probe": ""}, {}),
+    "equals_binding": _OperatorAnswer(
+        {"equals_binding": "bound"}, {"probe": "PAY-1"}, {"probe": "PAY-2"}, {"bound": "PAY-1"}
+    ),
+    "contains_binding": _OperatorAnswer(
+        {"contains_binding": "bound"},
+        {"probe": ["W0", "W1"]},
+        {"probe": ["W0"]},
+        {"bound": "W1"},
+    ),
 }
 
 
@@ -305,10 +321,14 @@ def test_an_operator_selects_the_call_whose_argument_it_holds_for(operator_name:
     )
 
     holds = select_events(
-        _timeline(recorded=[recorded_call("probe", arguments=answer.holds_for)]), matcher
+        _timeline(recorded=[recorded_call("probe", arguments=answer.holds_for)]),
+        matcher,
+        answer.bindings,
     )
     fails = select_events(
-        _timeline(recorded=[recorded_call("probe", arguments=answer.fails_for)]), matcher
+        _timeline(recorded=[recorded_call("probe", arguments=answer.fails_for)]),
+        matcher,
+        answer.bindings,
     )
 
     assert len(holds.matched) == 1

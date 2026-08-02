@@ -37,6 +37,9 @@ from tolokaforge.core.grading.key_manifest import (
 from tolokaforge.core.grading.key_manifest import (
     NO_TIMELINE_EVENTS_SKIP as NO_TIMELINE_EVENTS_SKIP,
 )
+from tolokaforge.core.grading.key_manifest import (
+    UNBOUND_BINDING_SKIP as UNBOUND_BINDING_SKIP,
+)
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
     GradingConfig,

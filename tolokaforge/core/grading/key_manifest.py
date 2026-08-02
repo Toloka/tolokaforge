@@ -728,6 +728,10 @@ NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
 )
 
+UNBOUND_BINDING_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="the binding selected no event"
+)
+
 TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")
 
 TRACE_ALTERNATIVES_KEY = checked_author_key("trace_checks.alternatives")

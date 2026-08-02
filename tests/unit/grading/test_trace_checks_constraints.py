@@ -245,8 +245,8 @@ def test_an_unmatched_side_fails_by_name_unless_the_author_opted_out():
     failing = evaluate_constraint(timeline, require)
     permitted = evaluate_constraint(timeline, require, on_missing="pass")
 
-    assert select_events(timeline, TraceMatcher(**_call_of(_DENIAL))).matched == ()
-    assert len(select_events(timeline, TraceMatcher(**_call_of(_LOOKUP))).matched) == 1
+    assert select_events(timeline, TraceMatcher(**_call_of(_DENIAL)), {}).matched == ()
+    assert len(select_events(timeline, TraceMatcher(**_call_of(_LOOKUP)), {}).matched) == 1
     assert failing.passed is False
     assert "right" in failing.message
     assert permitted.passed is True
@@ -942,3 +942,143 @@ def test_a_shared_gate_applies_whichever_route_won():
         assert result.gate_failed is True
         assert result.failed_gate_ids == ["no_status_was_written"]
     assert (clean.winning_path, clean.score, clean.gate_failed) == ("route_b", 1.0, False)
+
+
+# --------------------------------------------------------------------------
+# Correlating one argument against another
+# --------------------------------------------------------------------------
+
+_READ = "read_record"
+_WRITE = "write_record"
+
+
+def _record_timeline(*calls: tuple[str, Any]) -> TrialTimeline:
+    """One assistant turn calling ``(tool, record_id)`` in order, all recorded."""
+    return build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "On it.")),
+        recorded=[
+            recorded_call(tool, sequence=index, arguments={"record_id": record})
+            for index, (tool, record) in enumerate(calls)
+        ],
+    )
+
+
+def _read_before_write(**bind_fields: Any) -> dict[str, Any]:
+    """Every record the agent wrote, it read first — the correlation, not a literal."""
+    return {
+        "bind": {
+            "match": _call_of(_WRITE),
+            "values": {"rec": {"field": "args.record_id"}},
+            **bind_fields,
+        },
+        "require": {
+            "before": {
+                "left": _side("any", _READ, args={"record_id": {"equals_binding": "rec"}}),
+                "right": _side("any", _WRITE, args={"record_id": {"equals_binding": "rec"}}),
+            }
+        },
+    }
+
+
+def test_a_correlated_ordering_reads_the_record_the_agent_wrote():
+    """AC1: the same two constraints, decided by which record the write names."""
+    correlated = _read_before_write()
+
+    matching = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_WRITE, "X")),
+        correlated["require"],
+        bind=correlated["bind"],
+    )
+    crossed = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_WRITE, "Y")),
+        correlated["require"],
+        bind=correlated["bind"],
+    )
+
+    assert matching.passed is True, matching.message
+    assert crossed.passed is False
+    assert crossed.matched_positions == [4], "the write is selected; the read of X is not"
+
+
+@pytest.mark.parametrize(
+    ("bound", "other"), [("REC-1", "REC-2"), (42, 43)], ids=["string_record", "integer_record"]
+)
+def test_one_candidate_scores_exactly_as_the_value_written_out(bound: Any, other: Any):
+    """A reference substitutes; it does not reinterpret.
+
+    Driven over an integer record as well as a string one, because the whole content
+    of "substitutes" is that the bound value reaches ``operator.eq`` as itself — a
+    reference stringifying its value would still decide the string row correctly.
+    """
+    correlated = _read_before_write()
+    literal = {
+        "before": {
+            "left": _side("any", _READ, args={"record_id": {"equals": bound}}),
+            "right": _side("any", _WRITE, args={"record_id": {"equals": bound}}),
+        }
+    }
+
+    for label, timeline in [
+        ("correlated", _record_timeline((_READ, bound), (_WRITE, bound))),
+        ("crossed", _record_timeline((_READ, other), (_WRITE, bound))),
+    ]:
+        by_binding = evaluate_constraint(timeline, correlated["require"], bind=correlated["bind"])
+        by_literal = evaluate_constraint(timeline, literal)
+        assert (
+            by_binding.passed,
+            by_binding.weight,
+            by_binding.message,
+            by_binding.matched_positions,
+        ) == (
+            by_literal.passed,
+            by_literal.weight,
+            by_literal.message,
+            by_literal.matched_positions,
+        ), f"the {label} trajectory scores differently bound than written out"
+
+
+def test_a_binder_that_selects_nothing_fails_by_name_unless_the_author_opted_out():
+    """The universal reading is vacuous over no candidates, so ``on_unbound`` decides."""
+    read_only = _record_timeline((_READ, "X"))
+    failing = _read_before_write()
+    permitted = _read_before_write(on_unbound="pass")
+
+    unbound = evaluate_constraint(read_only, failing["require"], bind=failing["bind"])
+    opted_out = evaluate_constraint(read_only, permitted["require"], bind=permitted["bind"])
+
+    assert unbound.passed is False
+    assert "the binding selected no event" in unbound.message
+    assert opted_out.passed is True
+    assert opted_out.message == ""
+
+
+def test_a_type_mismatched_reference_says_the_comparison_was_not_made():
+    """``contains`` falls back to equality off the string pair, so this is never true.
+
+    The verdict is ``False`` either way, which is why the assertion is on the
+    message: a bare fold would be indistinguishable from the agent having failed,
+    and the author would read their own type mistake as the agent's.
+    """
+    timeline = build_timeline(
+        turns=(("user", "Open it."), ("assistant", "I opened delivery 4021 for you.")),
+        recorded=[recorded_call("open_delivery", arguments={"delivery_id": 4021})],
+    )
+    require = {
+        "present": {
+            "match": {"kind": "assistant_message", "text": {"contains_binding": "delivery"}}
+        }
+    }
+    binding = {
+        "match": _call_of("open_delivery"),
+        "values": {"delivery": {"field": "args.delivery_id"}},
+    }
+
+    result = evaluate_constraint(timeline, require, bind=binding)
+
+    assert result.passed is False
+    assert "the text comparison was not made" in result.message
+    assert "'delivery'" in result.message
+    assert "4021" in result.message
+    assert "of type int" in result.message
+    assert "equals_binding" in result.message
+    assert "regex capture" in result.message
