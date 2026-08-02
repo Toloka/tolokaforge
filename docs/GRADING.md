@@ -1155,8 +1155,9 @@ predicates, nested argument paths, counting, and a call's status or result.
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
 the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
-each carrying its `severity`, and are written inline in `grade.yaml` under
-`trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
+each carrying its `severity` and whether it was
+[undecided](#when-a-constraint-cannot-be-decided), and are written inline in
+`grade.yaml` under `trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
 gates that shut and one line per alternative, and lands beside them under
 `trace_checks_summary`. **A tripped gate fails the trial on both substrates** —
 the core engine's combine and the runner's `GradeTrial` each force `binary_pass`
@@ -1675,6 +1676,13 @@ A matcher yields definitely-matching events and
 constraint is decided only when **every** completion of the undecidable evidence
 reaches the same verdict; otherwise it is **undecided**, which is a failing
 sub-check naming the constraint and the evidence the trial does not carry.
+
+The verdict carries it as a field. `grade.yaml`'s `trace_check_results` entries
+each hold `undecided`, `true` exactly where the fold reached no verdict, so
+"the agent did not do this" and "nobody wrote down what it did" are told apart
+without reading `message` prose. `passed: false` beside `undecided: true` is the
+only pairing an undecided verdict takes — see
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md#trace-check-verdicts).
 
 Worked, over *d* definite matches and *u* undecidable ones:
 

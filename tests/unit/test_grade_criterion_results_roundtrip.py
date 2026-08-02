@@ -207,8 +207,10 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
     component score alone says a trace check failed without saying which: the
     payload is asserted whole, so a field the wire lowering or the writer drops —
     ``matched_positions`` above all, the only pointer back into
-    ``trajectory.yaml`` — fails rather than thinning the record. The summary rides
-    beside it: which route the score came from, and which gate shut.
+    ``trajectory.yaml``, and ``undecided``, which is the whole difference between
+    the agent not doing something and nobody recording whether it did — fails
+    rather than thinning the record. The summary rides beside it: which route the
+    score came from, and which gate shut.
     """
     lowered = lower_wire_grade(
         runner_pb2.Grade(
@@ -242,6 +244,14 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
                     message="absent: a forbidden call was made",
                     severity="gate",
                 ),
+                runner_pb2.TraceConstraintResult(
+                    id="the_refund_was_issued",
+                    kind="present",
+                    passed=False,
+                    weight=1.0,
+                    message="present cannot be decided — the trial records no status at position 2",
+                    undecided=True,
+                ),
             ],
             trace_checks_summary=runner_pb2.TraceChecksSummary(
                 winning_path="served_vs_source",
@@ -267,6 +277,7 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "severity": "scored",
             "message": "before: no match is ordered before the other side",
             "matched_positions": [2, 4],
+            "undecided": False,
         },
         {
             "id": "no_prefill",
@@ -276,6 +287,7 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "severity": "scored",
             "message": "",
             "matched_positions": [],
+            "undecided": False,
         },
         {
             "id": "order_untouched",
@@ -285,6 +297,17 @@ def test_per_constraint_trace_check_verdicts_reach_grade_yaml(tmp_path):
             "severity": "gate",
             "message": "absent: a forbidden call was made",
             "matched_positions": [],
+            "undecided": False,
+        },
+        {
+            "id": "the_refund_was_issued",
+            "kind": "present",
+            "passed": False,
+            "weight": 1.0,
+            "severity": "scored",
+            "message": "present cannot be decided — the trial records no status at position 2",
+            "matched_positions": [],
+            "undecided": True,
         },
     ]
     assert written["trace_checks_summary"] == {

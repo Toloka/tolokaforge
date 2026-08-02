@@ -2958,6 +2958,12 @@ class TraceConstraintResult(BaseModel):
     ``matched_positions`` holds timeline positions rather than events, so a grade
     stays readable and serialisable; an event is looked up by position against
     ``trajectory.yaml``.
+
+    ``undecided`` separates the two ways ``passed`` is ``False``: the trial did not
+    satisfy the constraint, or its evidence could not say. It changes no score —
+    an undecided constraint forfeits its weight and shuts a gate it carries,
+    exactly as a failure does — and it is the only field a reader can classify a
+    constraint's discriminating power from without matching on ``message`` prose.
     """
 
     id: str = Field(min_length=1)
@@ -2967,8 +2973,20 @@ class TraceConstraintResult(BaseModel):
     severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
     message: str = ""
     matched_positions: list[int] = Field(default_factory=list)
+    undecided: bool = False
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _reject_an_undecided_pass(self) -> TraceConstraintResult:
+        if self.undecided and self.passed:
+            raise ValueError(
+                f"trace constraint {self.id!r} passed and is undecided at once. Undecided "
+                "means no completion of the trial's missing evidence settles the verdict, "
+                "which is never a pass — a verdict reaching the host this way has lost "
+                "which of the two it is"
+            )
+        return self
 
 
 class TracePathResult(BaseModel):

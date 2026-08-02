@@ -407,6 +407,15 @@ message TraceConstraintResult {
   // rejects a pack declaring severity at RegisterTrial (the config model forbids
   // unknown keys), so every verdict it can produce is scored.
   string severity = 7;
+
+  // Whether the trial's evidence left the verdict undecidable rather than false
+  // — "nobody wrote down what happened", not "the agent did not do this". Never
+  // true beside passed, and scored exactly as a failure: it forfeits the weight
+  // and it shuts a gate it carries. False from a runner predating the field,
+  // which cannot say a verdict was undecided even where its own fold was; the
+  // engine skew gate covers the opposite direction only, so a new host reading
+  // an old runner sees such a verdict as decidably false.
+  bool undecided = 8;
 }
 
 // One alternative route's own outcome, whether or not it won. score is the

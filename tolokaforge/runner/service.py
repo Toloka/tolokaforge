@@ -1636,6 +1636,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         message=item.message,
                         matched_positions=item.matched_positions,
                         severity=item.severity,
+                        undecided=item.undecided,
                     )
                     for item in trace_checks_result.constraints
                 ],

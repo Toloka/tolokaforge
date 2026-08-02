@@ -1,0 +1,28 @@
+task_id: trace_checks_undecided
+name: "Substrate differential: trace_checks_undecided"
+category: test
+description: |
+  Substrate-parity fixture for the verdict no trial view can settle. The trial
+  it grades declares a call the runner never executes, which the shared trial
+  loader cannot express — a declared call there always carries a record — so the
+  two trials live in the test beside the lock and only the pack is authored here.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled: []
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

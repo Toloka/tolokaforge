@@ -853,6 +853,7 @@ trace_check_results:            # one entry per declared trace constraint; [] wh
     severity: scored            # scored | gate
     message: "before: no match is ordered before the other side under the declared quantifiers"
     matched_positions: [2, 4]
+    undecided: false            # true where the trial's evidence could not settle the verdict
 trace_checks_summary:           # which route was scored and whether a gate shut
   winning_path: served_vs_source  # "" when the pack declared no alternatives
   gate_failed: false
@@ -918,6 +919,13 @@ which.
 * `matched_positions` — the timeline positions the constraint's matchers
   selected, resolved against `trajectory.yaml`. Positions rather than events, so
   the grade stays scannable.
+* `undecided` — `true` where no completion of the trial's missing evidence
+  settles the verdict, which is the usual reading of a bundle re-graded without
+  its tool-call record. It scores exactly as a failure — the weight is forfeit
+  and a gate carrying it shuts — so it never appears beside `passed: true`; what
+  it adds is that a reader can tell an agent that did not do something from a
+  trial that did not record whether it did. See
+  [`docs/GRADING.md`](GRADING.md#when-a-constraint-cannot-be-decided).
 
 `trace_checks_summary` is the same evaluation seen from above: which route the
 component score came from, and whether a gate shut the trial. `binary_pass` is

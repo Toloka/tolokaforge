@@ -30,7 +30,9 @@ Twelve locks over :mod:`tolokaforge.core.grading.key_manifest`:
    author's ``combine.method``, each method pinned to a score written out here;
 10. both substrates score one ``trace_checks`` pack to the same component through
     their own grading path — the core engine's ``grade_trajectory``, and the
-    runner's ``GradeTrial`` over its real gRPC handlers;
+    runner's ``GradeTrial`` over its real gRPC handlers — and the per-constraint
+    facts a reviewer reads off the grade rather than off the score, ``severity``,
+    the winning route and ``undecided``, reach the host from both;
 11. both substrates read each per-constraint field that shapes how a kind scores
     without carrying a score itself, over packs a build ignoring the field would
     score identically;
@@ -52,6 +54,7 @@ import importlib
 import json
 import re
 import shutil
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from types import UnionType
@@ -1907,6 +1910,172 @@ def test_the_winning_route_crosses_the_wire(
         "the two routes tie and the winner is not the first declared, so the "
         "tie-break the grade reports depends on something other than declaration order"
     )
+
+
+_TRACE_UNDECIDED_TASK = "trace_checks_undecided"
+_THE_UNDECIDED_CONSTRAINT = "the_case_was_denied_successfully"
+
+_UNDECIDED_LOOKUP = ToolCall(
+    id="call_lookup", name="billing_api_get_payment", arguments={"payment_id": "PAY-664306"}
+)
+_UNDECIDED_DENIAL = ToolCall(
+    id="call_denial", name="servicenow_csm_update_case", arguments={"case_id": "CS-1042"}
+)
+
+# Both trials ask for both calls. They differ only in what the runner then did
+# with the denial, which is the difference the lock is about — so the message
+# view is one value rather than two that could drift apart.
+_UNDECIDED_VIEW = [
+    Message(role="user", content="The customer says this refund is a duplicate. Deny the case."),
+    Message(
+        role="assistant",
+        content="Checking the payment, then denying the case.",
+        tool_calls=[_UNDECIDED_LOOKUP, _UNDECIDED_DENIAL],
+    ),
+]
+
+
+def _execute_declared_call(
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, call: ToolCall, *, succeeds: bool
+) -> pb2.ExecuteToolResponse:
+    """Run one of the trial's declared calls through the runner's own handler."""
+
+    async def answer(_arguments: dict[str, Any]) -> str:
+        if not succeeds:
+            raise RuntimeError("the case service rejected the update")
+        return '{"case_id": "CS-1042", "state": "closed"}'
+
+    servicer.trials[trial_id].agent_tools[call.name] = answer
+    return servicer.ExecuteTool(
+        execute_request(trial_id, call.name, json.dumps(call.arguments), call_id=call.id),
+        context,
+    )
+
+
+def _runner_undecided_grade(
+    servicer: RunnerServiceImpl,
+    task_description: runner_models.TaskDescription,
+    trial_id: str,
+    context: Any,
+    *,
+    the_denial_ran: bool,
+) -> tuple[pb2.Grade, tuple[RecordedToolCall, ...]]:
+    """The runner's verdict on the declared pair, and the record it wrote getting there.
+
+    The record comes back with the grade because the core half is driven from it:
+    a hand-written counterpart could describe a trial the runner did not have, and
+    then the two substrates would be graded on two different trials.
+    """
+    registered = servicer.RegisterTrial(
+        register_request(
+            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
+            trial_id=trial_id,
+        ),
+        context,
+    )
+    assert registered.success is True, registered.error
+
+    lookup = _execute_declared_call(servicer, context, trial_id, _UNDECIDED_LOOKUP, succeeds=True)
+    assert lookup.status == pb2.EXECUTION_STATUS_SUCCESS, lookup.error_message
+    if the_denial_ran:
+        denial = _execute_declared_call(
+            servicer, context, trial_id, _UNDECIDED_DENIAL, succeeds=False
+        )
+        assert denial.status == pb2.EXECUTION_STATUS_ERROR, (
+            "the denial was meant to run and fail, so a success here would make the "
+            f"contrast case decidable for the wrong reason: {denial.status}"
+        )
+
+    response = servicer.GradeTrial(
+        pb2.GradeTrialRequest(
+            trial_id=trial_id,
+            llm_messages_json=json.dumps([_wire_message(message) for message in _UNDECIDED_VIEW]),
+        ),
+        context,
+    )
+    assert response.success is True, response.error
+    return response.grade, tuple(servicer.trials[trial_id].tool_call_history)
+
+
+def _core_undecided_verdict(
+    core_config: core_models.GradingConfig,
+    recorded: Sequence[RecordedToolCall],
+    task_dir: Path,
+) -> core_models.TraceConstraintResult:
+    """The core engine's own verdict on the trial the runner just recorded."""
+    grade = GradingEngine(core_config, task_dir=task_dir).grade_trajectory(
+        Trajectory(
+            task_id=_TRACE_UNDECIDED_TASK,
+            trial_index=0,
+            start_ts=_FIXTURE_TIMESTAMP,
+            end_ts=_FIXTURE_TIMESTAMP,
+            messages=_UNDECIDED_VIEW,
+            tool_log=list(recorded),
+        ),
+        {},
+    )
+    (verdict,) = grade.trace_check_results
+    return verdict
+
+
+def test_an_undecided_verdict_crosses_the_wire_as_the_fact_it_is(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """A constraint nobody can decide reaches the host as undecided, not as false.
+
+    The trial that makes the claim non-vacuous: the runner really ran, and the
+    evidence for this constraint is still missing, because the agent declared a
+    call the loop never executed. ``passed`` alone cannot tell that apart from the
+    agent failing the constraint outright, so the contrast is driven beside it —
+    the same declared pair with the denial executed and rejected, which is
+    decidably false. Both substrates answer both trials, so a field the runner
+    computes and never sends fails here rather than reaching a reviewer as a
+    verdict about the agent.
+    """
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_TRACE_UNDECIDED_TASK)
+    task_description = adapter.to_task_description(_TRACE_UNDECIDED_TASK)
+
+    runner_unrecorded, unrecorded_log = _runner_undecided_grade(
+        runner_service,
+        task_description,
+        "trace_undecided:0",
+        mock_grpc_context,
+        the_denial_ran=False,
+    )
+    runner_failed, failed_log = _runner_undecided_grade(
+        runner_service, task_description, "trace_denied:0", mock_grpc_context, the_denial_ran=True
+    )
+    core_unrecorded = _core_undecided_verdict(core_config, unrecorded_log, tmp_path)
+    core_failed = _core_undecided_verdict(core_config, failed_log, tmp_path)
+
+    assert [record.tool_name for record in unrecorded_log] == [_UNDECIDED_LOOKUP.name], (
+        "the runner recorded the denial, so the undecided trial's evidence is not "
+        "missing and the verdict below would be undecided for no reason"
+    )
+    assert [(record.tool_name, record.status.value) for record in failed_log] == [
+        (_UNDECIDED_LOOKUP.name, "success"),
+        (_UNDECIDED_DENIAL.name, "error"),
+    ]
+
+    (crossed_unrecorded,) = runner_unrecorded.trace_checks
+    (crossed_failed,) = runner_failed.trace_checks
+    assert (crossed_unrecorded.id, crossed_failed.id) == (
+        _THE_UNDECIDED_CONSTRAINT,
+        _THE_UNDECIDED_CONSTRAINT,
+    )
+    assert (crossed_unrecorded.passed, crossed_unrecorded.undecided) == (False, True), (
+        "the runner's own verdict on a trial whose evidence it never recorded is "
+        f"{(crossed_unrecorded.passed, crossed_unrecorded.undecided)}, and the wire "
+        f"says {crossed_unrecorded.message!r}"
+    )
+    assert (crossed_failed.passed, crossed_failed.undecided) == (False, False), (
+        "the executed-and-rejected denial is decidably false, so an undecided verdict "
+        f"here would mean the field tracks failure rather than missing evidence: "
+        f"{crossed_failed.message!r}"
+    )
+    assert (core_unrecorded.passed, core_unrecorded.undecided) == (False, True)
+    assert (core_failed.passed, core_failed.undecided) == (False, False)
 
 
 # --------------------------------------------------------------------------
