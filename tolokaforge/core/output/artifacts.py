@@ -1,10 +1,12 @@
 """Trial artifact writer — Protocol + disk-backed implementation.
 
 The writer composes :class:`tolokaforge.core.output_writer.OutputWriter`
-for the eight per-trial YAML files that make up a trial bundle:
+for the nine per-trial YAML files that make up a trial bundle:
 
 * ``task.yaml`` — frozen task identity + resolved preset fingerprint
 * ``trajectory.yaml`` — full message trace incl. reasoning blocks
+* ``tool_log.yaml`` — the trial's ordered tool-call record (sidecar; the
+  grader's view of what each call did, which the message view cannot carry)
 * ``env.yaml`` — final env state snapshot
 * ``metrics.yaml`` — usage / latency / tool-call metrics
 * ``grade.yaml`` — pass / fail + score components, per-criterion
@@ -23,6 +25,7 @@ indirection.
 
 * :class:`TrialArtifactWriter` — Protocol the orchestrator depends on.
 * :class:`FileArtifactWriter` — disk-backed implementation.
+* :func:`read_recorded_tool_log` — reads ``tool_log.yaml`` back off a bundle.
 * :func:`model_id_slug` — deterministic filesystem-safe slug combining
   provider + model name (still used by other call-sites; kept here as
   the canonical helper).
@@ -39,8 +42,10 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
 import yaml
+from pydantic import ValidationError
 
-from tolokaforge.core.output_writer import OutputWriter
+from tolokaforge.core.models import RecordedToolCall
+from tolokaforge.core.output_writer import TOOL_LOG_FILENAME, OutputWriter
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.logging import StructuredLogger
@@ -52,6 +57,7 @@ __all__ = [
     "TrialArtifactWriter",
     "TrialArtifactBundle",
     "model_id_slug",
+    "read_recorded_tool_log",
 ]
 
 
@@ -107,6 +113,42 @@ def model_id_slug(provider: str, name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
+# Reading a bundle back
+# ---------------------------------------------------------------------------
+
+
+def read_recorded_tool_log(trial_dir: Path) -> tuple[list[RecordedToolCall], bool]:
+    """The trial's tool-call record from its bundle, and whether the bundle held one.
+
+    Two states a caller must keep apart. A bundle written before the record was
+    persisted has no ``tool_log.yaml`` at all and reads back ``([], False)``: a
+    check over ``status``, ``executor`` or ``latency_seconds`` is undecidable
+    there. A trial that called no tool wrote the file empty and reads back
+    ``([], True)``: nothing happened, and the bundle says so. Collapsing them
+    reports missing evidence as an observation.
+
+    Raises:
+        ValueError: the file is present and is not a list of recorded calls.
+    """
+    path = Path(trial_dir) / TOOL_LOG_FILENAME
+    if not path.exists():
+        return [], False
+
+    with open(path, encoding="utf-8") as f:
+        record = yaml.safe_load(f)
+    if not isinstance(record, list):
+        raise ValueError(
+            f"{path} is the trial's tool-call record and must be a YAML list of "
+            f"recorded calls; it parsed as {type(record).__name__}."
+        )
+
+    try:
+        return [RecordedToolCall.model_validate(entry) for entry in record], True
+    except ValidationError as error:
+        raise ValueError(f"{path} is not a readable tool-call record: {error}") from error
+
+
+# ---------------------------------------------------------------------------
 # Protocol
 # ---------------------------------------------------------------------------
 
@@ -120,6 +162,15 @@ class TrialArtifactWriter(Protocol):
 
     def write_trajectory(self, trial_dir: Path, trajectory: Trajectory) -> None:
         """Persist ``trial_dir/trajectory.yaml`` from *trajectory*."""
+        ...
+
+    def write_tool_log(self, trial_dir: Path, trajectory: Trajectory) -> None:
+        """Persist ``trial_dir/tool_log.yaml`` from *trajectory.tool_log*.
+
+        A trial that called no tool persists an empty record. The artifact's
+        absence means the bundle was written before the record was, which is a
+        different state — see :func:`read_recorded_tool_log`.
+        """
         ...
 
     def write_task(self, trial_dir: Path, task_snapshot: dict[str, Any]) -> None:
@@ -184,9 +235,10 @@ class TrialArtifactWriter(Protocol):
         logger: StructuredLogger,
     ) -> None:
         """Write the per-trial bundle artifacts for a trial in one call:
-        ``task.yaml``, ``trajectory.yaml``, ``env.yaml``, ``metrics.yaml``,
-        ``grade.yaml`` (when ``trajectory.grade`` is non-``None``), and
-        ``logs.yaml``. Convenience for the common orchestrator path.
+        ``task.yaml``, ``trajectory.yaml``, ``tool_log.yaml``, ``env.yaml``,
+        ``metrics.yaml``, ``grade.yaml`` (when ``trajectory.grade`` is
+        non-``None``), and ``logs.yaml``. Convenience for the common
+        orchestrator path.
         """
         ...
 
@@ -228,6 +280,9 @@ class FileArtifactWriter:
     def write_trajectory(self, trial_dir: Path, trajectory: Trajectory) -> None:
         self._writer(trial_dir).write_trajectory(trajectory)
 
+    def write_tool_log(self, trial_dir: Path, trajectory: Trajectory) -> None:
+        self._writer(trial_dir).write_tool_log(trajectory)
+
     def write_task(self, trial_dir: Path, task_snapshot: dict[str, Any]) -> None:
         self._writer(trial_dir).write_task_info(task_snapshot)
 
@@ -255,7 +310,7 @@ class FileArtifactWriter:
         env_state: dict[str, Any],
         logger: StructuredLogger,
     ) -> None:
-        """Write task + trajectory + env + metrics + grade + logs for a trial."""
+        """Write task + trajectory + tool log + env + metrics + grade + logs."""
         writer = self._writer(trial_dir)
         writer.write_all(trajectory, task_snapshot, env_state, logger)
 
@@ -348,12 +403,16 @@ class TrialArtifactBundle:
     name, or ``None`` if the corresponding ``write_*`` method has not been
     called for this trial.
 
-    ``write_trial_bundle`` populates ``task``, ``trajectory``, ``env``,
-    ``metrics``, ``grade``, and ``logs``. ``tools_schemas`` and ``prompts``
-    are only populated by their own per-piece write methods.
+    ``write_trial_bundle`` populates ``task``, ``trajectory``, ``tool_log``,
+    ``env``, ``metrics``, ``grade``, and ``logs``. ``tools_schemas`` and
+    ``prompts`` are only populated by their own per-piece write methods.
+
+    ``tool_log`` mirrors the disk artifact's two distinct states: ``None`` is a
+    bundle carrying no record at all, an empty list a trial that called no tool.
     """
 
     trajectory: Trajectory | None = None
+    tool_log: list[RecordedToolCall] | None = None
     task: dict[str, Any] | None = None
     env: dict[str, Any] | None = None
     metrics: Metrics | None = None
@@ -399,6 +458,9 @@ class InMemoryArtifactWriter:
 
     def write_trajectory(self, trial_dir: Path, trajectory: Trajectory) -> None:
         self._bundle(trial_dir).trajectory = trajectory
+
+    def write_tool_log(self, trial_dir: Path, trajectory: Trajectory) -> None:
+        self._bundle(trial_dir).tool_log = trajectory.tool_log
 
     def write_task(self, trial_dir: Path, task_snapshot: dict[str, Any]) -> None:
         self._bundle(trial_dir).task = task_snapshot
@@ -448,6 +510,7 @@ class InMemoryArtifactWriter:
         bundle = self._bundle(trial_dir)
         bundle.task = task_snapshot
         bundle.trajectory = trajectory
+        bundle.tool_log = trajectory.tool_log
         bundle.env = env_state
         bundle.metrics = trajectory.metrics
         # Mirror the disk path's guard exactly (``OutputWriter.write_all``,

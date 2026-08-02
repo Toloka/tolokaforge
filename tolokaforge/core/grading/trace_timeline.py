@@ -91,8 +91,9 @@ class TrialTimeline:
 
     ``message_view_present`` and ``records_present`` are both degenerate-input
     flags, and each is a normal state: hash-only grading supplies no messages,
-    and a timeline rebuilt from a recorded bundle has no records because
-    ``tool_log`` is not written to ``trajectory.yaml``. ``records_present`` says a
+    and a timeline rebuilt from ``trajectory.yaml`` alone has no records — the
+    trial's record is the bundle's ``tool_log.yaml`` sidecar, and a bundle written
+    before that artifact existed carries none. ``records_present`` says a
     record view was supplied, not that results exist — a records-less timeline
     still carries whatever its ``role: tool`` messages preserved. A constraint
     that reads a field only the missing view supplies must become a named failing

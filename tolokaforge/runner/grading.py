@@ -382,8 +382,8 @@ _REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
 
 _UNRECORDED = (
     "the trial carries no tool-call record, so nothing knows whether the calls it "
-    "declared ran. A timeline rebuilt from a recorded bundle is in that state, "
-    "because tool_log is not written to trajectory.yaml"
+    "declared ran. A timeline rebuilt from a bundle's trajectory.yaml alone is in "
+    "that state — the record is the bundle's tool_log.yaml sidecar"
 )
 
 

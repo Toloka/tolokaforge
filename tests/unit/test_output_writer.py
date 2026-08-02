@@ -83,6 +83,51 @@ def test_write_trajectory(tmp_path, sample_trajectory):
     assert data["messages"][1]["role"] == "assistant"
 
 
+def test_write_tool_log(tmp_path, sample_trajectory):
+    """tool_log.yaml carries every recorded field, in ``sequence`` order.
+
+    The record is the grader's view of the trial. Three of its fields — ``executor``,
+    ``latency_seconds`` and ``sequence`` — have no conversational representation at
+    all, so nothing but this file can carry them into a re-grade.
+    """
+    writer = OutputWriter(tmp_path)
+
+    writer.write_tool_log(sample_trajectory)
+
+    with open(tmp_path / "tool_log.yaml") as f:
+        record = yaml.safe_load(f)
+
+    assert [call["sequence"] for call in record] == [0, 1, 2]
+    assert [call["tool_name"] for call in record] == ["get_user", "create_order", "create_order"]
+    assert [call["status"] for call in record] == ["success", "success", "error"]
+    assert [call["executor"] for call in record] == ["agent", "agent", "agent"]
+    assert [call["latency_seconds"] for call in record] == [0.25, 1.5, 0.75]
+    assert {call["call_id"] for call in record} == {
+        call.call_id for call in sample_trajectory.tool_log
+    }
+
+
+def test_write_tool_log_writes_an_empty_record_for_a_trial_that_called_no_tool(
+    tmp_path, sample_trajectory
+):
+    """The file is written empty rather than skipped.
+
+    An absent ``tool_log.yaml`` means the bundle carries no record at all, which is
+    what a bundle written before the artifact existed looks like. A trial that simply
+    never called a tool is a different fact about the trial, and the reader is
+    entitled to tell them apart.
+    """
+    writer = OutputWriter(tmp_path)
+    sample_trajectory.tool_log = []
+
+    writer.write_tool_log(sample_trajectory)
+
+    tool_log_file = tmp_path / "tool_log.yaml"
+    assert tool_log_file.exists()
+    with open(tool_log_file) as f:
+        assert yaml.safe_load(f) == []
+
+
 def test_write_metrics(tmp_path, sample_trajectory):
     """Test writing metrics.yaml with tool usage breakdown"""
     writer = OutputWriter(tmp_path)
@@ -155,6 +200,7 @@ def test_write_all(tmp_path, sample_trajectory, sample_grade):
 
     assert (tmp_path / "task.yaml").exists()
     assert (tmp_path / "trajectory.yaml").exists()
+    assert (tmp_path / "tool_log.yaml").exists()
     assert (tmp_path / "env.yaml").exists()
     assert (tmp_path / "metrics.yaml").exists()
     assert (tmp_path / "grade.yaml").exists()
@@ -182,6 +228,7 @@ def test_write_all_without_grade(tmp_path, sample_trajectory):
 
     assert (tmp_path / "task.yaml").exists()
     assert (tmp_path / "trajectory.yaml").exists()
+    assert (tmp_path / "tool_log.yaml").exists()
     assert (tmp_path / "env.yaml").exists()
     assert (tmp_path / "metrics.yaml").exists()
     assert (tmp_path / "logs.yaml").exists()

@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and its packs discriminate.
 
-Seven claims over the packs an author reads as the reference:
+Eight claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -37,6 +37,12 @@ Seven claims over the packs an author reads as the reference:
    of the POST rather than written as literals — so a guessed code, a fabricated code,
    an action against an unread lot, and a doubled post each fail exactly the check
    that names them, on trajectories the db_probe grades identically.
+8. **A trial bundle re-grades to the verdict its live run produced.** ``lot_ops_01``'s
+   correct run, written through the real artifact writer and read back off disk,
+   scores the same ``1.0`` — because the bundle carries the tool-call record and not
+   only the message trace. Without the record its flagship correlation cannot read
+   ``status`` and the same trajectory scores ``0.5``, which is a replay blaming the
+   author for evidence nobody wrote down.
 """
 
 from __future__ import annotations
@@ -58,6 +64,8 @@ from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
+from tolokaforge.core.grading.trace_timeline import build_trial_timeline
+from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
     GradingConfig,
@@ -70,7 +78,9 @@ from tolokaforge.core.models import (
     TraceChecksResult,
     TraceConstraintKind,
     TraceConstraintSeverity,
+    Trajectory,
 )
+from tolokaforge.core.output.artifacts import FileArtifactWriter, read_recorded_tool_log
 from tolokaforge.core.project_loader import load_project_config
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
@@ -591,9 +601,16 @@ def _root_cause_note(sequence: int, text: str = _NOTE_TEXT) -> RecordedToolCall:
     )
 
 
-def _cache_debug_messages(calls: Sequence[RecordedToolCall]) -> list[Message]:
-    """The message view declaring every recorded call, as the trial would carry it."""
-    user, assistant = _CACHE_DEBUG_TURNS
+def _trial_messages(calls: Sequence[RecordedToolCall], turns: tuple[str, str]) -> list[Message]:
+    """The message view a trial leaves behind, as ``ToolCallingLoop`` writes it.
+
+    A user turn, an assistant turn declaring every call, and then one ``role: tool``
+    message per executed call carrying that call's output and keyed by its id. The
+    last part is what a bundle persists and what the timeline falls back to for
+    ``result`` text, so a view that omits it understates what a re-graded bundle can
+    still decide.
+    """
+    user, assistant = turns
     return [
         Message(role=MessageRole.USER, content=user),
         Message(
@@ -604,6 +621,10 @@ def _cache_debug_messages(calls: Sequence[RecordedToolCall]) -> list[Message]:
                 for call in calls
             ],
         ),
+        *[
+            Message(role=MessageRole.TOOL, content=call.output, tool_call_id=call.call_id)
+            for call in calls
+        ],
     ]
 
 
@@ -809,7 +830,7 @@ def test_the_cache_debug_gate_fails_a_trial_whose_winning_route_scored_in_full()
     grade = GradingEngine(_grading_config(_CACHE_DEBUG_TASK)[1]).grade_trajectory(
         make_trajectory(
             task_id="cache_debug",
-            messages=_cache_debug_messages(_MUTATING_RUN),
+            messages=_trial_messages(_MUTATING_RUN, _CACHE_DEBUG_TURNS),
             tool_log=list(_MUTATING_RUN),
         ),
         _NOTE_ON_DISK,
@@ -1018,7 +1039,7 @@ def _lot_ops_grade(calls: Sequence[RecordedToolCall]) -> Grade:
     return GradingEngine(_lot_ops_grading()).grade_trajectory(
         make_trajectory(
             task_id="lot_ops_01",
-            messages=_cache_debug_messages(calls),
+            messages=_trial_messages(calls, _LOT_OPS_TURNS),
             tool_log=list(calls),
         ),
         {"filesystem": {"/env/fs/agent-visible/submissions/report.md": "CAPA-01 on LOT-1007"}},
@@ -1124,3 +1145,57 @@ def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_els
     assert guessed.components.state_checks == grounded.components.state_checks
     assert guessed.components.llm_judge == grounded.components.llm_judge
     assert guessed.score < grounded.score
+
+
+def _reload_from_bundle(trial_dir: Path) -> Trajectory:
+    """The trajectory a grader gets from a bundle on disk, and nothing else.
+
+    Both halves come off the filesystem — the message view from ``trajectory.yaml``,
+    the tool-call record from ``tool_log.yaml`` — so what this returns is whatever
+    the writer actually persisted. Modelling a bundle from a test helper's view of
+    it instead is what made two earlier measurements of this wrong: the helper
+    omitted the ``role: tool`` messages the writer keeps.
+    """
+    persisted = yaml.safe_load((trial_dir / "trajectory.yaml").read_text(encoding="utf-8"))
+    record, _ = read_recorded_tool_log(trial_dir)
+    return Trajectory.model_validate({**persisted, "tool_log": record})
+
+
+def test_the_lot_ops_correct_run_regrades_from_its_own_bundle_to_the_live_verdict(
+    tmp_path: Path,
+) -> None:
+    """A trial bundle carries the grader's view of the trial, not only the agent's.
+
+    The pack's flagship correlation reads ``status: {equals: success}``, which no
+    message can express — so with the record left out of the bundle this same
+    trajectory scores ``0.5``, its correct process reported as *"the trial records
+    no status at positions 4, 6"*. That is a replay blaming the author for evidence
+    the harness declined to write down, on the one pack the milestone built to show
+    the feature working.
+    """
+    calls = _LOT_OPS_CORRECT_RUN
+    trial_dir = tmp_path / "trials" / "lot_ops_01" / "0"
+    FileArtifactWriter().write_trial_bundle(
+        trial_dir,
+        make_trajectory(
+            task_id="lot_ops_01",
+            messages=_trial_messages(calls, _LOT_OPS_TURNS),
+            tool_log=list(calls),
+        ),
+        {"task_id": "lot_ops_01", "trial_index": 0},
+        {},
+        StructuredLogger("lot_ops_01-0"),
+    )
+
+    reloaded = _reload_from_bundle(trial_dir)
+    timeline = build_trial_timeline(
+        reloaded.messages, reloaded.tool_log, reloaded.termination_reason
+    )
+    trace_checks = _lot_ops_grading().trace_checks
+    assert trace_checks is not None
+    result = evaluate_trace_checks(timeline, trace_checks)
+
+    assert result.score == pytest.approx(1.0)
+    assert result.gate_failed is False
+    assert _failed(result) == []
+    assert timeline.records_present is True

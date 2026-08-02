@@ -521,11 +521,11 @@ inapplicable to the kind or unrecorded, and a predicate over a `None` field is
 unmatched, never vacuously true.**
 
 Unrecorded is the second case and it is not rare: `executor`, `status` and
-`latency_seconds` are `None` on every event of a bundle-sourced timeline (G6b),
+`latency_seconds` are `None` on every event of a records-less timeline (G6b),
 and on any call that never ran (G4). So `status != success` matches nothing at all
 on such a timeline rather than matching everything — read `records_present` before
 trusting either answer. `result` is the exception: a bundle keeps the `role: tool`
-messages, so a bundle-sourced timeline still says what each tool returned (G6b).
+messages, so even a records-less bundle still says what each tool returned (G6b).
 Per-field detail is in the table below; G4 and G6b say when each field goes
 missing on a kind it does apply to.
 
@@ -595,9 +595,11 @@ initial user prompt precedes the first assistant message and carries index 0.
   input carrying no assistant or user turn is built from the records alone:
   `tool_call` + `tool_result` pairs in `sequence` order, all at `turn_index` 0,
   `message_view_present = False`.
-- **G6b — messages-only is the normal state for a recorded bundle, and its results
-  come from the message view.** `tool_log` is not written to `trajectory.yaml`, so
-  a timeline rebuilt from a bundle has no records: `records_present = False` and
+- **G6b — messages-only is a declared input state, and its results come from the
+  message view.** A trial bundle carries its tool-call record as the `tool_log.yaml`
+  sidecar, so a timeline built from `trajectory.yaml` alone — which is also every
+  bundle written before that sidecar existed — has no records:
+  `records_present = False` and
   `executor` / `status` / `latency_seconds` are `None` throughout. The tool output
   is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
   its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
@@ -633,8 +635,8 @@ sub-check, not a silent pass.**
 
 The tool-expectation checks on both substrates honour that by gating on
 `records_present`, not on `status is None`. Those two are indistinguishable per
-call — a terminating turn's declared call and a bundle-sourced call both carry no
-status — so the flag is the only thing that says whether "no record" is a fact or
+call — a terminating turn's declared call and a call on a records-less timeline
+both carry no status — so the flag is the only thing that says whether "no record" is a fact or
 an absent view. A tool the message view never declared still passes a
 `disallowed_tools` check with no records present, because a record can only name a
 declared call (G7): the message view alone proves that tool never ran.
@@ -1690,8 +1692,10 @@ Undecided is not a pass in the agent's favour and not an over-fail either: defin
 evidence answers the question wherever it can. The usual way to reach it is a
 bundle re-graded without its tool-call record, where every `status` and `executor`
 predicate is unreadable, every `result` on an unanswered call with it, and so is any
-binder that reads one — which is a real limit on grading a `trace_checks` pack from a
-recorded bundle, not a defect to work around.
+binder that reads one. That is the permanent limit on grading a `trace_checks` pack
+from a bundle written before the record was persisted, and it is the right
+semantics rather than a defect to work around — the evidence really is absent, and
+the alternative is a silent pass.
 
 ### Weighting the constraints
 
