@@ -68,9 +68,18 @@ trace_checks:
       weight: 2.0
       on_missing: fail
       within: { first_turn: 0, last_turn: 8 }
+      bind:
+        match: { kind: tool_call, tool: { equals: write_file } }
+        values:
+          report_path: { field: args.path }
       require:
         before:
-          left: { quantifier: any, match: { kind: tool_call, tool: { equals: write_file } } }
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: write_file }
+              args: { path: { equals_binding: report_path } }
           right:
             quantifier: first
             match:

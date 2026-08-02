@@ -248,13 +248,17 @@ on a citation:
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
   [Score Combination](#score-combination).
-- `trace_checks.constraints.weight`, `.on_missing`, `.within` — each still names a
-  pack in the parametrisation that drives its differential, so a key escaping the
-  scored-key lock without one is caught here. Each pack is authored so a build
-  that ignored the field would score its two trials *identically*: the weight pack
-  passes one of two differently-weighted constraints in each trial, the
-  `on_missing` pack pairs an unmatched anchor against a definite wrong order, and
-  the `within` pack moves one call in and out of the turn window.
+- `trace_checks.constraints.weight`, `.on_missing`, `.severity`, `.within`, `.bind` —
+  each still names a pack in the parametrisation that drives its differential, so a
+  key escaping the scored-key lock without one is caught here. Each pack is authored
+  so a build that ignored the field would score its two trials *identically*: the
+  weight pack passes one of two differently-weighted constraints in each trial, the
+  `on_missing` pack pairs an unmatched anchor against a definite wrong order, the
+  `severity` pack fails one scored check in one trial and trips its gate in the
+  other so that a build folding both alike scores them equally, the `within` pack
+  moves one call in and out of the turn window, and the `bind` pack reads one
+  report in both trials and writes back a different one in the violating trial, so
+  only the correlation between the two arguments separates them.
 - `trace_checks` — the family root declares no field on either substrate, so it
   has no differential of its own; what its enforcement rests on is its leaves',
   and the clause asserts at least one member of the family is still reached by the
@@ -288,7 +292,7 @@ declared without one.
 | `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
-| `trace_checks.constraints.weight` / `.on_missing` / `.within` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints.weight` / `.on_missing` / `.severity` / `.within` / `.bind` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
 The `trace_checks` rows are the only scored family where **every** member is

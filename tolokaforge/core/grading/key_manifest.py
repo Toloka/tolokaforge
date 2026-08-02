@@ -654,6 +654,14 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         "the inclusive turn window every matcher in a constraint is restricted to, "
         "which narrows what the kinds select. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
     ),
+    _trace_constraint_field_key(
+        "bind",
+        "the values a constraint draws out of one event, which every matcher in its "
+        "require tree then resolves a binding reference against — so the kinds are "
+        "read once per candidate assignment rather than once, and the policy for a "
+        "binder that yielded none decides the constraint on its own. "
+        + _TRACE_CHECKS_EVIDENCE_LIMITS,
+    ),
     GradingKey(
         author_key="llm_judge",
         kind=KeyKind.SCORED_CHECK,
