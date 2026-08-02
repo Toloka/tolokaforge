@@ -1175,6 +1175,7 @@ trace_checks:
       severity: scored                          # scored (default) | gate
       on_missing: fail                          # fail (default) | pass
       within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
+      bind: …                                   # optional, see Correlating arguments
       require:
         before:
           left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: billing_api_get_payment },
@@ -1199,7 +1200,10 @@ trace_checks:
 `require` carries **exactly one** constraint kind, and each kind's value is that
 kind's own payload. Two conditions are an `all_of` over two expressions. Every
 model is `extra="forbid"`, so a misspelled operator, kind or matcher field fails
-at `tolokaforge validate` rather than grading as unset.
+at `tolokaforge validate` rather than grading as unset. `bind` is how a constraint
+compares one call's argument against another's rather than against a literal, and
+has its own section: [Correlating arguments across
+matchers](#correlating-arguments-across-matchers).
 
 A block declares `constraints`, `alternatives`, or both — but not neither, which
 would score nothing. **Every `id` in the block shares one space**: the path ids and
@@ -1453,6 +1457,149 @@ opt-in for "this constraint only applies when the anchor occurred".
 verdicts *are* the match. On `present` the pair would be an always-pass check —
 unmatched passes by the policy, matched passes by the constraint — so the load
 error is what stops a declaration that cannot fail from being written.
+
+### Correlating arguments across matchers
+
+Every predicate above compares a field against a value written into the YAML, which
+cannot say *this call's id equals that call's id*. A constraint's optional `bind`
+says it: one matcher whose events supply candidate values, one or more names
+extracted out of each, and predicates elsewhere in the same constraint that
+reference those names with
+[`equals_binding` / `contains_binding`](#operators).
+
+```yaml
+- id: every_record_written_was_read_first
+  description: "the agent read each record before it wrote to it"
+  bind:
+    match: { kind: tool_call, tool: { equals: write_record } }   # which events supply candidates
+    values:
+      rec: { field: args.record_id }                             # name -> extraction
+    on_unbound: fail                                             # fail (default) | pass
+  require:
+    before:
+      left:  { quantifier: any, match: { kind: tool_call, tool: { equals: read_record },
+                                         args: { record_id: { equals_binding: rec } } } }
+      right: { quantifier: any, match: { kind: tool_call, tool: { equals: write_record },
+                                         args: { record_id: { equals_binding: rec } } } }
+```
+
+`field` addresses `tool`, `text`, `result` or an `args.<dotted path>` on the kind
+`bind.match` selects, and an optional `pattern` narrows it to a regex capture —
+`{ field: text, pattern: '\$([0-9][0-9,]*\.[0-9]{2})' }` binds one candidate per
+dollar figure the message quotes. A binding is **scoped to its own constraint**:
+a name no predicate in that constraint references, and a reference to a name the
+constraint does not bind, are both load errors, so a correlation cannot reach
+across constraints or across [routes](#alternative-paths).
+
+#### The binder site is the direction of the implication
+
+The `require` tree above is symmetric in `read_record` and `write_record`, and the
+`bind` is what makes it an assertion about one of them. **Binding at the write says
+"every record written was read first"; binding at the read says "every record read
+was later written"** — a different claim, and usually not the one intended. Measured
+over the same three-call trajectory `read X`, `read Y`, `write X`:
+
+| binder | candidates | verdict |
+|---|---|---|
+| `write_record` | `X` | **passes** — the one record written was read |
+| `read_record` | `X`, `Y` | **fails** — `Y` was read and never written |
+
+#### Several candidates: the constraint must hold under every one
+
+Quantification over the candidate set is **universal**. Measured, binding at the
+write, with each candidate scored by writing its value out as a literal:
+
+| trajectory | candidates | per-candidate | first-match | **universal** | any-satisfying |
+|---|---|---|---|---|---|
+| `read X`, `write X` | `X` | `X: pass` | pass | **pass** | pass |
+| `read X`, `write Y` | `Y` | `Y: fail` | fail | **fail** | fail |
+| `read X`, `read Y`, `write X` | `X` | `X: pass` | pass | **pass** | pass |
+| `read X`, `write X`, `write Y` | `X`, `Y` | `X: pass`, `Y: fail` | pass | **fail** | pass |
+| `read X` twice, `write X` | `X` | `X: pass` | pass | **pass** | pass |
+| `read X` only | — | — | `on_unbound` | `on_unbound` | `on_unbound` |
+
+Row 4 is why **any-satisfying is not the rule**: the agent wrote a record it never
+read, and an existential reading passes because a *different* write happened to be
+correlated — the check silently stops covering everything the author did not think
+to enumerate, which is the whole reason to write a correlation instead of literals.
+
+**First-match is not the rule** either, and its cost shows up when the binder site
+is the read. Measured:
+
+| trajectory | candidates | first-match | **universal** |
+|---|---|---|---|
+| `read X`, `read Y`, `write X` | `X`, `Y` | pass | **fail** |
+| `read Y`, `read X`, `write X` | `Y`, `X` | fail | **fail** |
+
+Those two rows are the same set of actions in a different order. First-match is
+deterministic but flips the verdict on the order of two reads the constraint says
+nothing about; the universal reading is invariant under any permutation of the
+binder's events, which is what makes the grade reproducible. It also makes the
+*reported* binding reproducible, because the report is the **set** of values that
+failed and a set has nothing to choose:
+
+```
+before is unmatched: left selected no event; failed under (rec='Y')
+```
+
+**Candidates are distinct values, not events.** Ten calls naming one record are one
+reading of the `require` tree rather than ten identical ones, and the failure names
+one value rather than the same value ten times. Two candidates are the same when
+every name's value is equal **and of the same type**, so `True` and `1` are two
+candidates.
+
+A bound constraint costs one evaluation of its `require` tree per distinct
+candidate. Distinct-value counts on real trajectories are a handful per
+`(tool, argument)`, so this is not a size to author around; the shape worth knowing
+is that it multiplies the [`absent_between` cost](#declared-limits-and-what-owns-each)
+rather than adding to it.
+
+#### `on_unbound` — the trial where the binder selected nothing
+
+The universal reading is vacuously true over an empty candidate set, and
+`on_unbound` overrides it. It defaults to **`fail`**, which is right for
+read-before-write: zero writes means the agent did not do the task, and a vacuous
+pass there is exactly the hazard [`on_missing`](#on_missing--what-an-unmatched-anchor-decides)
+defaults against for the same reason. `on_unbound: pass` is the opt-in for a
+constraint whose empty case genuinely holds — "no figure the agent quoted was
+invented" is satisfied by an agent that quoted no figure, and failing it charges a
+second time for a gap another check already charges.
+
+This is a policy over **decidable** evidence: the candidate set is genuinely empty,
+not unreadable. `on_unbound: pass` beside `severity: gate` is a load error, since a
+gate carries no weight for the second charge to be avoided on.
+
+#### `negate`, and `within`
+
+Quantification is outermost, so `negate` inside a bound constraint reads
+**`∀v ¬P(v)`** — "no candidate satisfies `P`" — and not `¬∀v P(v)`. A
+`negate: { present: … }` over a binder on `write_record` therefore fails as soon as
+*one* written record was read, which is the useful reading; a reader expecting
+`¬∀ = ∃¬` would predict the opposite.
+
+`within` restricts the binder too, because the binder resolves through the same
+turn window every other matcher in the constraint does. A window that excludes an
+event removes the values it carried from the candidate set.
+
+#### The bound value's type is load-bearing
+
+`contains` compares two strings as substrings and falls back to **equality** for
+any other pair, so a bound `int` is never found inside a string. Measured:
+
+```python
+contains("http://api/deliveries/4021", 4021)    # False
+contains("http://api/deliveries/4021", "4021")  # True
+```
+
+A `contains_binding` between a text field and a value bound out of an integer
+argument is therefore false on **every** trajectory. That is not scored as an agent
+failure: the constraint fails with a message saying the comparison was not made,
+naming the binding, its value, its type, and the two ways to write the intent —
+`equals_binding` to correlate two arguments, or a `pattern` capture to compare
+against text. What the models cannot answer is which of the two it is:
+`args.reason_code` is a string and `args.delivery_id` is an integer, and only the
+tool's own schema tells them apart, so this one is caught at evaluation rather than
+at load.
 
 ### When a constraint cannot be decided
 
@@ -1714,7 +1861,9 @@ product of its `start` readings, its `end` readings and its `forbidden` readings
 so on a timeline where all three matchers are undecidable its work grows cubically
 in the number of undecidable events. Trials in the size range the harness produces
 stay well inside that, and a records-present timeline has no undecidable events at
-all.
+all. A [`bind`](#correlating-arguments-across-matchers) multiplies whatever its
+`require` tree costs by the number of distinct candidates, so the two compose — and
+neither is a reason to author around at these sizes.
 
 ---
 

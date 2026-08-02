@@ -428,7 +428,7 @@ def test_a_trial_with_no_events_accounts_every_declared_kind_as_skipped():
     }
 
 
-def _bound_before(constraint_id: str, binder_tool: str) -> dict[str, Any]:
+def _bound_before(constraint_id: str, binder_tool: str, **bind_fields: Any) -> dict[str, Any]:
     """A correlated ordering whose binder selects ``binder_tool`` and nothing else."""
     return {
         "id": constraint_id,
@@ -436,6 +436,7 @@ def _bound_before(constraint_id: str, binder_tool: str) -> dict[str, Any]:
         "bind": {
             "match": {"kind": "tool_call", "tool": {"equals": binder_tool}},
             "values": {"widget": {"field": "args.widget_id"}},
+            **bind_fields,
         },
         "require": {
             "before": {
@@ -489,18 +490,30 @@ def test_a_constraint_whose_binder_selected_nothing_accounts_its_kinds_as_skippe
     the honest record, and it is subtracted away by a sibling constraint of the same
     kind that *did* evaluate — otherwise the grade reports a kind as skipped while
     another constraint scored it.
-    """
-    config = GradingConfig(
-        trace_checks=TraceChecksConfig(
-            constraints=[_bound_before("no_binder_fires", "recall_widget")]
-        )
-    )
-    timeline = _inspected_then_shipped_widget_w1()
-    accounted = evaluate_trace_checks(timeline, config.trace_checks).accounted_keys
 
-    assert audit_accounted_keys(config, accounted).error is None
-    assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == UNBOUND_BINDING_SKIP
-    assert accounted[TRACE_CONSTRAINTS_KEY] == EVALUATED
+    ``on_unbound`` decides the verdict and nothing about the accounting: the require
+    tree went unevaluated under either policy, so both file the same skip. The audit
+    is read for its skip note rather than only for ``error``, because a
+    non-``EVALUATED`` record is routed to ``skip_notes`` — the audit reports no error
+    over a skip filed with the wrong outcome, so ``error is None`` alone would hold
+    whatever this evaluation recorded.
+    """
+    timeline = _inspected_then_shipped_widget_w1()
+    for policy in ({}, {"on_unbound": "pass"}):
+        config = GradingConfig(
+            trace_checks=TraceChecksConfig(
+                constraints=[_bound_before("no_binder_fires", "recall_widget", **policy)]
+            )
+        )
+        accounted = evaluate_trace_checks(timeline, config.trace_checks).accounted_keys
+        audit = audit_accounted_keys(config, accounted)
+
+        assert audit.error is None, policy
+        assert audit.skip_notes == (
+            f"{TRACE_CONSTRAINT_KEY_BY_KIND['before']} skipped: {UNBOUND_BINDING_SKIP.detail}",
+        ), policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == UNBOUND_BINDING_SKIP, policy
+        assert accounted[TRACE_CONSTRAINTS_KEY] == EVALUATED, policy
 
     beside_an_evaluated_sibling = GradingConfig(
         trace_checks=TraceChecksConfig(

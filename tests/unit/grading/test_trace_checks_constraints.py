@@ -1004,11 +1004,17 @@ def test_a_correlated_ordering_reads_the_record_the_agent_wrote():
     ("bound", "other"), [("REC-1", "REC-2"), (42, 43)], ids=["string_record", "integer_record"]
 )
 def test_one_candidate_scores_exactly_as_the_value_written_out(bound: Any, other: Any):
-    """A reference substitutes; it does not reinterpret.
+    """A reference substitutes; it does not reinterpret — the one-candidate boundary.
 
     Driven over an integer record as well as a string one, because the whole content
     of "substitutes" is that the bound value reaches ``operator.eq`` as itself — a
     reference stringifying its value would still decide the string row correctly.
+
+    The verdict, the weight and the matched positions are the literal's exactly. The
+    message is the literal's plus the assignment it failed under, which the fold
+    names at every cardinality including this one: suppressing it here would be a
+    special case for ``n=1`` inside the fold, and the value is the same thing an
+    author needs to read whether one record failed to correlate or four did.
     """
     correlated = _read_before_write()
     literal = {
@@ -1018,9 +1024,13 @@ def test_one_candidate_scores_exactly_as_the_value_written_out(bound: Any, other
         }
     }
 
-    for label, timeline in [
-        ("correlated", _record_timeline((_READ, bound), (_WRITE, bound))),
-        ("crossed", _record_timeline((_READ, other), (_WRITE, bound))),
+    for label, timeline, naming in [
+        ("correlated", _record_timeline((_READ, bound), (_WRITE, bound)), ""),
+        (
+            "crossed",
+            _record_timeline((_READ, other), (_WRITE, bound)),
+            f"; failed under (rec={bound!r})",
+        ),
     ]:
         by_binding = evaluate_constraint(timeline, correlated["require"], bind=correlated["bind"])
         by_literal = evaluate_constraint(timeline, literal)
@@ -1032,7 +1042,7 @@ def test_one_candidate_scores_exactly_as_the_value_written_out(bound: Any, other
         ) == (
             by_literal.passed,
             by_literal.weight,
-            by_literal.message,
+            by_literal.message + naming,
             by_literal.matched_positions,
         ), f"the {label} trajectory scores differently bound than written out"
 
@@ -1050,6 +1060,148 @@ def test_a_binder_that_selects_nothing_fails_by_name_unless_the_author_opted_out
     assert "the binding selected no event" in unbound.message
     assert opted_out.passed is True
     assert opted_out.message == ""
+
+
+def test_many_binder_events_carrying_one_value_are_one_candidate():
+    """Candidates are distinct values, not events — the many-identical boundary.
+
+    Asserted against the one-write trajectory rather than against a literal count,
+    so the lock is that three repeats of a value decide and *report* exactly as one
+    occurrence of it: an author reading a grade must not have to work out that the
+    three names in front of them are the same record written three times.
+    """
+    correlated = _read_before_write()
+    once = evaluate_constraint(
+        _record_timeline((_WRITE, "X")), correlated["require"], bind=correlated["bind"]
+    )
+    three_times = evaluate_constraint(
+        _record_timeline((_WRITE, "X"), (_WRITE, "X"), (_WRITE, "X")),
+        correlated["require"],
+        bind=correlated["bind"],
+    )
+
+    assert (three_times.passed, three_times.message) == (once.passed, once.message)
+    assert three_times.message.count("(rec=") == 1, three_times.message
+    assert three_times.matched_positions == [2, 4, 6], "the union over the one candidate's reading"
+
+
+def test_one_uncorrelated_record_among_several_fails_and_the_message_names_only_it():
+    """The universal fold — the many-distinct boundary, one candidate failing.
+
+    ``Z`` was written and never read, so the constraint fails however well the agent
+    handled ``X``. An existential fold passes this trajectory on ``X`` alone, and a
+    first-match fold answers on whichever candidate the binder happened to yield
+    first.
+    """
+    result = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_READ, "Y"), (_WRITE, "X"), (_WRITE, "Z")),
+        _read_before_write()["require"],
+        bind=_read_before_write()["bind"],
+    )
+
+    assert result.passed is False
+    assert "failed under (rec='Z')" in result.message
+    assert "'X'" not in result.message, "the correlated record is not what failed"
+    assert result.matched_positions == [2, 6, 8], "the read and write of X, and the write of Z"
+
+
+def test_the_verdict_does_not_turn_on_the_order_the_binder_yields_candidates():
+    """The property that rejected first-match: two reads the constraint says nothing about.
+
+    The same two records read in either order, one of them written. Binding at the
+    read makes both reads candidates, and ``Y`` was never written under either
+    ordering — so a rule reading only the first candidate calls the same set of
+    actions correlated in one order and uncorrelated in the other.
+    """
+    read_bound = {
+        "bind": {"match": _call_of(_READ), "values": {"rec": {"field": "args.record_id"}}},
+        "require": _read_before_write()["require"],
+    }
+
+    x_first = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_READ, "Y"), (_WRITE, "X")),
+        read_bound["require"],
+        bind=read_bound["bind"],
+    )
+    y_first = evaluate_constraint(
+        _record_timeline((_READ, "Y"), (_READ, "X"), (_WRITE, "X")),
+        read_bound["require"],
+        bind=read_bound["bind"],
+    )
+
+    assert (x_first.passed, x_first.message) == (y_first.passed, y_first.message)
+    assert x_first.passed is False, "Y was read and never written, whichever read came first"
+    assert "failed under (rec='Y')" in x_first.message
+
+
+def test_a_negated_bound_constraint_reads_no_candidate_satisfies_it():
+    """Quantification is outermost, so ``negate`` is ``∀v ¬P(v)`` and not ``¬∀v P(v)``.
+
+    Driven against both trajectories that separate the two readings: exactly one
+    candidate satisfying the negated expression fails the constraint, where ``¬∀``
+    would pass it on the other candidate not satisfying it.
+    """
+    forbidden_read = {
+        "bind": {"match": _call_of(_WRITE), "values": {"rec": {"field": "args.record_id"}}},
+        "require": {
+            "negate": {
+                "present": {"match": _call_of(_READ, args={"record_id": {"equals_binding": "rec"}})}
+            }
+        },
+    }
+
+    one_satisfies = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_WRITE, "X"), (_WRITE, "Y")),
+        forbidden_read["require"],
+        bind=forbidden_read["bind"],
+    )
+    none_satisfies = evaluate_constraint(
+        _record_timeline((_READ, "Z"), (_WRITE, "X"), (_WRITE, "Y")),
+        forbidden_read["require"],
+        bind=forbidden_read["bind"],
+    )
+
+    assert one_satisfies.passed is False
+    assert "failed under (rec='X')" in one_satisfies.message
+    assert none_satisfies.passed is True, "no candidate satisfies it, which is what it asks"
+
+
+def test_a_turn_window_restricts_the_binder_and_so_the_candidate_set():
+    """``within`` reaches the binder because it resolves through the same resolver.
+
+    The window changes the verdict here by changing which records are candidates at
+    all: ``Y`` is written in the excluded turn, and it is the only reason the
+    unwindowed constraint fails.
+    """
+    timeline = build_turn_timeline(
+        [
+            Turn("user", "Update the records."),
+            Turn(
+                "assistant",
+                "Reading and writing X.",
+                recorded=[
+                    recorded_call(_READ, sequence=0, arguments={"record_id": "X"}),
+                    recorded_call(_WRITE, sequence=1, arguments={"record_id": "X"}),
+                ],
+            ),
+            Turn(
+                "assistant",
+                "Writing Y as well.",
+                recorded=[recorded_call(_WRITE, sequence=2, arguments={"record_id": "Y"})],
+            ),
+        ]
+    )
+    correlated = _read_before_write()
+
+    unwindowed = evaluate_constraint(timeline, correlated["require"], bind=correlated["bind"])
+    windowed = evaluate_constraint(
+        timeline, correlated["require"], bind=correlated["bind"], within={"last_turn": 0}
+    )
+
+    assert [event.turn_index for event in timeline.events] == [0, 0, 0, 0, 0, 0, 1, 1, 1]
+    assert unwindowed.passed is False
+    assert "failed under (rec='Y')" in unwindowed.message
+    assert windowed.passed is True, "the write of Y is outside the window, so it binds nothing"
 
 
 def test_a_type_mismatched_reference_says_the_comparison_was_not_made():

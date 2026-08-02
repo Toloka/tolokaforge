@@ -619,7 +619,7 @@ def _evaluate_constraint(
         passed=truth is _Truth.TRUE,
         weight=constraint.weight,
         severity=constraint.severity,
-        message="; ".join(unmakeable) if unmakeable else _folded_message(readings),
+        message="; ".join(unmakeable) if unmakeable else _folded_message(readings, truth),
         matched_positions=sorted({item for reading in readings for item in reading.positions}),
     )
 
@@ -628,6 +628,7 @@ def _evaluate_constraint(
 class _CandidateReading:
     """What one constraint's ``require`` tree decided under one bound assignment."""
 
+    environment: Mapping[str, Any]
     truth: _Truth
     message: str
     positions: list[int]
@@ -644,6 +645,7 @@ def _read_under(
     resolver = _Resolver(timeline, constraint.within, visited, environment)
     truth = _evaluate(constraint.require, resolver, on_missing)
     return _CandidateReading(
+        environment=environment,
         truth=truth,
         message=_message(truth, constraint.require.declared_kind(), resolver, on_missing),
         positions=resolver.matched_positions(),
@@ -651,9 +653,45 @@ def _read_under(
     )
 
 
-def _folded_message(readings: list[_CandidateReading]) -> str:
-    """What the grade says about a constraint folded over its candidates."""
-    return next((item.message for item in readings if item.truth is not _Truth.TRUE), "")
+def _folded_message(readings: list[_CandidateReading], truth: _Truth) -> str:
+    """What the grade says about a constraint folded over its candidates.
+
+    The sentence is the one the first candidate that reached the folded verdict
+    wrote, and the assignments named beside it are **every** candidate that reached
+    it. Naming them is the only way an author learns which record failed to
+    correlate: the per-kind detail sentence is the same whichever value it failed
+    under, so a bound constraint without them reports a failure the author cannot
+    act on. A constraint that binds nothing names none, since its one reading holds
+    the empty environment.
+    """
+    if truth is _Truth.TRUE:
+        return ""
+    responsible = [item for item in readings if item.truth is truth]
+    return responsible[0].message + _naming(responsible, truth)
+
+
+def _naming(readings: list[_CandidateReading], truth: _Truth) -> str:
+    named = ", ".join(_assignment_text(item.environment) for item in readings if item.environment)
+    return f"; {_FOLD_PHRASE[truth]} {named}" if named else ""
+
+
+def _assignment_text(environment: Mapping[str, Any]) -> str:
+    """One assignment as an author reads it — every name it binds, parenthesised.
+
+    Parenthesised even at one name, so that a constraint binding two names reads
+    unambiguously when several assignments are listed side by side.
+    """
+    return "(" + ", ".join(f"{name}={value!r}" for name, value in sorted(environment.items())) + ")"
+
+
+# How a fold over candidates reads its own verdict, beside the values it reached it
+# under. Neutral about what the constraint asserted, because a ``negate`` fails
+# where its correlation *held*. ``TRUE`` is on no row: a passing constraint says
+# nothing at all.
+_FOLD_PHRASE: Mapping[_Truth, str] = {
+    _Truth.FALSE: "failed under",
+    _Truth.UNKNOWN: "undecided under",
+}
 
 
 def _unbound_result(
@@ -696,19 +734,49 @@ _UNBOUND_ENVIRONMENT: Mapping[str, Any] = {}
 
 
 def _candidates(timeline: TrialTimeline, constraint: TraceConstraint) -> _Candidates:
-    """Every assignment the binder yields, in the order its events occur."""
+    """Every distinct assignment the binder yields, in the order its events occur."""
     if constraint.bind is None:
         return _Candidates([_UNBOUND_ENVIRONMENT], "")
     outcome = _restricted(
         select_events(timeline, constraint.bind.match, _UNBOUND_ENVIRONMENT), constraint.within
     )
     results = _results_by_call_id(timeline)
-    assignments = [
-        assignment
-        for event in outcome.matched
-        for assignment in _assignments_from(constraint.bind, event, results)
-    ]
+    assignments = _distinct(
+        [
+            assignment
+            for event in outcome.matched
+            for assignment in _assignments_from(constraint.bind, event, results)
+        ]
+    )
     return _Candidates(assignments, _emptiness(outcome, assignments))
+
+
+def _distinct(assignments: list[Mapping[str, Any]]) -> list[Mapping[str, Any]]:
+    """``assignments`` with the repeats dropped, keeping the first of each.
+
+    Candidates are distinct *values*, not events: ten calls naming one record are
+    one reading of the ``require`` tree rather than ten identical ones, and the
+    values a failure names are the ones the author has to look at rather than that
+    list with duplicates in it. A linear scan rather than a set because an
+    assignment is a dict and a bound value may itself be a list or a dict — nothing
+    here is hashable.
+    """
+    distinct: list[Mapping[str, Any]] = []
+    for assignment in assignments:
+        if not any(_same_assignment(assignment, seen) for seen in distinct):
+            distinct.append(assignment)
+    return distinct
+
+
+def _same_assignment(left: Mapping[str, Any], right: Mapping[str, Any]) -> bool:
+    """Whether two assignments bind every name to the same value of the same type.
+
+    Type as well as equality, because ``True == 1`` in Python: equality alone would
+    collapse two values the arguments they came from distinguish, and the surviving
+    one would then decide the constraint for both. Every assignment one binder
+    yields carries the same names, so one side's are enough to compare over.
+    """
+    return all(type(left[name]) is type(right[name]) and left[name] == right[name] for name in left)
 
 
 def _emptiness(outcome: MatcherOutcome, assignments: list[Mapping[str, Any]]) -> str:
