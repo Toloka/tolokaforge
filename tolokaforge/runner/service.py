@@ -1558,9 +1558,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         grading_config_dict = grading_config.model_dump()
         score, binary_pass = combine_grade_components(components_dict, grading_config_dict)
 
-        # A failed required rubric criterion fails the trial outright — independent
-        # of pass_threshold and any other heavily-weighted component.
-        if judge_gate_failed:
+        # A failed required rubric criterion or a tripped trace gate fails the trial
+        # outright — independent of pass_threshold and any other heavily-weighted
+        # component. One rule, two gates: the core engine applies the trace half at
+        # its own combine (``combine.py``), so the verdict does not depend on which
+        # substrate graded the trial.
+        if judge_gate_failed or trace_checks_result.gate_failed:
             binary_pass = False
 
         # Build reasons string
@@ -1632,9 +1635,21 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                         weight=item.weight,
                         message=item.message,
                         matched_positions=item.matched_positions,
+                        severity=item.severity,
                     )
                     for item in trace_checks_result.constraints
                 ],
+                trace_checks_summary=pb2.TraceChecksSummary(
+                    winning_path=trace_checks_result.winning_path,
+                    gate_failed=trace_checks_result.gate_failed,
+                    failed_gate_ids=trace_checks_result.failed_gate_ids,
+                    paths=[
+                        pb2.TracePathResult(
+                            id=path.id, score=path.score, gate_failed=path.gate_failed
+                        )
+                        for path in trace_checks_result.paths
+                    ],
+                ),
             ),
         )
 

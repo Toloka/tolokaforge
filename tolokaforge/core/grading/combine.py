@@ -43,6 +43,7 @@ from tolokaforge.core.models import (
     GradingConfig,
     InitialStateConfig,
     TraceChecksResult,
+    TraceChecksSummary,
     Trajectory,
 )
 
@@ -182,6 +183,10 @@ class GradingEngine:
             trace_checks_result = evaluate_trace_checks(timeline, self.config.trace_checks)
             if trace_checks_result.constraints:
                 components.trace_checks = trace_checks_result.score
+                if trace_checks_result.failed_gate_ids:
+                    reasons_parts.append(
+                        f"FAILED trace gates: {', '.join(trace_checks_result.failed_gate_ids)}"
+                    )
                 reasons_parts.extend(
                     f"Trace check {item.id}: {item.message}"
                     for item in trace_checks_result.constraints
@@ -205,6 +210,12 @@ class GradingEngine:
 
         final_score, binary_pass = self._combine(components)
 
+        # A tripped trace gate fails the trial outright — independent of
+        # pass_threshold and of any other heavily-weighted component. The same act
+        # the runner performs on the rubric judge's gate in ``service.py``.
+        if trace_checks_result.gate_failed:
+            binary_pass = False
+
         return Grade(
             binary_pass=binary_pass,
             score=final_score,
@@ -213,6 +224,12 @@ class GradingEngine:
             state_diff=state_diff_result,
             custom_checks_details=custom_checks_details,
             trace_check_results=trace_checks_result.constraints,
+            trace_checks_summary=TraceChecksSummary(
+                winning_path=trace_checks_result.winning_path,
+                gate_failed=trace_checks_result.gate_failed,
+                failed_gate_ids=trace_checks_result.failed_gate_ids,
+                paths=trace_checks_result.paths,
+            ),
         )
 
     def _combine(self, components: GradeComponents) -> tuple[float, bool]:

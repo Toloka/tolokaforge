@@ -941,6 +941,18 @@ class OnMissing(str, Enum):
     PASS = "pass"
 
 
+class TraceConstraintSeverity(str, Enum):
+    """Whether a constraint is scored or gates the trial.
+
+    A gate is excluded from the weighted average entirely — it enters neither the
+    numerator nor the denominator — and a violated one fails the trial whatever the
+    scored constraints said.
+    """
+
+    SCORED = "scored"
+    GATE = "gate"
+
+
 class TurnWindow(BaseModel):
     """An inclusive turn range every matcher in a constraint is restricted to.
 
@@ -975,18 +987,24 @@ class TurnWindow(BaseModel):
         return self
 
 
-class TraceConstraint(BaseModel):
-    """One scored trajectory condition.
+_UNWEIGHTED_CONSTRAINT = 1.0
+"""The share a constraint that declares no ``weight`` carries."""
 
-    ``weight`` scales its share of the component score, and ``on_missing`` decides
-    an anchor that matched nothing — defaulting to a named failing sub-check, so an
-    unmatched anchor is never silently satisfied.
+
+class TraceConstraint(BaseModel):
+    """One trajectory condition, scored or gating.
+
+    ``weight`` scales its share of the component score, ``on_missing`` decides an
+    anchor that matched nothing — defaulting to a named failing sub-check, so an
+    unmatched anchor is never silently satisfied — and ``severity`` decides whether
+    the condition is scored at all or must simply hold.
     """
 
     id: str = Field(min_length=1)
     description: str = Field(min_length=1)
-    weight: float = 1.0
+    weight: float = _UNWEIGHTED_CONSTRAINT
     on_missing: OnMissing | None = None
+    severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
     within: TurnWindow | None = None
     require: TraceConstraintExpr
 
@@ -1012,9 +1030,50 @@ class TraceConstraint(BaseModel):
                 f"weight {value} scores nothing: a zero-weight constraint is evaluated and "
                 "reported while contributing to neither the numerator nor the denominator "
                 "of the component score, and a negative one inverts the fold. A check that "
-                "must hold without being scored is severity: gate (#680)"
+                "must hold without being scored is severity: gate"
             )
         return value
+
+    @model_validator(mode="after")
+    def _reject_a_weight_on_a_check_nothing_scores(self) -> TraceConstraint:
+        """A gate carries no share, so a share written beside one is read by nothing.
+
+        Stated against the weight's *value* rather than against
+        ``model_fields_set``: the config is dumped whole into the trial spec and
+        revalidated inside the runner, which marks every field set, so a
+        declaredness rule would reject on the runner every gate it admitted on the
+        engine. An explicitly written ``weight: 1.0`` is therefore indistinguishable
+        from an omitted one and is admitted.
+        """
+        if self.severity is TraceConstraintSeverity.GATE and self.weight != _UNWEIGHTED_CONSTRAINT:
+            raise ValueError(
+                f"{self.id}: weight {self.weight} is written on a severity: gate constraint, "
+                "which is excluded from the weighted average — it enters neither the "
+                "numerator nor the denominator, so the weight scales nothing. Drop the "
+                "weight, or drop the severity to have the check scored"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_an_anchor_policy_that_opens_a_gate_vacuously(self) -> TraceConstraint:
+        """``on_missing: pass`` on a gate is a gate the trial satisfies by never arriving.
+
+        The policy earns its place on a *scored* constraint, where an anchor that
+        matched nothing is already charged to the check asking whether the thing
+        happened and charging it again would cost the agent the same failure twice.
+        A gate carries no share, so there is no second charge to avoid and the
+        policy buys nothing but the vacuous pass — on the one check the author said
+        must hold.
+        """
+        if self.severity is TraceConstraintSeverity.GATE and self.on_missing is OnMissing.PASS:
+            raise ValueError(
+                f"{self.id}: on_missing: pass opens a severity: gate constraint on every "
+                "trial whose anchor matched nothing, so the check that must hold holds "
+                "vacuously. A gate carries no weight, so letting the unmatched anchor "
+                "fail it double-charges nothing: drop the on_missing, or drop the "
+                "severity to have the check scored"
+            )
+        return self
 
     @model_validator(mode="after")
     def _reject_an_unmatched_anchor_policy_where_nothing_is_anchored(self) -> TraceConstraint:
@@ -1028,21 +1087,117 @@ class TraceConstraint(BaseModel):
         return self
 
 
-class TraceChecksConfig(BaseModel):
-    """Declarative conditions on what the agent did, and in what order."""
+class TracePath(BaseModel):
+    """One alternative route through the task, scored as a whole.
 
+    A path is a named set of constraints, not a disjunction over single steps: an
+    agent's score on it is what the shared constraints and this path's own
+    constraints say together, so half of one route plus half of another scores
+    neither.
+    """
+
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
     constraints: list[TraceConstraint] = Field(min_length=1)
 
     model_config = {"extra": "forbid"}
 
+
+class TraceChecksConfig(BaseModel):
+    """Declarative conditions on what the agent did, and in what order.
+
+    ``constraints`` hold whatever route the agent took. ``alternatives`` declare
+    genuinely alternative routes, each scored against the shared constraints plus
+    its own; a block may declare either or both.
+    """
+
+    constraints: list[TraceConstraint] = Field(default_factory=list)
+    alternatives: list[TracePath] | None = None
+
+    model_config = {"extra": "forbid"}
+
+    def _declared_ids(self) -> list[str]:
+        """Every id the block declares, across the paths and every constraint list.
+
+        One space, because that is what a grade's sub-check results and the pre-run
+        gate's findings address a check by — ``trace_checks.<id>`` for a shared
+        constraint, ``trace_checks.<path id>.<constraint id>`` for one inside a route.
+        """
+        ids = [item.id for item in self.constraints]
+        for path in self.alternatives or ():
+            ids.append(path.id)
+            ids.extend(item.id for item in path.constraints)
+        return ids
+
     @model_validator(mode="after")
-    def _require_distinct_constraint_ids(self) -> TraceChecksConfig:
-        counted = Counter(item.id for item in self.constraints)
+    def _require_something_to_score(self) -> TraceChecksConfig:
+        if not self.constraints and self.alternatives is None:
+            raise ValueError(
+                "a trace_checks block declares neither constraints nor alternatives, so it "
+                "asserts nothing and scores nothing. Declare a constraints list, an "
+                "alternatives list of two or more paths, or drop the block"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_alternatives_to_be_alternative(self) -> TraceChecksConfig:
+        """Fewer than two routes is not a choice between routes.
+
+        A rule rather than a ``min_length`` bound, so the message can tell the author
+        what the one-path form already is — which is the argument for rejecting it.
+        """
+        if self.alternatives is None or len(self.alternatives) >= 2:
+            return self
+        raise ValueError(
+            "alternatives declares fewer than the two paths a choice between routes needs "
+            f"({len(self.alternatives)}). A single path is the flat form written the long "
+            "way round — the best of one path is that path — so move its constraints into "
+            "'constraints:' beside the shared ones, or declare the second route"
+        )
+
+    @model_validator(mode="after")
+    def _require_every_route_to_be_scored_where_any_route_is(self) -> TraceChecksConfig:
+        """A route with nothing scored in it cannot lose, so nothing else can win.
+
+        A decision set with no scored member has no weighted average to take and
+        collapses to its gates' verdict — ``1.0`` wherever they hold. Beside a route
+        that *is* scored that route ties or beats every sibling on every trajectory
+        its gates survive, so the component stops measuring the process the other
+        routes describe. The rule is stated over the block rather than over a path
+        because the shared constraints are in every decision set: a shared scored
+        check is what makes a gate-only path list scoreable.
+        """
+        scored = {
+            path.id: any(
+                item.severity is not TraceConstraintSeverity.GATE
+                for item in (*self.constraints, *path.constraints)
+            )
+            for path in self.alternatives or ()
+        }
+        unscoreable = [path_id for path_id, is_scored in scored.items() if not is_scored]
+        if not unscoreable or not any(scored.values()):
+            return self
+        raise ValueError(
+            f"paths {unscoreable} carry no scored check, beside "
+            f"{[path_id for path_id, is_scored in scored.items() if is_scored]}, which do. "
+            "A decision set with no scored member collapses to its gates' verdict — 1.0 "
+            "wherever they hold — so such a route ties or beats every scored sibling and "
+            "the component reports the gate rather than the route the agent walked. Move "
+            "the gate into the shared 'constraints:', where it applies whichever route "
+            "the agent took, or give the route a scored constraint of its own"
+        )
+
+    @model_validator(mode="after")
+    def _require_distinct_ids(self) -> TraceChecksConfig:
+        counted = Counter(self._declared_ids())
         duplicated = sorted(name for name, total in counted.items() if total > 1)
         if duplicated:
             raise ValueError(
-                f"constraint ids {duplicated} are declared more than once. Each id names "
-                "one sub-check in the grade, so a repeat makes two results indistinguishable"
+                f"ids {duplicated} are declared more than once. The paths and every "
+                "constraint list share one id space, because an id is how the grade names "
+                "a sub-check and how the pre-run gate addresses one — trace_checks.<id> "
+                "shared, trace_checks.<path id>.<constraint id> inside a route — so a "
+                "repeat anywhere in the block makes two results indistinguishable"
             )
         return self
 
@@ -2526,8 +2681,43 @@ class TraceConstraintResult(BaseModel):
     kind: TraceConstraintKind
     passed: bool
     weight: float
+    severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
     message: str = ""
     matched_positions: list[int] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class TracePathResult(BaseModel):
+    """How one alternative route scored, whether or not it won.
+
+    ``score`` is the route's own normalised score over the shared constraints and
+    its own. A gate zeroes the *component*, never a path's number, so the value the
+    argmax compared stays readable in the grade — a winner that won by a hair reads
+    differently from one that won by a mile.
+    """
+
+    id: str = Field(min_length=1)
+    score: float
+    gate_failed: bool
+
+    model_config = {"extra": "forbid"}
+
+
+class TraceChecksSummary(BaseModel):
+    """Which route a trial was scored on and whether a gate shut it.
+
+    The part of :class:`TraceChecksResult` that survives onto the ``Grade``: the
+    per-constraint verdicts ride ``Grade.trace_check_results`` beside it, and the
+    accounting is the runner's own. ``None`` on a ``Grade`` means the runner that
+    produced it predates the field, which is a different statement from a summary
+    saying no gate failed.
+    """
+
+    winning_path: str = ""
+    gate_failed: bool = False
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    paths: list[TracePathResult] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
@@ -2541,11 +2731,20 @@ class TraceChecksResult(BaseModel):
 
     A result with no ``constraints`` is the trial that left no trace of itself: the
     component is not scored there and the caller records the skip.
+
+    ``constraints`` holds the decision set that produced the score — the shared
+    constraints and the winning path's — so it keeps meaning "the verdicts the score
+    was made of". ``winning_path`` is ``""`` where the pack declared no
+    alternatives, and ``paths`` is empty there.
     """
 
     passed: bool = False
     score: float = 0.0
     constraints: list[TraceConstraintResult] = Field(default_factory=list)
+    winning_path: str = ""
+    gate_failed: bool = False
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    paths: list[TracePathResult] = Field(default_factory=list)
     accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}

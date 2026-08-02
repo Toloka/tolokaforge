@@ -1201,14 +1201,23 @@ def build_grade_reasons(
             else:
                 reasons.append("Transcript: failed")
 
-    # Trace checks reason — the score, then every failing constraint by name, the
-    # same lines core's engine emits so a grade reads the same on both substrates.
+    # Trace checks reason — the score and the route it was scored on, the gates
+    # that shut, then every failing constraint by name. The gate and constraint
+    # lines are the ones core's engine emits too, so a grade reads the same on
+    # both substrates.
     trace_checks_score = components.get("trace_checks_score", -1.0)
     if trace_checks_score >= 0:
-        reasons.append(f"Trace checks: score={trace_checks_score:.2f}")
+        trace_checks = trace_checks_result or {}
+        route = trace_checks.get("winning_path") or ""
+        reasons.append(
+            f"Trace checks: score={trace_checks_score:.2f}" + (f" (route {route})" if route else "")
+        )
+        failed_gate_ids = trace_checks.get("failed_gate_ids") or []
+        if failed_gate_ids:
+            reasons.append(f"FAILED trace gates: {', '.join(failed_gate_ids)}")
         reasons.extend(
             f"Trace check {item['id']}: {item['message']}"
-            for item in (trace_checks_result or {}).get("constraints", [])
+            for item in trace_checks.get("constraints", [])
             if not item["passed"]
         )
 

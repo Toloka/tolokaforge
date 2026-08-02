@@ -39,6 +39,8 @@ from tolokaforge.core.models import (
     AdjacencyView,
     ToolCall,
     TraceChecksConfig,
+    TraceChecksResult,
+    TraceConstraintSeverity,
     TraceMatcher,
 )
 from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS
@@ -395,7 +397,7 @@ def test_the_clients_no_prefill_conjunction_needs_both_branches():
     assert evaluate_constraint(silent, _NO_PREFILL).passed is False
 
 
-def _fold(weights: Sequence[float] | None) -> float:
+def _fold_result(weights: Sequence[float] | None) -> TraceChecksResult:
     """Three constraints, the middle one failing, scored under ``weights``."""
     timeline = _one_turn_timeline(_LOOKUP, _DENIAL)
     conditions = [
@@ -409,7 +411,11 @@ def _fold(weights: Sequence[float] | None) -> float:
         if weights is not None:
             constraint["weight"] = weights[index]
         constraints.append(constraint)
-    return evaluate_trace_checks(timeline, TraceChecksConfig(constraints=constraints)).score
+    return evaluate_trace_checks(timeline, TraceChecksConfig(constraints=constraints))
+
+
+def _fold(weights: Sequence[float] | None) -> float:
+    return _fold_result(weights).score
 
 
 def test_the_component_score_is_the_weighted_fraction_of_the_constraints_that_passed():
@@ -541,3 +547,398 @@ def test_the_weighted_fold_divides_without_a_zero_denominator_branch():
         "the fold guards its denominator, which can only be defending against an "
         "all-zero weight set the load-time bound already rejects"
     )
+
+
+# --------------------------------------------------------------------------
+# Alternative routes and gates: the max-over-paths fold, and the degenerate
+# shapes a parametrised sweep excludes by construction
+# --------------------------------------------------------------------------
+
+_FORBIDDEN = "servicenow_csm_write_status"
+
+
+def _condition(constraint_id: str, tool: str, **fields: Any) -> dict[str, Any]:
+    """A constraint that holds when the trial called ``tool``."""
+    return {
+        "id": constraint_id,
+        "description": "one condition",
+        "require": {"present": {"match": _call_of(tool)}},
+        **fields,
+    }
+
+
+def _forbidding(constraint_id: str, tool: str) -> dict[str, Any]:
+    """A gate that holds while the trial never called ``tool``."""
+    return {
+        "id": constraint_id,
+        "description": "a check that must hold",
+        "severity": "gate",
+        "require": {"absent": {"match": _call_of(tool)}},
+    }
+
+
+def _route(path_id: str, *constraints: dict[str, Any]) -> dict[str, Any]:
+    return {"id": path_id, "description": "one route", "constraints": list(constraints)}
+
+
+def test_a_block_declaring_no_alternatives_scores_what_the_flat_fold_scores():
+    """Boundary: zero routes. The shipped single-set fold, and no route grown around it.
+
+    Both numbers are the ones the weighted-fraction lock above pins, so a fold that
+    ran the route machinery over a synthesised default route could still reproduce
+    them — the empty winner and the empty ``paths`` are what give it away.
+    """
+    weighted = _fold_result([1.0, 1.0, 2.0])
+    unweighted = _fold_result(None)
+
+    assert weighted.score == 0.75
+    assert unweighted.score == pytest.approx(2 / 3)
+    for result in (weighted, unweighted):
+        assert result.winning_path == ""
+        assert result.paths == []
+        assert result.gate_failed is False
+        assert result.failed_gate_ids == []
+        assert [item.severity for item in result.constraints] == [
+            TraceConstraintSeverity.SCORED
+        ] * 3
+
+
+def test_a_route_of_nothing_but_gates_scores_the_gates_own_verdict():
+    """Boundary: a route whose non-gate set is empty, beside no shared scored check.
+
+    There is no weighted average to take, so the score is the gates' verdict. A build
+    routing the empty set through the weighted fraction divides by the empty sum and
+    raises; one that answers it with a guard *inside* that function reddens the AST
+    lock above instead.
+    """
+    config = TraceChecksConfig(
+        alternatives=[
+            _route("by_lookup", _condition("g_lookup", _LOOKUP, severity="gate")),
+            _route("by_denial", _condition("g_denial", _DENIAL, severity="gate")),
+        ]
+    )
+
+    one_open = evaluate_trace_checks(_one_turn_timeline(_LOOKUP), config)
+    both_shut = evaluate_trace_checks(_one_turn_timeline("audit_log_write"), config)
+
+    assert [(item.id, item.score, item.gate_failed) for item in one_open.paths] == [
+        ("by_lookup", 1.0, False),
+        ("by_denial", 0.0, True),
+    ]
+    assert (one_open.score, one_open.winning_path, one_open.gate_failed) == (
+        1.0,
+        "by_lookup",
+        False,
+    )
+    assert (both_shut.score, both_shut.winning_path, both_shut.gate_failed) == (
+        0.0,
+        "by_lookup",
+        True,
+    )
+    assert both_shut.failed_gate_ids == ["g_lookup"]
+
+
+def test_a_flat_block_of_nothing_but_gates_is_defined_and_grows_no_route():
+    """Boundary: ``alternatives`` absent and every shared constraint a gate.
+
+    The collapse is not conditional on a pack declaring alternatives. Gating it on
+    ``alternatives is not None`` is what leaves these two cases dividing by the empty
+    sum while every route-shaped test above stays green.
+    """
+    config = TraceChecksConfig(
+        constraints=[
+            _condition("z_the_payment_was_looked_up", _LOOKUP, severity="gate"),
+            _condition("a_the_case_was_denied", _DENIAL, severity="gate"),
+        ]
+    )
+
+    both_open = evaluate_trace_checks(_one_turn_timeline(_LOOKUP, _DENIAL), config)
+    both_shut = evaluate_trace_checks(_one_turn_timeline("audit_log_write"), config)
+
+    assert (both_open.score, both_open.gate_failed, both_open.failed_gate_ids) == (1.0, False, [])
+    assert (both_shut.score, both_shut.gate_failed) == (0.0, True)
+    assert both_shut.failed_gate_ids == [
+        "z_the_payment_was_looked_up",
+        "a_the_case_was_denied",
+    ], "the tripped gates are named in declaration order, not sorted"
+    for result in (both_open, both_shut):
+        assert result.winning_path == ""
+        assert result.paths == []
+
+
+def test_every_route_being_undecidable_scores_nothing_and_names_the_evidence():
+    """Boundary: no route reaches a verdict, because the record answers no call.
+
+    The winner is still the first-declared, so the grade names a route rather than
+    leaving the reader to guess which set the empty score came from.
+    """
+    undecidable = {"present": {"match": _REFUND_MATCH}}
+    config = TraceChecksConfig(
+        alternatives=[
+            _route(
+                "by_refund", {"id": "r1", "description": "one condition", "require": undecidable}
+            ),
+            _route(
+                "by_reversal", {"id": "r2", "description": "one condition", "require": undecidable}
+            ),
+        ]
+    )
+
+    result = evaluate_trace_checks(_refund_timeline(0, 1), config)
+
+    assert [item.score for item in result.paths] == [0.0, 0.0]
+    assert result.score == 0.0
+    assert result.winning_path == "by_refund"
+    assert result.gate_failed is False
+    assert [item.id for item in result.constraints] == ["r1"]
+    assert "cannot be decided" in result.constraints[0].message
+    assert "no status at position" in result.constraints[0].message
+
+
+def test_a_gate_no_completion_of_the_record_can_decide_trips_the_trial():
+    """R2: undecided is not a pass in the agent's favour, and a gate is no exception.
+
+    The scored check passes, so an undecidable gate that opened would score the trial
+    ``1.0`` — a silent pass on the one check the author said must hold, and a gate
+    weaker than the scored constraint it replaced.
+    """
+    config = TraceChecksConfig(
+        constraints=[
+            {
+                "id": "the_refund_went_through",
+                "description": "a check that must hold",
+                "severity": "gate",
+                "require": {"present": {"match": _REFUND_MATCH}},
+            },
+            {"id": "the_agent_said_so", "description": "one condition", "require": _SAID_IT},
+        ]
+    )
+
+    result = evaluate_trace_checks(_refund_timeline(0, 1), config)
+
+    assert [item.passed for item in result.constraints] == [False, True]
+    assert "cannot be decided" in result.constraints[0].message
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["the_refund_went_through"]
+    assert result.score == 0.0
+
+
+def test_routes_scoring_the_same_are_won_by_the_first_declared():
+    """Boundary: a tie at a non-zero score, broken by declaration order.
+
+    Three routes, because two cannot separate the two ways an id-ordered tie-break
+    is written: the winner is declared first and is neither the lexicographic
+    largest nor the smallest, so a max over ``(score, id)`` picks ``z_third_route``
+    and a sort by id before the max picks ``a_second_route``. Both name a route the
+    assertion does not.
+    """
+    config = TraceChecksConfig(
+        alternatives=[
+            _route("m_first_route", _condition("m1", _LOOKUP), _condition("m2", "audit_log_write")),
+            _route(
+                "a_second_route", _condition("a1", _LOOKUP), _condition("a2", "audit_log_write")
+            ),
+            _route("z_third_route", _condition("z1", _LOOKUP), _condition("z2", "audit_log_write")),
+        ]
+    )
+
+    result = evaluate_trace_checks(_one_turn_timeline(_LOOKUP), config)
+
+    assert [item.score for item in result.paths] == [0.5, 0.5, 0.5]
+    assert result.score == 0.5
+    assert result.winning_path == "m_first_route"
+    assert [item.id for item in result.constraints] == ["m1", "m2"]
+
+
+_TWO_ROUTES = TraceChecksConfig(
+    alternatives=[
+        _route("route_a", _condition("a1", "a_first"), _condition("a2", "a_second")),
+        _route("route_b", _condition("b1", "b_first"), _condition("b2", "b_second")),
+    ]
+)
+
+
+def test_a_route_walked_in_full_beats_half_of_each_route():
+    """The issue's criterion: cherry-picking one step of each route scores neither.
+
+    The comparison is against both full-route runs rather than a literal, so it is
+    the ordering that is pinned and not this fixture's arithmetic.
+    """
+    by_a = evaluate_trace_checks(_one_turn_timeline("a_first", "a_second"), _TWO_ROUTES)
+    by_b = evaluate_trace_checks(_one_turn_timeline("b_first", "b_second"), _TWO_ROUTES)
+    cherry_picked = evaluate_trace_checks(_one_turn_timeline("a_first", "b_second"), _TWO_ROUTES)
+
+    assert (by_a.score, by_a.winning_path) == (1.0, "route_a")
+    assert (by_b.score, by_b.winning_path) == (1.0, "route_b")
+    assert cherry_picked.score < by_a.score
+    assert cherry_picked.score < by_b.score
+
+
+def test_the_shared_constraints_are_folded_into_every_route_before_the_max():
+    """Authored so normalising over a route's own constraints alone picks the loser.
+
+    The short route is perfect on its own checks and the long one is not, yet the
+    heavy shared check both carry — and both failed — leaves the long route ahead
+    once each is normalised over the whole set it was scored on.
+    """
+    config = TraceChecksConfig(
+        constraints=[_condition("the_case_was_denied", _DENIAL, weight=3.0)],
+        alternatives=[
+            _route("shorter_route", _condition("a1", "a_first")),
+            _route(
+                "longer_route",
+                _condition("b1", "b_first"),
+                _condition("b2", "b_second"),
+                _condition("b3", "b_third"),
+            ),
+        ],
+    )
+
+    result = evaluate_trace_checks(_one_turn_timeline("a_first", "b_first", "b_second"), config)
+
+    assert [(item.id, item.score) for item in result.paths] == [
+        ("shorter_route", 0.25),
+        ("longer_route", pytest.approx(1 / 3)),
+    ]
+    assert result.winning_path == "longer_route"
+    assert [item.id for item in result.constraints] == ["the_case_was_denied", "b1", "b2", "b3"]
+
+
+def test_a_gate_that_holds_contributes_nothing_to_the_weighted_average():
+    """Three checks, one a gate that passes; the score is over the other two alone.
+
+    Counting the gate in the fold moves the score from ``1/2`` to ``2/3`` — it would
+    then be scored as well as gating, which is the double-counting severity exists
+    to avoid.
+    """
+    config = TraceChecksConfig(
+        constraints=[
+            _condition("the_payment_was_looked_up", _LOOKUP, severity="gate"),
+            _condition("the_case_was_denied", _DENIAL),
+            _condition("the_action_was_logged", "audit_log_write"),
+        ]
+    )
+
+    result = evaluate_trace_checks(_one_turn_timeline(_LOOKUP, _DENIAL), config)
+
+    assert [item.passed for item in result.constraints] == [True, True, False]
+    assert result.score == 0.5
+    assert result.gate_failed is False
+
+
+def test_a_gate_on_the_winning_route_fails_the_trial_rather_than_falling_back():
+    """R3, and the reason the argmax runs over every route including gated ones.
+
+    The gated route scores highest, so it wins and its gate shuts the trial. Dropping
+    a route whose gate failed from contention would hand the win to the clean route
+    below it and pass an agent that did the forbidden thing.
+    """
+    config = TraceChecksConfig(
+        alternatives=[
+            _route(
+                "route_a",
+                _forbidding("no_status_was_written", _FORBIDDEN),
+                _condition("a1", "a_first"),
+            ),
+            _route("route_b", _condition("b1", "b_first"), _condition("b2", "b_second")),
+        ]
+    )
+
+    result = evaluate_trace_checks(_one_turn_timeline("a_first", "b_first", _FORBIDDEN), config)
+
+    assert [(item.id, item.score, item.gate_failed) for item in result.paths] == [
+        ("route_a", 1.0, True),
+        ("route_b", 0.5, False),
+    ]
+    assert result.winning_path == "route_a"
+    assert result.score == 0.0
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["no_status_was_written"]
+
+
+def test_a_gate_on_the_route_that_lost_leaves_the_trial_passing():
+    """R3 stated honestly, and the escape it does not close, pinned as it stands.
+
+    A path gate is a **process** gate: it constrains how *that* route must be walked
+    and is consulted only on the route the agent took. The consequence is an escape —
+    trip route A's gate and sandbag A so a clean route B outscores it, and the trial
+    passes with the forbidden action performed. It is asserted rather than fixed:
+    no rule for path gates is hole-free, and a future change to the argmax must not
+    move this silently.
+
+    **A gate that must hold whatever route the agent took belongs in shared
+    ``constraints``**, where it is in every decision set and has no escape. See
+    ``docs/GRADING.md`` § "Shared gates and path gates: when each is appropriate".
+    """
+    config = TraceChecksConfig(
+        alternatives=[
+            _route(
+                "route_a",
+                _forbidding("no_status_was_written", _FORBIDDEN),
+                _condition("a1", "a_first"),
+            ),
+            _route("route_b", _condition("b1", "b_first")),
+        ]
+    )
+
+    result = evaluate_trace_checks(_one_turn_timeline("b_first", _FORBIDDEN), config)
+
+    assert [(item.id, item.score, item.gate_failed) for item in result.paths] == [
+        ("route_a", 0.0, True),
+        ("route_b", 1.0, False),
+    ]
+    assert result.winning_path == "route_b"
+    assert result.score == 1.0
+    assert result.gate_failed is False
+    assert result.failed_gate_ids == []
+
+
+def test_a_tie_is_won_by_the_route_whose_gate_shut_whichever_order_they_are_written():
+    """The tied cell of the argmax, driven at both authoring orders.
+
+    Broken by declaration order alone, this cell decides the trial by where in the
+    file the two routes were written: the gated route first and its gate fails the
+    trial, the gated route second and a clean sibling of equal score carries it.
+    The gate-failing route therefore wins a tie, which can only ever shut a
+    component and never rescue one — so it does not reopen the escape the
+    argmax-over-every-route rule closes.
+    """
+    gated = _route(
+        "route_a", _forbidding("no_status_was_written", _FORBIDDEN), _condition("a1", "a_first")
+    )
+    clean = _route("route_b", _condition("b1", "b_first"))
+    timeline = _one_turn_timeline("a_first", "b_first", _FORBIDDEN)
+
+    gated_first = evaluate_trace_checks(timeline, TraceChecksConfig(alternatives=[gated, clean]))
+    gated_second = evaluate_trace_checks(timeline, TraceChecksConfig(alternatives=[clean, gated]))
+
+    assert [item.score for item in gated_first.paths] == [1.0, 1.0], (
+        "the two routes do not tie on this trajectory, so the tie-break is not what "
+        "the assertions below measure"
+    )
+    for result in (gated_first, gated_second):
+        assert result.winning_path == "route_a"
+        assert (result.score, result.gate_failed) == (0.0, True)
+        assert result.failed_gate_ids == ["no_status_was_written"]
+
+
+def test_a_shared_gate_applies_whichever_route_won():
+    """Driven on both routes, so it cannot pass by the gate sitting in the only set."""
+    config = TraceChecksConfig(
+        constraints=[_forbidding("no_status_was_written", _FORBIDDEN)],
+        alternatives=[
+            _route("route_a", _condition("a1", "a_first")),
+            _route("route_b", _condition("b1", "b_first")),
+        ],
+    )
+
+    by_a = evaluate_trace_checks(_one_turn_timeline("a_first", _FORBIDDEN), config)
+    by_b = evaluate_trace_checks(_one_turn_timeline("b_first", _FORBIDDEN), config)
+    clean = evaluate_trace_checks(_one_turn_timeline("b_first"), config)
+
+    assert (by_a.winning_path, by_b.winning_path) == ("route_a", "route_b")
+    for result in (by_a, by_b):
+        assert result.score == 0.0
+        assert result.gate_failed is True
+        assert result.failed_gate_ids == ["no_status_was_written"]
+    assert (clean.winning_path, clean.score, clean.gate_failed) == ("route_b", 1.0, False)

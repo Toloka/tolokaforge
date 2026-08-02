@@ -52,6 +52,7 @@ from tolokaforge.core.models import (
     JudgeStatus,
     JudgeUsage,
     TerminationReason,
+    TraceChecksSummary,
     TraceConstraintResult,
     Trajectory,
     TrialStatus,
@@ -247,6 +248,26 @@ def _parse_trace_check_results(payload: list[dict[str, Any]]) -> list[TraceConst
         ) from exc
 
 
+def _parse_trace_checks_summary(payload: dict[str, Any] | None) -> TraceChecksSummary | None:
+    """Which route won and whether a gate shut, or a grading failure.
+
+    ``None`` is the runner that predates the field, and is preserved rather than
+    filled in with an empty summary: a summary the host invented would read as a
+    gate that was evaluated and held. A payload that is present and unreadable
+    rejects for the reason :func:`_parse_trace_check_results` rejects one — a gate
+    decides whether the trial passed, so a summary this engine cannot read is a
+    grade it cannot report.
+    """
+    if payload is None:
+        return None
+    try:
+        return TraceChecksSummary(**payload)
+    except (TypeError, ValidationError) as exc:
+        raise GradingFailedError(
+            f"the runner's Grade.trace_checks_summary payload is not readable: {exc}"
+        ) from exc
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
@@ -297,6 +318,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
             )
 
     trace_check_results = _parse_trace_check_results(raw_grade.get("trace_checks") or [])
+    trace_checks_summary = _parse_trace_checks_summary(raw_grade.get("trace_checks_summary"))
 
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
@@ -360,6 +382,7 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_custom_prompt=judge_custom_prompt,
         judge_agent_prompt_included=judge_agent_prompt_included,
         trace_check_results=trace_check_results,
+        trace_checks_summary=trace_checks_summary,
     )
 
 

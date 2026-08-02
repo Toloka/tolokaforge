@@ -1,4 +1,4 @@
-# Multi-service `cache_debug` — redis_dump reset + cache-invalidation diagnosis
+# Multi-service `cache_debug` — redis_dump reset + multi-path cache-invalidation diagnosis
 
 A **runnable** debugging example that exercises the `redis_dump` reset recipe
 end-to-end through `tolokaforge run`. A real `redis` service is labelled
@@ -6,6 +6,9 @@ end-to-end through `tolokaforge run`. A real `redis` service is labelled
 the per-trial backend restores that seed to a fresh stack at the start of every
 trial. The agent is asked to diagnose why the orders API serves stale data, and
 writes a root-cause note naming the cache-invalidation bug.
+
+It is also the reference for **multi-path deterministic grading**: two genuinely
+alternative diagnostic routes, each scored as a whole, behind one shared gate.
 
 ```
                  ┌── orders-api:8000 ──┬──▶ redis:7-alpine (cache, reset per trial)
@@ -36,21 +39,57 @@ agent  ──http──▶ │                     └──▶ postgres:16   (a
   The bug is real in code, not staged: `orders-api` is cache-first
   (`GET /orders/{id}` returns the cached value when present), and its
   `POST /orders/{id}` status update writes postgres but **never invalidates**
-  the `order:<id>` key — so cache-first reads keep serving the stale value. The
-  agent diagnoses by reading, not by mutating (tools are `http_request` GET +
-  `write_file` only).
+  the `order:<id>` key — so cache-first reads keep serving the stale value. That
+  `POST` is reachable with the agent's own `http_request` tool, which is what the
+  grading gate below is for: the task is to diagnose the staleness, not to paper
+  over it with a status update.
+
+- **Two genuinely alternative diagnostic routes, graded deterministically.** The
+  rubric reference names two comparisons as locating the bug, and the task's
+  guidance asks the agent to compare the layers without preferring a pair, so
+  `trace_checks.alternatives` declares both and the component score is the better
+  route's. An agent that compares the served read against the source of truth and
+  never opens the cache inspector scores in full, and so does one that reads the
+  cached value and compares it against either orders-api endpoint.
+
+  | route | the comparison it grades |
+  |---|---|
+  | `divergence_between_the_api_layers` | `GET /orders/4021` against `GET /orders/4021/source` |
+  | `divergence_against_the_cache` | `GET cache-admin:8000/cache/order:4021` against either orders-api read |
+
+  Each route asks two questions — were both sides read, and did the reads that
+  happened happen before the note — so an agent that starts down both routes and
+  completes neither has observed no divergence and scores the better of two
+  incomplete routes, not the sum of two halves. The ordering question carries
+  `on_missing: pass` and is vacuous where neither read happened, so the presence
+  question alone charges that case and a missing read costs the agent once.
+
+- **A shared gate: the diagnose-only task cannot be passed by mutating.**
+  `POST /orders/4021` exists and updates the order. An agent that "fixes" the
+  symptom that way has diagnosed nothing and has mutated data it was never asked
+  to touch, so `no_status_was_written` carries `severity: gate` — it is excluded
+  from the weighted average and a violation takes the component to `0.0` and fails
+  the trial outright, whatever the note said. The gate sits in the **shared**
+  `constraints`, not inside a route: "do not mutate on a diagnose-only task" holds
+  whichever route the agent took, and a gate inside a path is consulted only on the
+  route that won, so an agent could escape it by winning on the other one.
 
 - **A three-way weighted combine, no single decisive check.** The diagnosis is
-  natural language, so `llm_judge` is the primary signal:
+  natural language, so `llm_judge` is the primary signal and deliberately the
+  dominant one:
 
   | Component | Weight | What it checks |
   |---|---|---|
   | `llm_judge` | 0.50 | the note identifies the stale-cache / missing-invalidation bug, explains the mechanism, and avoids a false fix |
-  | `state_checks` | 0.30 | the written note names the cache-invalidation concept (substring `invalidat`) |
-  | `transcript_rules` | 0.20 | the agent inspected the app layer **and** the cache layer over `http_request` and wrote a note, within 20 turns |
+  | `state_checks` | 0.25 | the written note names the cache-invalidation concept (substring `invalidat`) |
+  | `trace_checks` | 0.25 | one of the two comparisons was completed before the note was written, and no status update was posted |
 
-  `0.5` judge + `0.3` note already clears the `0.6` threshold, so a correct
-  diagnosis is not sunk by an exact-URL `transcript_rules` miss.
+  The two routes are not equally probative — the cache inspector shows the stale
+  value itself, while the served-vs-source comparison shows only that the read path
+  serves something the database disagrees with — so the deterministic components
+  must not be able to carry a weak diagnosis. At `0.25` each they sum to `0.5`,
+  below the `0.6` threshold. `0.5` judge + `0.25` note clears it, so a correct
+  diagnosis is not sunk by the route it chose.
 
 - **The failure → #418 capture path.** A completed-but-red trial captures every
   declared service's logs to `results/<run>/trials/<task>/<idx>/services/<svc>.log`.
@@ -115,7 +154,7 @@ examples/native/multi_service_cache_debug/
 │   └── app-db/init.sql                 # orders table + fresh-truth seed (order 4021 = shipped)
 └── dataset/tasks/cache_debug/
     ├── task.yaml                       # inherits the project default_environment whole; no environment_manifest
-    └── grading.yaml                    # three-way weighted: state_checks + transcript_rules + llm_judge
+    └── grading.yaml                    # three-way weighted: state_checks + trace_checks (two routes, one gate) + llm_judge
 ```
 
 ## Design notes
@@ -145,6 +184,9 @@ examples/native/multi_service_cache_debug/
   — the `sql_dump` reset-recipe reference (postgres side).
 - [`docs/RESET_RECIPES.md`](../../../docs/RESET_RECIPES.md)
   — the reset-recipe reference, including `redis_dump`.
+- [`docs/GRADING.md`](../../../docs/GRADING.md#alternative-paths)
+  — `alternatives`, `severity: gate`, and when a gate belongs in shared
+  `constraints` rather than inside a route.
 - [`docs/MULTI_CONTAINER_GUIDE.md`](../../../docs/MULTI_CONTAINER_GUIDE.md)
   — authoring guide for multi-container tasks.
 ```

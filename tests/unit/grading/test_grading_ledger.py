@@ -34,6 +34,7 @@ from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
     EVALUATED,
     HASH_DISABLED_SKIP,
+    TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
     accountable_author_keys,
@@ -306,6 +307,7 @@ def test_the_ledger_names_an_accountable_key_for_every_constraint_kind():
     unclaimed = sorted(set(TRACE_CONSTRAINT_KEY_BY_KIND.values()) - accountable)
     assert not unclaimed, f"no recording site claims {unclaimed}"
     assert TRACE_CONSTRAINTS_KEY in accountable
+    assert TRACE_ALTERNATIVES_KEY in accountable
 
 
 def test_every_constraint_kind_the_evaluation_reaches_is_accounted_for():
@@ -339,6 +341,77 @@ def test_only_the_kinds_a_block_declares_have_to_be_accounted_for():
     starved = audit_accounted_keys(config, {})
     assert TRACE_CONSTRAINT_KEY_BY_KIND["before"] in starved.error
     assert TRACE_CONSTRAINT_KEY_BY_KIND["present"] not in starved.error
+
+
+_ROUTED_TRACE_BLOCK: dict[str, Any] = {
+    "alternatives": [
+        {
+            "id": "by_order",
+            "description": "the widget was inspected before it shipped",
+            "constraints": [
+                {
+                    "id": "inspected_first",
+                    "description": "the inspection came before the shipment",
+                    "require": {
+                        "before": {
+                            "left": {
+                                "quantifier": "first",
+                                "match": {
+                                    "kind": "tool_call",
+                                    "tool": {"equals": "inspect_widget"},
+                                },
+                            },
+                            "right": {
+                                "quantifier": "first",
+                                "match": {"kind": "tool_call", "tool": {"equals": "ship_widget"}},
+                            },
+                        }
+                    },
+                }
+            ],
+        },
+        {
+            "id": "by_restraint",
+            "description": "the widget was inspected at most once",
+            "constraints": [
+                {
+                    "id": "inspected_once",
+                    "description": "no re-inspection",
+                    "require": {
+                        "count": {
+                            "match": {"kind": "tool_call", "tool": {"equals": "inspect_widget"}},
+                            "max": 1,
+                        }
+                    },
+                }
+            ],
+        },
+    ]
+}
+
+_ROUTED_TRACE_KEYS = {
+    "trace_checks.constraints",
+    "trace_checks.alternatives",
+    "trace_checks.constraints.before",
+    "trace_checks.constraints.count",
+}
+
+
+def test_a_kind_declared_only_inside_a_route_is_accounted_for_like_a_shared_one():
+    """The walk reaches a path's constraints, and ``alternatives`` is a key of its own.
+
+    The block declares no shared constraints at all, so an account read off
+    ``constraints`` alone records nothing the pack actually asserts — and
+    ``GradeTrial`` then rejects every trial the pack grades.
+    """
+    config = GradingConfig(trace_checks=TraceChecksConfig(**_ROUTED_TRACE_BLOCK))
+    graded = evaluate_trace_checks(_inspected_then_shipped(), config.trace_checks)
+    silent = evaluate_trace_checks(build_turn_timeline([]), config.trace_checks)
+
+    assert set(graded.accounted_keys) == _ROUTED_TRACE_KEYS
+    assert set(silent.accounted_keys) == _ROUTED_TRACE_KEYS
+    assert audit_accounted_keys(config, graded.accounted_keys).error is None
+    assert TRACE_ALTERNATIVES_KEY in audit_accounted_keys(config, {}).error
 
 
 def test_a_trial_with_no_events_accounts_every_declared_kind_as_skipped():

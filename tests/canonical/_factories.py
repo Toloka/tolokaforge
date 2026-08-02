@@ -19,6 +19,7 @@ from tolokaforge.core.models import (
     Message,
     Metrics,
     ModelConfig,
+    RecordedToolCall,
     TaskConfig,
     TerminationReason,
     ToolsConfig,
@@ -115,6 +116,7 @@ def make_trajectory(
     termination_reason: TerminationReason | None = None,
     metrics: Metrics | None = None,
     messages: list[Message] | None = None,
+    tool_log: list[RecordedToolCall] | None = None,
 ) -> Trajectory:
     now = datetime.now(UTC)
     return Trajectory(
@@ -125,5 +127,6 @@ def make_trajectory(
         status=status,
         termination_reason=termination_reason,
         messages=messages or [],
+        tool_log=tool_log or [],
         metrics=metrics or Metrics(),
     )

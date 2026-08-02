@@ -77,11 +77,15 @@ from tolokaforge.runner.models import ToolExecutorIdentity as ToolExecutorIdenti
 from tolokaforge.runner.models import ToolExpectations as ToolExpectations
 from tolokaforge.runner.models import TraceChecksConfig as TraceChecksConfig
 from tolokaforge.runner.models import TraceChecksResult as TraceChecksResult
+from tolokaforge.runner.models import TraceChecksSummary as TraceChecksSummary
 from tolokaforge.runner.models import TraceConstraint as TraceConstraint
 from tolokaforge.runner.models import TraceConstraintExpr as TraceConstraintExpr
 from tolokaforge.runner.models import TraceConstraintKind as TraceConstraintKind
 from tolokaforge.runner.models import TraceConstraintResult as TraceConstraintResult
+from tolokaforge.runner.models import TraceConstraintSeverity as TraceConstraintSeverity
 from tolokaforge.runner.models import TraceMatcher as TraceMatcher
+from tolokaforge.runner.models import TracePath as TracePath
+from tolokaforge.runner.models import TracePathResult as TracePathResult
 from tolokaforge.runner.models import TurnWindow as TurnWindow
 from tolokaforge.runner.models import ValuePredicate as ValuePredicate
 
@@ -605,6 +609,12 @@ class Grade(BaseModel):
     # pack declared no trace checks, or when the timeline carried no events for
     # them to read. See docs/OUTPUT_FORMAT.md.
     trace_check_results: list[TraceConstraintResult] = Field(default_factory=list)
+    # Which alternative route the component was scored on and whether a trace gate
+    # shut the trial, serialized inline in ``grade.yaml`` beside the verdicts above.
+    # ``None`` only where the grade came off the wire from a runner predating the
+    # field — a runner that graded the trial reports an empty summary rather than
+    # no summary, so a gate cannot open by omission. See docs/OUTPUT_FORMAT.md.
+    trace_checks_summary: TraceChecksSummary | None = None
     # Per-criterion rubric-judge breakdown. ``None`` when no LLM judge ran;
     # an empty list is distinct (judge ran, rubric had no scorable criteria).
     criterion_results: list[CriterionResult] | None = None
