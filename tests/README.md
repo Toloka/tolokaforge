@@ -147,6 +147,13 @@ Compare output against committed golden snapshots in `snapshots/`.
   reconciliation failure, not a shortcut. `build_timeline` lands every call on the
   last assistant turn, while `build_turn_timeline` takes the calls per turn — which
   is what an ordering or turn-window property needs.
+- Gate semantics parity (`test_gate_semantics_parity.py`) — the judge's required
+  criterion and a trace check's `severity: gate` are one gate scored by two
+  implementations, driven against one shared answer table. A failure names the cell
+  where they disagree. No shared helper can replace it: the trace fold's weighted
+  fraction carries one division and no branch, while the judge's must raise on a
+  non-positive denominator. The same file holds `docs/GRADING.md`'s two gate sections
+  to cross-referencing each other, so neither spelling can be documented alone.
 
 Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
 authors a `task.yaml` and a `grading.yaml`. A pack that drives a differential adds
