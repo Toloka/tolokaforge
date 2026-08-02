@@ -1578,8 +1578,10 @@ took.
 > **A gate that must hold whatever route the agent took belongs in shared
 > `constraints`, never inside a path.**
 
-The issue's own examples — a forbidden tool called, another customer's record touched
-— are route-independent, so they are shared gates.
+A forbidden tool called, another customer's record touched, an order mutated by a
+diagnose-only agent — all route-independent, so all shared gates. The last is a
+shipped pack: see [`cache_debug`](#two-worked-packs), whose one gate is shared for
+exactly this reason.
 
 This rule is guidance rather than a guarantee, and the reason is worth stating
 plainly: a path gate has an escape. Trip route A's gate *and* score badly enough on A
@@ -1597,7 +1599,7 @@ same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` ho
 every shipped example pack to that, reading the combine that is *effective* after
 the project layer merges.
 
-### A worked pack
+### Two worked packs
 
 [`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
 grades the process alongside the substrate. Its three constraints are the three
@@ -1613,6 +1615,38 @@ trajectory fails it and the other two pass:
 The first is the assertion `transcript_rules` cannot express at all: it matches a
 **nested argument path** inside the request body, where `required_actions` compares
 whole argument values for exact equality.
+
+[`examples/native/multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md)
+is the multi-path and gate reference. It is a diagnose-only task whose own rubric
+reference names **two** comparisons as locating the bug, so the two are declared as
+`alternatives` and the component is the better route's:
+
+| check | where | the wrong process it catches |
+|---|---|---|
+| `no_status_was_written` | shared, `severity: gate` | the agent "fixed" the symptom with `POST /orders/4021` instead of diagnosing it |
+| `the_note_was_written` | shared | the trial ended with no root-cause note |
+| `both_api_layer_reads_happened` | route `divergence_between_the_api_layers` | a key listing stood in for the source-of-truth read, so no divergence was observed |
+| `both_api_layer_reads_precede_the_note` | route `divergence_between_the_api_layers` | the note was written first and the source read afterwards |
+| `the_cached_value_and_an_api_read_happened` | route `divergence_against_the_cache` | the cache inspector was never opened |
+| `the_cache_comparison_precedes_the_note` | route `divergence_against_the_cache` | the cached value was read after the note that claims to explain it |
+
+Three authoring choices in it are worth copying:
+
+- **The gate is shared, not per-route.** "Do not mutate on a diagnose-only task"
+  holds whichever comparison the agent chose, and a gate inside a route is consulted
+  only when that route wins — so a route gate here would be escapable by winning on
+  the other one. This is the [rule above](#shared-gates-and-path-gates-when-each-is-appropriate)
+  applied to a real pack.
+- **Each route asks two independent questions**: were both sides of the comparison
+  read, and did the reads that happened happen before the note. The ordering check
+  carries `on_missing: pass` so a read that never happened is charged once — to the
+  presence check — rather than twice, which is what lets each check fail on its own
+  wrong process rather than cascading.
+- **The judge stays dominant.** The routes are not equally probative: the cache
+  inspector shows the stale value itself, while the served-vs-source comparison
+  shows only that the read path serves something the database disagrees with. The
+  deterministic components therefore sum to less than `pass_threshold`, so no trial
+  passes on process alone.
 
 ### Declared limits, and what owns each
 

@@ -1,6 +1,6 @@
-"""The shipped example corpus grades what it configures, and the flagship pack discriminates.
+"""The shipped example corpus grades what it configures, and its packs discriminate.
 
-Five claims over the packs an author reads as the reference:
+Six claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -24,6 +24,10 @@ Five claims over the packs an author reads as the reference:
    ``examples/`` and ``tests/data/tasks/`` is checked against its own task's tool
    inventory and produces no error and no advisory, which is the measured proof that
    the gate ships green rather than the claim that it does.
+6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
+   passed by mutating.** Either comparison its rubric reference names scores in full
+   and records itself as the winner; completing neither scores below completing
+   either; and the shared gate sinks a trial whose winning route scored ``1.0``.
 """
 
 from __future__ import annotations
@@ -35,14 +39,26 @@ import pytest
 import yaml
 from click.testing import CliRunner
 
+from tests.canonical._factories import make_trajectory
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
-from tolokaforge.core.models import GradingConfig, RecordedToolCall
+from tolokaforge.core.models import (
+    GradingConfig,
+    Message,
+    MessageRole,
+    RecordedToolCall,
+    ToolCall,
+    TraceChecksConfig,
+    TraceChecksResult,
+    TraceConstraintKind,
+    TraceConstraintSeverity,
+)
 from tolokaforge.core.project_loader import load_project_config
 from tolokaforge.dx.cli.main import cli
 
@@ -346,17 +362,24 @@ _WRONG_PROCESS_RUNS = (
 )
 
 
+_HELPDESK_TURNS = (
+    "chasing DLV-4021, it lands after our dock closes",
+    "reconciling the delivery, the site and the policy",
+)
+
+
 def _helpdesk_grading() -> GradingConfig:
     return _grading_config(_HELPDESK_TASK)[1]
 
 
-def _timeline(calls: Sequence[RecordedToolCall]):
-    return build_turn_timeline(
-        [
-            Turn("user", "chasing DLV-4021, it lands after our dock closes"),
-            Turn("assistant", "reconciling the delivery, the site and the policy", recorded=calls),
-        ]
-    )
+def _timeline(calls: Sequence[RecordedToolCall], turns: tuple[str, str]):
+    user, assistant = turns
+    return build_turn_timeline([Turn("user", user), Turn("assistant", assistant, recorded=calls)])
+
+
+def _failed(result: TraceChecksResult) -> list[str]:
+    """The ids of the checks the scored decision set says did not hold."""
+    return [constraint.id for constraint in result.constraints if not constraint.passed]
 
 
 def test_the_flagship_pack_declares_the_three_documented_trace_constraints() -> None:
@@ -372,9 +395,9 @@ def test_the_flagship_pack_declares_the_three_documented_trace_constraints() -> 
 def test_the_flagship_pack_scores_the_policy_correct_process_in_full() -> None:
     trace_checks = _helpdesk_grading().trace_checks
     assert trace_checks is not None
-    result = evaluate_trace_checks(_timeline(_POLICY_CORRECT_RUN), trace_checks)
+    result = evaluate_trace_checks(_timeline(_POLICY_CORRECT_RUN, _HELPDESK_TURNS), trace_checks)
     assert result.score == pytest.approx(1.0)
-    assert [constraint.id for constraint in result.constraints if not constraint.passed] == []
+    assert _failed(result) == []
 
 
 @pytest.mark.parametrize(("calls", "broken_constraint"), _WRONG_PROCESS_RUNS)
@@ -384,12 +407,265 @@ def test_each_trace_constraint_fails_the_process_it_names(
     """No constraint is satisfied by every trajectory the task admits."""
     trace_checks = _helpdesk_grading().trace_checks
     assert trace_checks is not None
-    result = evaluate_trace_checks(_timeline(calls), trace_checks)
-    failed = [constraint.id for constraint in result.constraints if not constraint.passed]
-    assert failed == [broken_constraint]
+    result = evaluate_trace_checks(_timeline(calls, _HELPDESK_TURNS), trace_checks)
+    assert _failed(result) == [broken_constraint]
 
 
 def test_every_declared_trace_constraint_is_broken_by_one_of_the_wrong_runs() -> None:
     """So a constraint no scenario can fail cannot be added without a red test."""
     named = {param.values[1] for param in _WRONG_PROCESS_RUNS}
     assert named == {constraint_id for constraint_id, _ in _HELPDESK_CONSTRAINTS}
+
+
+_CACHE_DEBUG_TASK = (
+    _EXAMPLES
+    / "native"
+    / "multi_service_cache_debug"
+    / "dataset"
+    / "tasks"
+    / "cache_debug"
+    / "task.yaml"
+)
+
+_SERVED = "http://orders-api:8000/orders/4021"
+_SOURCE = "http://orders-api:8000/orders/4021/source"
+_CACHED = "http://cache-admin:8000/cache/order:4021"
+_CACHE_KEYS = "http://cache-admin:8000/keys"
+
+_CACHE_DEBUG_TURNS = (
+    "order 4021 still shows processing to customers",
+    "reading the layers and writing up the root cause",
+)
+
+# The shared half of the block, written out here so the assertion compares two
+# sources. Exactly one check is a gate, and it is shared rather than sitting inside
+# a route: "do not mutate on a diagnose-only task" holds whichever route was taken.
+_CACHE_DEBUG_SHARED = (
+    ("no_status_was_written", TraceConstraintKind.ABSENT, TraceConstraintSeverity.GATE),
+    ("the_note_was_written", TraceConstraintKind.PRESENT, None),
+)
+
+# The two routes and the checks each declares, in declaration order — which is also
+# the tie-break order, so a run walking both routes is scored on the first.
+_CACHE_DEBUG_PATHS = (
+    (
+        "divergence_between_the_api_layers",
+        ("both_api_layer_reads_happened", "both_api_layer_reads_precede_the_note"),
+    ),
+    (
+        "divergence_against_the_cache",
+        ("the_cached_value_and_an_api_read_happened", "the_cache_comparison_precedes_the_note"),
+    ),
+)
+
+
+_NOTE_TEXT = "order:4021 is never invalidated on a status update, so reads serve the stale value"
+
+# The note as the pack's own jsonpath check reads it, so a whole-grade fold sees the
+# deterministic components the gate has to override rather than a stub.
+_NOTE_ON_DISK = {"filesystem": {"/env/fs/agent-visible/submissions/rootcause.md": _NOTE_TEXT}}
+
+
+def _read(sequence: int, url: str) -> RecordedToolCall:
+    return _http_call(sequence, url, "GET")
+
+
+def _post_status(sequence: int) -> RecordedToolCall:
+    return _http_call(sequence, _SERVED, "POST", status="shipped")
+
+
+def _root_cause_note(sequence: int) -> RecordedToolCall:
+    return recorded_call(
+        "write_file",
+        sequence=sequence,
+        arguments={"path": "submissions/rootcause.md", "content": _NOTE_TEXT},
+    )
+
+
+def _cache_debug_messages(calls: Sequence[RecordedToolCall]) -> list[Message]:
+    """The message view declaring every recorded call, as the trial would carry it."""
+    user, assistant = _CACHE_DEBUG_TURNS
+    return [
+        Message(role=MessageRole.USER, content=user),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content=assistant,
+            tool_calls=[
+                ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments)
+                for call in calls
+            ],
+        ),
+    ]
+
+
+_ROUTE_A_IN_FULL = (_read(0, _SERVED), _read(1, _SOURCE), _root_cause_note(2))
+_ROUTE_B_IN_FULL = (
+    _read(0, _SERVED),
+    _read(1, _CACHE_KEYS),
+    _read(2, _CACHED),
+    _root_cause_note(3),
+)
+# The cache route reads either orders-api endpoint, because the rubric reference
+# names the source-vs-cache divergence as locating the bug just as the served-vs-cache
+# one does. Without this row nothing holds the route to accepting both.
+_ROUTE_B_FROM_THE_SOURCE_READ = (_read(0, _SOURCE), _read(1, _CACHED), _root_cause_note(2))
+_ROUTES_IN_FULL = (
+    pytest.param(_ROUTE_A_IN_FULL, "divergence_between_the_api_layers", id="served_vs_source"),
+    pytest.param(_ROUTE_B_IN_FULL, "divergence_against_the_cache", id="served_vs_cache"),
+    pytest.param(
+        _ROUTE_B_FROM_THE_SOURCE_READ, "divergence_against_the_cache", id="source_vs_cache"
+    ),
+)
+
+# Reads both layers, writes a correct note, and posts a status update on the way —
+# the trajectory the shipped pack awarded full marks for a forbidden action.
+_MUTATING_RUN = (_read(0, _SERVED), _read(1, _CACHED), _post_status(2), _root_cause_note(3))
+
+# Starts down both routes and completes neither: the served read plus a key listing
+# observes no divergence, so nothing was derived.
+_CHERRY_PICKED_RUN = (_read(0, _SERVED), _read(1, _CACHE_KEYS), _root_cause_note(2))
+
+# Each row is a trajectory that breaks exactly one declared check and no other. The
+# route the agent walked decides which checks are scored, so the rows that break a
+# route's own check are the rows on which that route wins.
+_CACHE_DEBUG_WRONG_PROCESS_RUNS = (
+    pytest.param(_MUTATING_RUN, "no_status_was_written", id="the_order_was_mutated"),
+    pytest.param(
+        (_read(0, _SERVED), _read(1, _SOURCE)),
+        "the_note_was_written",
+        id="both_layers_read_but_nothing_written",
+    ),
+    pytest.param(
+        _CHERRY_PICKED_RUN,
+        "both_api_layer_reads_happened",
+        id="the_key_listing_stands_in_for_the_source_read",
+    ),
+    pytest.param(
+        (_read(0, _SERVED), _root_cause_note(1), _read(2, _SOURCE)),
+        "both_api_layer_reads_precede_the_note",
+        id="the_source_was_read_after_the_note",
+    ),
+    pytest.param(
+        (_root_cause_note(0), _read(1, _SOURCE)),
+        "the_cached_value_and_an_api_read_happened",
+        id="the_cache_was_never_read",
+    ),
+    pytest.param(
+        (_root_cause_note(0), _read(1, _CACHED), _read(2, _SERVED)),
+        "the_cache_comparison_precedes_the_note",
+        id="the_cache_was_read_after_the_note",
+    ),
+)
+
+
+def _cache_debug_trace_checks() -> TraceChecksConfig:
+    trace_checks = _grading_config(_CACHE_DEBUG_TASK)[1].trace_checks
+    assert trace_checks is not None
+    return trace_checks
+
+
+def _cache_debug_result(calls: Sequence[RecordedToolCall]) -> TraceChecksResult:
+    return evaluate_trace_checks(_timeline(calls, _CACHE_DEBUG_TURNS), _cache_debug_trace_checks())
+
+
+def test_the_cache_debug_pack_declares_two_routes_behind_one_shared_gate() -> None:
+    trace_checks = _cache_debug_trace_checks()
+    shared = tuple(
+        (constraint.id, constraint.require.declared_kind(), constraint.severity)
+        for constraint in trace_checks.constraints
+    )
+    paths = tuple(
+        (path.id, tuple(constraint.id for constraint in path.constraints))
+        for path in trace_checks.alternatives or ()
+    )
+    assert shared == _CACHE_DEBUG_SHARED
+    assert paths == _CACHE_DEBUG_PATHS
+
+
+@pytest.mark.parametrize(("calls", "winning_path"), _ROUTES_IN_FULL)
+def test_each_cache_debug_route_scores_in_full_and_records_itself_the_winner(
+    calls: Sequence[RecordedToolCall], winning_path: str
+) -> None:
+    """Both diagnostic routes the pack's rubric reference names are worth full marks.
+
+    The served-vs-source run is the one the shipped pack docked. Driven through the
+    fold at the pack's old weights it scored CORE ``(0.9333, True)`` on 2 of 3
+    ``required_actions`` and RUNNER ``(0.95, True)`` on 3 of 4 rule rows: docked on
+    both substrates for a route the task never required. The two numbers differ only
+    by the aggregation divergence #685 already owns — core multiplies action x comm x
+    legacy, the runner takes the fraction of rows — not by anything this pack says.
+    """
+    result = _cache_debug_result(calls)
+    assert result.score == pytest.approx(1.0)
+    assert result.winning_path == winning_path
+    assert _failed(result) == []
+
+
+@pytest.mark.parametrize(("calls", "broken_check"), _CACHE_DEBUG_WRONG_PROCESS_RUNS)
+def test_each_cache_debug_check_fails_the_process_it_names(
+    calls: Sequence[RecordedToolCall], broken_check: str
+) -> None:
+    """No check is satisfied by every trajectory, and each can fail on its own.
+
+    Each row asserts the whole failing set, not membership in it, so a check its
+    route's other check already implies shows up here as a row naming two: the
+    ordering checks carry ``on_missing: pass`` precisely so a read that never
+    happened is charged to the presence check alone.
+    """
+    assert _failed(_cache_debug_result(calls)) == [broken_check]
+
+
+def test_every_declared_cache_debug_check_is_broken_by_one_of_the_wrong_runs() -> None:
+    """So a check no scenario can fail cannot be added to the pack without a red test."""
+    declared = {check for check, _, _ in _CACHE_DEBUG_SHARED} | {
+        check for _, checks in _CACHE_DEBUG_PATHS for check in checks
+    }
+    assert {param.values[1] for param in _CACHE_DEBUG_WRONG_PROCESS_RUNS} == declared
+
+
+def test_completing_neither_cache_debug_route_scores_below_completing_either() -> None:
+    """The hazard alternatives exist for: half of one route plus half of another.
+
+    Asserted against the two routes' own measured scores rather than a literal, so a
+    rebalance that moved every number in step would still have to keep the ordering.
+    """
+    in_full = [_cache_debug_result(param.values[0]).score for param in _ROUTES_IN_FULL]
+    cherry_picked = _cache_debug_result(_CHERRY_PICKED_RUN)
+
+    assert cherry_picked.score < min(in_full)
+    assert [path.score for path in cherry_picked.paths] == [
+        pytest.approx(cherry_picked.score)
+    ] * len(_CACHE_DEBUG_PATHS), (
+        "the cherry-picked run completed neither route, so no route may score above "
+        "the component the max-over-routes fold returned"
+    )
+
+
+def test_the_cache_debug_gate_fails_a_trial_whose_winning_route_scored_in_full() -> None:
+    """A mutation on a diagnose-only task sinks the trial the route would have passed.
+
+    The shipped pack scored this trajectory ``(1.0, True)`` on both substrates: the
+    agent read both layers, wrote a correct note, and satisfied every required
+    action, so the ``POST`` cost it nothing. The route it took still scores in full —
+    ``paths[winner].score`` is untouched by the gate — and the component is ``0.0``
+    with the state check at full marks, so no weighting rescues the trial.
+    """
+    result = _cache_debug_result(_MUTATING_RUN)
+    winner = next(path for path in result.paths if path.id == result.winning_path)
+
+    assert winner.score == pytest.approx(1.0)
+    assert result.score == pytest.approx(0.0)
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["no_status_was_written"]
+
+    grade = GradingEngine(_grading_config(_CACHE_DEBUG_TASK)[1]).grade_trajectory(
+        make_trajectory(
+            task_id="cache_debug",
+            messages=_cache_debug_messages(_MUTATING_RUN),
+            tool_log=list(_MUTATING_RUN),
+        ),
+        _NOTE_ON_DISK,
+    )
+    assert grade.components.state_checks == pytest.approx(1.0)
+    assert grade.components.trace_checks == pytest.approx(0.0)
+    assert grade.binary_pass is False

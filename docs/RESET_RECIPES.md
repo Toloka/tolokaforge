@@ -140,8 +140,11 @@ is the `redis_dump` reference. Its `redis` service is labelled
 an RDB snapshot that pre-loads `order:4021` with a **stale** value
 (`status: "processing"`) at every provision, while postgres holds the fresh
 truth (`status: "shipped"`). The agent is told the orders API serves stale
-data, inspects the app and cache layers over HTTP, and writes a root-cause
-note naming the cache-invalidation bug. `tests/integration/test_cache_debug_end_to_end.py`
+data, locates the divergence by either of the two comparisons the pack grades as
+[alternative routes](GRADING.md#alternative-paths) — the served read against the
+source of truth, or the cached value against either orders-api read — and writes
+a root-cause note naming the cache-invalidation bug.
+`tests/integration/test_cache_debug_end_to_end.py`
 proves the recipe fired by asserting the captured `services/redis.log`
 carries an RDB-load signature — the restart that reloaded `dump.rdb` — so the
 `redis_dump` dispatch is witnessed directly from the per-trial backend.
