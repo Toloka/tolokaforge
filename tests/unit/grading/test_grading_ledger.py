@@ -29,6 +29,7 @@ from tolokaforge.core.grading.key_manifest import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TrialTimeline
+from tolokaforge.core.models import ToolCall
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
@@ -37,6 +38,7 @@ from tolokaforge.runner.grading_ledger import (
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
+    UNBOUND_BINDING_SKIP,
     accountable_author_keys,
     audit_accounted_keys,
     hash_family_accounting,
@@ -51,6 +53,7 @@ from tolokaforge.runner.models import (
     RunnerStateChecksConfig,
     RunnerTranscriptRulesConfig,
     TraceChecksConfig,
+    TraceConstraintKind,
 )
 
 pytestmark = pytest.mark.unit
@@ -429,6 +432,214 @@ def test_a_trial_with_no_events_accounts_every_declared_kind_as_skipped():
     assert {record.detail for record in result.accounted_keys.values()} == {
         "the trial's timeline carries no events"
     }
+
+
+def _bound_before(constraint_id: str, binder_tool: str, **bind_fields: Any) -> dict[str, Any]:
+    """A correlated ordering whose binder selects ``binder_tool`` and nothing else."""
+    return {
+        "id": constraint_id,
+        "description": "every widget shipped was inspected first",
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": binder_tool}},
+            "values": {"widget": {"field": "args.widget_id"}},
+            **bind_fields,
+        },
+        "require": {
+            "before": {
+                "left": {
+                    "quantifier": "any",
+                    "match": {
+                        "kind": "tool_call",
+                        "tool": {"equals": "inspect_widget"},
+                        "args": {"widget_id": {"equals_binding": "widget"}},
+                    },
+                },
+                "right": {
+                    "quantifier": "any",
+                    "match": {
+                        "kind": "tool_call",
+                        "tool": {"equals": binder_tool},
+                        "args": {"widget_id": {"equals_binding": "widget"}},
+                    },
+                },
+            }
+        },
+    }
+
+
+def _inspected_then_shipped_widget_w1() -> TrialTimeline:
+    """The same trajectory, with the widget named on both calls so a binder can read it."""
+    return build_turn_timeline(
+        [
+            Turn("user", "Ship widget w1 once you have checked it."),
+            Turn(
+                "assistant",
+                "Inspecting it.",
+                recorded=[
+                    recorded_call("inspect_widget", sequence=0, arguments={"widget_id": "w1"})
+                ],
+            ),
+            Turn(
+                "assistant",
+                "Shipping it.",
+                recorded=[recorded_call("ship_widget", sequence=1, arguments={"widget_id": "w1"})],
+            ),
+        ]
+    )
+
+
+def _bound_composite(constraint_id: str, binder_tool: str, **bind_fields: Any) -> dict[str, Any]:
+    """``_bound_before``'s correlation nested under a composite, beside a second kind.
+
+    The nesting separates the two accounting outcomes a zero-candidate binder
+    produces: the composite is the kind the constraint's verdict is filed under, and
+    ``before`` and ``present`` are the kinds no evaluation reached.
+    """
+    constraint = _bound_before(constraint_id, binder_tool, **bind_fields)
+    constraint["require"] = {
+        "all_of": [
+            constraint["require"],
+            {"present": {"match": {"kind": "tool_call", "tool": {"equals": "ship_widget"}}}},
+        ]
+    }
+    return constraint
+
+
+def test_a_constraint_whose_binder_selected_nothing_accounts_its_nested_kinds_as_skipped():
+    """A kind reaches the ledger by carrying a verdict, and only the outer one does.
+
+    The constraint scores under its own kind whatever the binder yielded, so filing
+    that kind as skipped would report it as unevaluated in the same grade that fails
+    the trial on it. The kinds *under* the require tree are the ones nothing reached:
+    left unaccounted the RPC fails on a key the config populates, and filed as
+    ``EVALUATED`` the grade claims an evaluation that never happened. The skip is the
+    honest record, and it is subtracted away by a sibling constraint of the same kind
+    that *did* evaluate — otherwise the grade reports a kind as skipped while another
+    constraint scored it.
+
+    ``on_unbound`` decides the verdict and nothing about the accounting: the require
+    tree went unevaluated under either policy, so both file the same skips. The audit
+    is read for its skip notes rather than only for ``error``, because a
+    non-``EVALUATED`` record is routed to ``skip_notes`` — the audit reports no error
+    over a skip filed with the wrong outcome, so ``error is None`` alone would hold
+    whatever this evaluation recorded.
+    """
+    timeline = _inspected_then_shipped_widget_w1()
+    for policy, verdict in (({}, False), ({"on_unbound": "pass"}, True)):
+        config = GradingConfig(
+            trace_checks=TraceChecksConfig(
+                constraints=[_bound_composite("no_binder_fires", "recall_widget", **policy)]
+            )
+        )
+        result = evaluate_trace_checks(timeline, config.trace_checks)
+        accounted = result.accounted_keys
+        audit = audit_accounted_keys(config, accounted)
+
+        assert audit.error is None, policy
+        assert set(audit.skip_notes) == {
+            f"{TRACE_CONSTRAINT_KEY_BY_KIND[kind]} skipped: {UNBOUND_BINDING_SKIP.detail}"
+            for kind in ("before", "present")
+        }, policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == UNBOUND_BINDING_SKIP, policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP, policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["all_of"]] == EVALUATED, policy
+        assert accounted[TRACE_CONSTRAINTS_KEY] == EVALUATED, policy
+        assert result.constraints[0].kind is TraceConstraintKind.ALL_OF, policy
+        assert result.constraints[0].passed is verdict, policy
+
+    beside_an_evaluated_sibling = GradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[
+                _bound_composite("no_binder_fires", "recall_widget"),
+                _bound_before("the_binder_fires", "ship_widget"),
+            ]
+        )
+    )
+    both = evaluate_trace_checks(timeline, beside_an_evaluated_sibling.trace_checks).accounted_keys
+
+    assert audit_accounted_keys(beside_an_evaluated_sibling, both).error is None
+    assert both[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == EVALUATED
+    assert both[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP
+
+
+def test_a_binder_whose_value_the_trial_never_recorded_accounts_its_nested_kinds_as_skipped():
+    """The other way a ``require`` tree goes unentered: no assignment to enter it under.
+
+    The binder selects the call and the trial records no outcome for it, so the value
+    it extracts is unreadable rather than absent — a candidate with no name. There is
+    nothing to evaluate the tree under, so its nested kinds reach the ledger no more
+    than an unbound binder's do, and left unaccounted the RPC fails on a key the
+    config populates. The composite still carries the constraint's own verdict, which
+    is a failing sub-check rather than a silent resolution.
+    """
+    config = GradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[
+                {
+                    "id": "quoted_only_what_a_passing_inspection_returned",
+                    "description": (
+                        "every grade the agent quoted came out of an inspection, and no "
+                        "inspection failed"
+                    ),
+                    "bind": {
+                        "match": {
+                            "kind": "tool_call",
+                            "tool": {"equals": "inspect_widget"},
+                            "status": {"equals": "success"},
+                        },
+                        "values": {"grade": {"field": "result"}},
+                    },
+                    "require": {
+                        "all_of": [
+                            {
+                                "present": {
+                                    "match": {
+                                        "kind": "assistant_message",
+                                        "text": {"contains_binding": "grade"},
+                                    }
+                                }
+                            },
+                            {
+                                "absent": {
+                                    "match": {
+                                        "kind": "tool_call",
+                                        "tool": {"equals": "inspect_widget"},
+                                        "status": {"equals": "error"},
+                                    }
+                                }
+                            },
+                        ]
+                    },
+                }
+            ]
+        )
+    )
+    timeline = build_turn_timeline(
+        [
+            Turn("user", "Inspect widget w1 and tell me its grade."),
+            Turn(
+                "assistant",
+                "Widget w1 is grade A.",
+                unexecuted=[ToolCall(id="never_ran", name="inspect_widget", arguments={})],
+            ),
+        ]
+    )
+
+    result = evaluate_trace_checks(timeline, config.trace_checks)
+    audit = audit_accounted_keys(config, result.accounted_keys)
+
+    assert timeline.records_present is False
+    assert audit.error is None
+    assert set(audit.skip_notes) == {
+        f"{TRACE_CONSTRAINT_KEY_BY_KIND[kind]} skipped: {UNBOUND_BINDING_SKIP.detail}"
+        for kind in ("present", "absent")
+    }
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["absent"]] == UNBOUND_BINDING_SKIP
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["all_of"]] == EVALUATED
+    assert result.constraints[0].kind is TraceConstraintKind.ALL_OF
+    assert result.constraints[0].passed is False
+    assert "cannot be decided" in result.constraints[0].message
 
 
 # --------------------------------------------------------------------------

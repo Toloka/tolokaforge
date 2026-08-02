@@ -152,9 +152,17 @@ trace_checks:                              # ordering / scoped absence / countin
       on_missing: fail                     # fail (default) | pass — decides an unmatched anchor
       severity: scored                     # scored (default) | gate — a gate is not scored and must hold
       within: { first_turn: 0, last_turn: 5 }   # optional inclusive turn window
+      bind:                                # optional; the constraint holds under EVERY candidate
+        match: { kind: tool_call, tool: { equals: deny_case } }   # whose events supply candidates
+        values:                            # name -> extraction; at least one, each referenced below
+          case:                            # the name equals_binding / contains_binding reads
+            field: args.case_url           # tool | text | result | args.<dotted path>
+            pattern: '(https://[^/]+/cases/[0-9]+)'  # optional; exactly one group, always a string
+        on_unbound: fail                   # fail (default) | pass — a binder that selected nothing
       require:                             # exactly one constraint kind
         before:
-          left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: get_payment } } }
+          left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: get_payment },
+                                               args: { case_url: { equals_binding: case } } } }
           right: { quantifier: first, match: { kind: tool_call, tool: { equals: deny_case } } }
   alternatives:                            # two or more routes; one path is a load error
     - id: settled_from_the_ledger          # each is scored over the shared constraints plus its own,

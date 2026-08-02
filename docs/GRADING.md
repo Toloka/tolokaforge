@@ -115,7 +115,13 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   every `trace_checks.constraints.<kind>` key on that same timeline, `llm_judge`
   when it has no messages, `custom_checks` when the pack wrote the block but left
   `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
-  reads when `hash.enabled` is not set.
+  reads when `hash.enabled` is not set. On a timeline that *does* carry events, a
+  constraint whose [binder yielded no assignment](#correlating-arguments-across-matchers)
+  skips the kinds **nested inside** its `require` tree, which nothing entered; the
+  tree's own kind is evaluated, because the constraint takes a verdict under it
+  either way. A kind another constraint in the block scored is evaluated too — the
+  skip is filed per kind, and a kind that carried a verdict anywhere is not one the
+  grade contributed nothing under.
   `state_checks.hash.expected_state_hash` is a standing skip: it is declared
   `CORE_ONLY` because no runner path reads it (#693), so it is recorded as such
   whether or not hash grading ran — folding it into the family's outcome would report
@@ -248,13 +254,17 @@ on a citation:
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
   [Score Combination](#score-combination).
-- `trace_checks.constraints.weight`, `.on_missing`, `.within` — each still names a
-  pack in the parametrisation that drives its differential, so a key escaping the
-  scored-key lock without one is caught here. Each pack is authored so a build
-  that ignored the field would score its two trials *identically*: the weight pack
-  passes one of two differently-weighted constraints in each trial, the
-  `on_missing` pack pairs an unmatched anchor against a definite wrong order, and
-  the `within` pack moves one call in and out of the turn window.
+- `trace_checks.constraints.weight`, `.on_missing`, `.severity`, `.within`, `.bind` —
+  each still names a pack in the parametrisation that drives its differential, so a
+  key escaping the scored-key lock without one is caught here. Each pack is authored
+  so a build that ignored the field would score its two trials *identically*: the
+  weight pack passes one of two differently-weighted constraints in each trial, the
+  `on_missing` pack pairs an unmatched anchor against a definite wrong order, the
+  `severity` pack fails one scored check in one trial and trips its gate in the
+  other so that a build folding both alike scores them equally, the `within` pack
+  moves one call in and out of the turn window, and the `bind` pack reads one
+  report in both trials and writes back a different one in the violating trial, so
+  only the correlation between the two arguments separates them.
 - `trace_checks` — the family root declares no field on either substrate, so it
   has no differential of its own; what its enforcement rests on is its leaves',
   and the clause asserts at least one member of the family is still reached by the
@@ -288,7 +298,7 @@ declared without one.
 | `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
-| `trace_checks.constraints.weight` / `.on_missing` / `.within` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `trace_checks.constraints.weight` / `.on_missing` / `.severity` / `.within` / `.bind` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
 The `trace_checks` rows are the only scored family where **every** member is
@@ -870,7 +880,7 @@ four:
 | `contains` / `contains_ci` | the value contains it — recursively, per [`contains`](#operators) |
 
 The same four are the vocabulary of `db_probes[*].expect`. They are deliberately
-narrower than the fifteen [`trace_checks` operators](#operators): a second comparison
+narrower than the seventeen [`trace_checks` operators](#operators): a second comparison
 at one path has no conjunctive reading and is almost always a typo, so **two
 operators on one assertion is a failed check**, not a conjunction. So is **no**
 operator: a bare `path:`, or a misspelled `op:` / `expected:` key, fails rather than
@@ -1175,6 +1185,7 @@ trace_checks:
       severity: scored                          # scored (default) | gate
       on_missing: fail                          # fail (default) | pass
       within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
+      bind: …                                   # optional, see Correlating arguments
       require:
         before:
           left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: billing_api_get_payment },
@@ -1199,7 +1210,10 @@ trace_checks:
 `require` carries **exactly one** constraint kind, and each kind's value is that
 kind's own payload. Two conditions are an `all_of` over two expressions. Every
 model is `extra="forbid"`, so a misspelled operator, kind or matcher field fails
-at `tolokaforge validate` rather than grading as unset.
+at `tolokaforge validate` rather than grading as unset. `bind` is how a constraint
+compares one call's argument against another's rather than against a literal, and
+has its own section: [Correlating arguments across
+matchers](#correlating-arguments-across-matchers).
 
 A block declares `constraints`, `alternatives`, or both — but not neither, which
 would score nothing. **Every `id` in the block shares one space**: the path ids and
@@ -1242,7 +1256,7 @@ grading must not depend on it.
 ### Operators
 
 A predicate is the **conjunction of its operators**: every one it declares must
-hold, so `{ gt: 0, lt: 100 }` is a range. Fifteen operators:
+hold, so `{ gt: 0, lt: 100 }` is a range. Seventeen operators:
 
 | operator | holds when |
 |---|---|
@@ -1254,6 +1268,15 @@ hold, so `{ gt: 0, lt: 100 }` is a range. Fifteen operators:
 | `in_` / `not_in` | the value is (is not) a member of the list |
 | `len_gt` / `len_gte` | the value has a length, above (at or above) the bound |
 | `exists` | the field is present (`exists: false` is the absence primitive) |
+| `equals_binding` / `contains_binding` | the same, against a value the constraint's `bind` extracted under that name |
+
+**The two binding operators name a value rather than writing one.** Their argument
+is a name declared under the constraint's own `bind.values`, and the comparison
+they make is the one `equals` and `contains` make — so a constraint over a single
+bound value scores exactly as the same constraint with that value written out. A
+name no predicate in the constraint references, and a reference to a name the
+constraint does not bind, are both load errors, which is what scopes a correlation
+to one constraint.
 
 `contains` **recurses**: against a list, tuple or set it holds when any element
 contains the needle, against a dict when any **value** does — keys are never
@@ -1445,6 +1468,204 @@ verdicts *are* the match. On `present` the pair would be an always-pass check �
 unmatched passes by the policy, matched passes by the constraint — so the load
 error is what stops a declaration that cannot fail from being written.
 
+### Correlating arguments across matchers
+
+Every literal predicate above compares a field against a value written into the YAML,
+which cannot say *this call's id equals that call's id*. A constraint's optional `bind`
+says it: one matcher whose events supply candidate values, one or more names
+extracted out of each, and predicates elsewhere in the same constraint that
+reference those names with
+[`equals_binding` / `contains_binding`](#operators).
+
+```yaml
+- id: every_record_written_was_read_first
+  description: "the agent read each record before it wrote to it"
+  bind:
+    match: { kind: tool_call, tool: { equals: write_record } }   # which events supply candidates
+    values:
+      rec: { field: args.record_id }                             # name -> extraction
+    on_unbound: fail                                             # fail (default) | pass
+  require:
+    before:
+      left:  { quantifier: any, match: { kind: tool_call, tool: { equals: read_record },
+                                         args: { record_id: { equals_binding: rec } } } }
+      right: { quantifier: any, match: { kind: tool_call, tool: { equals: write_record },
+                                         args: { record_id: { equals_binding: rec } } } }
+```
+
+`field` addresses `tool`, `text`, `result` or an `args.<dotted path>` on the kind
+`bind.match` selects, and an optional `pattern` narrows it to a regex capture —
+`{ field: text, pattern: '\$([0-9][0-9,]*\.[0-9]{2})' }` binds one candidate per
+dollar figure the message quotes. A binding is **scoped to its own constraint**:
+a name no predicate in that constraint references, and a reference to a name the
+constraint does not bind, are both load errors, so a correlation cannot reach
+across constraints or across [routes](#alternative-paths).
+
+#### The binder site is the direction of the implication
+
+The `require` tree above is symmetric in `read_record` and `write_record`, and the
+`bind` is what makes it an assertion about one of them. **Binding at the write says
+"every record written was read first"; binding at the read says "every record read
+was later written"** — a different claim, and usually not the one intended. Measured
+over the same three-call trajectory `read X`, `read Y`, `write X`:
+
+| binder | candidates | verdict |
+|---|---|---|
+| `write_record` | `X` | **passes** — the one record written was read |
+| `read_record` | `X`, `Y` | **fails** — `Y` was read and never written |
+
+#### Several candidates: the constraint must hold under every one
+
+Quantification over the candidate set is **universal**. Measured, binding at the
+write, with each candidate scored by writing its value out as a literal:
+
+| trajectory | candidates | per-candidate | first-match | **universal** | any-satisfying |
+|---|---|---|---|---|---|
+| `read X`, `write X` | `X` | `X: pass` | pass | **pass** | pass |
+| `read X`, `write Y` | `Y` | `Y: fail` | fail | **fail** | fail |
+| `read X`, `read Y`, `write X` | `X` | `X: pass` | pass | **pass** | pass |
+| `read X`, `write X`, `write Y` | `X`, `Y` | `X: pass`, `Y: fail` | pass | **fail** | pass |
+| `read X` twice, `write X` | `X` | `X: pass` | pass | **pass** | pass |
+| `read X` only | — | — | `on_unbound` | `on_unbound` | `on_unbound` |
+
+Row 4 is why **any-satisfying is not the rule**: the agent wrote a record it never
+read, and an existential reading passes because a *different* write happened to be
+correlated — the check silently stops covering everything the author did not think
+to enumerate, which is the whole reason to write a correlation instead of literals.
+
+**First-match is not the rule** either, and its cost shows up when the binder site
+is the read. Measured:
+
+| trajectory | candidates | first-match | **universal** |
+|---|---|---|---|
+| `read X`, `read Y`, `write X` | `X`, `Y` | pass | **fail** |
+| `read Y`, `read X`, `write X` | `Y`, `X` | fail | **fail** |
+
+Those two rows are the same set of actions in a different order. First-match is
+deterministic but flips the verdict on the order of two reads the constraint says
+nothing about; the universal reading is invariant under any permutation of the
+binder's events, which is what makes the grade reproducible. It also makes the
+*reported* binding reproducible, because the report is the **set** of values that
+failed and a set has nothing to choose:
+
+```
+before is unmatched: left selected no event; failed under (rec='Y')
+```
+
+**Candidates are distinct values, not events.** Ten calls naming one record are one
+reading of the `require` tree rather than ten identical ones, and the failure names
+one value rather than the same value ten times. Two candidates are the same when
+every name's value is equal **and of the same type**, so `True` and `1` are two
+candidates.
+
+A bound constraint costs one evaluation of its `require` tree per distinct
+candidate, so it multiplies whatever the tree already costs rather than adding to
+it — [measured](#declared-limits-and-what-owns-each) beside the `absent_between`
+shape it compounds with.
+
+#### `on_unbound` — the trial where the binder selected nothing
+
+The universal reading is vacuously true over an empty candidate set, and
+`on_unbound` overrides it. It defaults to **`fail`**, which is right for
+read-before-write: zero writes means the agent did not do the task, and a vacuous
+pass there is exactly the hazard [`on_missing`](#on_missing--what-an-unmatched-anchor-decides)
+defaults against for the same reason. `on_unbound: pass` is the opt-in for a
+constraint whose empty case genuinely holds — "no figure the agent quoted was
+invented" is satisfied by an agent that quoted no figure, and failing it charges a
+second time for a gap another check already charges.
+
+This is a policy over **decidable** evidence: the candidate set is genuinely empty,
+not unreadable — the unreadable case is
+[below](#a-candidate-set-the-trial-cannot-determine). `on_unbound: pass` beside
+`severity: gate` is a load error, since a gate carries no weight for the second
+charge to be avoided on.
+
+#### A candidate set the trial cannot determine
+
+The binder resolves through the same matcher machinery every predicate does, so it
+has [undecidable](#what-a-matcher-resolves-to-matched-and-undecidable) events of its
+own: a `bind.match` reading `status` on a call the trial recorded no outcome for
+cannot say whether that call is a candidate. An extraction can go unread the same
+way — a `field: result` on a call with no recorded outcome is a candidate whose
+*value* the trial does not carry, where a `field: args.<path>` the call simply did
+not pass binds nothing at all. Absent value, absent evidence: the same distinction a
+predicate over the field draws.
+
+That second reading is about an argument the agent omitted, not one the author
+mistyped: an extraction naming an argument the *tool* does not declare is rejected by
+[`tolokaforge validate`](#what-is-validated-before-a-run) before the run, because it
+binds nothing on every trajectory and the default `on_unbound` would charge that to
+the agent.
+
+So the candidate set is three-valued too, and the constraint is decided only where
+every completion of it agrees. Writing `D` for the definite candidates and `U` for
+the undecidable ones, the readings compared are the **empty** one, `D ∪ {u}` for
+**each** `u` in `U`, and `D ∪ U`.
+
+The singletons are not redundant beside the two ends. With `D` empty the empty
+reading is `on_unbound` rather than a vacuous pass, so both ends can read *fail*
+where a completion binding one satisfied candidate holds — measured, at `D = {}`,
+`U = {u₀ holds, u₁ fails}`, `on_unbound: fail`:
+
+| reading | verdict |
+|---|---|
+| `{}` | fails — nothing bound, and `on_unbound` is `fail` |
+| `{u₀}` | **passes** |
+| `{u₁}` | fails |
+| `{u₀, u₁}` | fails |
+
+Comparing the two ends alone reports a definite failure there, on evidence the trial
+does not carry. That is the same over-fail the `count` bound guards against by
+reading the whole reachable interval rather than its endpoints, met one level up.
+
+An undecidable candidate set that changes no verdict is not reported: where the
+completions agree, the missing evidence changed nothing an author can act on. Where
+they disagree the constraint is undecided and says which evidence is missing and
+where, and a value the trial definitely binds absorbs an undecidable reading of the
+same value — it is in the set whatever the missing evidence says.
+
+#### `negate`, and `within`
+
+Quantification is outermost, so `negate` inside a bound constraint reads
+**`∀v ¬P(v)`** — "no candidate satisfies `P`" — and not `¬∀v P(v)`. A
+`negate: { present: … }` over a binder on `write_record` therefore fails as soon as
+*one* written record was read, which is the useful reading; a reader expecting
+`¬∀ = ∃¬` would predict the opposite.
+
+`within` restricts the binder too, because the binder resolves through the same
+turn window every other matcher in the constraint does. A window that excludes an
+event removes the values it carried from the candidate set.
+
+#### The bound value's type is load-bearing
+
+`contains` compares two strings as substrings and falls back to **equality** for
+any other pair, and `equals` over a string and a non-string is false outright — so a
+bound `int` is neither found inside a string nor equal to one. Measured:
+
+```python
+contains("http://api/deliveries/4021", 4021)    # False
+contains("http://api/deliveries/4021", "4021")  # True
+```
+
+A **binding reference** between a text field and a value bound out of an integer
+argument is therefore false on **every** trajectory, `equals_binding` exactly as much
+as `contains_binding`. That is not scored as an agent failure: the constraint fails
+with a message saying the comparison was not made, naming the binding, its value, its
+type, the operator that could not make the comparison, and the two ways to write the
+intent — a reference on an `args` predicate, which compares two arguments as they
+were written, or a `pattern` capture, which is always text.
+
+**`tolokaforge validate` catches it first, wherever a schema declares the type.**
+The config models cannot: `args.reason_code` is a string and `args.delivery_id` is an
+integer, and `BoundValue` cannot tell them apart, so a model-tier rejection broad
+enough to catch the second would refuse the first. The declared type lives in the
+tool's JSON schema, which the [authoring gate](#what-is-validated-before-a-run) holds
+— so the misuse is an **error** before the trial is paid for, on a schema forbidding
+extras, and an advisory on one permitting them. Both tiers reject and neither warns.
+The gate's residue is where no schema resolved, where the path runs below its first
+segment, and where the property writes no `type`; there the evaluation-time failure
+above is the whole backstop.
+
 ### When a constraint cannot be decided
 
 A matcher yields definitely-matching events and
@@ -1462,13 +1683,15 @@ Worked, over *d* definite matches and *u* undecidable ones:
 | `count` | passes when every count in `[d, d + u]` is within the bounds, fails when none is, undecided otherwise |
 | `before`, `immediately_before`, `absent_before`, `absent_between` | decided when every reading of each side agrees; undecided otherwise |
 | `all_of`, `any_of`, `negate` | Kleene: a conjunction with a failing branch fails whatever the undecided branch would have said, a disjunction with a holding branch passes, and otherwise an undecided branch makes the composite undecided |
+| any of the above declaring [`bind`](#correlating-arguments-across-matchers) | the **candidate set is itself subject to the rule**: decided where the empty reading, each single undecidable candidate beside the definite ones, and all of them together agree — undecided otherwise, and `on_unbound` supplies the empty reading rather than a vacuous pass. [Worked](#a-candidate-set-the-trial-cannot-determine) |
 | any of the above carrying [`severity: gate`](#severity--a-check-that-must-hold) | undecided **trips the gate** — a scored constraint forfeits its weight there, and a gate's forfeit is the trial |
 
 Undecided is not a pass in the agent's favour and not an over-fail either: definite
 evidence answers the question wherever it can. The usual way to reach it is a
 bundle re-graded without its tool-call record, where every `status` and `executor`
-predicate is unreadable — which is a real limit on grading a `trace_checks` pack
-from a recorded bundle, not a defect to work around.
+predicate is unreadable, every `result` on an unanswered call with it, and so is any
+binder that reads one — which is a real limit on grading a `trace_checks` pack from a
+recorded bundle, not a defect to work around.
 
 ### Weighting the constraints
 
@@ -1609,7 +1832,7 @@ took.
 
 A forbidden tool called, another customer's record touched, an order mutated by a
 diagnose-only agent — all route-independent, so all shared gates. The last is a
-shipped pack: see [`cache_debug`](#two-worked-packs), whose one gate is shared for
+shipped pack: see [`cache_debug`](#three-worked-packs), whose one gate is shared for
 exactly this reason.
 
 This rule is guidance rather than a guarantee, and the reason is worth stating
@@ -1630,7 +1853,7 @@ same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` ho
 every shipped example pack to that, reading the combine that is *effective* after
 the project layer merges.
 
-### Two worked packs
+### Three worked packs
 
 [`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
 grades the process alongside the substrate. Its three constraints are the three
@@ -1660,27 +1883,114 @@ reference names **two** comparisons as locating the bug, so the two are declared
 | `both_api_layer_reads_precede_the_note` | route `divergence_between_the_api_layers` | the note was written first and the source read afterwards |
 | `the_cached_value_and_an_api_read_happened` | route `divergence_against_the_cache` | the cache inspector was never opened |
 | `the_cache_comparison_precedes_the_note` | route `divergence_against_the_cache` | the cached value was read after the note that claims to explain it |
+| `the_note_quotes_the_value_the_served_read_returned` | route `divergence_between_the_api_layers` | the note recites the mechanism without quoting anything the agent observed |
+| `the_note_quotes_the_value_the_cache_held` | route `divergence_against_the_cache` | as above, off the cached read |
 
-Three authoring choices in it are worth copying:
+Four authoring choices in it are worth copying:
 
 - **The gate is shared, not per-route.** "Do not mutate on a diagnose-only task"
   holds whichever comparison the agent chose, and a gate inside a route is consulted
   only when that route wins — so a route gate here would be escapable by winning on
   the other one. This is the [rule above](#shared-gates-and-path-gates-when-each-is-appropriate)
   applied to a real pack.
-- **Each route asks two questions**: were both sides of the comparison read, and did
-  the reads that happened happen before the note. The ordering check carries
-  `on_missing: pass` so a read that never happened is charged once — to the presence
-  check — rather than twice, which is what lets each check fail on its own wrong
-  process rather than cascading. The two are not independent as a result: with
-  neither read performed the ordering check is vacuous and passes, so a trajectory
-  that writes the note and nothing else scores the same `2/3` as one that starts a
-  route and abandons it.
+- **Each route asks three questions**: were both sides of the comparison read, did
+  the reads that happened happen before the note, and does the note quote the value
+  the route's own read returned. The ordering check carries `on_missing: pass` and
+  the grounded-claim check `on_unbound: pass`, so a read that never happened is
+  charged once — to the presence check — rather than three times, which is what lets
+  each check fail on its own wrong process rather than cascading. The three are not
+  independent as a result: with neither read performed the ordering check is vacuous
+  and the binder selects nothing, so a trajectory that writes the note and nothing
+  else scores the same `3/4` as one that starts a route and abandons it — four
+  equal-weighted scored members, the route's three plus the shared
+  `the_note_was_written`, of which only the presence check fails.
 - **The judge stays dominant.** The routes are not equally probative: the cache
   inspector shows the stale value itself, while the served-vs-source comparison
   shows only that the read path serves something the database disagrees with. The
   deterministic components therefore sum to less than `pass_threshold`, so no trial
   passes on process alone.
+- **The grounded-claim check is per route, and the binder is that route's own read.**
+  No single read is common to both routes, so a shared binder would have
+  route-dependent candidates and could fail a correct route. Each route binds the
+  status token out of the read it guarantees and requires the note to quote it, which
+  names no status value and so generalises to whatever the cache is holding. It
+  carries `on_unbound: pass` for the same charge-once reason the ordering checks carry
+  `on_missing: pass`, and its `require` is an `any_of` whose first branch is "no note
+  was written at all" — `on_missing` is [rejected on `present`](#on_missing--what-an-unmatched-anchor-decides),
+  so the branch is how the same intent is written there. The two capture patterns
+  differ because the payloads do: `http_request` renders a JSON response as the parsed
+  object's Python `repr`, so the served read shows single-quoted keys while the cache
+  inspector's nested JSON string keeps the double quotes it was serialised with. Bind
+  against the payload the service really answers with, not against the one the schema
+  suggests.
+
+[`examples/native/multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md)
+is the correlation reference. Its substrate oracle reads the `corrective_actions` row
+that exists and cannot say how the values in it were obtained, and its own task
+guidance already demands a process nothing in its fold checked — "GET the reason-code
+catalog to find the contamination code before opening the action; do not guess it":
+
+| constraint | shape | the wrong process it catches |
+|---|---|---|
+| `the_reason_code_posted_was_read_from_the_catalog` | `bind` `code` from the POST's `args.json.reason_code`; `before` any successful result `contains_binding` it, then the first POST | the code was written from memory, or fabricated, rather than looked up |
+| `the_lot_was_read_before_the_action_was_opened` | `bind` `lot_url` from the POST's `args.url` by a regex capture; `before` any `GET` whose url `equals_binding` it, then the first POST | the action was opened against a lot the agent never read |
+| `exactly_one_corrective_action_was_opened` | `count { max: 1 }` over the POST, `severity: gate` | the action is double-posted, leaving the operator a duplicate to reconcile |
+
+Two statements generalise out of it, and both are the difference between a correlation
+that earns its weight and one that decorates a pack:
+
+- **A correlation earns its weight only where the substrate oracle cannot already see
+  the answer.** The flagship pack's only same-type correlation — the resolution path
+  written onto the delivery is the one recorded on the case — is already pinned to
+  `reschedule` by two independent db_probes, so adding it would catch nothing and
+  would be a check written to satisfy a corpus test. Here the probe reads the row the
+  POST created; it has no view of where the code came from, so the correlation is the
+  only thing in the fold that asks. Stated precisely: it beats **the fold**, not a
+  hard-coded `contains: CAPA-01` on every trajectory — wherever the probe passes, the
+  posted code *is* `CAPA-01` and both select the same events. What the binding adds
+  over the literal is the fabricated-code trajectory, and that a new code in the
+  catalog needs no constraint edit.
+- **A correlation over a short token is a correlation over noise — bind the widest
+  unambiguous span.** The lot id lives in the URL path, so the obvious capture binds
+  `"7"`, and `contains(".../lots/1007", "7")` is `True`: an agent that read the lot
+  *code* as though it were the id would pass. Capturing the whole `http://…/lots/7`
+  prefix and comparing it with `equals_binding` has no substring reading at all, and
+  it still names no lot number. There is no load-time answer to this — the value is
+  runtime — so it is an authoring rule rather than a rejected shape.
+- **The prompt is a second oracle: check the correlation against it, not only against
+  the substrate.** A grounded-claim check is evidence of grounding only where the
+  bound token reached the agent through the substrate alone. Everything the trial
+  shows the agent before it acts — `initial_user_message`, the user persona and its
+  backstory, `policies.guidance` — is a place the answer can already be sitting, and
+  a note paraphrasing the request would then satisfy the check having observed
+  nothing. `cache_debug` is authored around this: its on-call engineer reports an
+  out-of-date status and does not know which one, so `processing` is nowhere in the
+  prompt and reproducing it means the agent read a layer. `lot_ops_01` is the same
+  discipline from the other side — the persona withholds the reason code and the
+  task's own guidance says not to guess it, so the catalog is the only place `CAPA-01`
+  comes from. Read the prompt before shipping a correlation; the substrate probe will
+  not tell you the answer was in the question.
+
+#### What a correlation is a candidate to replace, and what it is not
+
+Both packs above name, in their `grading.yaml` headers, the judge criterion each new
+check is a candidate to replace. **Neither retires one.** The candidacy is a documented
+starting point for #683, which owns rubric migration, and the two findings below are
+what it has to honour — recorded here because correlation is what surfaced them.
+
+| new check | candidate to replace | why it cannot yet |
+|---|---|---|
+| `lot_ops_01`'s two correlations | `names_lot` (binary, `required: true`) | the criterion accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value; and it is a required criterion, so see the first finding |
+| `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded) | they reach the half that asks the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
+
+1. **Every retirement candidate in the corpus is `required: true`** — a trial-level
+   veto carrying **zero score share**. Migrating one converts that veto into either a
+   `severity: gate`, which is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate),
+   or a fraction of a scored component. Both are strictly weaker than what they
+   replace, and the weakening is invisible in the component score.
+2. **#683's own gate is agreement against historical judge verdicts.** A pack gaining
+   a correlation has no recorded-trial evidence and structurally cannot have any, so
+   retiring a criterion beside the new check would pre-empt that gate with a guess.
 
 ### Declared limits, and what owns each
 
@@ -1691,9 +2001,8 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| Two arguments on two different calls cannot be correlated (`this call's id equals that call's id`) | #681 |
 | A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
-| Migrating an existing rubric criterion into a constraint | #683 |
+| Migrating an existing rubric criterion into a constraint. Correlation ships, and [what it can and cannot retire](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) is measured: two packs name the criterion each new check is a candidate to replace, and the decision waits on the two findings recorded there — every candidate is a `required: true` veto with no score share, and #683's gate is agreement against historical judge verdicts | #683 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
@@ -1706,7 +2015,21 @@ product of its `start` readings, its `end` readings and its `forbidden` readings
 so on a timeline where all three matchers are undecidable its work grows cubically
 in the number of undecidable events. Trials in the size range the harness produces
 stay well inside that, and a records-present timeline has no undecidable events at
-all.
+all. A [`bind`](#correlating-arguments-across-matchers) multiplies whatever its
+`require` tree costs by the number of distinct candidates, so the two compose.
+Measured over a bound `absent_between`, the worst combination the vocabulary allows:
+
+| calls on the timeline | distinct candidates | one reading | the bound constraint |
+|---|---|---|---|
+| 20 | 5 | 0.97 ms | 4.8 ms |
+| 60 | 15 | 2.3 ms | 34 ms |
+| 200 | 40 | 4.9 ms | 211 ms |
+| 600 | 100 | 15 ms | 1.4 s |
+
+The multiplier is the candidate count and nothing worse — the readings do not
+compound each other. Distinct-value counts on real trajectories are a handful per
+`(tool, argument)`, so none of this is a reason to author around at the sizes the
+harness produces.
 
 ---
 
@@ -1726,15 +2049,17 @@ Findings come in three classes:
 
 | rule | class | where |
 |---|---|---|
-| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher, shared and per-route |
+| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
-| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | every `trace_checks` matcher, shared and per-route |
-| an `args` path whose first segment is outside the properties of a tool whose schema permits extras | advisory | as above |
-| a `regex` pattern that does not compile | error | every predicate, plus `transcript_rules.disallow_regex` |
+| an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
+| the same against a tool whose schema permits extras | advisory | as above |
+| a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference that compares text | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
+| a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
-| an `args` path on a tool whose schema did not resolve | unchecked | per matcher |
-| an `args` path below its first segment | unchecked | per path |
+| an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
+| an `args` address below its first segment | unchecked | per path |
+| a `bind.values[*].field` whose property writes no `type` | unchecked | per extraction |
 
 An **error** always fails the pack. An **advisory** fails it unless
 `evaluation.grading_validation.fail_on: error` is set on the run config: an MCP
@@ -1747,22 +2072,47 @@ severity: nothing reads it to decide whether to raise, so the gate has no
 false-reject mode. It is surfaced beside the task all the same — `validate` prints
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
-commits no `fixtures/tools.json`, and an `args` path below its first segment all
-land here.
+commits no `fixtures/tools.json`, an `args` address below its first segment, and a
+property whose schema writes no `type` all land here.
 
-Only the first segment of an `args` path is checked, and only against `properties`.
-`json.q` on `http_request` is checked at `json` and stops, because `json`'s own
-schema declares no properties and nothing below it is answerable. A tool named by
-`regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
-set, not a token.
+Only the first segment of an `args` address is checked, and only against
+`properties`. `json.q` on `http_request` is checked at `json` and stops, because
+`json`'s own schema declares no properties and nothing below it is answerable. A tool
+named by `regex` rather than by `equals` / `in_` produces no finding at all: a pattern
+names a set, not a token.
 
-**Every matcher rule reaches inside [`alternatives`](#alternative-paths).** A route's
-constraints are graded exactly as the shared ones are, so a misspelled tool on one
-route carries the same two hazards it does on a shared constraint, with the route as
-the blast radius: under `present` that route can be walked in full and still score
-below its siblings, and under `absent` it passes on every trajectory. A finding there
-is addressed `trace_checks.<path id>.<constraint id>`, against `trace_checks.<id>` for
-a shared constraint; the block's single id space is what keeps the two apart.
+**Every matcher rule reaches every matcher the block declares.** A matcher lives in
+three places — on a shared constraint's `require` tree, on an
+[alternative route's](#alternative-paths) constraint, and on a
+[binder's](#correlating-arguments-across-matchers) `bind.match` — and all three are
+graded identically, so a misspelled tool is one defect wherever it sits. What differs
+is the blast radius, and the address is what records it: `trace_checks.<id>` for a
+shared constraint against `trace_checks.<path id>.<constraint id>` inside a route,
+the block's single id space keeping those two apart, with `.bind.match` naming the
+binder rather than the `require` tree. Under `present` a route-local typo lets that
+route be walked in full and still score below its siblings; under `absent` it passes
+on every trajectory; inside a binder it selects no event, so the binding yields no
+assignment and the default `on_unbound` charges that to the agent.
+
+**The type a binder extracts is checked wherever the schema declares it.** `contains`
+compares two strings as substrings and falls back to equality for every other pair,
+and `equals_binding` *is* that equality — so a value bound out of an `integer`
+argument and read by a predicate on `tool` / `text` / `result`, or beside a `regex`
+that asserts the same of an argument, is false on **every** trajectory. That is the
+[type limit](#the-bound-values-type-is-load-bearing) answered before the run: the
+declared type lives in the tool's JSON schema, and the gate is the only tier holding
+it. Neither correct way to write the intent is flagged — `equals_binding` on an `args`
+predicate compares two natively-typed values, and a `pattern` on the extraction binds
+a capture, which is a string.
+
+**A binder reading `field: result` makes its pack records-dependent.** The
+[#717 rule](#matching-a-result-is-scoped-to-successful-calls) requires
+`status: { equals: success }` on such a binder's `match`, and `status` is a field only
+the tool-call record carries — so on a bundle re-graded without records the binder's
+own matcher is undecidable and the constraint reports that the candidate set cannot be
+determined, where a binder over `args` stays decidable. Not a finding: the gate reads
+the block, not the bundle it will be graded against. It is stated here because it is
+the kind of consequence a re-graded bundle otherwise surfaces months later.
 
 **A block that scores nothing is rejected.** `trace_checks` declaring neither
 `constraints` nor `alternatives` asserts nothing; `alternatives` carrying fewer than

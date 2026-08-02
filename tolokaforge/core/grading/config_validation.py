@@ -10,8 +10,9 @@ first, while every tool name is wrong against the second.
 The defects here are the author's, and every one of them is otherwise charged to
 the agent or to nobody: a misspelled tool name in a ``present`` matcher scores the
 component 0.0 with the message a genuine agent failure carries, the same typo in
-an ``absent`` matcher passes every trial, and an uncompilable ``regex`` raises
-inside the evaluator once the tokens are already spent.
+an ``absent`` matcher passes every trial, an uncompilable ``regex`` raises inside
+the evaluator once the tokens are already spent, and a binding correlated against
+a field of another type is red on every trajectory whatever the agent did.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -29,9 +30,12 @@ from typing import Any
 from pydantic import BaseModel
 
 from tolokaforge.core.models import (
+    BoundValue,
     GradingFindingSeverity,
     ToolExpectations,
+    TraceBinding,
     TraceChecksConfig,
+    TraceConstraint,
     TraceConstraintExpr,
     TraceMatcher,
     TranscriptRulesConfig,
@@ -99,6 +103,19 @@ class ToolInventory:
             return frozenset()
         return frozenset(schema.get("properties", {}))
 
+    def declared_type(self, tool: str, argument: str) -> str | None:
+        """The JSON type *tool*'s schema gives *argument*, where it gives one.
+
+        ``None`` where the property writes no ``type`` or writes it as a union of
+        several: neither settles that the value is never a string.
+        """
+        properties = self.parameters.get(tool, {}).get("properties")
+        if not isinstance(properties, Mapping):
+            return None
+        declared = properties.get(argument)
+        kind = declared.get("type") if isinstance(declared, Mapping) else None
+        return kind if isinstance(kind, str) else None
+
 
 @dataclass(frozen=True)
 class Finding:
@@ -152,15 +169,60 @@ class _MatcherSite:
 
 @dataclass(frozen=True)
 class _PredicateSite:
-    """One value predicate, and the authored address it was read from."""
+    """One value predicate, the matcher field it reads, and its authored address."""
 
     where: str
+    field: str
     predicate: ValuePredicate
+
+
+@dataclass(frozen=True)
+class _BindingSite:
+    """One constraint's binder, and every predicate in its ``require`` that reads it.
+
+    The references travel with the binder because a binding reaches exactly as far
+    as the constraint declaring it, so the two are never paired across constraints.
+    """
+
+    where: str
+    binding: TraceBinding
+    references: tuple[_PredicateSite, ...]
+
+
+@dataclass(frozen=True)
+class _ResolvedTool:
+    """The one tool an authored address is checked against, and what it declares."""
+
+    name: str
+    strictness: ArgumentSchema
+    properties: frozenset[str]
 
 
 _UNRESOLVABLE_REASON = (
     "the tool set of this task could not be resolved, so no tool name and no argument "
     "name in this block is checkable"
+)
+
+# The JSON types whose values are never strings. A schema declaring one of them for
+# an argument settles that a reference comparing the bound value against text cannot
+# hold; ``string``, and a property writing no type at all, settle nothing.
+_UNCORRELATABLE_JSON_TYPES: frozenset[str] = frozenset(
+    {"integer", "number", "boolean", "array", "object"}
+)
+
+# The event fields ``TraceEvent`` declares as ``str | None``, so a predicate on one of
+# them compares text whatever the value it is handed was typed as.
+_TEXTUAL_MATCHER_FIELDS: frozenset[str] = frozenset({"tool", "text", "result"})
+
+# What an argument name outside a closed schema costs, per site. One rule, two
+# policies: an unreadable predicate leaves the matcher unmatched and an unreadable
+# extraction leaves the binder unbound, and the author is pointed at the key that
+# decides each.
+_UNMATCHABLE_PREDICATE_HAZARD = (
+    "the matcher selects nothing and the default on_missing reports that as the agent's failure"
+)
+_UNBINDABLE_EXTRACTION_HAZARD = (
+    "the binding yields no assignment and the default on_unbound reports it as the agent's failure"
 )
 
 # What naming an undeclared tool costs, per expectation. Written per field because
@@ -190,10 +252,12 @@ def inspect_grading_authoring(
     inventory is unresolvable, and the rules that need nothing but the block —
     regex compilation, the hash-source declaration — still run.
     """
-    sites = tuple(_trace_matcher_sites(grading))
+    constraints = tuple(_trace_constraints(grading))
+    sites = tuple(_trace_matcher_sites(constraints))
+    binders = tuple(_trace_binding_sites(constraints))
     rules = _transcript_rules(grading)
     reports = [
-        _check_regex_compiles(sites, rules.disallow_regex if rules else ()),
+        _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
     ]
     if inventory.known:
@@ -201,6 +265,7 @@ def inspect_grading_authoring(
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
             _check_argument_paths(sites, inventory),
+            _check_bound_extractions(binders, inventory),
         ]
     else:
         reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
@@ -260,13 +325,16 @@ def _check_argument_paths(
 
 
 def _check_regex_compiles(
-    sites: tuple[_MatcherSite, ...], disallow_regex: Iterable[str]
+    sites: tuple[_MatcherSite, ...],
+    binders: tuple[_BindingSite, ...],
+    disallow_regex: Iterable[str],
 ) -> AuthoringReport:
     """Every authored pattern compiles here, or it raises inside the evaluator.
 
     Neither substrate catches ``re.error`` locally: core lets it propagate out of
     the grader and the runner folds it into a failed grade response, so the trial
-    is lost rather than the constraint.
+    is lost rather than the constraint. A binder's capture pattern is compiled by
+    the same evaluator on the same trial, so it is read here for the same reason.
     """
     authored = [
         (f"transcript_rules.disallow_regex[{index}]", pattern)
@@ -277,6 +345,12 @@ def _check_regex_compiles(
         for site in sites
         for predicate_site in _predicate_sites(site)
         if predicate_site.predicate.regex is not None
+    ]
+    authored += [
+        (f"{site.where}.values.{name}.pattern", value.pattern)
+        for site in binders
+        for name, value in site.binding.values.items()
+        if value.pattern is not None
     ]
     findings = (_uncompilable(where, pattern) for where, pattern in authored)
     return AuthoringReport(errors=tuple(finding for finding in findings if finding is not None))
@@ -313,46 +387,146 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     )
 
 
-def _one_matchers_argument_paths(site: _MatcherSite, inventory: ToolInventory) -> AuthoringReport:
-    """The argument half of one matcher, once the tool it addresses is decided."""
-    tool_predicate = site.matcher.tool
-    named = frozenset(_tool_names_asserted_by(tool_predicate)) if tool_predicate else frozenset()
-    where = f"{site.where}.args"
-    if len(named) != 1:
+def _check_bound_extractions(
+    binders: tuple[_BindingSite, ...], inventory: ToolInventory
+) -> AuthoringReport:
+    """What a tool's schema says about the values a binder draws out of its calls.
+
+    Two answers off the one resolved schema: the extraction addresses an argument
+    the tool declares, and the type declared there can be compared against the
+    fields the constraint references the name from.
+    """
+    return _merged(
+        _one_extraction(f"{site.where}.values.{name}.field", name, value, site, inventory)
+        for site in binders
+        for name, value in site.binding.values.items()
+    )
+
+
+def _one_extraction(
+    where: str, name: str, value: BoundValue, site: _BindingSite, inventory: ToolInventory
+) -> AuthoringReport:
+    """One extraction against the schema of the tool its binder selects.
+
+    Only an ``args`` extraction has a declared type at all: ``tool``, ``text`` and
+    ``result`` are the event's own string fields, which no tool schema describes
+    and which every reference compares correctly.
+    """
+    if value.head_segment() != "args":
+        return AuthoringReport()
+    resolved = _resolved_tool(site.binding.match, inventory, where)
+    if isinstance(resolved, Skip):
+        return AuthoringReport(unchecked=(resolved,))
+    _, _, path = value.field.partition(".")
+    if not path:
+        return _uncorrelatable_extraction(where, name, value, "object", resolved, site.references)
+    addressed = _one_argument_path(where, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
+    if addressed != AuthoringReport():
+        return addressed
+    declared = inventory.declared_type(resolved.name, path)
+    return _uncorrelatable_extraction(where, name, value, declared, resolved, site.references)
+
+
+def _uncorrelatable_extraction(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+    references: tuple[_PredicateSite, ...],
+) -> AuthoringReport:
+    """A value the schema types as non-text, read by a reference that compares text.
+
+    ``contains`` reads two strings as a substring pair and falls back to equality
+    for every other pairing, and ``equals_binding`` is that same equality, so both
+    are false on every trajectory — a check indistinguishable from the agent
+    failing. A ``pattern`` on the extraction binds a capture, which is a string.
+    """
+    if value.pattern is not None:
+        return AuthoringReport()
+    textual = _textual_references(name, references)
+    if not textual:
+        return AuthoringReport()
+    read_from = sorted(site.where for site in textual)
+    if declared is None:
         return AuthoringReport(
             unchecked=(
                 Skip(
                     where,
-                    "the matcher does not name one tool, so which schema declares these "
-                    "argument names is undecided",
+                    f"{resolved.name!r} declares no single type for {value.field!r} — no "
+                    f"type at all, or a union of several — so whether {read_from} can ever "
+                    "hold is not checkable",
                 ),
             )
         )
-    tool = next(iter(named))
-    strictness = inventory.strictness(tool)
-    if strictness is ArgumentSchema.UNKNOWN:
-        return AuthoringReport(
-            unchecked=(
-                Skip(where, f"no schema resolved for {tool!r}, so its arguments are not checkable"),
-            )
+    if declared not in _UNCORRELATABLE_JSON_TYPES:
+        return AuthoringReport()
+    finding = Finding(
+        where,
+        f"binding {name!r} extracts {value.field!r}, which {resolved.name!r} declares as "
+        f"type {declared!r}, and {read_from} compares it against a field holding text. A "
+        "non-string value is never a substring and equals nothing a text field holds, so "
+        "the check is false on every trajectory and reads as the agent's failure. Reference "
+        "the binding from an args predicate, which compares two arguments as they were "
+        "written, or bind a regex capture, which is always text",
+    )
+    if resolved.strictness is ArgumentSchema.CLOSED:
+        return AuthoringReport(errors=(finding,))
+    return AuthoringReport(advisories=(finding,))
+
+
+def _textual_references(
+    name: str, references: tuple[_PredicateSite, ...]
+) -> tuple[_PredicateSite, ...]:
+    """Every predicate reading *name* against a value that is text.
+
+    A ``regex`` beside the reference says the same of an argument the schema types
+    loosely: a pattern only ever holds against a string.
+    """
+    return tuple(
+        site
+        for site in references
+        if name in site.predicate.referenced_bindings()
+        and (site.field in _TEXTUAL_MATCHER_FIELDS or site.predicate.regex is not None)
+    )
+
+
+def _resolved_tool(
+    matcher: TraceMatcher, inventory: ToolInventory, where: str
+) -> _ResolvedTool | Skip:
+    """The tool whose schema answers for *matcher*'s arguments, or why none does."""
+    named = frozenset(_tool_names_asserted_by(matcher.tool)) if matcher.tool else frozenset()
+    if len(named) != 1:
+        return Skip(
+            where,
+            "the matcher does not name one tool, so which schema declares its arguments "
+            "is undecided",
         )
-    properties = inventory.properties(tool)
+    name = next(iter(named))
+    strictness = inventory.strictness(name)
+    if strictness is ArgumentSchema.UNKNOWN:
+        return Skip(where, f"no schema resolved for {name!r}, so its arguments are not checkable")
+    return _ResolvedTool(name, strictness, inventory.properties(name))
+
+
+def _one_matchers_argument_paths(site: _MatcherSite, inventory: ToolInventory) -> AuthoringReport:
+    """The argument half of one matcher, once the tool it addresses is decided."""
+    where = f"{site.where}.args"
+    resolved = _resolved_tool(site.matcher, inventory, where)
+    if isinstance(resolved, Skip):
+        return AuthoringReport(unchecked=(resolved,))
     return _merged(
-        _one_argument_path(f"{where}.{path}", path, tool, strictness, properties)
-        for path in site.matcher.args
+        _one_argument_path(f"{where}.{path}", path, resolved, _UNMATCHABLE_PREDICATE_HAZARD)
+        for path in site.matcher.args or ()
     )
 
 
 def _one_argument_path(
-    where: str,
-    path: str,
-    tool: str,
-    strictness: ArgumentSchema,
-    properties: frozenset[str],
+    where: str, path: str, resolved: _ResolvedTool, hazard: str
 ) -> AuthoringReport:
     head, _, below = path.partition(".")
-    if head not in properties:
-        return _unknown_argument_report(where, head, tool, strictness, properties)
+    if head not in resolved.properties:
+        return _unknown_argument_report(where, head, resolved, hazard)
     if below:
         return AuthoringReport(
             unchecked=(
@@ -367,21 +541,16 @@ def _one_argument_path(
 
 
 def _unknown_argument_report(
-    where: str,
-    head: str,
-    tool: str,
-    strictness: ArgumentSchema,
-    properties: frozenset[str],
+    where: str, head: str, resolved: _ResolvedTool, hazard: str
 ) -> AuthoringReport:
-    declared = f"{tool!r} declares {sorted(properties)}"
-    if strictness is ArgumentSchema.CLOSED:
+    declared = f"{resolved.name!r} declares {sorted(resolved.properties)}"
+    if resolved.strictness is ArgumentSchema.CLOSED:
         return AuthoringReport(
             errors=(
                 Finding(
                     where,
                     f"argument {head!r} is not one {declared} and its schema admits no "
-                    "other, so the matcher selects nothing and the default on_missing "
-                    "reports that as the agent's failure",
+                    f"other, so {hazard}",
                 ),
             )
         )
@@ -431,8 +600,8 @@ def _tool_names_asserted_by(predicate: ValuePredicate) -> tuple[str, ...]:
     return tuple(named)
 
 
-def _trace_matcher_sites(grading: Mapping[str, Any]) -> Iterator[_MatcherSite]:
-    """Every matcher the block declares, shared and per-route alike.
+def _trace_constraints(grading: Mapping[str, Any]) -> Iterator[tuple[str, TraceConstraint]]:
+    """Every constraint the block declares, shared and per-route, with its address.
 
     A route's constraints are graded exactly as the shared ones are, so a typo
     inside one is the same defect — and the route id joins the address because the
@@ -443,10 +612,45 @@ def _trace_matcher_sites(grading: Mapping[str, Any]) -> Iterator[_MatcherSite]:
         return
     config = TraceChecksConfig(**block)
     for constraint in config.constraints:
-        yield from _matcher_sites(constraint.require, f"trace_checks.{constraint.id}")
+        yield f"trace_checks.{constraint.id}", constraint
     for path in config.alternatives or ():
         for constraint in path.constraints:
-            yield from _matcher_sites(constraint.require, f"trace_checks.{path.id}.{constraint.id}")
+            yield f"trace_checks.{path.id}.{constraint.id}", constraint
+
+
+def _trace_matcher_sites(
+    constraints: Iterable[tuple[str, TraceConstraint]],
+) -> Iterator[_MatcherSite]:
+    """Every matcher a constraint declares, wherever on the constraint it lives.
+
+    Structural over the constraint's own fields, so a matcher-bearing field added
+    to the vocabulary is walked without a second table to keep in step. ``require``
+    alone is elided from the address, because the kind it declares is the segment
+    an author reads a finding by.
+    """
+    for where, constraint in constraints:
+        for name in type(constraint).model_fields:
+            below = where if name == "require" else f"{where}.{name}"
+            yield from _matcher_sites(getattr(constraint, name), below)
+
+
+def _trace_binding_sites(
+    constraints: Iterable[tuple[str, TraceConstraint]],
+) -> Iterator[_BindingSite]:
+    """Every binder a constraint declares, with the predicates reading its names."""
+    for where, constraint in constraints:
+        if constraint.bind is None:
+            continue
+        yield _BindingSite(
+            where=f"{where}.bind",
+            binding=constraint.bind,
+            references=tuple(
+                predicate_site
+                for matcher_site in _matcher_sites(constraint.require, where)
+                for predicate_site in _predicate_sites(matcher_site)
+                if predicate_site.predicate.referenced_bindings()
+            ),
+        )
 
 
 def _transcript_rules(grading: Mapping[str, Any]) -> TranscriptRulesConfig | None:
@@ -480,10 +684,10 @@ def _predicate_sites(site: _MatcherSite) -> Iterator[_PredicateSite]:
     for name in type(site.matcher).model_fields:
         value = getattr(site.matcher, name)
         if isinstance(value, ValuePredicate):
-            yield _PredicateSite(f"{site.where}.{name}", value)
+            yield _PredicateSite(f"{site.where}.{name}", name, value)
         elif isinstance(value, Mapping):
             for path, predicate in value.items():
-                yield _PredicateSite(f"{site.where}.{name}.{path}", predicate)
+                yield _PredicateSite(f"{site.where}.{name}.{path}", name, predicate)
 
 
 def _merged(reports: Iterable[AuthoringReport]) -> AuthoringReport:
