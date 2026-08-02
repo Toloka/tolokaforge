@@ -265,8 +265,9 @@ _TRACE_CHECKS_EVIDENCE_LIMITS = (
 _TRACE_CHECKS_ALTERNATIVES_NARROWING = (
     "the alternative routes a pack declares, each scored as a whole against the "
     "shared constraints plus its own. An entry carries one runner_field, and the "
-    "per-kind entries address TraceChecksConfig.constraints alone, so a constraint "
-    "kind written only inside a path is covered by this key rather than by its own "
+    "per-constraint entries address TraceChecksConfig.constraints alone, so a "
+    "constraint kind or per-constraint field written only inside a path is covered "
+    "by this key rather than by its own "
     "— #772 narrows the ledger's populated-implies-accounted guarantee there. The "
     "parity claim is untouched: one function reads a TraceConstraint identically "
     "whichever list it came from. "
@@ -641,6 +642,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         "on_missing",
         "what an anchor that matched nothing decides, which is a policy over the "
         "constraint's verdict rather than a check of its own. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
+    ),
+    _trace_constraint_field_key(
+        "severity",
+        "whether a constraint carries a share of the component or is a gate that must "
+        "hold, which decides whether it enters the weighted average at all and whether "
+        "its violation takes the component to 0.0. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
     ),
     _trace_constraint_field_key(
         "within",

@@ -1,0 +1,26 @@
+task_id: trace_checks_constraints_severity
+name: "Substrate differential: trace_checks_constraints_severity"
+category: test
+description: |
+  Substrate-parity differential fixture. The grading.yaml declares exactly one
+  author key so a violating trial can only be discriminated by that key.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled: []
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

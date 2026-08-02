@@ -425,6 +425,61 @@ def test_a_task_that_declares_no_tools_makes_every_tool_matcher_an_error() -> No
     assert "no tools at all" in report.errors[0].message
 
 
+def test_a_typo_inside_an_alternative_route_is_reported_under_that_route() -> None:
+    """A route's constraints are checked, and a finding there names the route.
+
+    Boundary case, standing lock: a walk over ``constraints`` alone reaches nothing
+    inside ``alternatives``, so a misspelled tool on one route escapes the gate
+    entirely and the route it sits on can never be walked by any agent. The
+    ``<path>.<constraint>`` address is what tells such a finding apart from one on a
+    shared constraint of the same name — the block's single id space is what makes
+    it unambiguous.
+    """
+    grading = {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "the_ticket_was_read",
+                    "description": "the agent read the ticket",
+                    "require": {"present": {"match": _tool_call("http_reqest")}},
+                }
+            ],
+            "alternatives": [
+                {
+                    "id": "by_the_ticket_api",
+                    "description": "the answer came from the ticket API",
+                    "constraints": [
+                        {
+                            "id": "the_api_answered",
+                            "description": "the ticket API answered",
+                            "require": {"present": {"match": _tool_call("http_requst")}},
+                        }
+                    ],
+                },
+                {
+                    "id": "by_the_knowledge_base",
+                    "description": "the answer came from the knowledge base",
+                    "constraints": [
+                        {
+                            "id": "the_article_was_read",
+                            "description": "the knowledge-base article was read",
+                            "require": {"present": {"match": _tool_call("http_request")}},
+                        }
+                    ],
+                },
+            ],
+        }
+    }
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.the_ticket_was_read.present.match.tool",
+        "trace_checks.by_the_ticket_api.the_api_answered.present.match.tool",
+    ]
+    assert all("is not declared by this task" in finding.message for finding in report.errors)
+
+
 _HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON = (
     pytest.param(True, id="written_true"),
     pytest.param(1, id="written_one"),

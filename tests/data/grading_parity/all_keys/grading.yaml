@@ -98,6 +98,7 @@ trace_checks:
                 match: { kind: tool_call, tool: { equals: write_file } }
     - id: closed_straight_after_writing_and_told_nobody_meanwhile
       description: the close follows the write, with no notification while the work is open
+      severity: scored
       require:
         all_of:
           - immediately_before:

@@ -1194,7 +1194,9 @@ A block declares `constraints`, `alternatives`, or both — but not neither, whi
 would score nothing. **Every `id` in the block shares one space**: the path ids and
 every constraint id, shared and per-path alike, because an id is how the grade names
 a sub-check and how [the pre-run gate](#what-is-validated-before-a-run) addresses one
-as `trace_checks.<id>`. A repeat anywhere is a load error.
+— `trace_checks.<id>` for a shared constraint and
+`trace_checks.<path id>.<constraint id>` for one inside a route. A repeat anywhere is
+a load error.
 
 ### Matchers
 
@@ -1656,9 +1658,9 @@ Findings come in three classes:
 
 | rule | class | where |
 |---|---|---|
-| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | `trace_checks` matchers |
+| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | every `trace_checks` matcher, shared and per-route |
 | `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
-| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | `trace_checks` matchers |
+| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | every `trace_checks` matcher, shared and per-route |
 | an `args` path whose first segment is outside the properties of a tool whose schema permits extras | advisory | as above |
 | a `regex` pattern that does not compile | error | every predicate, plus `transcript_rules.disallow_regex` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
@@ -1686,11 +1688,22 @@ schema declares no properties and nothing below it is answerable. A tool named b
 `regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
 set, not a token.
 
+**Every matcher rule reaches inside [`alternatives`](#alternative-paths).** A route's
+constraints are graded exactly as the shared ones are, so a misspelled tool on one
+route carries the same two hazards it does on a shared constraint, with the route as
+the blast radius: under `present` that route can be walked in full and still score
+below its siblings, and under `absent` it passes on every trajectory. A finding there
+is addressed `trace_checks.<path id>.<constraint id>`, against `trace_checks.<id>` for
+a shared constraint; the block's single id space is what keeps the two apart.
+
 **A block that scores nothing is rejected.** `trace_checks` declaring neither
 `constraints` nor `alternatives` asserts nothing; `alternatives` carrying fewer than
 two paths is the flat form written the long way round; and an `id` repeated anywhere
-in the block's one id space makes two sub-check results indistinguishable. All three
-are load errors naming what to write instead.
+in the block's one id space makes two sub-check results indistinguishable. A
+`weight` beside [`severity: gate`](#severity--a-check-that-must-hold) is rejected for
+the neighbouring reason — a gate enters neither the numerator nor the denominator, so
+the weight is a declared key nothing reads. All four are load errors naming what to
+write instead.
 
 **An ordering over one matcher is rejected unless some trajectory decides it.**
 Writing the same matcher on both sides of `before`, or forbidding the very events an

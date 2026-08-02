@@ -432,11 +432,21 @@ def _tool_names_asserted_by(predicate: ValuePredicate) -> tuple[str, ...]:
 
 
 def _trace_matcher_sites(grading: Mapping[str, Any]) -> Iterator[_MatcherSite]:
+    """Every matcher the block declares, shared and per-route alike.
+
+    A route's constraints are graded exactly as the shared ones are, so a typo
+    inside one is the same defect — and the route id joins the address because the
+    block's one id space is what keeps the two forms apart.
+    """
     block = grading.get("trace_checks")
     if not isinstance(block, Mapping):
         return
-    for constraint in TraceChecksConfig(**block).constraints:
+    config = TraceChecksConfig(**block)
+    for constraint in config.constraints:
         yield from _matcher_sites(constraint.require, f"trace_checks.{constraint.id}")
+    for path in config.alternatives or ():
+        for constraint in path.constraints:
+            yield from _matcher_sites(constraint.require, f"trace_checks.{path.id}.{constraint.id}")
 
 
 def _transcript_rules(grading: Mapping[str, Any]) -> TranscriptRulesConfig | None:

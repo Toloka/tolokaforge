@@ -201,16 +201,18 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
         "trace_checks",
         "trace_checks.constraints.weight",
         "trace_checks.constraints.on_missing",
+        "trace_checks.constraints.severity",
         "trace_checks.constraints.within",
     }
 )
 
-# The three per-constraint fields that shape how a kind scores without scoring
+# The four per-constraint fields that shape how a kind scores without scoring
 # anything themselves. Each owns a pack whose two trials a build ignoring the
 # field would score identically, so discrimination is the field being read.
 _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
     "trace_checks.constraints.weight",
     "trace_checks.constraints.on_missing",
+    "trace_checks.constraints.severity",
     "trace_checks.constraints.within",
 )
 
@@ -1914,12 +1916,13 @@ def test_the_winning_route_crosses_the_wire(
 def test_both_substrates_read_each_per_constraint_config_input(author_key, test_data_dir, tmp_path):
     """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
 
-    Lock 3 selects ``SCORED_CHECK``, so these three escape it — they carry no
+    Lock 3 selects ``SCORED_CHECK``, so these four escape it — they carry no
     component of their own, they change what one does. Each pack is authored so
     that a build ignoring the field scores its two trials *identically*: the
     weights are the only thing telling one from the other, or the unmatched
-    anchor's policy is, or the turn window is. Discrimination here is therefore
-    the field being read, not the constraint around it working.
+    anchor's policy is, or the turn window is, or which constraint is the gate is.
+    Discrimination here is therefore the field being read, not the constraint
+    around it working.
     """
     verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
     _assert_both_substrates_discriminate(author_key, verdict)

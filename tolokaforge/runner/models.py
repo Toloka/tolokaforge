@@ -1099,7 +1099,8 @@ class TraceChecksConfig(BaseModel):
         """Every id the block declares, across the paths and every constraint list.
 
         One space, because that is what a grade's sub-check results and the pre-run
-        gate's ``trace_checks.<id>`` findings address a check by.
+        gate's findings address a check by — ``trace_checks.<id>`` for a shared
+        constraint, ``trace_checks.<path id>.<constraint id>`` for one inside a route.
         """
         ids = [item.id for item in self.constraints]
         for path in self.alternatives or ():
@@ -1141,8 +1142,9 @@ class TraceChecksConfig(BaseModel):
             raise ValueError(
                 f"ids {duplicated} are declared more than once. The paths and every "
                 "constraint list share one id space, because an id is how the grade names "
-                "a sub-check and how the pre-run gate addresses one as trace_checks.<id>, "
-                "so a repeat anywhere in the block makes two results indistinguishable"
+                "a sub-check and how the pre-run gate addresses one — trace_checks.<id> "
+                "shared, trace_checks.<path id>.<constraint id> inside a route — so a "
+                "repeat anywhere in the block makes two results indistinguishable"
             )
         return self
 
