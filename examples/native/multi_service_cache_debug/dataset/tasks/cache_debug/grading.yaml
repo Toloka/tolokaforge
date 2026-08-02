@@ -12,11 +12,31 @@
 #   state_checks (0.25) — a deterministic floor: the written note names the
 #     cache-invalidation concept (substring `invalidat`).
 #   trace_checks (0.25) — the diagnostic process: one of the two comparisons the
-#     rubric reference names, walked before the note was written, and no status
+#     rubric reference names, walked before the note was written, the stale value
+#     the note reports quoted out of the read that returned it, and no status
 #     update written on a diagnose-only task.
 #
 # A correct diagnosis is not sunk by the route it took: judge 0.5 + note 0.25
 # already exceeds the 0.6 threshold whichever comparison the agent chose.
+#
+# The grounded-claim check rides inside the existing 0.25, so the calibration
+# invariant is untouched: the deterministic components still sum to 0.5, below the
+# 0.6 threshold, and no trial passes on process alone.
+#
+# CANDIDACY: the two `..._the_note_quotes_...` constraints below are candidates to
+# replace the `explains_mechanism` judge criterion — the half of it that asks the
+# note to be grounded in the divergence the agent observed rather than recited. They
+# do NOT retire it here. `explains_mechanism` also asks for the causal account (the
+# write updates postgres and skips the invalidation), which no exact or textual
+# check reaches, and the retirement decision belongs to #683, whose gate is
+# agreement against historical judge verdicts. See docs/GRADING.md § Trace Checks.
+#
+# RECORDS-DEPENDENCE: these two binders read `field: result`, which makes this pack
+# records-dependent for the first time — on a bundle re-graded without records the
+# binder's own matcher is undecidable and the winning route's grounded-claim
+# constraint reports that the candidate set cannot be determined, where every other
+# constraint here stays decidable. See docs/GRADING.md § What is validated before a
+# run, "A binder reading `field: result` makes its pack records-dependent".
 combine:
   method: weighted
   weights: { state_checks: 0.25, trace_checks: 0.25, llm_judge: 0.5 }
@@ -44,6 +64,24 @@ state_checks:
 # The gate is SHARED rather than written inside a route: "do not mutate the order
 # on a diagnose-only task" holds whatever route the agent took, and a gate inside a
 # path is consulted only when that path wins.
+#
+# The grounded-claim check is PER ROUTE rather than shared, because no single read is
+# common to both: route A is guaranteed the cache-first `GET /orders/4021`, route B
+# the cache inspector, and route B's `any_of` admits `/source` in place of the served
+# read. A shared binder would have route-dependent candidates and could fail a
+# correct route. It binds the status token the route's own stale read returned and
+# names no status value, so it generalises to whatever the cache is holding.
+#
+# It carries `on_unbound: pass` for the same charge-once reason the ordering checks
+# carry `on_missing: pass`: an agent that never made the route's stale read is
+# already charged by that route's presence check, and charging it again here would
+# cascade one wrong process into two failures.
+#
+# The two capture patterns differ because the two payloads do. `http_request` renders
+# a JSON response as the parsed object's Python repr, so route A's served read shows
+# `'status': 'processing'` in single quotes; the cache inspector returns the cached
+# blob as a JSON string inside a JSON field, so route B's read shows `"status":
+# "processing"` in double quotes inside that repr. One pattern does not serve both.
 trace_checks:
   constraints:
     - id: no_status_was_written
@@ -119,6 +157,34 @@ trace_checks:
                     match:
                       kind: tool_call
                       tool: { equals: write_file }
+        - id: the_note_quotes_the_value_the_served_read_returned
+          description: "the status the note reports is the one the customer-facing read actually returned, so the divergence is quoted rather than assumed"
+          bind:
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              status: { equals: success }
+              args:
+                url: { equals: "http://orders-api:8000/orders/4021" }
+                method: { equals: GET }
+            values:
+              observed: { field: result, pattern: "'status': '([a-z]+)'" }
+            on_unbound: pass
+          require:
+            any_of:
+              # No note at all is charged once, to `the_note_was_written`. This is
+              # what `on_missing: pass` says for the ordering checks, written as a
+              # branch because `on_missing` is rejected on `present`.
+              - absent:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+                    args:
+                      content: { contains_binding: observed }
     - id: divergence_against_the_cache
       description: "the bug is located by reading the cached value and comparing it against either orders-api read"
       constraints:
@@ -196,6 +262,31 @@ trace_checks:
                         match:
                           kind: tool_call
                           tool: { equals: write_file }
+        - id: the_note_quotes_the_value_the_cache_held
+          description: "the status the note reports is the one the cache inspector actually returned, so the divergence is quoted rather than assumed"
+          bind:
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              status: { equals: success }
+              args:
+                url: { equals: "http://cache-admin:8000/cache/order:4021" }
+                method: { equals: GET }
+            values:
+              observed: { field: result, pattern: '"status": "([a-z]+)"' }
+            on_unbound: pass
+          require:
+            any_of:
+              - absent:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+                    args:
+                      content: { contains_binding: observed }
 llm_judge:
   rubric:
     reference: |

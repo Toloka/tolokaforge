@@ -1824,7 +1824,7 @@ took.
 
 A forbidden tool called, another customer's record touched, an order mutated by a
 diagnose-only agent — all route-independent, so all shared gates. The last is a
-shipped pack: see [`cache_debug`](#two-worked-packs), whose one gate is shared for
+shipped pack: see [`cache_debug`](#three-worked-packs), whose one gate is shared for
 exactly this reason.
 
 This rule is guidance rather than a guarantee, and the reason is worth stating
@@ -1845,7 +1845,7 @@ same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` ho
 every shipped example pack to that, reading the combine that is *effective* after
 the project layer merges.
 
-### Two worked packs
+### Three worked packs
 
 [`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
 grades the process alongside the substrate. Its three constraints are the three
@@ -1875,8 +1875,10 @@ reference names **two** comparisons as locating the bug, so the two are declared
 | `both_api_layer_reads_precede_the_note` | route `divergence_between_the_api_layers` | the note was written first and the source read afterwards |
 | `the_cached_value_and_an_api_read_happened` | route `divergence_against_the_cache` | the cache inspector was never opened |
 | `the_cache_comparison_precedes_the_note` | route `divergence_against_the_cache` | the cached value was read after the note that claims to explain it |
+| `the_note_quotes_the_value_the_served_read_returned` | route `divergence_between_the_api_layers` | the note recites the mechanism without quoting anything the agent observed |
+| `the_note_quotes_the_value_the_cache_held` | route `divergence_against_the_cache` | as above, off the cached read |
 
-Three authoring choices in it are worth copying:
+Four authoring choices in it are worth copying:
 
 - **The gate is shared, not per-route.** "Do not mutate on a diagnose-only task"
   holds whichever comparison the agent chose, and a gate inside a route is consulted
@@ -1896,6 +1898,75 @@ Three authoring choices in it are worth copying:
   shows only that the read path serves something the database disagrees with. The
   deterministic components therefore sum to less than `pass_threshold`, so no trial
   passes on process alone.
+- **The grounded-claim check is per route, and the binder is that route's own read.**
+  No single read is common to both routes, so a shared binder would have
+  route-dependent candidates and could fail a correct route. Each route binds the
+  status token out of the read it guarantees and requires the note to quote it, which
+  names no status value and so generalises to whatever the cache is holding. It
+  carries `on_unbound: pass` for the same charge-once reason the ordering checks carry
+  `on_missing: pass`, and its `require` is an `any_of` whose first branch is "no note
+  was written at all" — `on_missing` is [rejected on `present`](#on_missing--what-an-unmatched-anchor-decides),
+  so the branch is how the same intent is written there. The two capture patterns
+  differ because the payloads do: `http_request` renders a JSON response as the parsed
+  object's Python `repr`, so the served read shows single-quoted keys while the cache
+  inspector's nested JSON string keeps the double quotes it was serialised with. Bind
+  against the payload the service really answers with, not against the one the schema
+  suggests.
+
+[`examples/native/multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md)
+is the correlation reference. Its substrate oracle reads the `corrective_actions` row
+that exists and cannot say how the values in it were obtained, and its own task
+guidance already demands a process nothing in its fold checked — "GET the reason-code
+catalog to find the contamination code before opening the action; do not guess it":
+
+| constraint | shape | the wrong process it catches |
+|---|---|---|
+| `the_reason_code_posted_was_read_from_the_catalog` | `bind` `code` from the POST's `args.json.reason_code`; `before` any successful result `contains_binding` it, then the first POST | the code was written from memory, or fabricated, rather than looked up |
+| `the_lot_was_read_before_the_action_was_opened` | `bind` `lot_url` from the POST's `args.url` by a regex capture; `before` any `GET` whose url `equals_binding` it, then the first POST | the action was opened against a lot the agent never read |
+| `exactly_one_corrective_action_was_opened` | `count { max: 1 }` over the POST, `severity: gate` | the action is double-posted, leaving the operator a duplicate to reconcile |
+
+Two statements generalise out of it, and both are the difference between a correlation
+that earns its weight and one that decorates a pack:
+
+- **A correlation earns its weight only where the substrate oracle cannot already see
+  the answer.** The flagship pack's only same-type correlation — the resolution path
+  written onto the delivery is the one recorded on the case — is already pinned to
+  `reschedule` by two independent db_probes, so adding it would catch nothing and
+  would be a check written to satisfy a corpus test. Here the probe reads the row the
+  POST created; it has no view of where the code came from, so the correlation is the
+  only thing in the fold that asks. Stated precisely: it beats **the fold**, not a
+  hard-coded `contains: CAPA-01` on every trajectory — wherever the probe passes, the
+  posted code *is* `CAPA-01` and both select the same events. What the binding adds
+  over the literal is the fabricated-code trajectory, and that a new code in the
+  catalog needs no constraint edit.
+- **A correlation over a short token is a correlation over noise — bind the widest
+  unambiguous span.** The lot id lives in the URL path, so the obvious capture binds
+  `"7"`, and `contains(".../lots/1007", "7")` is `True`: an agent that read the lot
+  *code* as though it were the id would pass. Capturing the whole `http://…/lots/7`
+  prefix and comparing it with `equals_binding` has no substring reading at all, and
+  it still names no lot number. There is no load-time answer to this — the value is
+  runtime — so it is an authoring rule rather than a rejected shape.
+
+#### What a correlation is a candidate to replace, and what it is not
+
+Both packs above name, in their `grading.yaml` headers, the judge criterion each new
+check is a candidate to replace. **Neither retires one.** The candidacy is a documented
+starting point for #683, which owns rubric migration, and the two findings below are
+what it has to honour — recorded here because correlation is what surfaced them.
+
+| new check | candidate to replace | why it cannot yet |
+|---|---|---|
+| `lot_ops_01`'s two correlations | `names_lot` (binary, `required: true`) | the criterion accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value; and it is a required criterion, so see the first finding |
+| `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded) | they reach the half that asks the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
+
+1. **Every retirement candidate in the corpus is `required: true`** — a trial-level
+   veto carrying **zero score share**. Migrating one converts that veto into either a
+   `severity: gate`, which is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate),
+   or a fraction of a scored component. Both are strictly weaker than what they
+   replace, and the weakening is invisible in the component score.
+2. **#683's own gate is agreement against historical judge verdicts.** A pack gaining
+   a correlation has no recorded-trial evidence and structurally cannot have any, so
+   retiring a criterion beside the new check would pre-empt that gate with a guess.
 
 ### Declared limits, and what owns each
 
@@ -1907,7 +1978,7 @@ evaluator.
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
 | A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
-| Migrating an existing rubric criterion into a constraint | #683 |
+| Migrating an existing rubric criterion into a constraint. Correlation ships, and [what it can and cannot retire](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) is measured: two packs name the criterion each new check is a candidate to replace, and the decision waits on the two findings recorded there — every candidate is a `required: true` veto with no score share, and #683's gate is agreement against historical judge verdicts | #683 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |

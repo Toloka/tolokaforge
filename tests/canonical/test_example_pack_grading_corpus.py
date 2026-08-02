@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and its packs discriminate.
 
-Six claims over the packs an author reads as the reference:
+Seven claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -27,11 +27,21 @@ Six claims over the packs an author reads as the reference:
 6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
    passed by mutating.** Either comparison its rubric reference names scores in full
    and records itself as the winner; completing neither scores below completing
-   either; and the shared gate sinks a trial whose winning route scored ``1.0``.
+   either; and the shared gate sinks a trial whose winning route scored ``1.0``. Each
+   route additionally requires the note to quote the stale status token that route's
+   own read returned, so a note that recites the mechanism without the observation
+   fails that route's grounded-claim check and nothing else.
+7. **``lot_ops_01`` grades how the posted values were obtained, which its substrate
+   oracle cannot see.** The reason code has to appear in a successful API result
+   before the action is opened and the lot has to have been read first, both bound out
+   of the POST rather than written as literals — so a guessed code, a fabricated code,
+   an action against an unread lot, and a doubled post each fail exactly the check
+   that names them, on trajectories the db_probe grades identically.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Sequence
 from pathlib import Path
 
@@ -49,11 +59,13 @@ from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.models import (
+    Grade,
     GradingConfig,
     Message,
     MessageRole,
     RecordedToolCall,
     ToolCall,
+    ToolExecutionStatus,
     TraceChecksConfig,
     TraceChecksResult,
     TraceConstraintKind,
@@ -61,6 +73,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.project_loader import load_project_config
 from tolokaforge.dx.cli.main import cli
+from tolokaforge.runner.grading_ledger import audit_accounted_keys
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -315,23 +328,53 @@ _CASES = "http://crm:8000/cases"
 _DELIVERY = "http://delivery-tracker:8000/deliveries/4021"
 
 
-def _http_call(sequence: int, url: str, method: str, **body: object) -> RecordedToolCall:
+def _http_call(
+    sequence: int,
+    url: str,
+    method: str,
+    *,
+    body: dict[str, object] | None = None,
+    output: str = "",
+    status: ToolExecutionStatus = ToolExecutionStatus.SUCCESS,
+) -> RecordedToolCall:
+    """One recorded ``http_request``.
+
+    ``body`` is a mapping rather than a kwargs splat: a request body carrying a
+    ``status`` key is ordinary here (``POST /orders/4021``) and would otherwise
+    shadow this function's own parameter.
+    """
     arguments: dict[str, object] = {"url": url, "method": method}
     if body:
         arguments["json"] = body
-    return recorded_call("http_request", sequence=sequence, arguments=arguments)
+    return recorded_call(
+        "http_request", sequence=sequence, arguments=arguments, output=output, status=status
+    )
+
+
+def _json_response(payload: object, status_code: int = 200) -> str:
+    """A response as ``HTTPRequestTool`` renders it — the parsed object's ``repr``.
+
+    Load-bearing for every constraint that binds a value out of a result: the tool
+    formats a JSON body with ``f"{response.json()}"``, so a served object shows
+    single-quoted keys and a JSON string nested inside one shows the double quotes
+    it was serialised with. The two capture patterns in ``cache_debug`` differ for
+    exactly that reason.
+    """
+    return f"Status: {status_code}\nResponse (JSON):\n{payload!r}"
 
 
 def _search(sequence: int, **body: object) -> RecordedToolCall:
-    return _http_call(sequence, _SEARCH, "POST", **body)
+    return _http_call(sequence, _SEARCH, "POST", body=body)
 
 
 def _create_case(sequence: int) -> RecordedToolCall:
-    return _http_call(sequence, _CASES, "POST", delivery_id=4021, resolution_path="reschedule")
+    return _http_call(
+        sequence, _CASES, "POST", body={"delivery_id": 4021, "resolution_path": "reschedule"}
+    )
 
 
 def _annotate_delivery(sequence: int) -> RecordedToolCall:
-    return _http_call(sequence, _DELIVERY, "PATCH", resolution_path="reschedule")
+    return _http_call(sequence, _DELIVERY, "PATCH", body={"resolution_path": "reschedule"})
 
 
 _POLICY_CORRECT_RUN = (
@@ -450,16 +493,55 @@ _CACHE_DEBUG_SHARED = (
 _CACHE_DEBUG_PATHS = (
     (
         "divergence_between_the_api_layers",
-        ("both_api_layer_reads_happened", "both_api_layer_reads_precede_the_note"),
+        (
+            "both_api_layer_reads_happened",
+            "both_api_layer_reads_precede_the_note",
+            "the_note_quotes_the_value_the_served_read_returned",
+        ),
     ),
     (
         "divergence_against_the_cache",
-        ("the_cached_value_and_an_api_read_happened", "the_cache_comparison_precedes_the_note"),
+        (
+            "the_cached_value_and_an_api_read_happened",
+            "the_cache_comparison_precedes_the_note",
+            "the_note_quotes_the_value_the_cache_held",
+        ),
     ),
 )
 
+# The two order views the pack's bug is the divergence between: the poisoned redis
+# blob (``assets/build_seed.py``) and the postgres row (``shared/app-db/init.sql``).
+_STALE_ORDER = {
+    "order_id": 4021,
+    "customer_id": "ACME",
+    "product": "Widget crate",
+    "status": "processing",
+    "updated_at": "2026-07-10T09:00:00+00:00",
+}
+_FRESH_ORDER = dict(_STALE_ORDER, status="shipped", updated_at="2026-07-28T14:12:00+00:00")
 
-_NOTE_TEXT = "order:4021 is never invalidated on a status update, so reads serve the stale value"
+# What each of the three reads answers with. ``/cache/order:4021`` returns the cached
+# blob as a JSON *string* inside a JSON field (``shared/cache-admin/main.py``), which
+# is why the cached read carries double-quoted keys where the served read does not.
+_CACHE_DEBUG_PAYLOADS = {
+    _SERVED: _STALE_ORDER,
+    _SOURCE: _FRESH_ORDER,
+    _CACHED: {"key": "order:4021", "value": json.dumps(_STALE_ORDER)},
+    _CACHE_KEYS: {"keys": ["order:4021"]},
+}
+
+# A note the way the pack's own rubric reference writes one: it names the mechanism
+# *and* quotes the two status values the agent read, which is what makes the
+# grounded-claim check pass on a correct run rather than only on a verbose one.
+_NOTE_TEXT = (
+    "order:4021 is never invalidated on a status update, so the cache-first read keeps "
+    "serving the stale processing value while the source of truth already reads shipped"
+)
+# The same diagnosis with the observation removed: a plausible note that explains
+# cache invalidation without quoting anything the agent saw.
+_UNGROUNDED_NOTE_TEXT = (
+    "order:4021 is never invalidated on a status update, so reads serve the stale value"
+)
 
 # The note as the pack's own jsonpath check reads it, so a whole-grade fold sees the
 # deterministic components the gate has to override rather than a stub.
@@ -467,18 +549,20 @@ _NOTE_ON_DISK = {"filesystem": {"/env/fs/agent-visible/submissions/rootcause.md"
 
 
 def _read(sequence: int, url: str) -> RecordedToolCall:
-    return _http_call(sequence, url, "GET")
+    return _http_call(sequence, url, "GET", output=_json_response(_CACHE_DEBUG_PAYLOADS[url]))
 
 
 def _post_status(sequence: int) -> RecordedToolCall:
-    return _http_call(sequence, _SERVED, "POST", status="shipped")
+    return _http_call(
+        sequence, _SERVED, "POST", body={"status": "shipped"}, output=_json_response(_FRESH_ORDER)
+    )
 
 
-def _root_cause_note(sequence: int) -> RecordedToolCall:
+def _root_cause_note(sequence: int, text: str = _NOTE_TEXT) -> RecordedToolCall:
     return recorded_call(
         "write_file",
         sequence=sequence,
-        arguments={"path": "submissions/rootcause.md", "content": _NOTE_TEXT},
+        arguments={"path": "submissions/rootcause.md", "content": text},
     )
 
 
@@ -554,6 +638,24 @@ _CACHE_DEBUG_WRONG_PROCESS_RUNS = (
         (_root_cause_note(0), _read(1, _CACHED), _read(2, _SERVED)),
         "the_cache_comparison_precedes_the_note",
         id="the_cache_was_read_after_the_note",
+    ),
+    # Both routes walked in full, with a note that recites the mechanism and quotes
+    # nothing the agent observed. Each row is the run on which its route wins, so the
+    # grounded-claim check reached is that route's own.
+    pytest.param(
+        (_read(0, _SERVED), _read(1, _SOURCE), _root_cause_note(2, _UNGROUNDED_NOTE_TEXT)),
+        "the_note_quotes_the_value_the_served_read_returned",
+        id="the_note_names_no_value_the_served_read_returned",
+    ),
+    pytest.param(
+        (
+            _read(0, _SERVED),
+            _read(1, _CACHE_KEYS),
+            _read(2, _CACHED),
+            _root_cause_note(3, _UNGROUNDED_NOTE_TEXT),
+        ),
+        "the_note_quotes_the_value_the_cache_held",
+        id="the_note_names_no_value_the_cache_held",
     ),
 )
 
@@ -669,3 +771,287 @@ def test_the_cache_debug_gate_fails_a_trial_whose_winning_route_scored_in_full()
     assert grade.components.state_checks == pytest.approx(1.0)
     assert grade.components.trace_checks == pytest.approx(0.0)
     assert grade.binary_pass is False
+
+
+_LOT_OPS_TASK = (
+    _EXAMPLES
+    / "native"
+    / "multi_service_lot_ops"
+    / "dataset"
+    / "tasks"
+    / "lot_ops_01"
+    / "task.yaml"
+)
+
+# The block the pack is expected to ship, written out here so the assertion compares
+# two sources. Both correlations are `before`, and the duplicate-post check is the
+# pack's only gate.
+_LOT_OPS_CONSTRAINTS = (
+    (
+        "the_reason_code_posted_was_read_from_the_catalog",
+        TraceConstraintKind.BEFORE,
+        TraceConstraintSeverity.SCORED,
+    ),
+    (
+        "the_lot_was_read_before_the_action_was_opened",
+        TraceConstraintKind.BEFORE,
+        TraceConstraintSeverity.SCORED,
+    ),
+    (
+        "exactly_one_corrective_action_was_opened",
+        TraceConstraintKind.COUNT,
+        TraceConstraintSeverity.GATE,
+    ),
+)
+
+_APP = "http://app-service:8000"
+
+# The three responses the lot-ops API really answers with, from `shared/app/main.py`
+# and the `reason_codes` / `lots` seeds in `shared/app-db/init.sql`. The catalog read
+# is the only place `CAPA-01` reaches the transcript before the POST, which is what
+# the reason-code correlation is about.
+_REASON_CODES = [
+    {"code": "CAPA-01", "title": "Contamination", "category": "quality"},
+    {"code": "CAPA-02", "title": "Dimensional nonconformance", "category": "quality"},
+    {"code": "CAPA-03", "title": "Documentation error", "category": "process"},
+]
+_LOT_7 = {
+    "lot_id": 7,
+    "lot_code": "LOT-1007",
+    "product": "Sterile vial C",
+    "status": "released",
+    "quantity": 980,
+    "created_at": "2026-06-16",
+}
+
+_LOT_OPS_TURNS = (
+    "LOT-1007 (lot_id 7) came back from QC with a contamination hit",
+    "looking the lot and the reason code up, then opening the action",
+)
+
+
+def _lot_ops_get(
+    sequence: int, path: str, payload: object, status_code: int = 200
+) -> RecordedToolCall:
+    return _http_call(sequence, f"{_APP}{path}", "GET", output=_json_response(payload, status_code))
+
+
+def _open_action(sequence: int, lot: int, code: str, *, accepted: bool = True) -> RecordedToolCall:
+    """A ``POST`` opening a corrective action, as the service answers it.
+
+    ``reason_code`` carries a foreign key to ``reason_codes(code)``, so a code the
+    catalog does not hold is rejected by postgres and the tool records a failure. The
+    binder reads ``args.json.reason_code`` rather than the result, so it binds the
+    attempted code either way — which is what lets a fabricated code be caught.
+    """
+    created = {
+        "ca_id": 1,
+        "lot_id": lot,
+        "reason_code": code,
+        "note": "QC contamination hit",
+        "status": "open",
+    }
+    return _http_call(
+        sequence,
+        f"{_APP}/lots/{lot}/corrective-actions",
+        "POST",
+        body={"reason_code": code, "note": "QC contamination hit"},
+        output=_json_response(created, 201) if accepted else "",
+        status=ToolExecutionStatus.SUCCESS if accepted else ToolExecutionStatus.ERROR,
+    )
+
+
+def _completion_report(sequence: int) -> RecordedToolCall:
+    return recorded_call(
+        "write_file",
+        sequence=sequence,
+        arguments={
+            "path": "submissions/report.md",
+            "content": "Opened a contamination corrective action (CAPA-01) on lot LOT-1007.",
+        },
+    )
+
+
+def _catalog(sequence: int) -> RecordedToolCall:
+    return _lot_ops_get(sequence, "/reason-codes", _REASON_CODES)
+
+
+def _lot(sequence: int) -> RecordedToolCall:
+    return _lot_ops_get(sequence, "/lots/7", _LOT_7)
+
+
+_LOT_OPS_CORRECT_RUN = (
+    _lot(0),
+    _catalog(1),
+    _open_action(2, 7, "CAPA-01"),
+    _completion_report(3),
+)
+
+# The trajectory that motivates the pack's whole trace block: the agent skips the
+# catalog, writes `CAPA-01` from memory, and lands the identical substrate row. The
+# db_probe cannot tell it from the correct run.
+_GUESSED_CODE_RUN = (_lot(0), _open_action(1, 7, "CAPA-01"), _completion_report(2))
+
+# The run that separates the binding from a hard-coded `contains: CAPA-01`: the agent
+# does read the catalog and then posts a code the catalog does not hold. Under the
+# literal the catalog result matches ahead of the POST and the check passes; under the
+# binding the candidate is `CAPA-99`, nothing successful carries it, and it fails.
+_FABRICATED_CODE_RUN = (
+    _lot(0),
+    _catalog(1),
+    _open_action(2, 7, "CAPA-99", accepted=False),
+    _completion_report(3),
+)
+
+# Reads the lot *code* as though it were the id — the confusion `task.yaml`'s own
+# prompt invites ("LOT-1007 (that's lot_id 7)") — and opens the action against a lot
+# it never read. `/lots/1007` is also why the correlation binds the whole URL: a bound
+# `"7"` is a substring of `.../lots/1007`.
+_UNREAD_LOT_RUN = (
+    _lot_ops_get(0, "/lots/1007", {"detail": "not found"}, 404),
+    _catalog(1),
+    _open_action(2, 7, "CAPA-01"),
+    _completion_report(3),
+)
+
+# #773: the action is posted twice. The db_probe does see the duplicate — its third
+# assertion reads `row_count` — but `evaluate_db_probes` passes a probe only when every
+# assertion does, so a duplicate took `state_checks` to `0.0` and the remaining
+# `0.2 + 0.3` landed on `pass_threshold` exactly, which `>=` admits. A rebalance alone
+# would not close that, which is why the check is a gate.
+_DOUBLE_POST_RUN = (
+    _lot(0),
+    _catalog(1),
+    _open_action(2, 7, "CAPA-01"),
+    _open_action(3, 7, "CAPA-01"),
+    _completion_report(4),
+)
+
+# The trajectory that justified deleting the pack's `required_actions`: the agent
+# researches and reports but never opens the action. Both binders bind *from* the
+# POST, so this is the zero-candidate case, and it is a standing test rather than a
+# wrong-process row because it fails both correlations rather than one.
+_NO_ACTION_RUN = (_lot(0), _catalog(1), _completion_report(2))
+
+_LOT_OPS_WRONG_PROCESS_RUNS = (
+    pytest.param(
+        _GUESSED_CODE_RUN,
+        "the_reason_code_posted_was_read_from_the_catalog",
+        id="the_reason_code_was_never_looked_up",
+    ),
+    pytest.param(
+        _FABRICATED_CODE_RUN,
+        "the_reason_code_posted_was_read_from_the_catalog",
+        id="the_posted_code_is_not_one_the_catalog_holds",
+    ),
+    pytest.param(
+        _UNREAD_LOT_RUN,
+        "the_lot_was_read_before_the_action_was_opened",
+        id="the_action_is_opened_against_a_lot_never_read",
+    ),
+    pytest.param(
+        _DOUBLE_POST_RUN,
+        "exactly_one_corrective_action_was_opened",
+        id="the_corrective_action_is_posted_twice",
+    ),
+)
+
+
+def _lot_ops_grading() -> GradingConfig:
+    return _grading_config(_LOT_OPS_TASK)[1]
+
+
+def _lot_ops_result(calls: Sequence[RecordedToolCall]) -> TraceChecksResult:
+    trace_checks = _lot_ops_grading().trace_checks
+    assert trace_checks is not None
+    return evaluate_trace_checks(_timeline(calls, _LOT_OPS_TURNS), trace_checks)
+
+
+def _lot_ops_grade(calls: Sequence[RecordedToolCall]) -> Grade:
+    """The whole fold over one trajectory, at the pack's own weights."""
+    return GradingEngine(_lot_ops_grading()).grade_trajectory(
+        make_trajectory(
+            task_id="lot_ops_01",
+            messages=_cache_debug_messages(calls),
+            tool_log=list(calls),
+        ),
+        {"filesystem": {"/env/fs/agent-visible/submissions/report.md": "CAPA-01 on LOT-1007"}},
+    )
+
+
+def test_the_lot_ops_pack_declares_the_two_correlations_and_the_duplicate_gate() -> None:
+    trace_checks = _lot_ops_grading().trace_checks
+    assert trace_checks is not None
+    declared = tuple(
+        (constraint.id, constraint.require.declared_kind(), constraint.severity)
+        for constraint in trace_checks.constraints
+    )
+    assert declared == _LOT_OPS_CONSTRAINTS
+    assert trace_checks.alternatives is None
+
+
+def test_the_lot_ops_pack_scores_the_grounded_process_in_full() -> None:
+    result = _lot_ops_result(_LOT_OPS_CORRECT_RUN)
+    assert result.score == pytest.approx(1.0)
+    assert result.gate_failed is False
+    assert _failed(result) == []
+
+
+@pytest.mark.parametrize(("calls", "broken_constraint"), _LOT_OPS_WRONG_PROCESS_RUNS)
+def test_each_lot_ops_constraint_fails_the_process_it_names(
+    calls: Sequence[RecordedToolCall], broken_constraint: str
+) -> None:
+    """Every row reaches the substrate state the db_probe grades, by a wrong process."""
+    assert _failed(_lot_ops_result(calls)) == [broken_constraint]
+
+
+def test_every_declared_lot_ops_constraint_is_broken_by_one_of_the_wrong_runs() -> None:
+    """So a constraint no scenario can fail cannot be added without a red test."""
+    assert {param.values[1] for param in _LOT_OPS_WRONG_PROCESS_RUNS} == {
+        constraint_id for constraint_id, _, _ in _LOT_OPS_CONSTRAINTS
+    }
+
+
+def test_a_run_that_never_opened_the_action_fails_both_correlations_and_stays_gradeable() -> None:
+    """The zero-candidate case on a shipped pack, and it must not be an ungradeable trial.
+
+    Both binders draw from the POST, so an agent that never posts binds nothing and the
+    default ``on_unbound`` charges it — strictly stronger than the ``required_actions``
+    row this replaced, which asked only that *a* POST happened. The ledger audit is the
+    other half: a constraint whose ``require`` tree was never evaluated has to be filed
+    as a skip, or the runner reports scored keys it neither evaluated nor skipped and
+    ``GradeTrialResponse`` comes back unsuccessful.
+    """
+    result = _lot_ops_result(_NO_ACTION_RUN)
+    failed = {constraint.id: constraint.message for constraint in result.constraints}
+
+    assert _failed(result) == [
+        "the_reason_code_posted_was_read_from_the_catalog",
+        "the_lot_was_read_before_the_action_was_opened",
+    ]
+    assert failed["the_reason_code_posted_was_read_from_the_catalog"] == (
+        "before is unbound: the binding selected no event"
+    )
+    audit = audit_accounted_keys(_lot_ops_grading(), result.accounted_keys)
+    assert "trace_checks" not in (audit.error or "")
+
+
+def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_else() -> None:
+    """The correlation earns its weight over the fold rather than restating the probe.
+
+    Driven through the real ``GradingEngine`` at the pack's weights, the guessed run
+    and the grounded run differ in ``trace_checks`` and in no other component. The
+    substrate oracle agrees with them both twice over: ``db_probes`` is RUNNER_ONLY, so
+    core evaluates none of it here, and on a real run a guess that happens to be right
+    lands the identical ``corrective_actions`` row — ``reason_code``, ``status`` and
+    ``row_count`` all read the same. The judge is unscored in a deterministic fold, so
+    ``llm_judge`` is ``None`` on both.
+    """
+    grounded = _lot_ops_grade(_LOT_OPS_CORRECT_RUN)
+    guessed = _lot_ops_grade(_GUESSED_CODE_RUN)
+
+    assert grounded.components.trace_checks == pytest.approx(1.0)
+    assert guessed.components.trace_checks == pytest.approx(0.5)
+    assert guessed.components.state_checks == grounded.components.state_checks
+    assert guessed.components.llm_judge == grounded.components.llm_judge
+    assert guessed.score < grounded.score

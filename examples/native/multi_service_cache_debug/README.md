@@ -57,12 +57,35 @@ agent  ──http──▶ │                     └──▶ postgres:16   (a
   | `divergence_between_the_api_layers` | `GET /orders/4021` against `GET /orders/4021/source` |
   | `divergence_against_the_cache` | `GET cache-admin:8000/cache/order:4021` against either orders-api read |
 
-  Each route asks two questions — were both sides read, and did the reads that
-  happened happen before the note — so an agent that starts down both routes and
+  Each route asks three questions — were both sides read, did the reads that
+  happened happen before the note, and does the note quote the stale status the
+  route's own read returned — so an agent that starts down both routes and
   completes neither has observed no divergence and scores the better of two
   incomplete routes, not the sum of two halves. The ordering question carries
   `on_missing: pass` and is vacuous where neither read happened, so the presence
   question alone charges that case and a missing read costs the agent once.
+
+- **A grounded claim: the note has to quote what the agent observed.** A diagnosis
+  can name cache invalidation, read plausibly, and still be a recital rather than a
+  reading of the two layers. Each route therefore binds the status token out of the
+  read it guarantees — `processing` in the seeded state — and requires the
+  `write_file` content to contain it. The constraint names **no** status value, so it
+  says "quote what you saw" rather than "say `processing`", and a differently seeded
+  cache needs no edit. It carries `on_unbound: pass`: an agent that never made the
+  route's stale read is already charged by that route's presence question, and
+  charging it again here would cascade one wrong process into two failures.
+
+  The two routes need two capture patterns. `http_request` renders a JSON response
+  as the parsed object's Python `repr`, so `GET /orders/4021` shows
+  `'status': 'processing'` in single quotes, while `GET /cache/order:4021` returns the
+  cached blob as a JSON *string* inside a JSON field and shows `"status":
+  "processing"` in double quotes inside that `repr`.
+
+  These are the pack's first constraints to read `field: result`, which makes it
+  records-dependent: on a bundle re-graded without tool-call records the binder's own
+  matcher cannot be decided, and the winning route's grounded-claim constraint reports
+  that the candidate set could not be determined rather than a verdict. See
+  [`docs/GRADING.md`](../../../docs/GRADING.md) § What is validated before a run.
 
 - **A shared gate: the diagnose-only task cannot be passed by mutating.**
   `POST /orders/4021` exists and updates the order. An agent that "fixes" the
@@ -82,7 +105,7 @@ agent  ──http──▶ │                     └──▶ postgres:16   (a
   |---|---|---|
   | `llm_judge` | 0.50 | the note identifies the stale-cache / missing-invalidation bug, explains the mechanism, and avoids a false fix |
   | `state_checks` | 0.25 | the written note names the cache-invalidation concept (substring `invalidat`) |
-  | `trace_checks` | 0.25 | one of the two comparisons was completed before the note was written, and no status update was posted |
+  | `trace_checks` | 0.25 | one of the two comparisons was completed before the note was written, the note quotes the stale status that comparison's own read returned, and no status update was posted |
 
   The two routes are not equally probative — the cache inspector shows the stale
   value itself, while the served-vs-source comparison shows only that the read path
