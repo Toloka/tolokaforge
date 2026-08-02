@@ -1151,10 +1151,11 @@ either is [undecided](#when-a-constraint-cannot-be-decided) rather than unmatche
 
 ```yaml
 trace_checks:
-  constraints:
-    - id: lookup_before_denial                  # unique within the pack
+  constraints:                                  # hold whatever route the agent took
+    - id: lookup_before_denial                  # unique across the whole block
       description: "payment looked up before the duplicate-refund case is denied"
       weight: 2.0                               # default 1.0
+      severity: scored                          # scored (default) | gate
       on_missing: fail                          # fail (default) | pass
       within: { first_turn: 2, last_turn: 5 }   # optional, inclusive turn window
       require:
@@ -1163,12 +1164,31 @@ trace_checks:
                                                args: { payment_id: { equals: "PAY-664306" } } } }
           right: { quantifier: first, match: { kind: tool_call, tool: { equals: servicenow_csm_update_case },
                                                args: { u_resolution_code: { equals: denied_ineligible } } } }
+  alternatives:                                 # optional, two or more routes
+    - id: refund_via_reversal
+      description: "the payment is reversed at the processor"
+      constraints:
+        - id: reversal_requested
+          description: "a reversal is requested for the duplicate charge"
+          require: { present: { match: { kind: tool_call, tool: { equals: billing_api_reverse_payment } } } }
+    - id: refund_via_credit_note
+      description: "a credit note settles the duplicate charge"
+      constraints:
+        - id: credit_note_issued
+          description: "a credit note is issued for the duplicate charge"
+          require: { present: { match: { kind: tool_call, tool: { equals: billing_api_issue_credit } } } }
 ```
 
 `require` carries **exactly one** constraint kind, and each kind's value is that
 kind's own payload. Two conditions are an `all_of` over two expressions. Every
 model is `extra="forbid"`, so a misspelled operator, kind or matcher field fails
 at `tolokaforge validate` rather than grading as unset.
+
+A block declares `constraints`, `alternatives`, or both — but not neither, which
+would score nothing. **Every `id` in the block shares one space**: the path ids and
+every constraint id, shared and per-path alike, because an id is how the grade names
+a sub-check and how [the pre-run gate](#what-is-validated-before-a-run) addresses one
+as `trace_checks.<id>`. A repeat anywhere is a load error.
 
 ### Matchers
 
@@ -1436,7 +1456,7 @@ The component score is `Σ(weight · passed) / Σ(weight)`, `weight` defaulting 
 `1.0`, so a pack that omits every weight scores the plain fraction of constraints
 that passed. `weight` must be **positive**: a zero weight is a declared check that
 contributes to neither the numerator nor the denominator, and "evaluated but not
-scored" is what `severity: gate` (#680) is for.
+scored" is what [`severity: gate`](#severity--a-check-that-must-hold) is for.
 
 Prefer uniform weights. Reach for `weight` when migrating an already-weighted
 criterion, not to express that one condition feels more important — a weight map
@@ -1447,7 +1467,51 @@ tuned on. The same guidance the rubric weights carry applies here.
 agent satisfy half of one route and half of another: `any_of: [A_step1, B_step1]`
 combined with `any_of: [A_step2, B_step2]` passes for an agent that did `A_step1`
 and `B_step2`, which is neither route. Grading genuinely alternative routes needs
-the paths declared as wholes, which is #680's `alternatives`.
+the paths declared as wholes, which is [`alternatives`](#alternative-paths).
+
+### `severity` — a check that must hold
+
+`severity: gate` marks a constraint that is not scored and must hold. A gate is
+excluded from the weighted average — it enters neither the numerator nor the
+denominator — so writing a `weight` beside one is a load error naming the key
+nothing reads. `severity: scored` is the default and is the constraint that carries
+a share.
+
+This is the same concept as the rubric judge's
+[required criterion](#required-gate-semantics), reached by the same reasoning: some
+conditions are not worth a fraction of the score, they are the condition the trial
+is allowed to exist under. Reach for a gate where a partial score would be
+misleading rather than merely low — a forbidden tool called, another customer's
+record touched, an order mutated by a diagnose-only agent.
+
+### Alternative paths
+
+`alternatives` declares two or more routes, each a `TracePath` carrying an `id`, a
+`description` and its own `constraints`. A path is a named **whole**, which is what
+separates it from `any_of`: an agent is measured against one route at a time, so
+half of one plus half of another is not a passing trajectory on either.
+
+```yaml
+trace_checks:
+  alternatives:
+    - id: served_vs_source
+      description: "the bug is located by comparing the served body against the source"
+      constraints:
+        - id: source_fetched
+          description: "the source document is read"
+          require: { present: { match: { kind: tool_call, tool: { equals: read_source } } } }
+    - id: cache_inspector
+      description: "the bug is located by reading the cache inspector"
+      constraints:
+        - id: inspector_read
+          description: "the cache inspector is queried"
+          require: { present: { match: { kind: tool_call, tool: { equals: cache_inspect } } } }
+```
+
+`constraints` may be omitted entirely when every check belongs to a route. **Two is
+the floor**: one path is the flat form written the long way round — the best of one
+path is that path — so a single-path block is rejected at load, pointing the author
+at `constraints:`.
 
 **Every component the pack configures needs a weight of its own.** A configured
 component absent from `combine.weights` is dropped from the core engine's fold and
@@ -1482,7 +1546,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| `severity: gate` and `alternatives` — a check that must hold without being scored, and genuinely alternative routes | #680 |
 | Two arguments on two different calls cannot be correlated (`this call's id equals that call's id`) | #681 |
 | A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
 | Migrating an existing rubric criterion into a constraint | #683 |
@@ -1547,6 +1610,12 @@ Only the first segment of an `args` path is checked, and only against `propertie
 schema declares no properties and nothing below it is answerable. A tool named by
 `regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
 set, not a token.
+
+**A block that scores nothing is rejected.** `trace_checks` declaring neither
+`constraints` nor `alternatives` asserts nothing; `alternatives` carrying fewer than
+two paths is the flat form written the long way round; and an `id` repeated anywhere
+in the block's one id space makes two sub-check results indistinguishable. All three
+are load errors naming what to write instead.
 
 **An ordering over one matcher is rejected unless some trajectory decides it.**
 Writing the same matcher on both sides of `before`, or forbidding the very events an
@@ -1801,6 +1870,11 @@ section) is computed over the **non-required criteria only**.
 If **every** criterion is required (no non-required criteria to average), the
 judge score collapses to the gate verdict: `1.0` when all required criteria are
 met, else `0.0`.
+
+`trace_checks` states the same concept as
+[`severity: gate`](#severity--a-check-that-must-hold), with the same semantics. Two
+spellings because the two vocabularies are authored separately; one behaviour,
+because a gate that meant something different in each would be a trap.
 
 ### The two weighting layers
 

@@ -45,6 +45,7 @@ from tolokaforge.runner.models import (
     TRACE_PREDICATE_OPERATORS,
     TraceConstraint,
     TraceConstraintExpr,
+    TraceConstraintSeverity,
     ValuePredicate,
 )
 
@@ -65,6 +66,7 @@ _VOCABULARY_CLASSES = frozenset(
         "TraceConstraintExpr",
         "TurnWindow",
         "TraceConstraint",
+        "TracePath",
         "TraceChecksConfig",
     }
 )
@@ -82,6 +84,15 @@ def _constraint(require: dict[str, Any], **overrides: Any) -> dict[str, Any]:
 
 def _block(*constraints: dict[str, Any]) -> dict[str, Any]:
     return {"constraints": list(constraints)}
+
+
+def _path(path_id: str, *constraints: dict[str, Any]) -> dict[str, Any]:
+    """One well-formed alternative route."""
+    return {
+        "id": path_id,
+        "description": f"the {path_id} route",
+        "constraints": list(constraints),
+    }
 
 
 _TOOL_CALL = {"kind": "tool_call", "tool": {"equals": "write_file"}}
@@ -355,7 +366,73 @@ _REJECTIONS: tuple[_Rejection, ...] = (
             _constraint({"absent": {"match": _TOOL_CALL}}),
         ),
         message="declared more than once",
-        validator="_require_distinct_constraint_ids",
+        validator="_require_distinct_ids",
+    ),
+    _Rejection(
+        label="path_id_colliding_with_a_shared_constraint_id",
+        # The collision a per-list uniqueness rule admits: the shared constraint and
+        # the path are each unique inside their own list, and both answer to
+        # ``trace_checks.probe``.
+        block={
+            "constraints": [_constraint({"present": {"match": _TOOL_CALL}})],
+            "alternatives": [
+                _path("probe", _constraint({"absent": {"match": _TOOL_CALL}}, id="via_absent")),
+                _path(
+                    "via_count",
+                    _constraint({"count": {"match": _TOOL_CALL, "min": 1}}, id="counted"),
+                ),
+            ],
+        },
+        message="['probe']",
+        validator="_require_distinct_ids",
+    ),
+    _Rejection(
+        label="constraint_id_repeated_across_two_paths",
+        block={
+            "constraints": [_constraint({"present": {"match": _TOOL_CALL}}, id="shared")],
+            "alternatives": [
+                _path("first_route", _constraint({"absent": {"match": _TOOL_CALL}}, id="step")),
+                _path("second_route", _constraint({"present": {"match": _TOOL_CALL}}, id="step")),
+            ],
+        },
+        message="['step']",
+        validator="_require_distinct_ids",
+    ),
+    _Rejection(
+        label="neither_constraints_nor_alternatives",
+        block={},
+        message="declares neither constraints nor alternatives",
+        validator="_require_something_to_score",
+    ),
+    _Rejection(
+        label="an_empty_constraints_list_alone",
+        block=_block(),
+        message="declares neither constraints nor alternatives",
+        validator="_require_something_to_score",
+    ),
+    _Rejection(
+        label="one_alternative_path",
+        block={
+            "alternatives": [_path("only_route", _constraint({"present": {"match": _TOOL_CALL}}))]
+        },
+        message="the flat form written the long way round",
+        validator="_require_alternatives_to_be_alternative",
+    ),
+    _Rejection(
+        label="zero_alternative_paths",
+        block={"alternatives": []},
+        message="the flat form written the long way round",
+        validator="_require_alternatives_to_be_alternative",
+    ),
+    _Rejection(
+        label="a_path_with_no_constraints",
+        block={
+            "alternatives": [
+                _path("empty_route"),
+                _path("other_route", _constraint({"present": {"match": _TOOL_CALL}})),
+            ]
+        },
+        message="at least 1 item",
     ),
     _Rejection(
         label="inverted_turn_window",
@@ -382,19 +459,25 @@ _REJECTIONS: tuple[_Rejection, ...] = (
     _Rejection(
         label="zero_weight",
         block=_block(_constraint({"present": {"match": _TOOL_CALL}}, weight=0.0)),
-        message="severity: gate (#680)",
+        message="severity: gate",
         validator="_require_a_weight_that_scores",
+    ),
+    _Rejection(
+        label="weight_on_a_gate",
+        block=_block(_constraint({"present": {"match": _TOOL_CALL}}, severity="gate", weight=2.0)),
+        message="excluded from the weighted average",
+        validator="_reject_a_weight_on_a_check_nothing_scores",
+    ),
+    _Rejection(
+        label="misspelled_severity",
+        block=_block(_constraint({"present": {"match": _TOOL_CALL}}, severity="gated")),
+        message="'scored' or 'gate'",
     ),
     _Rejection(
         label="weight_that_is_not_a_number",
         block=_block(_constraint({"present": {"match": _TOOL_CALL}}, weight=float("nan"))),
         message="is not a finite number",
         validator="_require_a_weight_that_scores",
-    ),
-    _Rejection(
-        label="no_constraints",
-        block=_block(),
-        message="at least 1 item",
     ),
     _Rejection(
         label="empty_conjunction",
@@ -504,6 +587,107 @@ def test_the_whole_vocabulary_loads():
 
     assert len(config.constraints) == len(TRACE_CONSTRAINT_KINDS)
     assert {item.require.declared_kind() for item in config.constraints} == TRACE_CONSTRAINT_KINDS
+
+
+@pytest.mark.parametrize("severity", sorted(item.value for item in TraceConstraintSeverity))
+def test_either_severity_loads_and_a_gate_needs_no_weight(severity: str):
+    """The enum is writable on both sides, and a gate carries the default share.
+
+    A gate is excluded from the weighted average, so the weight it holds is read by
+    nothing — which is why it may not be *written*, and why the default must load.
+    """
+    config = TraceChecksConfig(
+        **_block(_constraint({"present": {"match": _TOOL_CALL}}, severity=severity))
+    )
+
+    assert config.constraints[0].severity is TraceConstraintSeverity(severity)
+    assert config.constraints[0].weight == 1.0
+
+
+def test_a_gate_survives_the_trial_spec_round_trip():
+    """The runner revalidates the config it is handed, and must reach the same verdict.
+
+    Dumping a model writes every field, so the delivered constraint arrives with
+    ``weight`` in ``model_fields_set`` however the author wrote it. A rejection
+    keyed on declaredness rather than on the value would therefore admit this gate
+    on the engine and reject it inside the runner at ``RegisterTrial``.
+    """
+    authored = TraceChecksConfig(
+        **_block(_constraint({"absent": {"match": _TOOL_CALL}}, severity="gate"))
+    )
+
+    delivered = TraceChecksConfig.model_validate_json(authored.model_dump_json())
+
+    assert "weight" in delivered.constraints[0].model_fields_set
+    assert delivered == authored
+
+
+def test_a_block_declaring_no_alternatives_loads_and_dumps_as_a_flat_block():
+    """The zero-paths runtime boundary: today's packs must not move a byte.
+
+    ``alternatives`` unset is what every shipped pack writes, so its dumped value is
+    pinned rather than merely absent — defaulting the field to ``[]`` would leave
+    the block loading and its dump carrying an empty list where it carried a null.
+    """
+    config = TraceChecksConfig(**_block(_constraint({"present": {"match": _TOOL_CALL}})))
+
+    assert config.alternatives is None
+    dumped = config.model_dump()
+    assert set(dumped) == {"constraints", "alternatives"}
+    assert dumped["alternatives"] is None
+    assert "alternatives" not in config.model_dump(exclude_defaults=True)
+
+
+def test_a_purely_multi_path_block_omits_the_shared_constraints_entirely():
+    """A pack whose every check belongs to a route declares no top-level list.
+
+    Written as an omission rather than as ``constraints: []`` because that is the
+    shape the differential fixture packs must take: a key written empty is still a
+    key declared.
+    """
+    config = TraceChecksConfig(
+        alternatives=[
+            _path("served_vs_source", _constraint({"present": {"match": _TOOL_CALL}}, id="a")),
+            _path("cache_inspector", _constraint({"absent": {"match": _TOOL_CALL}}, id="b")),
+        ]
+    )
+
+    assert config.constraints == []
+    assert [path.id for path in config.alternatives] == ["served_vs_source", "cache_inspector"]
+
+
+def test_an_explicitly_empty_constraints_list_loads_beside_alternatives():
+    """The relaxation is about what the block scores, not about how it is spelled."""
+    config = TraceChecksConfig(
+        constraints=[],
+        alternatives=[
+            _path("first_route", _constraint({"present": {"match": _TOOL_CALL}}, id="a")),
+            _path("second_route", _constraint({"absent": {"match": _TOOL_CALL}}, id="b")),
+        ],
+    )
+
+    assert config.constraints == []
+
+
+def test_one_id_may_be_reused_by_nothing_anywhere_in_the_block():
+    """The positive half of the id-space rule: distinct ids across the paths load.
+
+    The rejection is scoped to repeats, not to path constraints sharing a namespace
+    with the shared ones — which a rule reading the shared list alone would leave
+    unproven in the other direction.
+    """
+    config = TraceChecksConfig(
+        constraints=[_constraint({"present": {"match": _TOOL_CALL}}, id="shared_step")],
+        alternatives=[
+            _path("route_a", _constraint({"absent": {"match": _TOOL_CALL}}, id="a_step")),
+            _path("route_b", _constraint({"present": {"match": _TOOL_CALL}}, id="b_step")),
+        ],
+    )
+
+    declared = [item.id for item in config.constraints]
+    for path in config.alternatives:
+        declared += [path.id, *(item.id for item in path.constraints)]
+    assert declared == ["shared_step", "route_a", "a_step", "route_b", "b_step"]
 
 
 _KINDS_THAT_ANCHOR_NOTHING = frozenset({"present", "absent", "count"})
