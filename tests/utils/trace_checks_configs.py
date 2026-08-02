@@ -12,19 +12,35 @@ from typing import Any
 
 # Every operator, spread across the fields whose values each one reads. The
 # ``status``/``result`` pairing is #717's rule: a result predicate is admitted only
-# beside a status predicate reading exactly ``{equals: success}``.
+# beside a status predicate reading exactly ``{equals: success}``. The two binding
+# operators name values ``_PAYMENT_BINDER`` extracts, so the matcher is authorable
+# only under the constraint that carries that binder.
 EVERY_OPERATOR_MATCHER: dict[str, Any] = {
     "kind": "tool_call",
     "tool": {"equals": "billing_api_get_payment"},
     "executor": {"not_equals": "user"},
     "status": {"equals": "success"},
-    "result": {"contains": "amount"},
+    "result": {"contains": "amount", "contains_binding": "quoted_amount"},
     "args": {
         "payment_id": {"equals_ci": "pay-664306", "regex": "^PAY-[0-9]+$"},
         "amount": {"gt": 0.0, "gte": 1.0, "lt": 1000.0, "lte": 999.0},
         "currency": {"in_": ["USD", "EUR"], "not_in": ["JPY"]},
         "note": {"contains_ci": "REFUND", "len_gt": 3, "len_gte": 4},
         "body.resolution_path": {"exists": True},
+        "case_id": {"equals_binding": "denied_case"},
+    },
+}
+
+# The binder the two binding operators above read: one case id off the denial call,
+# and one currency figure captured out of the assistant's own wording.
+_PAYMENT_BINDER: dict[str, Any] = {
+    "match": {
+        "kind": "tool_call",
+        "tool": {"equals": "servicenow_csm_update_case"},
+    },
+    "values": {
+        "denied_case": {"field": "args.case_id"},
+        "quoted_amount": {"field": "args.note", "pattern": r"\$([0-9]+\.[0-9]{2})"},
     },
 }
 
@@ -106,6 +122,11 @@ EVERY_CONSTRAINT_KIND: dict[str, dict[str, Any]] = {
 # itself, so the block carries it on one kind that does anchor.
 _ON_MISSING_KIND = "before"
 
+# ``present`` is the kind carrying ``EVERY_OPERATOR_MATCHER``, so it is the one
+# constraint that must declare the binder those references resolve under — a
+# reference to a name its own constraint does not bind is a load error.
+_BINDING_KIND = "present"
+
 
 def every_kind_block() -> dict[str, Any]:
     """The whole vocabulary as one authored ``trace_checks`` block."""
@@ -120,5 +141,7 @@ def every_kind_block() -> dict[str, Any]:
         }
         if kind == _ON_MISSING_KIND:
             constraint["on_missing"] = "pass"
+        if kind == _BINDING_KIND:
+            constraint["bind"] = _PAYMENT_BINDER
         constraints.append(constraint)
     return {"constraints": constraints}

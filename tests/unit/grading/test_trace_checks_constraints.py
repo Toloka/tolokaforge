@@ -16,6 +16,7 @@ constraints that passed.
 from __future__ import annotations
 
 import ast
+import itertools
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -31,6 +32,7 @@ from tolokaforge.core.grading.trace_checks import (
     _FAILURE_DETAIL,
     _HANDLERS,
     _VIEW_KINDS,
+    _candidates,
     evaluate_trace_checks,
     select_events,
 )
@@ -38,12 +40,18 @@ from tolokaforge.core.grading.trace_timeline import TraceEventKind, TrialTimelin
 from tolokaforge.core.models import (
     AdjacencyView,
     ToolCall,
+    ToolExecutionStatus,
     TraceChecksConfig,
     TraceChecksResult,
     TraceConstraintSeverity,
     TraceMatcher,
 )
-from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS
+from tolokaforge.runner.models import (
+    _UNBINDABLE_FIELDS,
+    TRACE_CONSTRAINT_KINDS,
+    TRACE_MATCHABLE_FIELDS_BY_KIND,
+    TraceConstraint,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -245,8 +253,8 @@ def test_an_unmatched_side_fails_by_name_unless_the_author_opted_out():
     failing = evaluate_constraint(timeline, require)
     permitted = evaluate_constraint(timeline, require, on_missing="pass")
 
-    assert select_events(timeline, TraceMatcher(**_call_of(_DENIAL))).matched == ()
-    assert len(select_events(timeline, TraceMatcher(**_call_of(_LOOKUP))).matched) == 1
+    assert select_events(timeline, TraceMatcher(**_call_of(_DENIAL)), {}).matched == ()
+    assert len(select_events(timeline, TraceMatcher(**_call_of(_LOOKUP)), {}).matched) == 1
     assert failing.passed is False
     assert "right" in failing.message
     assert permitted.passed is True
@@ -942,3 +950,765 @@ def test_a_shared_gate_applies_whichever_route_won():
         assert result.gate_failed is True
         assert result.failed_gate_ids == ["no_status_was_written"]
     assert (clean.winning_path, clean.score, clean.gate_failed) == ("route_b", 1.0, False)
+
+
+# --------------------------------------------------------------------------
+# Correlating one argument against another
+# --------------------------------------------------------------------------
+
+_READ = "read_record"
+_WRITE = "write_record"
+
+
+def _record_timeline(*calls: tuple[str, Any]) -> TrialTimeline:
+    """One assistant turn calling ``(tool, record_id)`` in order, all recorded."""
+    return build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "On it.")),
+        recorded=[
+            recorded_call(tool, sequence=index, arguments={"record_id": record})
+            for index, (tool, record) in enumerate(calls)
+        ],
+    )
+
+
+def _read_before_write(**bind_fields: Any) -> dict[str, Any]:
+    """Every record the agent wrote, it read first — the correlation, not a literal."""
+    return {
+        "bind": {
+            "match": _call_of(_WRITE),
+            "values": {"rec": {"field": "args.record_id"}},
+            **bind_fields,
+        },
+        "require": {
+            "before": {
+                "left": _side("any", _READ, args={"record_id": {"equals_binding": "rec"}}),
+                "right": _side("any", _WRITE, args={"record_id": {"equals_binding": "rec"}}),
+            }
+        },
+    }
+
+
+def test_a_correlated_ordering_reads_the_record_the_agent_wrote():
+    """AC1: the same two constraints, decided by which record the write names."""
+    correlated = _read_before_write()
+
+    matching = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_WRITE, "X")),
+        correlated["require"],
+        bind=correlated["bind"],
+    )
+    crossed = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_WRITE, "Y")),
+        correlated["require"],
+        bind=correlated["bind"],
+    )
+
+    assert matching.passed is True, matching.message
+    assert crossed.passed is False
+    assert crossed.matched_positions == [4], "the write is selected; the read of X is not"
+
+
+@pytest.mark.parametrize(
+    ("bound", "other"), [("REC-1", "REC-2"), (42, 43)], ids=["string_record", "integer_record"]
+)
+def test_one_candidate_scores_exactly_as_the_value_written_out(bound: Any, other: Any):
+    """A reference substitutes; it does not reinterpret — the one-candidate boundary.
+
+    Driven over an integer record as well as a string one, because the whole content
+    of "substitutes" is that the bound value reaches ``operator.eq`` as itself — a
+    reference stringifying its value would still decide the string row correctly.
+
+    The verdict, the weight and the matched positions are the literal's exactly. The
+    message is the literal's plus the assignment it failed under, which the fold
+    names at every cardinality including this one: suppressing it here would be a
+    special case for ``n=1`` inside the fold, and the value is the same thing an
+    author needs to read whether one record failed to correlate or four did.
+    """
+    correlated = _read_before_write()
+    literal = {
+        "before": {
+            "left": _side("any", _READ, args={"record_id": {"equals": bound}}),
+            "right": _side("any", _WRITE, args={"record_id": {"equals": bound}}),
+        }
+    }
+
+    for label, timeline, naming in [
+        ("correlated", _record_timeline((_READ, bound), (_WRITE, bound)), ""),
+        (
+            "crossed",
+            _record_timeline((_READ, other), (_WRITE, bound)),
+            f"; failed under (rec={bound!r})",
+        ),
+    ]:
+        by_binding = evaluate_constraint(timeline, correlated["require"], bind=correlated["bind"])
+        by_literal = evaluate_constraint(timeline, literal)
+        assert (
+            by_binding.passed,
+            by_binding.weight,
+            by_binding.message,
+            by_binding.matched_positions,
+        ) == (
+            by_literal.passed,
+            by_literal.weight,
+            by_literal.message + naming,
+            by_literal.matched_positions,
+        ), f"the {label} trajectory scores differently bound than written out"
+
+
+def test_a_binder_that_selects_nothing_fails_by_name_unless_the_author_opted_out():
+    """The universal reading is vacuous over no candidates, so ``on_unbound`` decides."""
+    read_only = _record_timeline((_READ, "X"))
+    failing = _read_before_write()
+    permitted = _read_before_write(on_unbound="pass")
+
+    unbound = evaluate_constraint(read_only, failing["require"], bind=failing["bind"])
+    opted_out = evaluate_constraint(read_only, permitted["require"], bind=permitted["bind"])
+
+    assert unbound.passed is False
+    assert "the binding selected no event" in unbound.message
+    assert opted_out.passed is True
+    assert opted_out.message == ""
+
+
+def test_many_binder_events_carrying_one_value_are_one_candidate():
+    """Candidates are distinct values, not events — the many-identical boundary.
+
+    Asserted against the one-write trajectory rather than against a literal count,
+    so the lock is that three repeats of a value decide and *report* exactly as one
+    occurrence of it: an author reading a grade must not have to work out that the
+    three names in front of them are the same record written three times.
+    """
+    correlated = _read_before_write()
+    once = evaluate_constraint(
+        _record_timeline((_WRITE, "X")), correlated["require"], bind=correlated["bind"]
+    )
+    three_times = evaluate_constraint(
+        _record_timeline((_WRITE, "X"), (_WRITE, "X"), (_WRITE, "X")),
+        correlated["require"],
+        bind=correlated["bind"],
+    )
+
+    assert (three_times.passed, three_times.message) == (once.passed, once.message)
+    assert three_times.message.count("(rec=") == 1, three_times.message
+    assert three_times.matched_positions == [2, 4, 6], "the union over the one candidate's reading"
+
+
+def test_one_uncorrelated_record_among_several_fails_and_the_message_names_only_it():
+    """The universal fold — the many-distinct boundary, one candidate failing.
+
+    ``Z`` was written and never read, so the constraint fails however well the agent
+    handled ``X``. An existential fold passes this trajectory on ``X`` alone, and a
+    first-match fold answers on whichever candidate the binder happened to yield
+    first.
+    """
+    result = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_READ, "Y"), (_WRITE, "X"), (_WRITE, "Z")),
+        _read_before_write()["require"],
+        bind=_read_before_write()["bind"],
+    )
+
+    assert result.passed is False
+    assert "failed under (rec='Z')" in result.message
+    assert "'X'" not in result.message, "the correlated record is not what failed"
+    assert result.matched_positions == [2, 6, 8], "the read and write of X, and the write of Z"
+
+
+def test_the_verdict_does_not_turn_on_the_order_the_binder_yields_candidates():
+    """The property that rejected first-match: two reads the constraint says nothing about.
+
+    The same two records read in either order, one of them written. Binding at the
+    read makes both reads candidates, and ``Y`` was never written under either
+    ordering — so a rule reading only the first candidate calls the same set of
+    actions correlated in one order and uncorrelated in the other.
+    """
+    read_bound = {
+        "bind": {"match": _call_of(_READ), "values": {"rec": {"field": "args.record_id"}}},
+        "require": _read_before_write()["require"],
+    }
+
+    x_first = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_READ, "Y"), (_WRITE, "X")),
+        read_bound["require"],
+        bind=read_bound["bind"],
+    )
+    y_first = evaluate_constraint(
+        _record_timeline((_READ, "Y"), (_READ, "X"), (_WRITE, "X")),
+        read_bound["require"],
+        bind=read_bound["bind"],
+    )
+
+    assert (x_first.passed, x_first.message) == (y_first.passed, y_first.message)
+    assert x_first.passed is False, "Y was read and never written, whichever read came first"
+    assert "failed under (rec='Y')" in x_first.message
+
+
+def test_a_negated_bound_constraint_reads_no_candidate_satisfies_it():
+    """Quantification is outermost, so ``negate`` is ``∀v ¬P(v)`` and not ``¬∀v P(v)``.
+
+    Driven against both trajectories that separate the two readings: exactly one
+    candidate satisfying the negated expression fails the constraint, where ``¬∀``
+    would pass it on the other candidate not satisfying it.
+    """
+    forbidden_read = {
+        "bind": {"match": _call_of(_WRITE), "values": {"rec": {"field": "args.record_id"}}},
+        "require": {
+            "negate": {
+                "present": {"match": _call_of(_READ, args={"record_id": {"equals_binding": "rec"}})}
+            }
+        },
+    }
+
+    one_satisfies = evaluate_constraint(
+        _record_timeline((_READ, "X"), (_WRITE, "X"), (_WRITE, "Y")),
+        forbidden_read["require"],
+        bind=forbidden_read["bind"],
+    )
+    none_satisfies = evaluate_constraint(
+        _record_timeline((_READ, "Z"), (_WRITE, "X"), (_WRITE, "Y")),
+        forbidden_read["require"],
+        bind=forbidden_read["bind"],
+    )
+
+    assert one_satisfies.passed is False
+    assert "failed under (rec='X')" in one_satisfies.message
+    assert none_satisfies.passed is True, "no candidate satisfies it, which is what it asks"
+
+
+def test_a_turn_window_restricts_the_binder_and_so_the_candidate_set():
+    """``within`` reaches the binder because it resolves through the same resolver.
+
+    The window changes the verdict here by changing which records are candidates at
+    all: ``Y`` is written in the excluded turn, and it is the only reason the
+    unwindowed constraint fails.
+    """
+    timeline = build_turn_timeline(
+        [
+            Turn("user", "Update the records."),
+            Turn(
+                "assistant",
+                "Reading and writing X.",
+                recorded=[
+                    recorded_call(_READ, sequence=0, arguments={"record_id": "X"}),
+                    recorded_call(_WRITE, sequence=1, arguments={"record_id": "X"}),
+                ],
+            ),
+            Turn(
+                "assistant",
+                "Writing Y as well.",
+                recorded=[recorded_call(_WRITE, sequence=2, arguments={"record_id": "Y"})],
+            ),
+        ]
+    )
+    correlated = _read_before_write()
+
+    unwindowed = evaluate_constraint(timeline, correlated["require"], bind=correlated["bind"])
+    windowed = evaluate_constraint(
+        timeline, correlated["require"], bind=correlated["bind"], within={"last_turn": 0}
+    )
+
+    assert [event.turn_index for event in timeline.events] == [0, 0, 0, 0, 0, 0, 1, 1, 1]
+    assert unwindowed.passed is False
+    assert "failed under (rec='Y')" in unwindowed.message
+    assert windowed.passed is True, "the write of Y is outside the window, so it binds nothing"
+
+
+_INTEGER_DELIVERY_BINDING = {
+    "match": _call_of("open_delivery"),
+    "values": {"delivery": {"field": "args.delivery_id"}},
+}
+"""A binding whose value is an ``int``, referenced below from a text field."""
+
+
+def _integer_delivery_timeline() -> TrialTimeline:
+    return build_timeline(
+        turns=(("user", "Open it."), ("assistant", "I opened delivery 4021 for you.")),
+        recorded=[recorded_call("open_delivery", arguments={"delivery_id": 4021})],
+    )
+
+
+def _assert_names_the_unmakeable_comparison(message: str, operator: str) -> None:
+    assert "the text comparison was not made" in message
+    assert "'delivery'" in message
+    assert "4021" in message
+    assert "of type int" in message
+    assert f"{operator} reads a text field as text" in message
+    assert "args predicate" in message
+    assert "regex capture" in message
+
+
+def test_a_type_mismatched_contains_binding_says_the_comparison_was_not_made():
+    """``contains`` falls back to equality off the string pair, so this is never true.
+
+    The verdict is ``False`` either way, which is why the assertion is on the
+    message: a bare fold would be indistinguishable from the agent having failed,
+    and the author would read their own type mistake as the agent's.
+    """
+    require = {
+        "present": {
+            "match": {"kind": "assistant_message", "text": {"contains_binding": "delivery"}}
+        }
+    }
+
+    result = evaluate_constraint(
+        _integer_delivery_timeline(), require, bind=_INTEGER_DELIVERY_BINDING
+    )
+
+    assert result.passed is False
+    _assert_names_the_unmakeable_comparison(result.message, "contains_binding")
+
+
+def test_a_type_mismatched_equals_binding_says_the_comparison_was_not_made():
+    """``eq`` over a string and an int is false outright, so this is never true either.
+
+    The gate rejects this shape wherever the tool's schema types the extraction, and
+    the residue it cannot type is exactly what this backstop covers — so the operator
+    that the gate exempts on an ``args`` predicate is not exempt on a text field.
+    """
+    require = {
+        "present": {"match": {"kind": "assistant_message", "text": {"equals_binding": "delivery"}}}
+    }
+
+    result = evaluate_constraint(
+        _integer_delivery_timeline(), require, bind=_INTEGER_DELIVERY_BINDING
+    )
+
+    assert result.passed is False
+    _assert_names_the_unmakeable_comparison(result.message, "equals_binding")
+
+
+# Every extraction the load rules admit, and the value it reads off the trajectory
+# below. A second source for the extraction table: the load rule admits a head
+# segment off ``TRACE_MATCHABLE_FIELDS_BY_KIND`` while the evaluator dispatches it
+# off its own map, so a field admitted by one and unknown to the other is a
+# ``KeyError`` at grade time — and the expected values here are what stops a
+# dispatch wired to the wrong attribute from passing that check.
+_EVERY_BINDABLE_EXTRACTION = (
+    pytest.param("tool_call", "tool", "get_payment", id="a_call_names_its_tool"),
+    pytest.param("tool_call", "args", {"payment_id": "4021"}, id="a_bare_args_binds_the_object"),
+    pytest.param("tool_call", "args.payment_id", "4021", id="a_dotted_path_binds_the_argument"),
+    pytest.param("tool_call", "result", "paid in full", id="a_call_reads_its_paired_outcome"),
+    pytest.param("tool_result", "tool", "get_payment", id="an_outcome_names_its_tool"),
+    pytest.param("tool_result", "result", "paid in full", id="an_outcome_reads_itself"),
+    pytest.param("assistant_message", "text", "reading it", id="an_assistant_turn_reads_its_text"),
+    pytest.param("user_message", "text", "look up payment 4021", id="a_user_turn_reads_its_text"),
+)
+
+
+def _extraction_probe() -> TrialTimeline:
+    """One trajectory carrying a distinct value for every bindable field."""
+    return build_timeline(
+        turns=(("user", "look up payment 4021"), ("assistant", "reading it")),
+        recorded=[
+            recorded_call("get_payment", arguments={"payment_id": "4021"}, output="paid in full")
+        ],
+    )
+
+
+def test_the_extraction_cells_span_every_field_a_binder_may_read() -> None:
+    """The sweep below reads a hand-written table, so a field missing from it is unswept.
+
+    Bare ``args`` and a dotted path under it are one admissible head segment written
+    twice, because the evaluator answers them on different branches.
+    """
+    swept = {
+        (kind, field.partition(".")[0])
+        for kind, field, _ in (param.values for param in _EVERY_BINDABLE_EXTRACTION)
+    }
+
+    assert swept == {
+        (kind.value, field)
+        for kind, fields in TRACE_MATCHABLE_FIELDS_BY_KIND.items()
+        for field in fields - _UNBINDABLE_FIELDS
+    }
+
+
+@pytest.mark.parametrize(("kind", "field", "expected"), _EVERY_BINDABLE_EXTRACTION)
+def test_a_binder_may_extract_every_field_its_kind_carries(
+    kind: str, field: str, expected: object
+) -> None:
+    """The rejection is scoped to the fields a kind lacks, not to the ones it has."""
+    match: dict[str, Any] = {"kind": kind}
+    if field == "result":
+        match["status"] = {"equals": "success"}
+    constraint = TraceConstraint.model_validate(
+        {
+            "id": "probe",
+            "description": "one extraction, read off the event kind that carries it",
+            "bind": {"match": match, "values": {"read": {"field": field}}},
+            "require": {
+                "present": {"match": _call_of("audit", args={"seen": {"equals_binding": "read"}})}
+            },
+        }
+    )
+
+    assert _candidates(_extraction_probe(), constraint).definite == [{"read": expected}]
+
+
+# --------------------------------------------------------------------------
+# The candidate set is itself three-valued
+# --------------------------------------------------------------------------
+
+# The binder selects successful writes, so a write the trial recorded no outcome
+# for is an event whose membership of the candidate set the trial cannot settle.
+_BOUND_PRESENT = {
+    "present": {
+        "match": _call_of(
+            _READ, status={"equals": "success"}, args={"record_id": {"equals_binding": "rec"}}
+        )
+    }
+}
+_SETTLED_BINDER = {
+    "match": _call_of(_WRITE, status={"equals": "success"}),
+    "values": {"rec": {"field": "args.record_id"}},
+}
+
+
+def _candidate_cell(definite: Sequence[str], undecidable: Sequence[str]) -> TrialTimeline:
+    """A trajectory binding one candidate per verdict asked for, each with that verdict.
+
+    A write makes a candidate — recorded for a definite one, unexecuted for an
+    undecidable one, since the binder reads a status the trial then does not carry.
+    A read of the same record decides that candidate's ``present``: recorded is a
+    definite match, unexecuted is undecidable, and none at all is a definite miss.
+    """
+    sequence = itertools.count()
+    recorded = [
+        recorded_call(_WRITE, sequence=next(sequence), arguments={"record_id": f"D{index}"})
+        for index in range(len(definite))
+    ]
+    unexecuted = [
+        ToolCall(id=f"unrun_write_{index}", name=_WRITE, arguments={"record_id": f"U{index}"})
+        for index in range(len(undecidable))
+    ]
+    for prefix, verdicts in (("D", definite), ("U", undecidable)):
+        for index, verdict in enumerate(verdicts):
+            record = f"{prefix}{index}"
+            if verdict == "pass":
+                recorded.append(
+                    recorded_call(_READ, sequence=next(sequence), arguments={"record_id": record})
+                )
+            elif verdict == "undecided":
+                unexecuted.append(
+                    ToolCall(id=f"unrun_read_{record}", name=_READ, arguments={"record_id": record})
+                )
+    return build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "Working.")),
+        recorded=recorded,
+        unexecuted=unexecuted,
+    )
+
+
+def _cell_verdict(definite: Sequence[str], undecidable: Sequence[str], on_unbound: str) -> str:
+    """What the shipped evaluator decides on one cell, as one of the three verdicts."""
+    result = evaluate_constraint(
+        _candidate_cell(definite, undecidable),
+        _BOUND_PRESENT,
+        bind=_SETTLED_BINDER | {"on_unbound": on_unbound},
+    )
+    if result.passed:
+        return "pass"
+    return "undecided" if "cannot be decided" in result.message else "fail"
+
+
+_KLEENE_ORDER = ("fail", "undecided", "pass")
+
+
+def _every_completion(definite: Sequence[str], undecidable: Sequence[str], on_unbound: str) -> str:
+    """The brute force: the verdict over `D ∪ S` for **every** `S ⊆ U`, or undecided.
+
+    Kleene AND over a set is its minimum under ``fail < undecided < pass``, and the
+    empty set is the vacuous truth ``on_unbound`` overrides. Written out over all
+    ``2**|U|`` subsets rather than over any shortcut, because the shortcut is what
+    is under test.
+    """
+
+    def conjunction(members: Sequence[str]) -> str:
+        return min(members, key=_KLEENE_ORDER.index) if members else "pass"
+
+    unbound = "pass" if on_unbound == "pass" else "fail"
+    readings = set()
+    for size in range(len(undecidable) + 1):
+        for chosen in itertools.combinations(range(len(undecidable)), size):
+            members = [*definite, *(undecidable[index] for index in chosen)]
+            readings.add(conjunction(members) if members else unbound)
+    return readings.pop() if len(readings) == 1 else "undecided"
+
+
+def test_the_candidate_set_is_decided_over_every_completion_and_not_its_two_ends():
+    """The reading enumeration agrees with brute force over every subset of ``U``.
+
+    ``D ∪ {u}`` per undecidable ``u`` is not redundant beside ``D`` and ``D ∪ U``:
+    with ``D`` empty the empty reading is ``on_unbound`` rather than a vacuous pass,
+    so both ends can read ``fail`` where a completion binding one satisfied candidate
+    holds. Comparing the two ends alone reports a definite failure there, on evidence
+    the trial does not carry — the over-fail ``_reachable_counts`` guards against one
+    level down, met again over the candidate set.
+
+    Driven against the real evaluator over a real trajectory per cell: the verdict
+    each candidate reaches is supplied as recorded and unexecuted calls rather than
+    stubbed, so the agreement is between two readings of the shipped fold.
+    """
+    verdicts = ("pass", "fail", "undecided")
+    cells = [
+        (list(definite), list(undecidable), on_unbound)
+        for definite_size in range(3)
+        for definite in itertools.product(verdicts, repeat=definite_size)
+        for undecidable_size in range(4)
+        for undecidable in itertools.product(verdicts, repeat=undecidable_size)
+        for on_unbound in ("fail", "pass")
+    ]
+
+    disagreements = [
+        (definite, undecidable, on_unbound, observed, expected)
+        for definite, undecidable, on_unbound in cells
+        for observed in [_cell_verdict(definite, undecidable, on_unbound)]
+        for expected in [_every_completion(definite, undecidable, on_unbound)]
+        if observed != expected
+    ]
+
+    reachable = {_every_completion(*cell) for cell in cells}
+
+    assert len(cells) == 1040, "|D| <= 2 and |U| <= 3 over three verdicts, both policies"
+    assert disagreements == []
+    assert reachable == {"pass", "fail", "undecided"}, "agreement on one verdict is not agreement"
+    assert ([], ["pass", "fail"], "fail") in cells, "the cell the two ends get wrong is swept"
+    assert _every_completion([], ["pass", "fail"], "fail") == "undecided", "both ends read fail"
+
+
+def test_a_definite_candidate_absorbs_an_undecidable_reading_of_the_same_value():
+    """Dedup spans the undecidable set, because a definite binding subsumes a doubtful one.
+
+    The value is in the candidate set whatever the missing status would have said, so
+    the undecidable copy enumerates a reading already read. Left in, it would name
+    the value twice and — where the definite reading fails — report the constraint as
+    undecided beside a failure every completion agrees on.
+    """
+    both = _candidate_cell(["fail"], [])
+    duplicated = build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "Working.")),
+        recorded=[recorded_call(_WRITE, sequence=0, arguments={"record_id": "D0"})],
+        unexecuted=[ToolCall(id="unrun_write_0", name=_WRITE, arguments={"record_id": "D0"})],
+    )
+
+    definite_only = evaluate_constraint(both, _BOUND_PRESENT, bind=_SETTLED_BINDER)
+    with_a_doubtful_copy = evaluate_constraint(duplicated, _BOUND_PRESENT, bind=_SETTLED_BINDER)
+
+    assert definite_only.passed is False
+    assert "failed under (rec='D0')" in definite_only.message
+    assert with_a_doubtful_copy.passed is False
+    assert "cannot be decided" not in with_a_doubtful_copy.message, "every completion fails"
+    assert with_a_doubtful_copy.message.count("(rec=") == 1, with_a_doubtful_copy.message
+
+
+def test_a_result_extraction_with_no_outcome_event_leaves_the_candidate_unnamed():
+    """A ``result`` read on a call the trial recorded no outcome for is missing evidence.
+
+    The extraction reads nothing and the reason is that nobody wrote down what the
+    call returned, so some completion of the record binds a value here and this trial
+    cannot say which. The constraint is indeterminate and names ``result`` — silently
+    resolving it to "no candidate" would score a records-less bundle as though the
+    binder had genuinely fired on nothing.
+    """
+    timeline = build_turn_timeline(
+        [
+            Turn("user", "What is the invoice total?"),
+            Turn(
+                "assistant",
+                "The invoice total is $42.00.",
+                unexecuted=[ToolCall(id="unrun-1", name=_LOOKUP, arguments={})],
+            ),
+        ]
+    )
+    require = {
+        "present": {"match": {"kind": "assistant_message", "text": {"contains_binding": "total"}}}
+    }
+    binding = {
+        "match": _call_of(_LOOKUP, status={"equals": "success"}),
+        "values": {"total": {"field": "result"}},
+    }
+
+    result = evaluate_constraint(timeline, require, bind=binding)
+
+    call = [event for event in timeline.events if event.kind is TraceEventKind.TOOL_CALL]
+    assert timeline.records_present is False
+    assert [event.status for event in call] == [None], "the call is there and its outcome is not"
+    assert result.passed is False
+    assert "cannot be decided" in result.message
+    assert "result" in result.message, result.message
+
+
+def test_an_extraction_reading_nothing_off_a_recorded_call_binds_no_candidate():
+    """The rule is keyed on the evidence being absent, not on the value being ``None``.
+
+    Here the trial recorded the call in full and the argument the binding addresses
+    is simply not among its arguments — an absent value, which binds nothing and
+    leaves the candidate set determined. Reading any empty extraction as missing
+    evidence instead would make every records-present trial with an absent argument
+    ungradeable.
+    """
+    timeline = build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "Working.")),
+        recorded=[recorded_call(_WRITE, sequence=0, arguments={"other_key": "X"})],
+    )
+    two_such_calls = build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "Working.")),
+        recorded=[
+            recorded_call(_WRITE, sequence=0, arguments={"other_key": "X"}),
+            recorded_call(_WRITE, sequence=1, arguments={"other_key": "Y"}),
+        ],
+    )
+
+    result = evaluate_constraint(timeline, _BOUND_PRESENT, bind=_SETTLED_BINDER)
+    two = evaluate_constraint(two_such_calls, _BOUND_PRESENT, bind=_SETTLED_BINDER)
+
+    outcomes = [event for event in timeline.events if event.kind is TraceEventKind.TOOL_RESULT]
+    recorded = [event.status for event in outcomes]
+
+    assert recorded == [ToolExecutionStatus.SUCCESS], "the outcome is there to be read"
+    assert result.passed is False
+    assert "cannot be decided" not in result.message
+    assert "the binding selected 1 event, none of which carried every value it extracts" in (
+        result.message
+    )
+    assert "the binding selected 2 events, none of which carried every value it extracts" in (
+        two.message
+    )
+
+
+def test_the_fold_reports_the_reading_whose_truth_is_the_folded_truth():
+    """A definite failure beside an undecided candidate reports the failure.
+
+    Mixed FALSE/UNKNOWN candidate sets are reachable only once the candidate set is
+    itself three-valued, and the fold must pick the reading that *reached* the folded
+    verdict rather than the first that is not a pass: picking the first would print
+    "cannot be decided" beside a verdict every completion agrees is a failure.
+    """
+    result = evaluate_constraint(
+        _candidate_cell(["undecided", "fail"], []), _BOUND_PRESENT, bind=_SETTLED_BINDER
+    )
+
+    assert result.passed is False
+    assert "cannot be decided" not in result.message, "D1 fails under every completion"
+    assert "failed under (rec='D1')" in result.message
+    assert "(rec='D0')" not in result.message, "the undecided candidate did not reach the verdict"
+
+
+def test_a_bound_gate_that_cannot_be_decided_trips_the_trial():
+    """An undecided gate is not a pass in the agent's favour, bound or not."""
+    config = TraceChecksConfig(
+        constraints=[
+            {
+                "id": "every_write_was_read",
+                "description": "the agent read each record before it wrote to it",
+                "severity": "gate",
+                "bind": _SETTLED_BINDER,
+                "require": _BOUND_PRESENT,
+            }
+        ]
+    )
+
+    result = evaluate_trace_checks(_candidate_cell([], ["pass", "fail"]), config)
+
+    assert result.constraints[0].passed is False
+    assert "cannot be decided" in result.constraints[0].message
+    assert result.gate_failed is True
+    assert result.failed_gate_ids == ["every_write_was_read"]
+    assert result.score == 0.0
+
+
+def _denied_record_timeline(*calls: tuple[str, Any]) -> TrialTimeline:
+    """``calls`` as in :func:`_record_timeline`, with a denial the second route asks for."""
+    return build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "On it.")),
+        recorded=[
+            recorded_call(tool, sequence=index, arguments={"record_id": record})
+            for index, (tool, record) in enumerate(calls)
+        ]
+        + [recorded_call(_DENIAL, sequence=len(calls))],
+    )
+
+
+_CORRELATED_ROUTES = TraceChecksConfig(
+    alternatives=[
+        {
+            "id": "read_first",
+            "description": "the agent read each record before writing it",
+            "constraints": [
+                {
+                    "id": "correlated",
+                    "description": "every record written was read first",
+                    **_read_before_write(),
+                }
+            ],
+        },
+        {
+            "id": "denied",
+            "description": "the agent declined the request instead",
+            "constraints": [
+                {
+                    "id": "declined",
+                    "description": "the agent denied the case",
+                    "require": {"present": {"match": _call_of(_DENIAL)}},
+                }
+            ],
+        },
+    ]
+)
+
+
+def test_a_bound_constraint_scores_inside_the_route_that_declares_it():
+    """Correlation composes with routes: the binder is resolved per route member.
+
+    The same two routes over two trajectories that differ only in which record the
+    write names, so the correlation is the whole reason the route scores what it does
+    and the argmax between the routes turns on it.
+    """
+    correlated = evaluate_trace_checks(
+        _denied_record_timeline((_READ, "X"), (_WRITE, "X")), _CORRELATED_ROUTES
+    )
+    crossed = evaluate_trace_checks(
+        _denied_record_timeline((_READ, "X"), (_WRITE, "Y")), _CORRELATED_ROUTES
+    )
+
+    assert [(path.id, path.score) for path in correlated.paths] == [
+        ("read_first", 1.0),
+        ("denied", 1.0),
+    ]
+    assert correlated.winning_path == "read_first", "a tie is won by the first declared route"
+    assert [(path.id, path.score) for path in crossed.paths] == [
+        ("read_first", 0.0),
+        ("denied", 1.0),
+    ]
+    assert crossed.winning_path == "denied"
+    assert [item.id for item in crossed.constraints] == ["declined"]
+
+
+def test_a_bound_shared_gate_applies_to_every_route():
+    """A shared gate is folded into each route's decision set before the argmax.
+
+    So a correlation that fails shuts the component whichever route the agent
+    walked — asserted per route rather than only on the winner, because a gate the
+    fold reached on one route alone would still zero that route's component.
+    """
+    config = TraceChecksConfig(
+        constraints=[
+            {
+                "id": "never_wrote_blind",
+                "description": "the agent read each record before writing it",
+                "severity": "gate",
+                **_read_before_write(),
+            }
+        ],
+        alternatives=_CORRELATED_ROUTES.alternatives,
+    )
+
+    result = evaluate_trace_checks(_denied_record_timeline((_READ, "X"), (_WRITE, "Y")), config)
+
+    assert [(path.id, path.gate_failed) for path in result.paths] == [
+        ("read_first", True),
+        ("denied", True),
+    ]
+    assert result.failed_gate_ids == ["never_wrote_blind"]
+    assert result.gate_failed is True
+    assert result.score == 0.0
+    assert "failed under (rec='Y')" in result.constraints[0].message

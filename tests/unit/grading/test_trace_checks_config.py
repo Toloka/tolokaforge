@@ -59,6 +59,8 @@ _RUNNER_MODELS = Path(__file__).resolve().parents[3] / "tolokaforge" / "runner" 
 _VOCABULARY_CLASSES = frozenset(
     {
         "ValuePredicate",
+        "BoundValue",
+        "TraceBinding",
         "TraceMatcher",
         "AnchorSide",
         "CountConstraint",
@@ -109,6 +111,32 @@ _AN_ORDERING = {
     }
 }
 
+# A correlation over one name: the binder draws a case id off one call, and the
+# require tree asserts another call carried the same one. The rows below malform one
+# part of it at a time, so each is rejected for the part it malforms.
+_BOUND_CASE = {"field": "args.case_id"}
+
+
+def _binder(**overrides: Any) -> dict[str, Any]:
+    return {
+        "match": {"kind": "tool_call", "tool": {"equals": "open_case"}},
+        "values": {"case": _BOUND_CASE},
+        **overrides,
+    }
+
+
+def _references_the_case(**predicates: Any) -> dict[str, Any]:
+    return {
+        "present": {
+            "match": {
+                "kind": "tool_call",
+                "tool": {"equals": "close_case"},
+                "args": {"case_id": predicates or {"equals_binding": "case"}},
+            }
+        }
+    }
+
+
 # One value per operator, in the shape that operator reads. ``exists: False`` and
 # ``gt: 0`` are the rows that matter: both are falsy, and a declaredness rule
 # reading truthiness rather than presence would drop them.
@@ -128,6 +156,8 @@ _OPERATOR_SAMPLES: dict[str, Any] = {
     "len_gt": 0,
     "len_gte": 2,
     "exists": False,
+    "equals_binding": "quoted_case",
+    "contains_binding": "quoted_case",
 }
 
 
@@ -547,6 +577,93 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         message="leaves no interval any trajectory opens",
         validator="_require_a_self_referential_window_some_trial_opens",
     ),
+    _Rejection(
+        label="binding_reference_to_an_unbound_name",
+        block=_block(_constraint(_references_the_case())),
+        message="references ['case'] name no value this constraint binds",
+        validator="_reject_a_reference_to_a_name_nothing_binds",
+    ),
+    _Rejection(
+        label="binder_referencing_what_it_binds",
+        block=_block(
+            _constraint(
+                _references_the_case(),
+                bind=_binder(
+                    match={
+                        "kind": "tool_call",
+                        "tool": {"equals": "open_case"},
+                        "args": {"case_id": {"equals_binding": "case"}},
+                    }
+                ),
+            )
+        ),
+        message="the binder's own match references ['case']",
+        validator="_reject_a_binder_reading_the_names_it_binds",
+    ),
+    _Rejection(
+        label="bound_value_nothing_references",
+        block=_block(
+            _constraint(
+                {"present": {"match": {"kind": "tool_call", "tool": {"equals": "close_case"}}}},
+                bind=_binder(),
+            )
+        ),
+        message="bindings ['case'] are extracted and never referenced",
+        validator="_reject_a_bound_value_nothing_reads",
+    ),
+    _Rejection(
+        label="binder_binding_nothing",
+        block=_block(_constraint(_references_the_case(), bind=_binder(values={}))),
+        message="a binding declares no values",
+        validator="_require_a_binding_that_binds_something",
+    ),
+    _Rejection(
+        label="extraction_the_kind_cannot_read",
+        block=_block(
+            _constraint(_references_the_case(), bind=_binder(values={"case": {"field": "text"}}))
+        ),
+        message="addressing a field the kind does not carry",
+        validator="_reject_an_extraction_the_binder_cannot_read",
+    ),
+    _Rejection(
+        label="extraction_over_a_closed_vocabulary",
+        block=_block(
+            _constraint(_references_the_case(), bind=_binder(values={"case": {"field": "status"}}))
+        ),
+        message="whose domain is a handful of members",
+        validator="_reject_an_extraction_over_a_closed_vocabulary",
+    ),
+    _Rejection(
+        label="extraction_from_result_without_a_success_status",
+        block=_block(
+            _constraint(_references_the_case(), bind=_binder(values={"case": {"field": "result"}}))
+        ),
+        message="read result without a status predicate",
+        validator="_require_a_success_status_beside_a_result_extraction",
+    ),
+    _Rejection(
+        label="capture_pattern_with_two_groups",
+        block=_block(
+            _constraint(
+                _references_the_case(),
+                bind=_binder(values={"case": {"field": "args.note", "pattern": "(a)(b)"}}),
+            )
+        ),
+        message="captures 2 groups, and a binding reads exactly one",
+        validator="_require_a_pattern_that_captures_exactly_one_value",
+    ),
+    _Rejection(
+        label="on_unbound_pass_on_a_gate",
+        block=_block(
+            _constraint(
+                _references_the_case(),
+                bind=_binder(on_unbound="pass"),
+                severity="gate",
+            )
+        ),
+        message="on_unbound: pass opens a severity: gate constraint",
+        validator="_reject_a_binding_policy_that_opens_a_gate_vacuously",
+    ),
 )
 
 
@@ -556,6 +673,67 @@ def test_a_malformed_block_is_rejected_naming_the_fix(rejection: _Rejection):
         TraceChecksConfig(**rejection.block)
 
     assert rejection.message in str(excinfo.value), str(excinfo.value)
+
+
+# The three binding boundaries below stand on tests of their own rather than on
+# rows of the sweep above. The sweep asserts the wording of one rejection; these
+# assert that the *neighbouring* well-formed shape still loads, which is what a
+# rule widened into rejecting every binding would fail.
+
+
+def test_a_reference_to_a_name_nothing_binds_is_a_load_error():
+    with pytest.raises(ValidationError) as excinfo:
+        TraceChecksConfig(**_block(_constraint(_references_the_case())))
+
+    assert "case" in str(excinfo.value)
+    TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=_binder())))
+
+
+def test_a_binder_referencing_the_name_it_binds_is_a_load_error():
+    self_referential = _binder(
+        match={
+            "kind": "tool_call",
+            "tool": {"equals": "open_case"},
+            "args": {"case_id": {"equals_binding": "case"}},
+        }
+    )
+
+    with pytest.raises(ValidationError) as excinfo:
+        TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=self_referential)))
+
+    assert "case" in str(excinfo.value)
+    TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=_binder())))
+
+
+def test_a_bound_value_no_reference_reads_is_a_load_error():
+    unread = _binder(values={"case": _BOUND_CASE, "opened_by": {"field": "args.actor"}})
+
+    with pytest.raises(ValidationError) as excinfo:
+        TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=unread)))
+
+    assert "opened_by" in str(excinfo.value)
+    assert "'case'" not in str(excinfo.value), "the referenced name is not the offender"
+    TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=_binder())))
+
+
+def test_a_binder_reading_result_loads_beside_a_success_status():
+    """The other half of #717 extended: the rule admits the portable shape.
+
+    Its rejection row above stays green under a rule that rejected every
+    ``result`` extraction, which would leave the portable correlation unwritable.
+    """
+    binding = {
+        "match": {
+            "kind": "tool_call",
+            "tool": {"equals": "open_case"},
+            "status": {"equals": "success"},
+        },
+        "values": {"case": {"field": "result", "pattern": r"case ([0-9]+)"}},
+    }
+
+    config = TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=binding)))
+
+    assert config.constraints[0].bound_names() == {"case"}
 
 
 def _vocabulary_class_nodes() -> dict[str, ast.ClassDef]:
@@ -858,9 +1036,9 @@ def test_an_operator_is_declared_by_its_value_and_survives_the_wire(operator: st
 
     The runner receives this config as JSON inside the trial spec, and dumping a
     model writes every unset field as ``null`` — so reading declaredness off
-    pydantic's ``model_fields_set`` would report all fifteen operators after the
-    round trip and grade a one-operator predicate as a fifteen-operator conjunction.
-    Reading it off the values is what makes the two sides agree.
+    pydantic's ``model_fields_set`` would report all seventeen operators after the
+    round trip and grade a one-operator predicate as a seventeen-operator
+    conjunction. Reading it off the values is what makes the two sides agree.
     """
     predicate = ValuePredicate(**{operator: value})
     assert predicate.declared_operators() == {operator}

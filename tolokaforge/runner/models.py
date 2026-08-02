@@ -16,6 +16,7 @@ import ipaddress
 import math
 import re
 from collections import Counter
+from collections.abc import Iterator
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -447,11 +448,19 @@ TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
         "len_gt",
         "len_gte",
         "exists",
+        "equals_binding",
+        "contains_binding",
     }
 )
 """Every operator a :class:`ValuePredicate` may carry, written out rather than
 comprehended from the model, so the per-operator answer table has a second source
 to be checked against."""
+
+TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
+    {"equals_binding", "contains_binding"}
+)
+"""The operators whose value is a name in the constraint's binding environment
+rather than a value to compare against."""
 
 
 class ValuePredicate(BaseModel):
@@ -467,6 +476,10 @@ class ValuePredicate(BaseModel):
     ``null``. The one thing that reading makes inexpressible is ``equals: null`` —
     and a ``None`` field is unmatched rather than vacuously true anyway, so that
     predicate never had a reading.
+
+    ``equals_binding`` and ``contains_binding`` name a value the constraint's
+    ``bind`` extracted rather than writing it out, and compare with the same
+    ``equals`` / ``contains`` the literal forms use.
     """
 
     equals: Any = None
@@ -484,6 +497,8 @@ class ValuePredicate(BaseModel):
     len_gt: int | None = Field(default=None, ge=0)
     len_gte: int | None = Field(default=None, ge=0)
     exists: bool | None = None
+    equals_binding: str | None = None
+    contains_binding: str | None = None
 
     model_config = {"extra": "forbid"}
 
@@ -491,6 +506,14 @@ class ValuePredicate(BaseModel):
         """The operators this predicate asserts, which it is the conjunction of."""
         return frozenset(
             name for name in TRACE_PREDICATE_OPERATORS if getattr(self, name) is not None
+        )
+
+    def referenced_bindings(self) -> frozenset[str]:
+        """The binding names this predicate reads out of its constraint's environment."""
+        return frozenset(
+            getattr(self, name)
+            for name in TRACE_PREDICATE_BINDING_OPERATORS
+            if getattr(self, name) is not None
         )
 
     @model_validator(mode="after")
@@ -572,18 +595,168 @@ class TraceMatcher(BaseModel):
         ``equals``, valued ``success`` — rather than "does this status admit a
         failure", which would be a satisfiability question over every operator.
         """
-        if self.result is None:
+        if self.result is None or _asserts_a_successful_call(self.status):
             return self
-        success = ToolExecutionStatus.SUCCESS.value
-        declared = self.status.declared_operators() if self.status else frozenset()
-        if declared != {"equals"} or self.status.equals != success:
-            raise ValueError(
-                "a result predicate needs a status predicate reading exactly "
-                f"{{equals: {success}}} beside it. A failed call's result text is not "
-                "identical on the two substrates (#717), so only a successful call's "
-                "result is matchable. To assert a call failed, match on status instead"
-            )
-        return self
+        raise ValueError(
+            "a result predicate needs a status predicate reading exactly "
+            f"{{equals: {ToolExecutionStatus.SUCCESS.value}}} beside it. A failed call's "
+            "result text is not identical on the two substrates (#717), so only a "
+            "successful call's result is matchable. To assert a call failed, match on "
+            "status instead"
+        )
+
+
+def _asserts_a_successful_call(status: ValuePredicate | None) -> bool:
+    """Whether ``status`` is the exact predicate #717 admits a ``result`` read beside.
+
+    Syntactic — one operator, ``equals``, valued ``success`` — rather than "does this
+    status admit a failure", which would be a satisfiability question over every
+    operator.
+    """
+    if status is None or status.declared_operators() != {"equals"}:
+        return False
+    return status.equals == ToolExecutionStatus.SUCCESS.value
+
+
+class BoundValue(BaseModel):
+    """One name a binding extracts out of the event it selected.
+
+    ``field`` addresses the extraction the same way a matcher addresses a
+    predicate — ``tool``, ``text``, ``result``, or an ``args`` path by dotted
+    segments. ``pattern`` narrows a textual field to one capture group, which is
+    what makes a figure quoted inside prose bindable.
+    """
+
+    field: str
+    pattern: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+    def head_segment(self) -> str:
+        """The field name ``field`` addresses, before any nested argument path."""
+        return self.field.split(".", 1)[0]
+
+    @model_validator(mode="after")
+    def _require_a_pattern_that_captures_exactly_one_value(self) -> BoundValue:
+        """Zero groups bind the whole match under a name that reads like a capture.
+
+        Scoped to a pattern that compiles, as every other authored pattern is: an
+        uncompilable one has no group count, and the authoring gate reports it at
+        its own address rather than as a miscount here.
+        """
+        if self.pattern is None:
+            return self
+        try:
+            groups = re.compile(self.pattern).groups
+        except re.error:
+            return self
+        if groups == 1:
+            return self
+        raise ValueError(
+            f"pattern {self.pattern!r} captures {groups} groups, and a binding reads "
+            "exactly one. Wrap the value to bind in a single group — none binds the "
+            "whole match, and several leave no defined which"
+        )
+
+
+class OnUnbound(str, Enum):
+    """What a binding that selected nothing to bind decides."""
+
+    FAIL = "fail"
+    PASS = "pass"
+
+
+# Closed vocabularies of a handful of members, so a value bound out of one
+# correlates nothing an ``equals`` literal does not already say.
+_UNBINDABLE_FIELDS: frozenset[str] = frozenset({"status", "executor"})
+
+
+class TraceBinding(BaseModel):
+    """The events a constraint draws its correlated values from, and what it draws.
+
+    One binder yields one assignment over every name in ``values`` per event it
+    selects, and the constraint's ``require`` tree is evaluated once per
+    assignment. ``on_unbound`` decides the trial where the binder selected nothing:
+    the universal reading is vacuously true there, and ``fail`` is the default
+    because a task whose binder never fired is usually a task the agent did not do.
+    """
+
+    match: TraceMatcher
+    values: dict[str, BoundValue]
+    on_unbound: OnUnbound = OnUnbound.FAIL
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _require_a_binding_that_binds_something(self) -> TraceBinding:
+        """A validator rather than a ``Field`` bound, which short-circuits the message."""
+        if self.values:
+            return self
+        raise ValueError(
+            "a binding declares no values, so it binds nothing and every reference in "
+            "the constraint names an environment that does not exist. Write "
+            "values: {<name>: {field: args.<path>}}, or drop the bind"
+        )
+
+    @model_validator(mode="after")
+    def _reject_an_extraction_the_binder_cannot_read(self) -> TraceBinding:
+        """The extraction addresses a field the selected kind carries, by its head segment.
+
+        The same table a matcher's predicates are checked against, read at the head
+        of the dotted path: ``args.record_id`` is admitted on ``args``, the address
+        shape the matcher's own ``args`` keys take one level down.
+        """
+        matchable = TRACE_MATCHABLE_FIELDS_BY_KIND[self.match.kind]
+        unreadable = sorted(
+            (name, value.field)
+            for name, value in self.values.items()
+            if value.head_segment() not in matchable
+        )
+        if not unreadable:
+            return self
+        raise ValueError(
+            f"a {self.match.kind.value} binding extracts {unreadable}, addressing a field "
+            f"the kind does not carry, so the name would bind nothing on every event. A "
+            f"{self.match.kind.value} binding reads {sorted(matchable)}, an args path "
+            "naming nested keys by dotted segments below that first one"
+        )
+
+    @model_validator(mode="after")
+    def _reject_an_extraction_over_a_closed_vocabulary(self) -> TraceBinding:
+        closed = sorted(
+            name
+            for name, value in self.values.items()
+            if value.head_segment() in _UNBINDABLE_FIELDS
+        )
+        if not closed:
+            return self
+        raise ValueError(
+            f"bindings {closed} extract a {sorted(_UNBINDABLE_FIELDS)} field, whose domain "
+            "is a handful of members — every event carrying the bound value is already "
+            "selected by a predicate on that field reading an equals literal, so the "
+            "correlation says nothing the literal does not"
+        )
+
+    @model_validator(mode="after")
+    def _require_a_success_status_beside_a_result_extraction(self) -> TraceBinding:
+        """#717 over a value bound out of ``result`` rather than compared against it.
+
+        The landed rule fires on a ``result`` *predicate*, which a binder carries
+        none of. A failed call's result text differs between the substrates, and a
+        value bound out of it propagates that difference into every reference.
+        """
+        bound_from_result = sorted(
+            name for name, value in self.values.items() if value.head_segment() == "result"
+        )
+        if not bound_from_result or _asserts_a_successful_call(self.match.status):
+            return self
+        raise ValueError(
+            f"bindings {bound_from_result} read result without a status predicate reading "
+            f"exactly {{equals: {ToolExecutionStatus.SUCCESS.value}}} on the binder's "
+            "match. A failed call's result text is not identical on the two substrates "
+            "(#717), so a value bound out of it grades differently on each. Add the "
+            "status predicate, or bind an argument of the call instead"
+        )
 
 
 class Quantifier(str, Enum):
@@ -991,13 +1164,53 @@ _UNWEIGHTED_CONSTRAINT = 1.0
 """The share a constraint that declares no ``weight`` carries."""
 
 
+def _matchers_within(value: Any) -> Iterator[TraceMatcher]:
+    """Every matcher reachable from ``value``, structurally rather than per kind.
+
+    A matcher holds no matcher of its own, so the walk stops at one; everything
+    above it — a constraint expression, a quantified side, a list of nested
+    expressions — is descended by its declared fields, and a kind added to the
+    vocabulary is walked by this code rather than by a second table.
+    """
+    if isinstance(value, TraceMatcher):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _matchers_within(item)
+    elif isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            yield from _matchers_within(getattr(value, name))
+
+
+def _bindings_referenced_by(value: Any) -> frozenset[str]:
+    """Every binding name the predicates under ``value`` read."""
+    return frozenset(
+        name
+        for matcher in _matchers_within(value)
+        for predicate in _predicates_of(matcher)
+        for name in predicate.referenced_bindings()
+    )
+
+
+def _predicates_of(matcher: TraceMatcher) -> Iterator[ValuePredicate]:
+    """Every value predicate one matcher carries, its argument paths included."""
+    for field in _MATCHER_PREDICATE_FIELDS:
+        declared = getattr(matcher, field)
+        if isinstance(declared, ValuePredicate):
+            yield declared
+        elif isinstance(declared, dict):
+            yield from declared.values()
+
+
 class TraceConstraint(BaseModel):
     """One trajectory condition, scored or gating.
 
     ``weight`` scales its share of the component score, ``on_missing`` decides an
     anchor that matched nothing — defaulting to a named failing sub-check, so an
     unmatched anchor is never silently satisfied — and ``severity`` decides whether
-    the condition is scored at all or must simply hold.
+    the condition is scored at all or must simply hold. ``bind`` draws values out of
+    one event for the ``require`` tree to correlate against, which is why a binding
+    reaches exactly as far as the constraint that declares it.
     """
 
     id: str = Field(min_length=1)
@@ -1006,9 +1219,14 @@ class TraceConstraint(BaseModel):
     on_missing: OnMissing | None = None
     severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
     within: TurnWindow | None = None
+    bind: TraceBinding | None = None
     require: TraceConstraintExpr
 
     model_config = {"extra": "forbid"}
+
+    def bound_names(self) -> frozenset[str]:
+        """The names this constraint's binder puts in scope, if it declares one."""
+        return frozenset(self.bind.values) if self.bind is not None else frozenset()
 
     @field_validator("weight")
     @classmethod
@@ -1074,6 +1292,71 @@ class TraceConstraint(BaseModel):
                 "severity to have the check scored"
             )
         return self
+
+    @model_validator(mode="after")
+    def _reject_a_reference_to_a_name_nothing_binds(self) -> TraceConstraint:
+        """A binding reaches exactly as far as its own constraint.
+
+        The binder is a constraint field, so a reference to a name declared by
+        another constraint — or by another route — is an unbound name here rather
+        than a rule of its own, and the scoping the issue settled is structural.
+        """
+        binder = _bindings_referenced_by(self.bind.match) if self.bind else frozenset()
+        unbound = sorted((_bindings_referenced_by(self.require) | binder) - self.bound_names())
+        if not unbound:
+            return self
+        raise ValueError(
+            f"{self.id}: references {unbound} name no value this constraint binds, and a "
+            "binding is scoped to the constraint that declares it — a name another "
+            "constraint or another route binds is out of scope here. Declare it under "
+            f"this constraint's bind.values, or write a literal. In scope: "
+            f"{sorted(self.bound_names())}"
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_binder_reading_the_names_it_binds(self) -> TraceConstraint:
+        """The environment such a reference needs is the one the binder produces."""
+        if self.bind is None:
+            return self
+        self_referential = sorted(_bindings_referenced_by(self.bind.match) & self.bound_names())
+        if not self_referential:
+            return self
+        raise ValueError(
+            f"{self.id}: the binder's own match references {self_referential}, which it is "
+            "what binds — the candidates would have to be known before they are selected. "
+            "Reference the name from require, or select the binder's events by a literal"
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_bound_value_nothing_reads(self) -> TraceConstraint:
+        """A declared key nothing reads, in the family a weight beside a gate belongs to."""
+        unreferenced = sorted(self.bound_names() - _bindings_referenced_by(self.require))
+        if not unreferenced:
+            return self
+        raise ValueError(
+            f"{self.id}: bindings {unreferenced} are extracted and never referenced, so "
+            "they multiply the candidate set and decide nothing. Reference them with "
+            "equals_binding or contains_binding in require, or drop them"
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_binding_policy_that_opens_a_gate_vacuously(self) -> TraceConstraint:
+        """``on_unbound: pass`` on a gate is a gate the trial satisfies by binding nothing.
+
+        The policy earns its place on a *scored* constraint, where a binder that
+        selected nothing is already charged to the check asking whether the thing
+        happened. A gate carries no share, so there is no second charge to avoid.
+        """
+        if self.bind is None or self.bind.on_unbound is not OnUnbound.PASS:
+            return self
+        if self.severity is not TraceConstraintSeverity.GATE:
+            return self
+        raise ValueError(
+            f"{self.id}: on_unbound: pass opens a severity: gate constraint on every trial "
+            "whose binder selected nothing, so the check that must hold holds vacuously. A "
+            "gate carries no weight, so letting the unbound case fail it double-charges "
+            "nothing: drop the on_unbound, or drop the severity to have the check scored"
+        )
 
     @model_validator(mode="after")
     def _reject_an_unmatched_anchor_policy_where_nothing_is_anchored(self) -> TraceConstraint:

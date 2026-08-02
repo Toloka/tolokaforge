@@ -51,6 +51,7 @@ from tolokaforge.runner.models import AdjacencyView as AdjacencyView
 from tolokaforge.runner.models import AnchorQuantifier as AnchorQuantifier
 from tolokaforge.runner.models import AnchorSide as AnchorSide
 from tolokaforge.runner.models import BeforeConstraint as BeforeConstraint
+from tolokaforge.runner.models import BoundValue as BoundValue
 from tolokaforge.runner.models import CountConstraint as CountConstraint
 from tolokaforge.runner.models import Criterion as Criterion
 from tolokaforge.runner.models import CriterionResult as CriterionResult
@@ -63,6 +64,7 @@ from tolokaforge.runner.models import KeyAccountingRecord as KeyAccountingRecord
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
 from tolokaforge.runner.models import MatcherSide as MatcherSide
 from tolokaforge.runner.models import OnMissing as OnMissing
+from tolokaforge.runner.models import OnUnbound as OnUnbound
 from tolokaforge.runner.models import PresentConstraint as PresentConstraint
 from tolokaforge.runner.models import Quantifier as Quantifier
 from tolokaforge.runner.models import RecordedToolCall as RecordedToolCall
@@ -75,6 +77,7 @@ from tolokaforge.runner.models import StackPatch as StackPatch
 from tolokaforge.runner.models import ToolCallRecorder as ToolCallRecorder
 from tolokaforge.runner.models import ToolExecutorIdentity as ToolExecutorIdentity
 from tolokaforge.runner.models import ToolExpectations as ToolExpectations
+from tolokaforge.runner.models import TraceBinding as TraceBinding
 from tolokaforge.runner.models import TraceChecksConfig as TraceChecksConfig
 from tolokaforge.runner.models import TraceChecksResult as TraceChecksResult
 from tolokaforge.runner.models import TraceChecksSummary as TraceChecksSummary

@@ -27,7 +27,7 @@ agent → FastAPI (app-service:8000) → postgres:16 (app-db)
   | Component | Weight | What it checks |
   |---|---|---|
   | `state_checks.db_probes` | 0.5 | the corrective action landed in postgres with the right reason code and `status='open'` |
-  | `transcript_rules` | 0.2 | the agent both **read** (`http_request` `GET`) and **mutated** (`http_request` `POST`), within the turn budget |
+  | `trace_checks` | 0.2 | the posted values were **obtained** rather than guessed, and the action was opened exactly once |
   | `llm_judge` | 0.3 | the written completion report names the lot, states the reason, and reads as an operator-facing note |
 
 - **A real application service, no custom image.** `app-service` is a small
@@ -36,10 +36,32 @@ agent → FastAPI (app-service:8000) → postgres:16 (app-db)
   ships **no Dockerfile**. A compose `command:` override boots `uvicorn`
   against the bind-mounted `app/main.py`; the runner image has no `ENTRYPOINT`,
   so the override takes effect.
+- **Correlated arguments: grading how a value was obtained.** The db_probe reads
+  the `corrective_actions` row that exists; it cannot say where the reason code in
+  it came from, and the task's own guidance says not to guess it. Two
+  `trace_checks` constraints bind a value out of the `POST` and require it to have
+  come from something the agent read:
+
+  | constraint | what it binds | the wrong process it catches |
+  |---|---|---|
+  | `the_reason_code_posted_was_read_from_the_catalog` | `args.json.reason_code` off the POST | the code was written from memory, or fabricated, rather than read out of `GET /reason-codes` |
+  | `the_lot_was_read_before_the_action_was_opened` | the lot URL off the POST, by regex capture | the action was opened against a lot the agent never read |
+  | `exactly_one_corrective_action_was_opened` | — (`count { max: 1 }`, `severity: gate`) | the action is double-posted, leaving a duplicate to reconcile |
+
+  Because both bind rather than hard-code, neither names a reason code or a lot
+  number: a new code in the catalog, or a different lot, needs no edit here. The lot
+  correlation captures the **whole** `http://…/lots/<id>` prefix on purpose — a bound
+  `"7"` is a substring of `.../lots/1007`, so an agent that read the lot *code* as
+  though it were the id would pass a bare-id binding. Both binders draw from the POST,
+  so an agent that never opens the action binds nothing and the default `on_unbound`
+  charges it: strictly stronger than asking that *a* POST happened. See
+  [`docs/GRADING.md`](../../../docs/GRADING.md) § Correlating arguments across
+  matchers.
+
 - **Distinct method-tagged tool calls.** The agent uses the `http_request`
   builtin (restricted to `app-service:8000`), so its reads and mutations carry
-  a `method` argument that `transcript_rules.required_actions` matches on
-  directly — cleaner than opaque `bash` invocations.
+  `method` and `url` arguments a matcher addresses directly — cleaner than opaque
+  `bash` invocations.
 
 ## The scenario
 
@@ -86,7 +108,7 @@ examples/native/multi_service_lot_ops/
 │       └── init.sql              # schema + seed + app/grader roles
 └── dataset/tasks/lot_ops_01/
     ├── task.yaml                 # env manifest + http_request/write_file tools
-    └── grading.yaml              # db_probes + transcript_rules + llm_judge
+    └── grading.yaml              # db_probes + trace_checks + llm_judge
 ```
 
 ## Design notes

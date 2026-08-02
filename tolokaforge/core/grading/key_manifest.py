@@ -654,6 +654,14 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         "the inclusive turn window every matcher in a constraint is restricted to, "
         "which narrows what the kinds select. " + _TRACE_CHECKS_EVIDENCE_LIMITS,
     ),
+    _trace_constraint_field_key(
+        "bind",
+        "the values a constraint draws out of one event, which every matcher in its "
+        "require tree then resolves a binding reference against — so the kinds are "
+        "read once per candidate assignment rather than once, and the policy for a "
+        "binder that yielded none decides the constraint on its own. "
+        + _TRACE_CHECKS_EVIDENCE_LIMITS,
+    ),
     GradingKey(
         author_key="llm_judge",
         kind=KeyKind.SCORED_CHECK,
@@ -726,6 +734,14 @@ EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
 
 NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="the trial's timeline carries no events"
+)
+
+# Every way a binder leaves its constraint's ``require`` tree unentered: no event
+# selected, events carrying no value to bind, and an event whose value the trial does
+# not record. One detail rather than one per reason, because the record answers "was
+# this kind evaluated" and the constraint's own message answers why it was not.
+UNBOUND_BINDING_SKIP = KeyAccountingRecord(
+    outcome=KeyAccounting.SKIPPED, detail="the binding yielded no assignment"
 )
 
 TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")

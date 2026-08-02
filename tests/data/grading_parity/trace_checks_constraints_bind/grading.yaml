@@ -1,0 +1,35 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+# Both trials read one report and then write one, so both anchors match in either
+# of them and the ordering alone separates nothing. The binding is the only reason
+# one of them counts: the path the write names is what the earlier read must have
+# named too. A build that never read `bind` resolves no environment, both
+# references compare nothing, and the two trials score identically.
+trace_checks:
+  constraints:
+    - id: every_report_written_was_read_first
+      description: "the agent reads a report before it overwrites it"
+      bind:
+        match:
+          kind: tool_call
+          tool: { equals: write_file }
+        values:
+          written: { field: args.path }
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: read_file }
+              args: { path: { equals_binding: written } }
+          right:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: write_file }
+              args: { path: { equals_binding: written } }
