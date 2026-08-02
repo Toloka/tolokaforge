@@ -337,9 +337,7 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
         )
         for path in config.alternatives
     }
-    # ``max`` keeps the first of equal scores and the routes are in declaration
-    # order, so a tie is broken by which route the author wrote first.
-    winner_id = max(routes, key=lambda path_id: routes[path_id].score)
+    winner_id = max(routes, key=lambda path_id: _precedence(routes[path_id]))
     paths = [
         TracePathResult(id=path_id, score=route.score, gate_failed=bool(route.failed_gate_ids))
         for path_id, route in routes.items()
@@ -362,14 +360,26 @@ class _DecisionSet:
     failed_gate_ids: list[str]
 
 
+def _precedence(route: _DecisionSet) -> tuple[float, bool]:
+    """What the argmax orders routes by: the score, then whether a gate shut.
+
+    ``max`` keeps the first of equal keys and the routes are in declaration order,
+    so a tie between clean routes is broken by which one the author wrote first.
+    A route whose gate failed wins a tie outright: it can only ever shut the
+    component and never rescue it, so the trial's verdict does not turn on where
+    in the file the two routes were written.
+    """
+    return (route.score, bool(route.failed_gate_ids))
+
+
 def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
     """``results`` scored over its non-gate members, or collapsed to the gate verdict.
 
     A gate enters neither the numerator nor the denominator, so a decision set whose
     every member is a gate has no weighted average to take — and an author who wrote
     only gates asked for a defined verdict, not an empty sum. It scores the gates'
-    own verdict, which is what the judge's all-required rubric already returns
-    (``rubric.py:459-462``). The collapse lives here rather than inside
+    own verdict, which is what :func:`~tolokaforge.core.grading.rubric.aggregate_rubric`
+    already returns for an all-required rubric. The collapse lives here rather than inside
     :func:`_weighted_fraction`, whose denominator its callers keep positive, and it
     is not conditional on ``alternatives``: a flat block of nothing but gates
     reaches it too.
@@ -401,9 +411,10 @@ def _component(
     """The winning decision set as the component both substrates read.
 
     A tripped gate zeroes the score here rather than at each substrate's
-    integration, because ``TraceChecksResult.score`` *is* the component on both
-    (``combine.py:184``, ``service.py:1452``) — the same act the runner performs on
-    the judge's aggregate at ``service.py:1505``, at the one place that serves both.
+    integration, because ``TraceChecksResult.score`` *is* the component both
+    :meth:`~tolokaforge.core.grading.combine.GradingEngine.grade_trajectory` and the
+    runner's ``GradeTrial`` assign — the same act ``GradeTrial`` performs on the
+    judge's aggregate when a required criterion fails, done once here for both.
     """
     return TraceChecksResult(
         passed=all(item.passed for item in winner.results),
@@ -484,7 +495,7 @@ def _evaluate_constraint(
         kind=kind,
         passed=truth is _Truth.TRUE,
         weight=constraint.weight,
-        severity=constraint.severity or TraceConstraintSeverity.SCORED,
+        severity=constraint.severity,
         message=_message(truth, kind, resolver, on_missing),
         matched_positions=resolver.matched_positions(),
     )

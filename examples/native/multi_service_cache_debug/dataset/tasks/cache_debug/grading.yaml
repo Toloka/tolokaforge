@@ -35,10 +35,11 @@ state_checks:
 # key listing, say — has observed no divergence at all, and scores the better of
 # two incomplete routes rather than the sum of two halves.
 #
-# Each route asks two independent questions: were both sides of the comparison
-# read, and did the reads that happened happen before the note. The second carries
-# `on_missing: pass` so a read that never happened is charged once, to the first
-# question, rather than twice.
+# Each route asks two questions: were both sides of the comparison read, and did the
+# reads that happened happen before the note. The second carries `on_missing: pass`
+# so a read that never happened is charged once, to the first question, rather than
+# twice — which makes the second vacuous when neither read happened, leaving the
+# presence question to carry that case alone.
 #
 # The gate is SHARED rather than written inside a route: "do not mutate the order
 # on a diagnose-only task" holds whatever route the agent took, and a gate inside a

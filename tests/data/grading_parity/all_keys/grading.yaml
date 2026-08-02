@@ -121,15 +121,15 @@ trace_checks:
     - id: closed_after_writing_the_report
       description: the widget is closed once the report exists
       constraints:
-        - id: the_report_exists_before_the_close
-          description: the report is written before the widget is closed
+        - id: the_report_exists
+          description: a report file is written
           require:
             present: { match: { kind: tool_call, tool: { equals: write_file } } }
     - id: closed_after_telling_the_customer
       description: the widget is closed once the customer has been told
       constraints:
-        - id: the_customer_was_told_before_the_close
-          description: the customer is notified before the widget is closed
+        - id: the_customer_was_told
+          description: the customer is notified
           require:
             present: { match: { kind: tool_call, tool: { equals: notify_customer } } }
 

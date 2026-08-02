@@ -97,6 +97,18 @@ def _path(path_id: str, *constraints: dict[str, Any]) -> dict[str, Any]:
 
 _TOOL_CALL = {"kind": "tool_call", "tool": {"equals": "write_file"}}
 
+# An ordering over two distinct matchers, so a row driving it is rejected for what
+# the row is about rather than for ordering one matcher against itself.
+_AN_ORDERING = {
+    "before": {
+        "left": {"quantifier": "first", "match": _TOOL_CALL},
+        "right": {
+            "quantifier": "first",
+            "match": {"kind": "tool_call", "tool": {"equals": "close_widget"}},
+        },
+    }
+}
+
 # One value per operator, in the shape that operator reads. ``exists: False`` and
 # ``gt: 0`` are the rows that matter: both are falsy, and a declaredness rule
 # reading truthiness rather than presence would drop them.
@@ -435,6 +447,20 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         message="at least 1 item",
     ),
     _Rejection(
+        label="a_route_of_nothing_but_gates_beside_a_scored_one",
+        block={
+            "alternatives": [
+                _path(
+                    "gate_only_route",
+                    _constraint({"absent": {"match": _TOOL_CALL}}, id="g", severity="gate"),
+                ),
+                _path("scored_route", _constraint({"present": {"match": _TOOL_CALL}}, id="s")),
+            ]
+        },
+        message="collapses to its gates' verdict",
+        validator="_require_every_route_to_be_scored_where_any_route_is",
+    ),
+    _Rejection(
         label="inverted_turn_window",
         block=_block(
             _constraint(
@@ -467,6 +493,12 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         block=_block(_constraint({"present": {"match": _TOOL_CALL}}, severity="gate", weight=2.0)),
         message="excluded from the weighted average",
         validator="_reject_a_weight_on_a_check_nothing_scores",
+    ),
+    _Rejection(
+        label="an_unmatched_anchor_opening_a_gate",
+        block=_block(_constraint(_AN_ORDERING, severity="gate", on_missing="pass")),
+        message="holds vacuously",
+        validator="_reject_an_anchor_policy_that_opens_a_gate_vacuously",
     ),
     _Rejection(
         label="misspelled_severity",
@@ -602,6 +634,84 @@ def test_either_severity_loads_and_a_gate_needs_no_weight(severity: str):
 
     assert config.constraints[0].severity is TraceConstraintSeverity(severity)
     assert config.constraints[0].weight == 1.0
+
+
+def test_a_constraint_that_writes_no_severity_is_scored():
+    """The unwritten value is the enum member, not an absence a reader coalesces.
+
+    Two readers would each have to supply the same default otherwise, and the
+    result-side twin already answers ``scored`` — a tri-state over a two-valued
+    domain is the shape from which the two can disagree.
+    """
+    config = TraceChecksConfig(**_block(_constraint({"present": {"match": _TOOL_CALL}})))
+
+    assert config.constraints[0].severity is TraceConstraintSeverity.SCORED
+
+
+def test_a_gate_may_decide_an_unmatched_anchor_by_failing():
+    """The complement of the vacuous-gate rejection: ``on_missing: fail`` is writable.
+
+    Without this the rejection could be widened to every ``on_missing`` beside a
+    gate and nothing would notice — which would take the default policy away from
+    the gates that state it explicitly.
+    """
+    config = TraceChecksConfig(
+        **_block(_constraint(_AN_ORDERING, severity="gate", on_missing="fail"))
+    )
+
+    assert (config.constraints[0].severity, config.constraints[0].on_missing) == (
+        TraceConstraintSeverity.GATE,
+        OnMissing.FAIL,
+    )
+
+
+def test_a_block_whose_every_route_is_unscoreable_loads():
+    """The all-gates collapse is a defined verdict, and the rejection does not reach it.
+
+    A route with nothing scored is rejected for tying or beating a *scored*
+    sibling. With no scored sibling anywhere there is nothing for it to beat: the
+    block asks the gates' own question of whichever route the agent walked, which
+    is the collapse ``docs/GRADING.md`` § "severity — a check that must hold"
+    documents. A rejection stated over one path in isolation reds here.
+    """
+    config = TraceChecksConfig(
+        alternatives=[
+            _path(
+                "by_lookup",
+                _constraint({"present": {"match": _TOOL_CALL}}, id="g", severity="gate"),
+            ),
+            _path(
+                "by_denial", _constraint({"absent": {"match": _TOOL_CALL}}, id="h", severity="gate")
+            ),
+        ]
+    )
+
+    assert [item.severity for path in config.alternatives for item in path.constraints] == [
+        TraceConstraintSeverity.GATE
+    ] * 2
+
+
+def test_a_shared_scored_check_is_what_makes_a_gate_only_route_scoreable():
+    """The decision set is the shared constraints plus the route's own, at load too.
+
+    One route carries a gate and nothing else while its sibling carries a scored
+    check, which is the pair the rejection is about — and the block is admitted,
+    because the shared check both routes carry is scored, so neither decision set
+    collapses. A rule reading ``path.constraints`` alone rejects this block, which
+    is a pack the evaluator grades correctly.
+    """
+    config = TraceChecksConfig(
+        constraints=[_constraint({"present": {"match": _TOOL_CALL}}, id="shared_step")],
+        alternatives=[
+            _path(
+                "by_lookup",
+                _constraint({"absent": {"match": _TOOL_CALL}}, id="g", severity="gate"),
+            ),
+            _path("by_denial", _constraint({"present": {"match": _TOOL_CALL}}, id="h")),
+        ],
+    )
+
+    assert [path.id for path in config.alternatives] == ["by_lookup", "by_denial"]
 
 
 def test_a_gate_survives_the_trial_spec_round_trip():

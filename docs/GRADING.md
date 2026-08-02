@@ -1,12 +1,15 @@
 # Grading System
 
-Tolokaforge evaluates agent performance across four dimensions:
+Tolokaforge evaluates agent performance across five dimensions:
 
 1. **State Checks** - Final environment state verification (hash-based or JSONPath)
 2. **Transcript Rules** - Process constraints (required phrases, tool usage, turn limits)
-3. **LLM Judge** - Per-criterion rubric grading by a read-only agentic judge
-4. **Custom Checks** - Author-written Python `@check` functions for the
-   deterministic-Python gap the other three don't express (arithmetic
+3. **Trace Checks** - Declarative conditions on the trial's event timeline: order,
+   scoped absence, counting, and argument-level matching, with alternative routes
+   and checks that must hold without being scored. See [Trace Checks](#trace-checks).
+4. **LLM Judge** - Per-criterion rubric grading by a read-only agentic judge
+5. **Custom Checks** - Author-written Python `@check` functions for the
+   deterministic-Python gap the other four don't express (arithmetic
    over final state, transcript patterns tied to computed values). See
    [custom_checks.md](custom_checks.md).
 
@@ -132,6 +135,14 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   termination notice and which made no tool call is skipped despite having
   messages. That is the point — grading a rule against harness text would let a
   task score itself on strings the harness wrote.
+
+**The guarantee is narrower inside a route.** A manifest entry carries one
+`runner_field`, and the per-constraint entries address
+`TraceChecksConfig.constraints`, so a constraint kind or per-constraint field
+written *only* inside an [`alternatives`](#alternative-paths) path is covered by the
+`trace_checks.alternatives` key rather than by its own leaf — populated-implies-accounted
+holds for the block, not for that leaf (#772). The evaluator's side is unaffected: it
+records every kind the walk reached, wherever the constraint was written.
 
 `grading_method: test_execution` returns before the component phase, so the ledger
 does not apply to that dispatch mode — recorded as the `grading_method` entry's
@@ -1483,8 +1494,13 @@ the paths declared as wholes, which is [`alternatives`](#alternative-paths).
 `severity: gate` marks a constraint that is not scored and must hold. A gate is
 excluded from the weighted average — it enters neither the numerator nor the
 denominator — so writing a `weight` beside one is a load error naming the key
-nothing reads. `severity: scored` is the default and is the constraint that carries
-a share.
+nothing reads. So is [`on_missing: pass`](#on_missing--what-an-unmatched-anchor-decides):
+it would open the gate on every trial whose anchor matched nothing. That policy earns
+its place on a *scored* constraint, where an unmatched anchor is already charged to
+the check that asked whether the thing happened and charging it again would cost the
+agent the same failure twice; a gate carries no share, so there is no second charge
+to avoid and the pass buys nothing but a check that must hold holding vacuously.
+`severity: scored` is the default and is the constraint that carries a share.
 
 This is the same concept as the rubric judge's
 [required criterion](#required-gate-semantics), reached by the same reasoning: some
@@ -1512,6 +1528,14 @@ where the same limit costs a weight rather than the trial.
 it — and this is the same collapse the judge's
 [all-required rubric](#required-gate-semantics) already returns. It applies to a flat
 `constraints` list and to a route's decision set alike.
+
+**A route with nothing scored beside a route that has something scored is a load
+error**, not a collapse. Such a route is `1.0` wherever its gates hold, so it ties or
+beats every scored sibling on every trajectory and the component reports the gate
+instead of the route the agent walked. The gate belongs in the shared `constraints`,
+where it applies whichever route was taken. A block whose routes are *all* gate-only
+is admitted: there is no scored sibling for one to stand in front of, and the block
+asks the gates' own question whichever route the agent walked.
 
 ### Alternative paths
 
@@ -1553,7 +1577,8 @@ route is not penalised for being long.
 scoreᵢ = Σ(weight · passed) / Σ(weight)   over the non-gate members of Dᵢ
 scoreᵢ = 1.0 if every gate in Dᵢ held else 0.0   when Dᵢ has no non-gate member
 
-winner        = the highest-scoring path, ties broken by declaration order
+winner        = the highest-scoring path; a tie goes to a path whose gate shut,
+                and between clean paths to the first declared
 gate_failed   = some gate in the winner's decision set did not hold
 component     = 0.0 if gate_failed else the winner's score
 ```
@@ -1566,7 +1591,11 @@ is never zeroed by a gate; only the component is.
 The argmax runs over **every** path, including ones whose gates did not hold. A path
 is not dropped from contention for failing its own gate: dropping it would let an
 agent violate the gate on the route it scored highest on, fall through to a
-lower-scoring clean route, and pass.
+lower-scoring clean route, and pass. For the same reason a **tie goes to the path
+whose gate shut** — otherwise the trial's verdict would turn on which of two
+equal-scoring routes the author happened to write first. Preferring the gated path
+in a tie can only ever shut a component and never rescue one, so it closes a cell
+rather than opening one.
 
 #### Shared gates and path gates: when each is appropriate
 
@@ -1584,9 +1613,11 @@ shipped pack: see [`cache_debug`](#two-worked-packs), whose one gate is shared f
 exactly this reason.
 
 This rule is guidance rather than a guarantee, and the reason is worth stating
-plainly: a path gate has an escape. Trip route A's gate *and* score badly enough on A
-that a clean route B wins, and A's gate is never consulted — the trial passes with the
-forbidden action performed. No rule for path gates closes it. Preferring a gate-clean
+plainly: a path gate has an escape. Trip route A's gate *and* score **strictly below**
+a clean route B, and A's gate is never consulted — the trial passes with the
+forbidden action performed. Scoring merely *level* with B no longer escapes, because
+a tie goes to the gated path, but scoring below it still does and no rule for path
+gates closes that. Preferring a gate-clean
 path is worse in the same place (an agent escapes a gate by violating it on the route
 it scores highest on), and consulting every gate everywhere fails an agent for
 tripping a gate on a route it did not take, which is the premise of the feature. A
@@ -1637,11 +1668,14 @@ Three authoring choices in it are worth copying:
   only when that route wins — so a route gate here would be escapable by winning on
   the other one. This is the [rule above](#shared-gates-and-path-gates-when-each-is-appropriate)
   applied to a real pack.
-- **Each route asks two independent questions**: were both sides of the comparison
-  read, and did the reads that happened happen before the note. The ordering check
-  carries `on_missing: pass` so a read that never happened is charged once — to the
-  presence check — rather than twice, which is what lets each check fail on its own
-  wrong process rather than cascading.
+- **Each route asks two questions**: were both sides of the comparison read, and did
+  the reads that happened happen before the note. The ordering check carries
+  `on_missing: pass` so a read that never happened is charged once — to the presence
+  check — rather than twice, which is what lets each check fail on its own wrong
+  process rather than cascading. The two are not independent as a result: with
+  neither read performed the ordering check is vacuous and passes, so a trajectory
+  that writes the note and nothing else scores the same `2/3` as one that starts a
+  route and abandons it.
 - **The judge stays dominant.** The routes are not equally probative: the cache
   inspector shows the stale value itself, while the served-vs-source comparison
   shows only that the read path serves something the database disagrees with. The
@@ -1736,8 +1770,12 @@ two paths is the flat form written the long way round; and an `id` repeated anyw
 in the block's one id space makes two sub-check results indistinguishable. A
 `weight` beside [`severity: gate`](#severity--a-check-that-must-hold) is rejected for
 the neighbouring reason — a gate enters neither the numerator nor the denominator, so
-the weight is a declared key nothing reads. All four are load errors naming what to
-write instead.
+the weight is a declared key nothing reads. Two more are rejected for what they do to
+the fold rather than to the block: `on_missing: pass` beside a gate, which opens it on
+every trial whose anchor matched nothing; and a route whose decision set — the shared
+constraints plus its own — has no scored member while another route's does, which is a
+constant `1.0` standing in front of every scored sibling. All six are load errors
+naming what to write instead.
 
 **An ordering over one matcher is rejected unless some trajectory decides it.**
 Writing the same matcher on both sides of `before`, or forbidding the very events an

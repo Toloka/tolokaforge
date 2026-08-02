@@ -217,4 +217,4 @@ unit tier is for the framework, not the pack's grader.
   — runnable reference pack (ledger reconciliation).
 - [ADR-0012 — the `CheckExecutor` Protocol seam](adr/0012-custom-checks-extension.md).
 - [ADR-0018 — network policy (`no_internet` invariant)](adr/0018-multi-container-under-shared-runtime.md).
-- [GRADING.md — the four-component grade](GRADING.md#custom-checks).
+- [GRADING.md — the five-component grade](GRADING.md#custom-checks).

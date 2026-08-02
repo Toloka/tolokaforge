@@ -1004,7 +1004,7 @@ class TraceConstraint(BaseModel):
     description: str = Field(min_length=1)
     weight: float = _UNWEIGHTED_CONSTRAINT
     on_missing: OnMissing | None = None
-    severity: TraceConstraintSeverity | None = None
+    severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
     within: TurnWindow | None = None
     require: TraceConstraintExpr
 
@@ -1051,6 +1051,27 @@ class TraceConstraint(BaseModel):
                 "which is excluded from the weighted average — it enters neither the "
                 "numerator nor the denominator, so the weight scales nothing. Drop the "
                 "weight, or drop the severity to have the check scored"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_an_anchor_policy_that_opens_a_gate_vacuously(self) -> TraceConstraint:
+        """``on_missing: pass`` on a gate is a gate the trial satisfies by never arriving.
+
+        The policy earns its place on a *scored* constraint, where an anchor that
+        matched nothing is already charged to the check asking whether the thing
+        happened and charging it again would cost the agent the same failure twice.
+        A gate carries no share, so there is no second charge to avoid and the
+        policy buys nothing but the vacuous pass — on the one check the author said
+        must hold.
+        """
+        if self.severity is TraceConstraintSeverity.GATE and self.on_missing is OnMissing.PASS:
+            raise ValueError(
+                f"{self.id}: on_missing: pass opens a severity: gate constraint on every "
+                "trial whose anchor matched nothing, so the check that must hold holds "
+                "vacuously. A gate carries no weight, so letting the unmatched anchor "
+                "fail it double-charges nothing: drop the on_missing, or drop the "
+                "severity to have the check scored"
             )
         return self
 
@@ -1132,6 +1153,38 @@ class TraceChecksConfig(BaseModel):
             f"({len(self.alternatives)}). A single path is the flat form written the long "
             "way round — the best of one path is that path — so move its constraints into "
             "'constraints:' beside the shared ones, or declare the second route"
+        )
+
+    @model_validator(mode="after")
+    def _require_every_route_to_be_scored_where_any_route_is(self) -> TraceChecksConfig:
+        """A route with nothing scored in it cannot lose, so nothing else can win.
+
+        A decision set with no scored member has no weighted average to take and
+        collapses to its gates' verdict — ``1.0`` wherever they hold. Beside a route
+        that *is* scored that route ties or beats every sibling on every trajectory
+        its gates survive, so the component stops measuring the process the other
+        routes describe. The rule is stated over the block rather than over a path
+        because the shared constraints are in every decision set: a shared scored
+        check is what makes a gate-only path list scoreable.
+        """
+        scored = {
+            path.id: any(
+                item.severity is not TraceConstraintSeverity.GATE
+                for item in (*self.constraints, *path.constraints)
+            )
+            for path in self.alternatives or ()
+        }
+        unscoreable = [path_id for path_id, is_scored in scored.items() if not is_scored]
+        if not unscoreable or not any(scored.values()):
+            return self
+        raise ValueError(
+            f"paths {unscoreable} carry no scored check, beside "
+            f"{[path_id for path_id, is_scored in scored.items() if is_scored]}, which do. "
+            "A decision set with no scored member collapses to its gates' verdict — 1.0 "
+            "wherever they hold — so such a route ties or beats every scored sibling and "
+            "the component reports the gate rather than the route the agent walked. Move "
+            "the gate into the shared 'constraints:', where it applies whichever route "
+            "the agent took, or give the route a scored constraint of its own"
         )
 
     @model_validator(mode="after")

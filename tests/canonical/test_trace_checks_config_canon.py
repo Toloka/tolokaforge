@@ -1,14 +1,17 @@
 """The ``trace_checks`` vocabulary is closed, and one model crosses to the runner.
 
-Three claims, each over two independent sources:
+Four claims, each over two independent sources:
 
 1. the declared constraint vocabulary, the hand-written
    :data:`~tolokaforge.runner.models.TRACE_CONSTRAINT_KINDS`, and the ten kinds this
    module writes out are the same set — so a kind added to the model without being
    admitted to the vocabulary, or the reverse, fails here;
-2. a config spanning that vocabulary survives the gRPC round trip byte-identically
+2. every field of the grade's ``TraceChecksSummary`` is a field of the evaluation's
+   ``TraceChecksResult`` under the same name and annotation — three call sites copy
+   the one onto the other field by field and nothing else ties the two shapes;
+3. a config spanning that vocabulary survives the gRPC round trip byte-identically
    *and* semantically, which the trial spec's JSON depends on;
-3. the block an author writes reaches the runner as the same object the core engine
+4. the block an author writes reaches the runner as the same object the core engine
    holds. Unlike ``state_checks`` and ``transcript_rules``, whose runner shapes are
    flattened and re-keyed field by field, this one crosses unchanged — so the
    assertion is equality of the whole model, not of the keys someone remembered to
@@ -24,7 +27,12 @@ import pytest
 from tests.utils.trace_checks_configs import every_kind_block
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import TraceChecksConfig
-from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS, TraceConstraintExpr
+from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
+    TraceChecksResult,
+    TraceChecksSummary,
+    TraceConstraintExpr,
+)
 
 pytestmark = pytest.mark.canonical
 
@@ -59,6 +67,26 @@ def test_the_constraint_vocabulary_is_closed_at_ten_members():
         f"TraceConstraintExpr declares {sorted(TraceConstraintExpr.model_fields)}. The "
         "evaluator dispatches on the frozenset and the loader validates against the "
         "fields, so a kind in one and not the other is either unreachable or unvalidated"
+    )
+
+
+def test_the_summary_is_a_projection_of_the_evaluation_result():
+    """Every summary field is a result field of the same name and annotation.
+
+    :class:`TraceChecksSummary` is the part of :class:`TraceChecksResult` that
+    survives onto the ``Grade``, and three call sites copy it across field by field
+    — the core fold, the runner's proto build, and the shared-stack dict. Nothing
+    else ties the two shapes together, so a field retyped on one of them is a copy
+    that silently narrows or widens on the way to ``grade.yaml``.
+    """
+    summary = {name: field.annotation for name, field in TraceChecksSummary.model_fields.items()}
+    result = {name: field.annotation for name, field in TraceChecksResult.model_fields.items()}
+
+    assert summary, "the summary declares no fields, so the subset below is vacuous"
+    assert summary.items() <= result.items(), (
+        f"TraceChecksSummary declares {sorted(summary)} against TraceChecksResult's "
+        f"{sorted(result)}; the fields that do not match by name and annotation are "
+        f"{sorted(name for name, hint in summary.items() if result.get(name) is not hint)}"
     )
 
 

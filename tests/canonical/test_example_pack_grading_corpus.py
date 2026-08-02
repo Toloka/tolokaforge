@@ -442,7 +442,7 @@ _CACHE_DEBUG_TURNS = (
 # a route: "do not mutate on a diagnose-only task" holds whichever route was taken.
 _CACHE_DEBUG_SHARED = (
     ("no_status_was_written", TraceConstraintKind.ABSENT, TraceConstraintSeverity.GATE),
-    ("the_note_was_written", TraceConstraintKind.PRESENT, None),
+    ("the_note_was_written", TraceConstraintKind.PRESENT, TraceConstraintSeverity.SCORED),
 )
 
 # The two routes and the checks each declares, in declaration order — which is also

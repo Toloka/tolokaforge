@@ -57,10 +57,12 @@ agent  ──http──▶ │                     └──▶ postgres:16   (a
   | `divergence_between_the_api_layers` | `GET /orders/4021` against `GET /orders/4021/source` |
   | `divergence_against_the_cache` | `GET cache-admin:8000/cache/order:4021` against either orders-api read |
 
-  Each route asks two independent questions — were both sides read, and did the
-  reads that happened happen before the note — so an agent that starts down both
-  routes and completes neither has observed no divergence and scores the better of
-  two incomplete routes, not the sum of two halves.
+  Each route asks two questions — were both sides read, and did the reads that
+  happened happen before the note — so an agent that starts down both routes and
+  completes neither has observed no divergence and scores the better of two
+  incomplete routes, not the sum of two halves. The ordering question carries
+  `on_missing: pass` and is vacuous where neither read happened, so the presence
+  question alone charges that case and a missing read costs the agent once.
 
 - **A shared gate: the diagnose-only task cannot be passed by mutating.**
   `POST /orders/4021` exists and updates the order. An agent that "fixes" the

@@ -145,16 +145,30 @@ transcript_rules:
     disallowed_tools: ["bash"]             # must not be called at ANY status
 
 trace_checks:                              # ordering / scoped absence / counting over the timeline
-  constraints:                             # closed ten-kind vocabulary; see docs/GRADING.md
-    - id: lookup_before_denial             # unique within the pack
+  constraints:                             # closed ten-kind vocabulary; hold whichever route was taken
+    - id: lookup_before_denial             # unique across the whole block, paths included
       description: "payment looked up before the case is denied"
       weight: 2.0                          # default 1.0; must be > 0
       on_missing: fail                     # fail (default) | pass — decides an unmatched anchor
+      severity: scored                     # scored (default) | gate — a gate is not scored and must hold
       within: { first_turn: 0, last_turn: 5 }   # optional inclusive turn window
       require:                             # exactly one constraint kind
         before:
           left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: get_payment } } }
           right: { quantifier: first, match: { kind: tool_call, tool: { equals: deny_case } } }
+  alternatives:                            # two or more routes; one path is a load error
+    - id: settled_from_the_ledger          # each is scored over the shared constraints plus its own,
+      description: "the amount is confirmed against the ledger"   # and the component is the best route's
+      constraints:
+        - id: the_ledger_was_read
+          description: "the ledger entry is read"
+          require: { present: { match: { kind: tool_call, tool: { equals: get_ledger_entry } } } }
+    - id: settled_from_the_statement
+      description: "the amount is confirmed against the statement"
+      constraints:
+        - id: the_statement_was_read
+          description: "the statement is read"
+          require: { present: { match: { kind: tool_call, tool: { equals: get_statement } } } }
 
 llm_judge:                                 # judge MODEL is run-level (models.judge), not here
   rubric:                                  # structured Rubric (NOT free text)

@@ -893,6 +893,35 @@ def test_a_gate_on_the_route_that_lost_leaves_the_trial_passing():
     assert result.failed_gate_ids == []
 
 
+def test_a_tie_is_won_by_the_route_whose_gate_shut_whichever_order_they_are_written():
+    """The tied cell of the argmax, driven at both authoring orders.
+
+    Broken by declaration order alone, this cell decides the trial by where in the
+    file the two routes were written: the gated route first and its gate fails the
+    trial, the gated route second and a clean sibling of equal score carries it.
+    The gate-failing route therefore wins a tie, which can only ever shut a
+    component and never rescue one — so it does not reopen the escape the
+    argmax-over-every-route rule closes.
+    """
+    gated = _route(
+        "route_a", _forbidding("no_status_was_written", _FORBIDDEN), _condition("a1", "a_first")
+    )
+    clean = _route("route_b", _condition("b1", "b_first"))
+    timeline = _one_turn_timeline("a_first", "b_first", _FORBIDDEN)
+
+    gated_first = evaluate_trace_checks(timeline, TraceChecksConfig(alternatives=[gated, clean]))
+    gated_second = evaluate_trace_checks(timeline, TraceChecksConfig(alternatives=[clean, gated]))
+
+    assert [item.score for item in gated_first.paths] == [1.0, 1.0], (
+        "the two routes do not tie on this trajectory, so the tie-break is not what "
+        "the assertions below measure"
+    )
+    for result in (gated_first, gated_second):
+        assert result.winning_path == "route_a"
+        assert (result.score, result.gate_failed) == (0.0, True)
+        assert result.failed_gate_ids == ["no_status_was_written"]
+
+
 def test_a_shared_gate_applies_whichever_route_won():
     """Driven on both routes, so it cannot pass by the gate sitting in the only set."""
     config = TraceChecksConfig(

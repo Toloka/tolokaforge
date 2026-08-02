@@ -832,7 +832,10 @@ key the manifest declares core-only that nonetheless arrives populated fails the
 same way, quoting the reason it is core-only. Scope is scored checks only:
 `state_checks.id_fields`, `state_checks.relaxed_validation` and
 `state_checks.numeric_string_fields` shape other checks instead of producing a
-component score, and `combine.*` is the aggregation itself. See
+component score, and `combine.*` is the aggregation itself. A constraint kind
+written only inside a `trace_checks.alternatives` path is covered by the
+`trace_checks.alternatives` key rather than by its own leaf, so the guarantee holds
+for the block rather than leaf by leaf there (#772). See
 [`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
 
 **The recorded skips.** A trial can legitimately reach `GradeTrial` with a
