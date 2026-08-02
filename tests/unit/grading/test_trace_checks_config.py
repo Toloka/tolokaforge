@@ -1,20 +1,27 @@
 """What a ``trace_checks`` block may say, and what it is rejected for saying.
 
-The vocabulary is type-level: no task context, no timeline. So every shape an
-author can get wrong is answerable at load, and answering it there is what makes
-the evaluator's "a predicate on a ``None`` field is unmatched" rule safe — without
+The vocabulary is type-level: no task context. So every shape an author can get
+wrong here is answerable at load, and answering it there is what makes the
+evaluator's "a predicate on a ``None`` field is unmatched" rule safe — without
 these rejections a typo produces a matcher that selects nothing, which the default
-``on_missing`` reports as the agent's failure rather than the author's.
+``on_missing`` reports as the agent's failure rather than the author's. What needs
+the task's tools is in ``tests/unit/grading/test_grading_authoring_gate.py``.
 
 Each row of :data:`_REJECTIONS` is one malformed block and the remediation text its
 message must carry. :func:`test_the_rejection_table_names_every_validator_that_raises`
 holds the table against the module: a validator that raises a ``ValueError`` no row
 provokes is a rejection nothing pins the wording of.
+
+The self-referential shapes are the one family a timeline is read for: whether an
+ordering over one matcher is a constant is a claim about trajectories, so the ten
+survivors are each driven against the trajectory that satisfies them and the one
+that refutes them, and admitting a constant under a different spelling reds there.
 """
 
 from __future__ import annotations
 
 import ast
+import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -22,11 +29,14 @@ from typing import Any
 import pytest
 from pydantic import ValidationError
 
+from tests.utils.recorded_calls import recorded_call
+from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_checks_configs import (
     EVERY_CONSTRAINT_KIND,
     EVERY_OPERATOR_MATCHER,
     every_kind_block,
 )
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TraceEventKind
 from tolokaforge.core.models import OnMissing, TraceChecksConfig
 from tolokaforge.runner.models import (
@@ -95,6 +105,42 @@ _OPERATOR_SAMPLES: dict[str, Any] = {
     "len_gte": 2,
     "exists": False,
 }
+
+
+# The self-referential shapes: one matcher on both sides of an ordering, or a
+# forbidden matcher that is also the anchor its window is measured from. Written as
+# builders because the whole quantifier cross-product is swept below, and the
+# rejection rows above are four cells of that same sweep.
+_SELF_REFERENTIAL_MATCH = {"kind": "tool_call", "tool": {"equals": "http_request"}}
+
+
+def _self_referential_order(kind: str, left: str, right: str) -> dict[str, Any]:
+    payload: dict[str, Any] = {
+        "left": {"quantifier": left, "match": _SELF_REFERENTIAL_MATCH},
+        "right": {"quantifier": right, "match": _SELF_REFERENTIAL_MATCH},
+    }
+    if kind == "immediately_before":
+        payload["among"] = "tool_calls"
+    return {kind: payload}
+
+
+def _self_referential_prefix(anchor: str) -> dict[str, Any]:
+    return {
+        "absent_before": {
+            "forbidden": _SELF_REFERENTIAL_MATCH,
+            "anchor": {"quantifier": anchor, "match": _SELF_REFERENTIAL_MATCH},
+        }
+    }
+
+
+def _self_referential_window(start: str, end: str) -> dict[str, Any]:
+    return {
+        "absent_between": {
+            "forbidden": _SELF_REFERENTIAL_MATCH,
+            "start": {"quantifier": start, "match": _SELF_REFERENTIAL_MATCH},
+            "end": {"quantifier": end, "match": _SELF_REFERENTIAL_MATCH},
+        }
+    }
 
 
 @dataclass(frozen=True)
@@ -359,6 +405,32 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         block=_block(_constraint({"present": {"match": {"tool": {"equals": "x"}}}})),
         message="match.kind",
     ),
+    _Rejection(
+        label="before_over_one_matcher",
+        block=_block(_constraint(_self_referential_order("before", "last", "first"))),
+        message="orders one matcher against itself",
+        validator="_reject_an_order_over_one_matcher_that_no_trial_decides",
+    ),
+    _Rejection(
+        label="immediately_before_over_one_matcher",
+        block=_block(
+            _constraint(_self_referential_order("immediately_before", "all", "all")),
+        ),
+        message="orders one matcher against itself",
+        validator="_reject_an_order_over_one_matcher_that_no_trial_decides",
+    ),
+    _Rejection(
+        label="absent_before_its_own_first_match",
+        block=_block(_constraint(_self_referential_prefix("first"))),
+        message="nothing precedes the first of them",
+        validator="_reject_an_order_over_one_matcher_that_no_trial_decides",
+    ),
+    _Rejection(
+        label="absent_between_its_own_matches",
+        block=_block(_constraint(_self_referential_window("last", "first"))),
+        message="leaves no interval any trajectory opens",
+        validator="_require_a_self_referential_window_some_trial_opens",
+    ),
 )
 
 
@@ -503,6 +575,164 @@ def test_an_operator_is_declared_by_its_value_and_survives_the_wire(operator: st
         f"{operator} is the only operator written, but after the wire round trip the "
         f"predicate asserts {sorted(delivered.declared_operators())}"
     )
+
+
+_QUANTIFIERS = ("first", "last", "any", "all")
+
+# The self-referential shapes some trajectory decides, and the two trajectories that
+# decide them: the number of identical matching calls the shape is TRUE of, and the
+# number it is FALSE of. Every other cell of the cross-product below is rejected.
+#
+# The witness differs by row and is the content of the rule. ``before`` reads "the
+# events occur at least twice", so two calls satisfy it and one does not.
+# ``absent_before`` anchored 'last' reads "at most once" — true at one call, false at
+# two. ``absent_between`` from first to last reads "exactly twice".
+_ORDERING_SURVIVORS: dict[tuple[str, str, str], tuple[int, int]] = {
+    (kind, left, right): (2, 1)
+    for kind in ("before", "immediately_before")
+    for left in ("first", "any")
+    for right in ("last", "any")
+}
+_PREFIX_SURVIVORS: dict[str, tuple[int, int]] = {"last": (1, 2)}
+_WINDOW_SURVIVORS: dict[tuple[str, str], tuple[int, int]] = {("first", "last"): (2, 1)}
+
+_SELF_REFERENTIAL_CELL_COUNT = 38
+_SELF_REFERENTIAL_SURVIVOR_COUNT = 10
+
+
+def _self_referential_cells() -> list[tuple[str, dict[str, Any], tuple[int, int] | None]]:
+    """Every self-referential shape the vocabulary can write, with its witnesses.
+
+    The third element is ``None`` where the shape is rejected, and the (true, false)
+    call counts where it survives.
+    """
+    cells = [
+        (
+            f"{kind}_{left}_before_{right}",
+            _self_referential_order(kind, left, right),
+            _ORDERING_SURVIVORS.get((kind, left, right)),
+        )
+        for kind, left, right in itertools.product(
+            ("before", "immediately_before"), _QUANTIFIERS, _QUANTIFIERS
+        )
+    ]
+    cells += [
+        (f"absent_before_{anchor}", _self_referential_prefix(anchor), _PREFIX_SURVIVORS.get(anchor))
+        for anchor in ("first", "last")
+    ]
+    cells += [
+        (
+            f"absent_between_{start}_{end}",
+            _self_referential_window(start, end),
+            _WINDOW_SURVIVORS.get((start, end)),
+        )
+        for start, end in itertools.product(("first", "last"), ("first", "last"))
+    ]
+    return cells
+
+
+_SELF_REFERENTIAL_CELLS = _self_referential_cells()
+
+
+def _timeline_of(matching_calls: int):
+    """A trajectory carrying *matching_calls* identical calls the shapes select."""
+    return build_turn_timeline(
+        [
+            Turn("user", "chase the delivery"),
+            Turn(
+                "assistant",
+                "working",
+                recorded=[
+                    recorded_call("http_request", sequence=index) for index in range(matching_calls)
+                ],
+            ),
+        ]
+    )
+
+
+def _verdict(require: dict[str, Any], matching_calls: int) -> bool:
+    config = TraceChecksConfig(**_block(_constraint(require)))
+    return evaluate_trace_checks(_timeline_of(matching_calls), config).constraints[0].passed
+
+
+def test_the_self_referential_sweep_covers_the_whole_quantifier_cross_product():
+    """A shrunken sweep would prove the rule over the cells it kept and no others."""
+    assert len(_SELF_REFERENTIAL_CELLS) == _SELF_REFERENTIAL_CELL_COUNT
+    surviving = [cell for cell in _SELF_REFERENTIAL_CELLS if cell[2] is not None]
+    assert len(surviving) == _SELF_REFERENTIAL_SURVIVOR_COUNT
+
+
+@pytest.mark.parametrize(
+    ("require", "witnesses"),
+    [(require, witnesses) for _, require, witnesses in _SELF_REFERENTIAL_CELLS],
+    ids=[label for label, _, _ in _SELF_REFERENTIAL_CELLS],
+)
+def test_a_self_referential_shape_loads_only_where_some_trajectory_decides_it(
+    require: dict[str, Any], witnesses: tuple[int, int] | None
+):
+    """Both sides of an ordering selecting one set of events is usually constant.
+
+    Rejecting the shape outright would delete ten satisfiable constraints, and
+    admitting it wholesale ships 28 checks whose verdict no agent can move. The line
+    runs through the quantifiers, which is why the whole cross-product is swept.
+    """
+    if witnesses is not None:
+        TraceChecksConfig(**_block(_constraint(require)))
+        return
+    with pytest.raises(ValidationError):
+        TraceChecksConfig(**_block(_constraint(require)))
+
+
+@pytest.mark.parametrize(
+    ("require", "witnesses"),
+    [(require, w) for _, require, w in _SELF_REFERENTIAL_CELLS if w is not None],
+    ids=[label for label, _, w in _SELF_REFERENTIAL_CELLS if w is not None],
+)
+def test_a_surviving_self_referential_shape_is_decided_by_the_trajectory(
+    require: dict[str, Any], witnesses: tuple[int, int]
+):
+    """Each survivor is contingent, which is the whole reason it survives.
+
+    A survivor no trajectory satisfies would be the constant the rule exists to
+    reject, admitted under a different spelling.
+    """
+    satisfied, refuted = witnesses
+    assert _verdict(require, satisfied) is True
+    assert _verdict(require, refuted) is False
+
+
+# Spanning the float domain a weight could be written as, including the denormal
+# floor and both zeros: the sweep is over what the model *admits*, so widening the
+# domain is what the assertion below catches.
+_WEIGHT_DOMAIN = (5e-324, 1e-300, 0.5, 1.0, 1e300, 0.0, -0.0, -1.0, float("inf"), float("nan"))
+
+
+def test_every_weight_the_model_admits_keeps_the_component_denominator_positive():
+    """The fold divides by Σweight with no zero-denominator branch, so it must hold.
+
+    ``Σweight > 0`` over a populated constraint list is a construction invariant
+    rather than a checked precondition, and it is one only because every admitted
+    weight is positive. Widening the weight domain — admitting a zero, say — makes
+    an all-zero weight set reachable and the fold's denominator zero, so the
+    invariant is asserted over the domain rather than over the weights packs write.
+    """
+    admitted = []
+    for index, weight in enumerate(_WEIGHT_DOMAIN):
+        try:
+            config = TraceChecksConfig(
+                **_block(
+                    _constraint(
+                        {"present": {"match": _TOOL_CALL}}, id=f"probe_{index}", weight=weight
+                    )
+                )
+            )
+        except ValidationError:
+            continue
+        admitted.append(config.constraints[0].weight)
+
+    assert len(admitted) == 5, f"the domain admitted {admitted}, not the five positive rows"
+    assert min(admitted) > 0.0
+    assert sum(admitted) > 0.0
 
 
 def test_the_shared_block_spans_the_declared_vocabulary():

@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and the flagship pack discriminates.
 
-Four claims over the packs an author reads as the reference:
+Five claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -20,6 +20,10 @@ Four claims over the packs an author reads as the reference:
    The inventory resolves schemas read-only while ``to_task_description`` may spawn the
    task's MCP server; both go through one producer, and this is where a second copy of
    the resolution would show up.
+5. **No shipped pack fails the authoring gate.** Every ``grading.yaml`` under
+   ``examples/`` and ``tests/data/tasks/`` is checked against its own task's tool
+   inventory and produces no error and no advisory, which is the measured proof that
+   the gate ships green rather than the claim that it does.
 """
 
 from __future__ import annotations
@@ -28,12 +32,14 @@ from collections.abc import Sequence
 from pathlib import Path
 
 import pytest
+import yaml
 from click.testing import CliRunner
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
-from tolokaforge.adapters._task_loader import build_tool_inventory
+from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.models import GradingConfig, RecordedToolCall
@@ -171,6 +177,67 @@ def test_the_tool_inventory_answers_for_the_tools_the_wire_actually_carries() ->
     )
     assert divergent_names == {}, "the inventory and the wire disagree on which tools exist"
     assert divergent_parameters == {}, "the two modes resolved different schemas for one tool"
+
+
+_TEST_DATA_TASKS = Path(__file__).resolve().parents[1] / "data" / "tasks"
+
+# Every pack under the two roots that ships a grading.yaml, so a guard that
+# enumerated nothing fails instead of passing over the empty set.
+_GATED_PACK_COUNT = 57
+
+# The one pack whose tool inventory cannot be built: it declares
+# ``tools.agent.mobile: true``, a typo fixture whose whole point is that a non-mapping
+# init block fails loud rather than reaching trial registration as a TypeError.
+_PACK_WITH_NO_INVENTORY = "bad_mobile"
+
+
+def _gated_packs() -> list[tuple[Path, Path]]:
+    """Each shipped task file that references a grading file, with that file."""
+    gated: list[tuple[Path, Path]] = []
+    for task_yaml in sorted(_EXAMPLES.rglob("task.yaml")) + sorted(
+        _TEST_DATA_TASKS.rglob("task.yaml")
+    ):
+        if task_yaml in _TASKS_WITHOUT_A_PROJECT:
+            continue
+        task, task_dir = load_task_yaml(task_yaml)
+        grading_path = task_dir / task.grading if task.grading else None
+        if grading_path is not None and grading_path.exists():
+            gated.append((task_yaml, grading_path))
+    return gated
+
+
+def test_no_shipped_pack_fails_the_authoring_gate() -> None:
+    """The corpus proof that the gate rejects nothing that grades today.
+
+    Each block is checked against its own task's inventory, so this is the whole
+    severity table applied to real packs: an argument rule that descended past the
+    first path segment, or an advisory promoted to an error, shows up here as a
+    shipped pack that no longer loads.
+    """
+    findings: dict[str, list[str]] = {}
+    without_an_inventory: list[str] = []
+
+    for task_yaml, grading_path in _gated_packs():
+        task, task_dir = load_task_yaml(task_yaml)
+        grading = yaml.safe_load(grading_path.read_text()) or {}
+        try:
+            inventory = build_tool_inventory(task, task_dir)
+        except ValueError:
+            without_an_inventory.append(task.task_id)
+            continue
+        report = inspect_grading_authoring(grading, inventory)
+        reported = [
+            f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
+        ]
+        if reported:
+            findings[task.task_id] = reported
+
+    assert len(_gated_packs()) == _GATED_PACK_COUNT, (
+        f"the guard checked {len(_gated_packs())} packs, not {_GATED_PACK_COUNT}. A corpus "
+        "proof over a subset says nothing about the packs it skipped"
+    )
+    assert without_an_inventory == [_PACK_WITH_NO_INVENTORY]
+    assert findings == {}
 
 
 def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:

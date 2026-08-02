@@ -172,6 +172,69 @@ class TestValidateCommand:
         assert result.exit_code == 1
         assert "0 valid, 1 invalid" in result.stderr
 
+    @pytest.mark.parametrize(
+        ("adapter_type", "exit_code", "summary"),
+        [("tau", 0, "1 valid, 0 invalid"), ("native", 1, "0 valid, 1 invalid")],
+        ids=["adapter_validate_cannot_read", "the_native_reading_validate_owns"],
+    )
+    def test_validate_says_so_when_it_cannot_check_a_tasks_tools(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        adapter_type: str,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """A tool set validate cannot read is printed as unchecked, never as a pass.
+
+        ``validate`` reads every task through the native loader, so for a task an
+        external adapter owns it has no tool set to check names against. The same
+        pack declared native is rejected, which is what makes the first row a
+        report of ignorance rather than an accidental clean bill of health.
+        """
+        directory = tmp_path / f"pack_{adapter_type}"
+        directory.mkdir(parents=True)
+        (directory / "grading.yaml").write_text(
+            yaml.dump(
+                {
+                    "trace_checks": {
+                        "constraints": [
+                            {
+                                "id": "probe",
+                                "description": "the agent called the tool",
+                                "require": {
+                                    "present": {
+                                        "match": {
+                                            "kind": "tool_call",
+                                            "tool": {"equals": "nothing_declares_this"},
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    }
+                }
+            )
+        )
+        task_file = directory / "task.yaml"
+        task_file.write_text(
+            yaml.dump(
+                {
+                    "task_id": directory.name,
+                    "description": "A task.",
+                    "adapter_type": adapter_type,
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        if exit_code == 0:
+            assert "not checked" in result.stderr
+            assert "could not be resolved" in result.stderr
+
 
 # ===================================================================
 # docker command group

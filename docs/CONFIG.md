@@ -478,6 +478,14 @@ llm_judge:                                 # the judge MODEL is set once per run
         weight: 0.5
 ```
 
+A whole-state hash is read only where the flag turns it on: `state_checks.hash`
+carrying an `expected_state_hash` without `enabled: true` is rejected at load,
+because both substrates test the flag before reading the hash and the pack would
+otherwise grade its state without the comparison the author wrote. Every other
+authoring rule this file's grading block is checked against — tool names, argument
+names, `regex` compilation — is in
+[GRADING.md](GRADING.md#what-is-validated-before-a-run).
+
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,
 or a per-task judge-model field is rejected at load with a migration message.

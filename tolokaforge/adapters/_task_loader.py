@@ -60,7 +60,11 @@ from tolokaforge.core.deprecations import (
     source_context,
     warn_deprecated,
 )
-from tolokaforge.core.grading.config_validation import ToolInventory
+from tolokaforge.core.grading.config_validation import (
+    AuthoringReport,
+    ToolInventory,
+    inspect_grading_authoring,
+)
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import GradingCombineConfig, TaskConfig, TaskDefaults
 from tolokaforge.core.project_loader import construct_config, deep_merge
@@ -76,7 +80,9 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 )
 
 
-def validate_grading_yaml(grading_path: Path) -> None:
+def validate_grading_yaml(
+    grading_path: Path, *, inventory: ToolInventory, advisory: bool = True
+) -> AuthoringReport:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
@@ -90,16 +96,32 @@ def validate_grading_yaml(grading_path: Path) -> None:
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
     which point the trial has already been paid for.
 
+    Once the shapes hold, the block is checked against the tools the task gives its
+    actors. Every finding is named in one raise rather than the first one found,
+    because an author fixing a pack wants the list.
+
     A missing grading file is not an error here: ``load_task_yaml`` already
     validates the ``grading`` path field, and some adapters synthesise grading
     config without an on-disk file.
+
+    Args:
+        grading_path: The task's grading file.
+        inventory: The task's tool set. A caller that cannot resolve one passes
+            :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
+            into the returned report's ``unchecked`` and fails nothing.
+        advisory: Whether a finding the schema cannot prove wrong is fatal too.
+
+    Returns:
+        The authoring report, whose ``unchecked`` entries the caller is expected to
+        surface: they never raise, and a gate that checked nothing must not read as
+        a clean bill of health.
 
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
         RuntimeError: If the file or a block this gate constructs is not a mapping.
     """
     if not grading_path.exists():
-        return
+        return AuthoringReport()
 
     with open(grading_path) as f:
         grading_data = yaml.safe_load(f) or {}
@@ -185,6 +207,13 @@ def validate_grading_yaml(grading_path: Path) -> None:
             "A constraint written directly under 'trace_checks:' makes the block a list. "
             "Write 'trace_checks:' then 'constraints:' indented beneath it."
         )
+
+    report = inspect_grading_authoring(grading_data, inventory)
+    fatal = report.errors + (report.advisories if advisory else ())
+    if fatal:
+        written = "\n".join(f"  - {finding.where}: {finding.message}" for finding in fatal)
+        raise ValueError(f"Grading file {grading_path} cannot be graded as written:\n{written}")
+    return report
 
 
 def load_task_yaml(
