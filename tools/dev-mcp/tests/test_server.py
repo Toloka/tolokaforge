@@ -175,3 +175,65 @@ class TestEnvironmentHelpers:
             assert missing == []
         finally:
             del os.environ["TEST_VAR_EXISTS"]
+
+
+@pytest.mark.unit
+class TestValidateTasksSkipsAnUnclonedTaskDirectory:
+    """A bare ``validate_tasks()`` must not red in a checkout with no task pack.
+
+    ``tolokaforge validate`` treats a glob matching nothing as an invocation
+    error and task packs are cloned separately, so the default glob over an
+    absent ``tasks/`` reports a failure about a directory the caller never named.
+    ``make validate`` skips that case; this tool answers for the same default and
+    skips it identically.
+    """
+
+    @staticmethod
+    def _record_commands(monkeypatch) -> list[list[str]]:
+        from dev_mcp import server
+
+        recorded: list[list[str]] = []
+
+        async def record(cmd, **kwargs):
+            recorded.append(cmd)
+            return "ran"
+
+        monkeypatch.setattr(server, "run_command", record)
+        return recorded
+
+    def test_the_default_glob_skips_and_shells_out_to_nothing(self, monkeypatch, tmp_path):
+        from dev_mcp import server
+
+        monkeypatch.setattr(server, "REPO_ROOT", tmp_path)
+        commands = self._record_commands(monkeypatch)
+
+        result = asyncio.run(server.validate_tasks())
+
+        assert "skipped" in result
+        assert server.DEFAULT_TASKS_DIR in result
+        assert commands == []
+
+    def test_the_default_glob_runs_once_the_pack_is_cloned(self, monkeypatch, tmp_path):
+        from dev_mcp import server
+
+        (tmp_path / server.DEFAULT_TASKS_DIR).mkdir()
+        monkeypatch.setattr(server, "REPO_ROOT", tmp_path)
+        commands = self._record_commands(monkeypatch)
+
+        asyncio.run(server.validate_tasks())
+
+        assert commands == [
+            ["uv", "run", "tolokaforge", "validate", "--tasks", server.DEFAULT_TASKS_GLOB]
+        ]
+
+    def test_a_named_glob_runs_whatever_the_task_directory_holds(self, monkeypatch, tmp_path):
+        from dev_mcp import server
+
+        monkeypatch.setattr(server, "REPO_ROOT", tmp_path)
+        commands = self._record_commands(monkeypatch)
+
+        asyncio.run(server.validate_tasks("examples/**/task.yaml"))
+
+        assert commands == [
+            ["uv", "run", "tolokaforge", "validate", "--tasks", "examples/**/task.yaml"]
+        ]

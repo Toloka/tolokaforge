@@ -15,7 +15,7 @@ import time
 import psutil
 import pytest
 
-from tolokaforge.adapters.native import _builtin_tool_schemas
+from tolokaforge.adapters._task_loader import _builtin_tool_schemas
 from tolokaforge.runner.models import ToolSchema
 from tolokaforge.runner.tool_factory import (
     PersistentShellToolWrapper,

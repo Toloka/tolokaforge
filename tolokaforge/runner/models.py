@@ -801,6 +801,27 @@ _KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
     {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
 )
 
+# Over one matched set, ``last`` and ``all`` on the left require the event nothing
+# follows to precede something, and ``first`` and ``all`` on the right require
+# something to precede the event nothing precedes — false at every trajectory. Their
+# complements, written out below, are the quantifiers an ordering over one matcher
+# survives on.
+_LEFT_QUANTIFIERS_LEAVING_A_SUCCESSOR: frozenset[Quantifier] = frozenset(
+    {Quantifier.FIRST, Quantifier.ANY}
+)
+_RIGHT_QUANTIFIERS_LEAVING_A_PREDECESSOR: frozenset[Quantifier] = frozenset(
+    {Quantifier.LAST, Quantifier.ANY}
+)
+
+# The one window over a self-referential ``absent_between`` that some trial opens
+# and some trial does not: from the first match to the last, which is non-empty
+# exactly when the events occur twice.
+_SELF_REFERENTIAL_WINDOW_SOME_TRIAL_OPENS = (AnchorQuantifier.FIRST, AnchorQuantifier.LAST)
+
+_ORDERING_KINDS: frozenset[TraceConstraintKind] = frozenset(
+    {TraceConstraintKind.BEFORE, TraceConstraintKind.IMMEDIATELY_BEFORE}
+)
+
 
 class TraceConstraintExpr(BaseModel):
     """Exactly one constraint kind, holding that kind's own payload.
@@ -849,6 +870,68 @@ class TraceConstraintExpr(BaseModel):
                 "all_of over two expressions"
             )
         return self
+
+    @model_validator(mode="after")
+    def _reject_an_order_over_one_matcher_that_no_trial_decides(self) -> TraceConstraintExpr:
+        """Two sides selecting one set of events, in a shape no author means to write.
+
+        An ordering whose sides carry the same matcher is satisfiable only where the
+        left selection can leave a later event and the right selection an earlier
+        one; every other quantifier pair fails whatever the agent did, and so does a
+        window measured between two selections of one set unless it runs from the
+        first match to the last. Anchoring ``absent_before`` at its own ``first`` is
+        the one rejected shape here that is not a constant: nothing precedes the
+        first match, so it decides exactly what ``present`` decides.
+        """
+        kind = self.declared_kind()
+        payload = getattr(self, kind.value)
+        if kind in _ORDERING_KINDS and payload.left.match == payload.right.match:
+            if not (
+                payload.left.quantifier in _LEFT_QUANTIFIERS_LEAVING_A_SUCCESSOR
+                and payload.right.quantifier in _RIGHT_QUANTIFIERS_LEAVING_A_PREDECESSOR
+            ):
+                raise ValueError(
+                    f"{kind.value} orders one matcher against itself, quantified "
+                    f"{payload.left.quantifier.value!r} before "
+                    f"{payload.right.quantifier.value!r}, which no trajectory satisfies: "
+                    "over the events one matcher selects, nothing follows the last of them "
+                    "and nothing precedes the first. Quantify the left side 'first' or "
+                    "'any' and the right side 'last' or 'any' for a shape a trajectory "
+                    "can decide, or give the two sides different matchers"
+                )
+        if (
+            kind is TraceConstraintKind.ABSENT_BEFORE
+            and payload.forbidden == payload.anchor.match
+            and payload.anchor.quantifier is AnchorQuantifier.FIRST
+        ):
+            raise ValueError(
+                "absent_before forbids the events its own anchor is selected from, "
+                "anchored 'first': nothing precedes the first of them, so the constraint "
+                "reduces to 'the events occurred at all' — present, written the long way "
+                "round. Write a present constraint, anchor it 'last' to assert the events "
+                "occur once, or forbid a different matcher"
+            )
+        if kind is TraceConstraintKind.ABSENT_BETWEEN and (
+            payload.forbidden == payload.start.match == payload.end.match
+        ):
+            self._require_a_self_referential_window_some_trial_opens(payload)
+        return self
+
+    @staticmethod
+    def _require_a_self_referential_window_some_trial_opens(
+        payload: AbsentBetweenConstraint,
+    ) -> None:
+        anchors = (payload.start.quantifier, payload.end.quantifier)
+        if anchors == _SELF_REFERENTIAL_WINDOW_SOME_TRIAL_OPENS:
+            return
+        raise ValueError(
+            "absent_between forbids the events its own window is measured between, "
+            f"from the {payload.start.quantifier.value!r} of them to the "
+            f"{payload.end.quantifier.value!r}, which leaves no interval any trajectory "
+            "opens: on_missing then decides the verdict however the agent behaved. Measure "
+            "from 'first' to 'last' to assert the events occur exactly twice, or forbid a "
+            "different matcher"
+        )
 
 
 class OnMissing(str, Enum):

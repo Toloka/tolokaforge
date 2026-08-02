@@ -201,15 +201,28 @@ transcript_rules:
 
 ## Tool Schemas (fixtures/tools.json)
 
-The adapter needs parameter schemas to tell the LLM what arguments each tool
-accepts.  Resolution order:
+The parameter schemas that tell the LLM what arguments each tool accepts come
+from one producer inside the adapter layer, `resolve_agent_tool_schemas`, so the
+schemas a run puts on the wire and the schemas a pre-run gate inspects cannot
+drift apart.  A task without an `mcp_server` gets them from the builtin
+registry; an MCP task gets them from its server, in one of two modes:
 
-1. **`fixtures/tools.json`** — pre-generated static file (fastest, avoids
-   subprocess overhead on every run).  Preferred.
-2. **Live MCP query** (`tools/list`) — used when `fixtures/tools.json` does
-   not exist.  The adapter starts `mcp_server.py` as a subprocess, performs
-   the MCP handshake, calls `tools/list`, and writes the result back to
-   `fixtures/tools.json` for subsequent runs.
+| `allow_subprocess` | Resolution | Used by |
+|---|---|---|
+| `True` | `fixtures/tools.json` first; when it is absent or unreadable, a live `tools/list` query against `mcp_server.py`, cached back into `fixtures/tools.json` | `to_task_description` — the run path |
+| `False` | `fixtures/tools.json` only; an MCP task without one resolves to no schemas at all | validation and pre-run gates |
+
+The read-only mode exists because a gate must not mutate the tree it is
+validating: spawning a server and depositing a generated fixture would change
+the task under inspection.  Its answer for an unresolved tool is *unknown*, not
+*no arguments* — see `ToolInventory.strictness` in
+[`config_validation.py`](../tolokaforge/core/grading/config_validation.py), which
+keeps a zero-argument tool (`{"properties": {}}`) apart from a tool whose schema
+never resolved.
+
+`search_kb` is resolved from `create_search_kb_schema()` in both modes: the
+runner rebuilds it as a source-less RAG wrapper, so its canonical schema — not a
+fixture entry or a registry lookup — is what the agent is handed.
 
 `fixtures/tools.json` format (list of tool descriptors):
 
@@ -241,10 +254,11 @@ accepts.  Resolution order:
 ]
 ```
 
-> **Note:** If `fixtures/tools.json` is absent and the live MCP query fails,
-> the adapter falls back to empty schemas (`{"type": "object", "properties": {}}`),
-> which causes the LLM to call tools with missing arguments.  Always commit
-> `fixtures/tools.json` or ensure `mcp_server.py` is importable before running.
+> **Note:** If `fixtures/tools.json` is absent and the live MCP query fails or
+> reports no tools, the run fails with a `RuntimeError` naming the server.  An
+> empty schema would reach the LLM as a parameter-less tool stub and read as an
+> agent-reasoning bug.  Commit `fixtures/tools.json` or ensure `mcp_server.py`
+> is importable before running.
 
 ---
 
@@ -300,7 +314,7 @@ called to serialize the task for transfer to the Runner container.
 
 | Field | Source |
 |-------|--------|
-| `agent_tools` | `tools.agent.enabled` list + schemas from `fixtures/tools.json` |
+| `agent_tools` | `tools.agent.enabled` list + schemas from `resolve_agent_tool_schemas` (see [Tool Schemas](#tool-schemas-fixturestoolsjson)) |
 | `user_tools` | `tools.user.enabled` list |
 | `initial_state.tables` | `initial_state.json` (collection → list of records) |
 | `initialization_actions` | `initial_state.initialization_actions` |
@@ -323,8 +337,8 @@ filesystem access.
 
 ### Tool schema resolution for Docker
 
-Same two-step logic as local runs: `fixtures/tools.json` first, then live MCP
-query.  The resolved schemas are embedded in `agent_tools[*].parameters` inside
+The same producer as local runs, in its `allow_subprocess=True` mode.  The
+resolved schemas are embedded in `agent_tools[*].parameters` inside
 `TaskDescription` and sent to the Runner via gRPC `RegisterTrial`.
 
 ---

@@ -14,7 +14,8 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.adapters.native import NativeAdapter, _builtin_tool_schemas
+from tolokaforge.adapters._task_loader import _builtin_tool_schemas
+from tolokaforge.adapters.native import NativeAdapter
 
 pytestmark = pytest.mark.unit
 

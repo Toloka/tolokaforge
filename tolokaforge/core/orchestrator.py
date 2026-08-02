@@ -12,6 +12,10 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
+from tolokaforge.adapters._task_loader import (
+    tool_inventory_under_adapter,
+    validate_grading_yaml,
+)
 from tolokaforge.core.budgets import (
     BudgetHit,
     CompositeBudget,
@@ -46,6 +50,7 @@ from tolokaforge.core.metrics import (
 )
 from tolokaforge.core.models import (
     ComputeConfig,
+    GradingFindingSeverity,
     ModelConfig,
     ProjectConfig,
     RunConfig,
@@ -629,6 +634,23 @@ class Orchestrator:
         )
         return conductor
 
+    def _task_description(self, task_id: str) -> TaskDescription:
+        """The task's wire-format description, resolved once per run.
+
+        The registration check runs on the build, so every description in the
+        cache has had its declared backend verified against the host registry —
+        writing the cache around this method would skip it.
+        """
+        if self.adapter is None:
+            raise RuntimeError("Task descriptions cannot be resolved before the adapter is loaded.")
+        cached = self._task_desc_cache.get(task_id)
+        if cached is not None:
+            return cached
+        description = self.adapter.to_task_description(task_id)
+        ensure_registered_adapter(description.adapter_type)
+        self._task_desc_cache[task_id] = description
+        return description
+
     def _build_trial_spec(
         self,
         *,
@@ -644,20 +666,11 @@ class Orchestrator:
     ) -> TrialSpec:
         """Build the per-trial :class:`TrialSpec` the Conductor consumes.
 
-        Resolves the wire-format ``TaskDescription`` through the adapter and
-        validates that its declared backend is registered before the spec is
-        constructed, so failures surface here rather than mid-execution.
         ``run_id`` is supplied by the caller (computed once at the top of
         ``run()`` / read from the engine run-state file in ``run_worker()``)
         so trial identity is independent of where artifacts are written.
         """
-        if self.adapter is None:
-            raise RuntimeError("Trial spec cannot be built before the adapter is loaded.")
-        task_desc = self._task_desc_cache.get(task.task_id)
-        if task_desc is None:
-            task_desc = self.adapter.to_task_description(task.task_id)
-            ensure_registered_adapter(task_desc.adapter_type)
-            self._task_desc_cache[task.task_id] = task_desc
+        task_desc = self._task_description(task.task_id)
         return TrialSpec(
             trial_id=f"{task.task_id}:{trial_idx}",
             run_id=run_id,
@@ -792,11 +805,7 @@ class Orchestrator:
                 "Task-driven backend selection requires the adapter to be loaded first."
             )
         for task in self.tasks:
-            task_desc = self._task_desc_cache.get(task.task_id)
-            if task_desc is None:
-                task_desc = self.adapter.to_task_description(task.task_id)
-                self._task_desc_cache[task.task_id] = task_desc
-            manifest = task_desc.environment_manifest
+            manifest = self._task_description(task.task_id).environment_manifest
             if manifest is not None and manifest.requires_per_trial:
                 return "per_trial"
         return "shared"
@@ -1014,11 +1023,7 @@ class Orchestrator:
         per_trial_violations: list[str] = []
         ephemeral_violations: list[tuple[str, list[str]]] = []
         for task in self.tasks:
-            task_desc = self._task_desc_cache.get(task.task_id)
-            if task_desc is None:
-                task_desc = self.adapter.to_task_description(task.task_id)
-                self._task_desc_cache[task.task_id] = task_desc
-            manifest = task_desc.environment_manifest
+            manifest = self._task_description(task.task_id).environment_manifest
             if manifest is None:
                 continue
             if manifest.requires_per_trial:
@@ -1265,6 +1270,82 @@ class Orchestrator:
             )
         return None
 
+    def _reject_ungradeable_packs(self) -> None:
+        """Refuse a run whose selected packs cannot be graded as written.
+
+        One pass over every selected task, before the first trial is paid for.
+        Each task's grading block goes through the same predicate
+        ``tolokaforge validate`` applies, so a tool name no actor of the task can
+        call, an argument name its schema forbids, an uncompilable ``regex``, a
+        state hash nothing reads, and every migration rejection the typed grading
+        blocks carry are all heard here rather than at grade time — where the
+        first two are charged to the agent and the rest lose the trial.
+
+        Every grading offender is named in one raise: an author fixing a run's
+        packs wants the list, not the first entry. What the gate could not check
+        is logged and fails nothing.
+
+        The aggregate is over what the grading predicate rejects. Resolving each
+        task's description happens outside the per-task catch, so whatever *that*
+        raises — an adapter the host has not installed, a grading file that is
+        not YAML, which the native adapter parses while it builds the
+        description — aborts on the first task carrying it, and the tasks after
+        it are never read. The list is of packs that load and cannot be graded;
+        a pack that does not load stops the pass where it stands.
+        """
+        fail_on = self.config.evaluation.grading_validation.fail_on
+        rejected: list[str] = []
+        for task in self.tasks:
+            failure = self._grading_rejection(task, fail_on=fail_on)
+            if failure is not None:
+                rejected.append(failure)
+        if not rejected:
+            return
+        raise ValueError(
+            "These selected tasks carry a grading block that cannot be graded as "
+            "written, so no trial was run:\n"
+            + "\n".join(rejected)
+            + f"\nevaluation.grading_validation.fail_on is {fail_on.value!r}, so a "
+            "finding of that class or more severe fails the run. `tolokaforge validate "
+            "--tasks <glob>` reports the same findings against the same packs, and "
+            "decides its own exit code by the default fail_on rather than this run's."
+        )
+
+    def _grading_rejection(
+        self, task: TaskConfig, *, fail_on: GradingFindingSeverity
+    ) -> str | None:
+        """What one task's grading block costs the run, or ``None`` if nothing.
+
+        The description is resolved through :meth:`_task_description` rather than
+        the adapter directly, so the adapter-registration guard is part of this
+        gate and a task naming an uninstalled backend is rejected here too.
+
+        An authoring defect becomes a named line rather than propagating, because
+        the run's operator wants the list. Anything outside that set is the
+        harness's own bug and propagates, rather than sending an author to read a
+        file that is fine.
+        """
+        adapter_type = self._task_description(task.task_id).adapter_type
+        if not task.grading:
+            return None
+        task_dir = self.adapter.get_task_dir(task.task_id)
+        try:
+            report = validate_grading_yaml(
+                task_dir / task.grading,
+                inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
+                fail_on=fail_on,
+            )
+        except (ValueError, RuntimeError, OSError) as exc:
+            return f"* {task.task_id} — {exc}"
+        for skip in report.unchecked:
+            self.logger.warning(
+                "Grading validation could not check part of this task's block",
+                task_id=task.task_id,
+                where=skip.where,
+                reason=skip.reason,
+            )
+        return None
+
     def _build_agent_client(self, agent_config: ModelConfig) -> LLMClient:
         """Build the agent-side wire client for this run.
 
@@ -1389,6 +1470,7 @@ class Orchestrator:
         # Resolve the run-level judge model and reject the run up front if any
         # selected task needs a judge but none is configured (fail loud).
         judge_config = self._resolve_judge_config()
+        self._reject_ungradeable_packs()
 
         # Log model configuration for all roles
         self.logger.info(
@@ -2160,9 +2242,11 @@ class Orchestrator:
             raise ValueError("No tasks found to enqueue")
 
         # Reject up front (at enqueue time) if any task needs a judge but none is
-        # configured — otherwise a misconfigured distributed run reports success
+        # configured, or if any selected pack's grading cannot be graded as
+        # written — otherwise a misconfigured distributed run reports success
         # here and then every worker dies identically at grade time.
         self._resolve_judge_config()
+        self._reject_ungradeable_packs()
 
         run_queue = create_run_queue(
             self.config.effective_queue_backend,

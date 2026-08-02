@@ -24,6 +24,27 @@ Tolokaforge supports two queue backends:
 2. `worker`: leases attempts, executes them, and marks `completed`/`failed`/`requeued`.
 3. `status`: shows queue counts, ETA, estimated cost, and token totals from artifacts.
 
+### The pre-run gate
+
+Before a single trial is scheduled — by `run`, and by `prepare` so a distributed
+enqueue is rejected once rather than by every worker identically — the run makes one
+pass over every selected task and checks two things it must not discover later:
+
+- **The judge model.** A task grading with `llm_judge` when the run config carries no
+  `models.judge` aborts the run, naming the offending tasks.
+- **The grading block.** Each task's grading config goes through the same predicate
+  `tolokaforge validate` applies: the migration rejections the typed grading blocks
+  carry, and the authoring rules checked against the tools that task gives its actors
+  (see [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)).
+  Every offending task is named in one abort — an author fixing a run's packs wants
+  the list, not the first entry. `evaluation.grading_validation.fail_on` names the
+  least severe class that is fatal; what the gate could not check is logged and fails
+  nothing.
+
+The pass resolves each task's wire description once and keeps it, so the trials that
+follow reuse it rather than rebuilding it. A task naming an adapter the host has not
+installed is rejected in the same pass.
+
 Queue attempt states:
 - `pending`
 - `leased`

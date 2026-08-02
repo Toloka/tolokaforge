@@ -314,8 +314,9 @@ Fields a run config can touch:
   a nightly sweep.
 - **`evaluation`** — `projects` (optional; defaults to the
   enclosing project), `tasks_glob`, `output_dir`,
-  `cache_images`, `harness_adapter`. This section has no
-  equivalent in `run_defaults`; it's per-invocation only.
+  `cache_images`, `harness_adapter`, `grading_validation`.
+  This section has no equivalent in `run_defaults`; it's
+  per-invocation only.
 - **`engine`** — `presets_file` and other invocation-time engine
   config.
 
@@ -1190,7 +1191,7 @@ field and vice versa.
 | `observability` (tracing, metrics, logging) | `project.run_defaults.observability` | `run_configs/<name>.yaml` |
 | `orchestrator` (repeats, max_turns cap, timeouts cap, auto_start_services, shuffle_trials; the lifecycle-axis field is settled in the M3 ADR) | `project.run_defaults.orchestrator` | `run_configs/<name>.yaml` |
 | `models` (open map; `agent`/`user`/`judge` conventional, plus one entry per model-backed actor) | `project.run_defaults.models` (optional) | `run_configs/<name>.yaml` |
-| `evaluation` (projects, tasks_glob, output_dir, cache_images, harness_adapter) | — | `run_configs/<name>.yaml` |
+| `evaluation` (projects, tasks_glob, output_dir, cache_images, harness_adapter, grading_validation) | — | `run_configs/<name>.yaml` |
 | `engine` (presets_file) | — | `run_configs/<name>.yaml` |
 
 ### Precedence — task-scoped fields
