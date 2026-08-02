@@ -4,10 +4,11 @@ category: "multi_service"
 description: "The orders API serves a stale order status because a redis cache entry is never invalidated when postgres is updated. The agent inspects the app layer and the cache layer over HTTP, compares against the source of truth, and writes a root-cause note naming the cache-invalidation bug."
 max_turns: 20
 initial_user_message: |
-  Hey — on-call here. Customers are telling us order 4021 still shows as
-  "processing" in the orders API even though our records say it shipped. It
-  looks like the orders service is serving stale data intermittently and I
-  can't tell why. Can you dig in and figure out the root cause?
+  Hey — on-call here. Customers are telling us order 4021 is still showing an
+  out-of-date status in the orders API even though our records say it shipped.
+  I don't know what status they're actually being shown. It looks like the
+  orders service is serving stale data intermittently and I can't tell why. Can
+  you dig in and figure out the root cause?
 
   The orders API is at http://orders-api:8000 — `GET /orders/4021` is what
   customers hit, and `GET /orders/4021/source` reads straight from the
@@ -32,12 +33,15 @@ actors:
     persona: "on-call engineer"
     backstory: |
       You are the on-call engineer who paged for help. You know order 4021 is
-      showing the wrong status to customers ("processing" when it actually
-      shipped) and that it happens intermittently, but you do NOT know the cause
-      — that is what you need the agent to find. Rules:
+      showing customers an out-of-date status when your records say it shipped,
+      and that it happens intermittently, but you do NOT know the cause — that
+      is what you need the agent to find. Rules:
       - Open naturally, in your own words, with the symptom — not a checklist.
       - Answer clarifying questions plainly from what you know (the symptom, the
         two orders-api endpoints, the cache inspector).
+      - You do NOT know which stale status customers are being shown, only that
+        it is not the shipped one. Never name a status value other than
+        "shipped"; if asked what the API returns, say to go and read it.
       - Never name the root cause or say the word "cache invalidation" yourself;
         that is the agent's job to diagnose.
       - Say ###STOP### once the agent has written a root-cause note under

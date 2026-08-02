@@ -32,6 +32,7 @@ from tolokaforge.core.grading.trace_checks import (
     _FAILURE_DETAIL,
     _HANDLERS,
     _VIEW_KINDS,
+    _candidates,
     evaluate_trace_checks,
     select_events,
 )
@@ -45,7 +46,12 @@ from tolokaforge.core.models import (
     TraceConstraintSeverity,
     TraceMatcher,
 )
-from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS
+from tolokaforge.runner.models import (
+    _UNBINDABLE_FIELDS,
+    TRACE_CONSTRAINT_KINDS,
+    TRACE_MATCHABLE_FIELDS_BY_KIND,
+    TraceConstraint,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -1206,36 +1212,136 @@ def test_a_turn_window_restricts_the_binder_and_so_the_candidate_set():
     assert windowed.passed is True, "the write of Y is outside the window, so it binds nothing"
 
 
-def test_a_type_mismatched_reference_says_the_comparison_was_not_made():
+_INTEGER_DELIVERY_BINDING = {
+    "match": _call_of("open_delivery"),
+    "values": {"delivery": {"field": "args.delivery_id"}},
+}
+"""A binding whose value is an ``int``, referenced below from a text field."""
+
+
+def _integer_delivery_timeline() -> TrialTimeline:
+    return build_timeline(
+        turns=(("user", "Open it."), ("assistant", "I opened delivery 4021 for you.")),
+        recorded=[recorded_call("open_delivery", arguments={"delivery_id": 4021})],
+    )
+
+
+def _assert_names_the_unmakeable_comparison(message: str, operator: str) -> None:
+    assert "the text comparison was not made" in message
+    assert "'delivery'" in message
+    assert "4021" in message
+    assert "of type int" in message
+    assert f"{operator} reads a text field as text" in message
+    assert "args predicate" in message
+    assert "regex capture" in message
+
+
+def test_a_type_mismatched_contains_binding_says_the_comparison_was_not_made():
     """``contains`` falls back to equality off the string pair, so this is never true.
 
     The verdict is ``False`` either way, which is why the assertion is on the
     message: a bare fold would be indistinguishable from the agent having failed,
     and the author would read their own type mistake as the agent's.
     """
-    timeline = build_timeline(
-        turns=(("user", "Open it."), ("assistant", "I opened delivery 4021 for you.")),
-        recorded=[recorded_call("open_delivery", arguments={"delivery_id": 4021})],
-    )
     require = {
         "present": {
             "match": {"kind": "assistant_message", "text": {"contains_binding": "delivery"}}
         }
     }
-    binding = {
-        "match": _call_of("open_delivery"),
-        "values": {"delivery": {"field": "args.delivery_id"}},
-    }
 
-    result = evaluate_constraint(timeline, require, bind=binding)
+    result = evaluate_constraint(
+        _integer_delivery_timeline(), require, bind=_INTEGER_DELIVERY_BINDING
+    )
 
     assert result.passed is False
-    assert "the text comparison was not made" in result.message
-    assert "'delivery'" in result.message
-    assert "4021" in result.message
-    assert "of type int" in result.message
-    assert "equals_binding" in result.message
-    assert "regex capture" in result.message
+    _assert_names_the_unmakeable_comparison(result.message, "contains_binding")
+
+
+def test_a_type_mismatched_equals_binding_says_the_comparison_was_not_made():
+    """``eq`` over a string and an int is false outright, so this is never true either.
+
+    The gate rejects this shape wherever the tool's schema types the extraction, and
+    the residue it cannot type is exactly what this backstop covers — so the operator
+    that the gate exempts on an ``args`` predicate is not exempt on a text field.
+    """
+    require = {
+        "present": {"match": {"kind": "assistant_message", "text": {"equals_binding": "delivery"}}}
+    }
+
+    result = evaluate_constraint(
+        _integer_delivery_timeline(), require, bind=_INTEGER_DELIVERY_BINDING
+    )
+
+    assert result.passed is False
+    _assert_names_the_unmakeable_comparison(result.message, "equals_binding")
+
+
+# Every extraction the load rules admit, and the value it reads off the trajectory
+# below. A second source for the extraction table: the load rule admits a head
+# segment off ``TRACE_MATCHABLE_FIELDS_BY_KIND`` while the evaluator dispatches it
+# off its own map, so a field admitted by one and unknown to the other is a
+# ``KeyError`` at grade time — and the expected values here are what stops a
+# dispatch wired to the wrong attribute from passing that check.
+_EVERY_BINDABLE_EXTRACTION = (
+    pytest.param("tool_call", "tool", "get_payment", id="a_call_names_its_tool"),
+    pytest.param("tool_call", "args", {"payment_id": "4021"}, id="a_bare_args_binds_the_object"),
+    pytest.param("tool_call", "args.payment_id", "4021", id="a_dotted_path_binds_the_argument"),
+    pytest.param("tool_call", "result", "paid in full", id="a_call_reads_its_paired_outcome"),
+    pytest.param("tool_result", "tool", "get_payment", id="an_outcome_names_its_tool"),
+    pytest.param("tool_result", "result", "paid in full", id="an_outcome_reads_itself"),
+    pytest.param("assistant_message", "text", "reading it", id="an_assistant_turn_reads_its_text"),
+    pytest.param("user_message", "text", "look up payment 4021", id="a_user_turn_reads_its_text"),
+)
+
+
+def _extraction_probe() -> TrialTimeline:
+    """One trajectory carrying a distinct value for every bindable field."""
+    return build_timeline(
+        turns=(("user", "look up payment 4021"), ("assistant", "reading it")),
+        recorded=[
+            recorded_call("get_payment", arguments={"payment_id": "4021"}, output="paid in full")
+        ],
+    )
+
+
+def test_the_extraction_cells_span_every_field_a_binder_may_read() -> None:
+    """The sweep below reads a hand-written table, so a field missing from it is unswept.
+
+    Bare ``args`` and a dotted path under it are one admissible head segment written
+    twice, because the evaluator answers them on different branches.
+    """
+    swept = {
+        (kind, field.partition(".")[0])
+        for kind, field, _ in (param.values for param in _EVERY_BINDABLE_EXTRACTION)
+    }
+
+    assert swept == {
+        (kind.value, field)
+        for kind, fields in TRACE_MATCHABLE_FIELDS_BY_KIND.items()
+        for field in fields - _UNBINDABLE_FIELDS
+    }
+
+
+@pytest.mark.parametrize(("kind", "field", "expected"), _EVERY_BINDABLE_EXTRACTION)
+def test_a_binder_may_extract_every_field_its_kind_carries(
+    kind: str, field: str, expected: object
+) -> None:
+    """The rejection is scoped to the fields a kind lacks, not to the ones it has."""
+    match: dict[str, Any] = {"kind": kind}
+    if field == "result":
+        match["status"] = {"equals": "success"}
+    constraint = TraceConstraint.model_validate(
+        {
+            "id": "probe",
+            "description": "one extraction, read off the event kind that carries it",
+            "bind": {"match": match, "values": {"read": {"field": field}}},
+            "require": {
+                "present": {"match": _call_of("audit", args={"seen": {"equals_binding": "read"}})}
+            },
+        }
+    )
+
+    assert _candidates(_extraction_probe(), constraint).definite == [{"read": expected}]
 
 
 # --------------------------------------------------------------------------
@@ -1444,8 +1550,16 @@ def test_an_extraction_reading_nothing_off_a_recorded_call_binds_no_candidate():
         turns=(("user", "Update the records."), ("assistant", "Working.")),
         recorded=[recorded_call(_WRITE, sequence=0, arguments={"other_key": "X"})],
     )
+    two_such_calls = build_timeline(
+        turns=(("user", "Update the records."), ("assistant", "Working.")),
+        recorded=[
+            recorded_call(_WRITE, sequence=0, arguments={"other_key": "X"}),
+            recorded_call(_WRITE, sequence=1, arguments={"other_key": "Y"}),
+        ],
+    )
 
     result = evaluate_constraint(timeline, _BOUND_PRESENT, bind=_SETTLED_BINDER)
+    two = evaluate_constraint(two_such_calls, _BOUND_PRESENT, bind=_SETTLED_BINDER)
 
     outcomes = [event for event in timeline.events if event.kind is TraceEventKind.TOOL_RESULT]
     recorded = [event.status for event in outcomes]
@@ -1453,7 +1567,12 @@ def test_an_extraction_reading_nothing_off_a_recorded_call_binds_no_candidate():
     assert recorded == [ToolExecutionStatus.SUCCESS], "the outcome is there to be read"
     assert result.passed is False
     assert "cannot be decided" not in result.message
-    assert "none of which carried every value it extracts" in result.message
+    assert "the binding selected 1 event, none of which carried every value it extracts" in (
+        result.message
+    )
+    assert "the binding selected 2 events, none of which carried every value it extracts" in (
+        two.message
+    )
 
 
 def test_the_fold_reports_the_reading_whose_truth_is_the_folded_truth():

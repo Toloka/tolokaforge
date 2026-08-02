@@ -22,7 +22,7 @@ import pytest
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
-from tolokaforge.core.grading.trace_checks import select_events
+from tolokaforge.core.grading.trace_checks import _BINDING_OPERATORS, select_events
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
@@ -35,7 +35,10 @@ from tolokaforge.core.models import (
     TraceMatcher,
     ValuePredicate,
 )
-from tolokaforge.runner.models import TRACE_PREDICATE_OPERATORS
+from tolokaforge.runner.models import (
+    TRACE_PREDICATE_BINDING_OPERATORS,
+    TRACE_PREDICATE_OPERATORS,
+)
 
 pytestmark = pytest.mark.unit
 
@@ -301,9 +304,16 @@ _OPERATOR_ANSWERS: dict[str, _OperatorAnswer] = {
 
 
 def test_the_answer_table_spans_the_operators_a_predicate_declares():
-    """Three sources: the table, the written-out vocabulary, and the model's own fields."""
+    """Three sources: the table, the written-out vocabulary, and the model's own fields.
+
+    The binding subset is a fourth pair: the model names which operators take a
+    binding name, and the evaluator dispatches them off its own map. A member in one
+    and not the other either resolves a name as a literal or raises on a name the
+    model admits.
+    """
     assert set(_OPERATOR_ANSWERS) == TRACE_PREDICATE_OPERATORS
     assert set(ValuePredicate.model_fields) == TRACE_PREDICATE_OPERATORS
+    assert set(_BINDING_OPERATORS) == TRACE_PREDICATE_BINDING_OPERATORS
     misrowed = {
         name: sorted(answer.predicate)
         for name, answer in _OPERATOR_ANSWERS.items()

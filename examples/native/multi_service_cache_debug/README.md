@@ -75,6 +75,14 @@ agent  ──http──▶ │                     └──▶ postgres:16   (a
   route's stale read is already charged by that route's presence question, and
   charging it again here would cascade one wrong process into two failures.
 
+  **The prompt is the second oracle, and it is deliberately silent on the token.**
+  Nothing the trial shows the agent before it acts — the opening message, the user
+  persona's backstory, the guidance — names the stale status. The on-call engineer
+  reports an out-of-date status and does not know which one, so a note paraphrasing
+  the symptom report cannot reproduce `processing` and reproducing it means the agent
+  read it off a layer. Naming the status in the prompt would make this check pass on
+  a trial that observed nothing, and no substrate probe would show it.
+
   The two routes need two capture patterns. `http_request` renders a JSON response
   as the parsed object's Python `repr`, so `GET /orders/4021` shows
   `'status': 'processing'` in single quotes, while `GET /cache/order:4021` returns the

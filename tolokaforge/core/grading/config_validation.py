@@ -453,8 +453,9 @@ def _uncorrelatable_extraction(
             unchecked=(
                 Skip(
                     where,
-                    f"{resolved.name!r} declares no type for {value.field!r}, so whether "
-                    f"{read_from} can ever hold is not checkable",
+                    f"{resolved.name!r} declares no single type for {value.field!r} — no "
+                    f"type at all, or a union of several — so whether {read_from} can ever "
+                    "hold is not checkable",
                 ),
             )
         )
@@ -465,9 +466,9 @@ def _uncorrelatable_extraction(
         f"binding {name!r} extracts {value.field!r}, which {resolved.name!r} declares as "
         f"type {declared!r}, and {read_from} compares it against a field holding text. A "
         "non-string value is never a substring and equals nothing a text field holds, so "
-        "the check is false on every trajectory and reads as the agent's failure. Write "
-        "equals_binding on an args predicate to correlate two arguments, or bind a regex "
-        "capture to compare against text",
+        "the check is false on every trajectory and reads as the agent's failure. Reference "
+        "the binding from an args predicate, which compares two arguments as they were "
+        "written, or bind a regex capture, which is always text",
     )
     if resolved.strictness is ArgumentSchema.CLOSED:
         return AuthoringReport(errors=(finding,))

@@ -34,12 +34,15 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
+    _TEXTUAL_MATCHER_FIELDS,
     AuthoringReport,
     Finding,
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import GradingFindingSeverity
+from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
 
 pytestmark = pytest.mark.unit
 
@@ -679,7 +682,7 @@ _UNCHECKED_EXTRACTIONS = (
         _MOBILE,
         _tool_call("mobile"),
         {"acts": {"field": "args.actions"}},
-        "declares no type",
+        "declares no single type",
         id="extraction_the_schema_gives_no_type",
     ),
 )
@@ -948,3 +951,39 @@ def test_a_matcher_carrying_no_predicate_at_all_is_not_a_finding() -> None:
     report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
 
     assert report == AuthoringReport()
+
+
+# Which attribute of ``TraceEvent`` each matchable field reads, written out here so
+# the type check below compares the gate's set against the dataclass rather than
+# against itself. ``args`` addresses ``arguments``, whose members are typed by the
+# tool schema and not by the event.
+_MATCHER_FIELD_ATTRIBUTES = {
+    "tool": "tool_name",
+    "text": "text",
+    "result": "result",
+    "executor": "executor",
+    "status": "status",
+    "args": "arguments",
+}
+
+
+def test_the_textual_matcher_fields_are_the_events_string_fields() -> None:
+    """A field the event types as text is one every reference compares correctly.
+
+    The gate flags a binding reference sitting on one of these against a schema-typed
+    non-string extraction, and exempts the rest. So a field retyped to ``str | None``
+    on ``TraceEvent`` and left out of the gate's set is a never-true check the gate
+    stops reporting — the same class it exists to catch — and one typed as anything
+    else but listed here is a correct native comparison the gate starts rejecting.
+    """
+    matchable = {field for fields in TRACE_MATCHABLE_FIELDS_BY_KIND.values() for field in fields}
+    assert set(_MATCHER_FIELD_ATTRIBUTES) == matchable
+
+    annotations = TraceEvent.__annotations__
+    textual = {
+        field
+        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
+        if annotations[attribute] == "str | None"
+    }
+
+    assert textual == _TEXTUAL_MATCHER_FIELDS

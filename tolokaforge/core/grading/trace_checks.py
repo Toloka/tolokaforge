@@ -102,8 +102,8 @@ class MatcherOutcome:
 
     ``unmakeable_comparisons`` names the comparisons a bound value's type put out of
     reach, which is a property of the matcher and the environment rather than of any
-    one event: a ``contains_binding`` against a text field is unmakeable on every
-    event once the binding holds a non-string.
+    one event: a binding reference against a text field is unmakeable on every event
+    once the binding holds a non-string.
     """
 
     matched: tuple[TraceEvent, ...]
@@ -252,26 +252,31 @@ def _resolve(
 def _unmakeable_comparisons(
     field: str, value: Any, predicate: ValuePredicate, bindings: Mapping[str, Any]
 ) -> Iterable[str]:
-    """Why a ``contains_binding`` on this reading could not be compared at all.
+    """Why a binding reference on this reading could not be compared at all.
 
-    ``contains`` reads two strings as a substring pair and falls back to equality
-    for any other pairing, so a non-string bound value against a text field is false
-    on every trajectory — indistinguishable from an agent failure to everything that
+    Both binding operators read a text field as text: ``contains`` takes two strings
+    as a substring pair and falls back to equality for any other pairing, and
+    ``equals`` over a string and a non-string is false outright. So a non-string
+    bound value against a text field is false on every trajectory whichever operator
+    the author wrote — indistinguishable from an agent failure to everything that
     reads the score, and so reported as a comparison rather than folded in as one.
+
+    A predicate is a conjunction, so both references are read: an author who wrote
+    two of them made two mistakes and is owed both.
     """
-    name = predicate.contains_binding
-    if name is None or not isinstance(value, str):
+    if not isinstance(value, str):
         return ()
-    bound = bindings[name]
-    if isinstance(bound, str):
-        return ()
-    return (
-        f"the {field} comparison was not made: binding {name!r} holds {bound!r} of type "
-        f"{type(bound).__name__}, and contains_binding reads a text field as text — a "
-        "non-string needle compares equal to the whole value or to nothing, which is "
-        "false on every trajectory. Write equals_binding to correlate two arguments, "
-        "or bind a regex capture to compare against text",
-    )
+    references = [(name, getattr(predicate, name)) for name in sorted(_BINDING_OPERATORS)]
+    return [
+        f"the {field} comparison was not made: binding {bound_name!r} holds "
+        f"{bindings[bound_name]!r} of type {type(bindings[bound_name]).__name__}, and "
+        f"{name} reads a text field as text — a non-string value neither equals a string "
+        "nor is found inside one, which is false on every trajectory. Reference the binding "
+        "from an args predicate, which compares two arguments as they were written, or bind "
+        "a regex capture, which is always text"
+        for name, bound_name in references
+        if bound_name is not None and not isinstance(bindings[bound_name], str)
+    ]
 
 
 def _predicate_readings(
@@ -450,12 +455,17 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
 class _KindLedger:
     """Which constraint kinds the evaluation walked, and which it never entered.
 
-    A kind reaches ``visited`` only by being evaluated — a walk of the *config*
-    would report it as evaluated whatever the evaluator did, which is the accounting
-    dishonesty this module exists to avoid. ``unevaluated`` holds the kinds of the
-    constraints whose ``require`` tree was never entered, a state a binding that
-    selected nothing reaches, and the block files a skip for those no other
-    constraint evaluated.
+    A kind reaches ``visited`` only by carrying a verdict — its ``require`` tree was
+    evaluated, or its constraint scored without entering one because the binder
+    yielded no assignment. A walk of the *config* would report a kind as evaluated
+    whatever the evaluator did, which is the accounting dishonesty this module exists
+    to avoid, and filing a kind the grade *failed the trial on* as skipped is the
+    same dishonesty pointing the other way.
+
+    ``unevaluated`` holds the kinds of the constraints whose ``require`` tree was
+    never entered, a state a binding that selected nothing reaches. The block files a
+    skip for those no constraint scored — so under a skipped tree that is its nested
+    kinds, the top-level one having taken the constraint's own verdict.
     """
 
     def __init__(self) -> None:
@@ -547,9 +557,9 @@ def _component(
         failed_gate_ids=winner.failed_gate_ids,
         paths=paths,
         # The skips are filed per kind and never against the block's own keys: a
-        # constraint that bound nothing leaves its kind unaccounted, while the block
-        # itself was evaluated, and a kind another constraint did evaluate keeps that
-        # record because ``skipped_kinds`` has already subtracted it.
+        # constraint that bound nothing leaves the kinds nested under its ``require``
+        # tree unaccounted, while the block itself was evaluated, and a kind any
+        # constraint scored keeps that record because ``skipped_kinds`` subtracts it.
         accounted_keys=_accounting(config, ledger.visited, EVALUATED)
         | {
             TRACE_CONSTRAINT_KEY_BY_KIND[kind]: UNBOUND_BINDING_SKIP
@@ -641,6 +651,11 @@ def _evaluate_constraint(
         for environment in candidates.undecidable
     ]
     if not definite and not possible:
+        # The top-level kind is scored whatever the binder yielded — this branch
+        # returns a verdict under it — so only the kinds nested beneath it went
+        # unreached. Filing the scored one as a skip would report a kind as
+        # unevaluated in the same grade that fails the trial on it.
+        ledger.visited.add(kind)
         ledger.unevaluated |= _expression_kinds(constraint.require)
         if not candidates.unnamed:
             return _unbound_result(constraint, kind, candidates)
@@ -945,7 +960,8 @@ def _emptiness(outcome: MatcherOutcome) -> str:
     selected = len(outcome.matched) + len(outcome.undecidable)
     if not selected:
         return "the binding selected no event"
-    return f"the binding selected {selected} events, none of which carried every value it extracts"
+    label = "event" if selected == 1 else "events"
+    return f"the binding selected {selected} {label}, none of which carried every value it extracts"
 
 
 @dataclass(frozen=True)

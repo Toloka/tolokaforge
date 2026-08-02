@@ -55,11 +55,12 @@ state_checks:
 # key listing, say — has observed no divergence at all, and scores the better of
 # two incomplete routes rather than the sum of two halves.
 #
-# Each route asks two questions: were both sides of the comparison read, and did the
-# reads that happened happen before the note. The second carries `on_missing: pass`
-# so a read that never happened is charged once, to the first question, rather than
-# twice — which makes the second vacuous when neither read happened, leaving the
-# presence question to carry that case alone.
+# Each route asks three questions: were both sides of the comparison read, did the
+# reads that happened happen before the note, and does the note quote the value the
+# route's own read returned. The second carries `on_missing: pass` so a read that
+# never happened is charged once, to the first question, rather than twice — which
+# makes the second vacuous when neither read happened, leaving the presence question
+# to carry that case alone. The third carries `on_unbound: pass` for the same reason.
 #
 # The gate is SHARED rather than written inside a route: "do not mutate the order
 # on a diagnose-only task" holds whatever route the agent took, and a gate inside a
@@ -76,6 +77,15 @@ state_checks:
 # carry `on_missing: pass`: an agent that never made the route's stale read is
 # already charged by that route's presence check, and charging it again here would
 # cascade one wrong process into two failures.
+#
+# THE PROMPT IS THE SECOND ORACLE, AND IT IS DELIBERATELY SILENT ON THE TOKEN. The
+# check is evidence of grounding only because nothing the trial shows the agent
+# before it acts — `task.yaml`'s `initial_user_message`, the user persona's
+# backstory, the guidance — names the stale status. The on-call engineer reports an
+# out-of-date status and does not know which one, so a note paraphrasing the symptom
+# report cannot reproduce the token and reproducing it means the agent read it. That
+# silence is load-bearing: naming the status in the prompt would make this check pass
+# on a trial that observed nothing, which is what a substrate probe alone cannot see.
 #
 # The two capture patterns differ because the two payloads do. `http_request` renders
 # a JSON response as the parsed object's Python repr, so route A's served read shows

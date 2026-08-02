@@ -115,7 +115,13 @@ Three properties keep the ledger from rejecting configs that grade correctly:
   every `trace_checks.constraints.<kind>` key on that same timeline, `llm_judge`
   when it has no messages, `custom_checks` when the pack wrote the block but left
   `enabled` off, and the `state_checks.hash` members the runner's hash evaluator
-  reads when `hash.enabled` is not set.
+  reads when `hash.enabled` is not set. On a timeline that *does* carry events, a
+  constraint whose [binder yielded no assignment](#correlating-arguments-across-matchers)
+  skips the kinds **nested inside** its `require` tree, which nothing entered; the
+  tree's own kind is evaluated, because the constraint takes a verdict under it
+  either way. A kind another constraint in the block scored is evaluated too — the
+  skip is filed per kind, and a kind that carried a verdict anywhere is not one the
+  grade contributed nothing under.
   `state_checks.hash.expected_state_hash` is a standing skip: it is declared
   `CORE_ONLY` because no runner path reads it (#693), so it is recorded as such
   whether or not hash grading ran — folding it into the family's outcome would report
@@ -1464,8 +1470,8 @@ error is what stops a declaration that cannot fail from being written.
 
 ### Correlating arguments across matchers
 
-Every predicate above compares a field against a value written into the YAML, which
-cannot say *this call's id equals that call's id*. A constraint's optional `bind`
+Every literal predicate above compares a field against a value written into the YAML,
+which cannot say *this call's id equals that call's id*. A constraint's optional `bind`
 says it: one matcher whose events supply candidate values, one or more names
 extracted out of each, and predicates elsewhere in the same constraint that
 reference those names with
@@ -1633,19 +1639,21 @@ event removes the values it carried from the candidate set.
 #### The bound value's type is load-bearing
 
 `contains` compares two strings as substrings and falls back to **equality** for
-any other pair, so a bound `int` is never found inside a string. Measured:
+any other pair, and `equals` over a string and a non-string is false outright — so a
+bound `int` is neither found inside a string nor equal to one. Measured:
 
 ```python
 contains("http://api/deliveries/4021", 4021)    # False
 contains("http://api/deliveries/4021", "4021")  # True
 ```
 
-A `contains_binding` between a text field and a value bound out of an integer
-argument is therefore false on **every** trajectory. That is not scored as an agent
-failure: the constraint fails with a message saying the comparison was not made,
-naming the binding, its value, its type, and the two ways to write the intent —
-`equals_binding` on an `args` predicate to correlate two arguments, or a `pattern`
-capture to compare against text.
+A **binding reference** between a text field and a value bound out of an integer
+argument is therefore false on **every** trajectory, `equals_binding` exactly as much
+as `contains_binding`. That is not scored as an agent failure: the constraint fails
+with a message saying the comparison was not made, naming the binding, its value, its
+type, the operator that could not make the comparison, and the two ways to write the
+intent — a reference on an `args` predicate, which compares two arguments as they
+were written, or a `pattern` capture, which is always text.
 
 **`tolokaforge validate` catches it first, wherever a schema declares the type.**
 The config models cannot: `args.reason_code` is a string and `args.delivery_id` is an
@@ -1885,14 +1893,17 @@ Four authoring choices in it are worth copying:
   only when that route wins — so a route gate here would be escapable by winning on
   the other one. This is the [rule above](#shared-gates-and-path-gates-when-each-is-appropriate)
   applied to a real pack.
-- **Each route asks two questions**: were both sides of the comparison read, and did
-  the reads that happened happen before the note. The ordering check carries
-  `on_missing: pass` so a read that never happened is charged once — to the presence
-  check — rather than twice, which is what lets each check fail on its own wrong
-  process rather than cascading. The two are not independent as a result: with
-  neither read performed the ordering check is vacuous and passes, so a trajectory
-  that writes the note and nothing else scores the same `2/3` as one that starts a
-  route and abandons it.
+- **Each route asks three questions**: were both sides of the comparison read, did
+  the reads that happened happen before the note, and does the note quote the value
+  the route's own read returned. The ordering check carries `on_missing: pass` and
+  the grounded-claim check `on_unbound: pass`, so a read that never happened is
+  charged once — to the presence check — rather than three times, which is what lets
+  each check fail on its own wrong process rather than cascading. The three are not
+  independent as a result: with neither read performed the ordering check is vacuous
+  and the binder selects nothing, so a trajectory that writes the note and nothing
+  else scores the same `3/4` as one that starts a route and abandons it — four
+  equal-weighted scored members, the route's three plus the shared
+  `the_note_was_written`, of which only the presence check fails.
 - **The judge stays dominant.** The routes are not equally probative: the cache
   inspector shows the stale value itself, while the served-vs-source comparison
   shows only that the read path serves something the database disagrees with. The
@@ -1946,6 +1957,19 @@ that earns its weight and one that decorates a pack:
   prefix and comparing it with `equals_binding` has no substring reading at all, and
   it still names no lot number. There is no load-time answer to this — the value is
   runtime — so it is an authoring rule rather than a rejected shape.
+- **The prompt is a second oracle: check the correlation against it, not only against
+  the substrate.** A grounded-claim check is evidence of grounding only where the
+  bound token reached the agent through the substrate alone. Everything the trial
+  shows the agent before it acts — `initial_user_message`, the user persona and its
+  backstory, `policies.guidance` — is a place the answer can already be sitting, and
+  a note paraphrasing the request would then satisfy the check having observed
+  nothing. `cache_debug` is authored around this: its on-call engineer reports an
+  out-of-date status and does not know which one, so `processing` is nowhere in the
+  prompt and reproducing it means the agent read a layer. `lot_ops_01` is the same
+  discipline from the other side — the persona withholds the reason code and the
+  task's own guidance says not to guess it, so the catalog is the only place `CAPA-01`
+  comes from. Read the prompt before shipping a correlation; the substrate probe will
+  not tell you the answer was in the question.
 
 #### What a correlation is a candidate to replace, and what it is not
 

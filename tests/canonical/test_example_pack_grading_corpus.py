@@ -147,6 +147,24 @@ def _graded_corpus() -> dict[str, GradingConfig]:
     return dict(_grading_config(task_yaml) for task_yaml in _corpus_task_files())
 
 
+def _prompt_surfaces(task_yaml: Path) -> list[str]:
+    """Everything the trial puts in front of the agent before it acts.
+
+    A grounded-claim correlation is evidence of grounding only where the token it
+    binds reached the agent through the substrate — so the prompt is a second oracle,
+    and a token sitting in any of these is one a note can paraphrase without having
+    observed anything.
+    """
+    task = yaml.safe_load(task_yaml.read_text())
+    user = task["actors"]["user"]
+    return [
+        task["initial_user_message"],
+        user["persona"],
+        user["backstory"],
+        *task["policies"]["guidance"],
+    ]
+
+
 def test_every_component_an_example_pack_configures_carries_a_weight() -> None:
     """A configured-but-unweighted component is #744's authoring-side exposure."""
     corpus = _graded_corpus()
@@ -475,8 +493,11 @@ _SOURCE = "http://orders-api:8000/orders/4021/source"
 _CACHED = "http://cache-admin:8000/cache/order:4021"
 _CACHE_KEYS = "http://cache-admin:8000/keys"
 
+# The user turn paraphrases the task's own `initial_user_message`, which names no
+# stale status value — the pack's grounded-claim checks rest on the prompt being a
+# second oracle the note cannot copy the token out of.
 _CACHE_DEBUG_TURNS = (
-    "order 4021 still shows processing to customers",
+    "order 4021 still shows an out-of-date status to customers",
     "reading the layers and writing up the root cause",
 )
 
@@ -537,10 +558,14 @@ _NOTE_TEXT = (
     "order:4021 is never invalidated on a status update, so the cache-first read keeps "
     "serving the stale processing value while the source of truth already reads shipped"
 )
-# The same diagnosis with the observation removed: a plausible note that explains
-# cache invalidation without quoting anything the agent saw.
+# The realistic ungrounded note: the mechanism recited, and the symptom restated in
+# the terms the on-call engineer reported it in. Nothing here is avoided by
+# construction — the note is free to reuse every word of the prompt, and the prompt
+# names no stale status value, so reproducing the token still takes having read it.
 _UNGROUNDED_NOTE_TEXT = (
-    "order:4021 is never invalidated on a status update, so reads serve the stale value"
+    "order 4021 is still showing an out-of-date status to customers even though our "
+    "records say it shipped: order:4021 is never invalidated on a status update, so the "
+    "cache-first read keeps serving the stale value"
 )
 
 # The note as the pack's own jsonpath check reads it, so a whole-grade fold sees the
@@ -701,6 +726,27 @@ def test_each_cache_debug_route_scores_in_full_and_records_itself_the_winner(
     assert result.score == pytest.approx(1.0)
     assert result.winning_path == winning_path
     assert _failed(result) == []
+
+
+def test_the_cache_debug_prompt_names_no_status_its_grounded_claim_binds() -> None:
+    """The prompt is the pack's second oracle, and it must not hold the answer.
+
+    The on-call engineer reports an out-of-date status and does not know which one, so
+    a note paraphrasing the symptom report cannot reproduce the token — which is the
+    whole reason reproducing it is evidence the agent read a layer.
+
+    The other three assertions are what stop this from passing vacuously on a pack
+    whose reads do not carry the token either: the cached read the binder resolves
+    over does return it, the reference-style note quotes it, and the ungrounded note
+    does not. So there is something for the prompt to have leaked, and the check
+    separates the two notes on it.
+    """
+    stale_status = _STALE_ORDER["status"]
+
+    assert [text for text in _prompt_surfaces(_CACHE_DEBUG_TASK) if stale_status in text] == []
+    assert stale_status in json.dumps(_CACHE_DEBUG_PAYLOADS[_CACHED])
+    assert stale_status in _NOTE_TEXT
+    assert stale_status not in _UNGROUNDED_NOTE_TEXT
 
 
 @pytest.mark.parametrize(("calls", "broken_check"), _CACHE_DEBUG_WRONG_PROCESS_RUNS)
@@ -1005,6 +1051,21 @@ def test_each_lot_ops_constraint_fails_the_process_it_names(
     assert _failed(_lot_ops_result(calls)) == [broken_constraint]
 
 
+def test_the_lot_ops_prompt_names_no_reason_code_its_correlation_binds() -> None:
+    """The other side of the same discipline: the catalog is the only place the code is.
+
+    The operator persona is told not to volunteer the reason code and the guidance says
+    not to guess it, so ``CAPA-01`` reaches the agent only out of a tool result. Were it
+    in the prompt, an agent that posted it from the request would satisfy the
+    correlation having read nothing — and the substrate probe, which grades the row
+    that exists, would show nothing wrong.
+    """
+    code = _REASON_CODES[0]["code"]
+
+    assert [text for text in _prompt_surfaces(_LOT_OPS_TASK) if code in text] == []
+    assert code in json.dumps(_REASON_CODES)
+
+
 def test_every_declared_lot_ops_constraint_is_broken_by_one_of_the_wrong_runs() -> None:
     """So a constraint no scenario can fail cannot be added without a red test."""
     assert {param.values[1] for param in _LOT_OPS_WRONG_PROCESS_RUNS} == {
@@ -1021,6 +1082,12 @@ def test_a_run_that_never_opened_the_action_fails_both_correlations_and_stays_gr
     other half: a constraint whose ``require`` tree was never evaluated has to be filed
     as a skip, or the runner reports scored keys it neither evaluated nor skipped and
     ``GradeTrialResponse`` comes back unsuccessful.
+
+    And the skip is filed only against kinds nothing scored. Both constraints here are
+    flat ``before``s that took a verdict, and the component is ``0.0`` *because* they
+    failed — a grade reporting ``before`` as skipped in the same breath is the
+    accounting dishonesty pointing the other way, and it is what the ledger's
+    "contributed nothing" contract rules out.
     """
     result = _lot_ops_result(_NO_ACTION_RUN)
     failed = {constraint.id: constraint.message for constraint in result.constraints}
@@ -1032,8 +1099,10 @@ def test_a_run_that_never_opened_the_action_fails_both_correlations_and_stays_gr
     assert failed["the_reason_code_posted_was_read_from_the_catalog"] == (
         "before is unbound: the binding selected no event"
     )
+    assert result.score == 0.0
     audit = audit_accounted_keys(_lot_ops_grading(), result.accounted_keys)
     assert "trace_checks" not in (audit.error or "")
+    assert audit.skip_notes == ()
 
 
 def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_else() -> None:
