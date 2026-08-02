@@ -28,6 +28,39 @@ default:
     reasoning_via_extra_body: false
 
 presets:
+  # Cohere Command A+ served through a LiteLLM gateway's ``azure_ai`` provider.
+  # That provider REJECTS ``tool_choice`` outright — litellm 400s with
+  # ``UnsupportedParamsError: azure_ai does not support parameters:
+  # ['tool_choice']`` before the request reaches the model, so every tool-calling
+  # call fails and the model looks incapable when it is not. Verified live
+  # 2026-08-01: identical client, prompt and tools, WITHOUT ``tool_choice`` the
+  # model returns a correct ``get_weather({'city': 'Budapest', 'unit': 'c'})``;
+  # WITH ``tool_choice="auto"`` it 400s.
+  #
+  # Omitting the parameter is semantically free: ``"auto"`` is the only value this
+  # codebase sends, and per the OpenAI spec ``auto`` is the default when tools are
+  # present. The model still decides whether to call a tool, so measurements stay
+  # comparable with every other model on the board.
+  #
+  # Matched on the model name rather than the provider because the same model is
+  # reachable under either, and it is the gateway's ``azure_ai`` route that has the
+  # constraint.
+  # The Azure serving stack's own JSON-schema converter also cannot resolve
+  # ``$ref``/``$defs`` — it 500s with
+  # ``json_schema_converter.cc:3370: Cannot find field $defs in #/$defs/_LineItem``
+  # (verified 2026-08-01), taking down every probe whose tool schema uses a
+  # ``$defs`` block. ``strict`` inlines refs and drops ``$defs`` in its pre-pass,
+  # which is the documented remedy for a schema-dialect gap (docs/ADD_NEW_MODEL.md
+  # § "Field-rename failures are a schema-dialect symptom").
+  cohere_command_a_plus:
+    match:
+      - "azure_ai/cohere-command-a-plus*"
+      - "*cohere-command-a-plus*"
+    schema_sanitizer: strict
+    response_policy: array_dict_map
+    params:
+      supports_tool_choice: false
+
   # Claude 4.8 (Opus + Sonnet) — same adaptive-thinker contract as 4.7:
   # ignores ``reasoning_effort``, requires the canonical litellm ``thinking=``
   # kwarg + explicit ``budget_tokens``. Listed FIRST so first-match-wins

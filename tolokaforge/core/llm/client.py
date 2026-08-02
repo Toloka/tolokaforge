@@ -1672,7 +1672,7 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-            if tool_choice:
+            if tool_choice and self.capabilities.params_policy.supports_tool_choice:
                 kwargs["tool_choice"] = tool_choice
 
         kwargs["messages"] = self._convert_messages(system, messages)

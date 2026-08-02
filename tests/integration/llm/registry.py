@@ -2442,6 +2442,66 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Cohere Command A+ reached through a LiteLLM gateway's ``azure_ai`` route
+    # (the model is not on OpenRouter at all). Measured 2026-08-01 under the
+    # ``cohere_command_a_plus`` preset: 21 pass / 10 fail / 6 skip over the full
+    # probe suite. Two gateway-side quirks had to be resolved first, and both are
+    # recorded in that preset rather than here, because neither is a model trait:
+    # the route rejects ``tool_choice`` outright, and the Azure serving stack
+    # cannot resolve ``$ref``/``$defs``. On the raw preset the suite read 14/17/6
+    # and the model looked incapable of tool calling; it is not.
+    MC(
+        model_id="openrouter__azure_ai_cohere-command-a-plus-05-2026",
+        provider="openrouter",
+        name="azure_ai/cohere-command-a-plus-05-2026",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Cyclic ``$defs`` (``TreeNode.children: list[TreeNode]``) cannot be
+                # inlined, and the Azure schema converter 500s on the ``$ref`` it is
+                # left with — 0/4 shapes, verified 2026-08-01. NOT permanent: the
+                # cycle-breaking mechanism exists in ``GeminiRecursiveSchema`` but is
+                # coupled to Gemini-specific transforms, so lifting it into a
+                # provider-neutral sanitiser would very likely turn this green.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # Regex ``pattern`` constraints survive the sanitiser but the Azure
+                # converter still rejects the schema — verified 2026-08-01, unchanged
+                # under ``strict``.
+                C.RE2_PATTERN_TOLERANCE,
+                # Azure serverless Cohere exposes no ephemeral cache-control, and the
+                # response carries no cached-token counters — verified 2026-08-01.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # Cohere returns plain text, not Anthropic-style thinking blocks, so
+                # there is nothing to emit or replay. The Azure catalog advertises
+                # "reasoning" for this model, but no structured reasoning reaches the
+                # client over this route — verified 2026-08-01.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
 ]
 
 

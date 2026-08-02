@@ -88,6 +88,7 @@ class GenerationParams:
         drop_sampling_when_thinking: bool = False,
         reasoning_budget_default: int | None = None,
         unsupported_effort_levels: frozenset[str] | list[str] | tuple[str, ...] | None = None,
+        supports_tool_choice: bool = True,
     ):
         self._fixed_temperature = fixed_temperature
         self._supports_seed = supports_seed
@@ -109,6 +110,26 @@ class GenerationParams:
         self._unsupported_effort_levels: frozenset[str] = frozenset(
             e.lower() for e in (unsupported_effort_levels or ())
         )
+        # Some transports reject the ``tool_choice`` parameter outright rather than
+        # ignoring it — litellm's ``azure_ai`` provider 400s with
+        # ``UnsupportedParamsError: azure_ai does not support parameters:
+        # ['tool_choice']`` (verified live 2026-08-01 against Cohere Command A+ behind a
+        # LiteLLM gateway). Omitting it is SEMANTICALLY FREE here: ``"auto"`` is the only
+        # value this codebase ever sends (the agent loop hardcodes it and every capability
+        # probe uses it), and per the OpenAI spec ``auto`` IS the default when tools are
+        # present. So the model still decides whether to call a tool, and a model measured
+        # with this flag stays comparable with one measured without it.
+        self._supports_tool_choice = supports_tool_choice
+
+    @property
+    def supports_tool_choice(self) -> bool:
+        """Whether the transport accepts a ``tool_choice`` kwarg.
+
+        Read by :meth:`LLMClient._build_kwargs`, which is where ``tool_choice`` is
+        attached — it is set alongside ``tools`` and therefore after
+        :meth:`adapt` has run, so this cannot be a rewrite inside ``adapt``.
+        """
+        return self._supports_tool_choice
 
     def adapt(
         self,
