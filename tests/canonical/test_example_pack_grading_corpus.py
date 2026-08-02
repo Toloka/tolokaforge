@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and its packs discriminate.
 
-Nine claims over the packs an author reads as the reference:
+Thirteen claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -48,6 +48,21 @@ Nine claims over the packs an author reads as the reference:
    ``run_trace_replay_batch``, to the per-constraint verdicts and the winning route
    their own ``grade.yaml`` recorded — one bundle per route, one with the shared gate
    shut, so neither column is a constant.
+10. **A corpus that decides everything separates a discriminating constraint from a
+    degenerate one.** Both ``lot_ops_01`` correlations pass two of three trials and
+    fail different ones; a supplied constraint nothing satisfies is ``ALWAYS_FALSE``
+    and one everything satisfies is ``ALWAYS_TRUE``, both reported as findings.
+11. **Missing evidence is reported as missing.** The same pack's flagship
+    correlation over the three trajectories that need the tool-call record to decide
+    is ``NEVER_DECIDED`` with nothing decided, not failed on every trial — and where
+    one trial does decide it, ``UNDECIDED_IN_PART`` says so rather than condemning
+    the corpus off one observation.
+12. **A route that won no trial is reported unmeasured, not unanimous.** Three of
+    ``cache_debug``'s eight declared constraints are emitted by no result on a
+    mutating trial, and they keep a row saying zero trials evaluated.
+13. **Agreement with the recorded pass is counted from two sources.** The verdict
+    recomputed now against the ``binary_pass`` the live run wrote, over the corpus
+    whose recorded column varies.
 """
 
 from __future__ import annotations
@@ -63,6 +78,7 @@ from click.testing import CliRunner
 from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
+from tests.utils.trace_overrides import override_file
 from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
@@ -70,8 +86,15 @@ from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_replay import (
+    ConstraintDiscrimination,
+    ConstraintDiscriminationRow,
     ConstraintProvenance,
+    TraceChecksOverride,
     TraceReplayOutcomeStatus,
+    TraceReplayReport,
+    TrialTraceReplayOutcome,
+    build_trace_replay_report,
+    declared_trace_checks,
     read_trace_replay_inputs,
     run_trace_replay_batch,
 )
@@ -1016,15 +1039,25 @@ def _lot_ops_result(calls: Sequence[RecordedToolCall]) -> TraceChecksResult:
     return evaluate_trace_checks(_timeline(calls, _LOT_OPS_TURNS), trace_checks)
 
 
+# The submission the pack's jsonpath check reads, so a fold sees the deterministic
+# components a real grade was made of rather than a stub.
+_LOT_OPS_SUBMISSION = {
+    "filesystem": {"/env/fs/agent-visible/submissions/report.md": "CAPA-01 on LOT-1007"}
+}
+
+
+def _lot_ops_trajectory(calls: Sequence[RecordedToolCall]) -> Trajectory:
+    return make_trajectory(
+        task_id="lot_ops_01",
+        messages=make_trial_messages(calls, _LOT_OPS_TURNS),
+        tool_log=list(calls),
+    )
+
+
 def _lot_ops_grade(calls: Sequence[RecordedToolCall]) -> Grade:
     """The whole fold over one trajectory, at the pack's own weights."""
     return GradingEngine(_lot_ops_grading()).grade_trajectory(
-        make_trajectory(
-            task_id="lot_ops_01",
-            messages=make_trial_messages(calls, _LOT_OPS_TURNS),
-            tool_log=list(calls),
-        ),
-        {"filesystem": {"/env/fs/agent-visible/submissions/report.md": "CAPA-01 on LOT-1007"}},
+        _lot_ops_trajectory(calls), _LOT_OPS_SUBMISSION
     )
 
 
@@ -1159,11 +1192,7 @@ def test_the_lot_ops_correct_run_regrades_from_its_own_bundle_to_the_live_verdic
     trial_dir = tmp_path / "trials" / "lot_ops_01" / "0"
     FileArtifactWriter().write_trial_bundle(
         trial_dir,
-        make_trajectory(
-            task_id="lot_ops_01",
-            messages=make_trial_messages(calls, _LOT_OPS_TURNS),
-            tool_log=list(calls),
-        ),
+        _lot_ops_trajectory(calls),
         {"task_id": "lot_ops_01", "trial_index": 0},
         {},
         StructuredLogger("lot_ops_01-0"),
@@ -1245,3 +1274,272 @@ def test_a_cache_debug_bundle_re_checks_to_the_verdict_its_own_grade_recorded(
     assert [inputs.provenance for inputs in recorded] == [ConstraintProvenance.RECORDED] * 2
     assert [inputs.recorded_summary.gate_failed for inputs in recorded] == [False, True]
     assert [outcome.result.gate_failed for outcome in outcomes] == [False, True]
+
+
+# A block no pack ships, supplied to reach the two degenerate verdicts a real pack's
+# constraints do not produce over this corpus: one selecting a tool nothing called,
+# one selecting any call at all. Neither bundle records a wire tool list, so the
+# authoring gate cannot resolve ``recall_lot`` and reports the skip instead of
+# refusing the block.
+_DEGENERATE_OVERRIDE = {
+    "constraints": [
+        {
+            "id": "a_tool_no_trial_called",
+            "description": "a corrective action was recalled",
+            "require": {
+                "present": {"match": {"kind": "tool_call", "tool": {"equals": "recall_lot"}}}
+            },
+        },
+        {
+            "id": "any_tool_at_all_was_called",
+            "description": "the agent called something",
+            "require": {"present": {"match": {"kind": "tool_call"}}},
+        },
+    ]
+}
+
+
+def _write_lot_ops_bundle(
+    trial_dir: Path, calls: Sequence[RecordedToolCall], *, with_tool_log: bool
+) -> None:
+    """One ``lot_ops_01`` bundle, graded live and written the way a real run writes it.
+
+    ``with_tool_log=False`` drops the record sidecar, which is the shape of a bundle
+    written before the record was persisted — and the shape on which the flagship
+    correlation cannot read ``status``. The recorded grade is the live one either
+    way: it is the independent source the report counts agreement against, so it
+    must not be recomputed from the degraded bundle.
+    """
+    FileArtifactWriter().write_trial_bundle(
+        trial_dir,
+        _lot_ops_trajectory(calls).model_copy(update={"grade": _lot_ops_grade(calls)}),
+        {
+            "task_id": "lot_ops_01",
+            "grading_config": _lot_ops_grading().model_dump(mode="json"),
+        },
+        {},
+        StructuredLogger(f"lot_ops_01-{trial_dir.name}"),
+    )
+    if not with_tool_log:
+        (trial_dir / "tool_log.yaml").unlink()
+
+
+def _lot_ops_corpus(
+    root: Path, runs: Sequence[Sequence[RecordedToolCall]], *, with_tool_log: bool
+) -> Path:
+    for index, calls in enumerate(runs):
+        _write_lot_ops_bundle(
+            root / "trials" / "lot_ops_01" / str(index), calls, with_tool_log=with_tool_log
+        )
+    return root
+
+
+def _replay_report(
+    source: Path, *, replay_id: str = "discrimination", override: TraceChecksOverride | None = None
+) -> tuple[list[TrialTraceReplayOutcome], TraceReplayReport]:
+    """A batch over *source* and the report built off it, the way the command will.
+
+    ``declared`` is read off the batch rather than by re-reading ``task.yaml``, so
+    the constraint universe the report reports on is the one the trials were
+    measured against — including an override's, which the pack files never carry.
+    """
+    outcomes = run_trace_replay_batch(source, replay_id=replay_id, override=override)
+    report = build_trace_replay_report(
+        outcomes,
+        declared=declared_trace_checks(outcomes),
+        source=source,
+        replay_id=replay_id,
+    )
+    assert report is not None
+    return outcomes, report
+
+
+def _row(report: TraceReplayReport, constraint_id: str) -> ConstraintDiscriminationRow:
+    (row,) = [item for item in report.discrimination if item.constraint_id == constraint_id]
+    return row
+
+
+def _per_trial_verdicts(outcomes: Sequence[TrialTraceReplayOutcome], constraint_id: str) -> str:
+    """One mark per trial that evaluated the constraint, in discovery order.
+
+    The aggregate counts cannot tell two constraints apart when both split the
+    corpus the same way — which the two ``lot_ops_01`` correlations do, 2 passed and
+    1 failed each — so this is what says *which* trial each verdict belongs to.
+    """
+    return " ".join(
+        "U" if item.undecided else "P" if item.passed else "F"
+        for outcome in outcomes
+        for item in (outcome.result.constraints if outcome.result is not None else ())
+        if item.id == constraint_id
+    )
+
+
+def test_both_lot_ops_correlations_discriminate_over_a_corpus_that_decides_everything(
+    tmp_path: Path,
+) -> None:
+    """The report the feature exists to produce, over a corpus with nothing missing.
+
+    Three trajectories the substrate oracle grades identically: each correlation
+    passes two trials and fails one, and they fail *different* ones. Written with
+    the tool-call record, so no verdict is undecided and ``DISCRIMINATING`` rests on
+    complete evidence rather than on a gap.
+
+    The same corpus re-checked against a supplied block reaches the two verdicts a
+    working pack's constraints do not: a constraint selecting a tool nothing called
+    is ``ALWAYS_FALSE`` on all three, and one selecting any call at all is
+    ``ALWAYS_TRUE`` on all three. Both are findings, not failures — an author
+    iterating on a candidate constraint needs to read them and keep working — and
+    the gate's skip travels with them, because a block checked against a tool set
+    nothing could resolve must not read as a block checked and found clean.
+
+    The pack's own gate is ``P P P`` here and deliberately unasserted: the duplicate
+    post lives in ``DOUBLE_POST``, which this corpus does not hold.
+    """
+    source = _lot_ops_corpus(
+        tmp_path,
+        [_LOT_OPS_CORRECT_RUN, _GUESSED_CODE_RUN, _UNREAD_LOT_RUN],
+        with_tool_log=True,
+    )
+    outcomes, report = _replay_report(source)
+
+    assert _per_trial_verdicts(outcomes, _LOT_OPS_CONSTRAINTS[0][0]) == "P F P"
+    assert _per_trial_verdicts(outcomes, _LOT_OPS_CONSTRAINTS[1][0]) == "P P F"
+    for constraint_id, _, _ in _LOT_OPS_CONSTRAINTS[:2]:
+        row = _row(report, constraint_id)
+        assert row.verdict is ConstraintDiscrimination.DISCRIMINATING
+        assert (row.trials_evaluated, row.trials_decided, row.undecided_trials) == (3, 3, 0)
+        assert (row.passed_trials, row.failed_trials) == (2, 1)
+        assert row.decided_verdict is None
+    assert [trial.tool_log_present for trial in report.trials] == [True] * 3
+    assert report.evidence.bundles_with_tool_log == 3
+    assert report.override_authoring is None
+
+    supplied = override_file(tmp_path / "supplied", _DEGENERATE_OVERRIDE)
+    _, overridden = _replay_report(source, replay_id="degenerate", override=supplied)
+
+    assert [(row.constraint_id, row.verdict) for row in overridden.discrimination] == [
+        ("a_tool_no_trial_called", ConstraintDiscrimination.ALWAYS_FALSE),
+        ("any_tool_at_all_was_called", ConstraintDiscrimination.ALWAYS_TRUE),
+    ]
+    assert [row.trials_decided for row in overridden.discrimination] == [3, 3]
+    assert overridden.override_authoring is not None
+    assert overridden.override_authoring.advisories == []
+    assert [skip.split(": ", 1)[0] for skip in overridden.override_authoring.unchecked] == [
+        "grading"
+    ]
+
+
+def test_a_record_less_corpus_reports_the_flagship_correlation_as_never_decided(
+    tmp_path: Path,
+) -> None:
+    """Missing evidence is reported as missing, never as the constraint's fault.
+
+    These are exactly the three ``lot_ops_01`` trajectories on which the flagship
+    correlation goes undecided without the record: its ``require.before.left``
+    matcher reads ``status``, which no message can express. All three undecided is
+    ``NEVER_DECIDED`` with nothing decided — the answer an author needs, where
+    "failed on every trial" would be an accusation the corpus cannot support.
+
+    The other two constraints are decided on the same bundles and carry the
+    agreement counts, because this corpus is the one whose recorded ``binary_pass``
+    column *varies*: the doubled post is the trial the live run failed. So the two
+    rows disagree on how often the recomputed verdict matches the live pass, which a
+    count computed against a constant could not produce.
+    """
+    source = _lot_ops_corpus(
+        tmp_path,
+        [_LOT_OPS_CORRECT_RUN, _UNREAD_LOT_RUN, _DOUBLE_POST_RUN],
+        with_tool_log=False,
+    )
+    outcomes, report = _replay_report(source)
+    reason_code = _row(report, _LOT_OPS_CONSTRAINTS[0][0])
+
+    assert _per_trial_verdicts(outcomes, _LOT_OPS_CONSTRAINTS[0][0]) == "U U U"
+    assert reason_code.verdict is ConstraintDiscrimination.NEVER_DECIDED
+    assert (reason_code.trials_evaluated, reason_code.trials_decided) == (3, 0)
+    assert reason_code.undecided_trials == 3
+    assert (reason_code.passed_trials, reason_code.failed_trials) == (0, 0)
+    assert (reason_code.trials_labelled, reason_code.agreed_with_recorded_pass) == (0, 0)
+
+    assert [trial.gate_failed for trial in report.trials] == [False, False, True]
+    assert report.evidence.bundles_with_tool_log == 0
+    lot = _row(report, _LOT_OPS_CONSTRAINTS[1][0])
+    gate = _row(report, _LOT_OPS_CONSTRAINTS[2][0])
+    assert (lot.trials_labelled, lot.agreed_with_recorded_pass) == (3, 1)
+    assert (gate.trials_labelled, gate.agreed_with_recorded_pass) == (3, 3)
+
+
+def test_a_correlation_decided_on_one_trial_of_three_is_reported_undecided_in_part(
+    tmp_path: Path,
+) -> None:
+    """The case the sixth member exists for, on the pack the milestone built.
+
+    Standing single case. Two trials undecided and one decidably false: under a
+    five-member set this read ``ALWAYS_FALSE`` — a corpus-wide condemnation resting
+    on one observation, which is the exact misleading answer the feature exists to
+    prevent. ``UNDECIDED_IN_PART`` says what was decided, how much of the corpus
+    decided it, and which way.
+    """
+    source = _lot_ops_corpus(
+        tmp_path,
+        [_LOT_OPS_CORRECT_RUN, _UNREAD_LOT_RUN, _GUESSED_CODE_RUN],
+        with_tool_log=False,
+    )
+    outcomes, report = _replay_report(source)
+    row = _row(report, _LOT_OPS_CONSTRAINTS[0][0])
+
+    assert _per_trial_verdicts(outcomes, _LOT_OPS_CONSTRAINTS[0][0]) == "U U F"
+    assert row.verdict is ConstraintDiscrimination.UNDECIDED_IN_PART
+    assert row.decided_verdict is False
+    assert (row.trials_evaluated, row.trials_decided, row.undecided_trials) == (3, 1, 2)
+    assert (row.passed_trials, row.failed_trials) == (0, 1)
+    assert (row.trials_labelled, row.agreed_with_recorded_pass) == (1, 0)
+
+
+def test_a_cache_debug_route_that_won_no_trial_is_reported_unmeasured_not_unanimous(
+    tmp_path: Path,
+) -> None:
+    """A route's constraints must not vanish, and must not read as passing either.
+
+    Standing single case. ``evaluate_trace_checks`` emits the shared constraints and
+    the winning route's only, so on this one mutating trial three of the pack's
+    eight declared constraints appear in no result at all — route A lost on the
+    reads it never made. A report built from the verdicts alone would simply not
+    mention them; one that classified them in declaration order would call them
+    ``ALWAYS_TRUE``, because over zero trials "every evaluated trial was decided and
+    all passed" is vacuously true.
+
+    So the row exists, says zero trials evaluated, and names the route it belongs
+    to — and the report states the denominator, because ``ALWAYS_TRUE`` on a route
+    that won twice out of twenty otherwise reads as a corpus-wide claim.
+    """
+    _write_cache_debug_bundle(tmp_path / "trials" / "cache_debug" / "0", _MUTATING_RUN)
+    outcomes, report = _replay_report(tmp_path)
+    rows = {row.constraint_id: row for row in report.discrimination}
+    losing_route, losing_checks = _CACHE_DEBUG_PATHS[0]
+    winning_route, winning_checks = _CACHE_DEBUG_PATHS[1]
+
+    assert outcomes[0].result is not None
+    assert len(outcomes[0].result.constraints) == 5
+    assert len(rows) == len(_CACHE_DEBUG_SHARED) + sum(
+        len(checks) for _, checks in _CACHE_DEBUG_PATHS
+    )
+
+    for constraint_id in losing_checks:
+        assert (rows[constraint_id].route, rows[constraint_id].trials_evaluated) == (
+            losing_route,
+            0,
+        )
+        assert rows[constraint_id].verdict is ConstraintDiscrimination.NOT_MEASURED
+        assert rows[constraint_id].decided_verdict is None
+    for constraint_id in winning_checks:
+        assert (rows[constraint_id].route, rows[constraint_id].trials_evaluated) == (
+            winning_route,
+            1,
+        )
+        assert rows[constraint_id].verdict is ConstraintDiscrimination.ALWAYS_TRUE
+
+    assert rows["no_status_was_written"].route == ""
+    assert rows["no_status_was_written"].verdict is ConstraintDiscrimination.ALWAYS_FALSE
+    assert [trial.winning_path for trial in report.trials] == [winning_route]
+    assert "trials its path won" in report.route_scoping

@@ -104,7 +104,10 @@ tests/
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
+    ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary
+    ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
+    ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 

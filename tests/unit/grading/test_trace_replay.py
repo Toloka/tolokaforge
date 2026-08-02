@@ -15,7 +15,11 @@ Locks the contract of :mod:`tolokaforge.core.grading.trace_replay`:
   the operator a pydantic traceback;
 * an override is read off a file that says which file it was, so a block the
   vocabulary refuses is reported against the path the operator supplied rather
-  than as an anonymous validation error.
+  than as an anonymous validation error;
+* a discrimination row is keyed by task *and* constraint id, and a bundle that
+  cannot name its task is a named failure rather than a row belonging to nobody;
+* the degenerate corpora answer as themselves — one bundle reports the single
+  observation its unanimity rests on, and an empty one produces no report at all.
 
 Bundles are written by the real :class:`FileArtifactWriter`, so the tests read the
 same on-disk contract the eval flow produces, and every override travels through
@@ -32,18 +36,23 @@ import yaml
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
+from tests.utils.trace_overrides import override_file
 from tolokaforge.core.grading.trace_replay import (
     TRACE_REPLAY_DIRNAME,
+    TRACE_REPLAY_REPORT_FILENAME,
+    ConstraintDiscrimination,
     ConstraintProvenance,
-    TraceChecksOverride,
     TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
+    build_trace_replay_report,
+    declared_trace_checks,
     discover_trace_bundles,
+    emit_trace_replay_report,
     load_trace_checks_override,
     read_trace_replay_inputs,
     run_trace_replay_batch,
 )
-from tolokaforge.core.models import Trajectory
+from tolokaforge.core.models import Grade, GradeComponents, Trajectory
 from tolokaforge.core.output.artifacts import FileArtifactWriter, read_recorded_tool_log
 from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION
 
@@ -82,32 +91,17 @@ _STATUS_TRACE_CHECKS: dict[str, Any] = {
 _TURNS = ("I want a refund for order O-1.", "Reading the order.")
 
 
-def _override(tmp_path: Path, block: Any = _TRACE_CHECKS) -> TraceChecksOverride:
-    """An override as an operator supplies one — written to a file and loaded back.
-
-    Never hand-constructed: the path the loader records is what every rejection
-    message is judged on, so a fixture that skipped the loader would test a value
-    the command never builds.
-    """
-    path = tmp_path / "constraints.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(block, sort_keys=False), encoding="utf-8")
-    return load_trace_checks_override(path)
-
-
-def _looked_up_the_order() -> Trajectory:
+def _looked_up_the_order(task_id: str = "refund_task") -> Trajectory:
     call = recorded_call(
         "get_order", sequence=0, arguments={"id": "O-1"}, output='{"total": 328.5}'
     )
     return make_trajectory(
-        task_id="refund_task", messages=make_trial_messages([call], _TURNS), tool_log=[call]
+        task_id=task_id, messages=make_trial_messages([call], _TURNS), tool_log=[call]
     )
 
 
-def _answered_without_calling_anything() -> Trajectory:
-    return make_trajectory(
-        task_id="refund_task", messages=make_trial_messages([], _TURNS), tool_log=[]
-    )
+def _answered_without_calling_anything(task_id: str = "refund_task") -> Trajectory:
+    return make_trajectory(task_id=task_id, messages=make_trial_messages([], _TURNS), tool_log=[])
 
 
 def _write_bundle(
@@ -116,11 +110,15 @@ def _write_bundle(
     *,
     trace_checks: dict[str, Any] | None = _TRACE_CHECKS,
     with_tool_log: bool = True,
+    grade: Grade | None = None,
 ) -> Path:
     """A bundle on disk, written the way the eval flow writes one.
 
     ``with_tool_log=False`` is the shape of a bundle written before the record was
-    persisted: every other artifact present, the sidecar absent.
+    persisted: every other artifact present, the sidecar absent. ``grade`` writes the
+    verdict a live run would have frozen, which is what the report counts the
+    recomputed constraint verdicts' agreement against; without one the bundle is an
+    ungraded trial, which is still re-checkable.
     """
     trajectory = trajectory if trajectory is not None else _looked_up_the_order()
     writer = FileArtifactWriter()
@@ -128,6 +126,8 @@ def _write_bundle(
     if with_tool_log:
         writer.write_tool_log(trial_dir, trajectory)
     writer.write_metrics(trial_dir, trajectory)
+    if grade is not None:
+        writer.write_grade(trial_dir, grade)
     writer.write_task(
         trial_dir,
         {
@@ -194,7 +194,9 @@ def test_a_bundle_declaring_no_trace_checks_is_skipped_until_an_override_supplie
     assert skipped.result is None
     assert not (tmp_path / TRACE_REPLAY_DIRNAME).exists()
 
-    (replayed,) = run_trace_replay_batch(tmp_path, replay_id="r2", override=_override(tmp_path))
+    (replayed,) = run_trace_replay_batch(
+        tmp_path, replay_id="r2", override=override_file(tmp_path, _TRACE_CHECKS)
+    )
     assert replayed.status is TraceReplayOutcomeStatus.REPLAYED
     assert replayed.provenance is ConstraintProvenance.OVERRIDE
     assert replayed.result is not None
@@ -225,7 +227,7 @@ def test_a_zero_call_bundle_is_recorded_even_though_its_timeline_carries_no_reco
     assert read_recorded_tool_log(recorded) == ([], True)
     assert read_recorded_tool_log(unrecorded) == ([], False)
 
-    override = _override(tmp_path)
+    override = override_file(tmp_path, _TRACE_CHECKS)
     outcomes = run_trace_replay_batch(tmp_path, replay_id="r1", override=override)
     timelines = [
         read_trace_replay_inputs(bundle, override=override).timeline
@@ -371,8 +373,8 @@ def test_a_grading_document_and_a_bare_block_supply_the_same_constraints(
     kept its wrapper would hand the authoring gate ``trace_checks.trace_checks`` and
     find no constraint to check.
     """
-    document = _override(tmp_path / "doc", {"trace_checks": _TRACE_CHECKS})
-    bare = _override(tmp_path / "bare", _TRACE_CHECKS)
+    document = override_file(tmp_path / "doc", {"trace_checks": _TRACE_CHECKS})
+    bare = override_file(tmp_path / "bare", _TRACE_CHECKS)
 
     assert document.block == bare.block == _TRACE_CHECKS
     assert document.config == bare.config
@@ -490,7 +492,7 @@ def test_a_bundle_whose_recorded_tool_list_is_unreadable_fails_without_stopping_
     (broken / "tools_schemas.yaml").write_text(recorded, encoding="utf-8")
 
     failed, replayed = run_trace_replay_batch(
-        tmp_path, replay_id="r1", override=_override(tmp_path)
+        tmp_path, replay_id="r1", override=override_file(tmp_path, _TRACE_CHECKS)
     )
 
     assert failed.status is TraceReplayOutcomeStatus.FAILED
@@ -549,9 +551,137 @@ def test_bundles_with_different_recorded_tool_sets_get_their_own_gate_answers(
     )
 
     checked, skipped = run_trace_replay_batch(
-        tmp_path, replay_id="r1", override=_override(tmp_path)
+        tmp_path, replay_id="r1", override=override_file(tmp_path, _TRACE_CHECKS)
     )
 
     assert (checked.bundle, skipped.bundle) == (resolvable, unresolvable)
     assert checked.override_authoring.unchecked == ()
     assert [skip.where for skip in skipped.override_authoring.unchecked] == ["grading"]
+
+
+def _report(source: Path, *, replay_id: str = "r1"):
+    """A batch over *source* and the report built off it, the way the command will."""
+    outcomes = run_trace_replay_batch(source, replay_id=replay_id)
+    return outcomes, build_trace_replay_report(
+        outcomes,
+        declared=declared_trace_checks(outcomes),
+        source=source,
+        replay_id=replay_id,
+    )
+
+
+def test_two_packs_reusing_one_constraint_id_get_a_row_each(tmp_path: Path) -> None:
+    """A discrimination row is keyed by task and id, because an id is unique per pack.
+
+    Both bundles declare ``the_order_was_looked_up`` and reach opposite verdicts on
+    it. Keyed on the id alone the two fold into one row reading ``DISCRIMINATING``
+    over a mix of two predicates and two corpora — and every pack's constraints
+    would additionally read as unmeasured on every other pack's trials. Keyed
+    properly, each pack is told about its own corpus.
+    """
+    _write_bundle(tmp_path / "trials" / "refund_task" / "0", _looked_up_the_order())
+    _write_bundle(
+        tmp_path / "trials" / "status_task" / "0",
+        _answered_without_calling_anything("status_task"),
+    )
+
+    _, report = _report(tmp_path)
+
+    assert report is not None
+    assert [(row.task_id, row.constraint_id, row.verdict) for row in report.discrimination] == [
+        ("refund_task", "the_order_was_looked_up", ConstraintDiscrimination.ALWAYS_TRUE),
+        ("status_task", "the_order_was_looked_up", ConstraintDiscrimination.ALWAYS_FALSE),
+    ]
+    assert [row.trials_evaluated for row in report.discrimination] == [1, 1]
+
+
+def test_a_one_bundle_corpus_reports_the_single_observation_its_verdict_rests_on(
+    tmp_path: Path,
+) -> None:
+    """Standing single case at the smallest corpus that measures anything.
+
+    ``ALWAYS_TRUE`` over one trial is a far weaker claim than over twenty, and the
+    counts beside the verdict are the only thing that says which one it is — so they
+    are asserted rather than the verdict alone. The recorded pass is counted here
+    too: one labelled trial, agreeing with the recomputation.
+    """
+    _write_bundle(
+        tmp_path / "trials" / "refund_task" / "0",
+        grade=Grade(binary_pass=True, score=1.0, components=GradeComponents(), reasons=""),
+    )
+
+    outcomes = run_trace_replay_batch(tmp_path, replay_id="r1")
+    report = emit_trace_replay_report(
+        outcomes, declared=declared_trace_checks(outcomes), source=tmp_path, replay_id="r1"
+    )
+
+    assert report is not None
+    (row,) = report.discrimination
+    assert row.verdict is ConstraintDiscrimination.ALWAYS_TRUE
+    assert (row.trials_evaluated, row.trials_decided, row.passed_trials) == (1, 1, 1)
+    assert (row.trials_labelled, row.agreed_with_recorded_pass) == (1, 1)
+    assert (report.evidence.bundles_read, report.evidence.bundles_with_tool_log) == (1, 1)
+    assert report.evidence.schema_versions == {str(TRIAL_BUNDLE_SCHEMA_VERSION): 1}
+    assert (tmp_path / TRACE_REPLAY_DIRNAME / "r1" / TRACE_REPLAY_REPORT_FILENAME).is_file()
+
+
+def test_an_empty_corpus_produces_no_report_and_writes_nothing(tmp_path: Path) -> None:
+    """Standing single case at the degenerate boundary: nothing found, nothing claimed.
+
+    A selector matching no bundle validates nothing, so there is no report — and the
+    caller's non-zero exit rests on that, never on an empty table that would read as
+    a corpus in which every constraint behaved.
+    """
+    outcomes = run_trace_replay_batch(tmp_path, replay_id="r1")
+
+    assert outcomes == []
+    assert emit_trace_replay_report(outcomes, declared={}, source=tmp_path, replay_id="r1") is None
+    assert not (tmp_path / TRACE_REPLAY_DIRNAME).exists()
+
+
+def test_a_bundle_naming_no_task_fails_rather_than_folding_into_another_pack(
+    tmp_path: Path,
+) -> None:
+    """An unattributable verdict is a named failure, never a row under no task.
+
+    Constraint ids are unique only inside one pack's block, so a verdict with no task
+    to key on would land wherever another pack reused the id. The bundle is named and
+    the batch replays around it.
+    """
+    broken = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    healthy = _write_bundle(tmp_path / "trials" / "refund_task" / "1")
+    task = yaml.safe_load((broken / "task.yaml").read_text(encoding="utf-8"))
+    del task["task_id"]
+    _rewrite_yaml(broken / "task.yaml", task)
+
+    failed, replayed = run_trace_replay_batch(tmp_path, replay_id="r1")
+
+    assert failed.status is TraceReplayOutcomeStatus.FAILED
+    assert str(broken / "task.yaml") in (failed.reason or "")
+    assert "task_id" in (failed.reason or "")
+    assert (replayed.bundle, replayed.status) == (healthy, TraceReplayOutcomeStatus.REPLAYED)
+
+
+def test_an_unreadable_recorded_pass_fails_rather_than_reading_as_ungraded(
+    tmp_path: Path,
+) -> None:
+    """An ungraded trial and an unreadable verdict are different states.
+
+    Absent means the trial was never graded, which says nothing about its replay;
+    unreadable means the bundle cannot say what the live run concluded. Reading the
+    second as the first would drop a trial out of the agreement denominator without
+    saying so, and agreement is the one number in the report that has two sources.
+    """
+    bundle = _write_bundle(
+        tmp_path / "trials" / "refund_task" / "0",
+        grade=Grade(binary_pass=True, score=1.0, components=GradeComponents(), reasons=""),
+    )
+    grade = yaml.safe_load((bundle / "grade.yaml").read_text(encoding="utf-8"))
+    grade["binary_pass"] = "yes"
+    _rewrite_yaml(bundle / "grade.yaml", grade)
+
+    (outcome,) = run_trace_replay_batch(tmp_path, replay_id="r1")
+
+    assert outcome.status is TraceReplayOutcomeStatus.FAILED
+    assert str(bundle / "grade.yaml") in (outcome.reason or "")
+    assert "binary_pass" in (outcome.reason or "")

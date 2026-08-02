@@ -3,11 +3,12 @@
 Four claims, over the two bundle populations that matter:
 
 1. **A replay writes only into its own subtree.** Over a single-bundle source —
-   the layout where the output lands *inside* ``--source`` by construction — no file
-   the bundle already held changes or disappears, and the bundle root gains no new
-   path. Both halves are asserted because either alone is blind: the digest set
-   cannot see a file created under a name nothing held, and the root's file set
-   cannot see one rewritten in place.
+   the layout where the output lands *inside* ``--source`` by construction — neither
+   the per-bundle result nor the run-level report changes or removes a file the
+   bundle already held, and the bundle root gains no new path. Both halves are
+   asserted because either alone is blind: the digest set cannot see a file created
+   under a name nothing held, and the root's file set cannot see one rewritten in
+   place.
 2. **The schema stamp is evidence, never a gate.** The three ``tau_retail_mini``
    bundles committed under ``tests/data/projects/`` predate the stamp entirely, carry
    no ``tool_log.yaml``, and re-check fine — so a version gate would reject bundles
@@ -27,18 +28,19 @@ import hashlib
 from pathlib import Path
 
 import pytest
-import yaml
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
+from tests.utils.trace_overrides import override_file
 from tolokaforge.core.grading.trace_replay import (
     TRACE_CHECKS_RESULT_FILENAME,
     TRACE_REPLAY_DIRNAME,
-    TraceChecksOverride,
+    TRACE_REPLAY_REPORT_FILENAME,
     TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
+    declared_trace_checks,
     discover_trace_bundles,
-    load_trace_checks_override,
+    emit_trace_replay_report,
     read_trace_replay_inputs,
     run_trace_replay_batch,
 )
@@ -126,14 +128,6 @@ _BUNDLE_ARTIFACTS = {
 }
 
 
-def _override(directory: Path, block: dict) -> TraceChecksOverride:
-    """An override as an operator supplies one — written to a file and loaded back."""
-    path = directory / "constraints.yaml"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(yaml.safe_dump(block, sort_keys=False), encoding="utf-8")
-    return load_trace_checks_override(path)
-
-
 def _digests(root: Path) -> dict[Path, str]:
     return {
         path: hashlib.sha256(path.read_bytes()).hexdigest()
@@ -176,21 +170,31 @@ def test_a_replay_changes_no_file_the_bundle_held_and_adds_none_to_its_root(
     construction and a whole-tree comparison is unsatisfiable. What is promised
     instead — and asserted — is that nothing already on disk moved, and that the
     bundle root gained no path outside the subtree the command owns.
+
+    Both artifacts are written before the assertions, the per-bundle result and the
+    run-level report, because they are two write paths into the same subtree and the
+    guarantee has to hold for the pair. The run-level one lands beside the per-bundle
+    directories rather than inside one.
     """
     bundle = _write_graded_bundle(tmp_path / "trials" / "refund_task" / "0")
     before = _digests(bundle)
     root_before = {entry.name for entry in bundle.iterdir()}
     assert root_before == _BUNDLE_ARTIFACTS
 
-    (outcome,) = run_trace_replay_batch(bundle, replay_id="ro")
+    outcomes = run_trace_replay_batch(bundle, replay_id="ro")
+    report = emit_trace_replay_report(
+        outcomes, declared=declared_trace_checks(outcomes), source=bundle, replay_id="ro"
+    )
 
-    assert outcome.status is TraceReplayOutcomeStatus.REPLAYED
+    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.REPLAYED]
+    assert report is not None
     assert [path for path in before if not path.is_file()] == []
     assert {path: hashlib.sha256(path.read_bytes()).hexdigest() for path in before} == before
     assert {entry.name for entry in bundle.iterdir()} - {TRACE_REPLAY_DIRNAME} == root_before
     assert (
         bundle / TRACE_REPLAY_DIRNAME / "ro" / bundle.name / TRACE_CHECKS_RESULT_FILENAME
     ).is_file()
+    assert (bundle / TRACE_REPLAY_DIRNAME / "ro" / TRACE_REPLAY_REPORT_FILENAME).is_file()
 
 
 def test_the_committed_unstamped_bundles_are_re_checked_rather_than_rejected(
@@ -210,7 +214,7 @@ def test_the_committed_unstamped_bundles_are_re_checked_rather_than_rejected(
     and measure nothing.
     """
     source = _RECORDED_RUNS / "output"
-    override = _override(tmp_path, _TRACE_CHECKS)
+    override = override_file(tmp_path, _TRACE_CHECKS)
     bundles = discover_trace_bundles(source)
     outcomes = run_trace_replay_batch(source, replay_id="stamp", override=override, dry_run=True)
 
@@ -259,7 +263,7 @@ def test_an_override_the_recorded_tool_set_refuses_aborts_before_any_replay(
         run_trace_replay_batch(
             tmp_path,
             replay_id="typo",
-            override=_override(tmp_path / "supplied", block),
+            override=override_file(tmp_path / "supplied", block),
         )
 
     assert misspelling in str(raised.value)
@@ -288,7 +292,7 @@ def test_a_bundle_that_recorded_no_wire_tool_list_leaves_the_override_unchecked(
     outcomes = run_trace_replay_batch(
         source,
         replay_id="unchecked",
-        override=_override(tmp_path, _MISSPELLED_TOOL_CHECKS),
+        override=override_file(tmp_path, _MISSPELLED_TOOL_CHECKS),
         dry_run=True,
     )
 
