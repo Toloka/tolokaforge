@@ -24,7 +24,7 @@ import ast
 import itertools
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args
 
 import pytest
 from pydantic import ValidationError
@@ -43,6 +43,7 @@ from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
     TRACE_MATCHABLE_FIELDS_BY_KIND,
     TRACE_PREDICATE_OPERATORS,
+    TraceConstraint,
     TraceConstraintExpr,
     ValuePredicate,
 )
@@ -585,8 +586,8 @@ _QUANTIFIERS = ("first", "last", "any", "all")
 #
 # The witness differs by row and is the content of the rule. ``before`` reads "the
 # events occur at least twice", so two calls satisfy it and one does not.
-# ``absent_before`` anchored 'last' reads "at most once" — true at one call, false at
-# two. ``absent_between`` from first to last reads "exactly twice".
+# ``absent_before`` anchored 'last' reads "the events occur once". ``absent_between``
+# from first to last reads "exactly twice".
 _ORDERING_SURVIVORS: dict[tuple[str, str, str], tuple[int, int]] = {
     (kind, left, right): (2, 1)
     for kind in ("before", "immediately_before")
@@ -655,11 +656,145 @@ def _verdict(require: dict[str, Any], matching_calls: int) -> bool:
     return evaluate_trace_checks(_timeline_of(matching_calls), config).constraints[0].passed
 
 
+# Zero is in the sweep because it is the count that separates a constant from a
+# contingency: a shape true at one, two, three and four matching calls looks like a
+# tautology until the empty trajectory answers differently.
+_CALLS_SWEPT = (0, 1, 2, 3, 4)
+
+
+def _config_evading_the_load_rejection(require: dict[str, Any]) -> TraceChecksConfig:
+    """The block the evaluator would see had the rejection under test not been written.
+
+    A rejected shape cannot be built through the path that rejects it, so its
+    payload is validated on its own — the payload models carry no such rule — and
+    only the expression around it is assembled unvalidated. The matchers,
+    quantifiers, weights and ``on_missing`` are the ones production would evaluate.
+    """
+    kind, payload = next(iter(require.items()))
+    annotation = TraceConstraintExpr.model_fields[kind].annotation
+    payload_model = next(arg for arg in get_args(annotation) if arg is not type(None))
+    expression = TraceConstraintExpr.model_construct(**{kind: payload_model(**payload)})
+    return TraceChecksConfig.model_construct(
+        constraints=[
+            TraceConstraint.model_construct(
+                id="probe", description="a probe constraint", require=expression
+            )
+        ]
+    )
+
+
+def _verdicts_over_the_sweep(require: dict[str, Any], *, loadable: bool) -> str:
+    """The shape's verdict at each of :data:`_CALLS_SWEPT`, written ``T`` / ``F``."""
+    config = (
+        TraceChecksConfig(**_block(_constraint(require)))
+        if loadable
+        else _config_evading_the_load_rejection(require)
+    )
+    return "".join(
+        "T" if evaluate_trace_checks(_timeline_of(count), config).constraints[0].passed else "F"
+        for count in _CALLS_SWEPT
+    )
+
+
+# What each self-referential shape actually answers, at zero to four identical
+# matching calls, under the default ``on_missing``. Measured against the evaluator
+# and pinned here, because the rejection rule's justification is a claim about these
+# verdicts and a claim about verdicts is falsifiable. Two rows carry the whole
+# argument: ``absent_before_first`` is the one rejected shape that is not a
+# constant, and ``immediately_before_first_before_last`` is the one survivor that
+# reads "exactly twice" where its three siblings read "at least twice".
+_MEASURED_VERDICTS: dict[str, str] = {
+    "before_first_before_first": "FFFFF",
+    "before_first_before_last": "FFTTT",
+    "before_first_before_any": "FFTTT",
+    "before_first_before_all": "FFFFF",
+    "before_last_before_first": "FFFFF",
+    "before_last_before_last": "FFFFF",
+    "before_last_before_any": "FFFFF",
+    "before_last_before_all": "FFFFF",
+    "before_any_before_first": "FFFFF",
+    "before_any_before_last": "FFTTT",
+    "before_any_before_any": "FFTTT",
+    "before_any_before_all": "FFFFF",
+    "before_all_before_first": "FFFFF",
+    "before_all_before_last": "FFFFF",
+    "before_all_before_any": "FFFFF",
+    "before_all_before_all": "FFFFF",
+    "immediately_before_first_before_first": "FFFFF",
+    "immediately_before_first_before_last": "FFTFF",
+    "immediately_before_first_before_any": "FFTTT",
+    "immediately_before_first_before_all": "FFFFF",
+    "immediately_before_last_before_first": "FFFFF",
+    "immediately_before_last_before_last": "FFFFF",
+    "immediately_before_last_before_any": "FFFFF",
+    "immediately_before_last_before_all": "FFFFF",
+    "immediately_before_any_before_first": "FFFFF",
+    "immediately_before_any_before_last": "FFTTT",
+    "immediately_before_any_before_any": "FFTTT",
+    "immediately_before_any_before_all": "FFFFF",
+    "immediately_before_all_before_first": "FFFFF",
+    "immediately_before_all_before_last": "FFFFF",
+    "immediately_before_all_before_any": "FFFFF",
+    "immediately_before_all_before_all": "FFFFF",
+    "absent_before_first": "FTTTT",
+    "absent_before_last": "FTFFF",
+    "absent_between_first_first": "FFFFF",
+    "absent_between_first_last": "FFTFF",
+    "absent_between_last_first": "FFFFF",
+    "absent_between_last_last": "FFFFF",
+}
+
+# The one rejected shape whose verdict the trajectory moves.
+_PRESENT_WRITTEN_THE_LONG_WAY_ROUND = "absent_before_first"
+
+
 def test_the_self_referential_sweep_covers_the_whole_quantifier_cross_product():
     """A shrunken sweep would prove the rule over the cells it kept and no others."""
     assert len(_SELF_REFERENTIAL_CELLS) == _SELF_REFERENTIAL_CELL_COUNT
     surviving = [cell for cell in _SELF_REFERENTIAL_CELLS if cell[2] is not None]
     assert len(surviving) == _SELF_REFERENTIAL_SURVIVOR_COUNT
+    assert set(_MEASURED_VERDICTS) == {label for label, _, _ in _SELF_REFERENTIAL_CELLS}
+
+
+@pytest.mark.parametrize(
+    ("label", "require", "witnesses"),
+    _SELF_REFERENTIAL_CELLS,
+    ids=[label for label, _, _ in _SELF_REFERENTIAL_CELLS],
+)
+def test_every_self_referential_shape_answers_what_the_sweep_recorded(
+    label: str, require: dict[str, Any], witnesses: tuple[int, int] | None
+):
+    """Rejected or kept, each shape's verdict is measured rather than assumed.
+
+    The rejected rows are the point: ``pytest.raises`` alone proves the load error
+    and says nothing about the reason given for it. Evaluating them with the
+    rejection stepped over is what makes "this shape is a constant" a claim the
+    suite can catch being wrong.
+    """
+    measured = _verdicts_over_the_sweep(require, loadable=witnesses is not None)
+
+    assert measured == _MEASURED_VERDICTS[label]
+
+
+def test_the_one_rejected_shape_that_is_not_a_constant_is_present_in_disguise():
+    """``absent_before`` at its own ``first`` is rejected for a different reason.
+
+    Twenty-seven of the twenty-eight rejected shapes answer the same thing however
+    the agent behaved, which is why an author writing one learns nothing. This one
+    answers what ``present`` answers — nothing precedes the first of a matched set,
+    so the constraint reduces to "the events occurred at all". It stays rejected as
+    pathological authoring, not as a check no trajectory moves, and the ``present``
+    column is measured here rather than written down so the two cannot drift.
+    """
+    rejected = {label for label, _, witnesses in _SELF_REFERENTIAL_CELLS if witnesses is None}
+    moved_by_the_trajectory = {
+        label for label in rejected if len(set(_MEASURED_VERDICTS[label])) > 1
+    }
+
+    assert moved_by_the_trajectory == {_PRESENT_WRITTEN_THE_LONG_WAY_ROUND}
+    assert _MEASURED_VERDICTS[_PRESENT_WRITTEN_THE_LONG_WAY_ROUND] == _verdicts_over_the_sweep(
+        {"present": {"match": _SELF_REFERENTIAL_MATCH}}, loadable=True
+    )
 
 
 @pytest.mark.parametrize(

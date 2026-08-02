@@ -24,8 +24,15 @@ import pytest
 import yaml
 
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core import orchestrator as orchestrator_module
 from tolokaforge.core.conductor import InMemoryConductor
-from tolokaforge.core.models import EvaluationConfig, ModelConfig, OrchestratorConfig, RunConfig
+from tolokaforge.core.models import (
+    EvaluationConfig,
+    GradingFindingSeverity,
+    ModelConfig,
+    OrchestratorConfig,
+    RunConfig,
+)
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.runner.models import TaskDescription
@@ -131,11 +138,11 @@ def _orchestrator(
     output_dir: Path,
     *,
     repeats: int = 1,
-    advisory: bool | None = None,
+    fail_on: GradingFindingSeverity | None = None,
 ) -> tuple[Orchestrator, InMemoryConductor]:
     """A real orchestrator over *root*, and the conductor recording its trials.
 
-    *advisory* left at ``None`` writes no ``grading_validation`` block at all, so
+    *fail_on* left at ``None`` writes no ``grading_validation`` block at all, so
     the run reads whatever :class:`GradingValidationConfig` defaults to.
 
     A judge model is configured so the missing-judge gate returns early: it walks
@@ -143,8 +150,8 @@ def _orchestrator(
     counted against the pre-flight it runs beside.
     """
     evaluation: dict[str, Any] = {"output_dir": str(output_dir), "projects": [str(root)]}
-    if advisory is not None:
-        evaluation["grading_validation"] = {"advisory": advisory}
+    if fail_on is not None:
+        evaluation["grading_validation"] = {"fail_on": fail_on.value}
     conductor = InMemoryConductor()
     orchestrator = Orchestrator(
         RunConfig(
@@ -253,29 +260,31 @@ def test_prepare_run_rejects_the_pack_before_enqueueing_anything(tmp_path: Path)
 # ---------------------------------------------------------------------------
 
 
+_ERROR = GradingFindingSeverity.ERROR
+
 _SEVERITY_CELLS = (
-    pytest.param(_write_builtin_task, UNDECLARED_TOOL, None, True, id="error_advisory_default"),
-    pytest.param(_write_builtin_task, UNDECLARED_TOOL, False, True, id="error_advisory_off"),
-    pytest.param(_write_mcp_task, UNKNOWN_MCP_ARGUMENT, None, True, id="advisory_advisory_default"),
-    pytest.param(_write_mcp_task, UNKNOWN_MCP_ARGUMENT, False, False, id="advisory_advisory_off"),
+    pytest.param(_write_builtin_task, UNDECLARED_TOOL, None, True, id="error_fail_on_default"),
+    pytest.param(_write_builtin_task, UNDECLARED_TOOL, _ERROR, True, id="error_fail_on_error"),
+    pytest.param(_write_mcp_task, UNKNOWN_MCP_ARGUMENT, None, True, id="advisory_fail_on_default"),
+    pytest.param(_write_mcp_task, UNKNOWN_MCP_ARGUMENT, _ERROR, False, id="advisory_fail_on_error"),
     pytest.param(
-        _write_builtin_task, UNCHECKABLE_ARGUMENT_PATH, None, False, id="unchecked_advisory_default"
+        _write_builtin_task, UNCHECKABLE_ARGUMENT_PATH, None, False, id="unchecked_fail_on_default"
     ),
     pytest.param(
-        _write_builtin_task, UNCHECKABLE_ARGUMENT_PATH, False, False, id="unchecked_advisory_off"
+        _write_builtin_task, UNCHECKABLE_ARGUMENT_PATH, _ERROR, False, id="unchecked_fail_on_error"
     ),
 )
 
 
-@pytest.mark.parametrize(("write_task", "grading", "advisory", "aborts"), _SEVERITY_CELLS)
+@pytest.mark.parametrize(("write_task", "grading", "fail_on", "aborts"), _SEVERITY_CELLS)
 def test_the_config_reaches_advisories_and_nothing_else(
     tmp_path: Path,
     write_task: Any,
     grading: dict[str, Any],
-    advisory: bool | None,
+    fail_on: GradingFindingSeverity | None,
     aborts: bool,
 ) -> None:
-    """``advisory: false`` suppresses only what the schema cannot prove wrong.
+    """``fail_on: error`` suppresses only what the schema cannot prove wrong.
 
     An error stays fatal under either setting — a run that graded a pack whose
     matcher selects nothing would report the author's typo as the agent's failure.
@@ -284,9 +293,11 @@ def test_the_config_reaches_advisories_and_nothing_else(
     """
     root = tmp_path / "pack"
     write_task(root, "TASK-UNDER-TEST", grading)
-    orchestrator, conductor = _orchestrator(root, tmp_path / "results", advisory=advisory)
-    if advisory is None:
-        assert orchestrator.config.evaluation.grading_validation.advisory is True
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results", fail_on=fail_on)
+    if fail_on is None:
+        assert orchestrator.config.evaluation.grading_validation.fail_on is (
+            GradingFindingSeverity.ADVISORY
+        )
 
     if not aborts:
         orchestrator.run()
@@ -295,6 +306,77 @@ def test_the_config_reaches_advisories_and_nothing_else(
 
     with pytest.raises(ValueError, match="TASK-UNDER-TEST"):
         orchestrator.run()
+    assert conductor.call_log.runs == []
+
+
+_REJECTED_SEVERITY_POLICIES = (
+    pytest.param({"fail_on": "unchecked"}, "fail_on", id="a_channel_is_not_a_severity"),
+    pytest.param({"fail_on": "warning"}, "fail_on", id="a_severity_the_gate_never_reports"),
+    pytest.param({"advisory": True}, "advisory", id="a_field_the_block_does_not_carry"),
+)
+
+
+@pytest.mark.parametrize(("block", "named"), _REJECTED_SEVERITY_POLICIES)
+def test_a_severity_policy_outside_the_vocabulary_fails_the_config(
+    tmp_path: Path, block: dict[str, Any], named: str
+) -> None:
+    """``fail_on`` is a closed vocabulary, and the block forbids what it does not declare.
+
+    A free-string severity would take ``unchecked`` without a word and then behave
+    as the default, silently enforcing the class the operator wrote the key to
+    stop enforcing.
+    """
+    with pytest.raises(ValueError, match=named):
+        EvaluationConfig(output_dir=str(tmp_path), grading_validation=block)
+
+
+def test_a_harness_bug_in_the_gate_is_not_reported_as_the_packs_fault(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An offender line sends an author to read the file it names.
+
+    Catching every exception makes the harness miscalling itself indistinguishable
+    from a mis-authored pack, and the author reads a file that is fine. No input
+    produces a ``TypeError`` here, so it is injected at the seam the orchestrator
+    calls; the authoring classes beside it keep their named lines.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-CLEAN", CLEAN)
+
+    def raise_a_harness_bug(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("validate_grading_yaml() got an unexpected keyword argument")
+
+    monkeypatch.setattr(orchestrator_module, "validate_grading_yaml", raise_a_harness_bug)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(TypeError, match="unexpected keyword argument"):
+        orchestrator.run()
+    assert conductor.call_log.runs == []
+
+
+def test_a_grading_file_that_is_not_yaml_stops_the_pass_where_it_stands(
+    tmp_path: Path,
+) -> None:
+    """The every-offender list is of packs that load and cannot be graded.
+
+    Boundary case, standing lock: the native adapter parses ``grading.yaml`` while
+    it builds the description, which the pass resolves before the grading
+    predicate runs — so an unparseable file surfaces as its own parser error
+    naming the file, and the tasks behind it are never read. Widening the pass to
+    aggregate it would mean resolving descriptions inside the per-task catch,
+    where the adapter-registration guard also lives.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-UNPARSEABLE", CLEAN)
+    _write_builtin_task(root, "TASK-TYPO", UNDECLARED_TOOL)
+    (root / "tasks" / "TASK-UNPARSEABLE" / "grading.yaml").write_text("combine: [unclosed\n")
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(yaml.YAMLError) as excinfo:
+        orchestrator.run()
+
+    assert "TASK-UNPARSEABLE" in str(excinfo.value)
+    assert "TASK-TYPO" not in str(excinfo.value)
     assert conductor.call_log.runs == []
 
 

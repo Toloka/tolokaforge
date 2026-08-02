@@ -165,6 +165,26 @@ def test_strictness_separates_what_a_schema_says_from_whether_there_is_one(
     assert inventory.properties(tool) == frozenset(expected_properties)
 
 
+def test_a_schema_the_task_never_declared_is_not_in_the_inventory() -> None:
+    """An MCP fixture lists tools the task does not enable, and they are dropped.
+
+    The notes fixture carries the harness's own ``_tolokaforge_set_state_``. Left
+    in ``parameters``, one grading block naming it draws two findings that
+    contradict each other: an undeclared-tool error against ``declared``, and an
+    argument verdict off a schema the agent is never handed.
+    """
+    task, task_dir = load_task_yaml(_NOTES_TASK)
+    resolved = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
+    inventory = build_tool_inventory(task, task_dir)
+
+    assert set(resolved) - inventory.declared, (
+        "the fixture resolves nothing outside the declared set, so this pack can no "
+        "longer prove the filter is doing anything"
+    )
+    assert set(inventory.parameters) <= inventory.declared
+    assert inventory.strictness("_tolokaforge_set_state_") is ArgumentSchema.UNKNOWN
+
+
 def test_a_task_that_declares_no_tools_is_known_and_empty() -> None:
     """Declaring nothing is not the same as being unable to report anything.
 

@@ -1239,21 +1239,32 @@ class HarnessAdapterConfig(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class GradingFindingSeverity(str, Enum):
+    """How sure the authoring gate is that a finding is the author's mistake.
+
+    Most severe first: enforcing down to one class enforces every class above it.
+    ``unchecked`` is deliberately not a member — it is a channel rather than a
+    severity, and no caller may make it fatal.
+    """
+
+    ERROR = "error"
+    """The schema proves the check cannot grade what its author wrote."""
+
+    ADVISORY = "advisory"
+    """A schema that permits what it does not declare, so a probable typo."""
+
+
 class GradingValidationConfig(BaseModel):
     """How strictly the pre-run gate reads the selected packs' grading blocks.
 
-    A sub-object rather than a bare flag so a second severity class does not
-    need a second top-level key.
+    A sub-object rather than a bare key so a third severity class costs a member
+    of :class:`GradingFindingSeverity` and nothing else.
     """
 
     model_config = {"extra": "forbid"}
 
-    advisory: bool = True
-    """Whether a finding no schema can prove wrong fails the run too.
-
-    Errors are unconditional and take no input from here, and the ``unchecked``
-    channel is not reachable from this block at all.
-    """
+    fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY
+    """The least severe finding class that fails the run."""
 
 
 class EvaluationConfig(BaseModel):

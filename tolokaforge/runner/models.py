@@ -801,11 +801,11 @@ _KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
     {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
 )
 
-# Over one matched set, ``last`` and ``all`` on the left both require the event
-# nothing follows to precede something, and ``first`` and ``all`` on the right both
-# require something to precede the event nothing precedes. So when the two sides
-# select the same set, these are the only quantifiers an ordering survives — it
-# then reads "the matched events occur at least twice".
+# Over one matched set, ``last`` and ``all`` on the left require the event nothing
+# follows to precede something, and ``first`` and ``all`` on the right require
+# something to precede the event nothing precedes — false at every trajectory. Their
+# complements, written out below, are the quantifiers an ordering over one matcher
+# survives on.
 _LEFT_QUANTIFIERS_LEAVING_A_SUCCESSOR: frozenset[Quantifier] = frozenset(
     {Quantifier.FIRST, Quantifier.ANY}
 )
@@ -873,15 +873,15 @@ class TraceConstraintExpr(BaseModel):
 
     @model_validator(mode="after")
     def _reject_an_order_over_one_matcher_that_no_trial_decides(self) -> TraceConstraintExpr:
-        """Two sides selecting one set of events, in a shape with a constant verdict.
+        """Two sides selecting one set of events, in a shape no author means to write.
 
         An ordering whose sides carry the same matcher is satisfiable only where the
         left selection can leave a later event and the right selection an earlier
-        one; every other quantifier pair fails whatever the agent did. The two
-        absence kinds are the mirror: forbidding the events the anchor is selected
-        from is vacuously true before the first match, and a window measured between
-        two selections of one set is empty or inverted unless it runs from the first
-        match to the last.
+        one; every other quantifier pair fails whatever the agent did, and so does a
+        window measured between two selections of one set unless it runs from the
+        first match to the last. Anchoring ``absent_before`` at its own ``first`` is
+        the one rejected shape here that is not a constant: nothing precedes the
+        first match, so it decides exactly what ``present`` decides.
         """
         kind = self.declared_kind()
         payload = getattr(self, kind.value)
@@ -896,8 +896,8 @@ class TraceConstraintExpr(BaseModel):
                     f"{payload.right.quantifier.value!r}, which no trajectory satisfies: "
                     "over the events one matcher selects, nothing follows the last of them "
                     "and nothing precedes the first. Quantify the left side 'first' or "
-                    "'any' and the right side 'last' or 'any' to assert the events occur "
-                    "at least twice, or give the two sides different matchers"
+                    "'any' and the right side 'last' or 'any' for a shape a trajectory "
+                    "can decide, or give the two sides different matchers"
                 )
         if (
             kind is TraceConstraintKind.ABSENT_BEFORE
@@ -906,9 +906,10 @@ class TraceConstraintExpr(BaseModel):
         ):
             raise ValueError(
                 "absent_before forbids the events its own anchor is selected from, "
-                "anchored 'first', which every trajectory satisfies: nothing precedes the "
-                "first of them. Anchor it 'last' to assert the events occur at most once, "
-                "or forbid a different matcher"
+                "anchored 'first': nothing precedes the first of them, so the constraint "
+                "reduces to 'the events occurred at all' — present, written the long way "
+                "round. Write a present constraint, anchor it 'last' to assert the events "
+                "occur once, or forbid a different matcher"
             )
         if kind is TraceConstraintKind.ABSENT_BETWEEN and (
             payload.forbidden == payload.start.match == payload.end.match

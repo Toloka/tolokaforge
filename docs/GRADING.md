@@ -905,6 +905,15 @@ outside that range the component leaves `[0, 1]` altogether, and a value that is
 a real number in that range — a bool, a numeric string — is rejected on **both**
 substrates rather than coerced into one.
 
+**A hash source declared with the flag off is rejected at load too.** An
+`expected_state_hash` under a `hash` block whose `enabled` is falsy is a comparison
+that never runs: both substrates test the flag before reading the hash, so the pack
+grades its state without the literal the author wrote and says nothing. The flag is
+read for truth rather than for `true` — core branches on its truthiness and the
+runner coerces it, so `enabled: 1` grades and loads. The rule's class and the rest of
+the pre-run gate are in
+[What is validated before a run](#what-is-validated-before-a-run).
+
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
 `expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
 other shape yields at most one score *core-side*, so a weight there would have
@@ -1464,69 +1473,6 @@ The first is the assertion `transcript_rules` cannot express at all: it matches 
 **nested argument path** inside the request body, where `required_actions` compares
 whole argument values for exact equality.
 
-### What is validated before a run
-
-A mis-authored check is charged to the agent or to nobody: a misspelled tool name in
-a `present` matcher scores the component `0.0` with the message a genuine agent
-failure carries, the same typo under `absent` passes every trial, and an
-uncompilable `regex` raises inside the evaluator once the tokens are spent. So the
-block is checked against the task's tools before anything is paid for — by
-`tolokaforge validate`, which exits non-zero, and by the run's own pre-flight, which
-makes one pass over every selected task before it schedules the first trial and
-aborts naming **every** offending task. The same pass runs at `tolokaforge prepare`,
-so a distributed enqueue is rejected once rather than by every worker identically.
-
-Findings come in three classes:
-
-| rule | class | where |
-|---|---|---|
-| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | `trace_checks` matchers |
-| `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
-| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | `trace_checks` matchers |
-| an `args` path whose first segment is outside the properties of a tool whose schema permits extras | advisory | as above |
-| a `regex` pattern that does not compile | error | every predicate, plus `transcript_rules.disallow_regex` |
-| `state_checks.hash.expected_state_hash` declared without `hash.enabled: true` | error | `state_checks` |
-| a tool set the loader cannot resolve for this task | unchecked | whole block |
-| an `args` path on a tool whose schema did not resolve | unchecked | per matcher |
-| an `args` path below its first segment | unchecked | per path |
-
-An **error** always fails the pack. An **advisory** fails it unless
-`evaluation.grading_validation.advisory: false` is set on the run config: an MCP
-tool's schema declares its properties but permits others, so an unknown argument
-name there is a probable typo rather than a certainty, and hard-failing would
-enforce a claim the schema does not make.
-
-**`unchecked` never fails anything.** It is a separate channel, not a third
-severity: nothing reads it to decide whether to raise, so the gate has no
-false-reject mode. It is surfaced beside the task all the same — `validate` prints
-it, a run logs it — because a gate that could check nothing must not read as a clean
-bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
-commits no `fixtures/tools.json`, and an `args` path below its first segment all
-land here.
-
-Only the first segment of an `args` path is checked, and only against `properties`.
-`json.q` on `http_request` is checked at `json` and stops, because `json`'s own
-schema declares no properties and nothing below it is answerable. A tool named by
-`regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
-set, not a token.
-
-**An ordering over one matcher is rejected unless some trajectory decides it.**
-Writing the same matcher on both sides of `before`, or forbidding the very events an
-`absent_before` / `absent_between` window is measured from, usually yields a
-constant: nothing follows the last of a matched set and nothing precedes the first.
-Ten of the 38 quantifier combinations still say something, and the rest are load
-errors.
-
-| shape | survives | what it reads as |
-|---|---|---|
-| `before` / `immediately_before`, same matcher both sides | `left ∈ {first, any}` **and** `right ∈ {last, any}` | the events occur at least twice |
-| `absent_before`, forbidding its own anchor | `anchor: last` | the events occur at most once |
-| `absent_between`, forbidding its own anchors | `start: first`, `end: last` | the events occur exactly twice |
-
-Everything else in those shapes is a constant — vacuously true at every trajectory,
-or false at every one — and is rejected naming the quantifiers that would express
-the intent instead.
-
 ### Declared limits, and what owns each
 
 Named here so an author meets them in the docs rather than in a check that quietly
@@ -1553,6 +1499,80 @@ so on a timeline where all three matchers are undecidable its work grows cubical
 in the number of undecidable events. Trials in the size range the harness produces
 stay well inside that, and a records-present timeline has no undecidable events at
 all.
+
+---
+
+## What is validated before a run
+
+A mis-authored check is charged to the agent or to nobody: a misspelled tool name in
+a `present` matcher scores the component `0.0` with the message a genuine agent
+failure carries, the same typo under `absent` passes every trial, and an
+uncompilable `regex` raises inside the evaluator once the tokens are spent. So a
+task's whole grading block is checked against its tools before anything is paid for — by
+`tolokaforge validate`, which exits non-zero, and by the run's own pre-flight, which
+makes one pass over every selected task before it schedules the first trial and
+aborts naming **every** offending task. The same pass runs at `tolokaforge prepare`,
+so a distributed enqueue is rejected once rather than by every worker identically.
+
+Findings come in three classes:
+
+| rule | class | where |
+|---|---|---|
+| a `tool: { equals: X }` or `{ in_: [X, …] }` naming a tool outside the task's declared set | error | `trace_checks` matchers |
+| `required_tools` / `disallowed_tools` naming a tool outside that set | error | `transcript_rules.tool_expectations` |
+| an `args` path whose first segment is outside the properties of a tool whose schema forbids extras | error | `trace_checks` matchers |
+| an `args` path whose first segment is outside the properties of a tool whose schema permits extras | advisory | as above |
+| a `regex` pattern that does not compile | error | every predicate, plus `transcript_rules.disallow_regex` |
+| `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
+| a tool set the loader cannot resolve for this task | unchecked | whole block |
+| an `args` path on a tool whose schema did not resolve | unchecked | per matcher |
+| an `args` path below its first segment | unchecked | per path |
+
+An **error** always fails the pack. An **advisory** fails it unless
+`evaluation.grading_validation.fail_on: error` is set on the run config: an MCP
+tool's schema declares its properties but permits others, so an unknown argument
+name there is a probable typo rather than a certainty, and hard-failing would
+enforce a claim the schema does not make.
+
+**`unchecked` never fails anything.** It is a separate channel, not a third
+severity: nothing reads it to decide whether to raise, so the gate has no
+false-reject mode. It is surfaced beside the task all the same — `validate` prints
+it, a run logs it — because a gate that could check nothing must not read as a clean
+bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
+commits no `fixtures/tools.json`, and an `args` path below its first segment all
+land here.
+
+Only the first segment of an `args` path is checked, and only against `properties`.
+`json.q` on `http_request` is checked at `json` and stops, because `json`'s own
+schema declares no properties and nothing below it is answerable. A tool named by
+`regex` rather than by `equals` / `in_` produces no finding at all: a pattern names a
+set, not a token.
+
+**An ordering over one matcher is rejected unless some trajectory decides it.**
+Writing the same matcher on both sides of `before`, or forbidding the very events an
+`absent_before` / `absent_between` window is measured from, usually yields a
+constant: nothing follows the last of a matched set and nothing precedes the first.
+Ten of the 38 quantifier combinations still say something, and the rest are load
+errors.
+
+The readings below are what the evaluator answers under the default `on_missing`,
+measured at zero to four matching calls:
+
+| shape | survives | what it reads as |
+|---|---|---|
+| `before`, same matcher both sides | `left ∈ {first, any}` **and** `right ∈ {last, any}` | the events occur at least twice |
+| `immediately_before`, same matcher both sides | as above | the events occur at least twice — except `first` before `last`, which reads **exactly** twice, since a third match sits between them |
+| `absent_before`, forbidding its own anchor | `anchor: last` | the events occur once |
+| `absent_between`, forbidding its own anchors | `start: first`, `end: last` | the events occur exactly twice |
+
+Twenty-seven of the 28 rejected shapes are constants — false at every trajectory —
+and are rejected naming the quantifiers that would express the intent instead. The
+twenty-eighth is rejected for a different reason: **`absent_before` forbidding its
+own anchor, anchored `first`, is not a constant.** Nothing precedes the first of the
+matched events, so the constraint reduces to *the events occurred at all* — a
+`present` constraint written the long way round, which is what its message tells the
+author to write. The rejection is against pathological authoring, not against a check
+no trajectory moves.
 
 ---
 

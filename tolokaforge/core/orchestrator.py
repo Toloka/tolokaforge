@@ -50,6 +50,7 @@ from tolokaforge.core.metrics import (
 )
 from tolokaforge.core.models import (
     ComputeConfig,
+    GradingFindingSeverity,
     ModelConfig,
     ProjectConfig,
     RunConfig,
@@ -1280,38 +1281,49 @@ class Orchestrator:
         blocks carry are all heard here rather than at grade time — where the
         first two are charged to the agent and the rest lose the trial.
 
-        Every offender is named in one raise: an author fixing a run's packs
-        wants the list, not the first entry. What the gate could not check is
-        logged and fails nothing.
+        Every grading offender is named in one raise: an author fixing a run's
+        packs wants the list, not the first entry. What the gate could not check
+        is logged and fails nothing.
+
+        The aggregate is over what the grading predicate rejects. Resolving each
+        task's description happens outside the per-task catch, so whatever *that*
+        raises — an adapter the host has not installed, a grading file that is
+        not YAML, which the native adapter parses while it builds the
+        description — aborts on the first task carrying it, and the tasks after
+        it are never read. The list is of packs that load and cannot be graded;
+        a pack that does not load stops the pass where it stands.
         """
-        advisory = self.config.evaluation.grading_validation.advisory
+        fail_on = self.config.evaluation.grading_validation.fail_on
         rejected: list[str] = []
         for task in self.tasks:
-            failure = self._grading_rejection(task, advisory=advisory)
+            failure = self._grading_rejection(task, fail_on=fail_on)
             if failure is not None:
                 rejected.append(failure)
         if not rejected:
             return
-        fatal = "errors and advisories" if advisory else "errors only"
         raise ValueError(
             "These selected tasks carry a grading block that cannot be graded as "
             "written, so no trial was run:\n"
             + "\n".join(rejected)
-            + f"\nevaluation.grading_validation.advisory is {advisory}, so {fatal} "
-            "fail the run. `tolokaforge validate --tasks <glob>` reports the same "
-            "findings against the same packs."
+            + f"\nevaluation.grading_validation.fail_on is {fail_on.value!r}, so a "
+            "finding of that class or more severe fails the run. `tolokaforge validate "
+            "--tasks <glob>` reports the same findings against the same packs, and "
+            "decides its own exit code by the default fail_on rather than this run's."
         )
 
-    def _grading_rejection(self, task: TaskConfig, *, advisory: bool) -> str | None:
+    def _grading_rejection(
+        self, task: TaskConfig, *, fail_on: GradingFindingSeverity
+    ) -> str | None:
         """What one task's grading block costs the run, or ``None`` if nothing.
 
         The description is resolved through :meth:`_task_description` rather than
         the adapter directly, so the adapter-registration guard is part of this
         gate and a task naming an uninstalled backend is rejected here too.
 
-        Every exception the check raises becomes a named line rather than
-        propagating, because a malformed file and a schema break are the same
-        class of authoring defect and the run's operator wants both lists.
+        An authoring defect becomes a named line rather than propagating, because
+        the run's operator wants the list. Anything outside that set is the
+        harness's own bug and propagates, rather than sending an author to read a
+        file that is fine.
         """
         adapter_type = self._task_description(task.task_id).adapter_type
         if not task.grading:
@@ -1321,9 +1333,9 @@ class Orchestrator:
             report = validate_grading_yaml(
                 task_dir / task.grading,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
-                advisory=advisory,
+                fail_on=fail_on,
             )
-        except Exception as exc:
+        except (ValueError, RuntimeError, OSError) as exc:
             return f"* {task.task_id} — {exc}"
         for skip in report.unchecked:
             self.logger.warning(

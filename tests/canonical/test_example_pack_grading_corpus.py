@@ -216,8 +216,9 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
     """
     findings: dict[str, list[str]] = {}
     without_an_inventory: list[str] = []
+    gated = _gated_packs()
 
-    for task_yaml, grading_path in _gated_packs():
+    for task_yaml, grading_path in gated:
         task, task_dir = load_task_yaml(task_yaml)
         grading = yaml.safe_load(grading_path.read_text()) or {}
         try:
@@ -232,8 +233,8 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
         if reported:
             findings[task.task_id] = reported
 
-    assert len(_gated_packs()) == _GATED_PACK_COUNT, (
-        f"the guard checked {len(_gated_packs())} packs, not {_GATED_PACK_COUNT}. A corpus "
+    assert len(gated) == _GATED_PACK_COUNT, (
+        f"the guard checked {len(gated)} packs, not {_GATED_PACK_COUNT}. A corpus "
         "proof over a subset says nothing about the packs it skipped"
     )
     assert without_an_inventory == [_PACK_WITH_NO_INVENTORY]

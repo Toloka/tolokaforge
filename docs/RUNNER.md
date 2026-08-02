@@ -37,9 +37,9 @@ pass over every selected task and checks two things it must not discover later:
   carry, and the authoring rules checked against the tools that task gives its actors
   (see [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)).
   Every offending task is named in one abort — an author fixing a run's packs wants
-  the list, not the first entry. `evaluation.grading_validation.advisory` decides
-  whether the advisory class is fatal too; what the gate could not check is logged and
-  fails nothing.
+  the list, not the first entry. `evaluation.grading_validation.fail_on` names the
+  least severe class that is fatal; what the gate could not check is logged and fails
+  nothing.
 
 The pass resolves each task's wire description once and keeps it, so the trials that
 follow reuse it rather than rebuilding it. A task naming an adapter the host has not

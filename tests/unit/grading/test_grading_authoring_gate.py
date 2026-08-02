@@ -39,6 +39,7 @@ from tolokaforge.core.grading.config_validation import (
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.models import GradingFindingSeverity
 
 pytestmark = pytest.mark.unit
 
@@ -287,9 +288,11 @@ def test_an_uncompilable_regex_is_caught_before_the_tokens_are_spent(tmp_path: P
 # ---------------------------------------------------------------------------
 
 
-@pytest.mark.parametrize("advisory", [True, False], ids=["advisory_on", "advisory_off"])
+@pytest.mark.parametrize(
+    "fail_on", list(GradingFindingSeverity), ids=[member.value for member in GradingFindingSeverity]
+)
 def test_an_unresolvable_inventory_fails_nothing_and_says_why(
-    tmp_path: Path, advisory: bool
+    tmp_path: Path, fail_on: GradingFindingSeverity
 ) -> None:
     """ "Could not check" must be structurally incapable of failing a pack.
 
@@ -302,7 +305,7 @@ def test_an_unresolvable_inventory_fails_nothing_and_says_why(
     report = validate_grading_yaml(
         _write_grading(tmp_path, grading),
         inventory=ToolInventory.unresolvable(),
-        advisory=advisory,
+        fail_on=fail_on,
     )
 
     assert report.errors == ()
@@ -420,6 +423,43 @@ def test_a_task_that_declares_no_tools_makes_every_tool_matcher_an_error() -> No
 
     assert [finding.where for finding in report.errors] == ["trace_checks.probe.present.match.tool"]
     assert "no tools at all" in report.errors[0].message
+
+
+_HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON = (
+    pytest.param(True, id="written_true"),
+    pytest.param(1, id="written_one"),
+    pytest.param("yes", id="written_yes"),
+)
+
+
+@pytest.mark.parametrize("enabled", _HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON)
+def test_a_truthy_hash_flag_is_not_a_finding(enabled: Any) -> None:
+    """The gate may not be stricter than either substrate it speaks for.
+
+    Boundary case, standing lock: core branches on the flag's truthiness and the
+    runner coerces it, so a pack written ``enabled: 1`` does read the hash and
+    grades on it. Testing the flag for ``True`` rather than for truth rejects a
+    pack that works — the opposite failure to the one the rule exists to catch,
+    and one no sweep over shipped packs finds because they all write ``true``.
+    """
+    grading = {"state_checks": {"hash": {"enabled": enabled, "expected_state_hash": "aaaa"}}}
+
+    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+
+
+def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
+    """The two states decide opposite things, so a hybrid decides neither.
+
+    ``known=False`` skips every tool-aware rule, so tools reported beside it are
+    resolved and then ignored — a name checked against nothing, reading as clean.
+    """
+    with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
+        ToolInventory(declared=frozenset({"http_request"}), parameters={}, known=False)
+
+    with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
+        ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
+
+    assert ToolInventory.unresolvable().known is False
 
 
 def test_a_matcher_carrying_no_predicate_at_all_is_not_a_finding() -> None:

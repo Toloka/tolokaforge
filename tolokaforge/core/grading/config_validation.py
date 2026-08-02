@@ -15,7 +15,7 @@ inside the evaluator once the tokens are already spent.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
-``docs/GRADING.md`` § "Trace Checks".
+``docs/GRADING.md`` § "What is validated before a run".
 """
 
 from __future__ import annotations
@@ -29,6 +29,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from tolokaforge.core.models import (
+    GradingFindingSeverity,
     ToolExpectations,
     TraceChecksConfig,
     TraceConstraintExpr,
@@ -63,6 +64,15 @@ class ToolInventory:
 
     known: bool
     """``False`` only for :meth:`unresolvable`."""
+
+    def __post_init__(self) -> None:
+        if not self.known and (self.declared or self.parameters):
+            raise ValueError(
+                "an unresolvable inventory carries tools: every rule that reads them is "
+                f"skipped, so {sorted(self.declared) or sorted(self.parameters)} would be "
+                "resolved and then ignored. Report the tools with known=True, or report "
+                "nothing"
+            )
 
     @classmethod
     def unresolvable(cls) -> ToolInventory:
@@ -124,6 +134,12 @@ class AuthoringReport:
 
     unchecked: tuple[Skip, ...] = ()
     """Never fatal anywhere."""
+
+    def fatal(self, fail_on: GradingFindingSeverity) -> tuple[Finding, ...]:
+        """The findings a caller enforcing down to *fail_on* must refuse."""
+        if fail_on is GradingFindingSeverity.ERROR:
+            return self.errors
+        return self.errors + self.advisories
 
 
 @dataclass(frozen=True)
@@ -270,7 +286,11 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     """An expected state hash is read only where the hash check is enabled.
 
     Both substrates test the flag before reading the hash, so the comparison an
-    author wrote never runs and the pack grades without it in silence.
+    author wrote never runs and the pack grades without it in silence. The flag is
+    read for truth rather than for ``True``, because that is what decides the
+    grade: core branches on its truthiness and the runner coerces it, so a pack
+    written ``enabled: 1`` does read the hash and rejecting it here would be
+    stricter than either substrate.
     """
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
@@ -278,7 +298,7 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     hash_block = state_checks.get("hash")
     if not isinstance(hash_block, Mapping):
         return AuthoringReport()
-    if not hash_block.get("expected_state_hash") or hash_block.get("enabled") is True:
+    if not hash_block.get("expected_state_hash") or hash_block.get("enabled"):
         return AuthoringReport()
     return AuthoringReport(
         errors=(

@@ -66,7 +66,12 @@ from tolokaforge.core.grading.config_validation import (
     inspect_grading_authoring,
 )
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.models import GradingCombineConfig, TaskConfig, TaskDefaults
+from tolokaforge.core.models import (
+    GradingCombineConfig,
+    GradingFindingSeverity,
+    TaskConfig,
+    TaskDefaults,
+)
 from tolokaforge.core.project_loader import construct_config, deep_merge
 
 logger = get_logger(__name__)
@@ -81,7 +86,10 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 
 
 def validate_grading_yaml(
-    grading_path: Path, *, inventory: ToolInventory, advisory: bool = True
+    grading_path: Path,
+    *,
+    inventory: ToolInventory,
+    fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
 ) -> AuthoringReport:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
@@ -109,7 +117,7 @@ def validate_grading_yaml(
         inventory: The task's tool set. A caller that cannot resolve one passes
             :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
             into the returned report's ``unchecked`` and fails nothing.
-        advisory: Whether a finding the schema cannot prove wrong is fatal too.
+        fail_on: The least severe finding class that raises.
 
     Returns:
         The authoring report, whose ``unchecked`` entries the caller is expected to
@@ -209,7 +217,7 @@ def validate_grading_yaml(
         )
 
     report = inspect_grading_authoring(grading_data, inventory)
-    fatal = report.errors + (report.advisories if advisory else ())
+    fatal = report.fatal(fail_on)
     if fatal:
         written = "\n".join(f"  - {finding.where}: {finding.message}" for finding in fatal)
         raise ValueError(f"Grading file {grading_path} cannot be graded as written:\n{written}")
@@ -410,24 +418,10 @@ def resolve_agent_tool_schemas(
     enabled: list[str] = task.tools.agent.get("enabled", [])
     mcp_server_ref = task.tools.agent.get("mcp_server")
     if mcp_server_ref:
-        schemas = _load_rich_tool_schemas(
+        return _load_rich_tool_schemas(
             task_dir, task_dir / mcp_server_ref, allow_subprocess=allow_subprocess
         )
-    else:
-        schemas = _builtin_tool_schemas(enabled, agent_tool_configs(task))
-
-    if "search_kb" in enabled:
-        # The runner rebuilds search_kb as a source-less RAG wrapper, so its
-        # canonical schema — not whatever a fixture or the registry holds — is
-        # what the agent is handed.
-        from tolokaforge.runner.tool_factory import create_search_kb_schema
-
-        canonical = create_search_kb_schema()
-        schemas["search_kb"] = {
-            "description": canonical.description,
-            "parameters": canonical.parameters,
-        }
-    return schemas
+    return _builtin_tool_schemas(enabled, agent_tool_configs(task))
 
 
 def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
@@ -437,17 +431,29 @@ def build_tool_inventory(task: TaskConfig, task_dir: Path) -> ToolInventory:
     ``fixtures/tools.json``, a name the builtin registry does not know, a fixture
     entry carrying no ``parameters`` mapping — is absent from
     :attr:`ToolInventory.parameters` and so classifies as
-    :attr:`ArgumentSchema.UNKNOWN`.
+    :attr:`ArgumentSchema.UNKNOWN`. A resolved schema the task does not declare —
+    an MCP fixture listing the harness's own state tool — is dropped too, so one
+    grading block cannot draw an undeclared-tool error and an argument finding
+    from the same name.
     """
-    schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
     declared = frozenset(task.tools.agent.get("enabled", [])) | frozenset(
         task.tools.user.get("enabled", [])
     )
+    schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=False)
     parameters = {
         name: entry["parameters"]
         for name, entry in schemas.items()
-        if isinstance(entry.get("parameters"), dict)
+        if name in declared and isinstance(entry.get("parameters"), dict)
     }
+    if "search_kb" in declared:
+        # The runner rebuilds search_kb as a source-less RAG wrapper, so the
+        # canonical schema is what the agent is handed whatever a fixture or the
+        # registry holds. ``NativeAdapter.to_task_description`` reads the same
+        # function for the whole wire object, whose category, timeout and absent
+        # source this projection cannot carry.
+        from tolokaforge.runner.tool_factory import create_search_kb_schema
+
+        parameters["search_kb"] = create_search_kb_schema().parameters
     return ToolInventory(declared=declared, parameters=parameters, known=True)
 
 

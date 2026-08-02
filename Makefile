@@ -86,10 +86,11 @@ TASKS_DIR ?= tasks
 TASKS_GLOB ?= $(TASKS_DIR)/**/task.yaml
 
 # `tolokaforge validate` fails on a glob matching nothing, and task packs are
-# cloned separately — so skipping is the deliberate answer when TASKS_DIR is
-# absent, not an invocation error.
+# cloned separately — so skipping is the deliberate answer when nobody named a
+# target, not an invocation error. Only the default glob is about TASKS_DIR: a
+# TASKS_GLOB the caller wrote runs whether or not that directory exists.
 validate:
-	@if [ -d "$(TASKS_DIR)" ]; then \
+	@if [ -d "$(TASKS_DIR)" ] || [ "$(TASKS_GLOB)" != "$(TASKS_DIR)/**/task.yaml" ]; then \
 		uv run tolokaforge validate --tasks "$(TASKS_GLOB)"; \
 	else \
 		echo "validate: skipped — task directory '$(TASKS_DIR)' is not present (task packs are cloned separately; see README)"; \

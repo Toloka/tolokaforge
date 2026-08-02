@@ -435,7 +435,7 @@ Each task loads under its enclosing project. `validate` walks up from the `task.
 
 `project.default_environment` is not layered: it binds into a `TaskDescription`'s `EnvironmentManifest`, and `validate` builds no `TaskDescription`.
 
-`make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent, instead of failing on an empty glob.
+`make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
 ## Run banner
 
