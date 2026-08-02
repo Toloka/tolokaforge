@@ -40,6 +40,7 @@ from typing import Any
 from tolokaforge.core.grading.key_manifest import (
     EVALUATED,
     NO_TIMELINE_EVENTS_SKIP,
+    TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
 )
@@ -69,7 +70,9 @@ from tolokaforge.core.models import (
     TraceConstraintExpr,
     TraceConstraintKind,
     TraceConstraintResult,
+    TraceConstraintSeverity,
     TraceMatcher,
+    TracePathResult,
     TurnWindow,
     ValuePredicate,
 )
@@ -307,6 +310,11 @@ _OPERATORS: Mapping[str, Callable[[Any, Any], bool]] = {
 def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) -> TraceChecksResult:
     """Score ``config``'s constraints against ``timeline``.
 
+    A block declaring ``alternatives`` is scored once per route, over the shared
+    constraints and that route's own, and the component is the best route's score
+    with the winner named. A route is scored as a whole rather than step by step,
+    so half of one route plus half of another beats neither.
+
     A timeline carrying neither a conversational turn nor a tool call is the trial
     that left no trace of itself: no constraint is evaluated and every declared
     kind is accounted as skipped, because every constraint would otherwise score
@@ -315,33 +323,121 @@ def evaluate_trace_checks(timeline: TrialTimeline, config: TraceChecksConfig) ->
     """
     if not timeline.events:
         return TraceChecksResult(
-            accounted_keys=_accounting(_declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
+            accounted_keys=_accounting(config, _declared_kinds(config), NO_TIMELINE_EVENTS_SKIP)
         )
     visited: set[TraceConstraintKind] = set()
-    results = [
+    shared = [
         _evaluate_constraint(timeline, constraint, visited) for constraint in config.constraints
     ]
+    if config.alternatives is None:
+        return _component(config, _decision_set(shared), visited, winner_id="", paths=[])
+    routes = {
+        path.id: _decision_set(
+            shared + [_evaluate_constraint(timeline, item, visited) for item in path.constraints]
+        )
+        for path in config.alternatives
+    }
+    # ``max`` keeps the first of equal scores and the routes are in declaration
+    # order, so a tie is broken by which route the author wrote first.
+    winner_id = max(routes, key=lambda path_id: routes[path_id].score)
+    paths = [
+        TracePathResult(id=path_id, score=route.score, gate_failed=bool(route.failed_gate_ids))
+        for path_id, route in routes.items()
+    ]
+    return _component(config, routes[winner_id], visited, winner_id=winner_id, paths=paths)
+
+
+@dataclass(frozen=True)
+class _DecisionSet:
+    """One route's verdicts — the shared constraints and that route's own — folded.
+
+    ``score`` is the route's own normalised score, before a gate zeroes anything:
+    a gate shuts the component, never the number a route earned, and the argmax
+    runs over these rather than over the zeroed values so that a route cannot
+    escape its own gate by scoring below a clean sibling.
+    """
+
+    results: list[TraceConstraintResult]
+    score: float
+    failed_gate_ids: list[str]
+
+
+def _decision_set(results: list[TraceConstraintResult]) -> _DecisionSet:
+    """``results`` scored over its non-gate members, or collapsed to the gate verdict.
+
+    A gate enters neither the numerator nor the denominator, so a decision set whose
+    every member is a gate has no weighted average to take — and an author who wrote
+    only gates asked for a defined verdict, not an empty sum. It scores the gates'
+    own verdict, which is what the judge's all-required rubric already returns
+    (``rubric.py:459-462``). The collapse lives here rather than inside
+    :func:`_weighted_fraction`, whose denominator its callers keep positive, and it
+    is not conditional on ``alternatives``: a flat block of nothing but gates
+    reaches it too.
+    """
+    scored = [item for item in results if item.severity is not TraceConstraintSeverity.GATE]
+    return _DecisionSet(
+        results=results,
+        score=(
+            _weighted_fraction(scored)
+            if scored
+            else (1.0 if all(item.passed for item in results) else 0.0)
+        ),
+        failed_gate_ids=[
+            item.id
+            for item in results
+            if item.severity is TraceConstraintSeverity.GATE and not item.passed
+        ],
+    )
+
+
+def _component(
+    config: TraceChecksConfig,
+    winner: _DecisionSet,
+    visited: set[TraceConstraintKind],
+    *,
+    winner_id: str,
+    paths: list[TracePathResult],
+) -> TraceChecksResult:
+    """The winning decision set as the component both substrates read.
+
+    A tripped gate zeroes the score here rather than at each substrate's
+    integration, because ``TraceChecksResult.score`` *is* the component on both
+    (``combine.py:184``, ``service.py:1452``) — the same act the runner performs on
+    the judge's aggregate at ``service.py:1505``, at the one place that serves both.
+    """
     return TraceChecksResult(
-        passed=all(result.passed for result in results),
-        score=_weighted_fraction(results),
-        constraints=results,
-        accounted_keys=_accounting(visited, EVALUATED),
+        passed=all(item.passed for item in winner.results),
+        score=0.0 if winner.failed_gate_ids else winner.score,
+        constraints=winner.results,
+        winning_path=winner_id,
+        gate_failed=bool(winner.failed_gate_ids),
+        failed_gate_ids=winner.failed_gate_ids,
+        paths=paths,
+        accounted_keys=_accounting(config, visited, EVALUATED),
     )
 
 
 def _accounting(
-    kinds: Iterable[TraceConstraintKind], record: KeyAccountingRecord
+    config: TraceChecksConfig,
+    kinds: Iterable[TraceConstraintKind],
+    record: KeyAccountingRecord,
 ) -> dict[str, KeyAccountingRecord]:
-    """``record`` filed against the block's key and each kind's own."""
+    """``record`` filed against the keys the block declares and each kind's own."""
+    alternatives = {TRACE_ALTERNATIVES_KEY: record} if config.alternatives is not None else {}
     return {
         TRACE_CONSTRAINTS_KEY: record,
+        **alternatives,
         **{TRACE_CONSTRAINT_KEY_BY_KIND[kind]: record for kind in kinds},
     }
 
 
 def _declared_kinds(config: TraceChecksConfig) -> set[TraceConstraintKind]:
-    """Every kind the block declares, including those nested inside a composite."""
-    return {kind for item in config.constraints for kind in _expression_kinds(item.require)}
+    """Every kind the block declares, shared or inside a path, nesting included."""
+    declared = [
+        *config.constraints,
+        *(item for path in config.alternatives or () for item in path.constraints),
+    ]
+    return {kind for item in declared for kind in _expression_kinds(item.require)}
 
 
 def _expression_kinds(expr: TraceConstraintExpr) -> set[TraceConstraintKind]:
@@ -362,12 +458,14 @@ def _expression_kinds(expr: TraceConstraintExpr) -> set[TraceConstraintKind]:
 
 
 def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
-    """``Σ(weight · passed) / Σ(weight)`` over the evaluated constraints.
+    """``Σ(weight · passed) / Σ(weight)`` over the scored constraints of a decision set.
 
-    Every weight is positive and an evaluated constraint list is non-empty, so the
-    denominator is positive by construction. There is deliberately no
-    zero-denominator branch: any score it returned would be a convention no author
-    chose, and the load-time bound is what removes the need for one.
+    Every weight is positive and the only caller hands this a non-empty set — a
+    decision set with no scored member at all is answered by the gate collapse in
+    :func:`_decision_set` — so the denominator is positive by construction. There is
+    deliberately no zero-denominator branch: any score it returned would be a
+    convention no author chose, and keeping the empty case out is what removes the
+    need for one.
     """
     total = sum(result.weight for result in results)
     earned = sum(result.weight for result in results if result.passed)
@@ -386,6 +484,7 @@ def _evaluate_constraint(
         kind=kind,
         passed=truth is _Truth.TRUE,
         weight=constraint.weight,
+        severity=constraint.severity or TraceConstraintSeverity.SCORED,
         message=_message(truth, kind, resolver, on_missing),
         matched_positions=resolver.matched_positions(),
     )

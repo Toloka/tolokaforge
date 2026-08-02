@@ -24,6 +24,7 @@ from tolokaforge.core.grading.key_manifest import EVALUATED as EVALUATED
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     RUNNER_HASH_EVALUATOR,
+    TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
     GradingKey,
@@ -196,6 +197,7 @@ def accountable_author_keys() -> frozenset[str]:
             *_CORE_ONLY_HASH_FAMILY,
             *TRACE_CONSTRAINT_KEY_BY_KIND.values(),
             TRACE_CONSTRAINTS_KEY,
+            TRACE_ALTERNATIVES_KEY,
             MUST_CONTAIN_KEY,
             DISALLOW_REGEX_KEY,
             MAX_TURNS_KEY,

@@ -262,6 +262,16 @@ _TRACE_CHECKS_EVIDENCE_LIMITS = (
     "reading error can select a call whose failure was not the agent's"
 )
 
+_TRACE_CHECKS_ALTERNATIVES_NARROWING = (
+    "the alternative routes a pack declares, each scored as a whole against the "
+    "shared constraints plus its own. An entry carries one runner_field, and the "
+    "per-kind entries address TraceChecksConfig.constraints alone, so a constraint "
+    "kind written only inside a path is covered by this key rather than by its own "
+    "— #772 narrows the ledger's populated-implies-accounted guarantee there. The "
+    "parity claim is untouched: one function reads a TraceConstraint identically "
+    "whichever list it came from. "
+)
+
 _TRACE_CHECKS_FAMILY_ROOT_REASON = (
     "a family root declaring no field on either substrate: it names the block its "
     "leaves live under, and every score under it is a leaf's. CONFIG_INPUT is what "
@@ -610,6 +620,17 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_evaluator=_TRACE_CHECKS_EVALUATOR,
         reason=_TRACE_CHECKS_EVIDENCE_LIMITS,
     ),
+    GradingKey(
+        author_key="trace_checks.alternatives",
+        kind=KeyKind.SCORED_CHECK,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="TraceChecksConfig.alternatives",
+        runner_field="TraceChecksConfig.alternatives",
+        core_evaluator=_TRACE_CHECKS_EVALUATOR,
+        runner_evaluator=_TRACE_CHECKS_EVALUATOR,
+        reason=_TRACE_CHECKS_ALTERNATIVES_NARROWING + _TRACE_CHECKS_EVIDENCE_LIMITS,
+    ),
     *(_trace_constraint_kind_key(kind) for kind in _TRACE_CONSTRAINT_MANIFEST_KINDS),
     _trace_constraint_field_key(
         "weight",
@@ -701,6 +722,8 @@ NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
 )
 
 TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")
+
+TRACE_ALTERNATIVES_KEY = checked_author_key("trace_checks.alternatives")
 
 TRACE_CONSTRAINT_KEY_BY_KIND: Mapping[TraceConstraintKind, str] = {
     TraceConstraintKind.PRESENT: checked_author_key("trace_checks.constraints.present"),

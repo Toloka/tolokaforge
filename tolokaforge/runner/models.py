@@ -2626,8 +2626,25 @@ class TraceConstraintResult(BaseModel):
     kind: TraceConstraintKind
     passed: bool
     weight: float
+    severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
     message: str = ""
     matched_positions: list[int] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class TracePathResult(BaseModel):
+    """How one alternative route scored, whether or not it won.
+
+    ``score`` is the route's own normalised score over the shared constraints and
+    its own. A gate zeroes the *component*, never a path's number, so the value the
+    argmax compared stays readable in the grade — a winner that won by a hair reads
+    differently from one that won by a mile.
+    """
+
+    id: str = Field(min_length=1)
+    score: float
+    gate_failed: bool
 
     model_config = {"extra": "forbid"}
 
@@ -2641,11 +2658,20 @@ class TraceChecksResult(BaseModel):
 
     A result with no ``constraints`` is the trial that left no trace of itself: the
     component is not scored there and the caller records the skip.
+
+    ``constraints`` holds the decision set that produced the score — the shared
+    constraints and the winning path's — so it keeps meaning "the verdicts the score
+    was made of". ``winning_path`` is ``""`` where the pack declared no
+    alternatives, and ``paths`` is empty there.
     """
 
     passed: bool = False
     score: float = 0.0
     constraints: list[TraceConstraintResult] = Field(default_factory=list)
+    winning_path: str = ""
+    gate_failed: bool = False
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    paths: list[TracePathResult] = Field(default_factory=list)
     accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
 
     model_config = {"extra": "forbid"}

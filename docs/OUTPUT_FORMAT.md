@@ -795,6 +795,7 @@ trace_check_results:            # one entry per declared trace constraint; [] wh
     kind: before
     passed: false
     weight: 2.0
+    severity: scored            # scored | gate
     message: "before: no match is ordered before the other side under the declared quantifiers"
     matched_positions: [2, 4]
 criterion_results:              # per-criterion rubric breakdown; null unless an LLM judge ran
@@ -829,16 +830,23 @@ credit).
 
 ### Trace-check verdicts
 
-`trace_check_results` carries one entry per constraint the pack's `trace_checks`
-block declared, in declaration order, and is `[]` when the pack declared none or
-when the trial's timeline carried no events for them to read. It is written
-inline rather than to a sidecar: the block is small, and the component score
-alone says a trace check failed without saying which.
+`trace_check_results` carries one entry per constraint in the decision set that
+produced the score — the pack's shared `trace_checks.constraints` plus the
+constraints of the alternative route that won — in declaration order. It is `[]`
+when the pack declared no trace checks or when the trial's timeline carried no
+events for them to read. It is written inline rather than to a sidecar: the block
+is small, and the component score alone says a trace check failed without saying
+which.
 
 * `id` / `kind` — the author's constraint id and which of the ten constraint
   kinds it states. See [`docs/GRADING.md`](GRADING.md#trace-checks).
 * `passed` / `weight` — the verdict and the weight it carried into the component
-  fold, so a reader can reproduce `components.trace_checks` from the entries.
+  fold.
+* `severity` — `scored`, or `gate` for a check that must hold without being
+  scored. A gate enters neither side of the weighted fraction, so reproducing
+  `components.trace_checks` from these entries means folding the `scored` ones and
+  reading `0.0` whenever a `gate` did not pass. See
+  [`docs/GRADING.md`](GRADING.md#severity--a-check-that-must-hold).
 * `message` — empty on a pass; otherwise names the unmatched anchor, the failed
   condition, or the evidence the trial does not carry.
 * `matched_positions` — the timeline positions the constraint's matchers

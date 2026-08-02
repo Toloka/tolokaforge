@@ -84,6 +84,7 @@ from tolokaforge.runner.models import TraceConstraintResult as TraceConstraintRe
 from tolokaforge.runner.models import TraceConstraintSeverity as TraceConstraintSeverity
 from tolokaforge.runner.models import TraceMatcher as TraceMatcher
 from tolokaforge.runner.models import TracePath as TracePath
+from tolokaforge.runner.models import TracePathResult as TracePathResult
 from tolokaforge.runner.models import TurnWindow as TurnWindow
 from tolokaforge.runner.models import ValuePredicate as ValuePredicate
 

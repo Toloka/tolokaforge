@@ -1,0 +1,45 @@
+# The satisfying trial walks one route end to end and never touches the other. The
+# violating one performs the first step of each and completes neither, which is the
+# cherry-picking a per-step disjunction rewards and a route scored as a whole does
+# not: it confirmed the balance against nothing.
+satisfying:
+  messages:
+    - role: user
+      content: "Is the balance on account A-77 right?"
+    - role: assistant
+      content: "Checking it against the ledger."
+      tool_calls:
+        - tool_name: read_ledger
+          executor: agent
+          status: success
+          arguments: { account_id: "A-77" }
+          output: '{"entries": 3}'
+        - tool_name: recompute_ledger_total
+          executor: agent
+          status: success
+          arguments: { account_id: "A-77" }
+          output: '{"total": "412.50"}'
+    - role: assistant
+      content: "The ledger totals 412.50, which matches the balance."
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Is the balance on account A-77 right?"
+    - role: assistant
+      content: "Taking a look."
+      tool_calls:
+        - tool_name: read_ledger
+          executor: agent
+          status: success
+          arguments: { account_id: "A-77" }
+          output: '{"entries": 3}'
+        - tool_name: read_closing_balance
+          executor: agent
+          status: success
+          arguments: { account_id: "A-77" }
+          output: '{"closing_balance": "412.50"}'
+    - role: assistant
+      content: "The balance looks right."
+  state: {}

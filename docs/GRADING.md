@@ -1443,6 +1443,7 @@ Worked, over *d* definite matches and *u* undecidable ones:
 | `count` | passes when every count in `[d, d + u]` is within the bounds, fails when none is, undecided otherwise |
 | `before`, `immediately_before`, `absent_before`, `absent_between` | decided when every reading of each side agrees; undecided otherwise |
 | `all_of`, `any_of`, `negate` | Kleene: a conjunction with a failing branch fails whatever the undecided branch would have said, a disjunction with a holding branch passes, and otherwise an undecided branch makes the composite undecided |
+| any of the above carrying [`severity: gate`](#severity--a-check-that-must-hold) | undecided **trips the gate** — a scored constraint forfeits its weight there, and a gate's forfeit is the trial |
 
 Undecided is not a pass in the agent's favour and not an over-fail either: definite
 evidence answers the question wherever it can. The usual way to reach it is a
@@ -1484,6 +1485,26 @@ is allowed to exist under. Reach for a gate where a partial score would be
 misleading rather than merely low — a forbidden tool called, another customer's
 record touched, an order mutated by a diagnose-only agent.
 
+A tripped gate takes the component to `0.0` and fails the trial, whatever the scored
+constraints said, and the grade names the gates that tripped.
+
+**A gate nobody can decide trips.** Undecided is not a pass in the agent's favour
+anywhere in this vocabulary, and a gate is the one check the author said must hold —
+an undecided gate that opened would be a silent pass on exactly that check, and would
+leave a gate *weaker* than the scored constraint it replaced. The consequence is
+sharpest on the case the [declared limits](#declared-limits-and-what-owns-each)
+already name: a bundle re-graded without its tool-call record cannot read `status` or
+`executor` (#682), so a gate reading either fails every re-graded trial. Write gates
+over evidence the message view carries — which tool was called, with which
+arguments, in which order — and keep `status` and `executor` for scored constraints,
+where the same limit costs a weight rather than the trial.
+
+**A block of nothing but gates scores the gate verdict:** `1.0` when every gate held,
+`0.0` otherwise. There is no weighted average to take — every member is excluded from
+it — and this is the same collapse the judge's
+[all-required rubric](#required-gate-semantics) already returns. It applies to a flat
+`constraints` list and to a route's decision set alike.
+
 ### Alternative paths
 
 `alternatives` declares two or more routes, each a `TracePath` carrying an `id`, a
@@ -1512,6 +1533,54 @@ trace_checks:
 the floor**: one path is the flat form written the long way round — the best of one
 path is that path — so a single-path block is rejected at load, pointing the author
 at `constraints:`.
+
+#### How a multi-path block scores
+
+Each path is scored over its **decision set**: the shared `constraints` plus that
+path's own. Every path therefore carries the shared checks, and each path's score is
+normalised within its own set — which is why paths need no weights, and why a long
+route is not penalised for being long.
+
+```
+scoreᵢ = Σ(weight · passed) / Σ(weight)   over the non-gate members of Dᵢ
+scoreᵢ = 1.0 if every gate in Dᵢ held else 0.0   when Dᵢ has no non-gate member
+
+winner        = the highest-scoring path, ties broken by declaration order
+gate_failed   = some gate in the winner's decision set did not hold
+component     = 0.0 if gate_failed else the winner's score
+```
+
+The grade records the winner by id, and one line per path carrying that path's own
+score and whether its gates held — so "did it win by a mile or a hair" and "do models
+cluster on one route" are answerable from `grade.yaml` alone. A path's recorded score
+is never zeroed by a gate; only the component is.
+
+The argmax runs over **every** path, including ones whose gates did not hold. A path
+is not dropped from contention for failing its own gate: dropping it would let an
+agent violate the gate on the route it scored highest on, fall through to a
+lower-scoring clean route, and pass.
+
+#### Shared gates and path gates: when each is appropriate
+
+A gate in the shared `constraints` is in every decision set, so it applies whichever
+route the agent took. A gate **inside a path** is a *process* gate: it constrains how
+that route must be walked, and it is consulted only on the route the agent actually
+took.
+
+> **A gate that must hold whatever route the agent took belongs in shared
+> `constraints`, never inside a path.**
+
+The issue's own examples — a forbidden tool called, another customer's record touched
+— are route-independent, so they are shared gates.
+
+This rule is guidance rather than a guarantee, and the reason is worth stating
+plainly: a path gate has an escape. Trip route A's gate *and* score badly enough on A
+that a clean route B wins, and A's gate is never consulted — the trial passes with the
+forbidden action performed. No rule for path gates closes it. Preferring a gate-clean
+path is worse in the same place (an agent escapes a gate by violating it on the route
+it scores highest on), and consulting every gate everywhere fails an agent for
+tripping a gate on a route it did not take, which is the premise of the feature. A
+shared gate has no escape, which is why route-independent conditions belong there.
 
 **Every component the pack configures needs a weight of its own.** A configured
 component absent from `combine.weights` is dropped from the core engine's fold and
