@@ -1504,8 +1504,9 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     on instead: that lock 6's sweep still spans the weights where a fold rule is
     distinguishable at all, that lock 9's answer table still spans the declared
     combine methods with one distinct score each, and that lock 14's weight maps still
-    span the pair a membership rule is distinguishable over. Membership alone enforces
-    nothing: a differential deleted wholesale leaves the escaped set unchanged.
+    span the pair a membership rule is distinguishable over while its zero-share table
+    still answers ``all``/``any`` differently from ``weighted``. Membership alone
+    enforces nothing: a differential deleted wholesale leaves the escaped set unchanged.
     """
     reached = {item.author_key for item in _differential_entries()}
     escaped = {

@@ -39,13 +39,14 @@ author-facing key is one `GradingKey` entry declaring three axes:
   scores). The satisfying/violating **pair** sweep selects `SCORED_CHECK` alone,
   because only a scored key has a violating trajectory that moves a *component*.
   A `CONFIG_INPUT` or `AGGREGATION` key still reaches `DIFFERENTIAL_CANONICAL`
-  through a differential over what it does govern — each one over a
-  [`tests/data/grading_parity/`](../tests/data/grading_parity/) pack of its own:
+  through a differential over what it does govern, each over a
+  [`tests/data/grading_parity/`](../tests/data/grading_parity/) pack:
   `state_checks.hash.weight` by sweeping the weight across one pack's two hash
   cases, `combine.method` by re-authoring the method over one pack's split
-  components. Both escape the pair sweep, so a frozen set in the test module
-  enumerates every claim it does not reach and asserts, per entry, the property
-  that entry's own differential rests on (below).
+  components, and `combine.weights` by re-folding one pack's two scored components
+  under maps that omit and declare them. All three escape the pair sweep, so a
+  frozen set in the test module enumerates every claim it does not reach and
+  asserts, per entry, the property that entry's own differential rests on (below).
 - **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
   same component score), `BOTH_SIGNAL_PARITY` (both consume it and both
   discriminate; the magnitudes differ because the two substrates aggregate
@@ -260,6 +261,15 @@ on a citation:
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
   [Score Combination](#score-combination).
+- `combine.weights` — the membership differential's weight maps still span both
+  sides of the question: a map omitting a scored component, where both folds must
+  refuse, and one declaring every scored component, where both must fold. Hollowed
+  down to complete maps the refusal is never reached, and hollowed down to
+  incomplete ones no fold runs — either way every row would agree, and the
+  surviving rows still pass, so this clause is the only thing that sees it. Its
+  zero-share table also still answers `all` and `any` differently from `weighted`,
+  so the [`weighted`-only scoping](#score-combination) of the zero-total-weight
+  rule cannot be widened to every method without reding it.
 - `trace_checks.constraints.weight`, `.on_missing`, `.severity`, `.within`, `.bind` —
   each still names a pack in the parametrisation that drives its differential, so a
   key escaping the scored-key lock without one is caught here. Each pack is authored
@@ -359,6 +369,16 @@ manifest freezes config keys and field paths, not evaluation sources, so
 `transcript_rules.required_actions` passes every lock while core evaluates it from
 `trajectory.messages` and the runner evaluates it from the tool-call record — see
 [Both substrates consume it](#both-substrates-consume-it).
+
+Nor can a satisfying/violating pair reach a key's **degenerate** boundary, the input
+that declares nothing at all: both cells of a discriminating pair have to declare
+something, or the pair would not move a component. So `state_checks.jsonpaths` holds
+`BOTH_SCORE_PARITY` at `DIFFERENTIAL_CANONICAL` on evidence that says nothing about
+an *empty* assertion list, and that boundary carries a differential row of its own —
+an empty list leaves the component unscored on both substrates, asserted beside a row
+reading the pack's own assertions so an implementation scoring nothing at all cannot
+satisfy both. The tier on a row is a claim about the cells some lock reaches, not
+about every input the key admits.
 
 ### The recorded tool calls both substrates read
 
@@ -2906,9 +2926,11 @@ structurally unread — the shared dispatch aggregates the component set — so 
 gives `(0.0, False)` on both a satisfying and a violating trial while `all` and `any` give
 `(1.0, True)` and `(0.0, False)` respectively — the component's own verdict, unchanged.
 
-`combine.method` and `combine.weights` stay `BOTH_SIGNAL_PARITY` for a reason that is
-architectural rather than a defect: core produces no `llm_judge` component and cannot
-produce a `state_checks.db_probes` one — both `RUNNER_ONLY` by design — so on a judge- or
+`combine.method` and `combine.weights` are `BOTH_SIGNAL_PARITY` for a reason that is
+architectural rather than a defect, and the two rows in
+[`key_manifest.py`](../tolokaforge/core/grading/key_manifest.py) carry it as their
+`reason`: core produces no `llm_judge` component and cannot produce a
+`state_checks.db_probes` one — both `RUNNER_ONLY` by design — so on a judge- or
 probe-graded pack core's map is empty where the runner's is scored. Since `all` and `any`
 aggregate that map alone, the disagreement is a verdict flip rather than a magnitude. The
 canonical differential therefore proves the dispatch over deterministic components, which
