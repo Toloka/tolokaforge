@@ -26,7 +26,7 @@ the gate has no false-reject mode. The severity of each rule is documented in
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
@@ -268,6 +268,24 @@ against a recorded tool set performs no fold and is asked nothing about weights.
 """
 
 
+_TRANSCRIPT_RULE_KEYS: tuple[str, ...] = (
+    "must_contain",
+    "disallow_regex",
+    "max_turns",
+    "min_assistant_turns",
+    "required_actions",
+    "communicate_info",
+)
+"""The flat ``transcript_rules`` keys that declare a rule over the transcript.
+
+``tool_expectations`` is not among them because it declares its rules one level down,
+in ``required_tools`` and ``disallowed_tools`` — a block carrying it empty asserts as
+little as one omitting it. Held against ``TranscriptRulesConfig`` by the gate's unit
+tests, so a rule key added to the model joins this tuple rather than reading as
+nothing and refusing a pack that grades.
+"""
+
+
 # What each section must declare to assert anything, addressed to the author. Three
 # entries, because the other two components answer this question at model
 # construction: an empty ``trace_checks`` and an empty ``llm_judge`` are both
@@ -279,7 +297,8 @@ _WHAT_EACH_SECTION_MUST_DECLARE: Mapping[str, str] = {
     ),
     "transcript_rules": (
         "a rule over the transcript — must_contain, disallow_regex, max_turns, "
-        "min_assistant_turns, tool_expectations, required_actions or communicate_info"
+        "min_assistant_turns, required_actions, communicate_info, or a tool_expectations "
+        "carrying a required_tools or disallowed_tools entry"
     ),
     "custom_checks": (
         "enabled: true beside the file holding the checks, or enabled: false to record "
@@ -295,6 +314,10 @@ _ASSERTS_NOTHING = (
 _AN_EMPTY_BLOCK = "declares nothing at all"
 
 _NO_STATE_SOURCE = "declares no source any substrate can read"
+
+_NO_TRANSCRIPT_RULE = "declares no rule any substrate can evaluate"
+
+_NO_OPT_IN_DECISION = "leaves enabled unwritten, which the component's own default reads as off"
 
 # The JSON types whose values are never strings. A schema declaring one of them for
 # an argument settles that a reference comparing the bound value against text cannot
@@ -398,13 +421,20 @@ def _check_sections_declare_something(grading: Mapping[str, Any]) -> AuthoringRe
     artifacts, and it finishes a call the project has already made twice — an empty
     ``trace_checks`` and an empty ``llm_judge`` are refused at model construction.
 
-    ``state_checks`` carries the rule one level further, because it has fields that
-    configure how a source is read rather than declaring one: a block holding only
-    ``id_fields`` or ``relaxed_validation`` asserts exactly as little as an empty one.
-    That rule and :func:`_check_hash_source_declared` partition the unevaluable state
-    blocks between them rather than overlapping — see :func:`_state_checks_has_a_source`
-    for where the line falls — so each shape is refused once, at the key its own fix
-    belongs to.
+    All three sections carry the rule one level further, because each has keys that
+    configure how a component runs rather than declaring what it checks: a
+    ``state_checks`` holding only ``id_fields``, a ``transcript_rules`` whose every
+    rule list is empty, and a ``custom_checks`` naming a file under no ``enabled``
+    flag all assert exactly as little as an empty block, and each took a free pass for
+    it — the first two scored a vacuous ``1.0``, and the third escapes the weight
+    rules too, so a pack configuring nothing else folds as one asking for nothing.
+    :data:`_A_NON_EMPTY_SECTION_STILL_DECLARES` holds the predicate and the sentence
+    for each.
+
+    The ``state_checks`` rule and :func:`_check_hash_source_declared` partition the
+    unevaluable state blocks between them rather than overlapping — see
+    :func:`_state_checks_has_a_source` for where the line falls — so each shape is
+    refused once, at the key its own fix belongs to.
     """
     errors = tuple(
         Finding(
@@ -428,9 +458,8 @@ def _why_a_section_asserts_nothing(section: str, written: Any) -> str | None:
         return None
     if not written:
         return _AN_EMPTY_BLOCK
-    if section == "state_checks" and not _state_checks_has_a_source(written):
-        return _NO_STATE_SOURCE
-    return None
+    declares_something, because = _A_NON_EMPTY_SECTION_STILL_DECLARES[section]
+    return None if declares_something(written) else because
 
 
 def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
@@ -456,6 +485,53 @@ def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
         or hash_block.get("enabled")
         or any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
     )
+
+
+def _transcript_rules_asserts_something(transcript_rules: Mapping[str, Any]) -> bool:
+    """Whether the block declares a rule over the transcript at all.
+
+    Every key is read for truth rather than for presence, because that is what both
+    substrates do: an empty ``required_actions`` list requires no action and an empty
+    ``must_contain`` list demands no phrase, so a block holding only empty lists is
+    scored against nothing and takes the vacuous ``1.0`` that averaging an empty
+    sub-check set produces. ``max_turns`` and ``min_assistant_turns`` are bounds
+    rather than lists, and a bound of ``0`` admits every turn count from either side,
+    so truthiness is the right reading for them too.
+
+    ``tool_expectations`` is read one level down, through the same two keys the
+    tool-name rule addresses, because the block itself declares nothing — its two
+    lists do.
+    """
+    expectations = transcript_rules.get("tool_expectations") or {}
+    return bool(
+        any(transcript_rules.get(key) for key in _TRANSCRIPT_RULE_KEYS)
+        or any(expectations.get(key) for key in _TOOL_EXPECTATION_HAZARDS)
+    )
+
+
+def _custom_checks_decides_its_opt_in(custom_checks: Mapping[str, Any]) -> bool:
+    """Whether the block says, either way, that its suite runs.
+
+    Presence rather than truth, because ``enabled: false`` *is* a decision — it
+    survives the wire intact and both substrates read it as an opt-out. What asserts
+    nothing is the block that leaves the key out: ``CustomChecksConfig.enabled``
+    defaults to ``False``, so the suite never runs, no weight is owed for it, and a
+    pack naming a ``checks.py`` grades as though it had named none.
+    """
+    return "enabled" in custom_checks
+
+
+# What each section must still declare once it is non-empty, and the sentence for the
+# block that does not. Total over :data:`_WHAT_EACH_SECTION_MUST_DECLARE`, so a
+# component whose empty block stops being refused at model construction cannot join
+# that table without an answer here.
+_A_NON_EMPTY_SECTION_STILL_DECLARES: Mapping[
+    str, tuple[Callable[[Mapping[str, Any]], bool], str]
+] = {
+    "state_checks": (_state_checks_has_a_source, _NO_STATE_SOURCE),
+    "transcript_rules": (_transcript_rules_asserts_something, _NO_TRANSCRIPT_RULE),
+    "custom_checks": (_custom_checks_decides_its_opt_in, _NO_OPT_IN_DECISION),
+}
 
 
 def _check_requested_components_are_weighted(

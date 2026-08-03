@@ -81,7 +81,7 @@ Fifteen claims over the packs an author reads as the reference:
 from __future__ import annotations
 
 import json
-from collections.abc import Mapping, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -759,6 +759,23 @@ _HELPDESK_TURNS = (
 
 def _helpdesk_grading() -> GradingConfig:
     return _grading_config(_HELPDESK_TASK)[1]
+
+
+def _helpdesk_grade(calls: Sequence[RecordedToolCall]) -> Grade:
+    """The whole fold over one trajectory, at the pack's own weights.
+
+    No submission, because core reads none of this pack's state: ``jsonpaths`` is empty
+    and ``db_probes`` is RUNNER_ONLY, so ``trace_checks`` is the only component core
+    scores and the fold is that component alone.
+    """
+    return GradingEngine(_helpdesk_grading()).grade_trajectory(
+        make_trajectory(
+            task_id="helpdesk_01",
+            messages=make_trial_messages(calls, _HELPDESK_TURNS),
+            tool_log=list(calls),
+        ),
+        {},
+    )
 
 
 def _timeline(calls: Sequence[RecordedToolCall], turns: tuple[str, str]):
@@ -1443,10 +1460,75 @@ def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_els
 
     assert grounded.components.trace_checks == pytest.approx(1.0)
     assert guessed.components.trace_checks == pytest.approx(0.5)
-    assert guessed.components.state_checks == grounded.components.state_checks
+    assert guessed.components.state_checks is None
+    assert grounded.components.state_checks is None
     assert guessed.components.llm_judge is None
     assert grounded.components.llm_judge is None
     assert guessed.score < grounded.score
+
+
+# Every core-side verdict the CHANGELOG's compatibility notice names for the two
+# shipped ``examples/**`` packs, folded through the real ``GradingEngine`` at each
+# pack's own weights and its own committed scenarios. The notice is a published
+# surface and the numbers in it are what an operator compares a stored score
+# against, so a fold that moved without the notice moving is a silent break.
+#
+# Both packs' core-side fold is carried entirely by ``trace_checks``:
+# ``state_checks.db_probes`` is RUNNER_ONLY, so core evaluates none of it, and core
+# assigns no ``llm_judge`` component at all — which is why each verdict below equals
+# its trial's ``trace_checks`` score rather than a blend of three.
+_PUBLISHED_CORE_VERDICTS = (
+    pytest.param(_lot_ops_grade, _LOT_OPS_CORRECT_RUN, 1.0, True, id="lot_ops_grounded_process"),
+    pytest.param(_lot_ops_grade, _GUESSED_CODE_RUN, 0.5, True, id="lot_ops_guessed_reason_code"),
+    pytest.param(
+        _lot_ops_grade, _FABRICATED_CODE_RUN, 0.5, True, id="lot_ops_code_outside_the_catalog"
+    ),
+    pytest.param(_lot_ops_grade, _UNREAD_LOT_RUN, 0.5, True, id="lot_ops_lot_never_read"),
+    pytest.param(_lot_ops_grade, _DOUBLE_POST_RUN, 0.0, False, id="lot_ops_duplicate_gate_tripped"),
+    pytest.param(_lot_ops_grade, _NO_ACTION_RUN, 0.0, False, id="lot_ops_no_action_opened"),
+    pytest.param(_lot_ops_grade, (), 0.0, False, id="lot_ops_empty_trajectory"),
+    pytest.param(_helpdesk_grade, _POLICY_CORRECT_RUN, 1.0, True, id="helpdesk_correct_process"),
+    *(
+        pytest.param(_helpdesk_grade, param.values[0], 2 / 3, True, id=f"helpdesk_{param.id}")
+        for param in _WRONG_PROCESS_RUNS
+    ),
+    pytest.param(_helpdesk_grade, (), 0.0, False, id="helpdesk_empty_trajectory"),
+)
+
+
+@pytest.mark.parametrize(("grade_pack", "calls", "score", "binary_pass"), _PUBLISHED_CORE_VERDICTS)
+def test_each_published_core_verdict_folds_to_the_number_the_notice_names(
+    grade_pack: Callable[[Sequence[RecordedToolCall]], Grade],
+    calls: Sequence[RecordedToolCall],
+    score: float,
+    binary_pass: bool,
+) -> None:
+    """The compatibility notice's own numbers, measured rather than asserted in prose.
+
+    Both the score and the verdict, because the two move independently: the no-action
+    run is the row where the verdict flipped, and the wrong-process rows are rows where
+    the score moved and the verdict did not.
+    """
+    grade = grade_pack(calls)
+
+    assert (grade.score, grade.binary_pass) == (pytest.approx(score), binary_pass)
+
+
+def test_the_lot_ops_wrong_process_runs_pass_by_exactly_their_threshold() -> None:
+    """No margin at all, which is the property that makes this pack's fold fragile.
+
+    ``0.5`` is ``pass_threshold`` to the digit, admitted only because the comparison is
+    ``>=``. Any reweighting, or one more constraint in the block, moves these three
+    trials from pass to fail — so the equality is pinned here rather than left implicit
+    in the rows above, where ``0.5`` beside ``True`` reads like a comfortable pass.
+    """
+    threshold = _lot_ops_grading().combine.pass_threshold
+    wrong_process = (_GUESSED_CODE_RUN, _FABRICATED_CODE_RUN, _UNREAD_LOT_RUN)
+
+    scores = [_lot_ops_grade(calls).score for calls in wrong_process]
+
+    assert scores == [pytest.approx(threshold)] * len(wrong_process)
+    assert all(_lot_ops_grade(calls).binary_pass for calls in wrong_process)
 
 
 def _reload_from_bundle(trial_dir: Path) -> Trajectory:

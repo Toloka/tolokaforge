@@ -1012,8 +1012,11 @@ authoring API.
 
 * `components.custom_checks` — aggregate score over every `@check` the pack
   emitted, in `[0.0, 1.0]`. `null` when the pack has no `custom_checks` block
-  (or set `enabled: false`); when the executor errored under `fail_on_error:
-  false` the component is also excluded from the weighted combine. See
+  (or set `enabled: false`), and `null` when an enabled suite decided nothing —
+  every check returned `CheckSkipped`, or the file declared none — because an
+  aggregate over zero verdicts is not a score; when the executor errored under
+  `fail_on_error: false` the component is also excluded from the weighted
+  combine. See
   [`docs/custom_checks.md`](custom_checks.md#grade-output) for the scoring
   rules.
 

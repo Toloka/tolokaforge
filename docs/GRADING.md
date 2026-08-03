@@ -269,7 +269,7 @@ on a citation:
   surviving rows still pass, so this clause is the only thing that sees it. Its
   zero-share table also still answers `all` and `any` differently from `weighted`,
   so the [`weighted`-only scoping](#score-combination) of the zero-total-weight
-  rule cannot be widened to every method without reding it.
+  rule cannot be widened to every method without redoing it.
 - `trace_checks.constraints.weight`, `.on_missing`, `.severity`, `.within`, `.bind` —
   each still names a pack in the parametrisation that drives its differential, so a
   key escaping the scored-key lock without one is caught here. Each pack is authored
@@ -2229,6 +2229,8 @@ Findings come in three classes:
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
+| a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
+| a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
@@ -2257,16 +2259,33 @@ property whose schema writes no `type` all land here.
 nothing and scores nothing, and it cannot survive translation either: the wire erases
 an authored empty `state_checks` or `transcript_rules` to an absent section, so while
 the shape loads no predicate can answer "did the author write this?" the same way on
-both substrates. `state_checks` carries the rule one step further, because it has keys
-that configure how a source is read rather than declaring one — a block holding only
-`id_fields` or `relaxed_validation` asserts exactly as little as an empty one. The
-error names what to declare, or says to drop the block. Two of the five components
-already answer this at load: a `trace_checks` block declaring neither constraints nor
-alternatives and an `llm_judge` block with no rubric are both unrepresentable.
+both substrates. The error names what to declare, or says to drop the block. Two of
+the five components already answer this at load: a `trace_checks` block declaring
+neither constraints nor alternatives and an `llm_judge` block with no rubric are both
+unrepresentable.
+
+All three sections the rule reaches carry it one step further, because each has keys
+that configure how the component runs rather than declaring what it checks. A block
+holding only such keys asserts exactly as little as an empty one, and each took a
+vacuous pass for it while reading as configured:
+
+| shape | why it asserts nothing |
+|---|---|
+| `state_checks` with `jsonpaths: []`, or only `id_fields` / `relaxed_validation` | no source any substrate can read |
+| `transcript_rules` whose every rule list is empty — `required_actions: []`, `must_contain: []`, a `tool_expectations` expecting neither tool | no rule any substrate can evaluate; the component is averaged over no sub-check |
+| `custom_checks` naming a `file` with no `enabled` key | `CustomChecksConfig.enabled` defaults to `false`, so the suite never runs |
+
+Each rule reads its keys for **truth**, not presence, because that is what both
+substrates do: an empty `golden_actions` replays nothing, an empty `required_actions`
+requires nothing.
 
 An explicit opt-out is *not* "declares nothing": `custom_checks: {enabled: false}`
 states a decision, survives the wire intact, and is read the same way by both
-substrates — so it loads, it is not requested, and it needs no weight.
+substrates — so it loads, it is not requested, and it needs no weight. The unflagged
+block is the shape that needs the rule most, because it escapes the weight rules too:
+it is not requested, so no weight is owed, and a pack whose `custom_checks` is its
+only section then lands the free pass a pack asking for nothing has earned — scoring
+`1.0` on a suite that never ran.
 
 **A component and its weight must name each other, in both directions.** Configuring
 a section asks for that component to be scored, and declaring a weight asks for a
@@ -2280,9 +2299,9 @@ both folds unread.
 
 Both rules read the **effective** `combine`, a task's own block layered over its
 project's `task_defaults.grading_defaults.combine`, because a task that declares no
-`combine` at all still inherits one — five `example-microservices-pack` tasks are that
-shape. A caller that cannot resolve the effective combine reports it `unchecked`
-rather than assuming the weights are absent, which would refuse every pack whose
+`combine` at all still inherits one — five `example-microservices-pack` tasks inherit
+their weights that way. A caller that cannot resolve the effective combine reports it
+`unchecked` rather than assuming the weights are absent, which would refuse every pack whose
 weights are inherited. A pack that deliberately scores nothing — no component section
 and no weights — is clean: it asks for nothing, so nothing is missing.
 

@@ -188,13 +188,18 @@ def test_an_enabled_suite_that_skipped_everything_leaves_the_component_unscored(
     assert _NOTHING_TO_REPORT not in grade.reasons, grade.reasons
 
 
-def test_a_config_asking_for_nothing_is_the_one_fold_that_owes_no_reason() -> None:
+def test_a_config_asking_for_nothing_passes_and_says_that_is_why() -> None:
     """The deliberately non-scoring shape, and the only pass a fold hands out unearned.
 
-    Nothing configured and nothing weighted asked for nothing, so nothing is owed and there is
-    no sentence to write. Asserted beside the two fails above so the rule cannot be read as
-    "an unscored trial always fails": a wire-shape probe pack that scores nothing on purpose
-    keeps its pass.
+    Nothing configured and nothing weighted asked for nothing, so nothing is owed. Asserted
+    beside the two fails above so the rule cannot be read as "an unscored trial always
+    fails": a wire-shape probe pack that scores nothing on purpose keeps its pass.
+
+    The sentence is the half worth pinning. Every fold that decided without reading a score
+    owes one, and this is the fold with the least in the grade beside it to explain the
+    number — leaving it silent falls through to the "All checks passed" fallback, which for a
+    trial where no check ran at all is the same dishonesty as the failing folds above
+    inheriting it.
     """
     grade = GradingEngine(
         GradingConfig(combine={"method": "weighted", "weights": {}, "pass_threshold": 1.0})
@@ -210,4 +215,8 @@ def test_a_config_asking_for_nothing_is_the_one_fold_that_owes_no_reason() -> No
     )
 
     assert (grade.score, grade.binary_pass) == (1.0, True)
-    assert grade.reasons == _NOTHING_TO_REPORT
+    assert grade.reasons == (
+        "no component was configured and no weight names one, so nothing was scored and "
+        "nothing was owed"
+    )
+    assert _NOTHING_TO_REPORT not in grade.reasons, grade.reasons

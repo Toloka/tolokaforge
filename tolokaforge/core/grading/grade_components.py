@@ -20,6 +20,8 @@ from dataclasses import dataclass
 from types import MappingProxyType
 from typing import Any
 
+from pydantic import BaseModel
+
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 
 
@@ -44,13 +46,18 @@ class GradeComponentSpec:
     config_section: str
     core_field: str
     runner_score_field: str | None
-    opt_in_gate: Callable[[Any], bool] | None = None
+    opt_in_gate: Callable[[Mapping[str, Any] | None], bool] | None = None
     """The component's own opt-in gate, where its section carries an enable flag.
 
     ``None`` where the section's presence is the whole answer. A gate lives here
     rather than at the call sites because the flag's default is the component's own
     knowledge: ``CustomChecksConfig.enabled`` defaults to ``False``, so a caller
     reading the key generically would read an unflagged block as requested.
+
+    A gate reads the keys the author wrote, so a component declaring one must carry
+    its section raw on every artifact — which is why ``custom_checks`` is typed
+    ``dict[str, Any] | None`` on both substrates' config models while the other four
+    sections are typed sub-models. :func:`component_requested` enforces that.
     """
 
 
@@ -96,24 +103,39 @@ COMPONENT_BY_NAME: Mapping[str, GradeComponentSpec] = MappingProxyType(
 rather than re-deriving the field names it lives under."""
 
 
-def component_requested(spec: GradeComponentSpec, section: Any) -> bool:
+def component_requested(
+    spec: GradeComponentSpec, section: Mapping[str, Any] | BaseModel | None
+) -> bool:
     """Whether the author asked *spec*'s component to be scored.
 
     *section* is whatever the artifact in hand holds for :attr:`config_section` —
     the authored ``grading.yaml`` value, the ``GradingConfig`` attribute, or the
-    runner's wire dict entry.
+    runner's wire dict entry. The first and third are mappings; the second is a
+    constructed sub-model for every component but ``custom_checks``.
 
     An explicit opt-out (``custom_checks: {enabled: false}``) is *not* requested, and
     it reads that way from every artifact: unlike an empty mapping, it survives the
     wire intact rather than arriving as ``None``.
 
     Raises:
+        TypeError: for a constructed section handed to a component that declares an
+            :attr:`GradeComponentSpec.opt_in_gate`. A gate reads the keys the author
+            wrote, so a model that already applied the flag's default cannot answer
+            it; without this the gate would fail inside its own validation, naming
+            neither the component nor the reason.
         ValidationError: propagated from a component's own opt-in gate, for a
             non-empty section that is not a valid block. A mistyped key would
             otherwise read as its default and silently unrequest a scored component.
     """
     if spec.opt_in_gate is None:
         return section is not None
+    if isinstance(section, BaseModel):
+        raise TypeError(
+            f"{spec.name} decides its own opt-in off the keys the author wrote, and its "
+            f"{spec.config_section} arrived as a constructed {type(section).__name__}. "
+            f"Carry the section raw wherever {spec.name} is asked for, as both substrates' "
+            "config models do"
+        )
     return spec.opt_in_gate(section)
 
 

@@ -376,7 +376,7 @@ class TestUnevaluatedHashIsReported:
     }
 
     def test_a_pack_with_no_evaluable_source_is_unscored_and_still_says_why(self):
-        """#729's shape: an unreplayable hash beside an empty assertion list.
+        """An unreplayable hash beside an empty assertion list.
 
         Neither source yields a verdict, so the component is absent from the grade
         and the reason string beside it is the whole of what the pack can say. Any

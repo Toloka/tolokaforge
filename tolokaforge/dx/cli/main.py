@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
@@ -1424,7 +1425,9 @@ def _extract_log_errors(logs: list[dict]) -> list[str]:
     return errors
 
 
-def _load_task_under_its_project(task_file: Path) -> tuple[TaskConfig, Path, dict | None]:
+def _load_task_under_its_project(
+    task_file: Path,
+) -> tuple[TaskConfig, Path, dict[str, Any] | None]:
     """Load a task the way a run loads it — under its enclosing project's defaults.
 
     The shared-domain merge (a ``task.yaml`` carrying a ``domain:`` ref) happens

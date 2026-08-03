@@ -24,6 +24,11 @@ _NO_DEFENSIBLE_WEIGHT = (
 
 _NOTHING_COUNTED = "no scored component carries any weight, so the trial earned nothing: {because}"
 
+_NOTHING_ASKED = (
+    "no component was configured and no weight names one, so nothing was scored and "
+    "nothing was owed"
+)
+
 _PRODUCED_NO_VERDICT = "{names} produced no verdict"
 
 _WEIGHTS_SUM_TO_ZERO = (
@@ -94,7 +99,7 @@ def resolve_uncounted_fold(
     guard rather than a map to be defaulted around.
     """
     if not requested and not weights:
-        return FoldedGrade(score=1.0, binary_pass=True)
+        return FoldedGrade(score=1.0, binary_pass=True, reason=_NOTHING_ASKED)
     if not _carries_no_weight(scored=scored, weights=weights, method=method):
         return None
     return FoldedGrade(

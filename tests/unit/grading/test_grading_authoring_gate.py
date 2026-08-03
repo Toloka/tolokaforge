@@ -35,7 +35,10 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
+    _A_NON_EMPTY_SECTION_STILL_DECLARES,
     _TEXTUAL_MATCHER_FIELDS,
+    _TOOL_EXPECTATION_HAZARDS,
+    _TRANSCRIPT_RULE_KEYS,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
@@ -44,12 +47,18 @@ from tolokaforge.core.grading.config_validation import (
     ToolInventory,
     inspect_grading_authoring,
 )
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import (
+    COMPONENT_BY_NAME,
+    GRADE_COMPONENTS,
+    component_requested,
+)
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     GradingCombineConfig,
     GradingConfig,
     GradingFindingSeverity,
+    ToolExpectations,
+    TranscriptRulesConfig,
 )
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
 
@@ -253,6 +262,22 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_sections_declare_something",
         channel="errors",
         message="declares no source any substrate can read",
+    ),
+    _Rule(
+        label="a_transcript_rules_block_with_no_rule",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"required_actions": []}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="declares no rule any substrate can evaluate",
+    ),
+    _Rule(
+        label="a_custom_checks_block_deciding_no_opt_in",
+        task=_HELPDESK,
+        grading={"custom_checks": {"file": "checks.py"}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="the component's own default reads as off",
     ),
     _Rule(
         label="configured_component_with_no_weight",
@@ -718,6 +743,10 @@ def test_the_sections_a_gate_rule_reaches_are_the_ones_the_models_still_admit() 
     left. Both columns are asserted rather than only their agreement: a component that
     grew its own refusal has to leave the gate rule's table, and one that lost it has
     to join it.
+
+    The two tables the rule reads are held to the same key set, because the deeper
+    one is looked up totally: a section joining the first without an answer in the
+    second raises ``KeyError`` on every block the author writes.
     """
     sections = {spec.config_section for spec in GRADE_COMPONENTS}
     refused = {section for section in sections if _refuses_its_own_empty_block(section)}
@@ -725,6 +754,7 @@ def test_the_sections_a_gate_rule_reaches_are_the_ones_the_models_still_admit() 
     assert refused == {"trace_checks", "llm_judge"}
     assert sections - refused == {"state_checks", "transcript_rules", "custom_checks"}
     assert set(_WHAT_EACH_SECTION_MUST_DECLARE) == sections - refused
+    assert set(_A_NON_EMPTY_SECTION_STILL_DECLARES) == set(_WHAT_EACH_SECTION_MUST_DECLARE)
 
 
 _SOURCELESS_STATE_CHECKS = (
@@ -773,6 +803,106 @@ def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
     assert [finding.where for finding in report.errors] == [address]
 
 
+# The other two sections rule 1 reaches, refused and surviving shapes in one table
+# because the boundary between them is the whole content of each rule. Every refused
+# row scored a vacuous ``1.0`` — the block reads as configured, is evaluated against
+# nothing, and averaging an empty sub-check set produces a perfect score — and every
+# row is the smallest edit to a neighbour that crosses the line, so a rule widened
+# past what it owns shows up here as a survivor that stopped loading.
+_SECTIONS_WITH_KEYS_THAT_CONFIGURE_RATHER_THAN_ASSERT = (
+    pytest.param({"transcript_rules": {}}, ["transcript_rules"], id="an_empty_transcript_block"),
+    pytest.param(
+        {"transcript_rules": {"required_actions": []}},
+        ["transcript_rules"],
+        id="an_empty_required_action_list",
+    ),
+    pytest.param(
+        {"transcript_rules": {"must_contain": [], "disallow_regex": [], "communicate_info": []}},
+        ["transcript_rules"],
+        id="every_phrase_list_empty_at_once",
+    ),
+    pytest.param(
+        {"transcript_rules": {"tool_expectations": {"required_tools": [], "disallowed_tools": []}}},
+        ["transcript_rules"],
+        id="a_tool_expectations_block_expecting_neither",
+    ),
+    pytest.param(
+        {"transcript_rules": {"must_contain": ["cannot"]}}, [], id="one_phrase_to_search_for"
+    ),
+    pytest.param({"transcript_rules": {"max_turns": 10}}, [], id="a_bound_on_the_turn_counter"),
+    pytest.param(
+        {"transcript_rules": {"min_assistant_turns": 1}}, [], id="an_activity_floor_alone"
+    ),
+    pytest.param(
+        {"transcript_rules": {"tool_expectations": {"required_tools": ["http_request"]}}},
+        [],
+        id="one_required_tool",
+    ),
+    pytest.param(
+        {"transcript_rules": {"tool_expectations": {"disallowed_tools": ["http_request"]}}},
+        [],
+        id="one_forbidden_tool",
+    ),
+    pytest.param({"custom_checks": {}}, ["custom_checks"], id="an_empty_custom_checks_block"),
+    pytest.param(
+        {"custom_checks": {"file": "checks.py"}},
+        ["custom_checks"],
+        id="a_checks_file_under_no_flag",
+    ),
+    pytest.param({"custom_checks": {"enabled": False}}, [], id="the_opt_out_written_down"),
+    pytest.param(
+        {"custom_checks": {"enabled": True, "file": "checks.py"}}, [], id="the_suite_switched_on"
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("grading", "addresses"), _SECTIONS_WITH_KEYS_THAT_CONFIGURE_RATHER_THAN_ASSERT
+)
+def test_a_block_whose_every_key_only_configures_how_it_runs_is_refused(
+    grading: dict[str, Any], addresses: list[str]
+) -> None:
+    """Rule 1 reaches past the empty mapping for all three sections it owns.
+
+    A ``transcript_rules`` whose every rule list is empty and a ``custom_checks``
+    naming a file under no ``enabled`` flag are both non-empty mappings that assert
+    nothing: the first is scored against no sub-check, and the second never runs
+    because ``CustomChecksConfig.enabled`` defaults to ``False``. Both took a free
+    ``1.0`` while reading as configured, which is what makes them the same defect as
+    the empty block rather than a milder one.
+
+    The surviving rows are asserted in the same table so the refusal is a boundary
+    and not a blanket: a bound on the turn counter, one phrase, one tool on either
+    expectation list, and the opt-out written down all still load.
+    """
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == addresses
+
+
+def test_the_transcript_rules_the_gate_reads_are_the_ones_the_model_declares() -> None:
+    """The predicate's scope is measured against ``TranscriptRulesConfig``, not listed.
+
+    A rule key added to the model and not here would declare something the gate reads
+    as nothing, refusing a pack that grades — the failure direction a list beside the
+    model cannot catch. ``tool_expectations`` is the one field read a level down,
+    through the two keys the tool-name rule already addresses, so its own key set is
+    held against ``ToolExpectations`` in the same breath.
+
+    The author-facing sentence is checked against the same sets, since a message that
+    named a key the predicate stopped reading would send the author to declare
+    something the gate goes on refusing.
+    """
+    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations"} == set(
+        TranscriptRulesConfig.model_fields
+    )
+    assert set(_TOOL_EXPECTATION_HAZARDS) == set(ToolExpectations.model_fields)
+
+    what_to_declare = _WHAT_EACH_SECTION_MUST_DECLARE["transcript_rules"]
+    for key in (*_TRANSCRIPT_RULE_KEYS, *_TOOL_EXPECTATION_HAZARDS, "tool_expectations"):
+        assert key in what_to_declare, key
+
+
 def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     """The two states decide opposite things, so a hybrid decides neither.
 
@@ -781,6 +911,11 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     """
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
         ToolInventory(declared=frozenset({"http_request"}), parameters={}, known=False)
+
+    with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
+        ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
+
+    assert ToolInventory.unresolvable().known is False
 
 
 # ---------------------------------------------------------------------------
@@ -820,16 +955,22 @@ def test_an_unflagged_custom_checks_block_is_not_requested_by_the_components_own
 
     A caller reading the key generically would default it the other way and demand a
     weight for a component no substrate runs. The predicate asks the component, which
-    is why the answer here is "not requested" for a block that names a checks file.
+    is why "not requested" is the answer for a block that names a checks file — so
+    neither weight rule fires here, and the only finding is rule 1's.
+
+    That the block escapes both weight rules is exactly why rule 1 has to reach it: an
+    unrequested component with no weight is invisible to the fold, and a pack whose
+    ``custom_checks`` is its only section then lands the free pass a pack asking for
+    nothing has earned, scoring ``1.0`` on a suite that never ran.
     """
     grading = {"custom_checks": {"file": "checks.py"}}
 
-    assert (
-        inspect_grading_authoring(
-            grading, _inventory(_HELPDESK), effective_combine=GradingCombineConfig(weights={})
-        )
-        == AuthoringReport()
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), effective_combine=GradingCombineConfig(weights={})
     )
+
+    assert [finding.where for finding in report.errors] == ["custom_checks"]
+    assert not component_requested(COMPONENT_BY_NAME["custom_checks"], grading["custom_checks"])
 
 
 def test_a_mistyped_custom_checks_key_raises_rather_than_disabling_the_component() -> None:
@@ -952,10 +1093,7 @@ def test_an_unresolvable_combine_layer_may_not_carry_project_defaults() -> None:
     with pytest.raises(ValueError, match="unresolvable combine layer carries project defaults"):
         CombineLayer(project_combine={"weights": {"state_checks": 1.0}}, known=False)
 
-    with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
-        ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
-
-    assert ToolInventory.unresolvable().known is False
+    assert CombineLayer.unresolvable().known is False
 
 
 # ---------------------------------------------------------------------------

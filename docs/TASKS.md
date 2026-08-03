@@ -340,10 +340,10 @@ combine:
 The floor is a gate on the whole `transcript_rules` component rather than one more
 sub-check inside it: unmet, the component is `0.0` whatever the other keys scored,
 and `grade.reasons` carries `Assistant turn count 0 below min_assistant_turns of
-1`. **The `combine.weights` entry is not optional** — core admits a scored
-component only when `combine.weights` declares a weight for it, so a floor declared
-in a pack that weights `state_checks` alone is evaluated and then dropped before it
-can reach the final score.
+1`. **The `combine.weights` entry is not optional** — a configured component with no
+weight is refused before the run, in both directions, so a floor declared in a pack
+that weights `state_checks` alone never loads. Neither does the reverse: weighting
+`transcript_rules` in a pack that declares no floor.
 
 A floor above `max_turns` admits no turn count at all. `tolokaforge validate`
 rejects such a pack, naming both keys and both values, so an unsatisfiable window
