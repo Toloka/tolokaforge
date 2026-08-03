@@ -29,6 +29,7 @@ from typing import Any
 
 import pytest
 
+from tolokaforge.core.llm import ArrayDictMapResponse, OpenAIReasoningCodec, StrictSchema
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.presets import build_capabilities
@@ -154,3 +155,31 @@ class TestPresetScope:
         """Including the older Cohere Command A, which is a different route."""
         caps = build_capabilities(model, "openrouter")
         assert caps.params_policy.supports_tool_choice_auto is True
+
+    @pytest.mark.parametrize(
+        "model",
+        [
+            "azure_ai/cohere-command-a-plus-05-2026",
+            "cohere-command-a-plus-05-2026",
+        ],
+    )
+    def test_the_whole_preset_body_is_pinned(self, model: str) -> None:
+        """All four preset keys are load-bearing, so all four are asserted.
+
+        Only ``supports_tool_choice_auto`` was covered before this test, and the gap
+        was not theoretical: dropping ``response_policy`` and ``reasoning_codec`` from
+        the preset left the entire unit + canonical suite green (mutation-checked).
+
+        ``strict`` rewrites typed dict-maps to arrays and ``ArrayDictMapResponse`` is
+        the only thing that converts them back, so shipping one without the other
+        silently corrupts every dict-map tool argument. ``strip_re2_incompatible_patterns``
+        is what keeps an eval off the Azure validator's RE2 rejection, and it is the
+        reason the RE2 certificate entry is an upstream record rather than a live risk.
+        ``OpenAIReasoningCodec`` is what stops the engine discarding reasoning the
+        gateway surfaces.
+        """
+        caps = build_capabilities(model, "openrouter")
+        assert isinstance(caps.schema_sanitizer, StrictSchema)
+        assert caps.schema_sanitizer.strip_re2_incompatible_patterns is True
+        assert isinstance(caps.response_policy, ArrayDictMapResponse)
+        assert isinstance(caps.reasoning_codec, OpenAIReasoningCodec)
