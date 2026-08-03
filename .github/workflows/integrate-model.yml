@@ -237,6 +237,12 @@ jobs:
               # Only inside this branch: a companion without a base URL is a hard error,
               # so a job-level env var here would break the openrouter route.
               #
+              # The ${secret:NAME} references inside the value stay LITERAL here, because
+              # bash does not rescan the result of a parameter expansion. Never inline one
+              # into this script's text instead: bash reads ${secret:X} as substring
+              # syntax and silently yields an empty string, so the engine would never see
+              # the reference and its hard-error guard could not fire.
+              #
               # jq COMPACTS, and that is load-bearing, not tidiness: the dotenv parser's
               # unquoted-value branch is ``[^\s#]*``, so a value containing a space or a
               # '#' fails the line match and the line is SKIPPED at debug level. Pretty
