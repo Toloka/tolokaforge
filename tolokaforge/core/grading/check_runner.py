@@ -665,12 +665,19 @@ def run_custom_checks(
         task_dir: Task directory
         initial_state: Initial state dictionary
         final_state: Final state dictionary
-        transcript_messages: List of message dictionaries
+        transcript_messages: List of message dictionaries. A ``tool_calls``
+            entry may be either flat (``{"name", "arguments", "result"}``) or
+            grade-time wire shaped (``{"id", "function": {"name",
+            "arguments"}}``; see :mod:`tolokaforge.core.grading.transcript_wire`)
         task_id: Task identifier
         config: Optional config (default: enabled with 30s timeout)
 
     Returns:
         CheckResultSet with results
+
+    Raises:
+        ValueError: If a wire-shaped ``tool_calls`` entry is malformed; the
+            message names the offending entry.
     """
     from tolokaforge.core.grading.checks_interface import (
         EnvironmentState,
@@ -679,6 +686,17 @@ def run_custom_checks(
         ToolCall,
         Transcript,
     )
+    from tolokaforge.core.grading.transcript_wire import _decode_tool_call
+
+    def _tool_call(tc: dict[str, Any], message_index: int) -> ToolCall:
+        if "function" in tc:
+            decoded = _decode_tool_call(tc, message_index)
+            return ToolCall(name=decoded.name, arguments=decoded.arguments)
+        return ToolCall(
+            name=tc.get("name", ""),
+            arguments=tc.get("arguments", {}),
+            result=tc.get("result"),
+        )
 
     # Build context from raw data
     ctx = CheckContext(
@@ -689,16 +707,9 @@ def run_custom_checks(
                 Message(
                     role=m.get("role", "user"),
                     content=m.get("content", ""),
-                    tool_calls=[
-                        ToolCall(
-                            name=tc.get("name", ""),
-                            arguments=tc.get("arguments", {}),
-                            result=tc.get("result"),
-                        )
-                        for tc in m.get("tool_calls", [])
-                    ],
+                    tool_calls=[_tool_call(tc, i) for tc in m.get("tool_calls", [])],
                 )
-                for m in transcript_messages
+                for i, m in enumerate(transcript_messages)
             ]
         ),
         task=TaskContext(task_id=task_id),
