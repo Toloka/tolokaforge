@@ -144,7 +144,7 @@ class TestValidateCommand:
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
         assert result.exit_code == 0, result.stderr
 
-        task_config, _ = _load_task_under_its_project(task_file)
+        task_config, _, _ = _load_task_under_its_project(task_file)
         assert task_config.max_turns == 7
         # Anchored to the project directory the default was declared in.
         assert task_config.system_prompt == str(tmp_path / "voice.md")
@@ -197,6 +197,9 @@ class TestValidateCommand:
         (directory / "grading.yaml").write_text(
             yaml.dump(
                 {
+                    # Weighted, so the only thing separating the two rows is whether
+                    # validate can read the pack's tool set.
+                    "combine": {"weights": {"trace_checks": 1.0}},
                     "trace_checks": {
                         "constraints": [
                             {
@@ -212,7 +215,7 @@ class TestValidateCommand:
                                 },
                             }
                         ]
-                    }
+                    },
                 }
             )
         )

@@ -1,6 +1,6 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Twelve locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
@@ -37,7 +37,11 @@ Twelve locks over :mod:`tolokaforge.core.grading.key_manifest`:
     without carrying a score itself, over packs a build ignoring the field would
     score identically;
 12. the constraint vocabulary the manifest addresses, the one the evaluator and
-    the runtime ledger read, and the one an author can write are the same set.
+    the runtime ledger read, and the one an author can write are the same set;
+13. a state source that declares nothing leaves ``state_checks`` unscored on both
+    substrates, and the one asymmetry the rule permits — a probe-only pack, which
+    only the runner can read — is asserted against the manifest's own claim rather
+    than assumed.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -50,6 +54,7 @@ carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
+import asyncio
 import importlib
 import json
 import re
@@ -74,6 +79,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
+from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     Enforcement,
@@ -95,10 +101,12 @@ from tolokaforge.core.models import (
     ToolExecutorIdentity,
     Trajectory,
 )
+from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading import (
     combine_grade_components,
+    evaluate_db_probes,
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
     resolve_state_checks_component,
@@ -145,6 +153,15 @@ _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
     ("hash_matching", 1.0),
     ("hash_diverging", 0.0),
 )
+
+_JSONPATHS_KEY = "state_checks.jsonpaths"
+_PROBES_KEY = "state_checks.db_probes"
+
+# The one in-repo pack whose only state source is a probe, so it is the only fixture
+# that can show the RUNNER_ONLY asymmetry lock 13 asserts. It sits under
+# ``tests/data/tasks/`` rather than in the parity corpus because that corpus's packs
+# each isolate one key, and a probe-only pack isolates this one by construction.
+_PROBE_PACK = "db_probe_grading"
 
 _METHOD_KEY = "combine.method"
 _METHOD_CASE = "split_components"
@@ -201,6 +218,7 @@ _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
         "combine.method",
+        "combine.weights",
         "trace_checks",
         "trace_checks.constraints.weight",
         "trace_checks.constraints.on_missing",
@@ -807,8 +825,8 @@ def _runner_verdict(
             f"no runner differential driver for the {family!r} family — add one rather "
             "than silently skipping the key"
         )
-    combined, _ = combine_grade_components(components, grading.model_dump())
-    return component, combined
+    combined = combine_grade_components(components, grading.model_dump())
+    return component, combined.score
 
 
 # --------------------------------------------------------------------------
@@ -1229,10 +1247,10 @@ def _composition_verdict(
         db_probe_score=-1.0,
         hash_weight=runner_grading.state_checks.hash_weight,
     ).component
-    runner_total, _ = combine_grade_components(
+    runner_total = combine_grade_components(
         {"hash_score": hash_score, "jsonpath_score": runner_jsonpath},
         runner_grading.model_dump(),
-    )
+    ).score
     return _CompositionVerdict(
         core_component=core_component,
         core_total=core_total,
@@ -1484,9 +1502,11 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     proof — the enforcement level would rest on a nodeid resolving while the test it
     names asserted nothing. So this asserts the property each escaped claim depends
     on instead: that lock 6's sweep still spans the weights where a fold rule is
-    distinguishable at all, and that lock 9's answer table still spans the declared
-    combine methods with one distinct score each. Membership alone enforces nothing:
-    a differential deleted wholesale leaves the escaped set unchanged.
+    distinguishable at all, that lock 9's answer table still spans the declared
+    combine methods with one distinct score each, and that lock 14's weight maps still
+    span the pair a membership rule is distinguishable over while its zero-share table
+    still answers ``all``/``any`` differently from ``weighted``. Membership alone
+    enforces nothing: a differential deleted wholesale leaves the escaped set unchanged.
     """
     reached = {item.author_key for item in _differential_entries()}
     escaped = {
@@ -1532,6 +1552,21 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         f"the declared methods are pinned to {sorted(scores)} — fewer scores than methods. "
         "An implementation returning one aggregation for every method satisfies a table "
         "whose rows agree"
+    )
+
+    incomplete = {name for name, map_ in _WEIGHT_MAPS.items() if not set(map_) >= _SCORED_PAIR}
+    assert incomplete and incomplete != set(_WEIGHT_MAPS), (
+        f"_WEIGHT_MAPS {sorted(_WEIGHT_MAPS)} no longer spans both sides of the membership "
+        f"question over {sorted(_SCORED_PAIR)}. With only complete maps the refusal is never "
+        "reached and with only incomplete ones no fold runs, so either way "
+        f"{_WEIGHTS_KEY} would claim a canonical differential over a set of agreeing rows"
+    )
+
+    assert {verdict for key, verdict in _ZERO_WEIGHT_VERDICTS.items() if key[0] != "weighted"} - {
+        verdict for key, verdict in _ZERO_WEIGHT_VERDICTS.items() if key[0] == "weighted"
+    }, (
+        "_ZERO_WEIGHT_VERDICTS pins the same verdicts under all/any as under weighted, so the "
+        "zero-total-weight rule scoped to every method would satisfy the whole table"
     )
 
 
@@ -1610,14 +1645,14 @@ def _runner_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _
     transcript_score = evaluate_transcript_rules(
         case.runner_timeline, grading.transcript_rules.model_dump()
     ).score
-    score, binary_pass = combine_grade_components(
+    folded = combine_grade_components(
         {"jsonpath_score": jsonpath_score, "transcript_score": transcript_score},
         grading.model_dump(),
     )
     return _MethodVerdict(
         components={"state_checks": jsonpath_score, "transcript_rules": transcript_score},
-        score=score,
-        binary_pass=binary_pass,
+        score=folded.score,
+        binary_pass=folded.binary_pass,
     )
 
 
@@ -2141,6 +2176,368 @@ def test_the_manifest_addresses_every_constraint_kind_and_no_other():
         f"field on that model "
         "is a constraint kind an author can write, so the two are the same set"
     )
+
+
+# --------------------------------------------------------------------------
+# 13. A state source that declares nothing is not scored, on either substrate
+# --------------------------------------------------------------------------
+
+
+def _messageless_trajectory(task_id: str) -> Trajectory:
+    """A trial carrying no transcript, so only the state sources can score it."""
+    return Trajectory(
+        task_id=task_id,
+        trial_index=0,
+        start_ts=_FIXTURE_TIMESTAMP,
+        end_ts=_FIXTURE_TIMESTAMP,
+        messages=[],
+    )
+
+
+def _jsonpath_presence(
+    assertions: list[dict[str, Any]], state: dict[str, Any]
+) -> tuple[float | None, float | None]:
+    """Each substrate's ``state_checks`` slot for one JSONPath assertion list.
+
+    One list drives both columns through each substrate's own production evaluator
+    and its own composer, so the two differ in nothing but what the author declared.
+    """
+    core_config = core_models.GradingConfig(
+        state_checks={"jsonpaths": assertions},
+        combine={"weights": {"state_checks": 1.0}},
+    )
+    core_component = (
+        GradingEngine(core_config)
+        .grade_trajectory(_messageless_trajectory("jsonpath_presence"), state)
+        .components.state_checks
+    )
+    runner_jsonpath, _ = evaluate_jsonpath_checks(assertions, state=state)
+    runner_component = resolve_state_checks_component(
+        hash_score=-1.0,
+        jsonpath_score=runner_jsonpath,
+        db_probe_score=-1.0,
+        hash_weight=None,
+    ).component
+    return core_component, runner_component
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_an_empty_assertion_list_is_unscored_on_both_substrates(declared, test_data_dir):
+    """``state_checks.jsonpaths`` at its degenerate boundary: nothing declared.
+
+    The key claims ``BOTH_SCORE_PARITY``, and lock 3 proves it over a satisfying and
+    a violating trial — both of which declare assertions. This is the boundary no
+    cell of that sweep reaches: with nothing to evaluate, both substrates must leave
+    the component absent rather than one of them reporting the fraction of an empty
+    set. ``declared=True`` is the non-vacuity half — it reads the pack's own
+    assertions off disk, so an implementation scoring nothing at all fails there
+    instead of satisfying both rows.
+
+    Built from each substrate's config model rather than from a pack, because the
+    authoring gate refuses a ``state_checks`` block whose sources are all
+    unevaluable. What still reaches these folds is a directly constructed config, a
+    bundle recorded before that rule (which ``retrace`` replays), and the untyped
+    ``hash`` block being mutated after validation.
+    """
+    pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
+    authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
+    assert authored, (
+        f"{pack}/grading.yaml declares no JSONPath assertions, so the declared column "
+        "below carries an empty list too and this test compares one cell against itself"
+    )
+    case = _load_case(pack, "satisfying")
+
+    core, runner = _jsonpath_presence(authored if declared else [], case.state)
+
+    if not declared:
+        assert core is None, (
+            f"core scored state_checks {core!r} over zero assertions — a fraction of "
+            "nothing read as a verdict, which is the whole of what this lock forbids"
+        )
+        assert runner is None, (
+            f"the runner scored state_checks {runner!r} over zero assertions, so its "
+            "not-evaluated sentinel is no longer reaching the shared composer"
+        )
+        return
+
+    assert isinstance(core, float) and isinstance(runner, float), (
+        f"a declared assertion list left state_checks unscored — core {core!r}, runner "
+        f"{runner!r}. The unscored rows above then hold for every input and prove nothing"
+    )
+    assert core == pytest.approx(runner), (
+        f"{_JSONPATHS_KEY} claims BOTH_SCORE_PARITY but the substrates score the pack's "
+        f"own assertions differently: core {core} vs runner {runner}"
+    )
+
+
+def _probe_component(
+    probes: list[dict[str, Any]], rows: list[dict[str, Any]], monkeypatch
+) -> float | None:
+    """The runner's ``state_checks`` slot from its real probe evaluator over ``rows``.
+
+    ``rows`` stands in for the postgres the probe queries, at the seam
+    ``_fetch_probe_rows`` exists to provide — the DSN resolves only inside the task's
+    docker network, which is why the manifest enforces this key at the integration
+    tier. The probe's own ``expect`` assertions and the fold that reads the score are
+    the real ones.
+    """
+
+    async def _rows(dsn: str, query: str) -> list[dict[str, Any]]:
+        return rows
+
+    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    probe_score, _ = asyncio.run(evaluate_db_probes(probes))
+    return resolve_state_checks_component(
+        hash_score=-1.0,
+        jsonpath_score=-1.0,
+        db_probe_score=probe_score,
+        hash_weight=None,
+    ).component
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        pytest.param([{"reason_code": "CAPA-01", "status": "open"}], 1.0, id="the_probe_holds"),
+        pytest.param([{"reason_code": "GUESS", "status": "open"}], 0.0, id="the_probe_fails"),
+    ],
+)
+def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
+    rows, expected, test_data_dir, monkeypatch
+):
+    """The one asymmetry this presence rule is allowed to have, asserted not assumed.
+
+    ``state_checks.db_probes`` is the pack's only state source and it is
+    ``RUNNER_ONLY``: the probe DSN resolves inside the task's docker network, which
+    the runner container joins and the host-side engine does not. So core evaluating
+    nothing here is the declared design rather than a regression, and the manifest
+    entry is read to say so. Both rows fill the runner's slot and they differ, so
+    what sits in it is the probe's verdict rather than a constant.
+    """
+    assert entry(_PROBES_KEY).coverage is SubstrateCoverage.RUNNER_ONLY, (
+        f"{_PROBES_KEY} no longer claims RUNNER_ONLY, so core leaving the component "
+        "unscored below is a parity gap rather than the declared asymmetry"
+    )
+    adapter = NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": "tasks/**/task.yaml"})
+    grading_config = adapter.get_grading_config(_PROBE_PACK)
+    probes = grading_config.state_checks.db_probes
+    assert probes, f"{_PROBE_PACK} declares no db_probes, so the runner column scores nothing"
+
+    core = (
+        GradingEngine(grading_config)
+        .grade_trajectory(_messageless_trajectory(_PROBE_PACK), {})
+        .components.state_checks
+    )
+
+    assert core is None, (
+        f"core scored state_checks {core!r} on a pack whose only state source it cannot "
+        "read, so the number can only have come from the empty assertion list beside it"
+    )
+    assert _probe_component(probes, rows, monkeypatch) == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------------
+# 14. combine.weights: every scored component declares a share, and a fold with
+#     no share to read decides rather than defaulting
+# --------------------------------------------------------------------------
+
+_WEIGHTS_KEY = "combine.weights"
+
+#: The weight maps the differential drives the same two scored components under, keyed by
+#: what each does to the fold. Lock 8 asserts the set still spans a map omitting a scored
+#: component *and* one declaring every scored component: hollowed down to complete maps the
+#: refusal is never reached, and the differential would prove only that two folds which
+#: both aggregate agree.
+_SCORED_PAIR = frozenset({"state_checks", "transcript_rules"})
+
+_WEIGHT_MAPS: dict[str, dict[str, float]] = {
+    "declares_neither_scored_component": {},
+    "omits_transcript_rules": {"state_checks": 1.0},
+    "omits_state_checks": {"transcript_rules": 1.0},
+    "declares_every_scored_component": {"state_checks": 1.0, "transcript_rules": 1.0},
+}
+
+#: What both substrates owe for one component scored at an explicit weight of ``0.0``,
+#: per (method, case). Written out rather than derived: ``weighted`` has nothing to average
+#: and decides without one, while ``all`` and ``any`` aggregate the component *set* and
+#: never read a weight, so a share of ``0.0`` is inert there and the component's own score
+#: is still the verdict. The two cases differ under ``all``/``any``, so a rule scoping the
+#: zero-weight verdict to every method reds on those four rows.
+_ZERO_WEIGHT_VERDICTS: dict[tuple[str, str], tuple[float, bool]] = {
+    ("weighted", "satisfying"): (0.0, False),
+    ("weighted", "violating"): (0.0, False),
+    ("all", "satisfying"): (1.0, True),
+    ("all", "violating"): (0.0, False),
+    ("any", "satisfying"): (1.0, True),
+    ("any", "violating"): (0.0, False),
+}
+
+_WEIGHTS_THRESHOLD = 0.8
+
+
+def _scored_pair_configs(
+    assertions: list[dict[str, Any]], weights: dict[str, float], *, method: str = "weighted"
+) -> tuple[core_models.GradingConfig, dict[str, Any]]:
+    """One authored intent as each substrate's own grading config.
+
+    ``state_checks`` is scored from the pack's own JSONPath assertions, a
+    ``BOTH_SCORE_PARITY`` key, so the two columns fold the same number for it and the map is
+    the only thing that differs. ``transcript_rules`` is scored by each substrate's own
+    evaluator, whose magnitudes are separately tracked — which is why every assertion below
+    is about whether the fold *refuses*, never about the number it returns.
+    """
+    core_config = core_models.GradingConfig(
+        state_checks={"jsonpaths": assertions},
+        transcript_rules={"max_turns": 5},
+        combine={"method": method, "weights": weights, "pass_threshold": _WEIGHTS_THRESHOLD},
+    )
+    runner_config = {
+        "combine_method": method,
+        "weights": weights,
+        "pass_threshold": _WEIGHTS_THRESHOLD,
+        "state_checks": {"jsonpaths": assertions},
+        "transcript_rules": {"max_turns": 5},
+    }
+    return core_config, runner_config
+
+
+@pytest.mark.parametrize("case", sorted(_WEIGHT_MAPS))
+def test_a_scored_component_with_no_declared_weight_refuses_on_both_substrates(case, test_data_dir):
+    """The membership question, answered the same way on both substrates.
+
+    Neither may pick a share for a component it scored and the map does not weight: an
+    implementation dropping it from core's numerator, its denominator and its aggregation
+    while the runner folds it in at ``1.0`` scores the same trial two ways for no reason an
+    author could read. Both raise the same type with the same message instead, naming the
+    component and both one-line fixes.
+
+    The complete map is the non-vacuity half. Without it an implementation refusing every
+    fold satisfies the three refusing rows, and this would prove only that grading is
+    broken rather than that the map is read.
+    """
+    pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
+    authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
+    trial = _load_case(pack, "violating")
+    weights = _WEIGHT_MAPS[case]
+    core_config, runner_config = _scored_pair_configs(authored, weights)
+    jsonpath_score, _ = evaluate_jsonpath_checks(authored, state=trial.state)
+    runner_components = {
+        "jsonpath_score": jsonpath_score,
+        "transcript_score": evaluate_transcript_rules(
+            trial.runner_timeline, runner_config["transcript_rules"]
+        ).score,
+    }
+
+    if set(weights) >= _SCORED_PAIR:
+        core = GradingEngine(core_config).grade_trajectory(trial.core_trajectory, trial.state)
+        runner = combine_grade_components(runner_components, runner_config)
+        assert isinstance(core.score, float) and isinstance(runner.score, float), (
+            "a map declaring every scored component still refused, so the refusing rows "
+            "above hold for every map and the fold is proven to read nothing"
+        )
+        return
+
+    unweighted = sorted(_SCORED_PAIR - set(weights))
+    with pytest.raises(MissingComponentWeight) as core_refusal:
+        GradingEngine(core_config).grade_trajectory(trial.core_trajectory, trial.state)
+    with pytest.raises(MissingComponentWeight) as runner_refusal:
+        combine_grade_components(runner_components, runner_config)
+
+    for refusal in (core_refusal, runner_refusal):
+        message = str(refusal.value)
+        unnamed = f"{_WEIGHTS_KEY} omits {unweighted} and the refusal names none: {message}"
+        assert any(name in message for name in unweighted), unnamed
+        assert f"{_WEIGHTS_KEY}." in message, message
+
+
+@pytest.mark.parametrize("case", ["satisfying", "violating"])
+@pytest.mark.parametrize("method", COMBINE_METHODS)
+def test_a_zero_total_weight_decides_under_weighted_alone_on_both_substrates(
+    method, case, test_data_dir
+):
+    """One component scored at an explicit share of ``0.0``, on every declared method.
+
+    Under ``weighted`` there is nothing to average and the trial earned nothing. An
+    implementation answering the zero denominator with a free ``1.0`` instead passes a trial
+    whose only scored component the author weighted out. Under ``all`` and ``any`` the
+    weight is structurally unread — the shared dispatch aggregates the
+    component set — so those verdicts are asserted **unchanged**, which is what stops the
+    rule being scoped to every method and breaking an agreement that was already correct.
+    """
+    pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
+    authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
+    trial = _load_case(pack, case)
+    core_config = core_models.GradingConfig(
+        state_checks={"jsonpaths": authored},
+        combine={
+            "method": method,
+            "weights": {"state_checks": 0.0},
+            "pass_threshold": _WEIGHTS_THRESHOLD,
+        },
+    )
+    jsonpath_score, _ = evaluate_jsonpath_checks(authored, state=trial.state)
+
+    core = GradingEngine(core_config).grade_trajectory(trial.core_trajectory, trial.state)
+    runner = combine_grade_components(
+        {"jsonpath_score": jsonpath_score},
+        {
+            "combine_method": method,
+            "weights": {"state_checks": 0.0},
+            "pass_threshold": _WEIGHTS_THRESHOLD,
+            "state_checks": {"jsonpaths": authored},
+        },
+    )
+
+    expected = _ZERO_WEIGHT_VERDICTS[(method, case)]
+    assert (core.score, core.binary_pass) == expected
+    assert (runner.score, runner.binary_pass) == expected
+    if method != "weighted":
+        return
+    for reasons in (core.reasons, runner.reason or ""):
+        unnamed = f"the {method} fold counted nothing and named no component: {reasons!r}"
+        assert "state_checks" in reasons, unnamed
+
+
+@pytest.mark.parametrize(
+    ("weights", "expected", "named"),
+    [
+        pytest.param({}, (1.0, True), None, id="asks_for_nothing_and_weights_nothing"),
+        pytest.param({"state_checks": 1.0}, (0.0, False), "state_checks", id="a_stray_weight"),
+    ],
+)
+def test_a_config_scoring_nothing_passes_only_when_it_asked_for_nothing(weights, expected, named):
+    """The two ways a fold reaches no scored component at all, and they answer differently.
+
+    Nothing requested and nothing weighted is the deliberately non-scoring pack: a pass
+    earned by nothing, which is right because nothing was asked for. A weight naming a
+    component the config never configured is not that — it claims a component the pack does
+    not have, so nothing was scored and the trial fails with the weight key named. Both cells
+    are a decision written in one place: an implementation reaching the first from a threshold
+    comparison against ``0.0`` answers the second with a pass, and one refusing every
+    unscored trial answers the first with a fail.
+
+    Built from each substrate's config rather than from a pack, because the authoring gate
+    refuses a stray weight. What still reaches these folds is a directly constructed config
+    and a bundle recorded before that rule.
+    """
+    core_config = core_models.GradingConfig(
+        combine={"method": "weighted", "weights": weights, "pass_threshold": _WEIGHTS_THRESHOLD}
+    )
+    runner_config = {
+        "combine_method": "weighted",
+        "weights": weights,
+        "pass_threshold": _WEIGHTS_THRESHOLD,
+    }
+
+    core = GradingEngine(core_config).grade_trajectory(_messageless_trajectory("no_components"), {})
+    runner = combine_grade_components({}, runner_config)
+
+    assert (core.score, core.binary_pass) == expected
+    assert (runner.score, runner.binary_pass) == expected
+    if named is None:
+        return
+    assert named in core.reasons, core.reasons
+    assert named in (runner.reason or ""), runner.reason
 
 
 # --------------------------------------------------------------------------

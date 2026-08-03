@@ -1,7 +1,9 @@
 # NON-SCORING by design. Combine-only, no component sections,
 # no oracle / golden actions. Records wire-shape behaviour only.
+# `weights: {}` beside no component section asks for nothing, so the fold owes
+# nothing and the trial passes on an empty request — a weight naming a component
+# this pack never configures would instead claim one it does not have.
 combine:
   method: weighted
-  weights:
-    state_checks: 1.0
+  weights: {}
   pass_threshold: 1.0

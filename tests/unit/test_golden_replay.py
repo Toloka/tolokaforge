@@ -151,7 +151,8 @@ class TestRefusalTaskGrading:
             "pass_threshold": 1.0,
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
         assert score == 1.0
         assert binary_pass is True
 
@@ -171,6 +172,7 @@ class TestRefusalTaskGrading:
             "pass_threshold": 1.0,
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
         assert score == 0.0
         assert binary_pass is False

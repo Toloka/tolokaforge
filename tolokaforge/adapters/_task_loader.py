@@ -61,7 +61,10 @@ from tolokaforge.core.deprecations import (
     warn_deprecated,
 )
 from tolokaforge.core.grading.config_validation import (
+    UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
+    CombineLayer,
+    Skip,
     ToolInventory,
     inspect_grading_authoring,
 )
@@ -72,7 +75,11 @@ from tolokaforge.core.models import (
     TaskConfig,
     TaskDefaults,
 )
-from tolokaforge.core.project_loader import construct_config, deep_merge
+from tolokaforge.core.project_loader import (
+    construct_config,
+    deep_merge,
+    resolve_effective_grading_combine,
+)
 
 logger = get_logger(__name__)
 
@@ -84,11 +91,15 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
     TaskConfig.model_fields
 )
 
+# Bound once so the signature's default is the value, not a call in the annotation.
+_UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
+
 
 def validate_grading_yaml(
     grading_path: Path,
     *,
     inventory: ToolInventory,
+    combine_layer: CombineLayer = _UNRESOLVED_COMBINE_LAYER,
     fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
 ) -> AuthoringReport:
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
@@ -117,6 +128,11 @@ def validate_grading_yaml(
         inventory: The task's tool set. A caller that cannot resolve one passes
             :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
             into the returned report's ``unchecked`` and fails nothing.
+        combine_layer: What the task's enclosing project supplies beneath its own
+            ``combine`` block. A caller that cannot resolve it leaves the default,
+            :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
+            ``unchecked`` for the same reason as an unresolvable inventory and with
+            the same consequence.
         fail_on: The least severe finding class that raises.
 
     Returns:
@@ -217,7 +233,18 @@ def validate_grading_yaml(
             "then 'constraints:' or 'alternatives:' indented beneath it."
         )
 
-    report = inspect_grading_authoring(grading_data, inventory)
+    # After the ``combine`` block's own validation above, so a malformed one has
+    # already raised and the value here is a mapping or nothing.
+    effective_combine = (
+        resolve_effective_grading_combine(
+            combine_layer.project_combine, grading_data.get("combine")
+        )
+        if combine_layer.known
+        else None
+    )
+    report = inspect_grading_authoring(grading_data, inventory, effective_combine=effective_combine)
+    if effective_combine is None:
+        report = report.with_unchecked(Skip("combine.weights", UNRESOLVED_COMBINE_REASON))
     fatal = report.fatal(fail_on)
     if fatal:
         written = "\n".join(f"  - {finding.where}: {finding.message}" for finding in fatal)

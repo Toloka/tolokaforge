@@ -143,7 +143,8 @@ class TestGoldenMatchScoresOne:
             "pass_threshold": 1.0,
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == 1.0, f"Score should be 1.0, got {score}"
         assert binary_pass is True, "binary_pass should be True"
@@ -230,7 +231,8 @@ class TestGoldenMismatchScoresZero:
             "pass_threshold": 1.0,
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == 0.0, f"Score should be 0.0, got {score}"
         assert binary_pass is False, "binary_pass should be False"
@@ -426,7 +428,8 @@ class TestLLMJudgePlaceholderStatus:
             "pass_threshold": 0.8,
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         # Should only consider state_checks since llm_judge is not in components
         assert score == 1.0
@@ -458,7 +461,8 @@ class TestLLMJudgePlaceholderStatus:
             spec.config_section: _MINIMAL_CONFIG_SECTIONS[spec.config_section],
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == 0.0, f"{spec.name} configured but unevaluated scored {score}, not 0.0"
         assert binary_pass is False, f"{spec.name} configured with nothing evaluated must not pass"
@@ -484,7 +488,8 @@ class TestLLMJudgePlaceholderStatus:
             "pass_threshold": 1.0,
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == 1.0, f"Score should be 1.0 when no grading configured, got {score}"
         assert binary_pass is True, "binary_pass should be True when no grading configured"

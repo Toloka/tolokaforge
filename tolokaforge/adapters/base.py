@@ -8,6 +8,7 @@ from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge.core.grading.config_validation import CombineLayer
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
@@ -263,6 +264,17 @@ class BaseAdapter(ABC):
         if must_exist:
             raise FileNotFoundError(f"Path not found in task packs or base dir: {candidate}")
         return fallback
+
+    def grading_combine_layer(self) -> CombineLayer:
+        """What this adapter's projects supply beneath a task's own ``combine`` block.
+
+        The pre-run authoring gate resolves a task's effective combine from this and
+        the task's own block. ``unresolvable`` is the honest default: an adapter that
+        synthesises grading config rather than reading a project tree cannot say what
+        a project supplies, and reporting "no defaults" instead would refuse a task
+        whose weights are inherited.
+        """
+        return CombineLayer.unresolvable()
 
     @abstractmethod
     def get_task_ids(self) -> list[str]:

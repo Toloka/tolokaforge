@@ -437,7 +437,6 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
             "jsonpaths": _ASSERTIONS,
             "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 0.6},
         },
-        {"jsonpaths": _ASSERTIONS, "hash": {"enabled": True}},
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False}},
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "weight": 0.6}},
         {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTIONS}},
@@ -448,7 +447,6 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
     ],
     ids=[
         "weight_declared",
-        "hash_on_with_no_source",
         "hash_off",
         "hash_off_with_an_inert_weight",
         "no_assertions_to_weigh",
@@ -485,6 +483,25 @@ def test_validate_rejects_a_hash_the_flag_stops_anything_from_reading(
 
     grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
     with pytest.raises(ValueError, match="the comparison never runs"):
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+
+def test_validate_rejects_a_flag_with_nothing_to_compare_against(tmp_path: Path):
+    """The converse, and the one shape whose two substrates decide it differently.
+
+    Core produces no hash verdict for a source it cannot find while the runner
+    compares the trial against its initial state, so the pack's ``state_checks``
+    component depends on where it was graded. The file gate is what removes the
+    shape: the model still constructs it, because the weight predicate's real-source
+    condition is intact and a weight there would divide a verdict that does not
+    exist — dropping that condition instead would refuse this pack with the *weight*
+    message, for a number nothing reads.
+    """
+    hash_block = {"enabled": True}
+    StateChecksConfig(jsonpaths=_ASSERTIONS, hash=hash_block)
+
+    grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
+    with pytest.raises(ValueError, match="declares no expected_state_hash or golden_actions"):
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 

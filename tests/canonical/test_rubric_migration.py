@@ -21,9 +21,10 @@ Two pack roots reconcile this corpus and both are locked here. The **shipped** a
 ``examples/`` declare the migration they took, and the default ``--packs`` root resolves them,
 which is what makes the re-verification bite on the pack a reviewer reads: editing the shipped
 constraint changes what is recomputed over the frozen corpus. The **fixtures** under
-``tests/data/migration_packs/`` declare the same criterion while declaring no weight map, which
-is the only reason the counterfactual's *source* is measurable — they share the shipped
-``task_id``s, so ``tests/data`` is deliberately not a default root. Either root holds one pack
+``tests/data/migration_packs/`` declare the same criterion under a weight map differing from
+both the pack's current one and the map the corpus recorded, which is the only reason the
+counterfactual's *source* is measurable — they share the shipped ``task_id``s, so ``tests/data``
+is deliberately not a default root. Either root holds one pack
 per arm, because a bundle resolves its constraints through its own ``task_id``, and each root's
 two declarations are identical because pooling keys on the criterion text and the resolved
 constraints — a drift between them is a pooling refusal, not a quietly merged pair of claims.
@@ -362,21 +363,21 @@ def test_the_narrow_leaves_two_vetoes_over_one_policy_on_every_trial(
     veto set carries **both** it and the trace gate — the shipped narrow's whole shape, and the
     fact an after-set built by dropping the criterion would misreport as a veto lost.
 
-    Read beside the weight columns, which say nothing here: this entry declares no map and the
-    criterion frees no score share, so the two maps are identical and the veto set is the only
-    thing carrying the change. That the criterion's own id survives the migration is asserted
-    from the declaration's ``mode`` rather than from the report, so a counterfactual that dropped
-    it reds against ``narrowed`` written on disk.
+    Read beside the weight columns, which move for a different reason: the criterion frees no
+    score share, so every share the declared map shifts is the trace check the migration
+    installs being given one, not the conversion's arithmetic. The veto set is what the
+    conversion itself moves. That the criterion's own id survives the migration is asserted from
+    the declaration's ``mode`` rather than from the report, so a counterfactual that dropped it
+    reds against ``narrowed`` written on disk.
     """
     counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
     declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
 
     assert declared["mode"] == "narrowed"
     assert declared["was"]["required"] is True
-    assert "combine_weights" not in declared
     assert len(counterfactual.trials) == 5
     for row in counterfactual.trials:
-        assert row.weights_before == row.weights_after
+        assert row.weights_after == declared["combine_weights"]
         assert row.vetoes_before == ["checked_duplicates_first"]
         assert row.vetoes_after == [
             "checked_duplicates_first",
@@ -389,7 +390,7 @@ def test_no_reported_weight_map_is_the_map_the_pack_holds_today(tmp_path: Path) 
     current ``combine.weights`` — the post-migration state a reviewer is being asked to judge —
     must not be what the report folds under. Measurable here because the fixture's three maps all
     differ: the pack holds ``{llm_judge: 0.7, trace_checks: 0.3}``, the corpus recorded
-    ``{llm_judge: 1.0}``, and this entry declares none at all.
+    ``{llm_judge: 1.0}``, and this entry declares ``{llm_judge: 0.5, trace_checks: 0.5}``.
     """
     current = yaml.safe_load((_PACKS / "notes_duplicate_check_narrowed/grading.yaml").read_text())[
         "combine"
@@ -397,7 +398,7 @@ def test_no_reported_weight_map_is_the_map_the_pack_holds_today(tmp_path: Path) 
     counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
 
     assert current == {"llm_judge": 0.7, "trace_checks": 0.3}
-    assert counterfactual.weights_declared is None
+    assert counterfactual.weights_declared == {"llm_judge": 0.5, "trace_checks": 0.5}
     assert len(counterfactual.trials) == 5
     for row in counterfactual.trials:
         assert row.weights_before != current

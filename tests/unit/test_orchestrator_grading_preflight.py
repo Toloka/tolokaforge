@@ -41,7 +41,11 @@ pytestmark = pytest.mark.unit
 
 
 def _constraint(match: dict[str, Any]) -> dict[str, Any]:
+    """One trace constraint over *match*, weighted — a pack configuring a component
+    and declaring no weight for it is refused by the gate on its own account, which
+    would make every row here fail for a reason it is not about."""
     return {
+        "combine": {"weights": {"trace_checks": 1.0}},
         "trace_checks": {
             "constraints": [
                 {
@@ -50,7 +54,7 @@ def _constraint(match: dict[str, Any]) -> dict[str, Any]:
                     "require": {"present": {"match": match}},
                 }
             ]
-        }
+        },
     }
 
 

@@ -15,7 +15,13 @@
     "id_fields": {
       "widgets": "widget_id"
     },
-    "jsonpaths": [],
+    "jsonpaths": [
+      {
+        "description": "widget W1 is no longer pending",
+        "equals": "active",
+        "path": "$.db.widgets[0].status"
+      }
+    ],
     "numeric_string_fields": [],
     "relaxed_validation": false
   },

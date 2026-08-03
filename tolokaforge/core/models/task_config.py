@@ -366,6 +366,7 @@ class StateChecksConfig(BaseModel):
                 "        equals: shipped\n"
                 "    hash:                          # whole-state comparison\n"
                 "      enabled: true\n"
+                "      golden_actions: [...]        # or expected_state_hash\n"
                 "    db_probes:                     # substrate SQL assertions\n"
                 "      - name: order_shipped\n"
                 "        dsn: postgresql://...\n"

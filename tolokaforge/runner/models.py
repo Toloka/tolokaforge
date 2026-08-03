@@ -1726,7 +1726,10 @@ class RunnerGradingConfig(BaseModel):
     """
 
     combine_method: CombineMethod = "weighted"
-    weights: dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
+    # Empty rather than a weight for a component the payload never configured: a share
+    # invented here reads to the fold as one the author declared, and the fold's answer to
+    # "nothing was configured" is only reachable when nothing is weighted either.
+    weights: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
 
     @field_validator("combine_method", mode="before")

@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
@@ -34,14 +35,31 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
+    _A_NON_EMPTY_SECTION_STILL_DECLARES,
     _TEXTUAL_MATCHER_FIELDS,
+    _TOOL_EXPECTATION_HAZARDS,
+    _TRANSCRIPT_RULE_KEYS,
+    _WHAT_EACH_SECTION_MUST_DECLARE,
+    UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
+    CombineLayer,
     Finding,
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.grading.grade_components import (
+    COMPONENT_BY_NAME,
+    GRADE_COMPONENTS,
+    component_requested,
+)
 from tolokaforge.core.grading.trace_timeline import TraceEvent
-from tolokaforge.core.models import GradingFindingSeverity
+from tolokaforge.core.models import (
+    GradingCombineConfig,
+    GradingConfig,
+    GradingFindingSeverity,
+    ToolExpectations,
+    TranscriptRulesConfig,
+)
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
 
 pytestmark = pytest.mark.unit
@@ -124,7 +142,12 @@ def _quotes(operator: str, name: str) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _Rule:
-    """One authored defect, the channel it lands in, and the fix it must name."""
+    """One authored defect, the channel it lands in, and the fix it must name.
+
+    ``combine`` is the effective map the row is checked under. ``None`` leaves the
+    weight rules out, which is what every tool-aware row wants: they are about a
+    matcher, and a weight finding beside one would report two defects for one typo.
+    """
 
     label: str
     task: Path
@@ -132,6 +155,7 @@ class _Rule:
     checker: str
     channel: str
     message: str
+    combine: GradingCombineConfig | None = None
 
 
 _RULES: tuple[_Rule, ...] = (
@@ -215,6 +239,64 @@ _RULES: tuple[_Rule, ...] = (
         channel="errors",
         message="the comparison never runs",
     ),
+    _Rule(
+        label="enabled_hash_with_no_source",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        message="Declare expected_state_hash or golden_actions",
+    ),
+    _Rule(
+        label="a_section_that_declares_nothing",
+        task=_HELPDESK,
+        grading={"transcript_rules": {}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="declares nothing at all",
+    ),
+    _Rule(
+        label="a_state_checks_block_with_no_source",
+        task=_HELPDESK,
+        grading={"state_checks": {"jsonpaths": [], "relaxed_validation": True}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="declares no source any substrate can read",
+    ),
+    _Rule(
+        label="a_transcript_rules_block_with_no_rule",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"required_actions": []}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="declares no rule any substrate can evaluate",
+    ),
+    _Rule(
+        label="a_custom_checks_block_deciding_no_opt_in",
+        task=_HELPDESK,
+        grading={"custom_checks": {"file": "checks.py"}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="the component's own default reads as off",
+    ),
+    _Rule(
+        label="configured_component_with_no_weight",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"max_turns": 10}},
+        checker="_check_requested_components_are_weighted",
+        channel="errors",
+        message="Declare combine.weights.transcript_rules",
+        combine=GradingCombineConfig(weights={}),
+    ),
+    _Rule(
+        label="weight_naming_a_component_the_pack_never_configures",
+        task=_HELPDESK,
+        grading={},
+        checker="_check_weights_name_requested_components",
+        channel="errors",
+        message="the weight weighs nothing",
+        combine=GradingCombineConfig(weights={"state_checks": 1.0}),
+    ),
 )
 
 _FINDING_CHANNELS = ("errors", "advisories")
@@ -235,7 +317,9 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
     is only suspect; reporting either in the other's channel would hard-fail a pack
     the schema does not condemn, or wave through a matcher that selects nothing.
     """
-    report = inspect_grading_authoring(rule.grading, _inventory(rule.task))
+    report = inspect_grading_authoring(
+        rule.grading, _inventory(rule.task), effective_combine=rule.combine
+    )
 
     reported = _texts(report, rule.channel)
     assert any(rule.message in text for text in reported), reported
@@ -273,7 +357,9 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     for name in declared:
         monkeypatch.setattr(config_validation, name, _recording(name, answered))
     for rule in _RULES:
-        inspect_grading_authoring(rule.grading, _inventory(rule.task))
+        inspect_grading_authoring(
+            rule.grading, _inventory(rule.task), effective_combine=rule.combine
+        )
 
     assert answered == declared
 
@@ -374,7 +460,8 @@ def test_an_unresolvable_inventory_fails_nothing_and_says_why(
     assert report.advisories == ()
     assert [skip.reason for skip in report.unchecked] == [
         "the tool set of this task could not be resolved, so no tool name and no "
-        "argument name in this block is checkable"
+        "argument name in this block is checkable",
+        UNRESOLVED_COMBINE_REASON,
     ]
 
 
@@ -564,6 +651,258 @@ def test_a_truthy_hash_flag_is_not_a_finding(enabled: Any) -> None:
     assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
 
 
+@pytest.mark.parametrize("enabled", _HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON)
+def test_a_truthy_hash_flag_with_no_source_is_refused(enabled: Any) -> None:
+    """Every flag spelling that grades needs something to grade against.
+
+    The same three spellings the rule above may not refuse *with* a source it must
+    refuse *without* one, and for the same reason read the other way: a flag core
+    branches on and the runner coerces is a flag that reaches the hash evaluator, so
+    testing it for ``True`` here would leave ``enabled: 1`` free to carry the
+    divergence the rule exists to close.
+    """
+    grading = {"state_checks": {"hash": {"enabled": enabled}}}
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_an_enabled_hash_beside_an_empty_jsonpath_list_is_refused() -> None:
+    """Standing single case: the shape whose two substrates decide it differently.
+
+    Core evaluates neither source here — no hash to compare and no assertion to run —
+    so its ``state_checks`` component rests on no evidence at all, while the runner's
+    refusal semantics compare the trial against its initial state and hand the fold a
+    real binary verdict. Refusing the shape is what keeps that cell out of the
+    authorable set; a gate that accepted it would hand both substrates the same pack
+    to disagree over.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True}, "jsonpaths": []}}
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_an_empty_golden_action_list_is_not_a_hash_source() -> None:
+    """Standing single case: a declared source that replays nothing is no source.
+
+    An empty list is the shape a pack reaches by deleting the actions and leaving the
+    key, and both substrates already read it as absent — core names it as the missing
+    source in ``grade.reasons`` and the runner replays nothing. A gate keying on the
+    key's *presence* would accept it and leave the divergence reachable.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": []}}}
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_golden_actions_alone_are_a_hash_source() -> None:
+    """Standing single case: the source shape both substrates are proven to share.
+
+    The replay is what every shipped golden-action pack grades by, so a rule reading
+    only ``expected_state_hash`` as a source would refuse the one hash shape whose
+    verdict is the same on both substrates.
+    """
+    grading = {
+        "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "place_order"}]}}
+    }
+
+    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+
+
+# The rest of a loadable config, because ``combine`` is required: without it every
+# section below reads as refused, for a reason that has nothing to do with its block.
+_A_MINIMAL_COMBINE = {"combine": {"method": "weighted", "weights": {}, "pass_threshold": 1.0}}
+
+
+def _refuses_its_own_empty_block(section: str) -> bool:
+    """Whether ``GradingConfig`` refuses *section* written ``{}``, on the block's account.
+
+    The error has to name the section. A required field added elsewhere in the model
+    would otherwise read as "no empty block loads", which silently empties the gate
+    rule's scope instead of failing.
+    """
+    try:
+        GradingConfig.model_validate({**_A_MINIMAL_COMBINE, section: {}})
+    except ValidationError as error:
+        return any(str(item["loc"][0]) == section for item in error.errors())
+    return False
+
+
+def test_the_sections_a_gate_rule_reaches_are_the_ones_the_models_still_admit() -> None:
+    """Rule 1's scope is measured against the models, not listed beside them.
+
+    Two of the five components already refuse their empty block at construction — a
+    ``trace_checks`` block declaring neither constraints nor alternatives, and an
+    ``llm_judge`` block with no rubric — so the gate rule finishes a call the project
+    made twice rather than introducing one, and it reaches exactly the three that are
+    left. Both columns are asserted rather than only their agreement: a component that
+    grew its own refusal has to leave the gate rule's table, and one that lost it has
+    to join it.
+
+    The two tables the rule reads are held to the same key set, because the deeper
+    one is looked up totally: a section joining the first without an answer in the
+    second raises ``KeyError`` on every block the author writes.
+    """
+    sections = {spec.config_section for spec in GRADE_COMPONENTS}
+    refused = {section for section in sections if _refuses_its_own_empty_block(section)}
+
+    assert refused == {"trace_checks", "llm_judge"}
+    assert sections - refused == {"state_checks", "transcript_rules", "custom_checks"}
+    assert set(_WHAT_EACH_SECTION_MUST_DECLARE) == sections - refused
+    assert set(_A_NON_EMPTY_SECTION_STILL_DECLARES) == set(_WHAT_EACH_SECTION_MUST_DECLARE)
+
+
+_SOURCELESS_STATE_CHECKS = (
+    pytest.param({}, "state_checks", id="an_empty_block"),
+    pytest.param({"jsonpaths": []}, "state_checks", id="an_empty_assertion_list"),
+    pytest.param(
+        {"jsonpaths": [], "id_fields": {"widgets": "widget_id"}},
+        "state_checks",
+        id="only_keys_that_configure_how_a_source_is_read",
+    ),
+    pytest.param({"hash": {}}, "state_checks", id="a_hash_block_declaring_neither_half"),
+    pytest.param(
+        {"hash": {"enabled": False}}, "state_checks", id="a_hash_block_with_only_the_flag_off"
+    ),
+    pytest.param(
+        {"hash": {"enabled": True}}, "state_checks.hash.enabled", id="the_flag_on_with_no_source"
+    ),
+    pytest.param(
+        {"hash": {"enabled": True, "golden_actions": []}},
+        "state_checks.hash.enabled",
+        id="the_flag_on_with_an_empty_replay",
+    ),
+    pytest.param(
+        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        "state_checks.hash.expected_state_hash",
+        id="a_source_the_flag_never_reads",
+    ),
+)
+
+
+@pytest.mark.parametrize(("state_checks", "address"), _SOURCELESS_STATE_CHECKS)
+def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
+    state_checks: dict[str, Any], address: str
+) -> None:
+    """The two rules over ``state_checks`` partition its unevaluable shapes.
+
+    Every shape here scores nothing, and each must be refused once and addressed at
+    the key its own fix belongs to: a block that declares no source at all is the
+    section's finding, and a hash block whose flag and source disagree is the hash
+    rule's. Asserting the *whole* list rather than membership is what holds the
+    partition — a rule widened to cover a shape the other already owns shows up here
+    as two findings for one defect, and one narrowed shows up as none.
+    """
+    report = inspect_grading_authoring({"state_checks": state_checks}, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == [address]
+
+
+# The other two sections rule 1 reaches, refused and surviving shapes in one table
+# because the boundary between them is the whole content of each rule. Every refused
+# row scored a vacuous ``1.0`` — the block reads as configured, is evaluated against
+# nothing, and averaging an empty sub-check set produces a perfect score — and every
+# row is the smallest edit to a neighbour that crosses the line, so a rule widened
+# past what it owns shows up here as a survivor that stopped loading.
+_SECTIONS_WITH_KEYS_THAT_CONFIGURE_RATHER_THAN_ASSERT = (
+    pytest.param({"transcript_rules": {}}, ["transcript_rules"], id="an_empty_transcript_block"),
+    pytest.param(
+        {"transcript_rules": {"required_actions": []}},
+        ["transcript_rules"],
+        id="an_empty_required_action_list",
+    ),
+    pytest.param(
+        {"transcript_rules": {"must_contain": [], "disallow_regex": [], "communicate_info": []}},
+        ["transcript_rules"],
+        id="every_phrase_list_empty_at_once",
+    ),
+    pytest.param(
+        {"transcript_rules": {"tool_expectations": {"required_tools": [], "disallowed_tools": []}}},
+        ["transcript_rules"],
+        id="a_tool_expectations_block_expecting_neither",
+    ),
+    pytest.param(
+        {"transcript_rules": {"must_contain": ["cannot"]}}, [], id="one_phrase_to_search_for"
+    ),
+    pytest.param({"transcript_rules": {"max_turns": 10}}, [], id="a_bound_on_the_turn_counter"),
+    pytest.param(
+        {"transcript_rules": {"min_assistant_turns": 1}}, [], id="an_activity_floor_alone"
+    ),
+    pytest.param(
+        {"transcript_rules": {"tool_expectations": {"required_tools": ["http_request"]}}},
+        [],
+        id="one_required_tool",
+    ),
+    pytest.param(
+        {"transcript_rules": {"tool_expectations": {"disallowed_tools": ["http_request"]}}},
+        [],
+        id="one_forbidden_tool",
+    ),
+    pytest.param({"custom_checks": {}}, ["custom_checks"], id="an_empty_custom_checks_block"),
+    pytest.param(
+        {"custom_checks": {"file": "checks.py"}},
+        ["custom_checks"],
+        id="a_checks_file_under_no_flag",
+    ),
+    pytest.param({"custom_checks": {"enabled": False}}, [], id="the_opt_out_written_down"),
+    pytest.param(
+        {"custom_checks": {"enabled": True, "file": "checks.py"}}, [], id="the_suite_switched_on"
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("grading", "addresses"), _SECTIONS_WITH_KEYS_THAT_CONFIGURE_RATHER_THAN_ASSERT
+)
+def test_a_block_whose_every_key_only_configures_how_it_runs_is_refused(
+    grading: dict[str, Any], addresses: list[str]
+) -> None:
+    """Rule 1 reaches past the empty mapping for all three sections it owns.
+
+    A ``transcript_rules`` whose every rule list is empty and a ``custom_checks``
+    naming a file under no ``enabled`` flag are both non-empty mappings that assert
+    nothing: the first is scored against no sub-check, and the second never runs
+    because ``CustomChecksConfig.enabled`` defaults to ``False``. Both took a free
+    ``1.0`` while reading as configured, which is what makes them the same defect as
+    the empty block rather than a milder one.
+
+    The surviving rows are asserted in the same table so the refusal is a boundary
+    and not a blanket: a bound on the turn counter, one phrase, one tool on either
+    expectation list, and the opt-out written down all still load.
+    """
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == addresses
+
+
+def test_the_transcript_rules_the_gate_reads_are_the_ones_the_model_declares() -> None:
+    """The predicate's scope is measured against ``TranscriptRulesConfig``, not listed.
+
+    A rule key added to the model and not here would declare something the gate reads
+    as nothing, refusing a pack that grades — the failure direction a list beside the
+    model cannot catch. ``tool_expectations`` is the one field read a level down,
+    through the two keys the tool-name rule already addresses, so its own key set is
+    held against ``ToolExpectations`` in the same breath.
+
+    The author-facing sentence is checked against the same sets, since a message that
+    named a key the predicate stopped reading would send the author to declare
+    something the gate goes on refusing.
+    """
+    assert set(_TRANSCRIPT_RULE_KEYS) | {"tool_expectations"} == set(
+        TranscriptRulesConfig.model_fields
+    )
+    assert set(_TOOL_EXPECTATION_HAZARDS) == set(ToolExpectations.model_fields)
+
+    what_to_declare = _WHAT_EACH_SECTION_MUST_DECLARE["transcript_rules"]
+    for key in (*_TRANSCRIPT_RULE_KEYS, *_TOOL_EXPECTATION_HAZARDS, "tool_expectations"):
+        assert key in what_to_declare, key
+
+
 def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     """The two states decide opposite things, so a hybrid decides neither.
 
@@ -577,6 +916,184 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
         ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)
 
     assert ToolInventory.unresolvable().known is False
+
+
+# ---------------------------------------------------------------------------
+# A component and its weight name each other, in both directions
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicit_opt_out_loads_and_needs_no_weight() -> None:
+    """Standing single case: ``custom_checks: {enabled: false}`` declares something.
+
+    An explicit opt-out is not "declares nothing", and it survives the wire intact
+    where an empty block does not — so both substrates read it the same, and neither
+    scores it. Weighting a component nobody scores is what the second half refuses,
+    which is what makes the first half a decision rather than an omission.
+    """
+    opted_out = {"custom_checks": {"enabled": False}}
+    no_weights = GradingCombineConfig(weights={})
+
+    assert (
+        inspect_grading_authoring(opted_out, _inventory(_HELPDESK), effective_combine=no_weights)
+        == AuthoringReport()
+    )
+
+    weighted_anyway = inspect_grading_authoring(
+        opted_out,
+        _inventory(_HELPDESK),
+        effective_combine=GradingCombineConfig(weights={"custom_checks": 1.0}),
+    )
+    assert [finding.where for finding in weighted_anyway.errors] == [
+        "combine.weights.custom_checks"
+    ]
+    assert "absent or opted out" in weighted_anyway.errors[0].message
+
+
+def test_an_unflagged_custom_checks_block_is_not_requested_by_the_components_own_default() -> None:
+    """Standing single case: ``CustomChecksConfig.enabled`` defaults to ``False``.
+
+    A caller reading the key generically would default it the other way and demand a
+    weight for a component no substrate runs. The predicate asks the component, which
+    is why "not requested" is the answer for a block that names a checks file — so
+    neither weight rule fires here, and the only finding is rule 1's.
+
+    That the block escapes both weight rules is exactly why rule 1 has to reach it: an
+    unrequested component with no weight is invisible to the fold, and a pack whose
+    ``custom_checks`` is its only section then lands the free pass a pack asking for
+    nothing has earned, scoring ``1.0`` on a suite that never ran.
+    """
+    grading = {"custom_checks": {"file": "checks.py"}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), effective_combine=GradingCombineConfig(weights={})
+    )
+
+    assert [finding.where for finding in report.errors] == ["custom_checks"]
+    assert not component_requested(COMPONENT_BY_NAME["custom_checks"], grading["custom_checks"])
+
+
+def test_a_mistyped_custom_checks_key_raises_rather_than_disabling_the_component() -> None:
+    """Standing single case: the predicate inherits the block's own validation.
+
+    Reading ``enabled`` off a block with a misspelled key would answer "not
+    requested" — silently unscoring a component the author asked for and demanding no
+    weight for it, so the pack would validate clean and grade without it.
+    """
+    with pytest.raises(ValidationError, match="enabld"):
+        inspect_grading_authoring(
+            {"custom_checks": {"enabld": True}},
+            _inventory(_HELPDESK),
+            effective_combine=GradingCombineConfig(weights={}),
+        )
+
+
+def test_a_component_written_null_is_not_requested_and_a_declared_one_is() -> None:
+    """Standing single case: ``llm_judge: null`` is absent, not configured.
+
+    Both halves, because the negative alone passes under a predicate that never
+    reports anything: the same block with a rubric must demand its weight.
+    """
+    no_weights = GradingCombineConfig(weights={})
+
+    assert (
+        inspect_grading_authoring(
+            {"llm_judge": None}, _inventory(_HELPDESK), effective_combine=no_weights
+        )
+        == AuthoringReport()
+    )
+
+    declared = inspect_grading_authoring(
+        {"llm_judge": {"rubric": {"criteria": []}}},
+        _inventory(_HELPDESK),
+        effective_combine=no_weights,
+    )
+    assert [finding.where for finding in declared.errors] == ["combine.weights.llm_judge"]
+
+
+def test_a_deliberately_non_scoring_pack_loads_clean() -> None:
+    """Standing single case: nothing configured and nothing weighted asks for nothing.
+
+    The shape the wire-probe fixtures exist in — they record wire behaviour and score
+    nothing, and say so in their own comment. What the rules forbid is the stray
+    weight beside it, not the free pass itself.
+    """
+    report = inspect_grading_authoring(
+        {}, _inventory(_HELPDESK), effective_combine=GradingCombineConfig(weights={})
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_a_weight_naming_no_component_at_all_is_refused_with_the_other_fix() -> None:
+    """``combine.weights`` validates no key, so a typo there reaches both folds unread.
+
+    Boundary case, standing lock: the fix is not the one a weight naming a real but
+    unconfigured component takes — there is no section to configure — so a single
+    message would send the author to write a block that does not exist.
+    """
+    report = inspect_grading_authoring(
+        {"transcript_rules": {"max_turns": 10}},
+        _inventory(_HELPDESK),
+        effective_combine=GradingCombineConfig(
+            weights={"transcript_rules": 1.0, "transcript_rule": 1.0}
+        ),
+    )
+
+    assert [finding.where for finding in report.errors] == ["combine.weights.transcript_rule"]
+    assert "names no grading component" in report.errors[0].message
+    assert "Correct the name, or drop the weight" in report.errors[0].message
+
+
+# ---------------------------------------------------------------------------
+# The effective combine: inherited weights pass, an unresolved fold is unchecked
+# ---------------------------------------------------------------------------
+
+
+def test_a_task_inheriting_its_weights_from_its_project_passes(tmp_path: Path) -> None:
+    """B1's regression cell: the rule reads the effective combine, not the authored block.
+
+    Five shipped ``example-microservices-pack`` tasks are this shape — four declare no
+    ``combine`` at all and one declares ``pass_threshold`` alone, with a comment saying
+    the rest inherits. A rule reading the file would refuse all five.
+    """
+    grading = _write_grading(tmp_path, {"transcript_rules": {"max_turns": 10}})
+
+    report = validate_grading_yaml(
+        grading,
+        inventory=ToolInventory.unresolvable(),
+        combine_layer=CombineLayer({"weights": {"transcript_rules": 1.0}}),
+    )
+
+    assert report.errors == ()
+    assert [skip.reason for skip in report.unchecked] == [config_validation._UNRESOLVABLE_REASON]
+
+
+def test_the_same_task_with_no_resolvable_project_reports_unchecked(tmp_path: Path) -> None:
+    """A fold nobody resolved is reported, never passed.
+
+    The same pack as the case above, whose weight is supplied by a layer this caller
+    cannot see. Answering "unweighted" would refuse a pack that grades correctly;
+    answering "clean" would report a rule that ran on nothing as a rule that held.
+    """
+    grading = _write_grading(tmp_path, {"transcript_rules": {"max_turns": 10}})
+
+    report = validate_grading_yaml(grading, inventory=ToolInventory.unresolvable())
+
+    assert report.errors == ()
+    assert UNRESOLVED_COMBINE_REASON in [skip.reason for skip in report.unchecked]
+
+
+def test_an_unresolvable_combine_layer_may_not_carry_project_defaults() -> None:
+    """The two states decide opposite things, so a hybrid decides neither.
+
+    ``known=False`` skips both weight rules, so defaults reported beside it are
+    resolved and then ignored — a fold checked against nothing, reading as unchecked.
+    """
+    with pytest.raises(ValueError, match="unresolvable combine layer carries project defaults"):
+        CombineLayer(project_combine={"weights": {"state_checks": 1.0}}, known=False)
+
+    assert CombineLayer.unresolvable().known is False
 
 
 # ---------------------------------------------------------------------------

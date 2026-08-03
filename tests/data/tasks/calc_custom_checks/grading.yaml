@@ -1,16 +1,12 @@
 combine:
   method: "weighted"
   weights:
-    state_checks: 0.3
-    custom_checks: 0.7
+    custom_checks: 1.0
   pass_threshold: 0.8
 
-state_checks:
-  # No jsonpaths — counter_reached_target() in checks.py owns the "counter >= 5"
-  # assertion (the engine has no gte operator; an `equals: 5` here would tighten
-  # the original "at least 5" semantic).
-  jsonpaths: []
-
+# No state_checks block — counter_reached_target() in checks.py owns the
+# "counter >= 5" assertion (the engine has no gte operator; an `equals: 5` would
+# tighten the original "at least 5" semantic), so there is no state source to declare.
 custom_checks:
   enabled: true
   file: "checks.py"

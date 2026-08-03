@@ -115,6 +115,9 @@ def simple_task_description() -> dict[str, Any]:
         "grading": {
             "combine_method": "all",
             "pass_threshold": 1.0,
+            # Declared rather than left to the model's default, which weights nothing: the
+            # fold refuses to invent a share for a component the payload configures.
+            "weights": {"state_checks": 1.0},
             "state_checks": {
                 "hash_enabled": True,
                 "golden_actions": [

@@ -82,12 +82,13 @@ def _combine(method: str, pass_threshold: float) -> tuple[float, bool]:
 
 
 def _runner_combine(method: object) -> tuple[float, bool]:
-    return combine_grade_components(
+    folded = combine_grade_components(
         _RUNNER_COMPONENT_SCORES, {**_RUNNER_CONFIG, "combine_method": method}
     )
+    return folded.score, folded.binary_pass
 
 
-def _unscored_trial_grade(*, method: str, pass_threshold: float) -> tuple[float, bool]:
+def _unscored_trial_grade(*, method: str, pass_threshold: float) -> tuple[float, bool, str]:
     """Core's verdict on a trial where no configured component was scored."""
     grading_config = GradingConfig.model_validate(
         {
@@ -107,7 +108,7 @@ def _unscored_trial_grade(*, method: str, pass_threshold: float) -> tuple[float,
         tool_log=[],
     )
     grade = GradingEngine(grading_config).grade_trajectory(trajectory, {})
-    return grade.score, grade.binary_pass
+    return grade.score, grade.binary_pass, grade.reasons
 
 
 class TestDispatchTable:
@@ -217,19 +218,24 @@ class TestEmptyComponentScores:
                 pass_threshold=0.8,
             )
 
-    @pytest.mark.parametrize(("pass_threshold", "expected_pass"), ((0.0, True), (0.8, False)))
-    def test_core_answers_an_unscored_trial_from_the_threshold_alone(
-        self, pass_threshold, expected_pass
+    @pytest.mark.parametrize("pass_threshold", _PASS_THRESHOLDS)
+    def test_core_fails_an_unscored_trial_at_every_threshold_and_names_the_weight(
+        self, pass_threshold
     ):
-        """``all`` over an empty map has no answer, so the engine must not ask for one.
+        """``all`` over an empty map has no answer, so the engine must not ask for one —
+        and its own answer is not a threshold comparison either.
 
-        Its own answer compares ``0.0`` to the author's threshold, which passes at
-        ``pass_threshold: 0.0`` — a config shape that grades today.
+        The config weights ``state_checks`` and configures no component, so nothing was
+        scored and there is no number for a threshold to admit. Swept over every declared
+        threshold, ``0.0`` included: a comparison against ``0.0`` passes there, so an
+        implementation answering from the threshold reds on that row alone.
         """
-        assert _unscored_trial_grade(method="all", pass_threshold=pass_threshold) == (
-            0.0,
-            expected_pass,
+        score, binary_pass, reasons = _unscored_trial_grade(
+            method="all", pass_threshold=pass_threshold
         )
+
+        assert (score, binary_pass) == (0.0, False)
+        assert "state_checks" in reasons, reasons
 
 
 class TestTheRunnerCombineDispatchesOnTheDeclaredMethod:

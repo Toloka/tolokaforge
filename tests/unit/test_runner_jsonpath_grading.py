@@ -346,7 +346,7 @@ def test_combine_folds_by_the_weight_the_grading_config_carries(hash_weight, exp
             "hash_weight": hash_weight,
         },
     }
-    score, _ = combine_grade_components(components, grading_config)
+    score = combine_grade_components(components, grading_config).score
     assert score == pytest.approx(expected)
 
 
@@ -357,7 +357,7 @@ def test_combine_components_uses_jsonpath_when_hash_absent():
         "weights": {"state_checks": 1.0},
         "state_checks": {"jsonpath_checks": [{"path_glob": "x"}]},
     }
-    score, _ = combine_grade_components(components, grading_config)
+    score = combine_grade_components(components, grading_config).score
     assert score == 0.75
 
 
@@ -452,7 +452,8 @@ def test_combine_components_uses_db_probe_as_state_checks():
         "weights": {"state_checks": 1.0},
         "state_checks": {"db_probes": [{"name": "x"}]},
     }
-    score, binary_pass = combine_grade_components(components, grading_config)
+    folded = combine_grade_components(components, grading_config)
+    score, binary_pass = folded.score, folded.binary_pass
     assert score == 1.0
     assert binary_pass is True
 

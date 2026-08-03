@@ -65,7 +65,7 @@ from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
-from tolokaforge.runner.models import GradingConfig, TaskDescription
+from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
 
 _TASK_IDS = count()
 
@@ -162,7 +162,7 @@ def _make_task_description(task_id: str) -> TaskDescription:
         description="d",
         adapter_type="native",
         system_prompt="sys",
-        grading=GradingConfig(llm_judge=None),
+        grading=RunnerGradingConfig(llm_judge=None),
     )
 
 

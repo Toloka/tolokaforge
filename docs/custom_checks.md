@@ -98,7 +98,9 @@ The rules:
 - `CheckPassed(message, score=1.0, details={})` and
   `CheckFailed(message, score=0.0, details={})` accept a positional
   message and optional score / details dict. `CheckSkipped(message)` is
-  excluded from the aggregate score. Scores are clamped `[0, 1]`.
+  excluded from the aggregate score, so a suite whose every check skipped
+  produces **no** `custom_checks` component rather than a `0.0`. Scores
+  are clamped `[0, 1]`.
 - `SUPPORTED_VERSIONS` lives in
   `tolokaforge.core.grading.checks_interface`. A declared
   `interface_version` outside that set is rejected at `RegisterTrial`
@@ -191,6 +193,14 @@ The host parses that list into `Grade.custom_checks_details`
 `check_name="__executor__"` preserves the audit and the aggregate score
 follows `fail_on_error`: `0.0` when true, excluded from the combine when
 false.
+
+`Grade.components.custom_checks` is `null` under three conditions, on both
+substrates: the pack declares no `custom_checks` block, the block sets
+`enabled: false`, or an enabled suite decided nothing — every check returned
+`CheckSkipped`, or the file declared no `@check` at all. The third is the one
+worth reading twice: an aggregate over zero verdicts is `0.0` arithmetically,
+which would fold as a component that failed, so the component is left unscored
+and the fold decides on what was actually decided.
 
 ## Choosing a test tier
 

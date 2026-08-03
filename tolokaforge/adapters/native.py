@@ -16,10 +16,12 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
+from tolokaforge.core.grading.config_validation import CombineLayer
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
     construct_config,
+    project_grading_combine,
     resolve_effective_grading_combine,
     resolve_effective_judge_customization,
 )
@@ -327,11 +329,11 @@ class NativeAdapter(BaseAdapter):
 
         raise ValueError(f"Grading config not found: {grading_path}")
 
+    def grading_combine_layer(self) -> CombineLayer:
+        return CombineLayer(self._project_combine_defaults())
+
     def _project_combine_defaults(self) -> dict[str, Any] | None:
-        """The project's ``task_defaults.grading_defaults.combine`` sub-dict,
-        the base layer under each task's own ``grading.yaml.combine``.
-        ``None`` when the enclosing project sets no grading defaults."""
-        return self._project_task_defaults.get("grading_defaults", {}).get("combine")
+        return project_grading_combine(self._project_task_defaults)
 
     def _project_judge_customization_defaults(self) -> dict[str, Any] | None:
         """The project's ``task_defaults.grading_defaults.llm_judge.customization``

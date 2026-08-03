@@ -15,6 +15,12 @@ this locks:
 3. Same, with ``fail_on_error=False`` — score is the -1.0 "not evaluated"
    sentinel so ``combine_grade_components`` excludes it from the weighted
    total; the ``__executor__`` audit entry is still emitted.
+
+The fourth shape is not an error at all: a suite that ran and *decided nothing*,
+because every check skipped or the file declared none. It also reports the -1.0
+sentinel — the runner's spelling of the unscored component the core engine
+produces for the same suite — and the case that reached a verdict is asserted
+beside it so the sentinel is not a constant.
 """
 
 from __future__ import annotations
@@ -26,7 +32,7 @@ from typing import Any
 import pytest
 
 from tolokaforge.core.grading.check_runner import InMemoryCheckExecutor
-from tolokaforge.core.grading.checks_interface import CheckResultSet
+from tolokaforge.core.grading.checks_interface import CheckResult, CheckResultSet, CheckStatus
 from tolokaforge.runner.models import RunnerGradingConfig, RunnerInitialStateConfig
 from tolokaforge.runner.service import RunnerServiceImpl
 
@@ -223,6 +229,69 @@ class TestGradeCustomChecksExecutorErrors:
             assert entry.status == "error"
             assert "boom: executor crashed mid-run" in entry.message
             # Dispatch happened; the call is recorded even though it raised.
+            assert len(executor.call_log.runs) == 1
+        finally:
+            servicer.shutdown()
+
+    @pytest.mark.parametrize(
+        ("results", "expected"),
+        (
+            pytest.param(
+                [
+                    CheckResult(check_name="c1", status=CheckStatus.SKIPPED, score=0.0),
+                    CheckResult(check_name="c2", status=CheckStatus.SKIPPED, score=1.0),
+                ],
+                -1.0,
+                id="every_check_skipped",
+            ),
+            pytest.param([], -1.0, id="the_file_declared_no_check"),
+            pytest.param(
+                [
+                    CheckResult(check_name="c1", status=CheckStatus.SKIPPED, score=1.0),
+                    CheckResult(check_name="c2", status=CheckStatus.FAILED, score=0.0),
+                ],
+                0.0,
+                id="one_check_reached_a_verdict",
+            ),
+        ),
+    )
+    def test_a_suite_that_decided_nothing_reports_the_not_evaluated_sentinel(
+        self, tmp_path: Path, results: list[CheckResult], expected: float
+    ) -> None:
+        """The runner reaches core's answer for a suite of skips, through one predicate.
+
+        ``aggregate_score`` averages the unskipped results and returns ``0.0`` over none
+        of them, so a suite that only skipped would fold as a component that failed —
+        the vacuous ``1.0`` sign-flipped, and a divergence from the core engine, which
+        leaves the component unscored. The runner's ``-1.0`` is the same answer in this
+        substrate's own vocabulary: ``combine_grade_components`` reads it as not
+        evaluated.
+
+        The third row is what keeps the sentinel from being a constant: one failing
+        check among skips *decided* something, its aggregate is also ``0.0``, and that
+        ``0.0`` reaches the fold as a real verdict.
+        """
+        executor = InMemoryCheckExecutor(result_set=CheckResultSet(results=results))
+        servicer = _build_servicer(check_executor=executor)
+        try:
+            trial_id = "reconcile:0"
+            servicer._artifact_dirs[trial_id] = tmp_path
+            trial_context = _trial_context(
+                custom_checks={
+                    "enabled": True,
+                    "file": "checks.py",
+                    "interface_version": "1.0",
+                    "fail_on_error": True,
+                },
+            )
+
+            score, wire = _await(
+                servicer,
+                servicer._grade_custom_checks(trial_id, trial_context, llm_messages=[]),
+            )
+
+            assert score == expected
+            assert [entry.check_name for entry in wire] == [item.check_name for item in results]
             assert len(executor.call_log.runs) == 1
         finally:
             servicer.shutdown()

@@ -1,2 +1,8 @@
-transcript_rules:
-  required_actions: []
+# NON-SCORING by design. This fixture is loaded, never graded — it exists so the
+# adapter's builtin tool-config plumbing has a `mobile` tool to resolve. `weights: {}`
+# beside no component section asks for nothing, so the fold owes nothing; an empty
+# `required_actions` list beside a weight would instead claim a rule it does not have.
+combine:
+  method: weighted
+  weights: {}
+  pass_threshold: 1.0

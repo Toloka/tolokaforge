@@ -14,14 +14,17 @@ including a wire key whose absence silently wrote ``-1.0`` into a real score.
 
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from tests.utils.wire_grades import lower_wire_grade
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.models import GradeComponents as CoreGradeComponents
-from tolokaforge.core.models import GradingConfig
+from tolokaforge.core.models import GradingConfig, StateChecksConfig
 from tolokaforge.runner import runner_pb2
 from tolokaforge.runner.models import GradeComponents as RunnerGradeComponents
+from tolokaforge.runner.models import GradingConfig as RunnerGradingConfig
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -73,3 +76,28 @@ def test_every_config_section_resolves_on_the_grading_config() -> None:
         spec.config_section for spec in GRADE_COMPONENTS if spec.config_section not in declared
     ]
     assert unresolved == []
+
+
+def test_every_gated_component_carries_its_section_raw_on_both_config_models() -> None:
+    """A component's opt-in gate reads the keys the *author* wrote.
+
+    So its section cannot arrive already constructed: a sub-model has applied the
+    flag's default before the gate sees it, and the gate would then answer for a block
+    nobody wrote — reading an unflagged ``custom_checks`` as an explicit opt-out, which
+    is the same silent unscoring a mistyped key would cause. Both models are asserted
+    because both are producers, and retyping either section to a sub-model would
+    otherwise surface only at grade time.
+
+    The raise is the runtime backstop for a caller outside these two models, and it
+    names the component rather than failing inside the gate's own validation.
+    """
+    gated = [spec for spec in GRADE_COMPONENTS if spec.opt_in_gate is not None]
+    assert [spec.name for spec in gated] == ["custom_checks"]
+
+    for spec in gated:
+        for model in (GradingConfig, RunnerGradingConfig):
+            annotation = model.model_fields[spec.config_section].annotation
+            assert annotation == dict[str, Any] | None, (spec.name, model.__name__, annotation)
+
+    with pytest.raises(TypeError, match="arrived as a constructed"):
+        component_requested(gated[0], StateChecksConfig())

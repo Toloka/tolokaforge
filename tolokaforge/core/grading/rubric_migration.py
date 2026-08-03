@@ -62,6 +62,7 @@ from tolokaforge.core.grading.agreement import (
     accuracy,
     cohen_kappa,
 )
+from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
@@ -268,12 +269,13 @@ class ExcludedTrial(BaseModel):
 class RecomputationGap(str, Enum):
     """Why a contributing trial carries no counterfactual row.
 
-    Both are statements about what the recomputation could establish, never about the
-    declaration: the counterfactual gates nothing, so neither is a :class:`Refusal`.
+    Every one is a statement about what the recomputation could establish, never about the
+    declaration: the counterfactual gates nothing, so none is a :class:`Refusal`.
     """
 
     COMPOSED_COMPONENT_HAS_NO_RUNNER_FIELD = "composed_component_has_no_runner_field"
     RECOMPUTED_VERDICT_DIVERGES = "recomputed_verdict_diverges"
+    FOLDED_COMPONENT_HAS_NO_DECLARED_WEIGHT = "folded_component_has_no_declared_weight"
 
 
 class UnrecomputedTrial(BaseModel):
@@ -848,6 +850,10 @@ _THE_REPRODUCTION_DIVERGED = (
     "A composition that cannot reproduce what the runner decided says nothing about what the "
     "migration would decide"
 )
+_A_WEIGHTLESS_COMPONENT = (
+    "the {column} column folds a component the weight map it is folded under does not weight, "
+    "so any verdict reported for it could only come from an invented share: {detail}"
+)
 
 
 def _runner_components(recorded: Mapping[str, Any]) -> dict[str, float]:
@@ -940,6 +946,38 @@ def _reproduces_the_recorded_verdict(
     )
 
 
+def _composed_column(
+    trial: str,
+    column: str,
+    components: Mapping[str, Any],
+    config: Mapping[str, Any],
+    *,
+    judge_gate_failed: bool,
+    trace_gate_failed: bool,
+) -> RunnerTrialVerdict | UnrecomputedTrial:
+    """One column's verdict, or the gap a map that does not weight what it folds leaves.
+
+    The *after* column installs ``trace_checks`` as a scored component, and an entry
+    declaring no weight map is folded under the map the trial recorded — which cannot weight
+    a check the migration has not made yet. Folding it at an invented share would put the
+    very defect this report exists to measure inside the number a reviewer reads, so the row
+    states the missing key instead.
+    """
+    try:
+        return compose_runner_trial_verdict(
+            dict(components),
+            dict(config),
+            judge_gate_failed=judge_gate_failed,
+            trace_gate_failed=trace_gate_failed,
+        )
+    except MissingComponentWeight as exc:
+        return UnrecomputedTrial(
+            trial=trial,
+            gap=RecomputationGap.FOLDED_COMPONENT_HAS_NO_DECLARED_WEIGHT,
+            reason=_A_WEIGHTLESS_COMPONENT.format(column=column, detail=exc),
+        )
+
+
 def _scored(field: str, score: float | None) -> dict[str, float]:
     """The component under ``field``, or nothing where the component was not evaluated.
 
@@ -1012,7 +1050,9 @@ def _counterfactual_for_trial(
     weights_before = dict((recorded.grading_config.get("combine") or {}).get("weights") or {})
 
     before_score, before_gate = _judge_component_of(rubric, results)
-    before = compose_runner_trial_verdict(
+    before = _composed_column(
+        trial.trial,
+        "before",
         {**carried, **_scored(judge_field, before_score)},
         _flat_grading_config(
             recorded.grading_config, weights=weights_before, judge_scored=bool(rubric.criteria)
@@ -1020,6 +1060,8 @@ def _counterfactual_for_trial(
         judge_gate_failed=before_gate,
         trace_gate_failed=False,
     )
+    if isinstance(before, UnrecomputedTrial):
+        return before
     if (diverged := _reproduces_the_recorded_verdict(recorded, before)) is not None:
         return UnrecomputedTrial(
             trial=trial.trial, gap=RecomputationGap.RECOMPUTED_VERDICT_DIVERGES, reason=diverged
@@ -1033,7 +1075,9 @@ def _counterfactual_for_trial(
         reduced, [row for row in results if row.id != entry.criterion]
     )
     weights_after = dict(entry.combine_weights or weights_before)
-    after = compose_runner_trial_verdict(
+    after = _composed_column(
+        trial.trial,
+        "after",
         {**carried, **_scored(judge_field, after_score), trace_field: recorded.trace_component},
         _flat_grading_config(
             {**recorded.grading_config, trace_section: _THE_MIGRATION_DECLARES_TRACE_CHECKS},
@@ -1043,6 +1087,8 @@ def _counterfactual_for_trial(
         judge_gate_failed=after_gate,
         trace_gate_failed=recorded.trace_gate_failed,
     )
+    if isinstance(after, UnrecomputedTrial):
+        return after
     return TrialCounterfactual(
         trial=trial.trial,
         weights_before=weights_before,

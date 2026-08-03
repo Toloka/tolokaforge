@@ -230,8 +230,8 @@ the recomputed trace component and — **the map the entry declares, never the m
 today**. That is the point: the pack's current map *is* the post-migration state a reviewer is
 being asked to judge, so folding under it would answer the wrong question. Where the entry
 declares no map, which the [freed-share rule](GRADING.md#trace-checks) permits only for a
-criterion carrying no score share, the *after* map is the map that trial was graded under, since
-nothing was freed to move.
+criterion carrying no score share or a `mode: candidate`, the *after* map is the map that trial
+was graded under, since nothing was freed to move.
 
 **The recomposition is checked against the recorded verdict before any *after* column is
 believed.** A trial whose recorded verdict the composition cannot reproduce is listed under
@@ -240,6 +240,14 @@ composition that cannot reproduce what the runner already decided says nothing t
 what the migration would decide. The same list names a trial whose recorded grade carries a
 `state_checks` component — the runner folds that one from several sources and no single field
 holds it, so it cannot be routed back through the fold that produced it.
+
+**A column folding a component its map does not weight is the third such gap**, and it is the
+one an entry declaring no map runs into: the *after* column installs `trace_checks` as a scored
+component, and the map the trial was graded under cannot weight a check the migration has not
+made yet. The fold refuses to invent a share, so the row names the missing weight key instead of
+reporting a number that would carry exactly the defect this report exists to measure. Declaring
+`combine_weights` — with a share for the check the conversion installs — is what makes the
+counterfactual computable for such an entry.
 
 **Nothing reads the counterfactual.** No verdict, no exit code and no refusal. It is evidence a
 reviewer reads, and that is deliberate: gating on it would infer an unbounded safety property
