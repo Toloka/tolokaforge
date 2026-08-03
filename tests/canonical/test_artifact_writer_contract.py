@@ -8,6 +8,7 @@ from typing import Any
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -36,6 +37,7 @@ def _make_trajectory() -> Trajectory:
         status=TrialStatus.COMPLETED,
         messages=[Message(role="assistant", content="done")],
         metrics=Metrics(),
+        tool_log=[recorded_call("lookup_user", sequence=0, output="{'id': 7}")],
         grade=Grade(
             binary_pass=True,
             score=1.0,
@@ -97,6 +99,11 @@ class TestPerTrialMethodParity:
         trajectory = _make_trajectory()
         for i, writer in enumerate(writers):
             writer.write_trajectory(tmp_path / f"trial_{i}", trajectory)
+
+    def test_write_tool_log(self, writers: list[TrialArtifactWriter], tmp_path: Path) -> None:
+        trajectory = _make_trajectory()
+        for i, writer in enumerate(writers):
+            writer.write_tool_log(tmp_path / f"trial_{i}", trajectory)
 
     def test_write_task(self, writers: list[TrialArtifactWriter], tmp_path: Path) -> None:
         snapshot = _make_task_snapshot()
@@ -177,11 +184,21 @@ class TestInMemoryWriterBundleSemantics:
         bundle = writer.trials[Path("x:0")]
         assert bundle.task is snapshot
         assert bundle.trajectory is trajectory
+        assert bundle.tool_log is trajectory.tool_log
         assert bundle.env is env
         assert bundle.metrics is trajectory.metrics
         assert isinstance(bundle.metrics, Metrics)
         assert bundle.grade is trajectory.grade
         assert bundle.logs is logger
+
+    def test_an_untouched_bundle_reports_no_tool_log_rather_than_an_empty_one(self) -> None:
+        """``None`` is "never written", ``[]`` is "written, and the trial called
+        nothing" — the same two states the disk artifact's absence and emptiness
+        carry, so a consumer reads one distinction whichever writer produced it."""
+        writer = InMemoryArtifactWriter()
+        writer.write_trajectory(Path("x:0"), _make_trajectory())
+
+        assert writer.trials[Path("x:0")].tool_log is None
 
     def test_overwrites_on_repeat_write(self) -> None:
         writer = InMemoryArtifactWriter()

@@ -5,6 +5,13 @@ run, producing new replay grade artifacts and leaving the originals untouched. I
 does not re-run the agent or any environment service, so it spends judge tokens
 only.
 
+Re-checking the **deterministic** side of the same recorded run — a pack's
+[`trace_checks`](GRADING.md#trace-checks) constraints — is
+[`tolokaforge retrace`](TRACE_REPLAY.md), a separate command because it spends
+nothing at all: no judge, no tokens, no containers. Reach for `rejudge` when the
+judge is what changed, and for `retrace` when a constraint is. Neither command
+discovers the other's output.
+
 ## When to use it
 
 - **Validate a judge change.** After editing the `submit_report` schema, the judge

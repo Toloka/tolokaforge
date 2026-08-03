@@ -364,6 +364,7 @@ message TraceConstraintResult {
   string message = 5;                   // empty on a pass
   repeated int32 matched_positions = 6; // timeline positions, resolved in trajectory.yaml
   string severity = 7;                  // "scored" | "gate"; empty from an older Runner
+  bool undecided = 8;                   // the evidence could not settle it; never true beside passed
 }
 
 message TracePathResult {

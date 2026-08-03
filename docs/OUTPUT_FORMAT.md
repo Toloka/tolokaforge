@@ -23,6 +23,7 @@ bumped and this document is updated in the same commit.
         └── {trial_index}/
             ├── task.yaml
             ├── trajectory.yaml             ← message trace + status + metrics
+            ├── tool_log.yaml               ← the trial's ordered tool-call record
             ├── env.yaml
             ├── metrics.yaml
             ├── grade.yaml                  ← only when the trial produced a grade
@@ -282,6 +283,61 @@ registered on the preset (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) § `reasoning_codec`). Non-reasoning
 models emit `reasoning: null`.
 
+## `trials/{task_id}/{trial_index}/tool_log.yaml`
+
+The trial's ordered tool-call record — one
+[`RecordedToolCall`](../tolokaforge/runner/models.py) per attempted call, in
+`sequence` order, as a plain YAML list:
+
+```yaml
+- call_id: toolu_01Hx…
+  sequence: 0
+  tool_name: http_request
+  arguments:
+    url: http://app-service:8000/lots/7
+    method: GET
+  executor: agent
+  status: success
+  output: |-
+    Status: 200
+    Response (JSON):
+    {'lot_id': 7, 'lot_code': 'LOT-1007', …}
+  latency_seconds: 0.183
+  timestamp: '2026-07-28T14:12:03.881000+00:00'
+```
+
+This is the **grader's** view of the trial, where `trajectory.yaml` carries the
+model's. Four of its fields are unreachable from a message trace: `status`
+(which each substrate words differently in prose — match on `status`, not on
+result text), `executor` (agent vs user simulator is invisible in a transcript),
+`latency_seconds`, and `sequence` (trial-wide order *across* executors). `output`
+is the executing layer's own text, untruncated — on a failed call that differs
+from the `Error: …` wording the agent-facing `role: tool` message carries.
+
+A **sidecar** rather than a key on `trajectory.yaml`: the record repeats every
+tool's output, which on a tool-heavy trial is most of the bundle, so whoever
+reads only the message trace pays nothing for it.
+
+Read it back with `read_recorded_tool_log(trial_dir)`
+([`tolokaforge/core/output/artifacts.py`](../tolokaforge/core/output/artifacts.py)),
+which returns the calls **and whether the file was there** — two states a consumer
+must keep apart:
+
+| on disk | reads back | means |
+|---|---|---|
+| absent | `([], False)` | the bundle carries no record; a check over `status`, `executor` or `latency_seconds` is undecidable on it |
+| `[]` | `([], True)` | the trial called no tool |
+
+Absence is the permanent shape of a bundle written before this artifact existed —
+not an error, and not the same fact as an empty trial. A present file that does
+not read as a list of recorded calls raises, naming the path — including the
+truncated YAML an interrupted run leaves, which must never fall through to the
+absent reading and report a broken record as a bundle written before records
+existed.
+
+The [provision-failure bundle](#provision-failure-bundle) carries no
+`tool_log.yaml`: the trial body never ran, so there is no record to write.
+
 ## `trials/{task_id}/{trial_index}/env.yaml`
 
 ```yaml
@@ -361,11 +417,13 @@ included for forensics. Each LLM API call is also recorded in
 `latency_s` — the trial-level `cost_usd` is the sum of those entries.
 
 To help analytics consumers detect schema evolution, every trial-level
-metrics file includes a root-level `schema_version: 3` marker. Generation 3
-bundles carry no `grade.yaml` in two cases — the trial was aborted by
-infrastructure before the agent ran, or grading ran and refused to produce a
-verdict — so a reader must not assume the file is there, and must read
-`trajectory.yaml`'s `grading_error` to tell the two apart.
+metrics file includes a root-level `schema_version: 4` marker. Generation 4
+bundles carry the trial's tool-call record as
+[`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml). They carry no
+`grade.yaml` in two cases — the trial was aborted by infrastructure before the
+agent ran, or grading ran and refused to produce a verdict — so a reader must
+not assume the file is there, and must read `trajectory.yaml`'s `grading_error`
+to tell the two apart.
 
 ```yaml
 latency_total_s: 174.14
@@ -426,11 +484,9 @@ status is `success`; every other status — including a call the executor refuse
 before it reached the tool — counts as an error. `total_duration_s` sums the wall
 time measured around each call, failures included.
 
-`tool_log`, the trial's ordered `RecordedToolCall` list, is **not** written to any
-artifact. It lives on the in-process `Trajectory` and feeds grading; a bundle read
-back from disk carries the message trace but no per-call `output`, `status`,
-`latency_seconds` or `executor`. Persisting it is a stated prerequisite of #682
-(replay).
+`tool_usage` is a roll-up, not the record: the per-call `output`, `status`,
+`executor` and `latency_seconds` it aggregates live in
+[`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing
@@ -683,14 +739,16 @@ raises, or `await_ready` times out), the conductor body never runs, so the
 executor writes the trial directory itself. Only two files land —
 `trajectory.yaml` and `metrics.yaml` — plus the
 [`services/`](#trialstask_idtrial_indexservices) bundle when per-service capture
-fired inside `provision`. `task.yaml`, `env.yaml`, and `logs.yaml` are **not**
-written (no resolved model config, no environment state, no per-trial logger for
-a run that never happened).
+fired inside `provision`. `task.yaml`, `env.yaml`, `logs.yaml` and
+`tool_log.yaml` are **not** written (no resolved model config, no environment
+state, no per-trial logger, and no tool call for a run that never happened).
+The schema stamp says which generation wrote the bundle, never which files it
+contains — on this path it is stamped and most of them are absent.
 
 * `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
   `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 3`, empty `tool_usage`) plus two top-level failure-signal
+  `schema_version: 4`, empty `tool_usage`) plus two top-level failure-signal
   keys:
 
   ```yaml
@@ -798,6 +856,7 @@ trace_check_results:            # one entry per declared trace constraint; [] wh
     severity: scored            # scored | gate
     message: "before: no match is ordered before the other side under the declared quantifiers"
     matched_positions: [2, 4]
+    undecided: false            # true where the trial's evidence could not settle the verdict
 trace_checks_summary:           # which route was scored and whether a gate shut
   winning_path: served_vs_source  # "" when the pack declared no alternatives
   gate_failed: false
@@ -863,6 +922,13 @@ which.
 * `matched_positions` — the timeline positions the constraint's matchers
   selected, resolved against `trajectory.yaml`. Positions rather than events, so
   the grade stays scannable.
+* `undecided` — `true` where no completion of the trial's missing evidence
+  settles the verdict, which is the usual reading of a bundle re-graded without
+  its tool-call record. It scores exactly as a failure — the weight is forfeit
+  and a gate carrying it shuts — so it never appears beside `passed: true`; what
+  it adds is that a reader can tell an agent that did not do something from a
+  trial that did not record whether it did. See
+  [`docs/GRADING.md`](GRADING.md#when-a-constraint-cannot-be-decided).
 
 `trace_checks_summary` is the same evaluation seen from above: which route the
 component score came from, and whether a gate shut the trial. `binary_pass` is
@@ -1197,6 +1263,7 @@ def load_trial(trial_dir: Path) -> dict:
     for name in (
         "task",
         "trajectory",
+        "tool_log",
         "env",
         "metrics",
         "grade",
@@ -1282,12 +1349,13 @@ evidence about us, and our own defects stay counted. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
-| `metrics.yaml` | `schema_version` | `3` | The per-trial bundle's file set or field semantics change |
+| `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
+| `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
 
 There is no global version stamp — each subsystem stamps independently so
 changes localise.

@@ -521,11 +521,11 @@ inapplicable to the kind or unrecorded, and a predicate over a `None` field is
 unmatched, never vacuously true.**
 
 Unrecorded is the second case and it is not rare: `executor`, `status` and
-`latency_seconds` are `None` on every event of a bundle-sourced timeline (G6b),
+`latency_seconds` are `None` on every event of a records-less timeline (G6b),
 and on any call that never ran (G4). So `status != success` matches nothing at all
 on such a timeline rather than matching everything — read `records_present` before
 trusting either answer. `result` is the exception: a bundle keeps the `role: tool`
-messages, so a bundle-sourced timeline still says what each tool returned (G6b).
+messages, so even a records-less bundle still says what each tool returned (G6b).
 Per-field detail is in the table below; G4 and G6b say when each field goes
 missing on a kind it does apply to.
 
@@ -595,9 +595,11 @@ initial user prompt precedes the first assistant message and carries index 0.
   input carrying no assistant or user turn is built from the records alone:
   `tool_call` + `tool_result` pairs in `sequence` order, all at `turn_index` 0,
   `message_view_present = False`.
-- **G6b — messages-only is the normal state for a recorded bundle, and its results
-  come from the message view.** `tool_log` is not written to `trajectory.yaml`, so
-  a timeline rebuilt from a bundle has no records: `records_present = False` and
+- **G6b — messages-only is a declared input state, and its results come from the
+  message view.** A trial bundle carries its tool-call record as the `tool_log.yaml`
+  sidecar, so a timeline built from `trajectory.yaml` alone — which is also every
+  bundle written before that sidecar existed — has no records:
+  `records_present = False` and
   `executor` / `status` / `latency_seconds` are `None` throughout. The tool output
   is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
   its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
@@ -633,8 +635,8 @@ sub-check, not a silent pass.**
 
 The tool-expectation checks on both substrates honour that by gating on
 `records_present`, not on `status is None`. Those two are indistinguishable per
-call — a terminating turn's declared call and a bundle-sourced call both carry no
-status — so the flag is the only thing that says whether "no record" is a fact or
+call — a terminating turn's declared call and a call on a records-less timeline
+both carry no status — so the flag is the only thing that says whether "no record" is a fact or
 an absent view. A tool the message view never declared still passes a
 `disallowed_tools` check with no records present, because a record can only name a
 declared call (G7): the message view alone proves that tool never ran.
@@ -1153,8 +1155,9 @@ predicates, nested argument paths, counting, and a call's status or result.
 `grade_trajectory` and by the runner's `GradeTrial`, over the timeline each
 already builds, so the component score does not depend on which substrate graded
 the trial. The per-constraint verdicts cross the wire on `Grade.trace_checks`,
-each carrying its `severity`, and are written inline in `grade.yaml` under
-`trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
+each carrying its `severity` and whether it was
+[undecided](#when-a-constraint-cannot-be-decided), and are written inline in
+`grade.yaml` under `trace_check_results`; `Grade.trace_checks_summary` carries the winning route, the
 gates that shut and one line per alternative, and lands beside them under
 `trace_checks_summary`. **A tripped gate fails the trial on both substrates** —
 the core engine's combine and the runner's `GradeTrial` each force `binary_pass`
@@ -1674,6 +1677,13 @@ constraint is decided only when **every** completion of the undecidable evidence
 reaches the same verdict; otherwise it is **undecided**, which is a failing
 sub-check naming the constraint and the evidence the trial does not carry.
 
+The verdict carries it as a field. `grade.yaml`'s `trace_check_results` entries
+each hold `undecided`, `true` exactly where the fold reached no verdict, so
+"the agent did not do this" and "nobody wrote down what it did" are told apart
+without reading `message` prose. `passed: false` beside `undecided: true` is the
+only pairing an undecided verdict takes — see
+[`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md#trace-check-verdicts).
+
 Worked, over *d* definite matches and *u* undecidable ones:
 
 | constraint | verdict |
@@ -1687,11 +1697,16 @@ Worked, over *d* definite matches and *u* undecidable ones:
 | any of the above carrying [`severity: gate`](#severity--a-check-that-must-hold) | undecided **trips the gate** — a scored constraint forfeits its weight there, and a gate's forfeit is the trial |
 
 Undecided is not a pass in the agent's favour and not an over-fail either: definite
-evidence answers the question wherever it can. The usual way to reach it is a
-bundle re-graded without its tool-call record, where every `status` and `executor`
-predicate is unreadable, every `result` on an unanswered call with it, and so is any
-binder that reads one — which is a real limit on grading a `trace_checks` pack from a
-recorded bundle, not a defect to work around.
+evidence answers the question wherever it can. A trial bundle carries its tool-call
+record as the `tool_log.yaml` sidecar, so a pack re-graded from one reaches the
+verdict the live run reached — which is what
+[`tolokaforge retrace`](TRACE_REPLAY.md) re-checks a whole recorded corpus for,
+spending nothing. A bundle written before that sidecar existed carries the message
+trace alone, and there every `status` and `executor` predicate is unreadable, every
+`result` on an unanswered call with it, and so is any binder that reads one — such a
+bundle reports undecided, permanently. That is the right semantics rather than a
+defect to work around: the evidence really is absent, and the alternative is a
+silent pass.
 
 ### Weighting the constraints
 
@@ -1739,12 +1754,13 @@ constraints said, and the grade names the gates that tripped.
 anywhere in this vocabulary, and a gate is the one check the author said must hold —
 an undecided gate that opened would be a silent pass on exactly that check, and would
 leave a gate *weaker* than the scored constraint it replaced. The consequence is
-sharpest on the case the [declared limits](#declared-limits-and-what-owns-each)
-already name: a bundle re-graded without its tool-call record cannot read `status` or
-`executor` (#682), so a gate reading either fails every re-graded trial. Write gates
-over evidence the message view carries — which tool was called, with which
-arguments, in which order — and keep `status` and `executor` for scored constraints,
-where the same limit costs a weight rather than the trial.
+sharpest on a bundle written before the tool-call record was persisted, which
+[cannot read `status` or `executor` at all](#when-a-constraint-cannot-be-decided), so
+a gate reading either fails every trial re-graded from one. Write gates over evidence
+the message view carries — which
+tool was called, with which arguments, in which order — and keep `status` and
+`executor` for scored constraints, where the same limit costs a weight rather than
+the trial.
 
 **A block of nothing but gates scores the gate verdict:** `1.0` when every gate held,
 `0.0` otherwise. There is no weighted average to take — every member is excluded from
@@ -2001,7 +2017,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
 | Migrating an existing rubric criterion into a constraint. Correlation ships, and [what it can and cannot retire](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) is measured: two packs name the criterion each new check is a candidate to replace, and the decision waits on the two findings recorded there — every candidate is a `required: true` veto with no score share, and #683's gate is agreement against historical judge verdicts | #683 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
@@ -2152,6 +2167,13 @@ matched events, so the constraint reduces to *the events occurred at all* — a
 `present` constraint written the long way round, which is what its message tells the
 author to write. The rejection is against pathological authoring, not against a check
 no trajectory moves.
+
+**What no static rule can answer is whether a constraint separates anything.** The
+gate reads the block, not the trials: a correctly authored constraint that passes every
+trial the pack ever ran adds no signal to the pack, and nothing about the block says
+so. That question is empirical, and [`tolokaforge retrace`](TRACE_REPLAY.md) answers it
+over a recorded corpus for free — per constraint, whether any trial it evaluated
+disagreed with any other, and how much of the corpus could decide it at all.
 
 ---
 

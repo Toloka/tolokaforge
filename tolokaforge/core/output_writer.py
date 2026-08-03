@@ -12,15 +12,22 @@ import yaml
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import Grade, ToolExecutionStatus, Trajectory
 
-TRIAL_BUNDLE_SCHEMA_VERSION = 3
+TRIAL_BUNDLE_SCHEMA_VERSION = 4
 """The per-trial bundle generation stamped into ``metrics.yaml``.
 
-Version 3 bundles omit ``grade.yaml`` for two different trials — one the
-infrastructure aborted before the agent ran, and one whose grading refused to
-produce a verdict. The discriminator is ``trajectory.yaml``'s ``grading_error``:
-populated for the second, ``null`` for the first. An absent grade alone no
-longer says which happened.
+Version 4 bundles carry the trial's tool-call record as ``tool_log.yaml`` beside
+the message view in ``trajectory.yaml``, so a bundle re-grades to the verdict its
+live run produced.
+
+They omit ``grade.yaml`` for two different trials — one the infrastructure aborted
+before the agent ran, and one whose grading refused to produce a verdict. The
+discriminator is ``trajectory.yaml``'s ``grading_error``: populated for the second,
+``null`` for the first. An absent grade alone does not say which happened.
 """
+
+TOOL_LOG_FILENAME = "tool_log.yaml"
+"""The bundle's tool-call record. Read back with
+:func:`tolokaforge.core.output.artifacts.read_recorded_tool_log`."""
 
 
 def _represent_multiline_str(dumper, data):
@@ -43,6 +50,7 @@ class OutputWriter:
     Splits trajectory data into focused files:
     - task.yaml: Task metadata and grading configuration
     - trajectory.yaml: Conversation messages only
+    - tool_log.yaml: The trial's ordered tool-call record
     - env.yaml: Final environment state
     - metrics.yaml: Performance metrics with tool usage breakdown
     - grade.yaml: Grading results with detailed diff
@@ -125,6 +133,29 @@ class OutputWriter:
 
         with open(self.output_dir / "trajectory.yaml", "w") as f:
             yaml.dump(traj_data, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
+
+    def write_tool_log(self, trajectory: Trajectory):
+        """Write tool_log.yaml — the trial's tool-call record, in ``sequence`` order.
+
+        A sidecar rather than a key on ``trajectory.yaml``: the record repeats every
+        tool's untruncated output, which the ``role: tool`` messages already carry,
+        and on a tool-heavy trial that is most of the bundle. Whoever reads only the
+        message trace pays nothing for it.
+
+        A trial that called no tool writes an empty list. The file's *absence* means
+        the bundle was written before the record was — a different state, kept apart
+        by :func:`tolokaforge.core.output.artifacts.read_recorded_tool_log`.
+
+        Args:
+            trajectory: Trajectory object carrying the tool-call record
+        """
+        record = [
+            call.model_dump(mode="json")
+            for call in sorted(trajectory.tool_log, key=lambda call: call.sequence)
+        ]
+
+        with open(self.output_dir / TOOL_LOG_FILENAME, "w", encoding="utf-8") as f:
+            yaml.dump(record, f, default_flow_style=False, allow_unicode=True, sort_keys=False)
 
     def write_env_state(self, env_state: dict[str, Any]):
         """Write env.yaml with final environment state
@@ -256,6 +287,7 @@ class OutputWriter:
         """
         self.write_task_info(task_config)
         self.write_trajectory(trajectory)
+        self.write_tool_log(trajectory)
         self.write_env_state(env_state)
         self.write_metrics(trajectory)
 
