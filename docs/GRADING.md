@@ -1848,7 +1848,7 @@ took.
 
 A forbidden tool called, another customer's record touched, an order mutated by a
 diagnose-only agent — all route-independent, so all shared gates. The last is a
-shipped pack: see [`cache_debug`](#three-worked-packs), whose one gate is shared for
+shipped pack: see [`cache_debug`](#four-worked-packs), whose one gate is shared for
 exactly this reason.
 
 This rule is guidance rather than a guarantee, and the reason is worth stating
@@ -1869,7 +1869,7 @@ same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` ho
 every shipped example pack to that, reading the combine that is *effective* after
 the project layer merges.
 
-### Three worked packs
+### Four worked packs
 
 [`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
 grades the process alongside the substrate. Its three constraints are the three
@@ -1987,26 +1987,135 @@ that earns its weight and one that decorates a pack:
   comes from. Read the prompt before shipping a correlation; the substrate probe will
   not tell you the answer was in the question.
 
+[`examples/native/native_shared_domain`](../examples/native/native_shared_domain/README.md)
+is the migration reference — the one shipped pack where a judge criterion and a trace
+constraint grade the same policy, each holding the half it can see. Its
+`add_note_duplicate_check_gated` / `add_note_duplicate_check_policy` pair grades a
+check-for-duplicates-first policy with two conjuncts:
+
+| the half | who checks it | why that one |
+|---|---|---|
+| `list_notes` ran before `add_note` | `the_notes_were_listed_before_the_note_was_added`, shared, `severity: gate` | a trajectory predicate: deterministic, free, and re-checkable over a recorded run forever |
+| the user was warned about the near-duplicate | `checked_duplicates_first`, `kind: binary`, `required: true` | a judgment about what the assistant *said*, which no tool record answers |
+
+Three authoring choices in it are the ones to copy:
+
+- **The veto survives on both halves, and that is a load-time rule rather than a
+  convention.** The criterion is `required: true`, so it carries a trial-level veto and
+  **no score share** — retiring or narrowing it moves the judge score not at all, and only
+  the veto is at stake. The declaration is therefore only accepted because the constraint
+  claiming it is **shared** and carries `severity: gate`
+  ([the veto rule](#declaring-a-migration-the-migrationyaml-sidecar)); the criterion stays
+  `required: true` for the conjunct it holds. Two vetoes over one policy, and either fails
+  the trial alone.
+- **The judge's `reference` stops asking for the half it no longer grades.** A reference
+  still describing the ordering would have the judge charging a conjunct the gate already
+  owns, so the narrow would be a text change and nothing else. It says outright that the
+  ordering is checked deterministically and is not the judge's to grade.
+- **Neither component can carry a trial by itself.** `combine.weights` is
+  `{llm_judge: 0.7, trace_checks: 0.3}` against `pass_threshold: 0.75`, so a pass means
+  both halves happened — a `trace_checks` weight is mandatory rather than optional here,
+  because a scored component with no declared weight is dropped core-side and folded in at
+  an invented `1.0` runner-side (#744).
+
+The pair is also the corpus behind its own migration: both arms declare it in a
+[`migration.yaml`](#declaring-a-migration-the-migrationyaml-sidecar), and
+[`tolokaforge reconcile`](RUBRIC_MIGRATION.md) re-checks the declaration against the
+seventeen recorded judge verdicts under
+`tests/data/migration_corpora/notes_duplicate_check/` at zero cost — 17 observations,
+κ `1.0`, `no_counter_evidence`. What that verdict does and does not say is
+[RUBRIC_MIGRATION.md § Reading the evidence](RUBRIC_MIGRATION.md#reading-the-evidence);
+the mode is the **author's** recorded judgment, and the residual claim — the warning the
+judge still reads — is its justification.
+
 #### What a correlation is a candidate to replace, and what it is not
 
-Both packs above name, in their `grading.yaml` headers, the judge criterion each new
-check is a candidate to replace. **Neither retires one.** The candidacy is a documented
-starting point for #683, which owns rubric migration, and the two findings below are
-what it has to honour — recorded here because correlation is what surfaced them.
+`lot_ops_01` and `cache_debug` each declare, in a [`migration.yaml` sidecar](#declaring-a-migration-the-migrationyaml-sidecar)
+beside their `grading.yaml`, the judge criterion their new checks are a `candidate` for.
+**Neither retires one**, and a `candidate` changes no grading: the criterion keeps its
+weight and its veto, and the declaration is the claim to be measured. Each pack's header
+comment points at its sidecar; what a retirement would still have to answer for is written
+in the sidecar beside the entry, and summarised here because correlation is what surfaced it.
 
-| new check | candidate to replace | why it cannot yet |
+`by` is a **conjunction** — every constraint it names must pass for the recomputed label to
+count as met — so a check is named there only where it is about the same proposition as the
+criterion. `lot_ops_01`'s reason-code correlation is therefore *not* part of its candidacy: a
+trial that grounded the lot correctly and got the reason code wrong would count against a claim
+about the lot. It is a candidate for nothing the pack currently declares, which is the honest
+state — no criterion in that rubric is about the code.
+
+| new check | candidate for | what a retirement would still owe |
 |---|---|---|
-| `lot_ops_01`'s two correlations | `names_lot` (binary, `required: true`) | the criterion accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value; and it is a required criterion, so see the first finding |
-| `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded) | they reach the half that asks the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
+| `lot_ops_01`'s lot correlation | `names_lot` (binary, `required: true`) | a shared `severity: gate` constraint, because the correlation is *scored* and the criterion is a veto — the veto rule refuses the conversion at load. The criterion also accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value |
+| `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded, weight `1.0`) | a `combine_weights` map for the freed score share, which the freed-share rule requires of a scored conversion. The checks also reach only the half asking the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
 
-1. **Every retirement candidate in the corpus is `required: true`** — a trial-level
-   veto carrying **zero score share**. Migrating one converts that veto into either a
-   `severity: gate`, which is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate),
-   or a fraction of a scored component. Both are strictly weaker than what they
-   replace, and the weakening is invisible in the component score.
-2. **#683's own gate is agreement against historical judge verdicts.** A pack gaining
-   a correlation has no recorded-trial evidence and structurally cannot have any, so
-   retiring a criterion beside the new check would pre-empt that gate with a guess.
+1. **The two conversions are unsafe in opposite directions, and a different rule refuses
+   each.** `names_lot` is `required: true` — a trial-level veto carrying **zero score
+   share** — so migrating it converts that veto into either a `severity: gate`, which is
+   [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate),
+   or a fraction of a scored component; both are strictly weaker than what they replace and
+   the weakening is invisible in the component score. `explains_mechanism` is `kind: graded`
+   with no `required` flag, so it carries the opposite hazard: its weight sits in the judge
+   component's denominator, and dropping it raises the component by `+0.667` on a trial that
+   scored it `0.0`. The [veto rule and the freed-share rule](#declaring-a-migration-the-migrationyaml-sidecar)
+   are what refuse each conversion at load.
+2. **The bar is agreement against recorded judge verdicts, and neither pack has a single
+   recorded trial.** [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) needs Cohen's κ over the
+   joined labels to be **defined**, which needs judge verdicts on both sides of the
+   criterion. It reads those verdicts out of the bundles under `--source`, reporting an entry
+   only where a bundle resolves to the pack declaring it — so for these two there is nothing
+   to reconcile yet rather than a verdict that falls short. A judge-labelled corpus per
+   rubric pack is **#793**.
+
+#### Declaring a migration: the `migration.yaml` sidecar
+
+A task directory may carry a `migration.yaml` beside its `grading.yaml`, naming each rubric
+criterion its constraints are a candidate for, have narrowed, or have replaced. The file is
+optional; a pack without one is unchanged. Nothing about grading reads it — it records the
+claim and the evidence behind it so [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) can check
+that claim against recorded judge verdicts, which is why it is a sidecar and not a
+`grading.yaml` key: `GradingConfig` is
+`extra="ignore"`, so a `migration:` key there is silently dropped, and making it a real key
+needs a `GRADING_KEYS` manifest entry, whose every `KeyKind` describes score production.
+
+```yaml
+migrations:
+  - criterion: checked_duplicates_first        # the rubric criterion id
+    mode: candidate | narrowed | retired
+    by: [the_notes_were_listed_before_the_note_was_added]   # trace_checks ids in this pack
+    was: { kind: binary, required: true, weight: 1.0, description: "<the text measured against>" }
+    residual: { kind: none | text, reason: "<why nothing remains / what remains>" }
+    combine_weights: { llm_judge: 0.7, trace_checks: 0.3 }  # post-migration combine.weights
+    evidence: { corpus: tests/data/migration_corpora/notes_duplicate_check, observations: 17, kappa: 1.0 }
+    acknowledged: [ { trial: <bundle path under evidence.corpus>, reason: "<why the judge was wrong>" } ]
+```
+
+`residual` is a model rather than a string because no one scalar carries both a sentinel and
+free text: `residual: none` parses to the non-empty string `'none'` while `residual: null`
+parses to `None`, so a single field answers the wrong question for one of the two modes
+whichever way it is spelled. Its presence and its kind are a **total function of `mode`** —
+absent for `candidate`, `kind: text` for `narrowed`, `kind: none` for `retired` — so a reader
+can tell what an entry claims from its mode alone.
+
+Every rule below is an **error** naming what to write instead. They are checked by
+`tolokaforge validate`, and deliberately not by the pre-run gate: the file cannot affect a
+grade, so a run must not abort on authoring metadata.
+
+| rule | why |
+|---|---|
+| `candidate` — the criterion exists and `was` matches its current shape exactly; no `evidence` and no `residual` | a candidacy is against the criterion as it stands and has measured nothing yet, so it has neither a conclusion's support nor a judgment about a migration that happened — either would park a claim no evidence ever checks |
+| `narrowed` — the criterion exists, `was.description` differs from it, `evidence` and `residual.kind: text` | a narrow that shortened no text narrowed nothing |
+| **`was` cross-check**, `narrowed` only — `was.required` and `was.kind` must equal the criterion's current ones, while **`was.weight` is deliberately free** | every other rule reads `was`, so an unchecked `was.required: false` escapes the veto rule below outright, and a flipped `kind` makes the recorded evidence incomparable with what the judge scores after the migration. `weight` is left out because a criterion that now asks less may legitimately weigh less, and requiring a match would refuse a correct migration while adding nothing against the escape, which turns entirely on `required` |
+| `retired` — the criterion is **absent** from the rubric, `evidence` and `residual.kind: none` with a reason | zero disagreements satisfies `narrowed`'s condition and `retired`'s alike, so the choice is the author's and is recorded here. Its `was` is not cross-checked: the criterion is gone from the pack, so no load-time source holds its pre-migration shape |
+| every `by` id resolves in this pack's `trace_checks`, shared or inside a route | a migration is *by* the checks that replace the criterion |
+| **veto rule** — a `narrowed` / `retired` entry whose `was.required` is true may only name **shared** constraints carrying `severity: gate` | a required criterion is a trial-level veto with no score share, so retiring one moves the judge score not at all; a route-scoped gate is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate) and a scored constraint is a fraction of a component where a veto was |
+| **freed-share rule** — a `narrowed` / `retired` entry on a criterion that is *not* required must declare `combine_weights` | a scored criterion's weight is in the judge component's denominator, so removing one the agent failed makes the judge *more generous* — `+0.667` on `cache_debug`'s `explains_mechanism`, on a trial that scored it `0.0`. The declaration is **unconditional** for a scored conversion: an author who shifts nothing declares the **identity map**, which a reviewer reads in the diff where an implied claim is invisible. It is a claim rather than a proof, and `tolokaforge reconcile`'s report shows per trial what the declared map does to the judge component and the trial verdict |
+| every `acknowledged.trial` is a bundle under `evidence.corpus` | a waiver addresses a disagreement the verdict measured |
+
+A `candidate` entry is charged neither the veto rule nor the freed-share rule: it replaces
+nothing, so the criterion keeps its veto and its score share whatever it names. Both shipped
+candidacies name scored constraints, which is exactly what those two rules refuse for a
+narrow or a retirement.
 
 ### Declared limits, and what owns each
 
@@ -2017,7 +2126,7 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| Migrating an existing rubric criterion into a constraint. Correlation ships, and [what it can and cannot retire](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) is measured: two packs name the criterion each new check is a candidate to replace, and the decision waits on the two findings recorded there — every candidate is a `required: true` veto with no score share, and #683's gate is agreement against historical judge verdicts | #683 |
+| Migrating a rubric criterion into a constraint needs recorded judge verdicts to decide it, and one pack in the corpus has them. The machinery ships — the [`migration.yaml` declaration](#declaring-a-migration-the-migrationyaml-sidecar), its two load-time hazard rules, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md)'s bar — and one criterion is narrowed against a committed corpus. The other rubric packs have no recorded verdicts, so a [declared candidacy](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) there has nothing to be decided against | #793 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
@@ -2403,6 +2512,18 @@ If **every** criterion is required (no non-required criteria to average), the
 judge score collapses to the gate verdict: `1.0` when all required criteria are
 met, else `0.0`.
 
+**Where the gate is applied.** `aggregate_rubric` reports the gate as
+`gate_failed` beside a weighted average it does not touch, so the aggregate on
+its own says nothing about the gate: on a rubric whose non-required criteria all
+scored full marks, a trial that *failed* a required criterion still aggregates to
+`score: 1.0`. Zeroing the component is
+[`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
+grade and the reasons string carry — measured on the five bundles under
+`tests/data/migration_corpora/notes_duplicate_check/not_met/`, whose `grade.yaml`
+records `components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
+aggregate's `score` without the gate and every one of them reads as a trial that
+aced the rubric it failed.
+
 `trace_checks` states the same concept as
 [`severity: gate`](#severity--a-check-that-must-hold), with the same semantics. Two
 spellings because the two vocabularies are authored separately; one behaviour,
@@ -2715,6 +2836,26 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
 declares no weight for, where the runner includes it at an invented `1.0` — the
 divergence tracked by #744 above.
+
+**Where the runner-side verdict is composed.** The runner folds a trial through
+`compose_runner_trial_verdict`
+([`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py)), which wraps
+`combine_grade_components` and applies **both gates** around it: the judge
+component is zeroed where a required criterion failed, and a failed judge or
+trace gate then forces `binary_pass` false whatever the threshold. It returns the
+gated judge component beside `(score, binary_pass)`, because that component — not
+the judge's raw aggregate — is what the wire grade and the reasons carry. One
+runner-side home, so an offline recomputation reaches the runner's verdict without
+repeating either gate: `tolokaforge reconcile`'s counterfactual
+([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) is that caller, and it is what
+[#775](https://github.com/toloka/tolokaforge/issues/775) would call.
+
+**Core composes its own**, in
+[`tolokaforge/core/grading/combine.py`](../tolokaforge/core/grading/combine.py),
+with its own trace-gate forcing, and produces no `llm_judge` component at all —
+so there is no judge gate for it to apply and nothing shared to extract. Two
+substrates, two compositions, one behaviour where both can be asked; the
+canonical differential above is what holds them to it.
 
 **Configured but unevaluated fails loud, for every component.** A component is
 configured when `combine.weights` gives it a weight **and** the pack writes its

@@ -1,0 +1,106 @@
+task_id: notes_add_note_duplicate_check_gated
+trial_index: 0
+category: tool_use
+description: |
+  The user asks to save a new note. The rubric encodes a check-first policy (the assistant should list_notes and warn the user when a similar note already exists BEFORE adding) as a REQUIRED criterion. The shared system prompt does NOT mention this policy and instead tells the agent to call add_note directly, and the user never asks for a duplicate check — so agents reliably skip the check-first step. The initial state already contains a near-duplicate note, so the duplicate genuinely exists. This testcase demonstrates the rubric REQUIRED-criterion GATE firing: skipping the check-first step fails the required criterion → gate_failed → binary_pass=false, even though the graded "note was saved" criterion still scores > 0.
+grading_config:
+  combine:
+    method: weighted
+    weights:
+      llm_judge: 1.0
+    pass_threshold: 0.75
+  state_checks: null
+  transcript_rules: null
+  llm_judge:
+    model_ref: openrouter/openai/gpt-4.1-mini
+    rubric:
+      criteria:
+      - id: checked_duplicates_first
+        description: |
+          Before calling add_note, the assistant called list_notes to check for duplicates AND warned the user that a similar note ("Team stand-up", "Daily stand-up at 9:30 in the Maple room.") already exists. If the assistant called add_note without first checking for duplicates, or did not surface the existing near-duplicate, this criterion is NOT met.
+        weight: 1.0
+        kind: binary
+        required: true
+        expected: null
+      - id: note_saved
+        description: |
+          A new note was saved (add_note called) capturing the user's request — a "Team standup" title and a body about a 9:30 standup in the Maple room. Score on how faithfully the saved note matches what the user asked for.
+        weight: 1.0
+        kind: graded
+        required: false
+        expected: title 'Team standup'; body 'Daily standup at 9:30 in the Maple room.'
+      - id: clarity
+        description: |
+          The assistant's final reply is clear and professional — it confirms in plain language what it did.
+        weight: 0.5
+        kind: graded
+        required: false
+        expected: null
+      reference: |
+        The notes app already contains a note titled "Team stand-up" with body
+        "Daily stand-up at 9:30 in the Maple room." — a near-duplicate of what the
+        user now asks to save ("Team standup" / "Daily standup at 9:30 in the Maple
+        room.").
+
+        The mandatory policy this rubric grades against: before saving ANY new note
+        the assistant MUST first call `list_notes` to check for a similar existing
+        note, and warn the user about the duplicate, BEFORE calling `add_note`.
+
+        A compliant transcript therefore shows `list_notes` called BEFORE
+        `add_note`, and the assistant warning the user that a similar note already
+        exists. The note the user asked for is itself reasonable to save.
+  custom_checks: null
+tools:
+  agent:
+    mcp_server: _shared/mcp_server.py
+    enabled:
+    - list_notes
+    - add_note
+  user:
+    enabled: []
+policies: {}
+model_config:
+  agent:
+    provider: openrouter
+    name: openai/gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 2048
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    resolved:
+      effective_preset: default
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: openai
+      response_policy: standard
+      reasoning_codec: none
+      cache_policy: none
+  user:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4-6
+    temperature: 0.2
+    max_tokens: null
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    resolved:
+      effective_preset: anthropic
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: anthropic
+      response_policy: standard
+      reasoning_codec: anthropic
+      cache_policy: anthropic_ephemeral

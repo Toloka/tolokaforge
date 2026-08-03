@@ -1,4 +1,5 @@
-"""Load-time schema rejection of removed / malformed ``grading.yaml`` blocks.
+"""Load-time rejection of removed / malformed ``grading.yaml`` blocks, and of the
+``migration.yaml`` sidecar beside them.
 
 Every contract here surfaces at load time (``validate`` /
 ``validate_grading_yaml``), not deferred to run time, and each rejection is
@@ -25,6 +26,10 @@ migration:
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
   that could only ever select nothing is rejected before a trial is paid for; a
   block that is not a mapping is rejected naming the file, the key and the shape.
+* The ``migration.yaml`` sidecar: ``validate`` reads it, so a declaration its pack
+  contradicts is heard here rather than by whoever reads the migration report. It is
+  the one gate that does, because the file cannot affect a grade and a run must not
+  abort on authoring metadata.
 
 Every gate here is about the block's own shape, so the calls pass an unresolvable
 tool inventory: none of these rejections has anything to do with the task's tools,
@@ -911,3 +916,65 @@ def test_validate_rejects_a_trace_checks_block_that_is_not_a_mapping(
     assert "'trace_checks'" in message, message
     assert type(trace_checks).__name__ in message, message
     assert "'constraints:' or 'alternatives:'" in message, message
+
+
+# ---------------------------------------------------------------------------
+# migration.yaml — the sidecar is reached by validate, and by nothing a run pays for
+#
+# Every rule the declaration carries is locked in
+# tests/unit/grading/test_migration_declaration.py and
+# tests/canonical/test_migration_declaration.py. What belongs here is the gate: that
+# ``validate`` reads the file beside a task's grading.yaml at all, so a mis-authored
+# declaration is heard before a trial is run rather than by whoever reads the
+# migration report later.
+# ---------------------------------------------------------------------------
+
+
+_MIGRATED_GRADING = yaml.safe_dump(
+    {
+        "combine": {"method": "weighted", "weights": {"llm_judge": 1.0}},
+        "llm_judge": {
+            "rubric": {
+                "criteria": [
+                    {"id": "checked_first", "description": "It checked first.", "required": True}
+                ]
+            }
+        },
+    }
+)
+
+
+def test_validate_cli_reports_a_mis_authored_migration_sidecar_as_invalid(tmp_path: Path):
+    """The entry names a criterion the rubric does not declare, which no other gate reads."""
+    task_dir = tmp_path / "mis_authored_migration"
+    task_file = _write_task(task_dir, _MIGRATED_GRADING)
+    (task_dir / "migration.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "migrations": [
+                    {
+                        "criterion": "never_declared",
+                        "mode": "candidate",
+                        "by": ["nothing_declares_this_either"],
+                        "was": {"description": "Something the rubric never said."},
+                    }
+                ]
+            }
+        )
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "names no criterion in the pack's rubric" in out
+
+
+def test_validate_cli_reports_a_task_carrying_no_sidecar_as_valid(tmp_path: Path):
+    """The file is optional, so the gate's accepting direction is every pack that has
+    none — which is every pack in the tree until one declares a migration."""
+    task_file = _write_task(tmp_path / "no_migration_sidecar", _MIGRATED_GRADING)
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    assert "1 valid, 0 invalid" in result.stderr

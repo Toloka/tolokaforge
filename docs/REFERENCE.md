@@ -211,6 +211,50 @@ side, ends every per-criterion justification with a trailing `VERDICT: MET` /
 match its verdict; the marker is kept verbatim in each `criterion_results`
 justification in `grade.yaml`.
 
+### migration.yaml
+
+Optional, beside a task's `grading.yaml`. Records which rubric criteria the pack's
+`trace_checks` constraints are a candidate for, have narrowed, or have replaced. **Nothing
+about grading reads it**: it is the claim [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) checks
+against recorded judge verdicts, and `tolokaforge validate` refuses a claim the pack
+contradicts. A pack without one is unchanged.
+
+```yaml
+migrations:                                  # at least one entry
+  - criterion: checked_duplicates_first      # a criterion id in this pack's llm_judge.rubric
+    mode: narrowed                           # candidate | narrowed | retired
+    by:                                      # trace_checks ids in this pack; a CONJUNCTION
+      - the_notes_were_listed_before_the_note_was_added
+    was:                                     # the criterion's PRE-migration shape
+      kind: binary                           # binary | graded; default binary
+      required: true                         # default false
+      weight: 1.0                            # default 1.0
+      description: "<the text the evidence was gathered against>"
+    residual:                                # absent for candidate; kind is fixed by mode
+      kind: text                             # none (retired) | text (narrowed)
+      reason: "<what the judge still reads / why nothing remains>"
+    combine_weights:                         # post-migration combine.weights map
+      llm_judge: 0.7                         # required for a narrowed/retired SCORED criterion
+      trace_checks: 0.3
+    evidence:                                # required for narrowed/retired, forbidden on candidate
+      corpus: tests/data/migration_corpora/notes_duplicate_check
+      observations: 17                       # checked against what reconcile measures
+      kappa: 1.0                             # nullable and required; null means undefined
+    acknowledged:                            # optional waivers, default []
+      - trial: <bundle path under evidence.corpus>
+        reason: "<why the judge's verdict on that trial is the one to discount>"
+```
+
+The file is `extra="forbid"` at every level, so a misspelled key is an error rather than a
+claim nothing reads. `residual`'s presence and kind are a **total function of `mode`** —
+absent, `text`, `none` — so a reader can tell what an entry claims from its mode alone. The
+two load-time hazard rules (a `required: true` criterion may only be claimed by **shared**
+`severity: gate` constraints; a *scored* one must declare `combine_weights`) and every other
+refusal are in
+[GRADING.md § Declaring a migration](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar);
+the bar the declaration is decided against is in
+[RUBRIC_MIGRATION.md](RUBRIC_MIGRATION.md#the-bar).
+
 ### Environment Variables
 
 | Variable | Description |

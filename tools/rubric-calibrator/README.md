@@ -59,15 +59,28 @@ testcase). The graded criteria are still met, so it is a mixed verdict.
 
 ## Layout
 
-- `src/rubric_calibrator/metrics.py` — pure agreement maths (no LLM, unit-tested).
 - `src/rubric_calibrator/fixture.py` — fixture schema + loader (Pydantic v2).
 - `src/rubric_calibrator/runner.py` — drives the real judge, pairs verdicts.
 - `src/rubric_calibrator/report.py` — rich report rendering.
 - `src/rubric_calibrator/cli.py` — typer CLI + trust gate.
 
+The agreement maths — `binarise`, `accuracy`, `cohen_kappa`,
+`extract_disagreements`, `build_report`, `decide_gate` and their value types —
+lives in the engine at
+[`tolokaforge/core/grading/agreement.py`](../../tolokaforge/core/grading/agreement.py),
+which is its only home. It is pure (no LLM, no IO) and named neutrally
+(`reference` / `candidate` labels) because the maths does not care which side is
+the judge; this tool supplies the human label as `reference` and the judge's
+verdict as `candidate`. The met/not-met threshold for graded criteria is
+`GRADED_MET_THRESHOLD`, imported from `tolokaforge.core.grading.rubric` so the
+calibrator and the required-gate cannot disagree about it.
+
 ## Tests
 
 ```bash
-cd tools/rubric-calibrator && uv run pytest tests/ -m unit          # pure + scripted-harness
+cd tools/rubric-calibrator && uv run pytest tests/ -m unit          # fixtures + scripted harness
 cd tools/rubric-calibrator && scripts/with_env.sh uv run pytest tests/ -m integration  # real LLM
 ```
+
+The agreement maths is unit-tested in the engine's suite —
+`uv run pytest tests/unit/grading/test_agreement.py`.

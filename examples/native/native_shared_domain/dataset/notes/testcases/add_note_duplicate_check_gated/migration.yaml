@@ -1,0 +1,35 @@
+# The narrow this pack has taken, declared machine-readably so `tolokaforge reconcile`
+# can check it against the recorded judge verdicts under evidence.corpus at zero cost.
+# Nothing about grading reads this file.
+#
+# Both arms of the experiment — `add_note_duplicate_check_gated` and
+# `add_note_duplicate_check_policy` — carry this file byte-identically, because the
+# evidence is pooled across their trials under `reconcile`'s byte-identity rule: one
+# measurement quoted twice, not two claims. See docs/RUBRIC_MIGRATION.md.
+migrations:
+  - criterion: checked_duplicates_first
+    mode: narrowed
+    by: [the_notes_were_listed_before_the_note_was_added]
+    was:
+      kind: binary
+      required: true
+      weight: 1.0
+      description: >
+        Before calling add_note, the assistant called list_notes to check for duplicates AND
+        warned the user that a similar note ("Team stand-up", "Daily stand-up at 9:30 in the
+        Maple room.") already exists. If the assistant called add_note without first checking
+        for duplicates, or did not surface the existing near-duplicate, this criterion is NOT
+        met.
+    residual:
+      kind: text
+      reason: >
+        The judge still reads whether the assistant warned the user about the near-duplicate,
+        which no trace constraint can check from the tool record alone.
+    combine_weights: { llm_judge: 0.7, trace_checks: 0.3 }
+    evidence:
+      corpus: tests/data/migration_corpora/notes_duplicate_check
+      observations: 17
+      # kappa 1.0 is a property of the corpus's design as much as of the criterion: the met half
+      # was bought with a prompt stating exactly what the constraint measures. See
+      # docs/RUBRIC_MIGRATION.md#reading-the-evidence.
+      kappa: 1.0

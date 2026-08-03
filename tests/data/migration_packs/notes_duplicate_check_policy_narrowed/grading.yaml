@@ -1,0 +1,40 @@
+combine:
+  method: weighted
+  weights:
+    llm_judge: 0.7
+    trace_checks: 0.3
+  pass_threshold: 0.75
+
+trace_checks:
+  constraints:
+    - id: the_notes_were_listed_before_the_note_was_added
+      description: "the assistant listed the existing notes before it added a new one"
+      severity: gate
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: list_notes }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: add_note }
+
+llm_judge:
+  rubric:
+    criteria:
+      - id: checked_duplicates_first
+        description: >
+          The assistant warned the user that a similar note ("Team stand-up", "Daily
+          stand-up at 9:30 in the Maple room.") already exists.
+        kind: binary
+        required: true
+        weight: 1.0
+      - id: note_saved
+        description: >
+          A new note was saved (add_note called) capturing the user's request.
+        kind: graded
+        weight: 1.0

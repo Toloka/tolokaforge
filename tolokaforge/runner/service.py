@@ -88,7 +88,7 @@ from tolokaforge.runner.db_client import (
 )
 from tolokaforge.runner.grading import (
     build_grade_reasons,
-    combine_grade_components,
+    compose_runner_trial_verdict,
     compute_state_diff,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
@@ -1499,10 +1499,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 else:
                     judge_status = pb2.JUDGE_STATUS_COMPLETED
                     judge_gate_failed = judge_result.gate_failed
-                    # A failed required criterion is a HARD fail of the component
-                    # regardless of the weighted score — a high score must not
-                    # rescue it. Feed 0.0 so the combine reflects the gate.
-                    components.llm_judge_score = 0.0 if judge_gate_failed else judge_result.score
+                    # The judge's raw aggregate; the required-criterion gate is applied
+                    # by ``compose_runner_trial_verdict`` below.
+                    components.llm_judge_score = judge_result.score
                     logger.info(
                         f"GradeTrial: {trial_id} - LLM judge: "
                         f"score={judge_result.score:.2f}, gate_failed={judge_gate_failed}"
@@ -1554,17 +1553,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
 
+        verdict = compose_runner_trial_verdict(
+            components.model_dump(),
+            grading_config.model_dump(),
+            judge_gate_failed=judge_gate_failed,
+            trace_gate_failed=trace_checks_result.gate_failed,
+        )
+        # The gated component, not the judge's raw aggregate, is what the wire grade and
+        # the reasons carry — so the write-back happens before either is built.
+        components.llm_judge_score = verdict.judge_component
         components_dict = components.model_dump()
-        grading_config_dict = grading_config.model_dump()
-        score, binary_pass = combine_grade_components(components_dict, grading_config_dict)
-
-        # A failed required rubric criterion or a tripped trace gate fails the trial
-        # outright — independent of pass_threshold and any other heavily-weighted
-        # component. One rule, two gates: the core engine applies the trace half at
-        # its own combine (``combine.py``), so the verdict does not depend on which
-        # substrate graded the trial.
-        if judge_gate_failed or trace_checks_result.gate_failed:
-            binary_pass = False
+        score, binary_pass = verdict.score, verdict.binary_pass
 
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None

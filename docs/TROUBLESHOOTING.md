@@ -54,6 +54,30 @@ See [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version 
 and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §
 "Runner-engine version lock (both directions)".
 
+## Every Tool Call Fails: MCP server closed connection
+
+**Symptom.** Every tool call of every task declaring an `mcp_server.py` comes back
+`Tool error: RuntimeError: MCP server closed connection`. The agent burns its whole turn
+budget on failing tools and the trial grades `0.0` — a full-price run that measured nothing.
+Reproduced on `examples/native/native_shared_domain`: three trials, `tool_calls=5`, every
+call failed, `avg_score_micro=0.0`.
+
+**Cause: the image resolved its own `mcp` version.** The runner image installs the built
+wheel with **pip**, which resolves the declared dependency range itself rather than reading
+`uv.lock` — so a loose range picks up a version inside the container that the workspace venv
+never sees. `core/tools_interface.py` imports `mcp.server.fastmcp`, which `mcp` 2.x does not
+have (FastMCP moved), and the server subprocess dies at import. The host venv stays green
+throughout, which is what makes this hard to see: `uv run pytest` cannot reproduce it.
+
+**Fix.** Rebuild the image from the current tree, which now resolves the pinned range:
+
+```bash
+make docker-build-core
+```
+
+**Anyone holding an image built from an unpinned resolution must rebuild it**, whatever the
+tree they build from says today — the version is baked into the image. See #794.
+
 ## Browser Tool Errors
 
 - Ensure Playwright is installed:

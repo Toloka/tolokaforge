@@ -23,13 +23,11 @@
 # invariant is untouched: the deterministic components still sum to 0.5, below the
 # 0.6 threshold, and no trial passes on process alone.
 #
-# CANDIDACY: the two `..._the_note_quotes_...` constraints below are candidates to
-# replace the `explains_mechanism` judge criterion — the half of it that asks the
-# note to be grounded in the divergence the agent observed rather than recited. They
-# do NOT retire it here. `explains_mechanism` also asks for the causal account (the
-# write updates postgres and skips the invalidation), which no exact or textual
-# check reaches, and the retirement decision belongs to #683, whose gate is
-# agreement against historical judge verdicts. See docs/GRADING.md § Trace Checks.
+# CANDIDACY: the two `..._the_note_quotes_...` constraints below are declared
+# candidates to replace the `explains_mechanism` criterion, in the `migration.yaml`
+# beside this file — which is where what a retirement would still have to answer for
+# is written, and where `tolokaforge validate` checks the claim against this rubric.
+# Neither retires anything.
 #
 # RECORDS-DEPENDENCE: these two binders read `field: result`, which makes this pack
 # records-dependent for the first time — on a bundle re-graded without records the
