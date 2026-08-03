@@ -13,9 +13,10 @@ the agent or to nobody: a misspelled tool name in a ``present`` matcher scores t
 component 0.0 with the message a genuine agent failure carries, the same typo in
 an ``absent`` matcher passes every trial, an uncompilable ``regex`` raises inside
 the evaluator once the tokens are already spent, a binding correlated against a
-field of another type is red on every trajectory whatever the agent did, and a
-component and its weight naming each other only one way leaves the two substrates
-folding different maps for the same trial.
+field of another type is red on every trajectory whatever the agent did, a section
+declaring nothing scores nothing while reading as configured, and a component and its
+weight naming each other only one way leaves the two substrates folding different maps
+for the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -267,6 +268,34 @@ against a recorded tool set performs no fold and is asked nothing about weights.
 """
 
 
+# What each section must declare to assert anything, addressed to the author. Three
+# entries, because the other two components answer this question at model
+# construction: an empty ``trace_checks`` and an empty ``llm_judge`` are both
+# unrepresentable, so no gate rule can reach one.
+_WHAT_EACH_SECTION_MUST_DECLARE: Mapping[str, str] = {
+    "state_checks": (
+        "a non-empty jsonpaths list, a db_probes list, or hash.enabled beside an "
+        f"{' or '.join(HASH_SOURCE_KEYS)}"
+    ),
+    "transcript_rules": (
+        "a rule over the transcript — must_contain, disallow_regex, max_turns, "
+        "min_assistant_turns, tool_expectations, required_actions or communicate_info"
+    ),
+    "custom_checks": (
+        "enabled: true beside the file holding the checks, or enabled: false to record "
+        "the opt-out explicitly"
+    ),
+}
+
+_ASSERTS_NOTHING = (
+    "the {section} block {because}, so it asserts nothing and scores nothing. "
+    "Declare {what}, or drop the block"
+)
+
+_AN_EMPTY_BLOCK = "declares nothing at all"
+
+_NO_STATE_SOURCE = "declares no source any substrate can read"
+
 # The JSON types whose values are never strings. A schema declaring one of them for
 # an argument settles that a reference comparing the bound value against text cannot
 # hold; ``string``, and a property writing no type at all, settle nothing.
@@ -338,6 +367,7 @@ def inspect_grading_authoring(
     binders = tuple(_trace_binding_sites(constraints))
     rules = _transcript_rules(grading)
     reports = [
+        _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
     ]
@@ -356,6 +386,76 @@ def inspect_grading_authoring(
             _check_weights_name_requested_components(grading, effective_combine),
         ]
     return _merged(reports)
+
+
+def _check_sections_declare_something(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A component section the author wrote declares something to evaluate.
+
+    An empty block cannot survive translation: the wire erases an authored empty
+    ``state_checks`` or ``transcript_rules`` to an absent section, so while the shape
+    is representable no predicate can answer "did the author write this?" the same way
+    on both substrates. Refusing it is what makes one predicate serve all three
+    artifacts, and it finishes a call the project has already made twice — an empty
+    ``trace_checks`` and an empty ``llm_judge`` are refused at model construction.
+
+    ``state_checks`` carries the rule one level further, because it has fields that
+    configure how a source is read rather than declaring one: a block holding only
+    ``id_fields`` or ``relaxed_validation`` asserts exactly as little as an empty one.
+    That rule and :func:`_check_hash_source_declared` partition the unevaluable state
+    blocks between them rather than overlapping — see :func:`_state_checks_has_a_source`
+    for where the line falls — so each shape is refused once, at the key its own fix
+    belongs to.
+    """
+    errors = tuple(
+        Finding(
+            section,
+            _ASSERTS_NOTHING.format(section=section, because=because, what=what),
+        )
+        for section, what in _WHAT_EACH_SECTION_MUST_DECLARE.items()
+        if (because := _why_a_section_asserts_nothing(section, grading.get(section))) is not None
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _why_a_section_asserts_nothing(section: str, written: Any) -> str | None:
+    """Which of the two shapes *written* is, or ``None`` where it declares something.
+
+    A section that is not a mapping is left alone: the block is expected to have
+    passed its own shape validation, so a scalar there is a load error rather than an
+    authoring finding.
+    """
+    if not isinstance(written, Mapping):
+        return None
+    if not written:
+        return _AN_EMPTY_BLOCK
+    if section == "state_checks" and not _state_checks_has_a_source(written):
+        return _NO_STATE_SOURCE
+    return None
+
+
+def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
+    """Whether the block declares a state source at all.
+
+    ``db_probes`` counts although only the runner can read one: that a probe's DSN
+    resolves only inside the task's docker network is the documented substrate
+    asymmetry, not something the author wrote wrong.
+
+    A ``hash`` block counts as soon as it declares *either* the flag or something to
+    compare against, which is what divides this rule from
+    :func:`_check_hash_source_declared`: that rule owns every hash block whose two
+    halves disagree, and this one owns a block that declares no source at all —
+    including a hash block carrying neither. So each shape draws exactly one finding,
+    and no shape draws none.
+    """
+    hash_block = state_checks.get("hash")
+    if not isinstance(hash_block, Mapping):
+        hash_block = {}
+    return bool(
+        state_checks.get("jsonpaths")
+        or state_checks.get("db_probes")
+        or hash_block.get("enabled")
+        or any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
+    )
 
 
 def _check_requested_components_are_weighted(

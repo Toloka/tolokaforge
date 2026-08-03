@@ -36,6 +36,7 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _TEXTUAL_MATCHER_FIELDS,
+    _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
     CombineLayer,
@@ -43,8 +44,13 @@ from tolokaforge.core.grading.config_validation import (
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.trace_timeline import TraceEvent
-from tolokaforge.core.models import GradingCombineConfig, GradingFindingSeverity
+from tolokaforge.core.models import (
+    GradingCombineConfig,
+    GradingConfig,
+    GradingFindingSeverity,
+)
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
 
 pytestmark = pytest.mark.unit
@@ -231,6 +237,22 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_hash_source_declared",
         channel="errors",
         message="Declare expected_state_hash or golden_actions",
+    ),
+    _Rule(
+        label="a_section_that_declares_nothing",
+        task=_HELPDESK,
+        grading={"transcript_rules": {}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="declares nothing at all",
+    ),
+    _Rule(
+        label="a_state_checks_block_with_no_source",
+        task=_HELPDESK,
+        grading={"state_checks": {"jsonpaths": [], "relaxed_validation": True}},
+        checker="_check_sections_declare_something",
+        channel="errors",
+        message="declares no source any substrate can read",
     ),
     _Rule(
         label="configured_component_with_no_weight",
@@ -665,6 +687,90 @@ def test_golden_actions_alone_are_a_hash_source() -> None:
     }
 
     assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+
+
+# The rest of a loadable config, because ``combine`` is required: without it every
+# section below reads as refused, for a reason that has nothing to do with its block.
+_A_MINIMAL_COMBINE = {"combine": {"method": "weighted", "weights": {}, "pass_threshold": 1.0}}
+
+
+def _refuses_its_own_empty_block(section: str) -> bool:
+    """Whether ``GradingConfig`` refuses *section* written ``{}``, on the block's account.
+
+    The error has to name the section. A required field added elsewhere in the model
+    would otherwise read as "no empty block loads", which silently empties the gate
+    rule's scope instead of failing.
+    """
+    try:
+        GradingConfig.model_validate({**_A_MINIMAL_COMBINE, section: {}})
+    except ValidationError as error:
+        return any(str(item["loc"][0]) == section for item in error.errors())
+    return False
+
+
+def test_the_sections_a_gate_rule_reaches_are_the_ones_the_models_still_admit() -> None:
+    """Rule 1's scope is measured against the models, not listed beside them.
+
+    Two of the five components already refuse their empty block at construction — a
+    ``trace_checks`` block declaring neither constraints nor alternatives, and an
+    ``llm_judge`` block with no rubric — so the gate rule finishes a call the project
+    made twice rather than introducing one, and it reaches exactly the three that are
+    left. Both columns are asserted rather than only their agreement: a component that
+    grew its own refusal has to leave the gate rule's table, and one that lost it has
+    to join it.
+    """
+    sections = {spec.config_section for spec in GRADE_COMPONENTS}
+    refused = {section for section in sections if _refuses_its_own_empty_block(section)}
+
+    assert refused == {"trace_checks", "llm_judge"}
+    assert sections - refused == {"state_checks", "transcript_rules", "custom_checks"}
+    assert set(_WHAT_EACH_SECTION_MUST_DECLARE) == sections - refused
+
+
+_SOURCELESS_STATE_CHECKS = (
+    pytest.param({}, "state_checks", id="an_empty_block"),
+    pytest.param({"jsonpaths": []}, "state_checks", id="an_empty_assertion_list"),
+    pytest.param(
+        {"jsonpaths": [], "id_fields": {"widgets": "widget_id"}},
+        "state_checks",
+        id="only_keys_that_configure_how_a_source_is_read",
+    ),
+    pytest.param({"hash": {}}, "state_checks", id="a_hash_block_declaring_neither_half"),
+    pytest.param(
+        {"hash": {"enabled": False}}, "state_checks", id="a_hash_block_with_only_the_flag_off"
+    ),
+    pytest.param(
+        {"hash": {"enabled": True}}, "state_checks.hash.enabled", id="the_flag_on_with_no_source"
+    ),
+    pytest.param(
+        {"hash": {"enabled": True, "golden_actions": []}},
+        "state_checks.hash.enabled",
+        id="the_flag_on_with_an_empty_replay",
+    ),
+    pytest.param(
+        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        "state_checks.hash.expected_state_hash",
+        id="a_source_the_flag_never_reads",
+    ),
+)
+
+
+@pytest.mark.parametrize(("state_checks", "address"), _SOURCELESS_STATE_CHECKS)
+def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
+    state_checks: dict[str, Any], address: str
+) -> None:
+    """The two rules over ``state_checks`` partition its unevaluable shapes.
+
+    Every shape here scores nothing, and each must be refused once and addressed at
+    the key its own fix belongs to: a block that declares no source at all is the
+    section's finding, and a hash block whose flag and source disagree is the hash
+    rule's. Asserting the *whole* list rather than membership is what holds the
+    partition — a rule widened to cover a shape the other already owns shows up here
+    as two findings for one defect, and one narrowed shows up as none.
+    """
+    report = inspect_grading_authoring({"state_checks": state_checks}, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == [address]
 
 
 def test_an_unresolvable_inventory_may_not_carry_tools() -> None:

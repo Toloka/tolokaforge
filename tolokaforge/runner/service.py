@@ -1901,6 +1901,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         follows ``fail_on_error`` — ``0.0`` when true (contributes to the
         weighted total as a fail), ``-1.0`` when false (component not
         evaluated).
+
+        A suite that ran and decided nothing — every check skipped, or the
+        file declared none — also returns ``-1.0``, the same answer the core
+        engine reaches through the shared
+        :attr:`CheckResultSet.decided_something`. Its aggregate over zero
+        verdicts is ``0.0``, which would fold as a component that failed.
         """
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
@@ -1981,6 +1987,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"GradeTrial: {trial_id} - custom checks: "
             f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
         )
+        if not result.decided_something:
+            return -1.0, wire_results
         return result.aggregate_score, wire_results
 
     async def _build_judge_state_diff(

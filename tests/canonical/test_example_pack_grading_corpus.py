@@ -1,14 +1,18 @@
 """The shipped example corpus grades what it configures, and its packs discriminate.
 
-Fourteen claims over the packs an author reads as the reference:
+Fifteen claims over the packs an author reads as the reference:
 
-1. **No example pack configures a component it never weights.** Both substrates refuse
-   to fold a scored component whose share the map does not declare, so a pack of that
-   shape is not gradeable at all — and the authoring gate says so before the run pays
-   for it. The guard reads the **effective** combine — what ``NativeAdapter.get_grading_config`` returns
-   after the project layer merges — because five shipped packs declare no ``combine``
-   of their own and inherit ``llm_judge: 1.0`` from ``project.yaml``. Over raw
-   ``grading.yaml`` the same guard is red on those five on day one.
+1. **No pack in the repository and its weight map disagree about which components
+   exist**, in either direction: nothing a pack configures goes unweighted, and no
+   weight names a component the pack never configures. Both substrates refuse to fold
+   a scored component whose share the map does not declare, and neither produces a
+   component nothing configured, so either shape is ungradeable — and the authoring
+   gate says so before the run pays for it. The guard reads the **effective** combine —
+   what ``NativeAdapter.get_grading_config`` returns after the project layer merges —
+   because five shipped packs declare no ``combine`` of their own and inherit
+   ``llm_judge: 1.0`` from ``project.yaml``. Over raw ``grading.yaml`` the same guard
+   is red on those five on day one. Both corpus roots are walked: the 64 project-less
+   ``tests/data`` packs are where every stray weight was.
 2. **``helpdesk_01``'s ``trace_checks`` block asserts the process its README calls
    ungradeable by any other rule**, and each of its three constraints can fail on
    its own. A trajectory that reaches the right database state by a wrong process
@@ -22,8 +26,11 @@ Fourteen claims over the packs an author reads as the reference:
    the resolution would show up.
 5. **No shipped pack fails the authoring gate.** Every ``grading.yaml`` under
    ``examples/`` and ``tests/data/tasks/`` is checked against its own task's tool
-   inventory and produces no error and no advisory, which is the measured proof that
-   the gate ships green rather than the claim that it does.
+   inventory *and* its own effective combine, and produces no error, no advisory and
+   nothing unchecked — the measured proof that the gate ships green rather than the
+   claim that it does. The rules that read the block alone are held over the wider
+   93-pack walk too, so a pack outside the two task roots cannot declare a section
+   that asserts nothing.
 6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
    passed by mutating.** Either comparison its rubric reference names scores in full
    and records itself as the winner; completing neither scores below completing
@@ -74,13 +81,15 @@ Fourteen claims over the packs an author reads as the reference:
 from __future__ import annotations
 
 import json
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from click.testing import CliRunner
+from pydantic import ValidationError
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
@@ -89,8 +98,16 @@ from tests.utils.trace_overrides import override_file
 from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
-from tolokaforge.core.grading.config_validation import inspect_grading_authoring
-from tolokaforge.core.grading.grade_components import COMPONENT_BY_NAME, GRADE_COMPONENTS
+from tolokaforge.core.grading.config_validation import (
+    AuthoringReport,
+    ToolInventory,
+    inspect_grading_authoring,
+)
+from tolokaforge.core.grading.grade_components import (
+    COMPONENT_BY_NAME,
+    GRADE_COMPONENTS,
+    component_requested,
+)
 from tolokaforge.core.grading.rubric import aggregate_rubric, parse_submit_report
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_replay import (
@@ -110,6 +127,7 @@ from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
+    GradingCombineConfig,
     GradingConfig,
     RecordedToolCall,
     ToolExecutionStatus,
@@ -121,18 +139,25 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter, read_recorded_tool_log
-from tolokaforge.core.project_loader import load_project_config
+from tolokaforge.core.project_loader import (
+    load_project_config,
+    project_grading_combine,
+    resolve_effective_grading_combine,
+)
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
-_EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
+_REPO = Path(__file__).resolve().parents[2]
+_EXAMPLES = _REPO / "examples"
+_TEST_DATA = _REPO / "tests" / "data"
 
-# Every task the corpus grades, so a guard that enumerated nothing fails instead of
-# passing over the empty set. The two files outside it are the ``terminal_bench``
-# pair, which ship no enclosing project and are the corpus's two known-invalid tasks.
+# Every task under ``examples/`` the corpus grades, so a guard that enumerated nothing
+# fails instead of passing over the empty set. The two files outside it are the
+# ``terminal_bench`` pair, which ship no enclosing project and are the corpus's two
+# known-invalid tasks.
 _GRADED_TASK_COUNT = 29
 # Tool schemas the corpus puts on the wire, across the 24 tasks that declare any, so a
 # parameter comparison that resolved nothing fails instead of passing over empty maps.
@@ -144,14 +169,32 @@ _TASKS_WITHOUT_A_PROJECT = (
 
 
 def _enclosing_project(task_yaml: Path) -> Path | None:
-    """The ``project.yaml`` whose layer this task loads under, or ``None``."""
+    """The ``project.yaml`` whose layer this task loads under, or ``None``.
+
+    The walk is bounded by the two corpus roots: every pack under ``tests/data``
+    ships without a project, and an unbounded walk would go on to ask the repository
+    root and the filesystem above it.
+    """
     for directory in task_yaml.parents:
         candidate = directory / "project.yaml"
         if candidate.exists():
             return candidate
-        if directory == _EXAMPLES:
+        if directory in (_EXAMPLES, _TEST_DATA):
             return None
     return None
+
+
+def _project_layer(task_yaml: Path) -> dict[str, Any] | None:
+    """The ``task_defaults`` layer beneath this task, or ``None`` for no project at all.
+
+    ``None`` is the honest answer for a project-less pack rather than an empty
+    mapping: no layer means the task's own block *is* the effective one, which is a
+    different statement from a layer that could not be read.
+    """
+    project_yaml = _enclosing_project(task_yaml)
+    if project_yaml is None:
+        return None
+    return load_project_config(project_yaml).task_defaults.model_dump(exclude_defaults=True) or None
 
 
 def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
@@ -163,16 +206,17 @@ def _pack_adapter(task_yaml: Path) -> tuple[str, NativeAdapter]:
     glob silently measures a subset of the corpus.
     """
     project_yaml = _enclosing_project(task_yaml)
-    assert project_yaml is not None, f"{task_yaml} is under no project"
-    project = load_project_config(project_yaml)
-    root = project_yaml.parent
+    if project_yaml is None:
+        root, environment = task_yaml.parent, None
+    else:
+        root = project_yaml.parent
+        environment = load_project_config(project_yaml).default_environment
     adapter = NativeAdapter(
         {
             "tasks_glob": str(task_yaml.relative_to(root)),
             "task_packs": [str(root)],
-            "project_task_defaults": project.task_defaults.model_dump(exclude_defaults=True)
-            or None,
-            "project_default_environment": project.default_environment,
+            "project_task_defaults": _project_layer(task_yaml),
+            "project_default_environment": environment,
         }
     )
     task_ids = adapter.get_task_ids()
@@ -194,8 +238,41 @@ def _grading_config(task_yaml: Path) -> tuple[str, GradingConfig]:
     return task_id, adapter.get_grading_config(task_id)
 
 
-def _graded_corpus() -> dict[str, GradingConfig]:
-    return dict(_grading_config(task_yaml) for task_yaml in _corpus_task_files())
+# Directories under ``tests/data`` holding recorded ``TaskDescription`` artifacts: a
+# bundle's own copy of the config the trial was graded under. They are not authored
+# packs, nothing may edit them, and a guard over authoring must not read them.
+_RECORDED_ARTIFACT_DIRS = ("output/trials", "migration_corpora")
+
+# The authored task files that load no grading config, so a pack losing its grading
+# block shows up as a guard failure rather than as a silent absence. The three
+# ``terminal_bench`` files declare no ``task_id`` at all and ``actor_binding`` ships no
+# grading; ``test_the_authored_walk_partitions_every_task_file_under_both_roots``
+# holds each reason.
+_TASKS_OUTSIDE_THE_GRADED_CORPUS = _TASKS_WITHOUT_A_PROJECT + (
+    _TEST_DATA / "terminal_bench_tasks" / "echo-hello" / "task.yaml",
+    _TEST_DATA / "actor_binding" / "task.yaml",
+)
+
+# Every authored pack in the repository whose grading config loads: 29 under
+# ``examples/``, each beneath a ``project.yaml``, and 64 project-less packs under
+# ``tests/data``. Reconciled by the partition guard rather than only counted here.
+_AUTHORED_PACK_COUNT = 93
+
+
+def _is_a_recorded_artifact(task_yaml: Path) -> bool:
+    posix = task_yaml.as_posix()
+    return any(f"/{directory}/" in posix for directory in _RECORDED_ARTIFACT_DIRS)
+
+
+def _authored_packs() -> list[Path]:
+    """Every authored task file under both roots that loads a grading config."""
+    return [
+        task_yaml
+        for task_yaml in sorted(_EXAMPLES.rglob("task.yaml"))
+        + sorted(_TEST_DATA.rglob("task.yaml"))
+        if not _is_a_recorded_artifact(task_yaml)
+        and task_yaml not in _TASKS_OUTSIDE_THE_GRADED_CORPUS
+    ]
 
 
 def _prompt_surfaces(task_yaml: Path) -> list[str]:
@@ -216,25 +293,95 @@ def _prompt_surfaces(task_yaml: Path) -> list[str]:
     ]
 
 
-def test_every_component_an_example_pack_configures_carries_a_weight() -> None:
-    """A configured-but-unweighted component is #744's authoring-side exposure."""
-    corpus = _graded_corpus()
-    assert len(corpus) == _GRADED_TASK_COUNT, (
-        f"the guard measured {len(corpus)} example tasks, not {_GRADED_TASK_COUNT}. A "
+def test_the_authored_walk_partitions_every_task_file_under_both_roots() -> None:
+    """The two exclusions the widened walk makes, each one falsifiable.
+
+    A guard is only as honest as its walk, and this one drops files on two grounds: a
+    recorded ``TaskDescription`` under ``output/trials`` or ``migration_corpora`` is
+    not authored, and four authored files load no grading config. Both are asserted
+    against what the files actually do, so the exclusion list cannot be used to park
+    a pack a guard reds on — a named file that *does* load a grading config fails
+    here, and so does a task file the walk drops on neither ground.
+    """
+    every_file = set(_EXAMPLES.rglob("task.yaml")) | set(_TEST_DATA.rglob("task.yaml"))
+    recorded = {task_yaml for task_yaml in every_file if _is_a_recorded_artifact(task_yaml)}
+    authored = set(_authored_packs())
+
+    assert authored | recorded | set(_TASKS_OUTSIDE_THE_GRADED_CORPUS) == every_file
+    assert authored & recorded == set()
+    assert len(authored) == _AUTHORED_PACK_COUNT, (
+        f"the walk found {len(authored)} authored packs, not {_AUTHORED_PACK_COUNT}. A "
         "corpus guard over a subset proves nothing about the packs it skipped"
     )
-    unweighted = {
-        task_id: sorted(
+    assert len(recorded) == len(every_file) - _AUTHORED_PACK_COUNT - len(
+        _TASKS_OUTSIDE_THE_GRADED_CORPUS
+    )
+    for task_yaml in _TASKS_OUTSIDE_THE_GRADED_CORPUS:
+        assert task_yaml.exists(), f"{task_yaml} is excluded by name and does not exist"
+        assert _loads_no_grading_config(task_yaml), (
+            f"{task_yaml} loads a grading config, so excluding it hides a pack from "
+            "every guard over this walk"
+        )
+
+
+def _loads_no_grading_config(task_yaml: Path) -> bool:
+    """Whether this task file reaches no grading block, for either of the two reasons."""
+    try:
+        task, task_dir = load_task_yaml(task_yaml)
+    except ValidationError:
+        return True
+    return task.grading is None or not (task_dir / task.grading).exists()
+
+
+def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> None:
+    """#744's authoring-side exposure, both directions, over every pack in the repo.
+
+    A component a pack configures that the effective map never weights is not
+    gradeable at all: core drops it from the numerator while the runner folds it at an
+    invented ``1.0``. A weight naming a component the pack never configures is the
+    same defect from the other side — no substrate produces that component, so the
+    weight weighs nothing, and it turns a pack that asks for nothing into one claiming
+    a component it does not have.
+
+    Both directions are asserted because a guard that asks one of two symmetric
+    questions is how 21 ``wire_probes`` fixtures carrying a stray ``state_checks``
+    weight stayed invisible while the requested-but-unweighted half read green. The
+    map is the **effective** one — five shipped packs declare no ``combine`` of their
+    own and inherit ``llm_judge: 1.0`` from ``project.yaml``, so over the authored
+    block alone this guard is red on those five on day one.
+
+    Keyed by path rather than by task id: two ``migration_packs`` fixtures reuse the
+    task ids of the ``native_shared_domain`` packs they were narrowed from, so a
+    corpus keyed by id silently measures 91 of the 93.
+    """
+    corpus = {task_yaml: _grading_config(task_yaml)[1] for task_yaml in _authored_packs()}
+    assert len(corpus) == _AUTHORED_PACK_COUNT, (
+        f"the guard measured {len(corpus)} packs, not {_AUTHORED_PACK_COUNT}. A corpus "
+        "guard over a subset proves nothing about the packs it skipped"
+    )
+
+    unweighted: dict[str, list[str]] = {}
+    unrequested: dict[str, list[str]] = {}
+    for task_yaml, grading in corpus.items():
+        requested = {
             spec.name
             for spec in GRADE_COMPONENTS
-            if getattr(grading, spec.config_section, None)
-            and spec.name not in (grading.combine.weights or {})
-        )
-        for task_id, grading in corpus.items()
-    }
-    assert {task_id: names for task_id, names in unweighted.items() if names} == {}, (
+            if component_requested(spec, getattr(grading, spec.config_section))
+        }
+        weighted = set(grading.combine.weights or {})
+        pack = str(task_yaml.relative_to(_REPO))
+        if missing := sorted(requested - weighted):
+            unweighted[pack] = missing
+        if stray := sorted(weighted - requested):
+            unrequested[pack] = stray
+
+    assert unweighted == {}, (
         "these packs configure a component the effective combine never weights, so core "
         "drops it from the fold and the runner invents a 1.0 for it (#744)"
+    )
+    assert unrequested == {}, (
+        "these packs weight a component they never configure, so no substrate produces "
+        "it and the weight folds nothing"
     )
 
 
@@ -288,6 +435,13 @@ _GATED_PACK_COUNT = 58
 # init block fails loud rather than reaching trial registration as a TypeError.
 _PACK_WITH_NO_INVENTORY = "bad_mobile"
 
+# The two packs that address a tool argument below its first path segment — the one
+# thing the gate declines to check over this corpus, and the reason it gives (#765).
+# Pinned so a weight or tool-set skip, either of which would mean a rule proved
+# nothing, cannot hide among them.
+_PACKS_ADDRESSING_A_NESTED_ARGUMENT = ("helpdesk_01", "lot_ops_01")
+_NESTED_ARGUMENT_SKIP = "an argument path is checked at its first segment only"
+
 
 def _gated_packs() -> list[tuple[Path, Path]]:
     """Each shipped task file that references a grading file, with that file."""
@@ -304,15 +458,68 @@ def _gated_packs() -> list[tuple[Path, Path]]:
     return gated
 
 
+def _effective_combine(task_yaml: Path, grading: Mapping[str, Any]) -> GradingCombineConfig:
+    """The combine a pack grades under: its own block over its project's defaults.
+
+    The weight rules read the effective map because a task declaring no ``combine`` at
+    all still inherits one, and ``weights`` merges key by key — so even a pack that
+    writes a ``combine`` block can be missing weights its project supplies. Handing
+    the gate the authored block instead refuses the five ``example-microservices-pack``
+    tasks that inherit theirs.
+    """
+    return resolve_effective_grading_combine(
+        project_grading_combine(_project_layer(task_yaml)), grading.get("combine")
+    )
+
+
+# A weight key naming no component at all, injected into a pack's own effective map to
+# prove the weight rules were live at this tier. Rule 3's "names no grading component"
+# branch is the one shape no corpus edit can ever make legitimate.
+_A_WEIGHT_NAMING_NO_COMPONENT = "a_component_no_pack_configures"
+
+
+def _gate_reports(
+    task_yaml: Path, grading: Mapping[str, Any], inventory: ToolInventory
+) -> tuple[AuthoringReport, AuthoringReport]:
+    """A pack's own gate report, and the same pack's under one weight naming nothing.
+
+    Both come out of one resolved combine and one call site, which is what makes the
+    second a positive control for the first: supplying no combine leaves the weight
+    rules out of the report entirely — the gate adds no skip, because only a caller
+    gating a whole pack owes that — so a clean sweep would still read clean with those
+    two rules never run. The probed report is empty in exactly that case.
+    """
+    combine = _effective_combine(task_yaml, grading)
+    probed = combine.model_copy(
+        update={"weights": {**combine.weights, _A_WEIGHT_NAMING_NO_COMPONENT: 1.0}}
+    )
+    return (
+        inspect_grading_authoring(grading, inventory, effective_combine=combine),
+        inspect_grading_authoring(grading, inventory, effective_combine=probed),
+    )
+
+
 def test_no_shipped_pack_fails_the_authoring_gate() -> None:
     """The corpus proof that the gate rejects nothing that grades today.
 
-    Each block is checked against its own task's inventory, so this is the whole
-    severity table applied to real packs: an argument rule that descended past the
-    first path segment, or an advisory promoted to an error, shows up here as a
-    shipped pack that no longer loads.
+    Each block is checked against its own task's inventory *and* its own effective
+    combine, so this is the whole severity table applied to real packs: an argument
+    rule that descended past the first path segment, an advisory promoted to an error,
+    or a section that declares nothing shows up here as a shipped pack that no longer
+    loads.
+
+    Two things stop a clean sweep from reading clean for the wrong reason. The
+    ``unchecked`` channel is asserted rather than ignored, because a rule reported
+    unchecked is not a rule that passed — the corpus produces exactly one documented
+    skip, an argument addressed below its first segment (#765), and both which packs
+    report one and what it says are pinned. And every pack is checked a second time
+    with a weight naming no component, which has to be refused: the two weight rules
+    are simply absent from a report built with no combine, so without that control a
+    guard that stopped resolving the layer would go on passing.
     """
     findings: dict[str, list[str]] = {}
+    unchecked: dict[str, list[str]] = {}
+    unprobed: list[str] = []
     without_an_inventory: list[str] = []
     gated = _gated_packs()
 
@@ -324,12 +531,18 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
         except ValueError:
             without_an_inventory.append(task.task_id)
             continue
-        report = inspect_grading_authoring(grading, inventory)
+        report, probed = _gate_reports(task_yaml, grading, inventory)
         reported = [
             f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
         ]
         if reported:
             findings[task.task_id] = reported
+        if report.unchecked:
+            unchecked[task.task_id] = [skip.reason for skip in report.unchecked]
+        if [finding.where for finding in probed.errors] != [
+            f"combine.weights.{_A_WEIGHT_NAMING_NO_COMPONENT}"
+        ]:
+            unprobed.append(task.task_id)
 
     assert len(gated) == _GATED_PACK_COUNT, (
         f"the guard checked {len(gated)} packs, not {_GATED_PACK_COUNT}. A corpus "
@@ -337,6 +550,70 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
     )
     assert without_an_inventory == [_PACK_WITH_NO_INVENTORY]
     assert findings == {}
+    assert unprobed == [], (
+        "the gate did not refuse a weight naming no component for these packs, so the "
+        "weight rules never ran here and the clean sweep above proves nothing about them"
+    )
+    assert sorted(unchecked) == sorted(_PACKS_ADDRESSING_A_NESTED_ARGUMENT), (
+        "these packs are the ones whose blocks the gate cannot check in full, and the "
+        f"list moved: {unchecked}"
+    )
+    assert [
+        reason
+        for reasons in unchecked.values()
+        for reason in reasons
+        if _NESTED_ARGUMENT_SKIP not in reason
+    ] == [], (
+        "the gate skipped a rule for a reason other than the one nested-argument "
+        "limitation this corpus has — a weight rule reported unchecked here proves "
+        "nothing about the 57 packs it was supposed to gate"
+    )
+
+
+def test_no_authored_grading_block_asserts_nothing() -> None:
+    """Rule 1 over all 93 authored packs, which is 35 more than the gate walk reaches.
+
+    ``tests/data/grading_parity`` and ``tests/data/projects`` sit outside
+    :func:`_gated_packs`, so without this the rule's corpus proof stops at the packs
+    that happen to live under the two task roots. The inventory is deliberately
+    unresolvable: the rules that need a tool set are the gate guard's business above,
+    and what is wanted here is every rule that reads the block alone, over the widest
+    walk in the file.
+
+    The ``unchecked`` assertion is what stops that from reading as a clean bill of
+    health. Every pack reports exactly the one tool-set skip; a rule moved behind
+    ``inventory.known`` would show up here as a second skip rather than as a silent
+    loss of coverage.
+    """
+    findings: dict[str, list[str]] = {}
+    unchecked: dict[str, list[str]] = {}
+    packs = _authored_packs()
+
+    for task_yaml in packs:
+        task, task_dir = load_task_yaml(task_yaml)
+        assert task.grading is not None
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        report = inspect_grading_authoring(grading, ToolInventory.unresolvable())
+        pack = str(task_yaml.relative_to(_REPO))
+        if report.errors or report.advisories:
+            findings[pack] = [
+                f"{finding.where}: {finding.message}"
+                for finding in report.errors + report.advisories
+            ]
+        unchecked[pack] = [skip.where for skip in report.unchecked]
+
+    assert len(packs) == _AUTHORED_PACK_COUNT, (
+        f"the guard inspected {len(packs)} blocks, not {_AUTHORED_PACK_COUNT}. A corpus "
+        "proof over a subset says nothing about the packs it skipped"
+    )
+    assert findings == {}, (
+        "these packs declare a component section that asserts nothing, so the section "
+        "scores nothing and the wire cannot tell it from one the author never wrote"
+    )
+    assert unchecked == {pack: ["grading"] for pack in unchecked}, (
+        "a block-only rule was skipped for want of a tool set, so this guard stopped "
+        "checking what it reports on"
+    )
 
 
 def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
@@ -1167,7 +1444,8 @@ def test_the_guessed_reason_code_is_caught_by_the_correlation_and_by_nothing_els
     assert grounded.components.trace_checks == pytest.approx(1.0)
     assert guessed.components.trace_checks == pytest.approx(0.5)
     assert guessed.components.state_checks == grounded.components.state_checks
-    assert guessed.components.llm_judge == grounded.components.llm_judge
+    assert guessed.components.llm_judge is None
+    assert grounded.components.llm_judge is None
     assert guessed.score < grounded.score
 
 

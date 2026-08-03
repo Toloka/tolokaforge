@@ -2207,6 +2207,8 @@ Findings come in three classes:
 | the same against a tool whose schema permits extras | advisory | as above |
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference that compares text | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
+| a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
+| a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
@@ -2230,6 +2232,21 @@ it, a run logs it — because a gate that could check nothing must not read as a
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, and a
 property whose schema writes no `type` all land here.
+
+**A section the author wrote declares something to evaluate.** An empty block asserts
+nothing and scores nothing, and it cannot survive translation either: the wire erases
+an authored empty `state_checks` or `transcript_rules` to an absent section, so while
+the shape loads no predicate can answer "did the author write this?" the same way on
+both substrates. `state_checks` carries the rule one step further, because it has keys
+that configure how a source is read rather than declaring one — a block holding only
+`id_fields` or `relaxed_validation` asserts exactly as little as an empty one. The
+error names what to declare, or says to drop the block. Two of the five components
+already answer this at load: a `trace_checks` block declaring neither constraints nor
+alternatives and an `llm_judge` block with no rubric are both unrepresentable.
+
+An explicit opt-out is *not* "declares nothing": `custom_checks: {enabled: false}`
+states a decision, survives the wire intact, and is read the same way by both
+substrates — so it loads, it is not requested, and it needs no weight.
 
 **A component and its weight must name each other, in both directions.** Configuring
 a section asks for that component to be scored, and declaring a weight asks for a
@@ -2624,6 +2641,16 @@ computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
 `CheckSkipped`; per-check results ride the wire as `CustomCheckResult`
 entries and the aggregate `CheckResultSet.aggregate_score` fills the
 `custom_checks` component.
+
+`aggregate_score` averages the checks that reached a verdict and excludes the
+skips, so a suite whose **every** check skipped — and one whose file declared no
+check — decided nothing. Both substrates leave the component **unscored** there
+rather than folding the `0.0` that averaging nothing produces: a component scored
+against no evidence fails the trial for the author's unmet precondition rather than
+for anything the agent did. The fold then decides and says so, naming
+`custom_checks` among the components that produced no verdict. A suite that could
+not *run* is a different answer and keeps its `0.0` under `fail_on_error: true` —
+checks meant to decide the trial and unable to are a failure, not an absence.
 
 ```yaml
 custom_checks:
