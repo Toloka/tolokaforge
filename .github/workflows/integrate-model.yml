@@ -115,8 +115,8 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
-      # Values the $NAME placeholders in ARENA_AUTOMATION_LLM_PROXY_HEADERS resolve to.
-      # Job-level is safe for these: unlike LLM_PROXY_*, an unused one is inert.
+      # Values the ${secret:NAME} references in ARENA_AUTOMATION_LLM_PROXY_HEADERS resolve
+      # to. Job-level is safe for these: unlike LLM_PROXY_*, an unused one is inert.
       SUNDAY_ORDER_ID: ${{ secrets.ARENA_AUTOMATION_SUNDAY_ORDER_ID }}
       GATEWAY_RUNNER_KEY: ${{ secrets.ARENA_AUTOMATION_GATEWAY_RUNNER_KEY }}
       # Run + PR permalinks, passed to the Slack notifier as <url|label> links.

@@ -105,10 +105,11 @@ matched preset and the ``providers:`` overlay. See ``docs/LLM_LAYER.md`` § prox
 from __future__ import annotations
 
 import json
-import re
 import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
+
+from tolokaforge.secrets.expand import UnresolvedReferenceError, expand_secret_refs
 
 if TYPE_CHECKING:
     from tolokaforge.secrets import SecretManager
@@ -205,45 +206,11 @@ class ProxyConfig:
         return headers
 
 
-#: ``$$`` (a literal ``$``), ``${NAME}`` or ``$NAME`` in a header value.
-_PLACEHOLDER_RE = re.compile(
-    r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
-)
-
-
-def _expand_placeholders(value: str, header: str, secrets: SecretManager) -> str:
-    """Resolve ``$NAME`` / ``${NAME}`` in a header value through ``secrets``.
-
-    See ``docs/LLM_LAYER.md`` § "Header values may reference other secrets" for the
-    rationale and the rules an unresolved name follows.
-    """
-    missing: list[str] = []
-
-    def _sub(match: re.Match[str]) -> str:
-        if match.group(1):
-            return "$"
-        name = match.group(2) or match.group(3)
-        resolved = secrets.get_secret(name)
-        if resolved is None or not resolved.strip():
-            missing.append(name)
-            return ""
-        return resolved
-
-    expanded = _PLACEHOLDER_RE.sub(_sub, value)
-    if missing:
-        raise ProxyConfigError(
-            f"{ENV_HEADERS} value for {header!r} references "
-            f"{', '.join(sorted(set(missing)))}, which is not set. Set it, or write the "
-            f"value literally, or use $$ for a literal dollar sign. It is never "
-            f"substituted as empty: see docs/LLM_LAYER.md § proxy."
-        )
-    return expanded
-
-
 def _parse_headers(raw: str | None, secrets: SecretManager) -> dict[str, str]:
     """Parse ``LLM_PROXY_HEADERS`` (a JSON object of string values).
 
-    Values may reference other secrets, see :func:`_expand_placeholders`.
+    A value may reference a secret as ``${secret:NAME}``, resolved by
+    :func:`tolokaforge.secrets.expand_secret_refs`.
     """
     if raw is None or not raw.strip():
         return {}
@@ -260,20 +227,26 @@ def _parse_headers(raw: str | None, secrets: SecretManager) -> dict[str, str]:
             f"got {type(parsed).__name__}"
         )
     headers: dict[str, str] = {}
-    for name, value in parsed.items():
-        if not isinstance(name, str) or not name.strip():
+    for raw_name, value in parsed.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
             raise ProxyConfigError(f"{ENV_HEADERS} contains a non-string or empty header name")
+        name = raw_name.strip()
         if not isinstance(value, str | int | float | bool):
             raise ProxyConfigError(
                 f"{ENV_HEADERS} value for {name!r} must be a scalar, got {type(value).__name__}"
             )
-        # Only strings expand; a JSON number/bool keeps its plain stringify path.
-        resolved = (
-            _expand_placeholders(value, name.strip(), secrets)
-            if isinstance(value, str)
-            else str(value)
-        )
-        headers[name.strip()] = resolved
+        if not isinstance(value, str):
+            # A JSON number/bool cannot carry a reference; keep the stringify path.
+            headers[name] = str(value)
+            continue
+        try:
+            headers[name] = expand_secret_refs(
+                value, secrets, where=f"{ENV_HEADERS} value for {name!r}"
+            )
+        except UnresolvedReferenceError as exc:
+            # Re-raised as the gateway's own error type so callers keep catching one
+            # exception for "the gateway is misconfigured".
+            raise ProxyConfigError(str(exc)) from exc
     return headers
 
 

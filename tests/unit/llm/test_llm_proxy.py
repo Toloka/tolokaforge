@@ -275,111 +275,54 @@ class TestRequestHeaders:
         assert proxy.headers == {"X-Team-Id": "research"}
 
 
-class TestHeaderPlaceholders:
-    """Header VALUES may reference other secrets, so the JSON itself need not be one."""
+class TestHeaderSecretRefs:
+    """The wire-level half of ``${secret:NAME}``; the syntax itself is pinned in
+    tests/unit/secrets/test_expand.py."""
 
-    def test_a_placeholder_resolves_from_the_secret_manager(self, install_secrets: Any) -> None:
+    def test_a_reference_is_resolved_into_the_header(self, install_secrets: Any) -> None:
         install_secrets(
             {
                 "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Team-Id": "research", "X-Order-Id": "$ORDER_ID"}',
-                "ORDER_ID": "10000458",
+                "LLM_PROXY_HEADERS": '{"X-Team-Id": "research", "X-Order-Id": "${secret:ORDER_ID}"}',
+                "ORDER_ID": "9000123",
             }
         )
         proxy = resolve_proxy_config()
         assert proxy is not None
-        assert proxy.headers == {"X-Team-Id": "research", "X-Order-Id": "10000458"}
+        assert proxy.headers == {"X-Team-Id": "research", "X-Order-Id": "9000123"}
 
-    def test_the_braced_form_works_and_composes_with_surrounding_text(
+    def test_no_reference_reaches_the_wire(self, install_secrets: Any) -> None:
+        """A literal ``${secret:...}`` sent as a header value is the failure this
+        guards: no gateway errors on it usefully."""
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_HEADERS": '{"X-Order-Id": "${secret:ORDER_ID}"}',
+                "ORDER_ID": "9000123",
+            }
+        )
+        proxy = resolve_proxy_config()
+        assert proxy is not None
+        assert "${secret:" not in "".join(proxy.request_headers().values())
+
+    def test_an_unresolved_reference_surfaces_as_a_gateway_config_error(
         self, install_secrets: Any
     ) -> None:
+        """Callers catch one exception type for "the gateway is misconfigured", so the
+        secrets-layer error is translated rather than leaking through."""
         install_secrets(
             {
                 "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Trace": "run-${RUN_ID}-end"}',
-                "RUN_ID": "42",
-            }
-        )
-        proxy = resolve_proxy_config()
-        assert proxy is not None
-        assert proxy.headers == {"X-Trace": "run-42-end"}
-
-    def test_several_placeholders_in_one_value(self, install_secrets: Any) -> None:
-        install_secrets(
-            {
-                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Pair": "$LEFT/$RIGHT"}',
-                "LEFT": "a",
-                "RIGHT": "b",
-            }
-        )
-        proxy = resolve_proxy_config()
-        assert proxy is not None
-        assert proxy.headers == {"X-Pair": "a/b"}
-
-    def test_double_dollar_escapes_a_literal_dollar(self, install_secrets: Any) -> None:
-        install_secrets(
-            {
-                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Budget": "$$100"}',
-            }
-        )
-        proxy = resolve_proxy_config()
-        assert proxy is not None
-        assert proxy.headers == {"X-Budget": "$100"}
-
-    def test_a_value_without_placeholders_is_untouched(self, install_secrets: Any) -> None:
-        install_secrets(
-            {
-                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Team-Id": "research"}',
-            }
-        )
-        proxy = resolve_proxy_config()
-        assert proxy is not None
-        assert proxy.headers == {"X-Team-Id": "research"}
-
-    @pytest.mark.parametrize(
-        ("secrets_extra", "case"),
-        [
-            ({}, "not set at all"),
-            ({"ORDER_ID": "   "}, "set but blank"),
-        ],
-    )
-    def test_an_unresolved_placeholder_is_a_hard_error(
-        self, install_secrets: Any, secrets_extra: dict[str, str], case: str
-    ) -> None:
-        """Never an empty substitution: refused at resolve time, before any request."""
-        install_secrets(
-            {
-                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Order-Id": "$ORDER_ID"}',
-                **secrets_extra,
+                "LLM_PROXY_HEADERS": '{"X-Order-Id": "${secret:ORDER_ID}"}',
             }
         )
         with pytest.raises(ProxyConfigError) as excinfo:
             resolve_proxy_config()
         message = str(excinfo.value)
-        # Both, because "something is unset" is not actionable with several headers.
-        assert "X-Order-Id" in message, case
-        assert "ORDER_ID" in message, case
+        assert "X-Order-Id" in message
+        assert "ORDER_ID" in message
 
-    def test_the_placeholder_never_reaches_the_wire_unresolved(self, install_secrets: Any) -> None:
-        """Guards the literal ``$NAME``-on-the-wire case: no gateway errors usefully."""
-        install_secrets(
-            {
-                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
-                "LLM_PROXY_HEADERS": '{"X-Order-Id": "$ORDER_ID"}',
-                "ORDER_ID": "10000458",
-            }
-        )
-        proxy = resolve_proxy_config()
-        assert proxy is not None
-        assert "$" not in "".join(proxy.request_headers().values())
-
-    def test_a_non_string_value_still_works_and_takes_no_placeholder(
-        self, install_secrets: Any
-    ) -> None:
+    def test_a_non_string_value_takes_no_reference(self, install_secrets: Any) -> None:
         """JSON scalars keep their existing stringify path."""
         install_secrets(
             {

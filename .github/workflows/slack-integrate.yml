@@ -72,10 +72,10 @@ jobs:
       # => availability is "unknown" and every request integrates over OpenRouter as before.
       LLM_PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
       LLM_PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
-      # A VARIABLE, not a secret: sensitive halves are written as $NAME placeholders and
-      # resolved from the secrets below. See docs/LLM_LAYER.md § proxy.
+      # A VARIABLE, not a secret: sensitive halves are written as ${secret:NAME}
+      # references and resolved from the secrets below. See docs/LLM_LAYER.md § proxy.
       LLM_PROXY_HEADERS: ${{ vars.ARENA_AUTOMATION_LLM_PROXY_HEADERS }}
-      # One line per placeholder used above.
+      # One line per ${secret:NAME} referenced above.
       SUNDAY_ORDER_ID: ${{ secrets.ARENA_AUTOMATION_SUNDAY_ORDER_ID }}
       GATEWAY_RUNNER_KEY: ${{ secrets.ARENA_AUTOMATION_GATEWAY_RUNNER_KEY }}
     steps:

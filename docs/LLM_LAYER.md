@@ -417,7 +417,7 @@ posting to a route the gateway does not serve.
 |---|---|
 | `LLM_PROXY_BASE_URL` | Gateway base URL. **Setting this enables the transport**; everything else is optional. |
 | `LLM_PROXY_API_KEY` | Credential presented to the gateway. Omit only for gateways that authenticate by network position — litellm then falls through to its provider-env lookup and forwards the *provider's* key to the gateway host instead. |
-| `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference another secret, see below. |
+| `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
 
@@ -426,14 +426,15 @@ and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend.
 
-### Header values may reference other secrets
+### Values may reference secrets
 
-A value in `LLM_PROXY_HEADERS` may contain `$NAME` or `${NAME}`, resolved through the
-same `SecretManager`:
+A value in `LLM_PROXY_HEADERS` may contain `${secret:NAME}`, resolved through
+`SecretManager` by
+[`expand_secret_refs`](../tolokaforge/secrets/expand.py):
 
 ```
-LLM_PROXY_HEADERS={"X-Team-Id":"research","X-Order-Id":"$SUNDAY_ORDER_ID"}
-SUNDAY_ORDER_ID=10000458
+LLM_PROXY_HEADERS={"X-Team-Id":"research","X-Order-Id":"${secret:ORDER_ID}"}
+ORDER_ID=9000123
 ```
 
 This exists so the JSON does not have to be a secret just because one header carries
@@ -441,19 +442,54 @@ something sensitive. The header *names* and the overall shape stay legible, whic
 what a reviewer needs to see (what is this run telling the gateway about itself?),
 while the sensitive halves stay indirect. In CI that means the JSON can live in a
 plain repository **variable** without printing a secret into a public workflow log,
-because the variable only ever holds the placeholder.
+because the variable only ever holds the reference.
 
-Two deliberate rules:
+`${secret:...}` resolves by NAME through the normal provider chain, so what matters
+is that the name is set, not whether it is "a secret". A GitHub repository variable
+and a GitHub secret both arrive as ordinary environment variables; the difference is
+only that GitHub masks the secret's value in the log, which is the point.
 
+#### Rules
+
+* **The form is typed, not shell-style.** A bare `$NAME` would match inside real
+  credential text, and plenty of credentials contain a dollar sign: argon2
+  (`$argon2id$v=19$...`), bcrypt (`$2b$12$...`), Postgres SCRAM verifiers, generated
+  passwords. Under `${secret:NAME}` a lone `$` is never special, so no escape is
+  needed and `Pa$$w0rd` passes through untouched.
 * **An unresolved name is a hard error**, never an empty substitution. A blank
   attribution header bills the call to nobody and a blank admission header fails at
   the gateway, and both surface a long way from the misconfigured line. The error
-  names the header and the missing variable, and it fires at resolve time, before
-  any request goes out.
-* **`$$` is a literal `$`**, so a value that genuinely needs one is still writable.
+  names the value and the missing name, and fires at resolve time, before any
+  request goes out.
+* **A malformed reference is a hard error too.** `${secret:NAME` (unclosed),
+  `${secret:}` and `${secret:bad-name}` are refused rather than passed through as
+  literal text, which would put `${secret:...}` on the wire, where a gateway either
+  bills the literal string as an account id or rejects the request in a way that
+  reads as network trouble.
+* **Expansion is single-level.** A resolved value is not rescanned, and a value that
+  itself contains a reference is refused by the malformed-reference rule rather than
+  silently emitted.
 
 Only string values are expanded; a JSON number or boolean keeps its existing
 stringify path.
+
+#### Why this is not inside `get_secret`
+
+`SecretManager.get_secret` stays a verbatim pass-through. It is the universal
+credential read path, and two bulk callers resolve *every enumerable key* rather
+than the keys the engine asked for: the log-redaction set
+([`log_filter.py`](../tolokaforge/secrets/log_filter.py)) and the container
+serializer. Expanding there would run this syntax over values nobody wrote for it,
+where failing loud takes down logging and failing empty corrupts a credential.
+Expansion is a composition concern, so the caller requests it explicitly.
+
+One consequence worth knowing: a referenced name is only carried across the
+host→container boundary if it is enumerable, which for the environment means its
+*name* matches one of the credential patterns in
+[`providers.py`](../tolokaforge/secrets/providers.py). `DotEnvProvider` enumerates
+every `.env` key unconditionally, so putting referenced names in `.env` is the way
+to make in-container resolution work if that is ever needed.
+
 Setting any companion variable while `LLM_PROXY_BASE_URL` is empty also raises,
 so a typo in the base-URL name cannot silently fall back to direct provider
 access.
