@@ -190,14 +190,17 @@ three source shapes:
   runner's `expected_hash` field and **no runner path reads it** (#693), so the
   runner falls back on refusal semantics and compares the trial against the
   **initial** state where core compares it against the author's literal.
-- **`hash.enabled` with no declared source** — not proven. Core produces **no**
-  verdict (below), while the runner runs hash grading anyway for the refusal shape
-  and produces a real binary one. Measured, on a pack with live assertions scoring
-  `0.5` at `weight: 0.6`: core's component is `0.5` on both hash outcomes, the
-  runner's is `0.8` on a match and `0.2` on a divergence (#741).
+- **`hash.enabled` with no declared source** — not proven, and **refused at the
+  authoring gate** for that reason. Core produces **no** verdict (below), while the
+  runner runs hash grading anyway for the refusal shape and produces a real binary
+  one. Measured, on a pack with live assertions scoring `0.5` at `weight: 0.6`: core's
+  component is `0.5` on both hash outcomes, the runner's is `0.8` on a match and `0.2`
+  on a divergence. What remains reachable is a directly built config and a bundle
+  recorded before the rule.
 
-Moving either unproven shape moves refusal-task verdicts across the corpus, which is
-why #741 owns it rather than the change that found it.
+The rows say *signal* parity rather than *score* parity because bringing the two
+substrates into line on either unproven shape moves refusal-task verdicts across the
+corpus, which needs its own corpus measurement.
 
 The golden-actions differential runs over real gRPC and a real db-service, in
 [`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
@@ -928,13 +931,24 @@ outside that range the component leaves `[0, 1]` altogether, and a value that is
 a real number in that range — a bool, a numeric string — is rejected on **both**
 substrates rather than coerced into one.
 
-**A hash source declared with the flag off is rejected at load too.** An
-`expected_state_hash` under a `hash` block whose `enabled` is falsy is a comparison
-that never runs: both substrates test the flag before reading the hash, so the pack
-grades its state without the literal the author wrote and says nothing. The flag is
-read for truth rather than for `true` — core branches on its truthiness and the
-runner coerces it, so `enabled: 1` grades and loads. The rule's class and the rest of
-the pre-run gate are in
+**The flag and a source are declared together, or neither is.** Both halves are
+rejected at load:
+
+- **A source under a falsy `enabled`** is a comparison that never runs. Both
+  substrates test the flag before reading the hash, so the pack grades its state
+  without the literal the author wrote and says nothing.
+- **`enabled` with neither `expected_state_hash` nor `golden_actions`** is hash
+  grading with nothing to compare against, and the two substrates answer it
+  differently: core produces no hash verdict at all while the runner compares the
+  trial against its initial state, so the same trial takes two different
+  `state_checks` components. A refusal task — one whose expected final state *is* the
+  initial state — declares that state's `expected_state_hash` rather than an enabled
+  flag with no source.
+
+Both halves read for truth rather than for `true`/absence: core branches on the
+flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, and an
+empty `golden_actions` list replays nothing, so it is no more a source than an absent
+one. The rules' class and the rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
 
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
@@ -966,15 +980,15 @@ the weight as the flattened `state_checks.hash_weight` on its `StateChecksConfig
 applies the same presence gate at `RegisterTrial`. What is not shared is what each
 substrate feeds that fold:
 
-- **`hash.enabled` with no declared source.** Core produces no hash verdict and the
-  component is the assertion score alone. The runner runs hash grading anyway — the
-  refusal shape, where the expected state *is* the initial state — so it folds a real
-  binary verdict with the assertions. Measured at `weight: 0.6` against assertions
-  scoring `0.5`: core `0.5`, runner `0.8` on a match and `0.2` on a divergence. A
-  pack of this shape carrying live assertions and *no* weight loads on both
-  substrates and then fails `GradeTrial` on the runner, because the fold it reaches
-  there is undecidable — see
-  [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrial-error-semantics). Tracked as #741.
+- **`hash.enabled` with no declared source** — **not authorable**, and the divergence
+  below is why. Core produces no hash verdict and the component is the assertion score
+  alone. The runner runs hash grading anyway — the refusal shape, where the expected
+  state *is* the initial state — so it folds a real binary verdict with the assertions.
+  Measured at `weight: 0.6` against assertions scoring `0.5`: core `0.5`, runner `0.8`
+  on a match and `0.2` on a divergence. The pre-run gate refuses the shape rather than
+  leaving the two substrates to disagree over it, so it is reachable only from a config
+  built directly against the engine and from a bundle recorded before the rule — the
+  bundles `retrace` replays, where core's *no verdict* is the answer stated below.
 - **`expected_state_hash` alone.** No runner path reads the translated
   `expected_hash` (#693), so the runner again compares the trial against the initial
   state where core compares it against the author's literal.
@@ -2180,6 +2194,7 @@ Findings come in three classes:
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference that compares text | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
+| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
 | a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |

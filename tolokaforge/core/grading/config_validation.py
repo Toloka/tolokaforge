@@ -37,6 +37,7 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
 from tolokaforge.core.models import (
     BoundValue,
     GradingCombineConfig,
@@ -511,14 +512,21 @@ def _check_regex_compiles(
 
 
 def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
-    """An expected state hash is read only where the hash check is enabled.
+    """The hash check and something to compare against are declared together.
 
-    Both substrates test the flag before reading the hash, so the comparison an
-    author wrote never runs and the pack grades without it in silence. The flag is
-    read for truth rather than for ``True``, because that is what decides the
-    grade: core branches on its truthiness and the runner coerces it, so a pack
-    written ``enabled: 1`` does read the hash and rejecting it here would be
-    stricter than either substrate.
+    Either half alone grades the state without the comparison the author wrote. A
+    source under a disabled flag is never read: both substrates test the flag first,
+    so the pack grades in silence without it. An enabled flag with no source is the
+    same defect from the other side, and it also splits the two substrates — core
+    produces no hash verdict at all while the runner compares the trial against the
+    initial state, so the same trial takes two different ``state_checks`` components.
+
+    Both halves read the flag for truth rather than for ``True``, because that is
+    what decides the grade: core branches on its truthiness and the runner coerces
+    it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
+    would be stricter than either substrate. A source is read the same way — an
+    empty ``golden_actions`` list replays nothing, which is why both substrates
+    treat it as no source at all.
     """
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
@@ -526,16 +534,31 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     hash_block = state_checks.get("hash")
     if not isinstance(hash_block, Mapping):
         return AuthoringReport()
-    if not hash_block.get("expected_state_hash") or hash_block.get("enabled"):
+    enabled = hash_block.get("enabled")
+    if enabled and not any(hash_block.get(key) for key in HASH_SOURCE_KEYS):
+        sources = " or ".join(HASH_SOURCE_KEYS)
+        return AuthoringReport(
+            errors=(
+                Finding(
+                    "state_checks.hash.enabled",
+                    f"hash grading is enabled but the block declares no {sources} to "
+                    "compare against: core produces no hash verdict at all while the "
+                    "runner compares the trial against its initial state, so the same "
+                    "trial takes two different state_checks components. Declare "
+                    f"{sources}, or drop the hash block",
+                ),
+            )
+        )
+    if not hash_block.get("expected_state_hash") or enabled:
         return AuthoringReport()
     return AuthoringReport(
         errors=(
             Finding(
                 "state_checks.hash.expected_state_hash",
-                "an expected state hash is declared while hash.enabled is "
-                f"{hash_block.get('enabled')!r}: both substrates read the flag before the "
-                "hash, so the comparison never runs and the state is graded without it. "
-                "Write enabled: true, or drop the hash",
+                f"an expected state hash is declared while hash.enabled is {enabled!r}: "
+                "both substrates read the flag before the hash, so the comparison never "
+                "runs and the state is graded without it. Write enabled: true, or drop "
+                "the hash",
             ),
         )
     )

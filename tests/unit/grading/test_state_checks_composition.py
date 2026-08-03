@@ -534,11 +534,14 @@ class TestGradeTrialFoldsByTheAuthorWeight:
     verdict is a genuine ``1.0``, and the fixture's two assertions leave the JSONPath
     score at ``0.5``. The product rule would return ``0.5`` at every weight.
 
-    This shape is also the one the load gate accepts and the runner cannot always
+    This shape is also the one ``RegisterTrial`` accepts and the runner cannot always
     fold: ``hash.enabled`` with no *declared* source is not undecidable at load —
     core produces no verdict for it — but the runner's refusal semantics produce one
     anyway. Without a weight the component is undecidable at grade time, and the RPC
-    says so rather than returning a grade folded by an invented rule.
+    says so rather than returning a grade folded by an invented rule. It arrives here
+    as a wire payload because no pack can declare it: the authoring gate refuses the
+    flag with no source, so what reaches this fold is a directly built description or
+    a bundle recorded before that rule.
     """
 
     _REFUSAL_HASH = {"hash_enabled": True, "golden_actions": []}

@@ -225,6 +225,14 @@ _RULES: tuple[_Rule, ...] = (
         message="the comparison never runs",
     ),
     _Rule(
+        label="enabled_hash_with_no_source",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        message="Declare expected_state_hash or golden_actions",
+    ),
+    _Rule(
         label="configured_component_with_no_weight",
         task=_HELPDESK,
         grading={"transcript_rules": {"max_turns": 10}},
@@ -592,6 +600,69 @@ def test_a_truthy_hash_flag_is_not_a_finding(enabled: Any) -> None:
     and one no sweep over shipped packs finds because they all write ``true``.
     """
     grading = {"state_checks": {"hash": {"enabled": enabled, "expected_state_hash": "aaaa"}}}
+
+    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+
+
+@pytest.mark.parametrize("enabled", _HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON)
+def test_a_truthy_hash_flag_with_no_source_is_refused(enabled: Any) -> None:
+    """Every flag spelling that grades needs something to grade against.
+
+    The same three spellings the rule above may not refuse *with* a source it must
+    refuse *without* one, and for the same reason read the other way: a flag core
+    branches on and the runner coerces is a flag that reaches the hash evaluator, so
+    testing it for ``True`` here would leave ``enabled: 1`` free to carry the
+    divergence the rule exists to close.
+    """
+    grading = {"state_checks": {"hash": {"enabled": enabled}}}
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_an_enabled_hash_beside_an_empty_jsonpath_list_is_refused() -> None:
+    """Standing single case: the shape whose two substrates decide it differently.
+
+    Core evaluates neither source here — no hash to compare and no assertion to run —
+    so its ``state_checks`` component rests on no evidence at all, while the runner's
+    refusal semantics compare the trial against its initial state and hand the fold a
+    real binary verdict. Refusing the shape is what keeps that cell out of the
+    authorable set; a gate that accepted it would hand both substrates the same pack
+    to disagree over.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True}, "jsonpaths": []}}
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_an_empty_golden_action_list_is_not_a_hash_source() -> None:
+    """Standing single case: a declared source that replays nothing is no source.
+
+    An empty list is the shape a pack reaches by deleting the actions and leaving the
+    key, and both substrates already read it as absent — core names it as the missing
+    source in ``grade.reasons`` and the runner replays nothing. A gate keying on the
+    key's *presence* would accept it and leave the divergence reachable.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": []}}}
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_golden_actions_alone_are_a_hash_source() -> None:
+    """Standing single case: the source shape both substrates are proven to share.
+
+    The replay is what every shipped golden-action pack grades by, so a rule reading
+    only ``expected_state_hash`` as a source would refuse the one hash shape whose
+    verdict is the same on both substrates.
+    """
+    grading = {
+        "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "place_order"}]}}
+    }
 
     assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
 
