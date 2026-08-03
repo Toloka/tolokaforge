@@ -124,10 +124,10 @@ _EXAMPLES = Path(__file__).resolve().parents[2] / "examples"
 # Every task the corpus grades, so a guard that enumerated nothing fails instead of
 # passing over the empty set. The two files outside it are the ``terminal_bench``
 # pair, which ship no enclosing project and are the corpus's two known-invalid tasks.
-_GRADED_TASK_COUNT = 28
-# Tool schemas the corpus puts on the wire, across the 23 tasks that declare any, so a
+_GRADED_TASK_COUNT = 29
+# Tool schemas the corpus puts on the wire, across the 24 tasks that declare any, so a
 # parameter comparison that resolved nothing fails instead of passing over empty maps.
-_CORPUS_TOOL_COUNT = 54
+_CORPUS_TOOL_COUNT = 56
 _TASKS_WITHOUT_A_PROJECT = (
     _EXAMPLES / "terminal_bench" / "fix-airline-segmentation" / "task.yaml",
     _EXAMPLES / "terminal_bench" / "fix-billing-holds" / "task.yaml",
@@ -272,7 +272,7 @@ _TEST_DATA_TASKS = Path(__file__).resolve().parents[1] / "data" / "tasks"
 
 # Every pack under the two roots that ships a grading.yaml, so a guard that
 # enumerated nothing fails instead of passing over the empty set.
-_GATED_PACK_COUNT = 57
+_GATED_PACK_COUNT = 58
 
 # The one pack whose tool inventory cannot be built: it declares
 # ``tools.agent.mobile: true``, a typo fixture whose whole point is that a non-mapping

@@ -75,7 +75,12 @@ dependencies = [
     # MCP server support — needed by any task that declares an mcp_server.py.
     # Previously optional, promoted to core because the recommended task
     # authoring pattern (FastMCP server subprocess) requires it.
-    "mcp>=0.1.0",
+    # Upper-bounded on the major: ``mcp.server.fastmcp``, the one module
+    # ``core/tools_interface.py`` imports, does not exist in 2.x. The runner
+    # image installs the wheel with pip and resolves this range itself rather
+    # than reading uv.lock, so an unbounded range there resolves a version whose
+    # every tool call fails inside the container while the host venv is fine.
+    "mcp>=1.0,<2",
 ]
 
 [project.optional-dependencies]
@@ -363,7 +368,7 @@ dev = [
     "fastapi>=0.108.0",
     "uvicorn>=0.25.0",
     "rank-bm25>=0.2.2",
-    "mcp>=0.1.0",
+    "mcp>=1.0,<2",
     "build>=1.0.0",
     "commitizen>=4.0.0",
     "psycopg[binary]>=3.2.0",

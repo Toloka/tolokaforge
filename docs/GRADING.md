@@ -2028,7 +2028,7 @@ migrations:
     was: { kind: binary, required: true, weight: 1.0, description: "<the text measured against>" }
     residual: { kind: none | text, reason: "<why nothing remains / what remains>" }
     combine_weights: { llm_judge: 0.7, trace_checks: 0.3 }  # post-migration combine.weights
-    evidence: { corpus: tests/data/migration_corpora/notes, observations: 11, kappa: 1.0 }
+    evidence: { corpus: tests/data/migration_corpora/notes_duplicate_check, observations: 17, kappa: 1.0 }
     acknowledged: [ { trial: <bundle path under evidence.corpus>, reason: "<why the judge was wrong>" } ]
 ```
 
@@ -2461,8 +2461,8 @@ scored full marks, a trial that *failed* a required criterion still aggregates t
 `score: 1.0`. Zeroing the component is
 [`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
 grade and the reasons string carry — measured on the five bundles under
-`tests/data/migration_corpora/`, whose `grade.yaml` records
-`components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
+`tests/data/migration_corpora/notes_duplicate_check/not_met/`, whose `grade.yaml`
+records `components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
 aggregate's `score` without the gate and every one of them reads as a trial that
 aced the rubric it failed.
 

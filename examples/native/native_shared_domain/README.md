@@ -1,9 +1,11 @@
 # Native shared-domain example
 
-Two-task benchmark that demonstrates the **shared-domain layout** for native
-TolokaForge tasks. Both testcases reuse one set of tools, models, MCP server,
-and system prompt via `_shared/domain.yaml`; only the per-case initial state
-and grading rules differ.
+Five-testcase benchmark that demonstrates the **shared-domain layout** for
+native TolokaForge tasks. Every testcase reuses one set of tools, models and MCP
+server via `_shared/domain.yaml`; the per-case initial state and grading rules
+carry the deltas. Four of the five also inherit the shared system prompt — the
+exception is `add_note_duplicate_check_policy`, which ships its own and is
+explained below.
 
 ## Layout
 
@@ -13,6 +15,7 @@ examples/native/native_shared_domain/
   run_configs/
     dev.yaml                      # entry point (model + orchestrator settings)
     gate_demo.yaml                # cheap-agent config for the gate-fire testcase
+    policy_demo.yaml              # the same, for the criterion-met arm
   dataset/
     notes/
       _shared/
@@ -40,13 +43,20 @@ examples/native/native_shared_domain/
           task.yaml
           grading.yaml
           initial_state.json
+        add_note_duplicate_check_policy/ # the same rubric, MET — the gate's other arm
+          task.yaml
+          grading.yaml
+          initial_state.json
+          system_prompt.md               # the shared prompt verbatim + the policy paragraph
 ```
 
 `task.yaml` carries `domain: ../../_shared/domain.yaml` and only the
 per-case fields (`task_id`, `name`, `description`, `initial_user_message`,
 `initial_state.json_db`, `actors.user.backstory`, `grading`). Everything
 else — tools, mcp_server, system_prompt, category, the `actors.user`
-base — is inherited.
+base — is inherited. A task-level `system_prompt` **replaces** the inherited
+path rather than extending it, which is why the one case that overrides it
+carries the shared text in full.
 
 ## Rubric-graded testcase (`summarize_notes_rubric`)
 
@@ -141,6 +151,30 @@ The agent is a deliberately cheap model (`openai/gpt-4o-mini`) via
 `run_configs/gate_demo.yaml`; because the policy is not in the agent's prompt, the
 gate fires regardless of agent strength.
 
+## Criterion-met testcase (`add_note_duplicate_check_policy`)
+
+The other arm of the same rubric. Everything a grade reads is identical to
+`add_note_duplicate_check_gated` — the same rubric byte for byte, the same weights,
+the same near-duplicate initial state, the same user message and backstory. The one
+difference is the agent's system prompt: this testcase ships its own
+`system_prompt.md`, which is the shared prompt **verbatim** with a check-first policy
+paragraph **appended**. The same cheap `openai/gpt-4o-mini` agent that skips
+`list_notes` under `gate_demo.yaml` then lists, warns, and
+`checked_duplicates_first` comes back `met: true` → no `gate_failed` → `score: 1.0`.
+
+The prompt is a full copy rather than an addition because a task-level
+`system_prompt` is a **path** that *replaces* the inherited one on merge; extending
+is not something the field can do. A canonical guard
+(`tests/canonical/test_rubric_migration.py`) asserts this file starts with
+`_shared/system_prompt.md`'s exact bytes, so editing the shared prompt reds instead
+of quietly making the two arms incomparable.
+
+Why the pair exists: the two arms' recorded trials are the repo's judge-labelled
+corpus (`tests/data/migration_corpora/notes_duplicate_check/`), which is what lets
+`tolokaforge reconcile` measure a rubric-to-trace-check migration against real judge
+verdicts with Cohen's κ **defined** — one arm supplies the not-met labels and this
+one the met labels. See `docs/RUBRIC_MIGRATION.md`.
+
 ## Run
 
 All cases (the happy-path rubric included):
@@ -155,12 +189,20 @@ Just the gate-fire testcase (cheap agent, `repeats: 1`):
 scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/gate_demo.yaml
 ```
 
+Just the criterion-met arm, same models so the two arms stay comparable:
+
+```sh
+scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/policy_demo.yaml
+```
+
 Requires `OPENROUTER_API_KEY` in `.env`. All cases run with the docker
 runtime. The default `run_configs/dev.yaml` runs every testcase
 (`tasks_glob: **/testcases/**/task.yaml`) and writes to
 `results/native_shared_domain_example/`; `run_configs/gate_demo.yaml` narrows the
 glob to `**/testcases/add_note_duplicate_check_gated/task.yaml` and writes to
-`results/native_shared_domain_gate_demo/`. To run only the happy-path rubric
+`results/native_shared_domain_gate_demo/`; `run_configs/policy_demo.yaml` narrows
+it to `**/testcases/add_note_duplicate_check_policy/task.yaml` and writes to
+`results/native_shared_domain_policy_demo/`. To run only the happy-path rubric
 testcase, narrow the glob to `**/testcases/summarize_notes_rubric/task.yaml`.
 
 For a **deterministic** (no-agent-luck) version of the gate firing, see the

@@ -816,6 +816,41 @@ def test_the_migrated_criterion_leaves_the_veto_set_and_the_trace_gate_joins_it(
     assert row.vetoes_after == [_CONSTRAINT]
 
 
+def test_the_trace_gate_the_migration_installs_fails_the_after_verdict_it_gates() -> None:
+    """Naming the veto set is not the same as applying the veto, and this is the half that
+    applies it: the gate leaves the score alone and fails the trial outright.
+
+    Discriminating by construction, which the committed corpus cannot be: no trial there is
+    failed by the gate *alone*. The five the gate fails score ``0.5`` after the migration
+    against a ``0.75`` threshold, so the threshold fails them anyway, and the twelve it does
+    not fail score ``1.0`` and pass — so a counterfactual ignoring the trace gate outright
+    reports every verdict unchanged. Measured: that patch reds nothing in the whole unit and
+    canonical suite. Here the retirement leaves a full-marks judge component under an identity
+    map, so the after score is ``1.0`` and only the gate can fail it.
+    """
+    entry = _identity_map_retirement()
+    recorded = _cache_debug_shaped_verdict(scored=1.0)
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=entry.was,
+        judge_met=True,
+        constraint_passed=False,
+        recorded_verdict=RecordedTrialVerdict(
+            grading_config=recorded.grading_config,
+            grade=recorded.grade,
+            trace_component=recorded.trace_component,
+            trace_gate_failed=True,
+            gate_constraint_ids=frozenset({_CONSTRAINT}),
+        ),
+    )
+
+    (row,) = migration_counterfactual(entry, [trial]).trials
+
+    assert row.binary_pass_before is True
+    assert row.score_after == pytest.approx(1.0, abs=1e-9)
+    assert row.binary_pass_after is False
+
+
 # ---------------------------------------------------------------------------
 # Reading a corpus, over copies of the committed one
 # ---------------------------------------------------------------------------

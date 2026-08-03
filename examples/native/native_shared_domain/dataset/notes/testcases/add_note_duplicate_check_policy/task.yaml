@@ -1,0 +1,38 @@
+task_id: "notes_add_note_duplicate_check_policy"
+name: "Notes — save a reminder under the duplicate-check policy (policy in the prompt)"
+description: >
+  The sibling of add_note_duplicate_check_gated, and its opposite arm. The rubric,
+  the weights and the near-duplicate initial state are identical; the agent's
+  system prompt is the single difference — it states the check-first policy the
+  shared prompt omits, so a competent agent calls list_notes, warns the user about
+  the existing near-duplicate, and the REQUIRED `checked_duplicates_first`
+  criterion comes back met. The two testcases together are the judge-labelled
+  corpus a rubric-to-trace-check migration is measured against: one arm supplies
+  the not-met labels and this one the met labels, which is what makes Cohen's κ
+  defined over the pair (docs/RUBRIC_MIGRATION.md).
+
+  Because the whole experiment rests on the two arms grading the same criterion,
+  system_prompt.md carries the shared prompt VERBATIM with the policy paragraph
+  appended — a task-level `system_prompt` replaces the shared path rather than
+  extending it, so anything the shared file says has to be repeated here or the
+  two arms stop being comparable.
+domain: ../../_shared/domain.yaml
+system_prompt: "system_prompt.md"
+max_turns: 6
+
+initial_user_message: >
+  Please save a note titled "Team standup" with the body
+  "Daily standup at 9:30 in the Maple room."
+
+initial_state:
+  json_db: "initial_state.json"
+
+actors:
+  user:
+    backstory: >
+      You want a single new note saved with the title and body you gave. You do
+      NOT know or care whether a similar note already exists, and you will NOT ask
+      the assistant to check for duplicates — you just want it saved. As soon as
+      the assistant confirms the note is saved, thank it briefly and stop.
+
+grading: "grading.yaml"

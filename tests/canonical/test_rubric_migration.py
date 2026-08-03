@@ -1,15 +1,27 @@
-"""The first committed corpus, and what the bar says about it.
+"""The committed corpus, and what the bar says about each half of it and about the union.
 
-Five recorded trials of ``notes_add_note_duplicate_check_gated`` live under
-``tests/data/migration_corpora/notes_duplicate_check/not_met/``, carrying only the files the
-differential reads. Every one has the judge's ``checked_duplicates_first`` verdict as
-**not met**, and the candidate constraint fails on all five, so the corpus reads as *perfect
-accuracy and no evidence at all*: κ is undefined, and the entry resting on it is
-``insufficient_evidence`` rather than a pass. That is the whole point of the committed
-half — it is the falsifier for the corpus's other half, which #683's Stage 5 buys.
+``tests/data/migration_corpora/notes_duplicate_check/`` holds seventeen recorded trials in two
+halves, each carrying only the files the differential reads.
 
-The pack is a fixture under ``tests/data/migration_packs/``, not the shipped one: the shipped
-pack has not taken the migration yet, and reaching it is what ``--packs`` is for.
+``not_met/`` — five trials of ``notes_add_note_duplicate_check_gated``, whose prompt omits the
+check-first policy. The judge's ``checked_duplicates_first`` verdict is **not met** on every
+one and the candidate constraint fails on every one, so that half alone reads as *perfect
+accuracy and no evidence at all*: κ is undefined and an entry resting on it is
+``insufficient_evidence`` rather than a pass.
+
+``met/`` — twelve trials of ``notes_add_note_duplicate_check_policy``, the arm whose own prompt
+states the policy. The judge's verdict is **met** on every one and the constraint passes on
+every one.
+
+Each half is therefore the other's falsifier, and κ is defined only over the union. The
+label-invariance of either half taken alone is what the bar's evidence condition exists to
+catch, so both the one-sided verdict and the union verdict are locked here.
+
+The packs are fixtures under ``tests/data/migration_packs/``, not the shipped ones: the shipped
+pack has not taken the migration yet, and reaching them is what ``--packs`` is for. There is one
+fixture per arm because a bundle resolves its constraints through its own ``task_id``, and their
+declarations are identical because pooling keys on the criterion text and the resolved
+constraints — a drift between them is a pooling refusal, not a quietly merged pair of claims.
 
 **No number here is re-derived from the maths.** ``tests/unit/grading/test_agreement.py``
 already locks that a one-sided corpus gives accuracy ``1.0`` and κ ``None``; what this module
@@ -46,17 +58,42 @@ pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 _REPO = Path(__file__).resolve().parents[2]
 _CORPUS = _REPO / "tests/data/migration_corpora/notes_duplicate_check"
 _NOT_MET = _CORPUS / "not_met"
+_MET = _CORPUS / "met"
 _PACKS = _REPO / "tests/data/migration_packs"
 _DECLARATION = _PACKS / "notes_duplicate_check_narrowed/migration.yaml"
+_POLICY_DECLARATION = _PACKS / "notes_duplicate_check_policy_narrowed/migration.yaml"
 
-#: The bundle directories the committed half holds, written out so a bundle added to or
+_NOTES = _REPO / "examples/native/native_shared_domain/dataset/notes"
+_SHARED_PROMPT = _NOTES / "_shared/system_prompt.md"
+_GATED_ARM = _NOTES / "testcases/add_note_duplicate_check_gated"
+_POLICY_ARM = _NOTES / "testcases/add_note_duplicate_check_policy"
+
+#: The bundle directories the not-met half holds, written out so a bundle added to or
 #: dropped from the corpus reds here rather than silently moving every number below.
-_COMMITTED_BUNDLES = {
+_NOT_MET_BUNDLES = {
     "native_shared_domain_example_20260629_133126",
     "native_shared_domain_example_20260702_140836",
     "native_shared_domain_gate_demo_20260625_184817",
     "native_shared_domain_gate_demo_20260626_101928",
     "native_shared_domain_gate_demo_20260626_102829",
+}
+
+#: The met half, bought under the policy arm's prompt. Written out for the same reason, and
+#: separately from the half above because each half is the other's falsifier: the not-met
+#: half alone gives κ ``None``, and κ is defined only over the union.
+_MET_BUNDLES = {
+    "native_shared_domain_policy_demo_20260803_063010_trial0",
+    "native_shared_domain_policy_demo_20260803_063010_trial1",
+    "native_shared_domain_policy_demo_20260803_063010_trial2",
+    "native_shared_domain_policy_demo_20260803_063150_trial0",
+    "native_shared_domain_policy_demo_20260803_063150_trial1",
+    "native_shared_domain_policy_demo_20260803_063150_trial2",
+    "native_shared_domain_policy_demo_20260803_063150_trial3",
+    "native_shared_domain_policy_demo_20260803_063150_trial4",
+    "native_shared_domain_policy_demo_20260803_063150_trial5",
+    "native_shared_domain_policy_demo_20260803_063150_trial6",
+    "native_shared_domain_policy_demo_20260803_063150_trial7",
+    "native_shared_domain_policy_demo_20260803_063150_trial8",
 }
 
 #: The files a bundle is trimmed to: what the differential reads, and ``task.yaml`` for the
@@ -74,8 +111,8 @@ def _reconcile_cli(*args: str) -> Result:
     return CliRunner().invoke(cli, ["reconcile", *args], env={"COLUMNS": "200"})
 
 
-def _copy(tmp_path: Path) -> Path:
-    """A writable copy of the committed half.
+def _copied(root: Path, tmp_path: Path) -> Path:
+    """A writable copy of ``root``.
 
     Every reconciliation in this module runs over a copy, never over ``tests/data`` itself.
     Not caution: an implementation that wrote into the corpus would otherwise dirty the
@@ -84,27 +121,31 @@ def _copy(tmp_path: Path) -> Path:
     artifacts did, and the lock stayed green through it.
     """
     destination = tmp_path / "corpus"
-    shutil.copytree(_NOT_MET, destination)
+    shutil.copytree(root, destination)
     return destination
 
 
-def _report_over_the_committed_half(tmp_path: Path) -> ReconcileReport:
+def _copy(tmp_path: Path) -> Path:
+    return _copied(_NOT_MET, tmp_path)
+
+
+def _report_over_the_not_met_half(tmp_path: Path) -> ReconcileReport:
     return reconcile_corpus(_copy(tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True)
 
 
-def _entry_over_the_committed_half(tmp_path: Path) -> ReconciledEntry:
-    (entry,) = _report_over_the_committed_half(tmp_path).entries
+def _entry_over_the_not_met_half(tmp_path: Path) -> ReconciledEntry:
+    (entry,) = _report_over_the_not_met_half(tmp_path).entries
     return entry
 
 
-def test_the_committed_half_is_exactly_the_five_trimmed_bundles() -> None:
+def test_the_not_met_half_is_exactly_the_five_trimmed_bundles() -> None:
     """Two sources for the corpus's membership and shape: the tree, and this literal."""
-    assert {bundle.name for bundle in _NOT_MET.iterdir()} == _COMMITTED_BUNDLES
+    assert {bundle.name for bundle in _NOT_MET.iterdir()} == _NOT_MET_BUNDLES
     for bundle in _NOT_MET.iterdir():
         assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES
 
 
-def test_no_committed_bundle_declares_a_constraint_block() -> None:
+def test_no_bundle_in_either_half_declares_a_constraint_block() -> None:
     """The premise that makes resolving the block from the *pack* load-bearing.
 
     None of these trials ran with trace constraints, so nothing in the recomputation reads a
@@ -112,7 +153,9 @@ def test_no_committed_bundle_declares_a_constraint_block() -> None:
     shipped constraint red the lock over this frozen corpus. A ``--constraints``-style flag
     would pin a fixture instead and make the guard decorative.
     """
-    for bundle in sorted(_NOT_MET.iterdir()):
+    bundles = sorted([*_NOT_MET.iterdir(), *_MET.iterdir()])
+    assert len(bundles) == len(_NOT_MET_BUNDLES) + len(_MET_BUNDLES)
+    for bundle in bundles:
         task = yaml.safe_load((bundle / "task.yaml").read_text())
         assert task["grading_config"].get("trace_checks") is None, bundle.name
 
@@ -126,7 +169,7 @@ def test_the_one_sided_corpus_is_insufficient_evidence_for_the_narrow_it_carries
     ``judge_not_met_constraint_failed`` and zero everywhere else is a designed experiment, and
     an accuracy of 1.0 read on its own would say the opposite.
     """
-    entry = _entry_over_the_committed_half(tmp_path)
+    entry = _entry_over_the_not_met_half(tmp_path)
 
     assert entry.observations == 5
     assert entry.accuracy == 1.0
@@ -142,7 +185,7 @@ def test_the_one_sided_corpus_is_insufficient_evidence_for_the_narrow_it_carries
     assert entry.refusals == []
 
 
-def test_the_command_exits_non_zero_for_a_narrow_resting_on_the_committed_half(
+def test_the_command_exits_non_zero_for_a_narrow_resting_on_the_not_met_half(
     tmp_path: Path,
 ) -> None:
     """``insufficient_evidence`` is not exit zero, and the reason is printed rather than implied."""
@@ -159,7 +202,7 @@ def test_the_report_states_the_mode_the_author_declared_and_quotes_its_residual(
 ) -> None:
     """The declaration is the second source: the report renders it, never re-derives it."""
     declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
-    entry = _entry_over_the_committed_half(tmp_path)
+    entry = _entry_over_the_not_met_half(tmp_path)
 
     assert entry.mode.value == declared["mode"]
     assert entry.residual_kind is not None
@@ -170,7 +213,7 @@ def test_the_report_states_the_mode_the_author_declared_and_quotes_its_residual(
 
 def test_the_report_names_which_side_of_the_pair_is_the_reference(tmp_path: Path) -> None:
     """The maths is symmetric and will not say which labeller is which; the report must."""
-    report = _report_over_the_committed_half(tmp_path)
+    report = _report_over_the_not_met_half(tmp_path)
 
     assert "judge" in report.reference_labeller
     assert "constraint" in report.candidate_labeller
@@ -261,7 +304,7 @@ def _recorded_grade(bundle: Path) -> dict[str, Any]:
     return yaml.safe_load((bundle / "grade.yaml").read_text())
 
 
-def test_the_extraction_reproduces_every_recorded_verdict_in_the_committed_corpus(
+def test_the_extraction_reproduces_every_recorded_verdict_in_the_not_met_half(
     tmp_path: Path,
 ) -> None:
     """The runner's verdict composition, moved to a function and driven offline, reaches the
@@ -275,7 +318,7 @@ def test_the_extraction_reproduces_every_recorded_verdict_in_the_committed_corpu
     against a recorded ``0.0`` — required criteria are excluded from the weighted average, so the
     aggregate alone says the trial aced a rubric it failed.
     """
-    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+    counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
 
     assert counterfactual.unrecomputed_trials == []
     assert len(counterfactual.trials) == 5
@@ -286,7 +329,7 @@ def test_the_extraction_reproduces_every_recorded_verdict_in_the_committed_corpu
         assert row.binary_pass_before is grade["binary_pass"]
 
 
-def test_the_counterfactual_reports_what_the_narrow_does_to_every_committed_trial(
+def test_the_counterfactual_reports_what_the_narrow_does_to_every_not_met_trial(
     tmp_path: Path,
 ) -> None:
     """The judge component rises, the trial score rises, and the verdict does not move.
@@ -298,7 +341,7 @@ def test_the_counterfactual_reports_what_the_narrow_does_to_every_committed_tria
     unchanged pass rates, or the difference reported — and it holds here for a stated reason
     rather than by luck.
     """
-    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+    counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
 
     assert [row.judge_component_before for row in counterfactual.trials] == [0.0] * 5
     assert [row.judge_component_after for row in counterfactual.trials] == [1.0] * 5
@@ -313,7 +356,7 @@ def test_the_veto_transfers_from_the_criterion_to_the_trace_gate_on_every_trial(
 ) -> None:
     """For a ``required`` criterion the two weight maps are *identical*, so a weight-shift report
     would be silent about the only thing the migration changes. The veto sets are what says it."""
-    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+    counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
     declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
 
     assert declared["was"]["required"] is True
@@ -335,7 +378,7 @@ def test_no_reported_weight_map_is_the_map_the_pack_holds_today(tmp_path: Path) 
     current = yaml.safe_load((_PACKS / "notes_duplicate_check_narrowed/grading.yaml").read_text())[
         "combine"
     ]["weights"]
-    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+    counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
 
     assert current == {"llm_judge": 0.7, "trace_checks": 0.3}
     assert counterfactual.weights_declared is None
@@ -354,6 +397,185 @@ def test_the_counterfactual_reaches_the_reviewer_it_is_evidence_for(tmp_path: Pa
     assert "counterfactual under the map this entry declares" in result.output
     assert "pass rate 0/5 → 0/5" in result.output
     assert "nothing here decides the verdict" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The union: the second label, and the pair of arms that produced it
+# ---------------------------------------------------------------------------
+
+
+def _report_over_the_union(tmp_path: Path) -> ReconcileReport:
+    return reconcile_corpus(
+        _copied(_CORPUS, tmp_path), replay_id="canon", packs=[_PACKS], dry_run=True
+    )
+
+
+def _entry_over_the_union(tmp_path: Path) -> ReconciledEntry:
+    (entry,) = _report_over_the_union(tmp_path).entries
+    return entry
+
+
+def test_the_met_half_is_exactly_the_twelve_trimmed_bundles() -> None:
+    """Two sources for the bought half's membership and shape: the tree, and this literal."""
+    assert {bundle.name for bundle in _MET.iterdir()} == _MET_BUNDLES
+    for bundle in _MET.iterdir():
+        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES
+
+
+def test_the_policy_arm_ships_the_shared_prompt_verbatim_with_the_policy_appended() -> None:
+    """The containment guard, and it has to be ``startswith``.
+
+    A task-level ``system_prompt`` is a path resolved against the task directory and
+    ``deep_merge`` lets a scalar from the delta *replace* the base, so the policy arm's own file
+    replaces the shared one outright rather than extending it — measured, and the reason the
+    file exists at all. Forking the shared text is what makes drift possible, so the shared
+    bytes are asserted to be a *prefix*: the policy paragraph is appended, never interleaved
+    under one of the shared file's headings, because an interleaved paragraph breaks containment
+    on its first commit and the likely reaction to that red is to weaken this guard.
+
+    The gated arm's equality is the other half of the pair. Without it a shared file rewritten
+    to state the policy itself would leave both arms passing while the experiment lost its
+    independent variable.
+    """
+    shared = _SHARED_PROMPT.read_bytes()
+    policy = (_POLICY_ARM / "system_prompt.md").read_bytes()
+
+    assert not (_GATED_ARM / "system_prompt.md").exists()
+    assert policy.startswith(shared)
+    assert len(policy) > len(shared)
+    assert b"list_notes" in policy[len(shared) :]
+
+
+def _grading_of(arm: Path) -> dict[str, Any]:
+    return yaml.safe_load((arm / "grading.yaml").read_text())
+
+
+def _behavioural_fields(arm: Path) -> dict[str, Any]:
+    """Everything about an arm's task that decides what the agent is asked to do.
+
+    ``name`` and ``description`` are deliberately absent: they are the author's prose about
+    which arm this is, and requiring them to match would forbid saying so.
+    """
+    task = yaml.safe_load((arm / "task.yaml").read_text())
+    return {
+        "domain": task["domain"],
+        "max_turns": task["max_turns"],
+        "initial_user_message": task["initial_user_message"].split(),
+        "backstory": task["actors"]["user"]["backstory"].split(),
+        "json_db": (arm / task["initial_state"]["json_db"]).read_bytes(),
+    }
+
+
+def test_the_two_arms_differ_in_the_agent_prompt_and_in_nothing_a_grade_reads() -> None:
+    """The independent variable, locked: one paragraph of prompt and nothing else.
+
+    The corpus pools the two arms' trials into one measurement, and pooling keys on the
+    criterion text and the resolved constraints — so a rubric that drifted between the arms
+    would be two claims counted as one, and a different initial state or user message would make
+    the met labels answer a different question than the not-met ones. Both arms' rubrics are read
+    here rather than compared byte for byte, because the two files' leading comments say which
+    arm they are and must be allowed to.
+    """
+    assert _grading_of(_GATED_ARM) == _grading_of(_POLICY_ARM)
+    assert _behavioural_fields(_GATED_ARM) == _behavioural_fields(_POLICY_ARM)
+
+
+def test_the_union_corpus_reaches_a_defined_kappa_and_no_counter_evidence(
+    tmp_path: Path,
+) -> None:
+    """What the bought half buys: κ defined, so the bar can reach a verdict at all.
+
+    Seventeen observations in two cells on the agreeing diagonal — twelve met/passed from the
+    policy arm and five not-met/failed from the gated one — with nothing off it, so there is no
+    disagreement in either direction to acknowledge and the entry reaches
+    ``no_counter_evidence``. Read beside the one-sided lock above, which is this lock's
+    falsifier: the same declaration over ``not_met/`` alone is ``insufficient_evidence``.
+
+    The verdict is what is asserted, not the maths — ``no_counter_evidence`` says no trial in
+    this corpus contradicted the claim over seventeen observations, and κ ``1.0`` is reported
+    beside it rather than thresholded.
+    """
+    entry = _entry_over_the_union(tmp_path)
+
+    assert entry.task_ids == [
+        "notes_add_note_duplicate_check_gated",
+        "notes_add_note_duplicate_check_policy",
+    ]
+    assert entry.observations == 17
+    assert entry.accuracy == 1.0
+    assert entry.kappa == 1.0
+    assert entry.contingency.model_dump() == {
+        "judge_met_constraint_passed": 12,
+        "judge_met_constraint_failed": 0,
+        "judge_not_met_constraint_passed": 0,
+        "judge_not_met_constraint_failed": 5,
+    }
+    assert entry.strict_disagreements == []
+    assert entry.permissive_disagreements == []
+    assert entry.excluded_trials == []
+    assert entry.refusals == []
+    assert entry.verdict is ReconcileVerdict.NO_COUNTER_EVIDENCE
+
+
+def test_the_narrow_moves_no_trial_verdict_across_the_union(tmp_path: Path) -> None:
+    """The acceptance criterion — unchanged pass rates, or the difference reported.
+
+    Twelve of seventeen pass before and the same twelve after, for a reason rather than by
+    luck: the veto the judge held passes to the trace gate, which fails on exactly the five
+    trials whose criterion the judge failed. The met arm's rows are what make this more than a
+    restatement of the not-met lock, where every trial failed both before and after and a
+    counterfactual that moved nothing would have looked identical.
+    """
+    counterfactual = _entry_over_the_union(tmp_path).counterfactual
+
+    assert counterfactual.unrecomputed_trials == []
+    assert len(counterfactual.trials) == 17
+    passed_before = [row.trial for row in counterfactual.trials if row.binary_pass_before]
+    passed_after = [row.trial for row in counterfactual.trials if row.binary_pass_after]
+    assert passed_before == passed_after
+    assert len(passed_before) == 12
+    assert {Path(trial).name for trial in passed_before} == _MET_BUNDLES
+
+
+def test_the_declared_evidence_is_the_measurement_over_the_corpus_it_names(
+    tmp_path: Path,
+) -> None:
+    """The numbers the two declarations quote are the numbers a reconciliation reaches.
+
+    Three sources, none derived from another: the declarations' own ``evidence`` block, the
+    bundle directories on disk under the corpus root that block names, and the report the
+    command produces. A declaration is a claim — nothing in the product cross-checks it, which
+    is deliberate, because the report renders what the author declared rather than re-deriving
+    it — so this is where a stale claim is caught.
+
+    Both arms' declarations are byte-identical, which is what keeps the pooled measurement one
+    measurement quoted twice rather than two claims the pooling rule would then refuse.
+    """
+    assert _DECLARATION.read_bytes() == _POLICY_DECLARATION.read_bytes()
+    declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]["evidence"]
+    named = _REPO / declared["corpus"]
+
+    assert named == _CORPUS
+    assert {bundle.name for half in named.iterdir() for bundle in half.iterdir()} == (
+        _NOT_MET_BUNDLES | _MET_BUNDLES
+    )
+    entry = _entry_over_the_union(tmp_path)
+    assert declared["observations"] == entry.observations
+    assert declared["kappa"] == entry.kappa
+
+
+def test_the_command_exits_zero_over_the_union_and_says_what_that_means(
+    tmp_path: Path,
+) -> None:
+    """``no_counter_evidence``, and no other verdict, is what exit ``0`` means."""
+    corpus = _copied(_CORPUS, tmp_path)
+
+    result = _reconcile_cli("--source", str(corpus), "--packs", str(_PACKS), "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "no_counter_evidence over 17 observations" in result.output
+    assert "kappa 1.000" in result.output
+    assert "pass rate 12/17 → 12/17" in result.output
 
 
 def _tree_digest(root: Path) -> dict[str, str]:

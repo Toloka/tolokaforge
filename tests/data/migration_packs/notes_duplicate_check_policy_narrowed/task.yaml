@@ -1,0 +1,33 @@
+task_id: "notes_add_note_duplicate_check_policy"
+name: "Fixture — the notes duplicate-check criterion, narrowed (policy arm)"
+category: "test"
+description: >
+  The second of the pair of stand-ins for the shipped notes duplicate-check
+  testcases, carrying the migration the shipped packs have not taken yet. It declares
+  the task_id of the met arm — the bundles under
+  tests/data/migration_corpora/notes_duplicate_check/met/ — where its sibling
+  notes_duplicate_check_narrowed declares the not-met arm's, so `tolokaforge reconcile
+  --packs tests/data/migration_packs` resolves the whole corpus and pools both arms
+  into one entry.
+
+  Its grading.yaml and migration.yaml are byte-identical to the sibling's on purpose:
+  pooling keys on the criterion text and the resolved constraints, so a drift between
+  the two reds the reconcile lock with a pooling refusal instead of quietly measuring
+  two claims as one.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - list_notes
+      - add_note
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+grading: "grading.yaml"

@@ -214,13 +214,63 @@ therefore satisfied by *declaring* a map, and this is where the declared map is 
 entry declaring the identity map on a criterion the judge scored below `1.0` reports the judge
 component **rising**, which is the accepted residual made visible rather than trusted.
 
+## The committed corpus
+
+`tests/data/migration_corpora/notes_duplicate_check/` is the repo's judge-labelled corpus:
+seventeen recorded trials of the notes duplicate-check criterion, in two halves, committed with
+plain git at ~13 KB per bundle. Each bundle is trimmed to the five files the differential reads —
+`task.yaml`, `trajectory.yaml`, `grade.yaml`, `tools_schemas.yaml`, `metrics.yaml` — and its
+directory name carries the run it came from.
+
+| half | trials | task | the judge's `checked_duplicates_first` |
+|---|---|---|---|
+| `not_met/` | 5 | `notes_add_note_duplicate_check_gated` | not met on every one |
+| `met/` | 12 | `notes_add_note_duplicate_check_policy` | met on every one |
+
+**The two halves are the two arms of one experiment, and the independent variable is one
+paragraph of system prompt.** The arms are two testcases of
+`examples/native/native_shared_domain/`, byte-identical in rubric, weights, initial state, user
+message and backstory. `add_note_duplicate_check_gated` inherits the shared system prompt, which
+does not mention the check-first policy, so agents skip `list_notes` and the criterion is not
+met. `add_note_duplicate_check_policy` ships **its own** `system_prompt.md`, carrying the shared
+prompt verbatim with the policy paragraph appended, so a competent agent lists, warns, and the
+criterion is met.
+
+Two mechanics make that fork necessary rather than convenient, and both are measured. A
+task-level `system_prompt` is a *path* resolved against the task directory, and `deep_merge`
+lets a scalar from the delta **replace** the base — so a task-level value drops the shared
+prompt outright instead of extending it. The fork is therefore guarded: a canonical assertion
+requires the arm's prompt to *start with* the shared file's exact bytes, so a drift in
+`_shared/system_prompt.md` reds rather than diverging silently. `startswith` is the assertion
+because the paragraph is **appended**; interleaving it under one of the shared file's headings
+would break containment on its first commit.
+
+Over the union the entry reports **17 observations, accuracy `1.0`, κ `1.0`**, twelve
+met/passed and five not-met/failed with nothing off the agreeing diagonal, and reaches
+`no_counter_evidence` — exit `0`. Over `not_met/` alone the same declaration is
+`insufficient_evidence`, because κ is undefined on one label. Each half is the other's
+falsifier, and both verdicts are locked in
+`tests/canonical/test_rubric_migration.py`.
+
+The shipped packs have not taken the migration yet, so the declarations the corpus is reconciled
+against are fixtures under `tests/data/migration_packs/` — one per arm, because a bundle resolves
+its constraints through its own `task_id` — reached with `--packs tests/data/migration_packs`.
+Their declarations are identical, which is what keeps the pooled evidence one measurement quoted
+twice; a drift between them is a pooling refusal.
+
+The corpus is deliberately heterogeneous: the `not_met/` bundles are `schema_version: 1` and
+record-less (no `tool_log.yaml`), which does not block a constraint reading no `status` or
+`result`. Any future migration whose constraint reads either needs a record-carrying corpus, and
+the `evidence` block is where that shows.
+
 ## Reading the evidence
 
 The 2×2 table is required rather than optional, and it is the part to read first. A corpus
 whose mass sits in one or two cells is *visibly* a designed experiment; an accuracy of `1.0`
-read on its own says the opposite. On the committed corpus under
-`tests/data/migration_corpora/notes_duplicate_check/not_met/`, all five observations sit in
-`judge_not_met_constraint_failed`: accuracy `1.0`, κ `null`, verdict `insufficient_evidence`.
+read on its own says the opposite. Point `reconcile` at
+`tests/data/migration_corpora/notes_duplicate_check/not_met/` alone and all five observations
+sit in `judge_not_met_constraint_failed`: accuracy `1.0`, κ `null`, verdict
+`insufficient_evidence` — the same accuracy the union reports, and none of the evidence.
 
 **The bar can only ever report absence of counter-evidence.** `no_counter_evidence` means "no
 trial in this corpus contradicted the claim, over N observations" — never that the constraint
@@ -237,8 +287,10 @@ structurally by set-equality over its field names rather than by prose — an as
 **And the experimental-design limitation, stated rather than left to be noticed:** a corpus
 whose met half was produced by a prompt instructing exactly what the constraint measures
 cannot distinguish "the constraint matches the criterion" from "the agents did what they were
-told." A corpus of organically-varying trials would be stronger evidence and does not exist
-for any shipped pack yet (#793).
+told." That is precisely how the [`met/` half](#the-committed-corpus) was produced, so the κ of
+`1.0` it yields is a property of the design as much as of the criterion. A corpus of
+organically-varying trials would be stronger evidence and does not exist for any shipped pack
+yet (#793).
 
 ## From Python
 
