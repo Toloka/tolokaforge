@@ -32,14 +32,14 @@ user_simulator:
 grading: "grading.yaml"
 YAML
 
+# Non-scoring by design: this smoke exercises task-pack mounting, not grading. An
+# empty weight map beside no component section asks for nothing, which is the one
+# shape a pack may declare and still pass on nothing.
 cat > "$PACK_A/tasks/browser/public_a/grading.yaml" <<'YAML'
 combine:
   method: weighted
-  weights:
-    state_checks: 1.0
+  weights: {}
   pass_threshold: 1.0
-state_checks:
-  jsonpaths: []
 YAML
 
 cat > "$PACK_B/tasks/mobile/public_b/task.yaml" <<'YAML'
@@ -63,11 +63,8 @@ YAML
 cat > "$PACK_B/tasks/mobile/public_b/grading.yaml" <<'YAML'
 combine:
   method: weighted
-  weights:
-    state_checks: 1.0
+  weights: {}
   pass_threshold: 1.0
-state_checks:
-  jsonpaths: []
 YAML
 
 CONFIG_PATH="$TMP_DIR/run_taskpacks_smoke.yaml"

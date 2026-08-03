@@ -560,6 +560,6 @@ tools:
 
 - [GRADING.md](GRADING.md) - Detailed grading system (hash algorithm, pass@k)
 - [ADAPTER_ARCHITECTURE.md](ADAPTER_ARCHITECTURE.md) - Adapter architecture for task loading
-- [CUSTOM_CHECKS.md](CUSTOM_CHECKS.md) - Custom Python validation
+- [custom_checks.md](custom_checks.md) - Custom Python validation
 - [SECURITY.md](SECURITY.md) - Security model
 - [Multi-container tasks guide](MULTI_CONTAINER_GUIDE.md) - Declaring an `environment_manifest` so a task ships its own docker-compose stack

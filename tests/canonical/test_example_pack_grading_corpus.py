@@ -334,14 +334,14 @@ def _loads_no_grading_config(task_yaml: Path) -> bool:
 
 
 def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> None:
-    """#744's authoring-side exposure, both directions, over every pack in the repo.
+    """Both directions of the membership question, over every pack in the repo.
 
-    A component a pack configures that the effective map never weights is not
-    gradeable at all: core drops it from the numerator while the runner folds it at an
-    invented ``1.0``. A weight naming a component the pack never configures is the
-    same defect from the other side — no substrate produces that component, so the
-    weight weighs nothing, and it turns a pack that asks for nothing into one claiming
-    a component it does not have.
+    A component a pack configures that the effective map never weights is not gradeable
+    at all: both folds refuse a component they scored and hold no share for, rather than
+    inventing one, so such a pack fails at grade time on either substrate. A weight
+    naming a component the pack never configures is the same defect from the other side
+    — no substrate produces that component, so the weight weighs nothing, and it turns a
+    pack that asks for nothing into one claiming a component it does not have.
 
     Both directions are asserted because a guard that asks one of two symmetric
     questions is how 21 ``wire_probes`` fixtures carrying a stray ``state_checks``
@@ -376,8 +376,8 @@ def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> No
             unrequested[pack] = stray
 
     assert unweighted == {}, (
-        "these packs configure a component the effective combine never weights, so core "
-        "drops it from the fold and the runner invents a 1.0 for it (#744)"
+        "these packs configure a component the effective combine never weights, so both "
+        "folds refuse the trial rather than pick a share the author never declared"
     )
     assert unrequested == {}, (
         "these packs weight a component they never configure, so no substrate produces "

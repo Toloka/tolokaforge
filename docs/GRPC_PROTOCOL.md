@@ -564,7 +564,7 @@ Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that p
 
 The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
 
-The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](docs/TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
+The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
 
 ```json
 {
@@ -615,6 +615,12 @@ The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/c
 validates it while decoding this payload, so any other value fails `RegisterTrial`
 with a `ValidationError` naming the value and the three it may be. Which score each
 one returns is in [GRADING.md](GRADING.md#score-combination) § Score Combination.
+
+**`grading.weights` defaults to `{}`** — an empty map, never a share for a component
+the payload did not configure. A payload that configures a component and omits its
+weight therefore reaches the `MissingComponentWeight` row below at grade time rather
+than being folded at a share nobody sent. A payload configuring nothing and weighting
+nothing is the deliberately non-scoring shape and grades `(1.0, True)`.
 
 ### ExecuteToolRequest/Response
 
@@ -747,6 +753,9 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     #    Every component folded here carries a share grading_config.weights declares,
     #    and a fold with no weighted component decides before this call: nothing
     #    configured and nothing weighted passes, anything else fails with the reason.
+    #    Shares summing to zero over the scored components is that second answer under
+    #    "weighted" alone — "all" and "any" aggregate the component set and read no
+    #    share, so a 0.0 there is inert and each component's own verdict still decides.
     final_score, binary_pass = combine_by_method(
         method=grading_config.combine_method,
         component_scores={"state_checks": state_score, "transcript_rules": transcript_score},

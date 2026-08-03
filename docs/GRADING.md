@@ -2980,13 +2980,14 @@ substrates, two compositions, one behaviour where both can be asked; the
 canonical differential above is what holds them to it.
 
 **Configured but unevaluated fails loud, for every component.** A component is
-configured when `combine.weights` gives it a weight **and** the pack writes its
-`grading.yaml` section. If every configured component then comes back
-unevaluated, the trial scores `(0.0, False)` rather than a silent `(1.0, True)` —
-so a pack weighted entirely on one component that never ran fails instead of
-passing on nothing. A weight with no matching section is a different case: that
-pack is read as declaring no grading at all and passes by default, and the two
-substrates disagree on it (**#758**).
+configured when the pack writes its `grading.yaml` section — and, where that section
+carries its own enable flag, when the flag is on, so `custom_checks: {enabled: false}`
+is an explicit opt-out asking for nothing. If every configured component then comes
+back unevaluated, the trial scores `(0.0, False)` with a reason naming them, rather
+than a silent `(1.0, True)` — so a pack weighted entirely on one component that never
+ran fails instead of passing on nothing. One predicate answers this question for the
+authoring gate and for both folds, so the three cannot disagree about what the author
+asked for.
 
 ### What a component is
 
@@ -3067,7 +3068,7 @@ Tasks used for RL training need grading that produces a meaningful signal — no
 
 ### Principles
 
-- **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly. **Not on a task whose correct outcome is to change nothing** — a refusal-style task's expected final state equals its initial state, so an agent that did nothing at all scores `1.0` on state alone. Weight `transcript_rules` alongside it and declare a `min_assistant_turns` floor, which fails a trial that produced no assistant turns (see [§ Turn bounds](#turn-bounds)). A block with no evaluable source — only `id_fields`, or an empty `jsonpaths` list — is a free `1.0` core-side for the same reason (#733).
+- **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly. **Not on a task whose correct outcome is to change nothing** — a refusal-style task's expected final state equals its initial state, so an agent that did nothing at all scores `1.0` on state alone. Weight `transcript_rules` alongside it and declare a `min_assistant_turns` floor, which fails a trial that produced no assistant turns (see [§ Turn bounds](#turn-bounds)). A block with no evaluable source — only `id_fields`, or an empty `jsonpaths` list — asserts nothing and is refused before the run.
 - **Reserve `llm_judge` for genuinely subjective tasks.** An LLM judge giving 0.7 for "attempted the task" masks real failures. Don't use it as padding.
 - **CI portability:** the judge model is a run-level role (`models.judge`), so CI can point it at `mock/mock-judge` to run without live judge inference; for real evaluations set `models.judge` to your production judge model. (No per-task edit is needed — switch the whole run in one place.)
 - **Check specific values, not just existence.** Assert `equals: "Large (14\")"` instead of just checking the path exists. Assert `equals: "apple_pay"` instead of checking that any payment method was set.
