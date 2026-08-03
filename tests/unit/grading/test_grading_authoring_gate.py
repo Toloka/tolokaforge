@@ -26,6 +26,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
@@ -35,13 +36,15 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _TEXTUAL_MATCHER_FIELDS,
+    UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
+    CombineLayer,
     Finding,
     ToolInventory,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.trace_timeline import TraceEvent
-from tolokaforge.core.models import GradingFindingSeverity
+from tolokaforge.core.models import GradingCombineConfig, GradingFindingSeverity
 from tolokaforge.runner.models import TRACE_MATCHABLE_FIELDS_BY_KIND
 
 pytestmark = pytest.mark.unit
@@ -124,7 +127,12 @@ def _quotes(operator: str, name: str) -> dict[str, Any]:
 
 @dataclass(frozen=True)
 class _Rule:
-    """One authored defect, the channel it lands in, and the fix it must name."""
+    """One authored defect, the channel it lands in, and the fix it must name.
+
+    ``combine`` is the effective map the row is checked under. ``None`` leaves the
+    weight rules out, which is what every tool-aware row wants: they are about a
+    matcher, and a weight finding beside one would report two defects for one typo.
+    """
 
     label: str
     task: Path
@@ -132,6 +140,7 @@ class _Rule:
     checker: str
     channel: str
     message: str
+    combine: GradingCombineConfig | None = None
 
 
 _RULES: tuple[_Rule, ...] = (
@@ -215,6 +224,24 @@ _RULES: tuple[_Rule, ...] = (
         channel="errors",
         message="the comparison never runs",
     ),
+    _Rule(
+        label="configured_component_with_no_weight",
+        task=_HELPDESK,
+        grading={"transcript_rules": {"max_turns": 10}},
+        checker="_check_requested_components_are_weighted",
+        channel="errors",
+        message="Declare combine.weights.transcript_rules",
+        combine=GradingCombineConfig(weights={}),
+    ),
+    _Rule(
+        label="weight_naming_a_component_the_pack_never_configures",
+        task=_HELPDESK,
+        grading={},
+        checker="_check_weights_name_requested_components",
+        channel="errors",
+        message="the weight weighs nothing",
+        combine=GradingCombineConfig(weights={"state_checks": 1.0}),
+    ),
 )
 
 _FINDING_CHANNELS = ("errors", "advisories")
@@ -235,7 +262,9 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
     is only suspect; reporting either in the other's channel would hard-fail a pack
     the schema does not condemn, or wave through a matcher that selects nothing.
     """
-    report = inspect_grading_authoring(rule.grading, _inventory(rule.task))
+    report = inspect_grading_authoring(
+        rule.grading, _inventory(rule.task), effective_combine=rule.combine
+    )
 
     reported = _texts(report, rule.channel)
     assert any(rule.message in text for text in reported), reported
@@ -273,7 +302,9 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
     for name in declared:
         monkeypatch.setattr(config_validation, name, _recording(name, answered))
     for rule in _RULES:
-        inspect_grading_authoring(rule.grading, _inventory(rule.task))
+        inspect_grading_authoring(
+            rule.grading, _inventory(rule.task), effective_combine=rule.combine
+        )
 
     assert answered == declared
 
@@ -374,7 +405,8 @@ def test_an_unresolvable_inventory_fails_nothing_and_says_why(
     assert report.advisories == ()
     assert [skip.reason for skip in report.unchecked] == [
         "the tool set of this task could not be resolved, so no tool name and no "
-        "argument name in this block is checkable"
+        "argument name in this block is checkable",
+        UNRESOLVED_COMBINE_REASON,
     ]
 
 
@@ -572,6 +604,176 @@ def test_an_unresolvable_inventory_may_not_carry_tools() -> None:
     """
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
         ToolInventory(declared=frozenset({"http_request"}), parameters={}, known=False)
+
+
+# ---------------------------------------------------------------------------
+# A component and its weight name each other, in both directions
+# ---------------------------------------------------------------------------
+
+
+def test_an_explicit_opt_out_loads_and_needs_no_weight() -> None:
+    """Standing single case: ``custom_checks: {enabled: false}`` declares something.
+
+    An explicit opt-out is not "declares nothing", and it survives the wire intact
+    where an empty block does not — so both substrates read it the same, and neither
+    scores it. Weighting a component nobody scores is what the second half refuses,
+    which is what makes the first half a decision rather than an omission.
+    """
+    opted_out = {"custom_checks": {"enabled": False}}
+    no_weights = GradingCombineConfig(weights={})
+
+    assert (
+        inspect_grading_authoring(opted_out, _inventory(_HELPDESK), effective_combine=no_weights)
+        == AuthoringReport()
+    )
+
+    weighted_anyway = inspect_grading_authoring(
+        opted_out,
+        _inventory(_HELPDESK),
+        effective_combine=GradingCombineConfig(weights={"custom_checks": 1.0}),
+    )
+    assert [finding.where for finding in weighted_anyway.errors] == [
+        "combine.weights.custom_checks"
+    ]
+    assert "absent or opted out" in weighted_anyway.errors[0].message
+
+
+def test_an_unflagged_custom_checks_block_is_not_requested_by_the_components_own_default() -> None:
+    """Standing single case: ``CustomChecksConfig.enabled`` defaults to ``False``.
+
+    A caller reading the key generically would default it the other way and demand a
+    weight for a component no substrate runs. The predicate asks the component, which
+    is why the answer here is "not requested" for a block that names a checks file.
+    """
+    grading = {"custom_checks": {"file": "checks.py"}}
+
+    assert (
+        inspect_grading_authoring(
+            grading, _inventory(_HELPDESK), effective_combine=GradingCombineConfig(weights={})
+        )
+        == AuthoringReport()
+    )
+
+
+def test_a_mistyped_custom_checks_key_raises_rather_than_disabling_the_component() -> None:
+    """Standing single case: the predicate inherits the block's own validation.
+
+    Reading ``enabled`` off a block with a misspelled key would answer "not
+    requested" — silently unscoring a component the author asked for and demanding no
+    weight for it, so the pack would validate clean and grade without it.
+    """
+    with pytest.raises(ValidationError, match="enabld"):
+        inspect_grading_authoring(
+            {"custom_checks": {"enabld": True}},
+            _inventory(_HELPDESK),
+            effective_combine=GradingCombineConfig(weights={}),
+        )
+
+
+def test_a_component_written_null_is_not_requested_and_a_declared_one_is() -> None:
+    """Standing single case: ``llm_judge: null`` is absent, not configured.
+
+    Both halves, because the negative alone passes under a predicate that never
+    reports anything: the same block with a rubric must demand its weight.
+    """
+    no_weights = GradingCombineConfig(weights={})
+
+    assert (
+        inspect_grading_authoring(
+            {"llm_judge": None}, _inventory(_HELPDESK), effective_combine=no_weights
+        )
+        == AuthoringReport()
+    )
+
+    declared = inspect_grading_authoring(
+        {"llm_judge": {"rubric": {"criteria": []}}},
+        _inventory(_HELPDESK),
+        effective_combine=no_weights,
+    )
+    assert [finding.where for finding in declared.errors] == ["combine.weights.llm_judge"]
+
+
+def test_a_deliberately_non_scoring_pack_loads_clean() -> None:
+    """Standing single case: nothing configured and nothing weighted asks for nothing.
+
+    The shape the wire-probe fixtures exist in — they record wire behaviour and score
+    nothing, and say so in their own comment. What the rules forbid is the stray
+    weight beside it, not the free pass itself.
+    """
+    report = inspect_grading_authoring(
+        {}, _inventory(_HELPDESK), effective_combine=GradingCombineConfig(weights={})
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_a_weight_naming_no_component_at_all_is_refused_with_the_other_fix() -> None:
+    """``combine.weights`` validates no key, so a typo there reaches both folds unread.
+
+    Boundary case, standing lock: the fix is not the one a weight naming a real but
+    unconfigured component takes — there is no section to configure — so a single
+    message would send the author to write a block that does not exist.
+    """
+    report = inspect_grading_authoring(
+        {"transcript_rules": {"max_turns": 10}},
+        _inventory(_HELPDESK),
+        effective_combine=GradingCombineConfig(
+            weights={"transcript_rules": 1.0, "transcript_rule": 1.0}
+        ),
+    )
+
+    assert [finding.where for finding in report.errors] == ["combine.weights.transcript_rule"]
+    assert "names no grading component" in report.errors[0].message
+    assert "Correct the name, or drop the weight" in report.errors[0].message
+
+
+# ---------------------------------------------------------------------------
+# The effective combine: inherited weights pass, an unresolved fold is unchecked
+# ---------------------------------------------------------------------------
+
+
+def test_a_task_inheriting_its_weights_from_its_project_passes(tmp_path: Path) -> None:
+    """B1's regression cell: the rule reads the effective combine, not the authored block.
+
+    Five shipped ``example-microservices-pack`` tasks are this shape — four declare no
+    ``combine`` at all and one declares ``pass_threshold`` alone, with a comment saying
+    the rest inherits. A rule reading the file would refuse all five.
+    """
+    grading = _write_grading(tmp_path, {"transcript_rules": {"max_turns": 10}})
+
+    report = validate_grading_yaml(
+        grading,
+        inventory=ToolInventory.unresolvable(),
+        combine_layer=CombineLayer({"weights": {"transcript_rules": 1.0}}),
+    )
+
+    assert report.errors == ()
+    assert [skip.reason for skip in report.unchecked] == [config_validation._UNRESOLVABLE_REASON]
+
+
+def test_the_same_task_with_no_resolvable_project_reports_unchecked(tmp_path: Path) -> None:
+    """A fold nobody resolved is reported, never passed.
+
+    The same pack as the case above, whose weight is supplied by a layer this caller
+    cannot see. Answering "unweighted" would refuse a pack that grades correctly;
+    answering "clean" would report a rule that ran on nothing as a rule that held.
+    """
+    grading = _write_grading(tmp_path, {"transcript_rules": {"max_turns": 10}})
+
+    report = validate_grading_yaml(grading, inventory=ToolInventory.unresolvable())
+
+    assert report.errors == ()
+    assert UNRESOLVED_COMBINE_REASON in [skip.reason for skip in report.unchecked]
+
+
+def test_an_unresolvable_combine_layer_may_not_carry_project_defaults() -> None:
+    """The two states decide opposite things, so a hybrid decides neither.
+
+    ``known=False`` skips both weight rules, so defaults reported beside it are
+    resolved and then ignored — a fold checked against nothing, reading as unchecked.
+    """
+    with pytest.raises(ValueError, match="unresolvable combine layer carries project defaults"):
+        CombineLayer(project_combine={"weights": {"state_checks": 1.0}}, known=False)
 
     with pytest.raises(ValueError, match="unresolvable inventory carries tools"):
         ToolInventory(declared=frozenset(), parameters={"http_request": {}}, known=False)

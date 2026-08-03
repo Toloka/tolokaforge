@@ -2180,7 +2180,10 @@ Findings come in three classes:
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference that compares text | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
+| a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
+| a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
+| an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
 | a `bind.values[*].field` whose property writes no `type` | unchecked | per extraction |
@@ -2198,6 +2201,24 @@ it, a run logs it — because a gate that could check nothing must not read as a
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, and a
 property whose schema writes no `type` all land here.
+
+**A component and its weight must name each other, in both directions.** Configuring
+a section asks for that component to be scored, and declaring a weight asks for a
+component to be folded; either one alone leaves the fold reading a map the author did
+not write. Both directions are errors at the gate, each naming the two one-line
+fixes — declare the weight, or drop the section; configure the section, or drop the
+weight — because the substrates do not answer an undeclared weight the same way (see
+[Score Combination](#score-combination)). A weight key naming no component at all
+takes the second fix only: `combine.weights` validates no key, so a typo there reaches
+both folds unread.
+
+Both rules read the **effective** `combine`, a task's own block layered over its
+project's `task_defaults.grading_defaults.combine`, because a task that declares no
+`combine` at all still inherits one — five `example-microservices-pack` tasks are that
+shape. A caller that cannot resolve the effective combine reports it `unchecked`
+rather than assuming the weights are absent, which would refuse every pack whose
+weights are inherited. A pack that deliberately scores nothing — no component section
+and no weights — is clean: it asks for nothing, so nothing is missing.
 
 Only the first segment of an `args` address is checked, and only against
 `properties`. `json.q` on `http_request` is checked at `json` and stops, because
@@ -2805,6 +2826,14 @@ the map *is* the whole input, so it is a verdict flip. Measured on
 runner-side. **Declare a weight for every component the pack scores** and this
 divergence closes: on the same trial with both weighted, all three methods answer
 identically on both substrates.
+
+That is a rule rather than advice: a pack configuring a component and declaring no
+weight for it — or weighting one it never configures — is refused before the run, in
+both directions, against the effective `combine`. See
+[What is validated before a run](#what-is-validated-before-a-run). The gate reaches an
+authored `grading.yaml`, so the divergence above survives only where no gate ran: a
+`GradingConfig` built in process, and a config **recorded** before the rule existed and
+re-folded offline by `reconcile`. Both folds therefore still have to answer for it.
 
 One asymmetry survives #744, because it is architectural rather than a defect: core
 produces no `llm_judge` component and cannot produce a `state_checks.db_probes` one —

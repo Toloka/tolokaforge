@@ -1,18 +1,21 @@
-"""Checking grading authoring against the tools a task gives its actors.
+"""Checking grading authoring against the tools a task gives its actors and its fold.
 
 Substrate-neutral and pure — no adapter, no filesystem: an adapter resolves the
-task's tool set into a :class:`ToolInventory`, and :func:`inspect_grading_authoring`
-reads only that. A tool set the adapter cannot report is
-:meth:`ToolInventory.unresolvable` — distinct from a task that declares no
-tools, because the two decide opposite things: nothing is checkable against the
-first, while every tool name is wrong against the second.
+task's tool set into a :class:`ToolInventory` and the task's effective ``combine``,
+and :func:`inspect_grading_authoring` reads only those. A tool set the adapter
+cannot report is :meth:`ToolInventory.unresolvable` — distinct from a task that
+declares no tools, because the two decide opposite things: nothing is checkable
+against the first, while every tool name is wrong against the second. An effective
+combine no caller could resolve is ``None``, and reads the same way.
 
 The defects here are the author's, and every one of them is otherwise charged to
 the agent or to nobody: a misspelled tool name in a ``present`` matcher scores the
 component 0.0 with the message a genuine agent failure carries, the same typo in
 an ``absent`` matcher passes every trial, an uncompilable ``regex`` raises inside
-the evaluator once the tokens are already spent, and a binding correlated against
-a field of another type is red on every trajectory whatever the agent did.
+the evaluator once the tokens are already spent, a binding correlated against a
+field of another type is red on every trajectory whatever the agent did, and a
+component and its weight naming each other only one way leaves the two substrates
+folding different maps for the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -29,8 +32,14 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.grade_components import (
+    COMPONENT_BY_NAME,
+    GRADE_COMPONENTS,
+    component_requested,
+)
 from tolokaforge.core.models import (
     BoundValue,
+    GradingCombineConfig,
     GradingFindingSeverity,
     ToolExpectations,
     TraceBinding,
@@ -118,6 +127,36 @@ class ToolInventory:
 
 
 @dataclass(frozen=True)
+class CombineLayer:
+    """The project layer beneath a task's own ``combine``, or the fact that none resolved.
+
+    The weight rules need the *effective* combine, and the authored file holds only
+    half of it: a task declaring no ``combine`` at all still inherits the project's
+    weights. A caller that cannot say what the project layer is reports
+    :meth:`unresolvable` — distinct from a caller reporting *no* project layer,
+    because the two decide opposite things. Reading a project's defaults as absent
+    would refuse every task that inherits its weights, which is why the two states
+    cannot share one value.
+    """
+
+    project_combine: dict[str, Any] | None
+    known: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.known and self.project_combine:
+            raise ValueError(
+                "an unresolvable combine layer carries project defaults: every weight "
+                f"rule is skipped, so {self.project_combine} would be resolved and then "
+                "ignored. Report the defaults with known=True, or report nothing"
+            )
+
+    @classmethod
+    def unresolvable(cls) -> CombineLayer:
+        """The layer of a caller that cannot say what a task's project supplies."""
+        return cls(project_combine=None, known=False)
+
+
+@dataclass(frozen=True)
 class Finding:
     """One authoring defect, addressed by where in the block it was written."""
 
@@ -157,6 +196,17 @@ class AuthoringReport:
         if fail_on is GradingFindingSeverity.ERROR:
             return self.errors
         return self.errors + self.advisories
+
+    def with_unchecked(self, *skips: Skip) -> AuthoringReport:
+        """This report plus what the *caller* could not check on its own account.
+
+        A rule the caller could not supply the inputs for is unchecked by the same
+        definition as one this module could not answer, and belongs in the same
+        channel — otherwise a caller that gated nothing reads as a clean bill of health.
+        """
+        return AuthoringReport(
+            errors=self.errors, advisories=self.advisories, unchecked=self.unchecked + skips
+        )
 
 
 @dataclass(frozen=True)
@@ -203,6 +253,19 @@ _UNRESOLVABLE_REASON = (
     "name in this block is checkable"
 )
 
+UNRESOLVED_COMBINE_REASON = (
+    "no caller resolved this task's effective combine, so which configured components "
+    "carry a weight — and which weights name a component the pack configures — is not "
+    "checkable"
+)
+"""What a pack gate reports when it could not resolve the fold it is gating.
+
+Reported by the caller through :meth:`AuthoringReport.with_unchecked`, because only a
+caller gating a whole pack owes the answer: a caller checking a block *fragment*
+against a recorded tool set performs no fold and is asked nothing about weights.
+"""
+
+
 # The JSON types whose values are never strings. A schema declaring one of them for
 # an argument settles that a reference comparing the bound value against text cannot
 # hold; ``string``, and a property writing no type at all, settle nothing.
@@ -240,9 +303,12 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
 
 
 def inspect_grading_authoring(
-    grading: Mapping[str, Any], inventory: ToolInventory
+    grading: Mapping[str, Any],
+    inventory: ToolInventory,
+    *,
+    effective_combine: GradingCombineConfig | None = None,
 ) -> AuthoringReport:
-    """Report what a task's tools say about the grading block it is graded by.
+    """Report what a task's tools and its fold say about the grading block it is graded by.
 
     The block is expected to have passed its own shape validation; the typed
     sub-blocks read here are constructed, so a malformed one raises its own load
@@ -251,6 +317,20 @@ def inspect_grading_authoring(
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
     inventory is unresolvable, and the rules that need nothing but the block —
     regex compilation, the hash-source declaration — still run.
+
+    Args:
+        grading: The authored block, as written.
+        inventory: The task's tool set.
+        effective_combine: The combine the task grades under, project defaults
+            layered beneath its own. The weight rules read the *effective* map
+            because a task declaring no ``combine`` at all still inherits one, so a
+            rule reading the authored block would refuse a pack that grades fine.
+            ``None`` leaves those two rules out entirely — the answer for a caller
+            checking a block fragment against a recorded tool set, which performs no
+            fold. A caller gating a whole pack that could not resolve one owes
+            :data:`UNRESOLVED_COMBINE_REASON` through
+            :meth:`AuthoringReport.with_unchecked`, so its gate does not read as a
+            clean bill of health.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -269,7 +349,81 @@ def inspect_grading_authoring(
         ]
     else:
         reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
+    if effective_combine is not None:
+        reports += [
+            _check_requested_components_are_weighted(grading, effective_combine),
+            _check_weights_name_requested_components(grading, effective_combine),
+        ]
     return _merged(reports)
+
+
+def _check_requested_components_are_weighted(
+    grading: Mapping[str, Any], combine: GradingCombineConfig
+) -> AuthoringReport:
+    """A component the pack configures carries a weight in the effective combine.
+
+    Configuring a section asks for the component to be scored; declaring no weight
+    for it leaves nothing in the config saying what share of the trial's score that
+    verdict carries, and the two substrates do not answer that the same way.
+    """
+    errors = tuple(
+        Finding(
+            f"combine.weights.{spec.name}",
+            f"the {spec.config_section} section is configured, so the {spec.name} component "
+            f"is scored, but the effective combine.weights declares {sorted(combine.weights)} "
+            f"and no weight for it: nothing in the config says what share of the score "
+            f"{spec.name} carries, and the two substrates do not answer that the same way. "
+            f"Declare combine.weights.{spec.name}, or drop the {spec.config_section} section",
+        )
+        for spec in GRADE_COMPONENTS
+        if component_requested(spec, grading.get(spec.config_section))
+        and spec.name not in combine.weights
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _check_weights_name_requested_components(
+    grading: Mapping[str, Any], combine: GradingCombineConfig
+) -> AuthoringReport:
+    """A weight in the effective combine names a component the pack configures.
+
+    The converse of :func:`_check_requested_components_are_weighted`, and refused for
+    the same reason in the other direction: no substrate produces a component the
+    pack never configured, so the weight weighs nothing an author can see.
+    """
+    requested = frozenset(
+        spec.name
+        for spec in GRADE_COMPONENTS
+        if component_requested(spec, grading.get(spec.config_section))
+    )
+    errors = tuple(
+        Finding(f"combine.weights.{name}", _unrequested_weight_message(name, requested))
+        for name in sorted(combine.weights)
+        if name not in requested
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _unrequested_weight_message(name: str, requested: frozenset[str]) -> str:
+    """Why one weight key weighs nothing, and which of the two fixes applies.
+
+    A key naming no component at all is the same defect one step further out — the
+    weight is unread either way — but it takes the other fix, because there is no
+    section to configure.
+    """
+    if name not in COMPONENT_BY_NAME:
+        return (
+            f"combine.weights declares a weight for {name!r}, which names no grading "
+            f"component: the components are {sorted(COMPONENT_BY_NAME)}. A weight no "
+            "substrate reads folds nothing. Correct the name, or drop the weight"
+        )
+    section = COMPONENT_BY_NAME[name].config_section
+    return (
+        f"combine.weights declares a weight for {name}, which this pack does not configure: "
+        f"its {section} section is absent or opted out and the pack configures "
+        f"{sorted(requested)}, so no substrate produces a {name} component and the weight "
+        f"weighs nothing. Configure the {section} section, or drop the weight"
+    )
 
 
 def _check_tool_names(sites: tuple[_MatcherSite, ...], inventory: ToolInventory) -> AuthoringReport:
