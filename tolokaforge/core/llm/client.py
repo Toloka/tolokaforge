@@ -1643,7 +1643,9 @@ class LLMClient:
 
         Composes four independent parameter sources: ``params_policy.adapt``
         (temperature / seed / reasoning routing), explicit per-call overrides
-        (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
+        (``top_p`` / ``max_tokens`` / ``tools``, plus ``tool_choice``, which is an
+        override the params policy can still veto per value, see
+        ``supports_tool_choice_auto``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
         Nova's special-casing is deferred to :meth:`_call_with_key_rotation`

@@ -31,20 +31,20 @@ presets:
   # Cohere Command A+ (reached here through a LiteLLM gateway's ``azure_ai`` route).
   #
   # ``supports_tool_choice_auto: false`` is PERMANENT AND CORRECT, not a workaround.
-  # Cohere's Chat API accepts only ``REQUIRED`` and ``NONE`` for ``tool_choice`` —
-  # there is no ``AUTO`` (https://docs.cohere.com/reference/chat) — and its documented
+  # Cohere's Chat API accepts only ``REQUIRED`` and ``NONE`` for ``tool_choice``,
+  # there is no ``AUTO`` (https://docs.cohere.com/reference/chat), and its documented
   # behaviour when the parameter is OMITTED is "the model is free to choose whether to
   # use the specified tools or not". That is exactly what ``auto`` means, and ``auto``
   # is the only value this codebase ever sends. So omitting it reproduces the intended
   # semantics natively; measurements stay comparable with every other board model.
   #
-  # What surfaces the problem is litellm refusing the parameter first —
-  # ``UnsupportedParamsError: azure_ai does not support parameters: ['tool_choice']``
-  # — which reads as "the model cannot do tool calling" when the truth is "this value
-  # does not exist in Cohere's enum". Verified live 2026-08-01: identical client,
-  # prompt and tools, WITHOUT the parameter the model returns a correct
-  # ``get_weather({'city': 'Budapest', 'unit': 'c'})``; WITH ``tool_choice="auto"`` the
-  # call never leaves litellm.
+  # What surfaces the problem is litellm refusing the parameter first
+  # (``UnsupportedParamsError: azure_ai does not support parameters:
+  # ['tool_choice']``), which reads as "the model cannot do tool calling" when the
+  # truth is "this value does not exist in Cohere's enum". Verified live 2026-08-01:
+  # identical client, prompt and tools, WITHOUT the parameter the model returns a
+  # correct ``get_weather({'city': 'Budapest', 'unit': 'c'})``, WITH
+  # ``tool_choice="auto"`` the call never leaves litellm.
   #
   # The flag is deliberately about the VALUE, not the parameter: Cohere does support
   # ``tool_choice`` with ``REQUIRED``/``NONE``, and those still go through untouched.
@@ -52,24 +52,44 @@ presets:
   # Do NOT "fix" this proxy-side with ``allowed_openai_params: ['tool_choice']`` or a
   # ``model_info: supports_tool_choice: true`` override: both would push the
   # non-existent ``auto`` through to Cohere, trading a clear client-side error for a
-  # provider-side one. And do NOT enable ``drop_params`` gateway-wide — that silently
+  # provider-side one. And do NOT enable ``drop_params`` gateway-wide, since that silently
   # discards unsupported parameters for every model and every consumer of that gateway.
   #
-  # Matched on the model name rather than the provider because the constraint belongs
-  # to Cohere's API, so it holds on whatever route the model is reached through.
-  # The Azure serving stack's own JSON-schema converter also cannot resolve
-  # ``$ref``/``$defs`` — it 500s with
+  # Matched on the model NAME rather than the provider, because the ``tool_choice``
+  # constraint belongs to Cohere's API and not to this route. Note what the globs
+  # below actually cover, though: the gateway's ``azure_ai/`` route name and a bare
+  # alias. The OpenRouter naming (``cohere/command-a-plus-*``) and the direct-Cohere
+  # naming (``command-a-plus-*``) both LACK the literal ``cohere-command-a-plus``
+  # substring, so they would fall through to ``default``. Add them here if the model
+  # is ever reached that way.
+  #
+  # ``schema_sanitizer: strict`` + ``response_policy: array_dict_map`` are a PAIR, and
+  # unlike the flag above they ARE route-specific. The Azure serving stack's own
+  # JSON-schema converter cannot resolve ``$ref``/``$defs``: it 500s with
   # ``json_schema_converter.cc:3370: Cannot find field $defs in #/$defs/_LineItem``
   # (verified 2026-08-01), taking down every probe whose tool schema uses a
   # ``$defs`` block. ``strict`` inlines refs and drops ``$defs`` in its pre-pass,
   # which is the documented remedy for a schema-dialect gap (docs/ADD_NEW_MODEL.md
-  # § "Field-rename failures are a schema-dialect symptom").
+  # section "Field-rename failures are a schema-dialect symptom"). It also rewrites
+  # typed dict-maps to arrays, and ``array_dict_map`` is the counterpart that converts
+  # them back, so removing either one alone silently corrupts every dict-map tool
+  # argument. Same pairing as ``openai_gpt5`` and ``xai_grok``. ``dict_map_hints`` was
+  # tried and rejected: it contradicts the array schema ``strict`` sends (see the
+  # ``qwen`` preset comment for the same finding).
+  #
+  # ``reasoning_codec: openai`` is set on purpose despite the thinking probes failing.
+  # It is a strict superset of ``none`` (both return ``None`` when the message carries
+  # no ``reasoning_content``, and both replay as a no-op), the Azure catalog advertises
+  # "reasoning" for this model, and with ``none`` the engine would silently discard any
+  # reasoning the gateway does surface for a whole eval. See the certificate in
+  # tests/integration/llm/registry.py for what that means for the measurement.
   cohere_command_a_plus:
     match:
       - "azure_ai/cohere-command-a-plus*"
       - "*cohere-command-a-plus*"
     schema_sanitizer: strict
     response_policy: array_dict_map
+    reasoning_codec: openai
     params:
       supports_tool_choice_auto: false
 

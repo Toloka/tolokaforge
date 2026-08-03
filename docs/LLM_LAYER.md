@@ -701,7 +701,7 @@ class ParamPolicy(Protocol):
     ) -> dict: ...
 ```
 
-`GenerationParams` reads six preset-driven flags:
+`GenerationParams` reads eight preset-driven flags:
 
 | Flag | Default | Effect |
 |---|---|---|
@@ -711,6 +711,8 @@ class ParamPolicy(Protocol):
 | `reasoning_via_thinking_kwarg` | `false` | Budget reasoning → top-level `thinking={"type":"enabled","budget_tokens":N}` (Anthropic-native). |
 | `drop_sampling_when_thinking` | `false` | Pop `temperature` / `top_p` / `top_k` whenever the `thinking` kwarg was emitted (P3b — OpenRouter silently strips them today; Anthropic raw 400s). |
 | `reasoning_budget_default` | `None` | Default `budget_tokens` when `ReasoningConfig(mode="budget")` omits its own budget. |
+| `unsupported_effort_levels` | `[]` | Effort levels known broken upstream; `adapt` raises `ValueError` rather than silently remapping to a level the caller did not ask for. |
+| `supports_tool_choice_auto` | `true` | When `false`, `LLMClient._build_kwargs` omits `tool_choice` for the value `"auto"` **only**; `required` / `none` still pass through. Read outside `adapt`, because `tool_choice` is attached alongside `tools` and therefore after `adapt` has run. For providers whose `tool_choice` enum has no `AUTO`, e.g. Cohere, where omitting the parameter is the documented equivalent. |
 
 ### Reasoning routing matrix
 

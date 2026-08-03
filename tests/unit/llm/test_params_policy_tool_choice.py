@@ -1,16 +1,16 @@
-"""``supports_tool_choice_auto`` — omit a VALUE the provider has no word for.
+"""``supports_tool_choice_auto``: omit a VALUE the provider has no word for.
 
 Cohere's Chat API accepts only ``REQUIRED`` and ``NONE`` for ``tool_choice``; there
 is no ``AUTO`` (https://docs.cohere.com/reference/chat). Omitting the parameter is
 its documented way to express "the model is free to choose whether to use the
-specified tools or not" — which is exactly what ``auto`` means, and ``auto`` is the
+specified tools or not", which is exactly what ``auto`` means, and ``auto`` is the
 only value this codebase ever sends.
 
 So this flag is not a workaround to be removed later: it reproduces the intended
 semantics in the provider's own vocabulary, and a model measured under it stays
 comparable with one measured without it.
 
-It is deliberately about the VALUE, not the parameter — Cohere DOES support
+It is deliberately about the VALUE, not the parameter. Cohere DOES support
 ``tool_choice``, just not ``auto``. An explicit ``REQUIRED``/``NONE`` therefore still
 goes through: dropping a caller's explicit forcing would change what the model was
 asked to do, which is a behaviour change rather than a no-op. That, and the scoping,
@@ -23,6 +23,8 @@ which reads as a missing capability rather than a missing enum value.
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
@@ -31,6 +33,8 @@ from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
+from tolokaforge.secrets import DictProvider, SecretManager
+from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = pytest.mark.unit
 
@@ -41,6 +45,41 @@ _TOOL = {
         "parameters": {"type": "object", "properties": {"city": {"type": "string"}}},
     },
 }
+
+
+@pytest.fixture(autouse=True)
+def _no_ambient_secrets() -> Iterator[None]:
+    """Isolate these tests from ambient secrets, including a developer ``.env``.
+
+    They assert on the kwargs dict, not on transport. But building an
+    ``LLMClient`` calls ``resolve_proxy_config``, which deliberately raises
+    ``ProxyConfigError`` when a companion variable is set while
+    ``LLM_PROXY_BASE_URL`` is missing (an orphan companion means gateway routing
+    was intended and silently did not happen). On a machine in that half
+    configured state every test here would error out for a reason that has
+    nothing to do with ``tool_choice``, which is the same ambient-secret exposure
+    that already makes ``test_rate_limit_probe_retry`` fail on a checkout whose
+    ``.env`` carries ``LLM_PROXY_*``.
+
+    Swapping the ``SecretManager`` singleton is what actually isolates:
+    ``monkeypatch.delenv`` is NOT enough, because the providers read the
+    on-disk ``.env`` directly and it would win straight back (verified).
+    ``os.environ`` is snapshotted because ``LLMClient`` construction reaches
+    ``os.environ.setdefault`` for provider base URLs, and CI runs the whole
+    suite in one interpreter, so a leak here is an order-dependent failure
+    elsewhere. Same contract as ``install_secrets`` in test_llm_proxy.py.
+    """
+    original_manager = secrets_manager._default_manager
+    original_env = dict(os.environ)
+    secrets_manager._default_manager = SecretManager(
+        [DictProvider({"OPENROUTER_API_KEY": "sk-test-not-used"})]
+    )
+    try:
+        yield
+    finally:
+        secrets_manager._default_manager = original_manager
+        os.environ.clear()
+        os.environ.update(original_env)
 
 
 def _kwargs(model: str, tool_choice: str | None = "auto") -> dict[str, Any]:
@@ -71,7 +110,7 @@ class TestBuildKwargs:
     def test_auto_is_omitted_when_the_provider_has_no_such_value(self) -> None:
         kwargs = _kwargs("azure_ai/cohere-command-a-plus-05-2026")
         assert "tool_choice" not in kwargs
-        # The tools themselves must still go — omitting those would be a real
+        # The tools themselves must still go, omitting those would be a real
         # capability change rather than a parameter one.
         assert kwargs["tools"] == [_TOOL]
 

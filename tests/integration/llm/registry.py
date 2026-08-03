@@ -2442,25 +2442,60 @@ _ALL: list[MC] = [
             }
         ),
     ),
-    # Cohere Command A+ reached through a LiteLLM gateway's ``azure_ai`` route
-    # (the model is not on OpenRouter at all). Measured 2026-08-01 under the
-    # ``cohere_command_a_plus`` preset: 21 pass / 10 fail / 6 skip over the full
-    # probe suite. On the raw preset the same suite read 14/17/6 and the model
-    # looked incapable of tool calling; it is not. Two quirks account for the
-    # difference, and both live in that preset rather than here because neither
-    # is a capability of the model:
+    # Cohere Command A+ reached through a LiteLLM gateway's ``azure_ai`` route.
+    # The model is not on OpenRouter at all (verified against the public
+    # catalogue, which carries only ``cohere/command-a`` and ``command-r*``).
+    # Measured 2026-08-01 under the ``cohere_command_a_plus`` preset:
+    # 21 pass / 10 fail / 6 skip over the full probe suite.
     #
-    #   * ``tool_choice`` — Cohere's Chat API has no ``AUTO``, only ``REQUIRED``
+    # Two quirks shape that result, and both live in the preset rather than here,
+    # because neither is a capability of the model:
+    #
+    #   * ``tool_choice``: Cohere's Chat API has no ``AUTO``, only ``REQUIRED``
     #     and ``NONE``, and omission is its documented equivalent of ``auto``. The
     #     preset omits that one value (``supports_tool_choice_auto: false``), which
     #     is correct rather than a workaround; REQUIRED/NONE still go through.
-    #   * ``$ref``/``$defs`` — the Azure serving stack's schema converter cannot
+    #     Evidenced by a live A/B on 2026-08-01: identical client, prompt and
+    #     tools, WITHOUT the parameter the model returns a correct
+    #     ``get_weather({'city': 'Budapest', 'unit': 'c'})``, WITH
+    #     ``tool_choice="auto"`` the call is rejected by litellm before it leaves
+    #     the process. An earlier, partially converged run of the suite read
+    #     14/17/6. Do NOT read that as "the rejection killed every tool-calling
+    #     probe": most probes send ``auto``, so a blanket rejection could not have
+    #     left 14 of them passing. That intermediate reading is not
+    #     reconstructible and carries no weight beyond "worse before".
+    #   * ``$ref``/``$defs``: the Azure serving stack's schema converter cannot
     #     resolve them and 500s, so the preset inlines them via ``strict``.
+    #
+    # Pricing provenance, which ``pricing.json`` itself cannot carry (JSON permits
+    # no comment, and ``pricing-updater`` rewrites the ``_meta`` block wholesale in
+    # ``fetcher.py``): $0.80/M in, $3.20/M out is Azure GlobalStandard retail, read
+    # from the public retail-prices API on 2026-08-01 and confirmed against a live
+    # billed call ($0.000336 for 124 in / 74 out). It is deliberately NOT an
+    # OpenRouter number, unlike every other key in that file.
+    #
+    # NOT fixed here, and it has to be fixed before this model goes on the board:
+    # response text arrives wrapped in ``<|START_TEXT|>...<|END_TEXT|>`` (observed
+    # 2026-08-01). ``ResponsePolicy`` cannot reach it, because that hook only
+    # post-processes tool-call arguments, so the markers land in ``trajectory.yaml``
+    # and in front of any transcript grader or LLM judge, depressing scores for a
+    # reason that is not capability. It needs an engine-side text hook.
+    # ``BASIC_COMPLETION`` is still ``required`` and honestly so: the probe asserts
+    # non-empty text, and wrapped text is non-empty. That gap between the synthetic
+    # probe and production is exactly the asymmetry docs/ADD_NEW_MODEL.md section 4
+    # says to record on the certificate.
     MC(
         model_id="openrouter__azure_ai_cohere-command-a-plus-05-2026",
         provider="openrouter",
         name="azure_ai/cohere-command-a-plus-05-2026",
-        env_key="OPENROUTER_API_KEY",
+        # NOT ``OPENROUTER_API_KEY``: this model is gateway-only, so an OpenRouter
+        # key is not what makes these probes runnable, the gateway transport is.
+        # ``LLM_PROXY_BASE_URL`` is the switch ``resolve_proxy_config`` reads to
+        # decide whether that transport is active, so gating on it lets a checkout
+        # without the gateway skip cleanly instead of firing the whole live probe
+        # suite at a model OpenRouter does not serve. Same contract as the
+        # dedicated variable in tests/integration/llm/test_gateway_live.py.
+        env_key="LLM_PROXY_BASE_URL",
         required=frozenset(
             {
                 C.BASIC_COMPLETION,
@@ -2485,23 +2520,40 @@ _ALL: list[MC] = [
             {
                 # Cyclic ``$defs`` (``TreeNode.children: list[TreeNode]``) cannot be
                 # inlined, and the Azure schema converter 500s on the ``$ref`` it is
-                # left with — 0/4 shapes, verified 2026-08-01. NOT permanent: the
+                # left with: 0/4 shapes, verified 2026-08-01. NOT permanent, since the
                 # cycle-breaking mechanism exists in ``GeminiRecursiveSchema`` but is
                 # coupled to Gemini-specific transforms, so lifting it into a
                 # provider-neutral sanitiser would very likely turn this green.
                 C.RECURSIVE_REF_TOOL_CALL,
-                # Regex ``pattern`` constraints survive the sanitiser but the Azure
-                # converter still rejects the schema — verified 2026-08-01, unchanged
-                # under ``strict``.
+                # Probed with the sanitiser deliberately bypassed (the test swaps in
+                # ``PassthroughSchema``), so this measures the Azure converter's own
+                # validator: it rejects a lookahead-bearing ``pattern``, verified
+                # 2026-08-01. Production is NOT exposed to that, because ``strict``
+                # strips RE2-incompatible patterns before the wire
+                # (``strip_re2_incompatible_patterns`` defaults to True). So this
+                # entry records an upstream quirk rather than an eval risk, and the
+                # paired ratchet trips if Azure ever relaxes it.
                 C.RE2_PATTERN_TOLERANCE,
                 # Azure serverless Cohere exposes no ephemeral cache-control, and the
-                # response carries no cached-token counters — verified 2026-08-01.
+                # response carries no cached-token counters, verified 2026-08-01.
                 C.PROMPT_CACHING,
                 C.IMPLICIT_PROMPT_CACHING,
-                # Cohere returns plain text, not Anthropic-style thinking blocks, so
-                # there is nothing to emit or replay. The Azure catalog advertises
-                # "reasoning" for this model, but no structured reasoning reaches the
-                # client over this route — verified 2026-08-01.
+                # Measured under ``reasoning_codec: none``, where these three cannot
+                # pass by construction: ``NoReasoningCodec.extract`` returns ``None``
+                # unconditionally. So the honest claim is the narrow one, that no
+                # structured reasoning reached the client on this route, NOT that the
+                # model has none. The Azure catalog does advertise "reasoning" for it.
+                #
+                # The preset therefore now runs ``reasoning_codec: openai``, which is a
+                # strict superset of ``none``: ``OpenAIReasoningCodec.extract`` also
+                # returns ``None`` when the message carries no ``reasoning_content``,
+                # and its ``encode_for_replay`` is a no-op either way. It cannot have
+                # changed any of the 21 passes or the other 7 failures, and it turns
+                # these three into a real measurement on the next run from an
+                # allowlisted network: if the gateway does surface reasoning, the
+                # ratchet tests below fail loudly, instead of the engine silently
+                # discarding reasoning for a whole eval. Declaring unsupported is the
+                # conservative direction, since that is the side the ratchets guard.
                 C.THINKING_EMITS_BLOCKS,
                 C.THINKING_REPLAY_ROUNDTRIP,
                 C.UNSIGNED_THINKING_REPLAY,
