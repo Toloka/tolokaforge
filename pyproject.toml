@@ -149,6 +149,11 @@ runner_rpc = "tolokaforge.core.trial_grader:runner_rpc_trial_grader_factory"
 in_process = "tolokaforge.core.conductor:in_process_conductor_factory"
 in_memory = "tolokaforge.core.conductor:in_memory_conductor_factory"
 
+[project.entry-points."tolokaforge.service_readiness_probes"]
+grpc = "tolokaforge.core.service_readiness:grpc_readiness_probe_factory"
+http = "tolokaforge.core.service_readiness:http_readiness_probe_factory"
+tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",

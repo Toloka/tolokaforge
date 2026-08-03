@@ -547,15 +547,16 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-The three orchestrator seams — `RuntimeBackend`, `TrialGrader`, and `Conductor` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** `Callable[[<Context>], <Impl>]` — not the raw class — so divergent constructors are adapted behind a per-group context object. tolokaforge's own six built-ins register through the same mechanism.
+Four swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, and `ServiceReadinessProbe` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** — not the raw class — so divergent constructors are adapted behind a factory. The three orchestrator seams pass a per-group frozen-dataclass context (`Callable[[<Context>], <Impl>]`); a readiness probe needs no build dependencies, so its factory is arg-less (`Callable[[], ServiceReadinessProbe]`). tolokaforge's own nine built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
 | `tolokaforge.runtime_backends` | `Callable[[RuntimeBackendBuildContext], RuntimeBackend]` | `runner_address`, `env_manifest`, `run_id`, `seeds`, `log_capture`, `events` |
 | `tolokaforge.trial_graders` | `Callable[[TrialGraderContext], TrialGrader]` | `runtime_backend`, `logger` |
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
+| `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 
-A factory is free to ignore context fields it does not need. The runtime-backend and trial-grader context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
 **Runtime backend** — `mypkg/runtime.py`:
 
@@ -600,6 +601,26 @@ def my_conductor_factory(ctx: ConductorContext) -> "MyConductor":
 [project.entry-points."tolokaforge.conductors"]
 my_conductor = "mypkg.conductor:my_conductor_factory"
 ```
+
+**Service-readiness probe** — `mypkg/readiness.py`. A probe answers, from the calling process, whether a resolved `host:port` is reachable and protocol-ready within a timeout budget, returning a `ReadinessResult`. Register it under a **kind name** (`grpc` / `http` / `tcp`, or a custom kind); the substrate picks it up by kind with no substrate edit. The factory is arg-less — probes carry no build context:
+
+```python
+from tolokaforge.core.service_readiness import ReadinessResult, ResolvedEndpoint
+
+class MyReadinessProbe:
+    def probe(self, endpoint: ResolvedEndpoint, *, timeout: float) -> ReadinessResult:
+        ...  # cheap reachability check; ok=True on success, detail set on failure
+
+def my_probe_factory() -> MyReadinessProbe:
+    return MyReadinessProbe()
+```
+
+```toml
+[project.entry-points."tolokaforge.service_readiness_probes"]
+mykind = "mypkg.readiness:my_probe_factory"
+```
+
+tolokaforge ships `grpc`, `http`, and `tcp` built-ins under this group.
 
 **Fail-loud resolution.** Names resolve lazily and are cached per group. Discovery enumerates names and distributions **without importing any target**, which gives the policy two distinct shapes:
 

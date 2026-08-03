@@ -1,11 +1,12 @@
-"""Built-in entry-point registrations for the three orchestrator seams.
+"""Built-in entry-point registrations for the four swappable seams.
 
 Snapshots the registration table tolokaforge ships in its own ``pyproject.toml``:
-the six built-in names resolve through the fail-loud loader to factories that
-build the right impl, the ``available_*`` listings match the ADR-locked set,
-and the raw ``importlib.metadata`` probe from the acceptance criterion sees the
-runtime-backend names. Canonical tier because it reads *installed* package
-metadata (``uv sync`` / the CI install step registers the entry points).
+the built-in names resolve through the fail-loud loader to factories that build
+the right impl, the ``available_*`` listings match the ADR-locked set, and the
+raw ``importlib.metadata`` probe from the acceptance criterion sees the
+runtime-backend and readiness-probe names. Canonical tier because it reads
+*installed* package metadata (``uv sync`` / the CI install step registers the
+entry points).
 """
 
 from __future__ import annotations
@@ -24,16 +25,24 @@ from tolokaforge.core.conductor import (
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
     RUNTIME_BACKENDS_GROUP,
+    SERVICE_READINESS_PROBES_GROUP,
     RuntimeBackendBuildContext,
     TrialGraderContext,
     available_conductors,
+    available_readiness_probes,
     available_runtime_backends,
     available_trial_graders,
     load_conductor,
+    load_readiness_probe,
     load_runtime_backend,
     load_trial_grader,
 )
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.core.service_readiness import (
+    GrpcReadinessProbe,
+    HttpReadinessProbe,
+    TcpReadinessProbe,
+)
 from tolokaforge.core.shared_stack_runtime import SharedStackRuntimeBackend
 from tolokaforge.core.trial_grader import RunnerRPCTrialGrader
 
@@ -97,12 +106,33 @@ def test_conductor_names_resolve_to_their_class(name: str, expected_cls: type) -
     assert isinstance(conductor, expected_cls)
 
 
+@pytest.mark.parametrize(
+    ("kind", "expected_cls"),
+    [
+        ("grpc", GrpcReadinessProbe),
+        ("http", HttpReadinessProbe),
+        ("tcp", TcpReadinessProbe),
+    ],
+)
+def test_readiness_probe_kinds_resolve_to_their_class(kind: str, expected_cls: type) -> None:
+    probe = load_readiness_probe(kind)()
+    assert isinstance(probe, expected_cls)
+
+
 def test_available_listings_match_the_builtin_set() -> None:
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
     assert available_trial_graders() == ["runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
+    assert available_readiness_probes() == ["grpc", "http", "tcp"]
 
 
 def test_raw_entry_point_probe_lists_runtime_backends() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=RUNTIME_BACKENDS_GROUP))
     assert names == ["in_memory", "per_trial", "shared"]
+
+
+def test_raw_entry_point_probe_lists_readiness_probes() -> None:
+    names = sorted(
+        ep.name for ep in importlib.metadata.entry_points(group=SERVICE_READINESS_PROBES_GROUP)
+    )
+    assert names == ["grpc", "http", "tcp"]
