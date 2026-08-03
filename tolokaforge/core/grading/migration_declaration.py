@@ -18,7 +18,10 @@ The two hazards, both measured:
   share, so retiring one moves the judge score not at all; only the veto goes. Such a
   criterion may therefore only be claimed by **shared** constraints carrying
   ``severity: gate`` — a route-scoped gate is escapable inside ``alternatives``, and a
-  scored constraint is a fraction of a component where a veto was.
+  scored constraint is a fraction of a component where a veto was. That rule reads the
+  author's ``was.required``, so a ``narrowed`` entry's ``was`` is cross-checked against the
+  criterion the pack still holds: unchecked, declaring ``required: false`` escapes the rule
+  outright.
 * **A freed score share.** A *scored* criterion's weight sits in the judge component's
   denominator, so retiring one the agent failed makes the judge more generous: dropping
   ``cache_debug``'s ``explains_mechanism`` (weight 1.0 of a 1.5 denominator) raises the
@@ -168,11 +171,21 @@ class MigrationAcknowledgement(BaseModel):
         )
 
 
-_RESIDUAL_BY_MODE: Mapping[MigrationMode, ResidualKind] = MappingProxyType(
+_RESIDUAL_BY_MODE: Mapping[MigrationMode, ResidualKind | None] = MappingProxyType(
     {
+        MigrationMode.CANDIDATE: None,
         MigrationMode.NARROWED: ResidualKind.TEXT,
         MigrationMode.RETIRED: ResidualKind.NONE,
     }
+)
+"""Total over the modes, so a new one has to say what it claims rather than accept any."""
+
+_RESIDUAL_ON_A_CANDIDATE = (
+    "mode: candidate declares a residual. A residual is the author's judgment about a "
+    "migration that happened — what the judge still reads of the criterion, or that nothing "
+    "does — and a candidate has migrated nothing, so it parks a claim no evidence ever "
+    "checks and blurs the one signal separating an intention from a decision. Drop the "
+    "residual block, or declare the mode the measurement supports"
 )
 
 _WRONG_RESIDUAL_KIND: Mapping[MigrationMode, str] = MappingProxyType(
@@ -215,11 +228,15 @@ class MigrationEntry(BaseModel):
         """Zero disagreements satisfies ``retired``'s evidence condition and ``narrowed``'s
         alike, so which one a pack means is the author's judgment rather than the corpus's,
         and it is recorded here — in both directions, because a mode paired with the other
-        mode's residual claims two contradictory things at once.
+        mode's residual claims two contradictory things at once. A ``candidate`` carries
+        none, which makes ``residual``'s presence and kind a total function of ``mode``: a
+        reader can tell what an entry claims from its mode alone.
         """
-        expected = _RESIDUAL_BY_MODE.get(self.mode)
+        expected = _RESIDUAL_BY_MODE[self.mode]
         if expected is None:
-            return self
+            if self.residual is None:
+                return self
+            raise ValueError(_RESIDUAL_ON_A_CANDIDATE)
         if self.residual is None:
             raise ValueError(
                 f"mode: {self.mode.value} declares no residual. The evidence cannot choose "
@@ -439,6 +456,7 @@ def _pack_rejections(
         for message in (
             _criterion_presence_rejection(entry, criteria),
             _declared_shape_rejection(entry, criteria),
+            _narrowed_conversion_rejection(entry, criteria),
             _unknown_constraint_rejection(entry, constraints),
             _veto_rejection(entry, constraints),
         )
@@ -481,27 +499,75 @@ def _declared_shape_rejection(
     return None
 
 
-def _stale_declared_shape(was: MigratedCriterion, current: Criterion) -> str | None:
-    drifted = {
-        name: (declared, actual)
-        for name, declared, actual in (
-            ("description", _text(was.description), _text(current.description)),
-            ("kind", was.kind, current.kind),
-            ("required", was.required, current.required),
-            ("weight", was.weight, current.weight),
-        )
-        if declared != actual
+_EVERY_DECLARED_FIELD = ("description", "kind", "required", "weight")
+_WHAT_A_NARROW_LEAVES_ALONE = ("kind", "required")
+
+
+def _declared_shape(criterion: MigratedCriterion | Criterion) -> dict[str, Any]:
+    """One criterion's shape, its description reduced to the words it is made of."""
+    return {
+        "description": _text(criterion.description),
+        "kind": criterion.kind,
+        "required": criterion.required,
+        "weight": criterion.weight,
     }
-    if not drifted:
+
+
+def _disagreement(
+    was: MigratedCriterion, current: Criterion, *, over: tuple[str, ...]
+) -> str | None:
+    """Where ``was`` and the rubric disagree across ``over``, written out for an author."""
+    declared = _declared_shape(was)
+    actual = _declared_shape(current)
+    differing = [name for name in over if declared[name] != actual[name]]
+    if not differing:
         return None
-    written = "; ".join(
-        f"{name}: declared {declared!r}, the rubric has {actual!r}"
-        for name, (declared, actual) in drifted.items()
+    return "; ".join(
+        f"{name}: declared {declared[name]!r}, the rubric has {actual[name]!r}"
+        for name in differing
     )
+
+
+def _stale_declared_shape(was: MigratedCriterion, current: Criterion) -> str | None:
+    written = _disagreement(was, current, over=_EVERY_DECLARED_FIELD)
+    if written is None:
+        return None
     return (
         f"was does not match the criterion the rubric declares ({written}). A candidacy is "
         "against the criterion as it stands, so a stale 'was' means whatever evidence is "
         "later quoted was gathered against other text. Copy the criterion's current shape"
+    )
+
+
+def _narrowed_conversion_rejection(
+    entry: MigrationEntry, criteria: Mapping[str, Criterion]
+) -> str | None:
+    """What a ``narrowed`` entry may not change about the criterion it narrows.
+
+    A narrow leaves the criterion in the pack, so the pack is a load-time source for what
+    ``was`` claims — and ``was`` is what every other rule here reads. ``weight`` is left out
+    of the comparison deliberately: ``was`` describes the pre-migration state while the pack
+    holds the post-migration one, and a criterion that now asks less may legitimately weigh
+    less, so requiring a match would refuse a correct migration while adding nothing against
+    the escape, which turns entirely on ``required``.
+    """
+    if entry.mode is not MigrationMode.NARROWED:
+        return None
+    current = criteria.get(entry.criterion)
+    if current is None:
+        return None
+    written = _disagreement(entry.was, current, over=_WHAT_A_NARROW_LEAVES_ALONE)
+    if written is None:
+        return None
+    return (
+        f"mode: narrowed, but was contradicts the criterion the pack still holds ({written}). "
+        "A narrow reduces the criterion's text and changes nothing else about it, while every "
+        "other rule here reads 'was': the veto rule keys on was.required, so a narrow "
+        "declaring a requiredness the rubric does not have escapes it altogether, and a "
+        "flipped kind makes the recorded evidence incomparable with what the judge scores "
+        "after the migration. Copy kind and required from the rubric and let a change to "
+        "either be its own migration — was.weight is free, so a criterion that now asks less "
+        "may weigh less"
     )
 
 

@@ -2034,7 +2034,9 @@ migrations:
 `residual` is a model rather than a string because no one scalar carries both a sentinel and
 free text: `residual: none` parses to the non-empty string `'none'` while `residual: null`
 parses to `None`, so a single field answers the wrong question for one of the two modes
-whichever way it is spelled.
+whichever way it is spelled. Its presence and its kind are a **total function of `mode`** —
+absent for `candidate`, `kind: text` for `narrowed`, `kind: none` for `retired` — so a reader
+can tell what an entry claims from its mode alone.
 
 Every rule below is an **error** naming what to write instead. They are checked by
 `tolokaforge validate`, and deliberately not by the pre-run gate: the file cannot affect a
@@ -2042,9 +2044,10 @@ grade, so a run must not abort on authoring metadata.
 
 | rule | why |
 |---|---|
-| `candidate` — the criterion exists and `was` matches its current shape exactly; no `evidence` | a candidacy is against the criterion as it stands, and has measured nothing yet |
+| `candidate` — the criterion exists and `was` matches its current shape exactly; no `evidence` and no `residual` | a candidacy is against the criterion as it stands and has measured nothing yet, so it has neither a conclusion's support nor a judgment about a migration that happened — either would park a claim no evidence ever checks |
 | `narrowed` — the criterion exists, `was.description` differs from it, `evidence` and `residual.kind: text` | a narrow that shortened no text narrowed nothing |
-| `retired` — the criterion is **absent** from the rubric, `evidence` and `residual.kind: none` with a reason | zero disagreements satisfies `narrowed`'s condition and `retired`'s alike, so the choice is the author's and is recorded here |
+| **`was` cross-check**, `narrowed` only — `was.required` and `was.kind` must equal the criterion's current ones, while **`was.weight` is deliberately free** | every other rule reads `was`, so an unchecked `was.required: false` escapes the veto rule below outright, and a flipped `kind` makes the recorded evidence incomparable with what the judge scores after the migration. `weight` is left out because a criterion that now asks less may legitimately weigh less, and requiring a match would refuse a correct migration while adding nothing against the escape, which turns entirely on `required` |
+| `retired` — the criterion is **absent** from the rubric, `evidence` and `residual.kind: none` with a reason | zero disagreements satisfies `narrowed`'s condition and `retired`'s alike, so the choice is the author's and is recorded here. Its `was` is not cross-checked: the criterion is gone from the pack, so no load-time source holds its pre-migration shape |
 | every `by` id resolves in this pack's `trace_checks`, shared or inside a route | a migration is *by* the checks that replace the criterion |
 | **veto rule** — a `narrowed` / `retired` entry whose `was.required` is true may only name **shared** constraints carrying `severity: gate` | a required criterion is a trial-level veto with no score share, so retiring one moves the judge score not at all; a route-scoped gate is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate) and a scored constraint is a fraction of a component where a veto was |
 | **freed-share rule** — a `narrowed` / `retired` entry on a criterion that is *not* required must declare `combine_weights` | a scored criterion's weight is in the judge component's denominator, so removing one the agent failed makes the judge *more generous* — `+0.667` on `cache_debug`'s `explains_mechanism`, on a trial that scored it `0.0`. The other way out of the hazard is a counterfactual component that rises on no corpus trial, which needs a corpus this gate does not have |

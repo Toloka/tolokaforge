@@ -79,29 +79,30 @@ def _inspect(tmp_path: Path, pack: Path, *entries: dict[str, Any]):
     )
 
 
+def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
+    """``lot_ops_01``'s shipped candidacy, as the entry its header describes in prose."""
+    return {
+        "criterion": "names_lot",
+        "mode": "candidate",
+        "by": [
+            "the_reason_code_posted_was_read_from_the_catalog",
+            "the_lot_was_read_before_the_action_was_opened",
+        ],
+        "was": {
+            "description": _NAMES_LOT,
+            "kind": "binary",
+            "required": True,
+            "weight": 1.0,
+        },
+    } | overrides
+
+
 def test_the_lot_ops_candidacy_loads_as_a_declaration(tmp_path: Path):
     """``lot_ops_01``'s two correlations, named in its header as candidates for
     ``names_lot``. The criterion is ``required: true`` and both constraints are shared and
     *scored*, which a narrow or a retirement would be refused for — and a candidacy is not,
     because it replaces nothing and the criterion keeps its veto."""
-    declaration = _inspect(
-        tmp_path,
-        _LOT_OPS,
-        {
-            "criterion": "names_lot",
-            "mode": "candidate",
-            "by": [
-                "the_reason_code_posted_was_read_from_the_catalog",
-                "the_lot_was_read_before_the_action_was_opened",
-            ],
-            "was": {
-                "description": _NAMES_LOT,
-                "kind": "binary",
-                "required": True,
-                "weight": 1.0,
-            },
-        },
-    )
+    declaration = _inspect(tmp_path, _LOT_OPS, _lot_ops_candidacy())
     assert declaration is not None
     entry = declaration.migrations[0]
     assert (entry.criterion, entry.mode) == ("names_lot", MigrationMode.CANDIDATE)
@@ -134,6 +135,21 @@ def test_the_cache_debug_candidacy_loads_as_a_declaration(tmp_path: Path):
     entry = declaration.migrations[0]
     assert (entry.criterion, entry.mode) == ("explains_mechanism", MigrationMode.CANDIDATE)
     assert entry.combine_weights is None
+
+
+def test_a_candidate_carrying_a_residual_is_refused(tmp_path: Path):
+    """The shipped candidacy plus one line, which is the whole of the defect: a residual is
+    the author's judgment about a migration that happened, so on a candidate it parks a claim
+    no bar ever checks. Refusing it makes ``residual``'s presence and kind a total function of
+    ``mode`` — absent, ``text``, ``none`` — so a reader can tell what an entry claims from its
+    mode alone.
+    """
+    with pytest.raises(ValueError, match="mode: candidate declares a residual"):
+        _inspect(
+            tmp_path,
+            _LOT_OPS,
+            _lot_ops_candidacy(residual={"kind": "none", "reason": "the bindings are the whole"}),
+        )
 
 
 def _narrowing_a_veto(**overrides: Any) -> dict[str, Any]:

@@ -19,6 +19,10 @@ it is:
   the shipped corpus cannot supply is a route-scoped *gate*, which is escapable by a
   trajectory taking another route and is therefore the cell that proves "shared" is doing
   work of its own.
+* the **narrowed cross-check** — the veto rule reads the author's ``was``, so a ``narrowed``
+  entry's ``was.required`` and ``was.kind`` must equal the criterion the pack still holds.
+  ``was.weight`` is deliberately free, and the standing case below that keeps the rule from
+  over-reaching is a narrow reducing it.
 
 What a shipped pack's candidacy looks like, and the rejections stated against a real
 rubric, are in ``tests/canonical/test_migration_declaration.py``.
@@ -147,6 +151,17 @@ def _narrowing(**overrides: Any) -> dict[str, Any]:
     return _entry(**({"was": was} | overrides))
 
 
+def _narrowed_was(**fields: Any) -> dict[str, Any]:
+    """The narrowed entry's ``was`` with ``fields`` written over it."""
+    return _narrowing()["was"] | fields
+
+
+def _candidacy(**overrides: Any) -> dict[str, Any]:
+    """The entry as a candidacy: a candidate has measured nothing and concluded nothing, so
+    it carries neither evidence nor a residual."""
+    return _entry(**({"mode": "candidate", "evidence": None, "residual": None} | overrides))
+
+
 def _inspect(tmp_path: Path, *entries: dict[str, Any]):
     return inspect_migration_declaration(
         write_migration_pack(
@@ -205,7 +220,7 @@ def test_a_route_scoped_scored_constraint_does_not_preserve_the_veto(tmp_path: P
 def test_a_candidate_naming_a_scored_constraint_keeps_its_veto_and_loads(tmp_path: Path):
     """A candidacy replaces nothing, so the criterion still vetoes whatever it names — which
     is what both shipped candidacies are, each naming scored constraints."""
-    declaration = _inspect(tmp_path, _entry(mode="candidate", by=["shared_scored"], evidence=None))
+    declaration = _inspect(tmp_path, _candidacy(by=["shared_scored"]))
     assert declaration is not None
     assert declaration.migrations[0].mode is MigrationMode.CANDIDATE
 
@@ -278,17 +293,14 @@ def test_a_candidate_whose_was_is_stale_is_refused(tmp_path: Path):
     contradicts means whatever evidence is later quoted was gathered against other text."""
     stale = _entry()["was"] | {"description": "The assistant did something else entirely."}
     with pytest.raises(ValueError, match="was does not match"):
-        _inspect(tmp_path, _entry(mode="candidate", evidence=None, was=stale))
+        _inspect(tmp_path, _candidacy(was=stale))
 
 
 def test_a_candidate_whose_was_drifts_only_in_requiredness_is_refused(tmp_path: Path):
     """Every field of ``was`` is compared, not the text alone: requiredness is what the veto
     rule reads, so a stale one is the field that matters most."""
     with pytest.raises(ValueError, match="required: declared False, the rubric has True"):
-        _inspect(
-            tmp_path,
-            _entry(mode="candidate", evidence=None, was=_entry()["was"] | {"required": False}),
-        )
+        _inspect(tmp_path, _candidacy(was=_entry()["was"] | {"required": False}))
 
 
 def test_a_candidate_whose_was_only_rewraps_the_text_loads(tmp_path: Path):
@@ -296,7 +308,7 @@ def test_a_candidate_whose_was_only_rewraps_the_text_loads(tmp_path: Path):
     into a space, so whether two authors wrote the same criterion is a question about the
     words rather than about where either one wrapped."""
     rewrapped = _entry()["was"] | {"description": f"  {_VETOING_DESCRIPTION.replace(' ', '  ')}\n"}
-    declaration = _inspect(tmp_path, _entry(mode="candidate", evidence=None, was=rewrapped))
+    declaration = _inspect(tmp_path, _candidacy(was=rewrapped))
     assert declaration is not None
 
 
@@ -305,6 +317,61 @@ def test_a_narrowed_entry_that_changed_no_text_is_refused(tmp_path: Path):
     mis-declaration: a narrow that shortened nothing narrowed nothing."""
     with pytest.raises(ValueError, match="nothing was narrowed"):
         _inspect(tmp_path, _entry())
+
+
+def test_a_narrowed_entry_declaring_a_requiredness_the_rubric_does_not_have_is_refused(
+    tmp_path: Path,
+):
+    """The bypass the cross-check closes, reproduced whole: the veto rule reads the author's
+    ``was.required``, so a narrow declaring ``false`` on the pack's ``required: true``
+    criterion escapes it and hands the veto to a *scored* constraint. The entry declares
+    ``combine_weights``, which is what satisfies the freed-share rule ``was.required: false``
+    otherwise charges — so the refusal here is the cross-check's and no other rule's.
+
+    Asserted on the rule's own wording beside the field detail: the drift fragment alone
+    appears in the *candidate* rule's message too, and this entry is ``narrowed``.
+    """
+    with pytest.raises(ValueError) as refused:
+        _inspect(
+            tmp_path,
+            _narrowing(
+                was=_narrowed_was(required=False),
+                by=["shared_scored"],
+                combine_weights={"llm_judge": 1.0},
+            ),
+        )
+
+    written = str(refused.value)
+    assert "was contradicts the criterion the pack still holds" in written, written
+    assert "required: declared False, the rubric has True" in written, written
+    assert "the veto rule keys on was.required" in written, written
+
+
+def test_a_narrowed_entry_declaring_a_kind_the_rubric_does_not_have_is_refused(tmp_path: Path):
+    """A criterion scores differently as ``graded`` than as ``binary``, so a declared kind
+    the pack contradicts makes the recorded evidence incomparable with what the judge scores
+    after the migration."""
+    with pytest.raises(ValueError) as refused:
+        _inspect(tmp_path, _narrowing(was=_narrowed_was(kind="graded")))
+
+    written = str(refused.value)
+    assert "was contradicts the criterion the pack still holds" in written, written
+    assert "kind: declared 'graded', the rubric has 'binary'" in written, written
+
+
+def test_a_narrowed_entry_whose_was_weight_differs_from_the_rubric_loads(tmp_path: Path):
+    """The rule's scope, and the reason it is three fields rather than four: a narrowed
+    criterion asks less, so reducing its weight is a correct migration. ``was`` describes the
+    pre-migration state and the pack holds the post-migration one, and requiring those to
+    agree on weight would refuse this while adding nothing against the bypass, which turns
+    entirely on ``required``.
+    """
+    declaration = _inspect(tmp_path, _narrowing(was=_narrowed_was(weight=0.5)))
+    assert declaration is not None
+    assert (declaration.migrations[0].was.weight, declaration.migrations[0].was.required) == (
+        0.5,
+        True,
+    )
 
 
 def test_a_blank_was_description_is_refused(tmp_path: Path):
@@ -443,13 +510,7 @@ def test_an_acknowledgement_without_evidence_is_refused(tmp_path: Path):
     is no verdict for one to have disagreed with."""
     with pytest.raises(ValidationError, match="without evidence to have disagreed with"):
         _inspect(
-            tmp_path,
-            _entry(
-                mode="candidate",
-                evidence=None,
-                residual=None,
-                acknowledged=[{"trial": "x/y", "reason": "the judge misread"}],
-            ),
+            tmp_path, _candidacy(acknowledged=[{"trial": "x/y", "reason": "the judge misread"}])
         )
 
 
