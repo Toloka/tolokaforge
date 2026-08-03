@@ -1153,6 +1153,19 @@ def _check_runner_not_restricted(
         )
 
 
+def _check_runner_readiness_not_declared(
+    manifest_services: dict[str, ServiceSpec], runner_service: str
+) -> None:
+    spec = manifest_services.get(runner_service)
+    if spec is not None and spec.readiness is not None:
+        raise ValueError(
+            f"EnvironmentManifest.runner_service = {runner_service!r} cannot declare a "
+            f"readiness contract; the runner is always gated by the built-in gRPC "
+            f"readiness probe on its host port. Drop the readiness field from the runner "
+            f"service, or declare it on a non-runner sibling instead."
+        )
+
+
 def _check_restricted_services_have_own_networks(
     compose_services: dict[str, dict[str, Any]],
     manifest_services: dict[str, ServiceSpec],
@@ -1519,6 +1532,7 @@ class EnvironmentManifest(BaseModel):
         _check_initial_state_keys(services, self.initial_state)
         _check_services_keys(services, self.services)
         _check_runner_not_restricted(self.services, self.runner_service)
+        _check_runner_readiness_not_declared(self.services, self.runner_service)
         _check_restricted_services_have_own_networks(services, self.services)
         _check_endpoint_services_declared(services, self.db_service, self.rag_service)
         self._compose_content = content

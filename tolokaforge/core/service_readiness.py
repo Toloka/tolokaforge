@@ -96,7 +96,9 @@ class HttpReadinessProbe:
         start = time.monotonic()
         url = f"http://{endpoint.host}:{endpoint.port}{HTTP_HEALTH_PATH}"
         try:
-            with urllib.request.urlopen(url, timeout=timeout) as response:  # noqa: S310
+            with urllib.request.urlopen(  # noqa: S310 — scheme is the hard-coded http:// health URL, not user input
+                url, timeout=timeout
+            ) as response:
                 status = response.status
             ok = 200 <= status < 300
             detail = None if ok else f"GET {url} returned HTTP {status}"

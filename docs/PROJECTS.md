@@ -1757,14 +1757,17 @@ default_environment:
 
 - **`kind`** — the only field in v1. Vocabulary and their port/path
   conventions:
-  - **`grpc`** — reachability is a gRPC channel reaching READY. Uses the
-    runner port (`stack.runner_port`) for the runner service, else the
+  - **`grpc`** — reachability is a gRPC channel reaching READY on the
     service's first published port.
   - **`http`** — `GET /health` on the service's first published port; a
     2xx response is reachable.
   - **`tcp`** — a TCP connect to the service's first published port.
 - **Omission** means the service declares **no explicit readiness
   contract** — the docker healthcheck remains its only readiness signal.
+- The **runner service cannot declare a `readiness` contract** — it is
+  always gated by the built-in gRPC probe on its host port
+  (`stack.runner_port`); a `readiness` entry on the runner service is
+  rejected at load. Declare it on a non-runner sibling instead.
 - `readiness` is orthogonal to `isolation`, `reset`, and `network_access`;
   every combination is legal. It deep-merges by name like every other
   `services.<name>` field — a task-side entry overrides the project-side

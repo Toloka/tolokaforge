@@ -593,7 +593,7 @@ class PerTrialRuntimeBackend:
             )
         }
         for service_name, service_spec in manifest.services.items():
-            if service_spec.readiness is None or service_name == manifest.runner_service:
+            if service_spec.readiness is None:
                 continue
             endpoint = self._resolve_service_endpoint(compose, service_name)
             if endpoint is None:

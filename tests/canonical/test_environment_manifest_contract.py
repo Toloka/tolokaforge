@@ -219,6 +219,18 @@ class TestServiceNetworkAccessContract:
                 },
             )
 
+    def test_runner_service_cannot_declare_readiness(self) -> None:
+        with pytest.raises(ValidationError, match="cannot declare a readiness contract"):
+            EnvironmentManifest(
+                compose_file=_fixture("safe_restricted_sibling.yaml"),
+                runner_service="default",
+                services={
+                    "default": ServiceSpec(
+                        isolation="shared", readiness=ReadinessSpec(kind="http")
+                    ),
+                },
+            )
+
     def test_restricted_service_without_compose_networks_is_rejected(self) -> None:
         with pytest.raises(ValidationError, match=r"'db'.*network_access='restricted'"):
             EnvironmentManifest(

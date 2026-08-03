@@ -131,12 +131,6 @@ rather than a stronger container-internal one.
 
 ### Follow-ups
 
-- Code changes required: the provision-time readiness gate +
-  `ProvisionError.diagnostic` land in a later stage of this ticket (#803).
-- Documentation to update: `docs/RUNTIME_BACKENDS.md` § "Plug-in extension
-  points" gains the fourth group row and a worked example (this stage).
-- Tests to add: the provision-gate negative/positive locks land with the gate
-  (later stage of #803).
 - **#805** — `fix(runner)`: bind the gRPC server to explicit IPv4 wildcard
   (`0.0.0.0`) instead of `[::]`. The readiness gate *diagnoses* the #801 class;
   this bind change is what makes an IPv6-only-bound environment actually run.
