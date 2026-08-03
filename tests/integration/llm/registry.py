@@ -2445,11 +2445,16 @@ _ALL: list[MC] = [
     # Cohere Command A+ reached through a LiteLLM gateway's ``azure_ai`` route
     # (the model is not on OpenRouter at all). Measured 2026-08-01 under the
     # ``cohere_command_a_plus`` preset: 21 pass / 10 fail / 6 skip over the full
-    # probe suite. Two gateway-side quirks had to be resolved first, and both are
-    # recorded in that preset rather than here, because neither is a model trait:
-    # the route rejects ``tool_choice`` outright, and the Azure serving stack
-    # cannot resolve ``$ref``/``$defs``. On the raw preset the suite read 14/17/6
-    # and the model looked incapable of tool calling; it is not.
+    # probe suite. On the raw preset the same suite read 14/17/6 and the model
+    # looked incapable of tool calling; it is not. Two quirks account for the
+    # difference, and both live in that preset rather than here because neither
+    # is a capability of the model:
+    #
+    #   * ``tool_choice`` — Cohere's Chat API has no ``AUTO``, only ``REQUIRED``
+    #     and ``NONE``, and omission is its documented equivalent of ``auto``.
+    #     The preset omits it, which is correct rather than a workaround.
+    #   * ``$ref``/``$defs`` — the Azure serving stack's schema converter cannot
+    #     resolve them and 500s, so the preset inlines them via ``strict``.
     MC(
         model_id="openrouter__azure_ai_cohere-command-a-plus-05-2026",
         provider="openrouter",

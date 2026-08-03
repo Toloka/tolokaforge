@@ -28,23 +28,32 @@ default:
     reasoning_via_extra_body: false
 
 presets:
-  # Cohere Command A+ served through a LiteLLM gateway's ``azure_ai`` provider.
-  # That provider REJECTS ``tool_choice`` outright — litellm 400s with
-  # ``UnsupportedParamsError: azure_ai does not support parameters:
-  # ['tool_choice']`` before the request reaches the model, so every tool-calling
-  # call fails and the model looks incapable when it is not. Verified live
-  # 2026-08-01: identical client, prompt and tools, WITHOUT ``tool_choice`` the
-  # model returns a correct ``get_weather({'city': 'Budapest', 'unit': 'c'})``;
-  # WITH ``tool_choice="auto"`` it 400s.
+  # Cohere Command A+ (reached here through a LiteLLM gateway's ``azure_ai`` route).
   #
-  # Omitting the parameter is semantically free: ``"auto"`` is the only value this
-  # codebase sends, and per the OpenAI spec ``auto`` is the default when tools are
-  # present. The model still decides whether to call a tool, so measurements stay
-  # comparable with every other model on the board.
+  # ``supports_tool_choice: false`` is PERMANENT AND CORRECT, not a workaround.
+  # Cohere's Chat API accepts only ``REQUIRED`` and ``NONE`` for ``tool_choice`` —
+  # there is no ``AUTO`` (https://docs.cohere.com/reference/chat) — and its documented
+  # behaviour when the parameter is OMITTED is "the model is free to choose whether to
+  # use the specified tools or not". That is exactly what ``auto`` means, and ``auto``
+  # is the only value this codebase ever sends. So omitting it reproduces the intended
+  # semantics natively; measurements stay comparable with every other board model.
   #
-  # Matched on the model name rather than the provider because the same model is
-  # reachable under either, and it is the gateway's ``azure_ai`` route that has the
-  # constraint.
+  # What surfaces the problem is litellm refusing the parameter first —
+  # ``UnsupportedParamsError: azure_ai does not support parameters: ['tool_choice']``
+  # — which reads as "the model cannot do tool calling" when the truth is "this value
+  # does not exist in Cohere's enum". Verified live 2026-08-01: identical client,
+  # prompt and tools, WITHOUT the parameter the model returns a correct
+  # ``get_weather({'city': 'Budapest', 'unit': 'c'})``; WITH ``tool_choice="auto"`` the
+  # call never leaves litellm.
+  #
+  # Do NOT "fix" this proxy-side with ``allowed_openai_params: ['tool_choice']`` or a
+  # ``model_info: supports_tool_choice: true`` override: both would push the
+  # non-existent ``auto`` through to Cohere, trading a clear client-side error for a
+  # provider-side one. And do NOT enable ``drop_params`` gateway-wide — that silently
+  # discards unsupported parameters for every model and every consumer of that gateway.
+  #
+  # Matched on the model name rather than the provider because the constraint belongs
+  # to Cohere's API, so it holds on whatever route the model is reached through.
   # The Azure serving stack's own JSON-schema converter also cannot resolve
   # ``$ref``/``$defs`` — it 500s with
   # ``json_schema_converter.cc:3370: Cannot find field $defs in #/$defs/_LineItem``

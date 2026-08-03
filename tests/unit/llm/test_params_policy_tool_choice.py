@@ -1,15 +1,20 @@
-"""``supports_tool_choice`` — omit a kwarg a transport rejects outright.
+"""``supports_tool_choice`` — omit a parameter whose value the provider has no word for.
 
-litellm's ``azure_ai`` provider 400s on ``tool_choice`` rather than ignoring it
-(``UnsupportedParamsError: azure_ai does not support parameters:
-['tool_choice']``), so every tool-calling request fails before the model sees it
-and the model reads as incapable when it is not.
+Cohere's Chat API accepts only ``REQUIRED`` and ``NONE`` for ``tool_choice``; there
+is no ``AUTO`` (https://docs.cohere.com/reference/chat). Omitting the parameter is
+its documented way to express "the model is free to choose whether to use the
+specified tools or not" — which is exactly what ``auto`` means, and ``auto`` is the
+only value this codebase ever sends.
 
-The reason this is safe to omit rather than a measurement compromise is pinned
-here too: ``"auto"`` is the only value this codebase ever sends, and per the
-OpenAI spec ``auto`` is the default when ``tools`` are present. Dropping it
-leaves the decision with the model, so a model measured under this flag stays
-comparable with one measured without it.
+So this flag is not a workaround to be removed later: it reproduces the intended
+semantics in the provider's own vocabulary, and a model measured under it stays
+comparable with one measured without it. That equivalence is what the tests below
+pin, alongside the scoping — a flag like this leaking onto a sibling model would
+silently change what that model was asked to do.
+
+The visible symptom is a transport refusing the parameter first (litellm:
+``UnsupportedParamsError: azure_ai does not support parameters: ['tool_choice']``),
+which reads as a missing capability rather than a missing enum value.
 """
 
 from __future__ import annotations

@@ -110,15 +110,21 @@ class GenerationParams:
         self._unsupported_effort_levels: frozenset[str] = frozenset(
             e.lower() for e in (unsupported_effort_levels or ())
         )
-        # Some transports reject the ``tool_choice`` parameter outright rather than
-        # ignoring it — litellm's ``azure_ai`` provider 400s with
-        # ``UnsupportedParamsError: azure_ai does not support parameters:
-        # ['tool_choice']`` (verified live 2026-08-01 against Cohere Command A+ behind a
-        # LiteLLM gateway). Omitting it is SEMANTICALLY FREE here: ``"auto"`` is the only
-        # value this codebase ever sends (the agent loop hardcodes it and every capability
-        # probe uses it), and per the OpenAI spec ``auto`` IS the default when tools are
-        # present. So the model still decides whether to call a tool, and a model measured
-        # with this flag stays comparable with one measured without it.
+        # Not every provider models ``tool_choice`` the way OpenAI does. Cohere's Chat
+        # API, for one, accepts only ``REQUIRED`` and ``NONE`` — there is no ``AUTO``
+        # (https://docs.cohere.com/reference/chat) — and omitting the parameter is its
+        # documented way to say "the model is free to choose whether to use the
+        # specified tools or not".
+        #
+        # That makes omission SEMANTICALLY FREE for this codebase: ``"auto"`` is the
+        # only value it ever sends (the agent loop hardcodes it, every capability probe
+        # uses it), and ``auto`` is precisely the behaviour omission yields. A model
+        # measured with this flag stays comparable with one measured without it.
+        #
+        # The symptom is usually a transport refusing the parameter before the request
+        # is sent — litellm 400s with ``UnsupportedParamsError: azure_ai does not
+        # support parameters: ['tool_choice']`` — which reads as a missing capability
+        # when it is really a value the provider's enum does not contain.
         self._supports_tool_choice = supports_tool_choice
 
     @property
