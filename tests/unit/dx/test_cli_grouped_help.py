@@ -122,6 +122,7 @@ class TestGroupedHelpLayout:
             "browse",
             "prepare",
             "rejudge",
+            "retrace",
             "run",
             "status",
             "worker",

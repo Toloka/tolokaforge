@@ -2165,6 +2165,13 @@ matched events, so the constraint reduces to *the events occurred at all* — a
 author to write. The rejection is against pathological authoring, not against a check
 no trajectory moves.
 
+**What no static rule can answer is whether a constraint separates anything.** The
+gate reads the block, not the trials: a correctly authored constraint that passes every
+trial the pack ever ran adds no signal to the pack, and nothing about the block says
+so. That question is empirical, and [`tolokaforge retrace`](TRACE_REPLAY.md) answers it
+over a recorded corpus for free — per constraint, whether any trial it evaluated
+disagreed with any other, and how much of the corpus could decide it at all.
+
 ---
 
 ## LLM Judge (Rubric Grading)

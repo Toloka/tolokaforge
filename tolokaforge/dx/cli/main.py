@@ -26,6 +26,16 @@ from tolokaforge.core.grading.replay import (
     load_grading_override,
     run_replay_batch,
 )
+from tolokaforge.core.grading.trace_replay import (
+    TraceChecksOverrideError,
+    TraceReplayOutcomeStatus,
+    build_trace_replay_report,
+    declared_trace_checks,
+    emit_trace_replay_report,
+    load_trace_checks_override,
+    run_trace_replay_batch,
+    trace_replay_root,
+)
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.llm.presets import (
@@ -61,6 +71,10 @@ from tolokaforge.dx.banners import (
 )
 from tolokaforge.dx.dry_run_render import render_dry_run
 from tolokaforge.dx.live_panel import LiveRunDisplay
+from tolokaforge.dx.trace_replay_render import (
+    render_trace_replay_dispositions,
+    render_trace_replay_report,
+)
 from tolokaforge.secrets import init_default, install_global_redactor
 
 # Initialize SecretManager singleton — reads .env via DotEnvProvider, then
@@ -179,6 +193,7 @@ class _GroupedCommandsGroup(click.Group):
         "analyze": "Runs",
         "browse": "Runs",
         "rejudge": "Runs",
+        "retrace": "Runs",
         "validate": "Tasks",
         "docker": "Docker",
         "config": "Config",
@@ -950,6 +965,111 @@ def rejudge(
             _print_replay_report(report)
 
     if any(o.status is ReplayOutcomeStatus.FAILED for o in outcomes):
+        raise SystemExit(1)
+
+
+@cli.command(name="retrace")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
+        "task.yaml + trajectory.yaml — a trial is worth re-checking whether or not it "
+        "was graded."
+    ),
+)
+@click.option(
+    "--trial",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Re-check a single bundle dir instead of the whole --source (default: whole source).",
+)
+@click.option(
+    "--constraints",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Replace each bundle's trace_checks block with the one this file carries — a "
+        "grading document with a 'trace_checks:' key, or a bare "
+        "'constraints:'/'alternatives:' block. Replaces wholesale, never merges. "
+        "Default: the block each bundle recorded."
+    ),
+)
+@click.option(
+    "--replay-id",
+    default=None,
+    help="Name for this replay's artifact subdirectory (default: timestamped id).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Discover + classify + rebuild each trial's timeline and report what would "
+    "be re-checked, writing nothing.",
+)
+def retrace(
+    source: str,
+    trial: str | None,
+    constraints: str | None,
+    replay_id: str | None,
+    dry_run: bool,
+):
+    """Re-check the trace constraints of recorded trials, spending nothing.
+
+    Rebuilds each trial's timeline from its bundle and scores a trace_checks block
+    against it again — no agent, no environment, no judge, so no tokens and no
+    containers. Reports per constraint whether it separated the corpus at all, which
+    is the answer to "is this constraint worth shipping".
+
+    Exits non-zero when a bundle cannot be re-checked, when a supplied constraint
+    file fails the authoring gate, or when --source holds no bundle at all. A
+    constraint that discriminated nothing and a replay disagreeing with the recorded
+    grade are *results*: they are reported and the command exits zero. See
+    docs/TRACE_REPLAY.md.
+    """
+    source_path = Path(source)
+    replay_id = replay_id or f"retrace_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    console.print(f"[bold blue]Re-checking trace constraints under {source_path}...[/bold blue]")
+    try:
+        override = load_trace_checks_override(Path(constraints)) if constraints else None
+        outcomes = run_trace_replay_batch(
+            source_path,
+            replay_id=replay_id,
+            trial=Path(trial) if trial else None,
+            override=override,
+            dry_run=dry_run,
+        )
+    except TraceChecksOverrideError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_trace_replay_dispositions(outcomes, source=source_path, dry_run=dry_run, console=console)
+    declared = declared_trace_checks(outcomes)
+    # A dry run has to build the report to report anything and must not write it, so
+    # the writing path is the only one that emits. Both answer None on empty
+    # discovery, which is the signal below.
+    report = (
+        build_trace_replay_report(
+            outcomes, declared=declared, source=source_path, replay_id=replay_id
+        )
+        if dry_run
+        else emit_trace_replay_report(
+            outcomes, declared=declared, source=source_path, replay_id=replay_id
+        )
+    )
+    if report is None:
+        raise click.ClickException(
+            f"no trial bundle under {source_path} — a selector matching nothing validates "
+            "nothing. A bundle is a directory holding task.yaml + trajectory.yaml"
+        )
+
+    render_trace_replay_report(
+        report,
+        artifacts_dir=None if dry_run else trace_replay_root(source_path, replay_id),
+        console=console,
+    )
+    if any(o.status is TraceReplayOutcomeStatus.FAILED for o in outcomes):
         raise SystemExit(1)
 
 

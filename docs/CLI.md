@@ -376,7 +376,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `prepare`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `prepare`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -388,7 +388,10 @@ Abbreviated transcript of the `Commands:` region:
 ```
 Runs:
   analyze  Analyze a single trial trajectory.
+  browse   Open a run's output directory in the OS default handler.
   prepare  Prepare a queue-backed run directory for distributed workers.
+  rejudge  Re-judge the rubric stage of recorded trials offline...
+  retrace  Re-check the trace constraints of recorded trials, spending...
   run      Run benchmark with specified configuration
   status   Show live/status snapshot for a run directory.
   worker   Run a queue worker process (distributed execution mode).
@@ -415,7 +418,7 @@ Adapters:
 
 ### Adding a new top-level command
 
-The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/test_cli_help_grouping.py::test_every_registered_command_has_a_group` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
+The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/dx/test_cli_grouped_help.py::TestGroupedCommandsGroupContract::test_all_registered_commands_are_mapped` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
 
 ## Task validation
 

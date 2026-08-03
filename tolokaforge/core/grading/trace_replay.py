@@ -87,6 +87,7 @@ __all__ = [
     "replay_trace_checks",
     "run_trace_replay_batch",
     "tool_inventory_from_bundle",
+    "trace_replay_root",
 ]
 
 #: Subdirectory replay artifacts are written under; excluded from discovery so a
@@ -650,13 +651,17 @@ def _bundle_rel(bundle: Path, source: Path) -> Path:
     return Path(bundle.name) if rel == Path(".") else rel
 
 
-def _replay_root(source: Path, replay_id: str) -> Path:
-    """The subtree one replay owns, and the only place under the source it writes."""
+def trace_replay_root(source: Path, replay_id: str) -> Path:
+    """The subtree one replay owns, and the only place under the source it writes.
+
+    Public because the command reports the path it wrote to, and composing that
+    layout a second time in the CLI would make the two disagree on a rename.
+    """
     return source / TRACE_REPLAY_DIRNAME / replay_id
 
 
 def _trace_replay_destination(source: Path, bundle: Path, replay_id: str) -> Path:
-    return _replay_root(source, replay_id) / _bundle_rel(bundle, source)
+    return trace_replay_root(source, replay_id) / _bundle_rel(bundle, source)
 
 
 def _dump_yaml(path: Path, payload: Any) -> None:
@@ -1163,6 +1168,6 @@ def emit_trace_replay_report(
     )
     if report is None:
         return None
-    destination = _replay_root(source, replay_id) / TRACE_REPLAY_REPORT_FILENAME
+    destination = trace_replay_root(source, replay_id) / TRACE_REPLAY_REPORT_FILENAME
     _dump_yaml(destination, report.model_dump(mode="json"))
     return report
