@@ -376,7 +376,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `browse`, `prepare`, `rejudge`, `retrace`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -387,14 +387,15 @@ Abbreviated transcript of the `Commands:` region:
 
 ```
 Runs:
-  analyze  Analyze a single trial trajectory.
-  browse   Open a run's output directory in the OS default handler.
-  prepare  Prepare a queue-backed run directory for distributed workers.
-  rejudge  Re-judge the rubric stage of recorded trials offline...
-  retrace  Re-check the trace constraints of recorded trials, spending...
-  run      Run benchmark with specified configuration
-  status   Show live/status snapshot for a run directory.
-  worker   Run a queue worker process (distributed execution mode).
+  analyze    Analyze a single trial trajectory.
+  browse     Open a run's output directory in the OS default handler.
+  prepare    Prepare a queue-backed run directory for distributed workers.
+  reconcile  Check a pack's declared rubric migration against recorded...
+  rejudge    Re-judge the rubric stage of recorded trials offline...
+  retrace    Re-check the trace constraints of recorded trials, spending...
+  run        Run benchmark with specified configuration
+  status     Show live/status snapshot for a run directory.
+  worker     Run a queue worker process (distributed execution mode).
 
 Tasks:
   validate  Validate task configurations

@@ -1,0 +1,43 @@
+# Policy-arm run config — runs ONLY the add_note_duplicate_check_policy testcase,
+# the arm of the duplicate-check pair that satisfies both of its vetoes.
+#
+# Same models and orchestrator settings as `gate_demo.yaml`, deliberately: the two
+# testcases differ by the agent's system prompt and nothing else, so the recorded
+# trials of the two arms are comparable and can be pooled into one judge-labelled
+# corpus (tests/data/migration_corpora/notes_duplicate_check/, see
+# docs/RUBRIC_MIGRATION.md). Change a model here and the pair stops being one
+# experiment with one independent variable.
+#
+# The check-first policy IS in this testcase's own system_prompt.md, so the same
+# cheap agent that skips list_notes under `gate_demo.yaml` lists and warns: the
+# `trace_checks` gate holds and the required `checked_duplicates_first` criterion
+# comes back met.
+#
+# Run with:
+#   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/policy_demo.yaml
+models:
+  agent:
+    provider: "openrouter"
+    name: "openai/gpt-4o-mini"
+    temperature: 0.0
+    max_tokens: 2048
+  user:
+    provider: "openrouter"
+    name: "anthropic/claude-sonnet-4-6"
+    temperature: 0.2
+  judge:
+    provider: "openrouter"
+    name: "openai/gpt-4.1-mini"
+    temperature: 0.0
+
+orchestrator:
+  workers: 1
+  repeats: 1
+  max_turns: 8
+  queue_backend: sqlite
+
+evaluation:
+  projects:
+    - "examples/native/native_shared_domain/dataset"
+  tasks_glob: "**/testcases/add_note_duplicate_check_policy/task.yaml"
+  output_dir: "results/native_shared_domain_policy_demo"

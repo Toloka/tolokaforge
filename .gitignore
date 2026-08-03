@@ -63,6 +63,14 @@ results/
 finished_runs/
 amzn_delivery/
 
+# Replay output, wherever the corpus it was read from lives. `retrace`, `reconcile` and judge
+# replay each write under their own --source, which for a committed corpus (tests/data/
+# migration_corpora/**, tests/data/projects/**) is inside the tree — so these are ignored at
+# any depth rather than only under results/. `--dry-run` is the invocation that writes nothing.
+trace_replay/
+reconcile/
+replays/
+
 # Output directory (benchmark results, generated reports)
 # NOTE: output/ is a working directory, not committed
 /output/

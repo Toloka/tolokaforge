@@ -63,7 +63,8 @@ bridge back to the runner event loop with `run_coroutine_threadsafe(...)`.
 | `Judge` / `LLMJudge` | `core/grading/judge.py` | `Judge` Protocol (grading-plane seam); `LLMJudge` builds the client + read-only tools and runs the loop |
 | read-only judge tools | `core/grading/judge_tools.py` | `get_db_state`/`query_db`/`search_kb`/`read_file` |
 | `JudgeStatus` / `JudgeReport` | proto + `core/models.py` | Errored status + judge usage/transcript |
-| calibrator | `tools/rubric-calibrator` | Agreement metrics + trust gate over golden fixtures |
+| agreement maths | `core/grading/agreement.py` | Accuracy + Cohen's κ over paired labels, disagreements, threshold gate (pure) |
+| calibrator | `tools/rubric-calibrator` | Runs the real judge over golden fixtures and applies the trust gate |
 
 ## Design decisions
 
@@ -146,11 +147,18 @@ prompt, wording, model) against recorded trajectories with judge-only spend. See
 ## Calibration
 
 `tools/rubric-calibrator` runs the real judge over golden fixtures
-(`{rubric, transcript, final_db_state?, workspace?, expected per-criterion}`),
-computes per-criterion accuracy + Cohen's κ (graded scores binarised at 0.5),
-lists disagreements, and applies a **trust gate**: it exits non-zero when overall
-agreement is below threshold OR any fixture errored. Integration is opt-in
-(default-skipped) so a bare test run never spends money.
+(`{rubric, transcript, final_db_state?, workspace?, expected per-criterion}`) and
+pairs each judge verdict against the human label. The agreement itself — per-criterion
+accuracy + Cohen's κ (graded scores binarised at `GRADED_MET_THRESHOLD`), the
+disagreement list, and the **trust gate** — is computed by
+[`core/grading/agreement.py`](../tolokaforge/core/grading/agreement.py); the tool exits
+non-zero when overall agreement is below threshold OR any fixture errored.
+Integration is opt-in (default-skipped) so a bare test run never spends money.
+
+κ is `None`, never a number, on a **label-invariant** corpus: if one side never
+varies and the two agree everywhere, chance agreement is total and κ is undefined
+while accuracy reads `1.0`. The gate treats an undefined κ as a failure — "no
+evidence" is not "agreement".
 
 ## Known limitations / future work
 

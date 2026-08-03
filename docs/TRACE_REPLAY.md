@@ -14,6 +14,14 @@ a clean-subprocess import probe holds
 trial, `retrace` re-runs a deterministic component and spends nothing. Folding a free
 operation into a paid one is how an operator pays by accident.
 
+[`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is the third command over a recorded run and
+also spends nothing, but it is separate from `retrace` for a different reason: it joins each
+recomputed constraint verdict to the *judge's* recorded verdict for a rubric criterion and
+exits non-zero on the verdict of a decision. `retrace`'s exit code is reserved for the
+readability of the corpus — a non-discriminating constraint and a disagreement with the
+recorded grade both exit `0` here, deliberately — so a gate on a migration decision cannot
+live in it without changing that contract.
+
 ## When to use it
 
 - **Decide whether a constraint is worth shipping.** A constraint that passes every
@@ -90,6 +98,11 @@ previously-replayed subtree can be nested anywhere beneath whatever the operator
 at. The cost of that is stated rather than discovered: a *task* named `replays` or
 `trace_replay` would hide its own trials from discovery, which is the trade for an
 isolation that holds whatever either command writes into its tree.
+
+`reconcile` ([RUBRIC_MIGRATION.md](RUBRIC_MIGRATION.md)) is **not** a third reserved name, and
+does not need to be: its isolation comes from its *write set* rather than from discovery. It
+writes exactly one file — `reconcile/<replay_id>/reconcile_report.yaml` — and never a per-bundle
+marker, so nothing it leaves under `--source` can be mistaken for a bundle by anything.
 
 Judge replay's own markers are untouched — `retrace` declares its own and never calls
 `discover_trial_bundles`.

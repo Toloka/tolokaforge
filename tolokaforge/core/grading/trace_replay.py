@@ -88,6 +88,9 @@ __all__ = [
     "emit_trace_replay_report",
     "load_trace_checks_override",
     "read_trace_replay_inputs",
+    "recorded_grade",
+    "recorded_task",
+    "recorded_task_id",
     "replay_trace_checks",
     "run_trace_replay_batch",
     "tool_inventory_from_bundle",
@@ -507,12 +510,14 @@ def discover_trace_bundles(source: Path) -> list[Path]:
     return sorted(bundles)
 
 
-def _recorded_task(bundle: Path) -> dict[str, Any]:
+def recorded_task(bundle: Path) -> dict[str, Any]:
     """The bundle's ``task.yaml``, read once per bundle and threaded onward.
 
     Every reader of it — the eligibility classification, the constraint block, the
     task id — takes the mapping rather than the path, because parsing it per reader
-    costs more than the whole re-check it feeds.
+    costs more than the whole re-check it feeds. Public for the readers outside this
+    module that need the trial's own account of what it was graded against: the
+    differential reads the rubric each bundle recorded off it.
     """
     task = _load_yaml_mapping(bundle / "task.yaml")
     if task is None:
@@ -534,7 +539,7 @@ def classify_trace_trial(
     mapping: that is not a constraint-less trial, it is not a trial bundle.
     """
     bundle = Path(bundle)
-    return _classify_trace_trial(_recorded_task(bundle), override)
+    return _classify_trace_trial(recorded_task(bundle), override)
 
 
 def _classify_trace_trial(
@@ -659,8 +664,20 @@ def _recorded_constraints(bundle: Path, recorded: Any) -> tuple[TraceConstraintR
     return tuple(TraceConstraintResult.model_validate(item) for item in recorded)
 
 
+def recorded_grade(bundle: Path) -> dict[str, Any] | None:
+    """The bundle's ``grade.yaml`` as the live run wrote it, ``None`` where none graded it.
+
+    Public because the differential joins the *judge's* per-criterion verdicts to a
+    recomputed constraint verdict, and those verdicts are a different question from the
+    trace-check ones :class:`TraceReplayInputs` carries. A file present but holding
+    anything other than a mapping is refused rather than folded into the ``None``: a
+    bundle that cannot say what it concluded is not one nobody graded.
+    """
+    return _carried_mapping(bundle / "grade.yaml")
+
+
 def _recorded_grade(bundle: Path) -> _RecordedGrade:
-    grade = _carried_mapping(bundle / "grade.yaml")
+    grade = recorded_grade(bundle)
     if grade is None:
         return _RecordedGrade(constraints=None, summary=None, binary_pass=None)
     summary = grade.get("trace_checks_summary")
@@ -687,8 +704,12 @@ def _schema_version(bundle: Path) -> int | None:
     )
 
 
-def _task_id(bundle: Path, task: dict[str, Any]) -> str:
-    """Which task a bundle's trial belongs to, half of a discrimination row's key."""
+def recorded_task_id(bundle: Path, task: dict[str, Any]) -> str:
+    """Which task a bundle's trial belongs to, half of a discrimination row's key.
+
+    Public because the differential resolves a bundle's *pack* through it, and a second
+    reading of the field would answer a bundle that names none with a different refusal.
+    """
     declared = task.get("task_id")
     if isinstance(declared, str) and declared:
         return declared
@@ -711,7 +732,7 @@ def read_trace_replay_inputs(
     an eligible one.
     """
     bundle = Path(bundle)
-    return _read_trace_replay_inputs(bundle, _recorded_task(bundle), override)
+    return _read_trace_replay_inputs(bundle, recorded_task(bundle), override)
 
 
 def _read_trace_replay_inputs(
@@ -721,7 +742,7 @@ def _read_trace_replay_inputs(
     trajectory, tool_log_present = _load_trajectory(bundle)
     recorded = _recorded_grade(bundle)
     return TraceReplayInputs(
-        task_id=_task_id(bundle, task),
+        task_id=recorded_task_id(bundle, task),
         config=config,
         provenance=provenance,
         timeline=build_trial_timeline(
@@ -858,7 +879,7 @@ def _replay_one_bundle(
     authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
-        task = _recorded_task(bundle)
+        task = recorded_task(bundle)
         if _classify_trace_trial(task, override) is TraceReplayEligibility.NOT_APPLICABLE:
             return TrialTraceReplayOutcome(
                 bundle=bundle, status=TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE

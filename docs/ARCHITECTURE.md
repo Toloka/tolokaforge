@@ -214,7 +214,8 @@ The orchestrator process and the Docker stack live on the same host. There is no
 | Concern | Where to look |
 |---|---|
 | **Secrets handling** | [AGENTS.md § Secrets — single abstraction](../AGENTS.md#secrets--single-abstraction) · `tolokaforge/secrets` |
-| **Determinism & state hashing** | [`docs/GRADING.md`](GRADING.md) · [`docs/GOLDEN_TRIALS.md`](GOLDEN_TRIALS.md) |
+| **Determinism & state hashing** | [`docs/GRADING.md`](GRADING.md) |
+| **Re-checking a recorded trial against what it recorded** | [`docs/TRACE_REPLAY.md`](TRACE_REPLAY.md) · [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md) · [`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md) |
 | **Per-trial isolation & reset recipes** | [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) · [`RESET_RECIPES.md`](RESET_RECIPES.md) |
 | **Task-pack image layering (build-cache sharing)** | [`IMAGE_LAYERING_GUIDE.md`](IMAGE_LAYERING_GUIDE.md) · [`MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md) |
 | **Per-provider capability handling** | [`docs/LLM_LAYER.md`](LLM_LAYER.md) · [AGENTS.md § Known Gotchas](../AGENTS.md#known-gotchas) |

@@ -1,0 +1,14 @@
+{
+  "notes": [
+    {
+      "id": "N-001",
+      "title": "Team stand-up",
+      "body": "Daily stand-up at 9:30 in the Maple room."
+    },
+    {
+      "id": "N-002",
+      "title": "Plant watering",
+      "body": "Water the office plants every Tuesday and Friday."
+    }
+  ]
+}

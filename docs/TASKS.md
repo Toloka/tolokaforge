@@ -18,12 +18,20 @@ evaluation:
 tasks/<category>/<task_id>/
 ├── task.yaml
 ├── grading.yaml
+├── migration.yaml              # optional, what the rubric is migrating into trace checks
 ├── initial_state.json          # optional
 ├── www/                        # optional, for full-site browser tasks
 ├── mock_web/                   # optional, for single-page browser tasks
 ├── rag/corpus/                 # optional
 └── README.md                   # optional
 ```
+
+`migration.yaml` records which rubric criteria the task's `trace_checks` constraints are a
+candidate for, have narrowed, or have replaced. It is a sidecar beside `grading.yaml`
+because nothing about grading reads it: it carries the author's claim and the evidence
+behind it so the claim can be checked against recorded judge verdicts. `tolokaforge
+validate` refuses a declaration its pack contradicts. See
+[`docs/GRADING.md`](GRADING.md) § Trace Checks.
 
 Categories: `terminal`, `browser`, `mobile`. Use `mobile` for app-style tasks that simulate phone interactions (restricted browser actions, no URL navigation). Use `browser` for full web browsing tasks. The mock-web service discovers static files from all categories automatically.
 
@@ -300,8 +308,8 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 
 - Prefer `state_checks.jsonpaths` for deterministic, objective checks — four operators, exactly one per assertion ([vocabulary](GRADING.md#the-jsonpaths-assertion-vocabulary)).
 - Use `transcript_rules` to enforce tool usage patterns.
-- Use `trace_checks` when the condition is about **order, scoped absence, an argument the flat presence checks cannot express, a task with more than one correct route, or a condition that must hold without being scored** — see [Trace Checks](GRADING.md#trace-checks). Three worked packs: [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence; [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md), which grades two alternative diagnostic routes behind one shared `severity: gate` check that a diagnose-only agent trips by mutating, and requires the note to quote the stale value the route's own read returned; and [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md), whose constraints [correlate arguments](GRADING.md#correlating-arguments-across-matchers) — the posted reason code has to have come back in a result the agent read, and the lot has to have been read first.
-- Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs.
+- Use `trace_checks` when the condition is about **order, scoped absence, an argument the flat presence checks cannot express, a task with more than one correct route, or a condition that must hold without being scored** — see [Trace Checks](GRADING.md#trace-checks). Four worked packs: [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence; [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md), which grades two alternative diagnostic routes behind one shared `severity: gate` check that a diagnose-only agent trips by mutating, and requires the note to quote the stale value the route's own read returned; [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md), whose constraints [correlate arguments](GRADING.md#correlating-arguments-across-matchers) — the posted reason code has to have come back in a result the agent read, and the lot has to have been read first; and [`native_shared_domain`](../examples/native/native_shared_domain/README.md), where a shared `severity: gate` constraint and a `required` rubric criterion grade the two conjuncts of one policy, each holding the half it can see.
+- Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is how that move is [declared](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar) and checked against the judge's own recorded verdicts before it is trusted.
 - **Weight every component the pack configures.** A configured component missing from `combine.weights` is dropped by one substrate and folded in at an invented `1.0` by the other (#744).
 - For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding — unless an idle agent already satisfies the state, in which case `transcript_rules` needs a weight of its own (below).
 
