@@ -128,6 +128,11 @@ rather than a stronger container-internal one.
   is documented here rather than papered over with an empty context dataclass.
 - A fourth registry group is one more discovery surface to keep in the canonical
   registration snapshot (`test_builtin_plugin_registrations.py`).
+- The HTTP probe path is a v1 convention: `HTTP_HEALTH_PATH = "/health"` is
+  hard-coded rather than configurable. If a real pack ever needs a different
+  path, the escalation is an additive optional `ReadinessSpec.path` field
+  (default `/health`, so existing packs validate unchanged) threaded to the
+  probe — not introduced here to avoid config surface no pack yet needs.
 
 ### Follow-ups
 

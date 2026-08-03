@@ -93,6 +93,9 @@ class HttpReadinessProbe:
     """Ready when ``GET /health`` on the endpoint returns a 2xx within the budget."""
 
     def probe(self, endpoint: ResolvedEndpoint, *, timeout: float) -> ReadinessResult:
+        """Redirects are followed by ``urlopen``'s default handlers, so the 2xx
+        check applies to the final response — a ``/health`` that returns 3xx is
+        ready when its redirect target is 2xx."""
         start = time.monotonic()
         url = f"http://{endpoint.host}:{endpoint.port}{HTTP_HEALTH_PATH}"
         try:

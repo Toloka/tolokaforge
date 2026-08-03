@@ -641,7 +641,11 @@ class PerTrialRuntimeBackend:
         not-ready result, carrying a :class:`DiagnosticPayload` assembled from
         the still-running container. The probe opens and closes a throwaway
         client — it proves reachability, and does not stand in for the deferred
-        per-trial runner-client connect (see :attr:`_connected_trials`)."""
+        per-trial runner-client connect (see :attr:`_connected_trials`).
+
+        Services are probed in ``services`` insertion order, which is runner-first
+        because :meth:`_readiness_targets` seeds the runner first — intentional, so
+        a broken runner surfaces before budget is spent probing sidecars."""
         for service_name, (kind, endpoint) in services.items():
             probe = self.readiness_probe_loader(kind)()
             result = probe.probe(endpoint, timeout=self.connect_timeout)
