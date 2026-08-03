@@ -14,6 +14,14 @@ a clean-subprocess import probe holds
 trial, `retrace` re-runs a deterministic component and spends nothing. Folding a free
 operation into a paid one is how an operator pays by accident.
 
+[`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is the third command over a recorded run and
+also spends nothing, but it is separate from `retrace` for a different reason: it joins each
+recomputed constraint verdict to the *judge's* recorded verdict for a rubric criterion and
+exits non-zero on the verdict of a decision. `retrace`'s exit code is reserved for the
+readability of the corpus — a non-discriminating constraint and a disagreement with the
+recorded grade both exit `0` here, deliberately — so a gate on a migration decision cannot
+live in it without changing that contract.
+
 ## When to use it
 
 - **Decide whether a constraint is worth shipping.** A constraint that passes every

@@ -27,6 +27,12 @@ from tolokaforge.core.grading.replay import (
     load_grading_override,
     run_replay_batch,
 )
+from tolokaforge.core.grading.rubric_migration import (
+    DEFAULT_PACKS_ROOT,
+    ReconcileError,
+    reconcile_corpus,
+    reconcile_root,
+)
 from tolokaforge.core.grading.trace_replay import (
     TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
@@ -73,6 +79,7 @@ from tolokaforge.dx.banners import (
 )
 from tolokaforge.dx.dry_run_render import render_dry_run
 from tolokaforge.dx.live_panel import LiveRunDisplay
+from tolokaforge.dx.rubric_migration_render import render_reconcile_report
 from tolokaforge.dx.trace_replay_render import (
     render_trace_replay_dispositions,
     render_trace_replay_report,
@@ -194,6 +201,7 @@ class _GroupedCommandsGroup(click.Group):
         "status": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
+        "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
         "validate": "Tasks",
@@ -970,10 +978,10 @@ def rejudge(
         raise SystemExit(1)
 
 
-#: A replay id names one directory under ``<source>/trace_replay/``, so it is held to
-#: the characters a single directory name is built from. Without it ``..`` walks out of
-#: the subtree the read-only guarantee is scoped to and a separator writes into a tree
-#: the operator never named.
+#: A replay id names one directory in the subtree its command owns under ``<source>``, so
+#: it is held to the characters a single directory name is built from. Without it ``..``
+#: walks out of the subtree the read-only guarantee is scoped to and a separator writes
+#: into a tree the operator never named.
 _REPLAY_ID_CHARACTERS = re.compile(r"[A-Za-z0-9._-]+")
 
 
@@ -983,9 +991,9 @@ def _checked_replay_id(ctx: click.Context, param: click.Parameter, value: str | 
         return value
     raise click.BadParameter(
         f"{value!r} is not a directory name: a replay id may hold letters, digits, "
-        "'.', '_' and '-' only, and cannot be '.' or '..'. It names one directory "
-        "under <source>/trace_replay/, and a separator or '..' in it would write "
-        "outside the subtree the replay owns",
+        "'.', '_' and '-' only, and cannot be '.' or '..'. It names one directory in the "
+        "subtree the command owns under <source>, and a separator or '..' in it would "
+        "write outside that subtree",
         ctx=ctx,
         param=param,
     )
@@ -1099,6 +1107,79 @@ def retrace(
     )
     if any(o.status is TraceReplayOutcomeStatus.FAILED for o in outcomes):
         raise SystemExit(1)
+
+
+@cli.command(name="reconcile")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Corpus of recorded trial bundles the migration's evidence comes from — a run dir, "
+        "a flat collection of bundle dirs, or a single bundle dir."
+    ),
+)
+@click.option(
+    "--packs",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Directory searched recursively for the pack each bundle's task_id names; repeatable. "
+        f"A task_id resolving in none of them, or in more than one, is an error naming the id "
+        f"and the roots searched. Default: {DEFAULT_PACKS_ROOT}."
+    ),
+)
+@click.option(
+    "--replay-id",
+    default=None,
+    callback=_checked_replay_id,
+    help="Name for this reconciliation's artifact subdirectory — letters, digits, '.', '_' "
+    "and '-' only (default: timestamped id).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Reconcile and report, writing no artifact.",
+)
+def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
+    """Check a pack's declared rubric migration against recorded judge verdicts.
+
+    For every criterion a pack's migration.yaml declares, recomputes the trace constraints
+    it names over each recorded trial and joins that verdict to the judge's own recorded
+    verdict for the criterion. Reports κ, the 2×2 contingency table and every disagreement
+    with the judge's own justification. Spends nothing — no agent, no judge, no containers —
+    and edits no pack whatever the verdict.
+
+    Exits zero only when every narrowed/retired entry reaches `no_counter_evidence`: an
+    undefined κ (`insufficient_evidence`) and a refusal both exit non-zero, as does an
+    unreadable bundle. A `candidate` entry's verdict is reported and gates nothing. See
+    docs/RUBRIC_MIGRATION.md.
+    """
+    source_path = Path(source)
+    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    console.print(f"[bold blue]Reconciling declared migrations under {source_path}...[/bold blue]")
+    try:
+        report = reconcile_corpus(
+            source_path,
+            replay_id=replay_id,
+            packs=[Path(root) for root in packs] or None,
+            dry_run=dry_run,
+        )
+    except ReconcileError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_reconcile_report(
+        report,
+        artifacts_dir=None if dry_run else reconcile_root(source_path, replay_id),
+        console=console,
+    )
+    blocking = report.blocking
+    if not blocking:
+        return
+    for reason in blocking:
+        console.print(f"[error]blocks the migration[/error] {reason}")
+    raise SystemExit(1)
 
 
 @cli.command(name="prepare")

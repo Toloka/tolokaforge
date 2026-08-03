@@ -1,0 +1,54 @@
+task_id: notes_add_note_duplicate_check_gated
+trial_index: 0
+simulator_schema_version: 1
+start_ts: '2026-06-26T10:29:44.069407+00:00'
+end_ts: '2026-06-26T10:29:49.073744+00:00'
+status: completed
+termination_reason: user_stop
+messages:
+- role: user
+  content: |
+    Please save a note titled "Team standup" with the body "Daily standup at 9:30 in the Maple room."
+  content_blocks: null
+  tool_calls: null
+  tool_call_id: null
+  reasoning: null
+  ts: '2026-06-26T10:29:44.069413Z'
+- role: assistant
+  content: ''
+  content_blocks: null
+  tool_calls:
+  - id: call_qT15zsMG0mwK4CRD1gQCqPac
+    name: add_note
+    arguments:
+      title: Team standup
+      body: Daily standup at 9:30 in the Maple room.
+  tool_call_id: null
+  reasoning: null
+  ts: '2026-06-26T10:29:45.495567Z'
+- role: tool
+  content: |-
+    {
+      "id": "N-003",
+      "title": "Team standup",
+      "body": "Daily standup at 9:30 in the Maple room."
+    }
+  content_blocks: null
+  tool_calls: null
+  tool_call_id: call_qT15zsMG0mwK4CRD1gQCqPac
+  reasoning: null
+  ts: '2026-06-26T10:29:45.845152Z'
+- role: assistant
+  content: The note titled "Team standup" has been saved successfully.
+  content_blocks: null
+  tool_calls: null
+  tool_call_id: null
+  reasoning: null
+  ts: '2026-06-26T10:29:46.840498Z'
+- role: system
+  content: User signaled stop (###STOP###). Dialogue ended.
+  content_blocks: null
+  tool_calls: null
+  tool_call_id: null
+  reasoning: null
+  ts: '2026-06-26T10:29:49.073722Z'

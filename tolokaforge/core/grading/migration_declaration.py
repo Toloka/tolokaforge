@@ -499,7 +499,9 @@ def _declared_shape_rejection(
     return None
 
 
-_EVERY_DECLARED_FIELD = ("description", "kind", "required", "weight")
+EVERY_DECLARED_FIELD = ("description", "kind", "required", "weight")
+"""Every field ``was`` claims, so a field added to it is compared by every tier that checks it."""
+
 _WHAT_A_NARROW_LEAVES_ALONE = ("kind", "required")
 
 
@@ -513,10 +515,16 @@ def _declared_shape(criterion: MigratedCriterion | Criterion) -> dict[str, Any]:
     }
 
 
-def _disagreement(
-    was: MigratedCriterion, current: Criterion, *, over: tuple[str, ...]
+def criterion_shape_disagreement(
+    was: MigratedCriterion, current: MigratedCriterion | Criterion, *, over: tuple[str, ...]
 ) -> str | None:
-    """Where ``was`` and the rubric disagree across ``over``, written out for an author."""
+    """Where ``was`` and another reading of the criterion disagree across ``over``.
+
+    Public because ``was`` is checked against two different sources — the criterion the pack
+    still holds, here, and the rubric each corpus bundle recorded, in
+    :mod:`~tolokaforge.core.grading.rubric_migration` — and a second comparison written out
+    there would let the two tiers drift on what a criterion's shape is.
+    """
     declared = _declared_shape(was)
     actual = _declared_shape(current)
     differing = [name for name in over if declared[name] != actual[name]]
@@ -529,7 +537,7 @@ def _disagreement(
 
 
 def _stale_declared_shape(was: MigratedCriterion, current: Criterion) -> str | None:
-    written = _disagreement(was, current, over=_EVERY_DECLARED_FIELD)
+    written = criterion_shape_disagreement(was, current, over=EVERY_DECLARED_FIELD)
     if written is None:
         return None
     return (
@@ -556,7 +564,7 @@ def _narrowed_conversion_rejection(
     current = criteria.get(entry.criterion)
     if current is None:
         return None
-    written = _disagreement(entry.was, current, over=_WHAT_A_NARROW_LEAVES_ALONE)
+    written = criterion_shape_disagreement(entry.was, current, over=_WHAT_A_NARROW_LEAVES_ALONE)
     if written is None:
         return None
     return (

@@ -2014,8 +2014,9 @@ what surfaced them.
 A task directory may carry a `migration.yaml` beside its `grading.yaml`, naming each rubric
 criterion its constraints are a candidate for, have narrowed, or have replaced. The file is
 optional; a pack without one is unchanged. Nothing about grading reads it — it records the
-claim and the evidence behind it so the claim can be checked against recorded judge
-verdicts, which is why it is a sidecar and not a `grading.yaml` key: `GradingConfig` is
+claim and the evidence behind it so [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) can check
+that claim against recorded judge verdicts, which is why it is a sidecar and not a
+`grading.yaml` key: `GradingConfig` is
 `extra="ignore"`, so a `migration:` key there is silently dropped, and making it a real key
 needs a `GRADING_KEYS` manifest entry, whose every `KeyKind` describes score production.
 
