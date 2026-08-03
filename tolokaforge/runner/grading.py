@@ -25,7 +25,16 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, runner_score_field
+from tolokaforge.core.grading.combine_weights import (
+    FoldedGrade,
+    require_component_weight,
+    resolve_uncounted_fold,
+)
+from tolokaforge.core.grading.grade_components import (
+    GRADE_COMPONENTS,
+    component_requested,
+    runner_score_field,
+)
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
@@ -1022,7 +1031,7 @@ def resolve_state_checks_component(
 
 def combine_grade_components(
     components: dict[str, Any], grading_config: dict[str, Any]
-) -> tuple[float, bool]:
+) -> FoldedGrade:
     """
     Combine component scores into final grade.
 
@@ -1030,6 +1039,10 @@ def combine_grade_components(
     - "all": All components must pass (score >= threshold)
     - "weighted": Weighted average of component scores
     - "any": Any component passing is sufficient
+
+    Every evaluated component carries a declared weight or the fold raises, and a fold
+    with no weighted evaluated component decides before the aggregation and reports why
+    — the two rules core's own fold applies, from the one shared definition.
 
     Args:
         components: Dict with component scores:
@@ -1048,9 +1061,11 @@ def combine_grade_components(
             }
 
     Returns:
-        Tuple of (score: float, binary_pass: bool)
+        The verdict, carrying the reason where the fold counted nothing.
 
     Raises:
+        MissingComponentWeight: an evaluated component ``combine.weights`` declares no
+            share for.
         ValueError: a hash verdict and a JSONPath score are both real and
             ``state_checks.hash_weight`` does not say how to fold them; or
             ``combine_method`` is missing or names no supported aggregation.
@@ -1082,47 +1097,36 @@ def combine_grade_components(
         if score >= 0:
             active_components[spec.name] = score
 
-    # If no components are active but grading was configured, fail explicitly.
-    # This prevents refusal tasks (empty golden_actions) or misconfigured
-    # grading from silently passing with score=1.0. A component counts as
-    # configured only when it is both weighted AND carries a config section
-    # (a section present in the model by default says nothing about the author).
-    if not active_components:
-        configured = {
+    shares = {name: require_component_weight(name, weights) for name in active_components}
+
+    # A refusal task (empty golden_actions), a misconfigured pack and a deliberately
+    # non-scoring one are three different answers, and the shared rule tells them apart.
+    uncounted = resolve_uncounted_fold(
+        scored=active_components,
+        requested={
             spec.name
             for spec in GRADE_COMPONENTS
-            if spec.name in weights and grading_config.get(spec.config_section) is not None
-        }
-
-        if configured:
-            logger.warning(
-                "Grading configured for %s but no components were evaluated — failing",
-                configured,
-            )
-            return 0.0, False
-        # Truly no grading configured at all — pass by default
-        return 1.0, True
+            if component_requested(spec, grading_config.get(spec.config_section))
+        },
+        weights=weights,
+        method=method,
+    )
+    if uncounted is not None:
+        if uncounted.reason:
+            logger.warning("Grading counted nothing — failing: %s", uncounted.reason)
+        return uncounted
 
     # Computed for every method, read only by ``weighted``: the shared dispatch
     # decides the aggregation and this substrate keeps its own mean.
-    total_weight = 0.0
-    weighted_sum = 0.0
-    for component_name, score in active_components.items():
-        weight = weights.get(component_name, 1.0)
-        weighted_sum += score * weight
-        total_weight += weight
-
-    if total_weight > 0:
-        weighted_mean = weighted_sum / total_weight
-    else:
-        weighted_mean = 1.0
-
-    return combine_by_method(
+    total_weight = sum(shares.values())
+    weighted_sum = sum(score * shares[name] for name, score in active_components.items())
+    score, binary_pass = combine_by_method(
         method=method,
         component_scores=active_components,
-        weighted_mean=weighted_mean,
+        weighted_mean=weighted_sum / total_weight if total_weight else 0.0,
         pass_threshold=threshold,
     )
+    return FoldedGrade(score=score, binary_pass=binary_pass)
 
 
 _JUDGE_SCORE_FIELD = runner_score_field("llm_judge")
@@ -1134,12 +1138,14 @@ class RunnerTrialVerdict:
 
     ``judge_component`` is the score the judge component carries *after* the required-criterion
     gate, which is what the wire grade and the reasons string report — not the weighted average
-    the judge's own aggregate returned.
+    the judge's own aggregate returned. ``reason`` is the fold's own sentence where it counted
+    nothing, which no component's reasons would otherwise state.
     """
 
     judge_component: float
     score: float
     binary_pass: bool
+    reason: str | None
 
 
 def compose_runner_trial_verdict(
@@ -1164,17 +1170,19 @@ def compose_runner_trial_verdict(
     independently (:mod:`~tolokaforge.core.grading.combine`) and never computes ``llm_judge``.
 
     Raises:
-        ValueError: propagated from :func:`combine_grade_components` — an undecidable
-            ``state_checks`` fold, or a ``combine_method`` naming no supported aggregation.
+        ValueError: propagated from :func:`combine_grade_components` — an evaluated component
+            with no declared weight, an undecidable ``state_checks`` fold, or a
+            ``combine_method`` naming no supported aggregation.
     """
     folded = dict(components)
     if judge_gate_failed:
         folded[_JUDGE_SCORE_FIELD] = 0.0
-    score, binary_pass = combine_grade_components(folded, grading_config)
+    combined = combine_grade_components(folded, grading_config)
     return RunnerTrialVerdict(
         judge_component=folded.get(_JUDGE_SCORE_FIELD, -1.0),
-        score=score,
-        binary_pass=binary_pass and not (judge_gate_failed or trace_gate_failed),
+        score=combined.score,
+        binary_pass=combined.binary_pass and not (judge_gate_failed or trace_gate_failed),
+        reason=combined.reason,
     )
 
 

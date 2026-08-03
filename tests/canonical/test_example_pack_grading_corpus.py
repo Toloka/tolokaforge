@@ -2,10 +2,10 @@
 
 Fourteen claims over the packs an author reads as the reference:
 
-1. **No example pack configures a component it never weights.** Core drops a scored
-   component carrying no declared weight and the runner folds it in at an invented
-   ``1.0`` (#744), so the two substrates disagree on any pack of that shape. The guard
-   reads the **effective** combine — what ``NativeAdapter.get_grading_config`` returns
+1. **No example pack configures a component it never weights.** Both substrates refuse
+   to fold a scored component whose share the map does not declare, so a pack of that
+   shape is not gradeable at all — and the authoring gate says so before the run pays
+   for it. The guard reads the **effective** combine — what ``NativeAdapter.get_grading_config`` returns
    after the project layer merges — because five shipped packs declare no ``combine``
    of their own and inherit ``llm_judge: 1.0`` from ``project.yaml``. Over raw
    ``grading.yaml`` the same guard is red on those five on day one.

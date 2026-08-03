@@ -1546,19 +1546,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 db_probe_score=components.db_probe_score,
                 hash_weight=state_checks_config.hash_weight if state_checks_config else None,
             )
+            verdict = compose_runner_trial_verdict(
+                components.model_dump(),
+                grading_config.model_dump(),
+                judge_gate_failed=judge_gate_failed,
+                trace_gate_failed=trace_checks_result.gate_failed,
+            )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
             return pb2.GradeTrialResponse(
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
-
-        verdict = compose_runner_trial_verdict(
-            components.model_dump(),
-            grading_config.model_dump(),
-            judge_gate_failed=judge_gate_failed,
-            trace_gate_failed=trace_checks_result.gate_failed,
-        )
         # The gated component, not the judge's raw aggregate, is what the wire grade and
         # the reasons carry — so the write-back happens before either is built.
         components.llm_judge_score = verdict.judge_component
@@ -1587,6 +1586,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # CONFIG_INPUT the fold can skip on its own, so it reports itself.
         if state_checks_slot.inert_weight_reason:
             reasons += f" | {state_checks_slot.inert_weight_reason}"
+
+        # A fold that counted nothing is not described by any component's reasons, so its
+        # own sentence is what stops a 0.0 arriving beside components that all read as passing.
+        if verdict.reason:
+            reasons += f" | {verdict.reason}"
 
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:

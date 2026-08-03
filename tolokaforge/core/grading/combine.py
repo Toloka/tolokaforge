@@ -22,7 +22,12 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.combine_method import combine_by_method
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.combine_weights import (
+    FoldedGrade,
+    require_component_weight,
+    resolve_uncounted_fold,
+)
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
     GoldenReplayError,
     StateChecker,
@@ -208,7 +213,10 @@ class GradingEngine:
             if custom_reasons:
                 reasons_parts.append(f"Custom: {custom_reasons}")
 
-        final_score, binary_pass = self._combine(components)
+        folded = self._combine(components)
+        if folded.reason:
+            reasons_parts.append(folded.reason)
+        binary_pass = folded.binary_pass
 
         # A tripped trace gate fails the trial outright — independent of
         # pass_threshold and of any other heavily-weighted component. The same act
@@ -218,7 +226,7 @@ class GradingEngine:
 
         return Grade(
             binary_pass=binary_pass,
-            score=final_score,
+            score=folded.score,
             components=components,
             reasons=" | ".join(reasons_parts) if reasons_parts else "All checks passed",
             state_diff=state_diff_result,
@@ -232,38 +240,54 @@ class GradingEngine:
             ),
         )
 
-    def _combine(self, components: GradeComponents) -> tuple[float, bool]:
-        """Aggregate the scored components into ``(score, binary_pass)`` by the author's method.
+    def _combine(self, components: GradeComponents) -> FoldedGrade:
+        """Aggregate the scored components into a verdict by the author's method.
 
-        ``combine.weights`` decides which components enter the map at all: a scored
-        component with no declared weight is left out of the mean's numerator, its
-        denominator and the aggregation. With nothing in the map there is nothing to
-        aggregate, and the trial's verdict is the threshold comparison alone.
+        Every component this engine scored carries a declared weight or the fold raises:
+        the mean cannot say what share a component holds without one, and both candidate
+        defaults discard something. A fold with no weighted scored component decides
+        before the aggregation, and says why — never a bare ``0.0`` beside components
+        that all read as passing, and never a ``1.0`` nothing earned.
         """
-        weights = self.config.combine.weights
-        component_scores: dict[str, float] = {}
-        final_score = 0.0
-        total_weight = 0.0
-        for spec in GRADE_COMPONENTS:
-            score = getattr(components, spec.core_field)
-            if score is None or spec.name not in weights:
-                continue
-            component_scores[spec.name] = score
-            final_score += score * weights[spec.name]
-            total_weight += weights[spec.name]
+        combine = self.config.combine
+        weights = combine.weights
+        component_scores = {
+            spec.name: score
+            for spec in GRADE_COMPONENTS
+            if (score := getattr(components, spec.core_field)) is not None
+        }
+        shares = {name: require_component_weight(name, weights) for name in component_scores}
 
-        if total_weight > 0:
-            final_score = final_score / total_weight
-
-        if not component_scores:
-            return final_score, final_score >= self.config.combine.pass_threshold
-
-        return combine_by_method(
-            method=self.config.combine.method,
-            component_scores=component_scores,
-            weighted_mean=final_score,
-            pass_threshold=self.config.combine.pass_threshold,
+        uncounted = resolve_uncounted_fold(
+            scored=component_scores,
+            requested=self._requested_components(),
+            weights=weights,
+            method=combine.method,
         )
+        if uncounted is not None:
+            return uncounted
+
+        total_weight = sum(shares.values())
+        weighted_mean = (
+            sum(score * shares[name] for name, score in component_scores.items()) / total_weight
+            if total_weight
+            else 0.0
+        )
+        score, binary_pass = combine_by_method(
+            method=combine.method,
+            component_scores=component_scores,
+            weighted_mean=weighted_mean,
+            pass_threshold=combine.pass_threshold,
+        )
+        return FoldedGrade(score=score, binary_pass=binary_pass)
+
+    def _requested_components(self) -> set[str]:
+        """The components this config asks to be scored, by the shared predicate."""
+        return {
+            spec.name
+            for spec in GRADE_COMPONENTS
+            if component_requested(spec, getattr(self.config, spec.config_section))
+        }
 
     def _grade_state_checks(
         self, final_env_state: dict[str, Any]

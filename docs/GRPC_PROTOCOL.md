@@ -744,6 +744,9 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     # 7. Fold the components by the method the pack declared. "weighted" returns
     #    their mean scaled by grading_config.weights, "all" the weakest component,
     #    "any" the strongest; anything else raises and the RPC returns success=false.
+    #    Every component folded here carries a share grading_config.weights declares,
+    #    and a fold with no weighted component decides before this call: nothing
+    #    configured and nothing weighted passes, anything else fails with the reason.
     final_score, binary_pass = combine_by_method(
         method=grading_config.combine_method,
         component_scores={"state_checks": state_score, "transcript_rules": transcript_score},
@@ -818,6 +821,7 @@ what that costs the run's counts.
 | `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
 | `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
 | `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions. An authored pack cannot be that shape: `hash.enabled` with no source is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)), so this row is reached by a `TaskDescription` built directly against the runner or recorded before that rule |
+| `Trial '<id>' is not gradeable: MissingComponentWeight: <component> was scored and combine.weights declares no weight for it …` | The fold evaluated a component `grading.weights` declares no share for. Neither `1.0` nor `0.0` is defensible, so the fold refuses rather than picking one. An authored pack cannot be that shape — a configured component with no weight is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)) — so this row is reached by a `TaskDescription` built directly against the runner, or by one recorded before that rule |
 | `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
 | `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
 | `Grading error: …` | Any other exception escaping the grading path |

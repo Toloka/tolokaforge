@@ -176,12 +176,15 @@ expected state:
 | Member | coverage | Tracked |
 |---|---|---|
 | `state_checks.hash.golden_actions` | `BOTH_SCORE_PARITY` | — |
-| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | #741 |
-| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | #741 |
+| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | — |
+| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | — |
+
+Neither carries a tracking issue of its own: the one shape still unproven is
+`expected_state_hash`, tracked on its own row above as **#693**.
 
 The fold rule is shared on every shape — both substrates call
-`compose_state_checks_score` — but the *inputs* to it still differ for two of the
-three source shapes:
+`compose_state_checks_score` — but the *inputs* to it still differ for one of the two
+authorable source shapes:
 
 - **`golden_actions`** — proven. Both substrates replay the actions and hash the
   resulting state, so the same trial yields the same verdict and therefore the same
@@ -199,7 +202,7 @@ three source shapes:
   recorded before the rule.
 
 The rows say *signal* parity rather than *score* parity because bringing the two
-substrates into line on either unproven shape moves refusal-task verdicts across the
+substrates into line on `expected_state_hash` moves refusal-task verdicts across the
 corpus, which needs its own corpus measurement.
 
 The golden-actions differential runs over real gRPC and a real db-service, in
@@ -1887,11 +1890,12 @@ tripping a gate on a route it did not take, which is the premise of the feature.
 shared gate has no escape, which is why route-independent conditions belong there.
 
 **Every component the pack configures needs a weight of its own.** A configured
-component absent from `combine.weights` is dropped from the core engine's fold and
-folded in by the runner at an invented `1.0` (#744), so the two substrates grade the
-same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` holds
-every shipped example pack to that, reading the combine that is *effective* after
-the project layer merges.
+component absent from `combine.weights` is refused before the run, and a component a
+substrate scored anyway makes the fold raise on both substrates — neither may pick a
+share, because `1.0` invents one the author never gave and `0.0` discards a verdict the
+substrate produced. `tests/canonical/test_example_pack_grading_corpus.py` holds every
+shipped example pack to that, reading the combine that is *effective* after the project
+layer merges.
 
 ### Four worked packs
 
@@ -2039,8 +2043,8 @@ Three authoring choices in it are the ones to copy:
 - **Neither component can carry a trial by itself.** `combine.weights` is
   `{llm_judge: 0.7, trace_checks: 0.3}` against `pass_threshold: 0.75`, so a pass means
   both halves happened — a `trace_checks` weight is mandatory rather than optional here,
-  because a scored component with no declared weight is dropped core-side and folded in at
-  an invented `1.0` runner-side (#744).
+  because a scored component with no declared weight makes the fold raise on both
+  substrates rather than being handed a share nobody declared.
 
 The pair is also the corpus behind its own migration: both arms declare it in a
 [`migration.yaml`](#declaring-a-migration-the-migrationyaml-sidecar), and
@@ -2845,36 +2849,43 @@ closed set — anything else fails the load, naming what an author may write ins
 `all` and `any` compare each component to `pass_threshold` and never scale it by
 `combine.weights` — measured, weights of `0.9`/`0.1` and of `1.0`/`1.0` give both
 methods the same answer on the same components. What they aggregate is the map of
-components, and **which components the map holds is a substrate-scoped question**:
+components, and **every component in that map carries a share the author declared.**
 
-- **Core** admits a scored component only when `combine.weights` declares a weight
-  for it.
-- **The runner** admits every component it evaluated, weighting an undeclared one at
-  an invented `1.0`.
+A pack configuring a component and declaring no weight for it — or weighting one it never
+configures — is refused before the run, in both directions, against the effective
+`combine`. See [What is validated before a run](#what-is-validated-before-a-run). The gate
+reaches an authored `grading.yaml`; a `GradingConfig` built in process and a config
+**recorded** before the rule existed and re-folded offline by `reconcile` reach no gate, so
+both folds guard the same rule themselves: a component a substrate scored whose share
+`combine.weights` does not declare raises on both substrates, naming the component and both
+one-line fixes. Neither may pick a value — `1.0` invents a share the author never gave the
+component and `0.0` discards a verdict the substrate produced.
 
-That is why `combine.method` and `combine.weights` are both `BOTH_SIGNAL_PARITY`
-tracked by **#744**. Under `weighted` the gap is a magnitude; under `all` and `any`
-the map *is* the whole input, so it is a verdict flip. Measured on
-`state_checks: 0.0` and `transcript_rules: 1.0` at `pass_threshold: 0.8` with only
-`state_checks` weighted, `any` gives `(0.0, False)` core-side and `(1.0, True)`
-runner-side. **Declare a weight for every component the pack scores** and this
-divergence closes: on the same trial with both weighted, all three methods answer
-identically on both substrates.
+**A fold with no weighted scored component decides rather than aggregating**, because min,
+max and a mean over an empty map have no answer:
 
-That is a rule rather than advice: a pack configuring a component and declaring no
-weight for it — or weighting one it never configures — is refused before the run, in
-both directions, against the effective `combine`. See
-[What is validated before a run](#what-is-validated-before-a-run). The gate reaches an
-authored `grading.yaml`, so the divergence above survives only where no gate ran: a
-`GradingConfig` built in process, and a config **recorded** before the rule existed and
-re-folded offline by `reconcile`. Both folds therefore still have to answer for it.
+- **Nothing configured and nothing weighted** is `(1.0, True)`. Nothing was asked for, so
+  nothing is owed — the shape a deliberately non-scoring pack declares.
+- **Anything else** is `(0.0, False)` with a reason naming what the config asked for: the
+  components that produced no verdict, the scored components whose shares sum to zero, or
+  the weight keys naming nothing the config configured. A fail here never names nothing:
+  a verdict reached without a component's reasons to explain it is one the author cannot
+  act on, and a `0.0` beside components that all read as passing contradicts itself.
 
-One asymmetry survives #744, because it is architectural rather than a defect: core
-produces no `llm_judge` component and cannot produce a `state_checks.db_probes` one —
-both `RUNNER_ONLY` by design — so on a judge- or probe-graded pack core's map is
-empty where the runner's is scored. The canonical differential therefore proves the
-dispatch over deterministic components, which is the whole of what is provable for
-this key.
+The zero-total-weight half is **`weighted`-only**. Under `all` and `any` the shares are
+structurally unread — the shared dispatch aggregates the component set — so a share of
+`0.0` there is an inert key rather than a statement about the fold, and a component scored
+`0.0` at weight `0.0` still fails. Measured: at `weights: {state_checks: 0.0}`, `weighted`
+gives `(0.0, False)` on both a satisfying and a violating trial while `all` and `any` give
+`(1.0, True)` and `(0.0, False)` respectively — the component's own verdict, unchanged.
+
+`combine.method` and `combine.weights` stay `BOTH_SIGNAL_PARITY` for a reason that is
+architectural rather than a defect: core produces no `llm_judge` component and cannot
+produce a `state_checks.db_probes` one — both `RUNNER_ONLY` by design — so on a judge- or
+probe-graded pack core's map is empty where the runner's is scored. Since `all` and `any`
+aggregate that map alone, the disagreement is a verdict flip rather than a magnitude. The
+canonical differential therefore proves the dispatch over deterministic components, which
+is the whole of what is provable for these keys.
 
 `combine_method` is one of the keys that lock an engine to a runner image built from
 the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
@@ -2896,9 +2907,8 @@ binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion 
 A component that was not evaluated is **excluded** from both the numerator and
 the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
-as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
-declares no weight for, where the runner includes it at an invented `1.0` — the
-divergence tracked by #744 above.
+as a `0.0`. An *evaluated* component that `combine.weights` declares no weight for is
+neither excluded nor defaulted: the fold raises on both substrates, per the rule above.
 
 **Where the runner-side verdict is composed.** The runner folds a trial through
 `compose_runner_trial_verdict`
