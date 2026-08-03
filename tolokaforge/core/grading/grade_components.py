@@ -14,7 +14,9 @@ lowers a wire grade into.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
+from types import MappingProxyType
 
 
 @dataclass(frozen=True)
@@ -73,3 +75,9 @@ GRADE_COMPONENTS: tuple[GradeComponentSpec, ...] = (
     ),
 )
 """Every component a grade may carry, in the order ``GradingConfig`` declares them."""
+
+COMPONENT_BY_NAME: Mapping[str, GradeComponentSpec] = MappingProxyType(
+    {spec.name: spec for spec in GRADE_COMPONENTS}
+)
+"""The enumeration keyed by wire name, so a caller needing one component looks it up here
+rather than re-deriving the field names it lives under."""

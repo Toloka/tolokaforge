@@ -24,15 +24,19 @@ import shutil
 import subprocess
 import sys
 from pathlib import Path
+from typing import Any
 
 import pytest
 import yaml
 from click.testing import CliRunner, Result
+from pydantic import BaseModel
 
 from tolokaforge.core.grading.rubric_migration import (
+    MigrationCounterfactual,
     ReconciledEntry,
     ReconcileReport,
     ReconcileVerdict,
+    TrialCounterfactual,
     reconcile_corpus,
 )
 from tolokaforge.dx.cli.main import cli
@@ -204,15 +208,36 @@ def test_the_report_names_which_side_of_the_pair_is_the_reference(tmp_path: Path
                 "strict_disagreements",
                 "permissive_disagreements",
                 "excluded_trials",
+                "counterfactual",
                 "verdict",
                 "refusals",
             },
         ),
+        (
+            MigrationCounterfactual,
+            {"weights_declared", "trials", "unrecomputed_trials"},
+        ),
+        (
+            TrialCounterfactual,
+            {
+                "trial",
+                "weights_before",
+                "weights_after",
+                "vetoes_before",
+                "vetoes_after",
+                "judge_component_before",
+                "judge_component_after",
+                "score_before",
+                "score_after",
+                "binary_pass_before",
+                "binary_pass_after",
+            },
+        ),
     ],
-    ids=["report", "entry"],
+    ids=["report", "entry", "counterfactual", "trial-counterfactual"],
 )
 def test_the_report_model_carries_no_field_that_ranks_or_compares_modes(
-    model: type[ReconcileReport] | type[ReconciledEntry], fields: set[str]
+    model: type[BaseModel], fields: set[str]
 ) -> None:
     """Set equality over the model's own field names against a set written out here.
 
@@ -223,12 +248,112 @@ def test_the_report_model_carries_no_field_that_ranks_or_compares_modes(
     satisfy the same condition, so the mode is the author's recorded judgment and nothing
     here may read as the bar having chosen it.
 
-    Both models, because the entry is where such a field would go and locking the envelope
-    alone would leave it unguarded. The two sources are the model and this literal, neither
-    derived from the other.
+    Every model the report is built from, because the entry is where such a field would go and
+    locking the envelope alone would leave it unguarded — the counterfactual included, since a
+    per-trial ``recommended_mode`` would rank modes exactly as an entry-level one would. The two
+    sources of each set are the model and this literal, neither derived from the other.
     """
     assert set(model.model_fields) == fields
     assert model.model_config["extra"] == "forbid"
+
+
+def _recorded_grade(bundle: Path) -> dict[str, Any]:
+    return yaml.safe_load((bundle / "grade.yaml").read_text())
+
+
+def test_the_extraction_reproduces_every_recorded_verdict_in_the_committed_corpus(
+    tmp_path: Path,
+) -> None:
+    """The runner's verdict composition, moved to a function and driven offline, reaches the
+    verdict the runner reached — on all five bundles.
+
+    This is the equivalence claim the extraction rests on, and it is not a tautology: the
+    *before* column is recomposed by :func:`compose_runner_trial_verdict` over each bundle's
+    recorded components and rubric, while the expected values are read straight out of that
+    bundle's ``grade.yaml``. Two sources, neither derived from the other. Drop the judge-gate
+    zeroing from the extracted function and every bundle reports a judge component of ``1.0``
+    against a recorded ``0.0`` — required criteria are excluded from the weighted average, so the
+    aggregate alone says the trial aced a rubric it failed.
+    """
+    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+
+    assert counterfactual.unrecomputed_trials == []
+    assert len(counterfactual.trials) == 5
+    for row in counterfactual.trials:
+        grade = _recorded_grade(Path(row.trial))
+        assert row.judge_component_before == pytest.approx(grade["components"]["llm_judge"])
+        assert row.score_before == pytest.approx(grade["score"])
+        assert row.binary_pass_before is grade["binary_pass"]
+
+
+def test_the_counterfactual_reports_what_the_narrow_does_to_every_committed_trial(
+    tmp_path: Path,
+) -> None:
+    """The judge component rises, the trial score rises, and the verdict does not move.
+
+    All five: the judge component goes ``0.0 → 1.0`` because the required criterion leaves the
+    judge's gate, the trial score goes ``0.0 → 0.5`` as the recomputed trace component folds in
+    beside it, and the pass rate is **0/5 → 0/5** because the veto the judge held is now held by
+    the trace gate, which fails on all five. That last equality is the acceptance criterion —
+    unchanged pass rates, or the difference reported — and it holds here for a stated reason
+    rather than by luck.
+    """
+    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+
+    assert [row.judge_component_before for row in counterfactual.trials] == [0.0] * 5
+    assert [row.judge_component_after for row in counterfactual.trials] == [1.0] * 5
+    assert [row.score_before for row in counterfactual.trials] == [0.0] * 5
+    assert [row.score_after for row in counterfactual.trials] == [0.5] * 5
+    assert [row.binary_pass_before for row in counterfactual.trials] == [False] * 5
+    assert [row.binary_pass_after for row in counterfactual.trials] == [False] * 5
+
+
+def test_the_veto_transfers_from_the_criterion_to_the_trace_gate_on_every_trial(
+    tmp_path: Path,
+) -> None:
+    """For a ``required`` criterion the two weight maps are *identical*, so a weight-shift report
+    would be silent about the only thing the migration changes. The veto sets are what says it."""
+    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+    declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
+
+    assert declared["was"]["required"] is True
+    assert "combine_weights" not in declared
+    assert len(counterfactual.trials) == 5
+    for row in counterfactual.trials:
+        assert row.weights_before == row.weights_after
+        assert row.vetoes_before == ["checked_duplicates_first"]
+        assert row.vetoes_after == ["the_notes_were_listed_before_the_note_was_added"]
+
+
+def test_no_reported_weight_map_is_the_map_the_pack_holds_today(tmp_path: Path) -> None:
+    """The counterfactual answers "what does the map *this entry* declares do", so the pack's
+    current ``combine.weights`` — the post-migration state a reviewer is being asked to judge —
+    must not be what the report folds under. Measurable here because the fixture's three maps all
+    differ: the pack holds ``{llm_judge: 0.7, trace_checks: 0.3}``, the corpus recorded
+    ``{llm_judge: 1.0}``, and this entry declares none at all.
+    """
+    current = yaml.safe_load((_PACKS / "notes_duplicate_check_narrowed/grading.yaml").read_text())[
+        "combine"
+    ]["weights"]
+    counterfactual = _entry_over_the_committed_half(tmp_path).counterfactual
+
+    assert current == {"llm_judge": 0.7, "trace_checks": 0.3}
+    assert counterfactual.weights_declared is None
+    assert len(counterfactual.trials) == 5
+    for row in counterfactual.trials:
+        assert row.weights_before != current
+        assert row.weights_after != current
+
+
+def test_the_counterfactual_reaches_the_reviewer_it_is_evidence_for(tmp_path: Path) -> None:
+    """Evidence nobody reads gates nothing and informs nothing, so the rendered report carries
+    it — and says what it is *not*, because a reader who took it for a gate would read a finite
+    corpus as licence for an unbounded claim."""
+    result = _reconcile_cli("--source", str(_copy(tmp_path)), "--packs", str(_PACKS), "--dry-run")
+
+    assert "counterfactual under the map this entry declares" in result.output
+    assert "pass rate 0/5 → 0/5" in result.output
+    assert "nothing here decides the verdict" in result.output
 
 
 def _tree_digest(root: Path) -> dict[str, str]:

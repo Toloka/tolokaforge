@@ -48,6 +48,7 @@ from __future__ import annotations
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
+from math import isclose
 from pathlib import Path
 from types import MappingProxyType
 from typing import Any
@@ -62,6 +63,7 @@ from tolokaforge.core.grading.agreement import (
     cohen_kappa,
 )
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
+from tolokaforge.core.grading.grade_components import COMPONENT_BY_NAME, GRADE_COMPONENTS
 from tolokaforge.core.grading.migration_declaration import (
     EVERY_DECLARED_FIELD,
     MigratedCriterion,
@@ -71,6 +73,7 @@ from tolokaforge.core.grading.migration_declaration import (
     criterion_shape_disagreement,
     inspect_migration_declaration,
 )
+from tolokaforge.core.grading.rubric import aggregate_rubric
 from tolokaforge.core.grading.trace_replay import (
     MissingTraceReplayInputError,
     TraceChecksOverride,
@@ -83,7 +86,14 @@ from tolokaforge.core.grading.trace_replay import (
     tool_inventory_from_bundle,
 )
 from tolokaforge.core.grading.trace_timeline import TimelineInconsistencyError
-from tolokaforge.core.models import Rubric, TraceChecksConfig
+from tolokaforge.core.models import (
+    CriterionResult,
+    Rubric,
+    TraceChecksConfig,
+    TraceChecksResult,
+    TraceConstraintSeverity,
+)
+from tolokaforge.runner.grading import RunnerTrialVerdict, compose_runner_trial_verdict
 
 __all__ = [
     "CANDIDATE_LABELLER",
@@ -95,16 +105,22 @@ __all__ = [
     "DisagreementDirection",
     "DisagreementRow",
     "ExcludedTrial",
+    "MigrationCounterfactual",
+    "RecomputationGap",
+    "RecordedTrialVerdict",
     "ReconcileError",
     "ReconcileReport",
     "ReconcileVerdict",
     "ReconciledEntry",
     "Refusal",
     "RefusalKind",
+    "TrialCounterfactual",
     "TrialEvidence",
     "TrialExclusion",
     "UnreadableTrial",
+    "UnrecomputedTrial",
     "emit_reconcile_report",
+    "migration_counterfactual",
     "reconcile_corpus",
     "reconcile_entry",
     "reconcile_root",
@@ -243,6 +259,78 @@ class ExcludedTrial(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class RecomputationGap(str, Enum):
+    """Why a contributing trial carries no counterfactual row.
+
+    Both are statements about what the recomputation could establish, never about the
+    declaration: the counterfactual gates nothing, so neither is a :class:`Refusal`.
+    """
+
+    COMPOSED_COMPONENT_HAS_NO_RUNNER_FIELD = "composed_component_has_no_runner_field"
+    RECOMPUTED_VERDICT_DIVERGES = "recomputed_verdict_diverges"
+
+
+class UnrecomputedTrial(BaseModel):
+    """A contributing trial whose recorded verdict the composition could not reproduce.
+
+    The *before* column is the verdict the bundle recorded, and the recomputation is checked
+    against it before any *after* column is believed: a composition that cannot reproduce what
+    the runner already decided says nothing trustworthy about what the migration would decide.
+    """
+
+    trial: str
+    gap: RecomputationGap
+    reason: str
+
+    model_config = {"extra": "forbid"}
+
+
+class TrialCounterfactual(BaseModel):
+    """What the declared migration would have done to one recorded trial's verdict.
+
+    The *before* columns are read from the bundle's own ``grade.yaml``; the *after* columns are
+    recomposed by the runner's own verdict function over the reduced rubric, the recomputed
+    trace component and the map the entry **declares**. Both weight maps and both veto sets ride
+    here per trial rather than once per entry, because each is a fact about the trial that
+    recorded it — and for a ``required`` criterion the two maps are *identical*, which is why the
+    veto sets are stated beside them: they are the only thing that moves.
+    """
+
+    trial: str
+    weights_before: dict[str, float]
+    weights_after: dict[str, float]
+    vetoes_before: list[str]
+    vetoes_after: list[str]
+    judge_component_before: float
+    judge_component_after: float
+    score_before: float
+    score_after: float
+    binary_pass_before: bool
+    binary_pass_after: bool
+
+    model_config = {"extra": "forbid"}
+
+
+class MigrationCounterfactual(BaseModel):
+    """What the entry's declared weight map does to the corpus the entry rests on.
+
+    Evidence a reviewer reads, and deliberately **nothing more**: no verdict, no exit code and
+    no refusal reads it. Gating on it would infer an unbounded safety property from a finite
+    corpus, which is the inference this bar is built to refuse — the freed-share rule is
+    therefore satisfied by *declaring* a map, and this is where the declared map is measured.
+
+    ``weights_declared`` is ``None`` where the entry declares no map, which the freed-share rule
+    permits only for a criterion carrying no score share. The per-trial *after* map is then the
+    map that trial was graded under, since nothing was freed to move.
+    """
+
+    weights_declared: dict[str, float] | None
+    trials: list[TrialCounterfactual]
+    unrecomputed_trials: list[UnrecomputedTrial]
+
+    model_config = {"extra": "forbid"}
+
+
 class UnreadableTrial(BaseModel):
     """A bundle that could not be read or re-checked, named with the defect.
 
@@ -279,6 +367,7 @@ class ReconciledEntry(BaseModel):
     strict_disagreements: list[DisagreementRow]
     permissive_disagreements: list[DisagreementRow]
     excluded_trials: list[ExcludedTrial]
+    counterfactual: MigrationCounterfactual
     verdict: ReconcileVerdict
     refusals: list[Refusal]
 
@@ -326,6 +415,24 @@ class ReconcileReport(BaseModel):
 
 
 @dataclass(frozen=True)
+class RecordedTrialVerdict:
+    """One bundle's own grade, the config it was graded under, and what the replay recomputed.
+
+    ``grading_config`` and ``grade`` are read from the bundle rather than resolved from the
+    pack: the pack holds the *post*-migration state, so only the bundle records what this trial
+    scored and under which weight map. ``gate_constraint_ids`` are those of the entry's ``by``
+    constraints the recomputation carried as ``severity: gate`` — the vetoes the migration hands
+    to the trace side.
+    """
+
+    grading_config: Mapping[str, Any]
+    grade: Mapping[str, Any]
+    trace_component: float
+    trace_gate_failed: bool
+    gate_constraint_ids: frozenset[str]
+
+
+@dataclass(frozen=True)
 class TrialEvidence:
     """What one recorded trial contributes to one declared entry.
 
@@ -335,6 +442,10 @@ class TrialEvidence:
     ``unavailable`` replaces them where one side has no verdict to compare: exactly one of
     the two states holds, because a trial that is both labelled and unlabelled would be
     counted in one place and excluded in another.
+
+    ``recorded_verdict`` is required of a labelled trial and of no other: a trial that
+    contributes an observation is a trial the counterfactual must be able to speak about, so
+    omitting it would empty the counterfactual silently rather than reporting a gap.
     """
 
     trial: str
@@ -343,19 +454,25 @@ class TrialEvidence:
     constraint_passed: bool | None = None
     justification: str = ""
     unavailable: tuple[TrialExclusion, str] | None = None
+    recorded_verdict: RecordedTrialVerdict | None = None
 
     def __post_init__(self) -> None:
-        if self.labelled is (self.unavailable is None):
-            return
-        raise ValueError(
-            f"trial {self.trial} carries "
-            + (
-                "both a label pair and a reason it has none"
-                if self.labelled
-                else "neither a label pair nor a reason it has none"
+        if self.labelled is not (self.unavailable is None):
+            raise ValueError(
+                f"trial {self.trial} carries "
+                + (
+                    "both a label pair and a reason it has none"
+                    if self.labelled
+                    else "neither a label pair nor a reason it has none"
+                )
+                + ". A trial either contributes an observation or names why it does not"
             )
-            + ". A trial either contributes an observation or names why it does not"
-        )
+        if self.labelled and self.recorded_verdict is None:
+            raise ValueError(
+                f"trial {self.trial} contributes an observation with no recorded_verdict, so "
+                "the counterfactual would silently omit it instead of reporting a gap. Pass "
+                "the grade and config the bundle recorded"
+            )
 
     @property
     def labelled(self) -> bool:
@@ -617,6 +734,214 @@ def _direction_and_waiver_refusals(
     ]
 
 
+#: A recorded score crossed a YAML round trip before it was read back, so the reproduction is
+#: compared to it at the precision that survives that trip rather than bit for bit.
+_REPRODUCTION_TOLERANCE = 1e-9
+
+_A_COMPOSED_COMPONENT = (
+    "the recorded grade carries a {name} component, which the runner folds from several "
+    "sources and no single runner field holds, so the recorded verdict cannot be recomposed "
+    "from it and neither can the counterfactual"
+)
+_THE_REPRODUCTION_DIVERGED = (
+    "recomposing the recorded verdict gives judge={judge}, score={score}, pass={passed} where "
+    "the bundle recorded judge={recorded_judge}, score={recorded_score}, pass={recorded_pass}. "
+    "A composition that cannot reproduce what the runner decided says nothing about what the "
+    "migration would decide"
+)
+
+
+def _runner_components(recorded: Mapping[str, Any]) -> dict[str, float]:
+    """A recorded grade's components under the field names the runner's fold reads.
+
+    Every component but the judge's, whose score the caller supplies: the *before* column feeds
+    the judge's own recorded aggregate and the *after* column the reduced one.
+
+    Raises:
+        KeyError: naming a composed component the recorded grade carries. ``state_checks`` has
+            no single runner field (:data:`GRADE_COMPONENTS` says so with ``None``), so its
+            recorded value cannot be routed back through the fold that produced it.
+    """
+    lowered: dict[str, float] = {}
+    for spec in GRADE_COMPONENTS:
+        value = recorded.get(spec.core_field)
+        if value is None or spec.name == "llm_judge":
+            continue
+        if spec.runner_score_field is None:
+            raise KeyError(spec.name)
+        lowered[spec.runner_score_field] = float(value)
+    return lowered
+
+
+#: The fold reads a component's config section only to tell a *configured* component from a
+#: merely weighted one, so the ``trace_checks`` block the migration introduces is represented by
+#: its presence alone: the recorded config carries none, the migration adds one, and no field of
+#: it is ever read.
+_THE_MIGRATION_DECLARES_TRACE_CHECKS: Mapping[str, Any] = MappingProxyType({})
+
+
+def _flat_grading_config(
+    recorded_config: Mapping[str, Any], *, weights: Mapping[str, float], judge_scored: bool
+) -> dict[str, Any]:
+    """The recorded config in the flat shape the runner's fold takes it in.
+
+    The recorded block nests ``combine``; the runner's own model carries ``combine_method`` /
+    ``weights`` / ``pass_threshold`` at the top. ``pass_threshold`` is carried only where the
+    recorded block declares one, so the fold applies its own default rather than one invented
+    here. The config sections ride along for the *configured* check above.
+    """
+    combine = recorded_config.get("combine") or {}
+    flat: dict[str, Any] = {
+        "combine_method": combine.get("method", "weighted"),
+        "weights": dict(weights),
+    }
+    if "pass_threshold" in combine:
+        flat["pass_threshold"] = combine["pass_threshold"]
+    for spec in GRADE_COMPONENTS:
+        flat[spec.config_section] = recorded_config.get(spec.config_section)
+    if not judge_scored:
+        flat[COMPONENT_BY_NAME["llm_judge"].config_section] = None
+    return flat
+
+
+def _judge_component_of(rubric: Rubric, results: Sequence[CriterionResult]) -> tuple[float, bool]:
+    """The judge's aggregate over ``rubric``, and whether its required gate failed.
+
+    An empty rubric is the judge component *not evaluated* rather than a free ``1.0``: retiring
+    a pack's last criterion deletes the judge, and folding in the aggregate's vacuous pass would
+    hand the trial a component nothing scored.
+    """
+    if not rubric.criteria:
+        return -1.0, False
+    aggregate = aggregate_rubric(rubric, list(results))
+    return aggregate.score, aggregate.gate_failed
+
+
+def _reproduces_the_recorded_verdict(
+    recorded: RecordedTrialVerdict, verdict: RunnerTrialVerdict
+) -> str | None:
+    """``None`` where the recomposition matches the bundle's grade, else how it diverged."""
+    grade = recorded.grade
+    recorded_judge = (grade.get("components") or {}).get(COMPONENT_BY_NAME["llm_judge"].core_field)
+    same = (
+        recorded_judge is not None
+        and isclose(verdict.judge_component, recorded_judge, abs_tol=_REPRODUCTION_TOLERANCE)
+        and isclose(verdict.score, grade.get("score", -1.0), abs_tol=_REPRODUCTION_TOLERANCE)
+        and verdict.binary_pass is bool(grade.get("binary_pass"))
+    )
+    if same:
+        return None
+    return _THE_REPRODUCTION_DIVERGED.format(
+        judge=verdict.judge_component,
+        score=verdict.score,
+        passed=verdict.binary_pass,
+        recorded_judge=recorded_judge,
+        recorded_score=grade.get("score"),
+        recorded_pass=grade.get("binary_pass"),
+    )
+
+
+def _counterfactual_for_trial(
+    entry: MigrationEntry, trial: TrialEvidence
+) -> TrialCounterfactual | UnrecomputedTrial:
+    """One trial's before/after pair, or the named gap that stopped it.
+
+    The *before* pair is recomposed from what the bundle recorded and checked against the
+    verdict the bundle carries, so a divergence is reported rather than presented as a
+    baseline. The *after* pair drops the migrated criterion from the judge's side, takes the
+    replay's trace component in its place, and folds under the map the entry **declares** —
+    never the map the pack holds today, which is the post-migration state the report exists to
+    let a reviewer judge.
+    """
+    recorded = trial.recorded_verdict
+    if recorded is None:
+        raise ValueError(
+            f"trial {trial.trial} has no recorded verdict to compare a counterfactual against. "
+            "Only a trial that contributed an observation has one, and only those are passed "
+            "here"
+        )
+    try:
+        carried = _runner_components(recorded.grade.get("components") or {})
+    except KeyError as exc:
+        return UnrecomputedTrial(
+            trial=trial.trial,
+            gap=RecomputationGap.COMPOSED_COMPONENT_HAS_NO_RUNNER_FIELD,
+            reason=_A_COMPOSED_COMPONENT.format(name=exc.args[0]),
+        )
+
+    judge_field = COMPONENT_BY_NAME["llm_judge"].runner_score_field
+    trace_field = COMPONENT_BY_NAME["trace_checks"].runner_score_field
+    trace_section = COMPONENT_BY_NAME["trace_checks"].config_section
+    rubric = _recorded_rubric(recorded.grading_config)
+    results = [CriterionResult(**row) for row in recorded.grade.get("criterion_results") or ()]
+    weights_before = dict((recorded.grading_config.get("combine") or {}).get("weights") or {})
+
+    before_score, before_gate = _judge_component_of(rubric, results)
+    before = compose_runner_trial_verdict(
+        {**carried, judge_field: before_score},
+        _flat_grading_config(
+            recorded.grading_config, weights=weights_before, judge_scored=bool(rubric.criteria)
+        ),
+        judge_gate_failed=before_gate,
+        trace_gate_failed=False,
+    )
+    if (diverged := _reproduces_the_recorded_verdict(recorded, before)) is not None:
+        return UnrecomputedTrial(
+            trial=trial.trial, gap=RecomputationGap.RECOMPUTED_VERDICT_DIVERGES, reason=diverged
+        )
+
+    reduced = Rubric(
+        criteria=[item for item in rubric.criteria if item.id != entry.criterion],
+        reference=rubric.reference,
+    )
+    after_score, after_gate = _judge_component_of(
+        reduced, [row for row in results if row.id != entry.criterion]
+    )
+    weights_after = dict(entry.combine_weights or weights_before)
+    after = compose_runner_trial_verdict(
+        {**carried, judge_field: after_score, trace_field: recorded.trace_component},
+        _flat_grading_config(
+            {**recorded.grading_config, trace_section: _THE_MIGRATION_DECLARES_TRACE_CHECKS},
+            weights=weights_after,
+            judge_scored=bool(reduced.criteria),
+        ),
+        judge_gate_failed=after_gate,
+        trace_gate_failed=recorded.trace_gate_failed,
+    )
+    return TrialCounterfactual(
+        trial=trial.trial,
+        weights_before=weights_before,
+        weights_after=weights_after,
+        vetoes_before=sorted(item.id for item in rubric.criteria if item.required),
+        vetoes_after=sorted(
+            {item.id for item in reduced.criteria if item.required} | recorded.gate_constraint_ids
+        ),
+        judge_component_before=before.judge_component,
+        judge_component_after=after.judge_component,
+        score_before=before.score,
+        score_after=after.score,
+        binary_pass_before=before.binary_pass,
+        binary_pass_after=after.binary_pass,
+    )
+
+
+def migration_counterfactual(
+    entry: MigrationEntry, trials: Sequence[TrialEvidence]
+) -> MigrationCounterfactual:
+    """What the entry's declared map would have done to each trial that contributed one.
+
+    Computed for every mode, a ``candidate`` included: a candidacy exists to be measured, and
+    this is the measurement it is waiting for. Nothing here decides anything — see
+    :class:`MigrationCounterfactual`.
+    """
+    computed = [_counterfactual_for_trial(entry, trial) for trial in trials]
+    return MigrationCounterfactual(
+        weights_declared=dict(entry.combine_weights) if entry.combine_weights else None,
+        trials=[row for row in computed if isinstance(row, TrialCounterfactual)],
+        unrecomputed_trials=[row for row in computed if isinstance(row, UnrecomputedTrial)],
+    )
+
+
 def reconcile_entry(
     entry: MigrationEntry, *, task_ids: Sequence[str], trials: Sequence[TrialEvidence]
 ) -> ReconciledEntry:
@@ -664,6 +989,7 @@ def reconcile_entry(
         strict_disagreements=rows[DisagreementDirection.STRICT],
         permissive_disagreements=rows[DisagreementDirection.PERMISSIVE],
         excluded_trials=excluded,
+        counterfactual=migration_counterfactual(entry, contributing),
         verdict=_verdict(refusals, kappa),
         refusals=refusals,
     )
@@ -795,18 +1121,20 @@ def _refuse_a_block_the_corpus_cannot_be_graded_against(
         )
 
 
-def _recorded_criteria(task: Mapping[str, Any]) -> dict[str, MigratedCriterion]:
-    """The rubric a bundle recorded, by criterion id, in the shape ``was`` is written in.
+def _recorded_rubric(grading_config: Mapping[str, Any]) -> Rubric:
+    """The rubric a bundle recorded, through the model that wrote it.
 
-    Read through :class:`~tolokaforge.core.models.Rubric` — the model that wrote it — so a
-    recorded criterion and a declared ``was`` are compared field for field rather than key
-    by key. An empty mapping where the bundle recorded no rubric at all: that bundle then
-    says nothing about the criterion's pre-migration shape.
+    Read through :class:`~tolokaforge.core.models.Rubric` so a recorded criterion and a declared
+    ``was`` are compared field for field rather than key by key. A bundle that recorded no rubric
+    at all yields one with no criteria: it says nothing about any criterion's pre-migration shape.
     """
-    judge = (task.get("grading_config") or {}).get("llm_judge")
+    judge = (grading_config or {}).get("llm_judge")
     rubric = judge.get("rubric") if isinstance(judge, Mapping) else None
-    if not isinstance(rubric, Mapping):
-        return {}
+    return Rubric(**rubric) if isinstance(rubric, Mapping) else Rubric(criteria=[])
+
+
+def _recorded_criteria(task: Mapping[str, Any]) -> dict[str, MigratedCriterion]:
+    """The rubric a bundle recorded, by criterion id, in the shape ``was`` is written in."""
     return {
         criterion.id: MigratedCriterion(
             description=criterion.description,
@@ -814,7 +1142,7 @@ def _recorded_criteria(task: Mapping[str, Any]) -> dict[str, MigratedCriterion]:
             required=criterion.required,
             weight=criterion.weight,
         )
-        for criterion in Rubric(**rubric).criteria
+        for criterion in _recorded_rubric(task.get("grading_config") or {}).criteria
     }
 
 
@@ -895,8 +1223,10 @@ def _trial_evidence(
     *,
     trial: str,
     recorded_criteria: Mapping[str, MigratedCriterion],
+    task: Mapping[str, Any],
     grade: Mapping[str, Any] | None,
     verdicts: Mapping[str, Any],
+    trace: TraceChecksResult,
 ) -> TrialEvidence:
     judge_met, justification, judge_missing = _judge_verdict(entry.criterion, grade)
     constraint_passed, constraint_missing = _constraint_verdict(entry, verdicts)
@@ -908,6 +1238,22 @@ def _trial_evidence(
         constraint_passed=None if unavailable else constraint_passed,
         justification=justification,
         unavailable=unavailable,
+        recorded_verdict=(
+            None
+            if unavailable or grade is None
+            else RecordedTrialVerdict(
+                grading_config=task.get("grading_config") or {},
+                grade=grade,
+                trace_component=trace.score,
+                trace_gate_failed=trace.gate_failed,
+                gate_constraint_ids=frozenset(
+                    name
+                    for name in entry.by
+                    if (found := verdicts.get(name)) is not None
+                    and found.severity == TraceConstraintSeverity.GATE
+                ),
+            )
+        ),
     )
 
 
@@ -1020,8 +1366,10 @@ def _file_one_bundle(
                 entry,
                 trial=str(bundle),
                 recorded_criteria=criteria,
+                task=task,
                 grade=recorded_grade(bundle),
                 verdicts=verdicts,
+                trace=result,
             )
         )
     return None

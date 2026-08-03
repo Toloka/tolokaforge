@@ -23,7 +23,7 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import COMPONENT_BY_NAME, GRADE_COMPONENTS
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
@@ -1120,6 +1120,59 @@ def combine_grade_components(
         component_scores=active_components,
         weighted_mean=weighted_mean,
         pass_threshold=threshold,
+    )
+
+
+_JUDGE_SCORE_FIELD = COMPONENT_BY_NAME["llm_judge"].runner_score_field
+
+
+@dataclass(frozen=True)
+class RunnerTrialVerdict:
+    """One trial's runner-side verdict: the two gates applied around the weighted fold.
+
+    ``judge_component`` is the score the judge component carries *after* the required-criterion
+    gate, which is what the wire grade and the reasons string report — not the weighted average
+    the judge's own aggregate returned.
+    """
+
+    judge_component: float
+    score: float
+    binary_pass: bool
+
+
+def compose_runner_trial_verdict(
+    components: dict[str, Any],
+    grading_config: dict[str, Any],
+    *,
+    judge_gate_failed: bool,
+    trace_gate_failed: bool,
+) -> RunnerTrialVerdict:
+    """Fold ``components`` into a trial verdict, applying both gates around the combine.
+
+    One rule, two gates, in the order they bind. A failed **required** rubric criterion is a
+    hard fail of the judge *component*: its score is zeroed before the fold, so a high weighted
+    average cannot rescue it and every downstream reader of the component sees the gate. A
+    failed **trace** gate leaves the score alone and fails the trial outright. Either gate
+    therefore fails the trial independently of ``pass_threshold`` and of how heavily any other
+    component is weighted.
+
+    ``components`` carries the judge's *raw* aggregate score under its runner field; the
+    zeroing is this function's, so a caller reproducing a recorded verdict offline reaches the
+    same verdict as the runner without repeating either gate. The core substrate composes
+    independently (:mod:`~tolokaforge.core.grading.combine`) and never computes ``llm_judge``.
+
+    Raises:
+        ValueError: propagated from :func:`combine_grade_components` — an undecidable
+            ``state_checks`` fold, or a ``combine_method`` naming no supported aggregation.
+    """
+    folded = dict(components)
+    if judge_gate_failed:
+        folded[_JUDGE_SCORE_FIELD] = 0.0
+    score, binary_pass = combine_grade_components(folded, grading_config)
+    return RunnerTrialVerdict(
+        judge_component=folded.get(_JUDGE_SCORE_FIELD, -1.0),
+        score=score,
+        binary_pass=binary_pass and not (judge_gate_failed or trace_gate_failed),
     )
 
 

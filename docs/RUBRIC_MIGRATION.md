@@ -173,9 +173,46 @@ row, which is the fold `retrace`'s `(task_id, constraint_id)` keying exists to p
 One report per reconciliation. Nothing else under `--source` is opened for write, and no pack
 is touched whatever the verdict. Per entry the report carries `observations`, the **2×2
 contingency table**, `accuracy`, `kappa`, both disagreement lists with the judge's own
-`justification` per trial, every exclusion with its reason, the verdict, and every refusal.
-The report names which side of the pair is the reference — the maths is symmetric and will not
-say, so the artifact does.
+`justification` per trial, every exclusion with its reason, the **counterfactual** below, the
+verdict, and every refusal. The report names which side of the pair is the reference — the
+maths is symmetric and will not say, so the artifact does.
+
+## The counterfactual: what the migration does to each trial's verdict
+
+Beside the evidence, `counterfactual` reports what the migration *would have done* to every
+trial that contributed an observation. Per trial:
+
+| field | what it is |
+|---|---|
+| `judge_component_before` / `_after` | the judge component the trial was graded on, and the one the reduced rubric produces |
+| `score_before` / `_after`, `binary_pass_before` / `_after` | the trial verdict, before and after |
+| `weights_before` / `_after` | the `combine.weights` map the trial was graded under, and the one the migration folds under |
+| `vetoes_before` / `_after` | what could veto the trial: required criterion ids, plus the entry's `severity: gate` constraints after |
+
+The *before* columns come from the bundle's own `grade.yaml`. The *after* columns are recomposed
+by the same function the runner folds a live trial through
+([`docs/GRADING.md`](GRADING.md#score-combination) § Score Combination) over the reduced rubric,
+the recomputed trace component and — **the map the entry declares, never the map the pack holds
+today**. That is the point: the pack's current map *is* the post-migration state a reviewer is
+being asked to judge, so folding under it would answer the wrong question. Where the entry
+declares no map, which the [freed-share rule](GRADING.md#trace-checks) permits only for a
+criterion carrying no score share, the *after* map is the map that trial was graded under, since
+nothing was freed to move.
+
+**The recomposition is checked against the recorded verdict before any *after* column is
+believed.** A trial whose recorded verdict the composition cannot reproduce is listed under
+`unrecomputed_trials` with the divergence spelled out, and carries no before/after row: a
+composition that cannot reproduce what the runner already decided says nothing trustworthy about
+what the migration would decide. The same list names a trial whose recorded grade carries a
+`state_checks` component — the runner folds that one from several sources and no single field
+holds it, so it cannot be routed back through the fold that produced it.
+
+**Nothing reads the counterfactual.** No verdict, no exit code and no refusal. It is evidence a
+reviewer reads, and that is deliberate: gating on it would infer an unbounded safety property
+from a finite corpus, which is the inference [the bar](#the-bar) refuses. The freed-share rule is
+therefore satisfied by *declaring* a map, and this is where the declared map is measured — an
+entry declaring the identity map on a criterion the judge scored below `1.0` reports the judge
+component **rising**, which is the accepted residual made visible rather than trusted.
 
 ## Reading the evidence
 

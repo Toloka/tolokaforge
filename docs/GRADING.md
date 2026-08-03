@@ -2454,6 +2454,18 @@ If **every** criterion is required (no non-required criteria to average), the
 judge score collapses to the gate verdict: `1.0` when all required criteria are
 met, else `0.0`.
 
+**Where the gate is applied.** `aggregate_rubric` reports the gate as
+`gate_failed` beside a weighted average it does not touch, so the aggregate on
+its own says nothing about the gate: on a rubric whose non-required criteria all
+scored full marks, a trial that *failed* a required criterion still aggregates to
+`score: 1.0`. Zeroing the component is
+[`compose_runner_trial_verdict`](#score-combination)'s, and it is what the wire
+grade and the reasons string carry — measured on the five bundles under
+`tests/data/migration_corpora/`, whose `grade.yaml` records
+`components.llm_judge: 0.0` where the aggregate alone gives `1.0`. Read the
+aggregate's `score` without the gate and every one of them reads as a trial that
+aced the rubric it failed.
+
 `trace_checks` states the same concept as
 [`severity: gate`](#severity--a-check-that-must-hold), with the same semantics. Two
 spellings because the two vocabularies are authored separately; one behaviour,
@@ -2766,6 +2778,26 @@ the denominator — this includes an `llm_judge` component whose judge ERRORED
 as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
 declares no weight for, where the runner includes it at an invented `1.0` — the
 divergence tracked by #744 above.
+
+**Where the runner-side verdict is composed.** The runner folds a trial through
+`compose_runner_trial_verdict`
+([`tolokaforge/runner/grading.py`](../tolokaforge/runner/grading.py)), which wraps
+`combine_grade_components` and applies **both gates** around it: the judge
+component is zeroed where a required criterion failed, and a failed judge or
+trace gate then forces `binary_pass` false whatever the threshold. It returns the
+gated judge component beside `(score, binary_pass)`, because that component — not
+the judge's raw aggregate — is what the wire grade and the reasons carry. One
+runner-side home, so an offline recomputation reaches the runner's verdict without
+repeating either gate: `tolokaforge reconcile`'s counterfactual
+([`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md)) is that caller, and it is what
+[#775](https://github.com/toloka/tolokaforge/issues/775) would call.
+
+**Core composes its own**, in
+[`tolokaforge/core/grading/combine.py`](../tolokaforge/core/grading/combine.py),
+with its own trace-gate forcing, and produces no `llm_judge` component at all —
+so there is no judge gate for it to apply and nothing shared to extract. Two
+substrates, two compositions, one behaviour where both can be asked; the
+canonical differential above is what holds them to it.
 
 **Configured but unevaluated fails loud, for every component.** A component is
 configured when `combine.weights` gives it a weight **and** the pack writes its

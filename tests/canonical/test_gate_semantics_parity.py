@@ -32,6 +32,7 @@ from tolokaforge.core.grading.rubric import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.models import TraceChecksConfig
+from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.models import Criterion, Rubric
 
 pytestmark = pytest.mark.canonical
@@ -176,11 +177,18 @@ def _judge_aggregate(members: Sequence[_Member]) -> RubricAggregate:
 
 
 def _judge_component(aggregate: RubricAggregate) -> _Verdict:
-    """The judge's aggregate as the runner publishes it (``runner/service.py:1505``)."""
-    return _Verdict(
-        component=0.0 if aggregate.gate_failed else aggregate.score,
-        gate_failed=aggregate.gate_failed,
+    """The judge's aggregate as the runner publishes it.
+
+    Driven through the runner's own composition rather than restating its zeroing, so this
+    parity table cannot agree with a rule the runner has stopped applying.
+    """
+    verdict = compose_runner_trial_verdict(
+        {"llm_judge_score": aggregate.score},
+        {"combine_method": "weighted", "weights": {"llm_judge": 1.0}, "llm_judge": {}},
+        judge_gate_failed=aggregate.gate_failed,
+        trace_gate_failed=False,
     )
+    return _Verdict(component=verdict.judge_component, gate_failed=aggregate.gate_failed)
 
 
 def _trace_component(members: Sequence[_Member]) -> _Verdict:

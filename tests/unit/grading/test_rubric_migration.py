@@ -37,11 +37,14 @@ from tolokaforge.core.grading.migration_declaration import (
     ResidualKind,
 )
 from tolokaforge.core.grading.rubric_migration import (
+    RecomputationGap,
     ReconcileError,
     ReconcileVerdict,
+    RecordedTrialVerdict,
     RefusalKind,
     TrialEvidence,
     TrialExclusion,
+    migration_counterfactual,
     reconcile_corpus,
     reconcile_entry,
 )
@@ -143,6 +146,56 @@ def _entry(
     )
 
 
+def _recorded_verdict(*, judge_met: bool, constraint_passed: bool) -> RecordedTrialVerdict:
+    """A bundle whose recorded verdict is consistent with the grade it records.
+
+    Hand-derived, not recomputed: the judge's weighted average runs over the one *non-required*
+    criterion and is ``1.0``, while the required one is a pure gate — so a met trial records
+    ``1.0`` and passes, and a not-met one records the gate's ``0.0`` and fails. Consistency is
+    what keeps the counterfactual from reporting a gap in tests that are about the bar; the
+    bar's own view of the pre-migration criterion is ``recorded_criterion``, not this.
+    """
+    judged = 1.0 if judge_met else 0.0
+    criteria = [
+        {
+            "id": _CRITERION,
+            "description": _PRE_MIGRATION_TEXT,
+            "kind": "binary",
+            "required": True,
+            "weight": 1.0,
+        },
+        {
+            "id": "note_saved",
+            "description": "a new note was saved",
+            "kind": "graded",
+            "required": False,
+            "weight": 1.0,
+        },
+    ]
+    return RecordedTrialVerdict(
+        grading_config={
+            "combine": {
+                "method": "weighted",
+                "weights": {"llm_judge": 1.0},
+                "pass_threshold": 0.75,
+            },
+            "llm_judge": {"rubric": {"criteria": criteria}},
+        },
+        grade={
+            "components": {"llm_judge": judged},
+            "score": judged,
+            "binary_pass": judge_met,
+            "criterion_results": [
+                {"id": _CRITERION, "met": judge_met, "score": judged, "justification": "as judged"},
+                {"id": "note_saved", "met": True, "score": 1.0, "justification": "as judged"},
+            ],
+        },
+        trace_component=1.0 if constraint_passed else 0.0,
+        trace_gate_failed=not constraint_passed,
+        gate_constraint_ids=frozenset({_CONSTRAINT}),
+    )
+
+
 def _trial(
     name: str,
     *,
@@ -151,6 +204,7 @@ def _trial(
     recorded: MigratedCriterion | None = -1,  # type: ignore[assignment]
     unavailable: tuple[TrialExclusion, str] | None = None,
 ) -> TrialEvidence:
+    labelled = judge_met is not None and constraint_passed is not None
     return TrialEvidence(
         trial=name,
         recorded_criterion=_was() if recorded == -1 else recorded,
@@ -158,6 +212,11 @@ def _trial(
         constraint_passed=constraint_passed,
         justification=f"the judge's reading of {name}",
         unavailable=unavailable,
+        recorded_verdict=(
+            _recorded_verdict(judge_met=bool(judge_met), constraint_passed=bool(constraint_passed))
+            if labelled
+            else None
+        ),
     )
 
 
@@ -442,6 +501,9 @@ def test_a_candidate_is_not_charged_the_recorded_rubric_check() -> None:
     assert reconciled.observations == 2
     assert reconciled.verdict is ReconcileVerdict.NO_COUNTER_EVIDENCE
     assert reconciled.gates_the_exit_code is False
+    # A candidacy exists to be measured, so the measurement it is waiting for is computed for it
+    # too — it converts nothing, which is why the number gates nothing here either.
+    assert len(reconciled.counterfactual.trials) == 2
 
 
 def test_a_trial_cannot_be_both_labelled_and_unlabelled() -> None:
@@ -453,6 +515,305 @@ def test_a_trial_cannot_be_both_labelled_and_unlabelled() -> None:
             constraint_passed=True,
             unavailable=(TrialExclusion.NO_CRITERION_RESULTS, "no results"),
         )
+
+
+def test_a_contributing_trial_without_its_recorded_verdict_is_refused() -> None:
+    """The second invariant, and the reason it is one: an observation with no recorded grade
+    behind it would drop out of the counterfactual silently, which reads as a migration that
+    moves nothing rather than as a trial nobody measured."""
+    with pytest.raises(ValueError, match="no recorded_verdict"):
+        TrialEvidence(trial="corpus/t0", judge_met=True, constraint_passed=True)
+
+
+# ---------------------------------------------------------------------------
+# The counterfactual: what the entry's declared map does, per trial
+# ---------------------------------------------------------------------------
+
+#: ``cache_debug``'s rubric shape — one required gate plus two graded criteria whose weights sum
+#: to the ``1.5`` denominator that makes retiring the graded ``explains_mechanism`` raise the
+#: judge component. Written out rather than read from the pack: this is the shape #683's
+#: measurement M5 used, and the pack is free to change without re-basing the arithmetic below.
+_SCORED_CRITERION = "explains_mechanism"
+
+
+def _cache_debug_shaped_verdict(*, scored: float, trace: float = 1.0) -> RecordedTrialVerdict:
+    """A recorded trial that met the gate and was awarded ``scored`` on the graded criterion.
+
+    The recorded grade is hand-derived: the judge's average runs over the two *non-required*
+    criteria, ``(1.0·scored + 0.5·1.0) / 1.5``, and the judge-only weight map makes the trial
+    score equal to it.
+    """
+    judge = (scored + 0.5) / 1.5
+    criteria = [
+        {
+            "id": "identifies_bug",
+            "description": "names the stale cache as the root cause",
+            "kind": "binary",
+            "required": True,
+            "weight": 1.0,
+        },
+        {
+            "id": _SCORED_CRITERION,
+            "description": "explains that the write does not invalidate the cached key",
+            "kind": "graded",
+            "required": False,
+            "weight": 1.0,
+        },
+        {
+            "id": "no_false_fix",
+            "description": "does not attribute the fault to an unrelated cause",
+            "kind": "graded",
+            "required": False,
+            "weight": 0.5,
+        },
+    ]
+    return RecordedTrialVerdict(
+        grading_config={
+            "combine": {
+                "method": "weighted",
+                "weights": {"llm_judge": 1.0},
+                "pass_threshold": 0.75,
+            },
+            "llm_judge": {"rubric": {"criteria": criteria}},
+        },
+        grade={
+            "components": {"llm_judge": judge},
+            "score": judge,
+            "binary_pass": judge >= 0.75,
+            "criterion_results": [
+                {"id": "identifies_bug", "met": True, "score": 1.0, "justification": "as judged"},
+                {
+                    "id": _SCORED_CRITERION,
+                    "met": scored >= 0.5,
+                    "score": scored,
+                    "justification": "as judged",
+                },
+                {"id": "no_false_fix", "met": True, "score": 1.0, "justification": "as judged"},
+            ],
+        },
+        trace_component=trace,
+        trace_gate_failed=False,
+        gate_constraint_ids=frozenset(),
+    )
+
+
+def _identity_map_retirement() -> MigrationEntry:
+    """A retirement of the graded criterion declaring the map the pack already has.
+
+    The identity map is what the freed-share rule leaves an author who shifts nothing, and it
+    absorbs no freed share: this entry is exactly the accepted residual that rule surfaces
+    rather than gates.
+    """
+    return MigrationEntry(
+        criterion=_SCORED_CRITERION,
+        mode=MigrationMode.RETIRED,
+        by=[_CONSTRAINT],
+        was=MigratedCriterion(
+            description="explains that the write does not invalidate the cached key",
+            kind="graded",
+            required=False,
+            weight=1.0,
+        ),
+        residual=MigrationResidual(kind=ResidualKind.NONE, reason="the check reads it whole"),
+        combine_weights={"llm_judge": 1.0},
+        evidence=MigrationEvidence(corpus="corpus", observations=1, kappa=0.72),
+    )
+
+
+@pytest.mark.parametrize(
+    ("scored", "judge_before"),
+    [(1.0, 1.0), (0.9, 0.933333333), (0.5, 0.666666667), (0.0, 0.333333333)],
+    ids=["full-marks", "0.9", "0.5", "0.0"],
+)
+def test_an_identity_map_on_a_criterion_scored_below_full_marks_reports_the_judge_rising(
+    scored: float, judge_before: float
+) -> None:
+    """The standing case that makes the freed-share rule's accepted residual visible.
+
+    A scored criterion's weight sits in the judge component's *denominator*, so retiring one the
+    agent did not ace raises the component — and an identity map absorbs none of the freed
+    share, which is why the rule can only require the declaration and not prove it safe. The
+    report is the instrument: it says so per trial. Full marks is the boundary where the hazard
+    vanishes, and it is here to show the rise is the *score's* doing rather than the retirement's.
+    """
+    entry = _identity_map_retirement()
+    trial = _trial("corpus/t0", judge_met=True, constraint_passed=True)
+    trial = TrialEvidence(
+        trial=trial.trial,
+        recorded_criterion=entry.was,
+        judge_met=True,
+        constraint_passed=True,
+        justification=trial.justification,
+        recorded_verdict=_cache_debug_shaped_verdict(scored=scored),
+    )
+
+    (row,) = migration_counterfactual(entry, [trial]).trials
+
+    assert row.judge_component_before == pytest.approx(judge_before, abs=1e-9)
+    assert row.judge_component_after == pytest.approx(1.0, abs=1e-9)
+    assert row.weights_before == row.weights_after == {"llm_judge": 1.0}
+
+
+def test_the_declared_map_is_the_map_the_after_column_is_folded_under() -> None:
+    """The point of the mandatory declaration: the report answers what the map *this entry
+    declares* does, so the declared map has to reach the fold and not merely the printout.
+
+    Discriminating by construction. The trial recorded ``{llm_judge: 1.0}``, and the trace
+    component the migration adds is ``0.0``: under the recorded map the trace component arrives
+    unweighted at an implicit ``1.0`` (#744) and the trial scores ``0.5``, while under the
+    declared ``{llm_judge: 0.75, trace_checks: 0.25}`` it scores ``0.75``. Reporting the declared
+    map while folding under the recorded one therefore reds on the score, not only on the map.
+    """
+    entry = _identity_map_retirement().model_copy(
+        update={"combine_weights": {"llm_judge": 0.75, "trace_checks": 0.25}}
+    )
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=entry.was,
+        judge_met=True,
+        constraint_passed=False,
+        recorded_verdict=_cache_debug_shaped_verdict(scored=0.0, trace=0.0),
+    )
+
+    (row,) = migration_counterfactual(entry, [trial]).trials
+
+    assert row.weights_before == {"llm_judge": 1.0}
+    assert row.weights_after == {"llm_judge": 0.75, "trace_checks": 0.25}
+    assert row.score_after == pytest.approx(0.75)
+
+
+def test_the_declared_map_is_reported_even_where_it_shifts_nothing() -> None:
+    """An identity map is a declaration a reviewer reads, so it is named rather than elided."""
+    entry = _identity_map_retirement()
+
+    counterfactual = migration_counterfactual(entry, [])
+
+    assert counterfactual.weights_declared == {"llm_judge": 1.0}
+    assert counterfactual.trials == []
+
+
+def test_an_entry_declaring_no_map_carries_the_map_its_trial_was_graded_under() -> None:
+    """A ``required`` criterion frees no share, so the freed-share rule asks for no map — and the
+    counterfactual then folds under the map the trial recorded, never the one the pack holds
+    today, which is the post-migration state the report exists to let a reviewer judge."""
+    (row,) = migration_counterfactual(
+        _entry(MigrationMode.NARROWED),
+        [_trial("corpus/t0", judge_met=True, constraint_passed=True)],
+    ).trials
+
+    assert row.weights_before == row.weights_after == {"llm_judge": 1.0}
+
+
+def test_retiring_a_pack_s_last_criterion_leaves_the_judge_component_unevaluated() -> None:
+    """A rubric with nothing left in it is a judge that scores nothing, not one that scores
+    ``1.0``: folding in the aggregate's vacuous pass would hand the trial a component no
+    criterion produced."""
+    entry = _entry(MigrationMode.RETIRED)
+    recorded = _recorded_verdict(judge_met=True, constraint_passed=True)
+    only_one = {
+        "llm_judge": {
+            "rubric": {
+                "criteria": [
+                    row
+                    for row in recorded.grading_config["llm_judge"]["rubric"]["criteria"]
+                    if row["id"] == _CRITERION
+                ]
+            }
+        },
+        "combine": recorded.grading_config["combine"],
+    }
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=_was(),
+        judge_met=True,
+        constraint_passed=True,
+        recorded_verdict=RecordedTrialVerdict(
+            grading_config=only_one,
+            grade={
+                "components": {"llm_judge": 1.0},
+                "score": 1.0,
+                "binary_pass": True,
+                "criterion_results": [
+                    {"id": _CRITERION, "met": True, "score": 1.0, "justification": "as judged"}
+                ],
+            },
+            trace_component=1.0,
+            trace_gate_failed=False,
+            gate_constraint_ids=frozenset({_CONSTRAINT}),
+        ),
+    )
+
+    (row,) = migration_counterfactual(entry, [trial]).trials
+
+    assert row.judge_component_before == 1.0
+    assert row.judge_component_after == -1.0
+
+
+def test_a_recorded_composed_component_is_named_rather_than_dropped() -> None:
+    """``state_checks`` is folded from several sources and no single runner field holds it, so a
+    recorded one cannot be routed back through the fold that produced it. Naming the gap is the
+    alternative to quietly recomposing the trial without a component it was graded on."""
+    recorded = _recorded_verdict(judge_met=True, constraint_passed=True)
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=_was(),
+        judge_met=True,
+        constraint_passed=True,
+        recorded_verdict=RecordedTrialVerdict(
+            grading_config=recorded.grading_config,
+            grade={**recorded.grade, "components": {"llm_judge": 1.0, "state_checks": 0.8}},
+            trace_component=recorded.trace_component,
+            trace_gate_failed=recorded.trace_gate_failed,
+            gate_constraint_ids=recorded.gate_constraint_ids,
+        ),
+    )
+
+    counterfactual = migration_counterfactual(_entry(MigrationMode.NARROWED), [trial])
+
+    assert counterfactual.trials == []
+    (gap,) = counterfactual.unrecomputed_trials
+    assert gap.gap is RecomputationGap.COMPOSED_COMPONENT_HAS_NO_RUNNER_FIELD
+    assert "state_checks" in gap.reason
+
+
+def test_a_verdict_the_composition_cannot_reproduce_is_named_and_not_used_as_a_baseline() -> None:
+    """The runtime half of the extraction's equivalence claim: the *before* column is the verdict
+    the bundle recorded, so the recomposition is checked against it before any *after* column is
+    believed. A composition that cannot reproduce what the runner already decided says nothing
+    about what the migration would decide, and the report says that instead of a number."""
+    recorded = _recorded_verdict(judge_met=False, constraint_passed=False)
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=_was(),
+        judge_met=False,
+        constraint_passed=False,
+        recorded_verdict=RecordedTrialVerdict(
+            grading_config=recorded.grading_config,
+            grade={**recorded.grade, "score": 0.75, "binary_pass": True},
+            trace_component=recorded.trace_component,
+            trace_gate_failed=recorded.trace_gate_failed,
+            gate_constraint_ids=recorded.gate_constraint_ids,
+        ),
+    )
+
+    counterfactual = migration_counterfactual(_entry(MigrationMode.NARROWED), [trial])
+
+    assert counterfactual.trials == []
+    (gap,) = counterfactual.unrecomputed_trials
+    assert gap.gap is RecomputationGap.RECOMPUTED_VERDICT_DIVERGES
+    assert "score=0.75" in gap.reason
+
+
+def test_the_migrated_criterion_leaves_the_veto_set_and_the_trace_gate_joins_it() -> None:
+    """For a ``required`` criterion the two weight maps are identical and say nothing, which is
+    why the veto sets are reported beside them: the transfer of the veto is the whole change."""
+    (row,) = migration_counterfactual(
+        _entry(MigrationMode.RETIRED), [_trial("corpus/t0", judge_met=True, constraint_passed=True)]
+    ).trials
+
+    assert _CRITERION in row.vetoes_before
+    assert _CRITERION not in row.vetoes_after
+    assert row.vetoes_after == [_CONSTRAINT]
 
 
 # ---------------------------------------------------------------------------
