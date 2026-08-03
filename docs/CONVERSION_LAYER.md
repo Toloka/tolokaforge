@@ -100,6 +100,8 @@ state_checks:
   hash:
     enabled: true
     weight: 1.0
+    golden_actions:                      # or expected_state_hash
+      - name: place_order
 ```
 
 #### `fixtures/tools.json`

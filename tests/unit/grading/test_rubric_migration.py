@@ -148,14 +148,25 @@ def _entry(
     )
 
 
+#: The recorded map every bundle below was graded under. It weights ``trace_checks`` because
+#: the *after* column installs that component, and a map that does not weight what the
+#: counterfactual folds leaves an ``UnrecomputedTrial`` gap instead of a row — the shape
+#: ``test_an_entry_declaring_no_weight_for_what_it_installs_reports_the_gap`` is about. The
+#: two shares are equal so the after column's arithmetic is the equal-shares mean every
+#: expected number in this module was derived against.
+_RECORDED_WEIGHTS = {"llm_judge": 1.0, "trace_checks": 1.0}
+
+
 def _recorded_verdict(*, judge_met: bool, constraint_passed: bool) -> RecordedTrialVerdict:
     """A bundle whose recorded verdict is consistent with the grade it records.
 
     Hand-derived, not recomputed: the judge's weighted average runs over the one *non-required*
     criterion and is ``1.0``, while the required one is a pure gate — so a met trial records
-    ``1.0`` and passes, and a not-met one records the gate's ``0.0`` and fails. Consistency is
-    what keeps the counterfactual from reporting a gap in tests that are about the bar; the
-    bar's own view of the pre-migration criterion is ``recorded_criterion``, not this.
+    ``1.0`` and passes, and a not-met one records the gate's ``0.0`` and fails. The recorded
+    grade carries no trace component, so the trial's recorded score is the judge's alone
+    whatever else the map weights. Consistency is what keeps the counterfactual from reporting
+    a gap in tests that are about the bar; the bar's own view of the pre-migration criterion is
+    ``recorded_criterion``, not this.
     """
     judged = 1.0 if judge_met else 0.0
     criteria = [
@@ -178,7 +189,7 @@ def _recorded_verdict(*, judge_met: bool, constraint_passed: bool) -> RecordedTr
         grading_config={
             "combine": {
                 "method": "weighted",
-                "weights": {"llm_judge": 1.0},
+                "weights": dict(_RECORDED_WEIGHTS),
                 "pass_threshold": 0.75,
             },
             "llm_judge": {"rubric": {"criteria": criteria}},
@@ -661,7 +672,7 @@ def _cache_debug_shaped_verdict(*, scored: float, trace: float = 1.0) -> Recorde
         grading_config={
             "combine": {
                 "method": "weighted",
-                "weights": {"llm_judge": 1.0},
+                "weights": dict(_RECORDED_WEIGHTS),
                 "pass_threshold": 0.75,
             },
             "llm_judge": {"rubric": {"criteria": criteria}},
@@ -692,7 +703,9 @@ def _identity_map_retirement() -> MigrationEntry:
 
     The identity map is what the freed-share rule leaves an author who shifts nothing, and it
     absorbs no freed share: this entry is exactly the accepted residual that rule surfaces
-    rather than gates.
+    rather than gates. Identity includes ``trace_checks``, which the recorded map already
+    weights — an author shifting nothing still has to say what share the check the migration
+    installs carries, and declaring none leaves a gap rather than a row.
     """
     return MigrationEntry(
         criterion=_SCORED_CRITERION,
@@ -705,7 +718,7 @@ def _identity_map_retirement() -> MigrationEntry:
             weight=1.0,
         ),
         residual=MigrationResidual(kind=ResidualKind.NONE, reason="the check reads it whole"),
-        combine_weights={"llm_judge": 1.0},
+        combine_weights=dict(_RECORDED_WEIGHTS),
         evidence=MigrationEvidence(corpus="corpus", observations=1, kappa=0.72),
     )
 
@@ -741,18 +754,18 @@ def test_an_identity_map_on_a_criterion_scored_below_full_marks_reports_the_judg
 
     assert row.judge_component_before == pytest.approx(judge_before, abs=1e-9)
     assert row.judge_component_after == pytest.approx(1.0, abs=1e-9)
-    assert row.weights_before == row.weights_after == {"llm_judge": 1.0}
+    assert row.weights_before == row.weights_after == _RECORDED_WEIGHTS
 
 
 def test_the_declared_map_is_the_map_the_after_column_is_folded_under() -> None:
     """The point of the mandatory declaration: the report answers what the map *this entry
     declares* does, so the declared map has to reach the fold and not merely the printout.
 
-    Discriminating by construction. The trial recorded ``{llm_judge: 1.0}``, and the trace
-    component the migration adds is ``0.0``: under the recorded map the trace component arrives
-    unweighted at an implicit ``1.0`` (#744) and the trial scores ``0.5``, while under the
-    declared ``{llm_judge: 0.75, trace_checks: 0.25}`` it scores ``0.75``. Reporting the declared
-    map while folding under the recorded one therefore reds on the score, not only on the map.
+    Discriminating by construction. The trace component the migration adds is ``0.0`` and the
+    judge component after the retirement is ``1.0``: under the recorded map's equal shares the
+    trial scores ``0.5``, while under the declared ``{llm_judge: 0.75, trace_checks: 0.25}`` it
+    scores ``0.75``. Reporting the declared map while folding under the recorded one therefore
+    reds on the score, not only on the map.
     """
     entry = _identity_map_retirement().model_copy(
         update={"combine_weights": {"llm_judge": 0.75, "trace_checks": 0.25}}
@@ -767,7 +780,7 @@ def test_the_declared_map_is_the_map_the_after_column_is_folded_under() -> None:
 
     (row,) = migration_counterfactual(entry, [trial]).trials
 
-    assert row.weights_before == {"llm_judge": 1.0}
+    assert row.weights_before == _RECORDED_WEIGHTS
     assert row.weights_after == {"llm_judge": 0.75, "trace_checks": 0.25}
     assert row.score_after == pytest.approx(0.75)
 
@@ -778,20 +791,96 @@ def test_the_declared_map_is_reported_even_where_it_shifts_nothing() -> None:
 
     counterfactual = migration_counterfactual(entry, [])
 
-    assert counterfactual.weights_declared == {"llm_judge": 1.0}
+    assert counterfactual.weights_declared == _RECORDED_WEIGHTS
     assert counterfactual.trials == []
 
 
-def test_an_entry_declaring_no_map_carries_the_map_its_trial_was_graded_under() -> None:
-    """A ``required`` criterion frees no share, so the freed-share rule asks for no map — and the
-    counterfactual then folds under the map the trial recorded, never the one the pack holds
-    today, which is the post-migration state the report exists to let a reviewer judge."""
-    (row,) = migration_counterfactual(
-        _entry(MigrationMode.NARROWED),
-        [_trial("corpus/t0", judge_met=True, constraint_passed=True)],
-    ).trials
+def _verdict_weighting_only_the_judge(*, judge_met: bool) -> RecordedTrialVerdict:
+    """A bundle graded before the trace check existed, so its map cannot weight one."""
+    recorded = _recorded_verdict(judge_met=judge_met, constraint_passed=True)
+    return RecordedTrialVerdict(
+        grading_config={
+            **recorded.grading_config,
+            "combine": {**recorded.grading_config["combine"], "weights": {"llm_judge": 1.0}},
+        },
+        grade=recorded.grade,
+        trace_component=recorded.trace_component,
+        trace_gate_failed=recorded.trace_gate_failed,
+        gate_constraint_ids=recorded.gate_constraint_ids,
+    )
 
-    assert row.weights_before == row.weights_after == {"llm_judge": 1.0}
+
+@pytest.mark.parametrize(
+    "mode",
+    [MigrationMode.NARROWED, MigrationMode.CANDIDATE],
+    ids=["was-required", "candidate"],
+)
+def test_an_entry_declaring_no_map_reports_the_unweighted_component_it_installs(
+    mode: MigrationMode,
+) -> None:
+    """The *after* column installs ``trace_checks`` as a scored component, and an entry
+    declaring no map is folded under the map the trial recorded — which cannot weight a
+    component the migration has not made yet. So there is no share to fold it at, and the
+    report says which key is missing rather than reporting a number computed from the
+    runner's invented ``1.0``: that would put the very defect this report measures inside a
+    reviewer-facing figure.
+
+    Both shapes the freed-share rule lets load without a map, because they escape it for
+    different reasons and an implementation reaching only one leaves the other inventing a
+    weight: a ``required`` criterion frees no score share, and a candidacy has measured
+    nothing to rebalance yet.
+    """
+    entry = _entry(mode)
+    assert entry.combine_weights is None
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=_was(),
+        judge_met=True,
+        constraint_passed=True,
+        recorded_verdict=_verdict_weighting_only_the_judge(judge_met=True),
+    )
+
+    counterfactual = migration_counterfactual(entry, [trial])
+
+    assert counterfactual.trials == []
+    (gap,) = counterfactual.unrecomputed_trials
+    assert gap.gap is RecomputationGap.FOLDED_COMPONENT_HAS_NO_DECLARED_WEIGHT
+    assert "trace_checks" in gap.reason, gap.reason
+    assert "after" in gap.reason, gap.reason
+
+
+def test_a_recorded_map_omitting_a_component_the_bundle_scored_names_the_before_column() -> None:
+    """The same gap on the other column, which is reached by a different defect.
+
+    The *before* column folds what the bundle recorded under the map the bundle recorded, so
+    it needs no declaration at all to reach a component with no share: a bundle graded before
+    the authoring rule that a configured component must be weighted carries exactly that
+    shape, and ``retrace`` and ``reconcile`` both replay such bundles. Which column the gap
+    names is what tells an author whether the missing weight is theirs to declare or the
+    bundle's to explain, so the row says so.
+    """
+    recorded = _verdict_weighting_only_the_judge(judge_met=True)
+    trial = TrialEvidence(
+        trial="corpus/t0",
+        recorded_criterion=_was(),
+        judge_met=True,
+        constraint_passed=True,
+        recorded_verdict=RecordedTrialVerdict(
+            grading_config=recorded.grading_config,
+            grade={**recorded.grade, "components": {"llm_judge": 1.0, "transcript_rules": 1.0}},
+            trace_component=recorded.trace_component,
+            trace_gate_failed=recorded.trace_gate_failed,
+            gate_constraint_ids=recorded.gate_constraint_ids,
+        ),
+    )
+
+    counterfactual = migration_counterfactual(_identity_map_retirement(), [trial])
+
+    assert counterfactual.trials == []
+    (gap,) = counterfactual.unrecomputed_trials
+    assert gap.gap is RecomputationGap.FOLDED_COMPONENT_HAS_NO_DECLARED_WEIGHT
+    assert "transcript_rules" in gap.reason, gap.reason
+    assert "before" in gap.reason, gap.reason
 
 
 def test_retiring_a_pack_s_last_criterion_leaves_the_judge_component_unevaluated() -> None:
@@ -915,8 +1004,9 @@ def test_the_veto_set_after_the_migration_is_the_one_the_declared_mode_leaves(
     retirement it is a candidate *for*, having no narrowed text to project instead.
 
     The weight maps are identical in every row here — this entry declares no map and a
-    ``required`` criterion frees no share — which is why the veto set is the column carrying the
-    change and why it is worth being exact about.
+    ``required`` criterion frees no share, so the after column folds under the map the trial
+    recorded — which is why the veto set is the column carrying the change and why it is worth
+    being exact about.
     """
     (row,) = migration_counterfactual(
         _entry(mode), [_trial("corpus/t0", judge_met=True, constraint_passed=True)]

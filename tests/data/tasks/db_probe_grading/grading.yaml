@@ -21,6 +21,4 @@ state_checks:
           description: "exactly one corrective action"
       description: "a corrective action exists for lot 7"
 
-transcript_rules: {}
-
 llm_judge: null

@@ -39,13 +39,14 @@ author-facing key is one `GradingKey` entry declaring three axes:
   scores). The satisfying/violating **pair** sweep selects `SCORED_CHECK` alone,
   because only a scored key has a violating trajectory that moves a *component*.
   A `CONFIG_INPUT` or `AGGREGATION` key still reaches `DIFFERENTIAL_CANONICAL`
-  through a differential over what it does govern — each one over a
-  [`tests/data/grading_parity/`](../tests/data/grading_parity/) pack of its own:
+  through a differential over what it does govern, each over a
+  [`tests/data/grading_parity/`](../tests/data/grading_parity/) pack:
   `state_checks.hash.weight` by sweeping the weight across one pack's two hash
   cases, `combine.method` by re-authoring the method over one pack's split
-  components. Both escape the pair sweep, so a frozen set in the test module
-  enumerates every claim it does not reach and asserts, per entry, the property
-  that entry's own differential rests on (below).
+  components, and `combine.weights` by re-folding one pack's two scored components
+  under maps that omit and declare them. All three escape the pair sweep, so a
+  frozen set in the test module enumerates every claim it does not reach and
+  asserts, per entry, the property that entry's own differential rests on (below).
 - **`coverage`** — `BOTH_SCORE_PARITY` (both substrates consume it and produce the
   same component score), `BOTH_SIGNAL_PARITY` (both consume it and both
   discriminate; the magnitudes differ because the two substrates aggregate
@@ -176,12 +177,15 @@ expected state:
 | Member | coverage | Tracked |
 |---|---|---|
 | `state_checks.hash.golden_actions` | `BOTH_SCORE_PARITY` | — |
-| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | #741 |
-| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | #741 |
+| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | — |
+| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | — |
+
+Neither carries a tracking issue of its own: the one shape still unproven is
+`expected_state_hash`, tracked on its own row above as **#693**.
 
 The fold rule is shared on every shape — both substrates call
-`compose_state_checks_score` — but the *inputs* to it still differ for two of the
-three source shapes:
+`compose_state_checks_score` — but the *inputs* to it still differ for one of the two
+authorable source shapes:
 
 - **`golden_actions`** — proven. Both substrates replay the actions and hash the
   resulting state, so the same trial yields the same verdict and therefore the same
@@ -190,14 +194,17 @@ three source shapes:
   runner's `expected_hash` field and **no runner path reads it** (#693), so the
   runner falls back on refusal semantics and compares the trial against the
   **initial** state where core compares it against the author's literal.
-- **`hash.enabled` with no declared source** — not proven. Core produces **no**
-  verdict (below), while the runner runs hash grading anyway for the refusal shape
-  and produces a real binary one. Measured, on a pack with live assertions scoring
-  `0.5` at `weight: 0.6`: core's component is `0.5` on both hash outcomes, the
-  runner's is `0.8` on a match and `0.2` on a divergence (#741).
+- **`hash.enabled` with no declared source** — not proven, and **refused at the
+  authoring gate** for that reason. Core produces **no** verdict (below), while the
+  runner runs hash grading anyway for the refusal shape and produces a real binary
+  one. Measured, on a pack with live assertions scoring `0.5` at `weight: 0.6`: core's
+  component is `0.5` on both hash outcomes, the runner's is `0.8` on a match and `0.2`
+  on a divergence. What remains reachable is a directly built config and a bundle
+  recorded before the rule.
 
-Moving either unproven shape moves refusal-task verdicts across the corpus, which is
-why #741 owns it rather than the change that found it.
+The rows say *signal* parity rather than *score* parity because bringing the two
+substrates into line on `expected_state_hash` moves refusal-task verdicts across the
+corpus, which needs its own corpus measurement.
 
 The golden-actions differential runs over real gRPC and a real db-service, in
 [`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
@@ -254,6 +261,15 @@ on a citation:
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
   [Score Combination](#score-combination).
+- `combine.weights` — the membership differential's weight maps still span both
+  sides of the question: a map omitting a scored component, where both folds must
+  refuse, and one declaring every scored component, where both must fold. Hollowed
+  down to complete maps the refusal is never reached, and hollowed down to
+  incomplete ones no fold runs — either way every row would agree, and the
+  surviving rows still pass, so this clause is the only thing that sees it. Its
+  zero-share table also still answers `all` and `any` differently from `weighted`,
+  so the [`weighted`-only scoping](#score-combination) of the zero-total-weight
+  rule cannot be widened to every method without redoing it.
 - `trace_checks.constraints.weight`, `.on_missing`, `.severity`, `.within`, `.bind` —
   each still names a pack in the parametrisation that drives its differential, so a
   key escaping the scored-key lock without one is caught here. Each pack is authored
@@ -353,6 +369,16 @@ manifest freezes config keys and field paths, not evaluation sources, so
 `transcript_rules.required_actions` passes every lock while core evaluates it from
 `trajectory.messages` and the runner evaluates it from the tool-call record — see
 [Both substrates consume it](#both-substrates-consume-it).
+
+Nor can a satisfying/violating pair reach a key's **degenerate** boundary, the input
+that declares nothing at all: both cells of a discriminating pair have to declare
+something, or the pair would not move a component. So `state_checks.jsonpaths` holds
+`BOTH_SCORE_PARITY` at `DIFFERENTIAL_CANONICAL` on evidence that says nothing about
+an *empty* assertion list, and that boundary carries a differential row of its own —
+an empty list leaves the component unscored on both substrates, asserted beside a row
+reading the pack's own assertions so an implementation scoring nothing at all cannot
+satisfy both. The tier on a row is a claim about the cells some lock reaches, not
+about every input the key admits.
 
 ### The recorded tool calls both substrates read
 
@@ -910,13 +936,21 @@ trial's final state, and both levels are fixed:
 | `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
 | `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
 
-A source nobody configured contributes nothing rather than a score:
+A source that declares nothing to evaluate produces no verdict, and a source
+nobody configured contributes nothing rather than a score. An empty `jsonpaths`
+list is therefore not a source: asking "what fraction of zero assertions passed?"
+has the answer `1.0`, and that fraction of nothing never becomes a component score.
 
 - **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
   hash verdict, at every `weight`. An empty assertion list is not a pass.
-- **`jsonpaths` only** (no hash source declared): the component is the assertion
-  score. **Core-side only** — see the substrate note below.
+- **non-empty `jsonpaths` only** (no hash source declared): the component is the
+  assertion score. **Core-side only** — see the substrate note below.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
+- **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
+  to produce a verdict: the component is **not evaluated**. It is absent from the
+  grade rather than present at a number, so `combine.weights` folds the components
+  that were actually decided. Core-side this is the answer for a `db_probes`-only
+  pack too, since core has no probe evaluator.
 
 `hash.weight` is consulted only in the third case, and it has **no default**:
 every candidate value there silently discards something the author asked for. So a
@@ -928,13 +962,24 @@ outside that range the component leaves `[0, 1]` altogether, and a value that is
 a real number in that range — a bool, a numeric string — is rejected on **both**
 substrates rather than coerced into one.
 
-**A hash source declared with the flag off is rejected at load too.** An
-`expected_state_hash` under a `hash` block whose `enabled` is falsy is a comparison
-that never runs: both substrates test the flag before reading the hash, so the pack
-grades its state without the literal the author wrote and says nothing. The flag is
-read for truth rather than for `true` — core branches on its truthiness and the
-runner coerces it, so `enabled: 1` grades and loads. The rule's class and the rest of
-the pre-run gate are in
+**The flag and a source are declared together, or neither is.** Both halves are
+rejected at load:
+
+- **A source under a falsy `enabled`** is a comparison that never runs. Both
+  substrates test the flag before reading the hash, so the pack grades its state
+  without the literal the author wrote and says nothing.
+- **`enabled` with neither `expected_state_hash` nor `golden_actions`** is hash
+  grading with nothing to compare against, and the two substrates answer it
+  differently: core produces no hash verdict at all while the runner compares the
+  trial against its initial state, so the same trial takes two different
+  `state_checks` components. A refusal task — one whose expected final state *is* the
+  initial state — declares that state's `expected_state_hash` rather than an enabled
+  flag with no source.
+
+Both halves read for truth rather than for `true`/absence: core branches on the
+flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, and an
+empty `golden_actions` list replays nothing, so it is no more a source than an absent
+one. The rules' class and the rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
 
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
@@ -966,15 +1011,15 @@ the weight as the flattened `state_checks.hash_weight` on its `StateChecksConfig
 applies the same presence gate at `RegisterTrial`. What is not shared is what each
 substrate feeds that fold:
 
-- **`hash.enabled` with no declared source.** Core produces no hash verdict and the
-  component is the assertion score alone. The runner runs hash grading anyway — the
-  refusal shape, where the expected state *is* the initial state — so it folds a real
-  binary verdict with the assertions. Measured at `weight: 0.6` against assertions
-  scoring `0.5`: core `0.5`, runner `0.8` on a match and `0.2` on a divergence. A
-  pack of this shape carrying live assertions and *no* weight loads on both
-  substrates and then fails `GradeTrial` on the runner, because the fold it reaches
-  there is undecidable — see
-  [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrial-error-semantics). Tracked as #741.
+- **`hash.enabled` with no declared source** — **not authorable**, and the divergence
+  below is why. Core produces no hash verdict and the component is the assertion score
+  alone. The runner runs hash grading anyway — the refusal shape, where the expected
+  state *is* the initial state — so it folds a real binary verdict with the assertions.
+  Measured at `weight: 0.6` against assertions scoring `0.5`: core `0.5`, runner `0.8`
+  on a match and `0.2` on a divergence. The pre-run gate refuses the shape rather than
+  leaving the two substrates to disagree over it, so it is reachable only from a config
+  built directly against the engine and from a bundle recorded before the rule — the
+  bundles `retrace` replays, where core's *no verdict* is the answer stated below.
 - **`expected_state_hash` alone.** No runner path reads the translated
   `expected_hash` (#693), so the runner again compares the trial against the initial
   state where core compares it against the author's literal.
@@ -988,9 +1033,11 @@ it.
 with neither source declared, or `golden_actions` with no task directory,
 `initial_state` or `mcp_server` to replay them against — yields **no** hash verdict
 and names the skipped check in `grade.reasons`, rather than a `0.0` that reads as a
-state the agent got wrong (#729). A golden replay that fails to *execute* is a
-grading error rather than a verdict on either substrate: core raises and the trial is
-left unscored, the runner answers `GradeTrial` with `success=false`.
+state the agent got wrong (#729). Beside an empty `jsonpaths` list there is then no
+verdict at all, so the whole component is unevaluated and no score sits next to the
+reason contradicting it. A golden replay that fails to *execute* is a grading error
+rather than a verdict on either substrate: core raises and the trial is left unscored,
+the runner answers `GradeTrial` with `success=false`.
 
 ### Best Practices
 
@@ -1863,11 +1910,12 @@ tripping a gate on a route it did not take, which is the premise of the feature.
 shared gate has no escape, which is why route-independent conditions belong there.
 
 **Every component the pack configures needs a weight of its own.** A configured
-component absent from `combine.weights` is dropped from the core engine's fold and
-folded in by the runner at an invented `1.0` (#744), so the two substrates grade the
-same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` holds
-every shipped example pack to that, reading the combine that is *effective* after
-the project layer merges.
+component absent from `combine.weights` is refused before the run, and a component a
+substrate scored anyway makes the fold raise on both substrates — neither may pick a
+share, because `1.0` invents one the author never gave and `0.0` discards a verdict the
+substrate produced. `tests/canonical/test_example_pack_grading_corpus.py` holds every
+shipped example pack to that, reading the combine that is *effective* after the project
+layer merges.
 
 ### Four worked packs
 
@@ -2015,8 +2063,8 @@ Three authoring choices in it are the ones to copy:
 - **Neither component can carry a trial by itself.** `combine.weights` is
   `{llm_judge: 0.7, trace_checks: 0.3}` against `pass_threshold: 0.75`, so a pass means
   both halves happened — a `trace_checks` weight is mandatory rather than optional here,
-  because a scored component with no declared weight is dropped core-side and folded in at
-  an invented `1.0` runner-side (#744).
+  because a scored component with no declared weight makes the fold raise on both
+  substrates rather than being handed a share nobody declared.
 
 The pair is also the corpus behind its own migration: both arms declare it in a
 [`migration.yaml`](#declaring-a-migration-the-migrationyaml-sidecar), and
@@ -2179,8 +2227,16 @@ Findings come in three classes:
 | the same against a tool whose schema permits extras | advisory | as above |
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference that compares text | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
+| a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
+| a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
+| a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
+| a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
+| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
+| a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
+| a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
+| an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
 | a `bind.values[*].field` whose property writes no `type` | unchecked | per extraction |
@@ -2198,6 +2254,56 @@ it, a run logs it — because a gate that could check nothing must not read as a
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, and a
 property whose schema writes no `type` all land here.
+
+**A section the author wrote declares something to evaluate.** An empty block asserts
+nothing and scores nothing, and it cannot survive translation either: the wire erases
+an authored empty `state_checks` or `transcript_rules` to an absent section, so while
+the shape loads no predicate can answer "did the author write this?" the same way on
+both substrates. The error names what to declare, or says to drop the block. Two of
+the five components already answer this at load: a `trace_checks` block declaring
+neither constraints nor alternatives and an `llm_judge` block with no rubric are both
+unrepresentable.
+
+All three sections the rule reaches carry it one step further, because each has keys
+that configure how the component runs rather than declaring what it checks. A block
+holding only such keys asserts exactly as little as an empty one, and each took a
+vacuous pass for it while reading as configured:
+
+| shape | why it asserts nothing |
+|---|---|
+| `state_checks` with `jsonpaths: []`, or only `id_fields` / `relaxed_validation` | no source any substrate can read |
+| `transcript_rules` whose every rule list is empty — `required_actions: []`, `must_contain: []`, a `tool_expectations` expecting neither tool | no rule any substrate can evaluate; the component is averaged over no sub-check |
+| `custom_checks` naming a `file` with no `enabled` key | `CustomChecksConfig.enabled` defaults to `false`, so the suite never runs |
+
+Each rule reads its keys for **truth**, not presence, because that is what both
+substrates do: an empty `golden_actions` replays nothing, an empty `required_actions`
+requires nothing.
+
+An explicit opt-out is *not* "declares nothing": `custom_checks: {enabled: false}`
+states a decision, survives the wire intact, and is read the same way by both
+substrates — so it loads, it is not requested, and it needs no weight. The unflagged
+block is the shape that needs the rule most, because it escapes the weight rules too:
+it is not requested, so no weight is owed, and a pack whose `custom_checks` is its
+only section then lands the free pass a pack asking for nothing has earned — scoring
+`1.0` on a suite that never ran.
+
+**A component and its weight must name each other, in both directions.** Configuring
+a section asks for that component to be scored, and declaring a weight asks for a
+component to be folded; either one alone leaves the fold reading a map the author did
+not write. Both directions are errors at the gate, each naming the two one-line
+fixes — declare the weight, or drop the section; configure the section, or drop the
+weight — because the substrates do not answer an undeclared weight the same way (see
+[Score Combination](#score-combination)). A weight key naming no component at all
+takes the second fix only: `combine.weights` validates no key, so a typo there reaches
+both folds unread.
+
+Both rules read the **effective** `combine`, a task's own block layered over its
+project's `task_defaults.grading_defaults.combine`, because a task that declares no
+`combine` at all still inherits one — five `example-microservices-pack` tasks inherit
+their weights that way. A caller that cannot resolve the effective combine reports it
+`unchecked` rather than assuming the weights are absent, which would refuse every pack whose
+weights are inherited. A pack that deliberately scores nothing — no component section
+and no weights — is clean: it asks for nothing, so nothing is missing.
 
 Only the first segment of an `args` address is checked, and only against
 `properties`. `json.q` on `http_request` is checked at `json` and stops, because
@@ -2575,6 +2681,16 @@ computed values. Each `@check` returns `CheckPassed` / `CheckFailed` /
 entries and the aggregate `CheckResultSet.aggregate_score` fills the
 `custom_checks` component.
 
+`aggregate_score` averages the checks that reached a verdict and excludes the
+skips, so a suite whose **every** check skipped — and one whose file declared no
+check — decided nothing. Both substrates leave the component **unscored** there
+rather than folding the `0.0` that averaging nothing produces: a component scored
+against no evidence fails the trial for the author's unmet precondition rather than
+for anything the agent did. The fold then decides and says so, naming
+`custom_checks` among the components that produced no verdict. A suite that could
+not *run* is a different answer and keeps its `0.0` under `fail_on_error: true` —
+checks meant to decide the trial and unable to are a failure, not an absence.
+
 ```yaml
 custom_checks:
   enabled: true
@@ -2753,9 +2869,18 @@ async driver `db_probes` connect with; the runner container joins the task's
 docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
 
 `db_probes` is the sole state source for the tasks that use it — it is not
-combined with hash or `jsonpaths` checks in the same task. It fills the
+combined with hash or `jsonpaths` checks in the same task. Runner-side it fills the
 `state_checks` component and combines with `transcript_rules` / `llm_judge`
 through the normal weighted combine below.
+
+**It is runner-only, so core declines to score a probe-only pack.** The DSN resolves
+inside the task's docker network, which the runner container joins and the host-side
+`GradingEngine` does not, so core has no probe evaluator and the pack's only state
+source produces no core-side verdict: `state_checks` is left **unevaluated** there
+rather than filled by whatever else the block happens to carry. Grading such a pack
+outside the runner therefore decides it on its remaining components — which is why
+`tolokaforge validate` and the host-side helpers are not a substitute for a real
+runner-side grade on these packs.
 
 A probe can encode **policy correctness**, not just existence: assert the
 specific value a policy selects (`resolution_path == "reschedule"`) rather than
@@ -2790,28 +2915,45 @@ closed set — anything else fails the load, naming what an author may write ins
 `all` and `any` compare each component to `pass_threshold` and never scale it by
 `combine.weights` — measured, weights of `0.9`/`0.1` and of `1.0`/`1.0` give both
 methods the same answer on the same components. What they aggregate is the map of
-components, and **which components the map holds is a substrate-scoped question**:
+components, and **every component in that map carries a share the author declared.**
 
-- **Core** admits a scored component only when `combine.weights` declares a weight
-  for it.
-- **The runner** admits every component it evaluated, weighting an undeclared one at
-  an invented `1.0`.
+A pack configuring a component and declaring no weight for it — or weighting one it never
+configures — is refused before the run, in both directions, against the effective
+`combine`. See [What is validated before a run](#what-is-validated-before-a-run). The gate
+reaches an authored `grading.yaml`; a `GradingConfig` built in process and a config
+**recorded** before the rule existed and re-folded offline by `reconcile` reach no gate, so
+both folds guard the same rule themselves: a component a substrate scored whose share
+`combine.weights` does not declare raises on both substrates, naming the component and both
+one-line fixes. Neither may pick a value — `1.0` invents a share the author never gave the
+component and `0.0` discards a verdict the substrate produced.
 
-That is why `combine.method` and `combine.weights` are both `BOTH_SIGNAL_PARITY`
-tracked by **#744**. Under `weighted` the gap is a magnitude; under `all` and `any`
-the map *is* the whole input, so it is a verdict flip. Measured on
-`state_checks: 0.0` and `transcript_rules: 1.0` at `pass_threshold: 0.8` with only
-`state_checks` weighted, `any` gives `(0.0, False)` core-side and `(1.0, True)`
-runner-side. **Declare a weight for every component the pack scores** and this
-divergence closes: on the same trial with both weighted, all three methods answer
-identically on both substrates.
+**A fold with no weighted scored component decides rather than aggregating**, because min,
+max and a mean over an empty map have no answer:
 
-One asymmetry survives #744, because it is architectural rather than a defect: core
-produces no `llm_judge` component and cannot produce a `state_checks.db_probes` one —
-both `RUNNER_ONLY` by design — so on a judge- or probe-graded pack core's map is
-empty where the runner's is scored. The canonical differential therefore proves the
-dispatch over deterministic components, which is the whole of what is provable for
-this key.
+- **Nothing configured and nothing weighted** is `(1.0, True)`. Nothing was asked for, so
+  nothing is owed — the shape a deliberately non-scoring pack declares.
+- **Anything else** is `(0.0, False)` with a reason naming what the config asked for: the
+  components that produced no verdict, the scored components whose shares sum to zero, or
+  the weight keys naming nothing the config configured. A fail here never names nothing:
+  a verdict reached without a component's reasons to explain it is one the author cannot
+  act on, and a `0.0` beside components that all read as passing contradicts itself.
+
+The zero-total-weight half is **`weighted`-only**. Under `all` and `any` the shares are
+structurally unread — the shared dispatch aggregates the component set — so a share of
+`0.0` there is an inert key rather than a statement about the fold, and a component scored
+`0.0` at weight `0.0` still fails. Measured: at `weights: {state_checks: 0.0}`, `weighted`
+gives `(0.0, False)` on both a satisfying and a violating trial while `all` and `any` give
+`(1.0, True)` and `(0.0, False)` respectively — the component's own verdict, unchanged.
+
+`combine.method` and `combine.weights` are `BOTH_SIGNAL_PARITY` for a reason that is
+architectural rather than a defect, and the two rows in
+[`key_manifest.py`](../tolokaforge/core/grading/key_manifest.py) carry it as their
+`reason`: core produces no `llm_judge` component and cannot produce a
+`state_checks.db_probes` one — both `RUNNER_ONLY` by design — so on a judge- or
+probe-graded pack core's map is empty where the runner's is scored. Since `all` and `any`
+aggregate that map alone, the disagreement is a verdict flip rather than a magnitude. The
+canonical differential therefore proves the dispatch over deterministic components, which
+is the whole of what is provable for these keys.
 
 `combine_method` is one of the keys that lock an engine to a runner image built from
 the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
@@ -2833,9 +2975,8 @@ binary_pass = (final_score >= pass_threshold) AND (no required rubric criterion 
 A component that was not evaluated is **excluded** from both the numerator and
 the denominator — this includes an `llm_judge` component whose judge ERRORED
 (see [LLM Judge](#llm-judge-rubric-grading)): a broken judge is never folded in
-as a `0.0`. Core also excludes an *evaluated* component that `combine.weights`
-declares no weight for, where the runner includes it at an invented `1.0` — the
-divergence tracked by #744 above.
+as a `0.0`. An *evaluated* component that `combine.weights` declares no weight for is
+neither excluded nor defaulted: the fold raises on both substrates, per the rule above.
 
 **Where the runner-side verdict is composed.** The runner folds a trial through
 `compose_runner_trial_verdict`
@@ -2858,13 +2999,14 @@ substrates, two compositions, one behaviour where both can be asked; the
 canonical differential above is what holds them to it.
 
 **Configured but unevaluated fails loud, for every component.** A component is
-configured when `combine.weights` gives it a weight **and** the pack writes its
-`grading.yaml` section. If every configured component then comes back
-unevaluated, the trial scores `(0.0, False)` rather than a silent `(1.0, True)` —
-so a pack weighted entirely on one component that never ran fails instead of
-passing on nothing. A weight with no matching section is a different case: that
-pack is read as declaring no grading at all and passes by default, and the two
-substrates disagree on it (**#758**).
+configured when the pack writes its `grading.yaml` section — and, where that section
+carries its own enable flag, when the flag is on, so `custom_checks: {enabled: false}`
+is an explicit opt-out asking for nothing. If every configured component then comes
+back unevaluated, the trial scores `(0.0, False)` with a reason naming them, rather
+than a silent `(1.0, True)` — so a pack weighted entirely on one component that never
+ran fails instead of passing on nothing. One predicate answers this question for the
+authoring gate and for both folds, so the three cannot disagree about what the author
+asked for.
 
 ### What a component is
 
@@ -2945,7 +3087,7 @@ Tasks used for RL training need grading that produces a meaningful signal — no
 
 ### Principles
 
-- **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly. **Not on a task whose correct outcome is to change nothing** — a refusal-style task's expected final state equals its initial state, so an agent that did nothing at all scores `1.0` on state alone. Weight `transcript_rules` alongside it and declare a `min_assistant_turns` floor, which fails a trial that produced no assistant turns (see [§ Turn bounds](#turn-bounds)). A block with no evaluable source — only `id_fields`, or an empty `jsonpaths` list — is a free `1.0` core-side for the same reason (#733).
+- **Use `state_checks` (weight 1.0) for deterministic tasks.** State checks are objective and reproducible. They verify that the agent actually changed the environment correctly. **Not on a task whose correct outcome is to change nothing** — a refusal-style task's expected final state equals its initial state, so an agent that did nothing at all scores `1.0` on state alone. Weight `transcript_rules` alongside it and declare a `min_assistant_turns` floor, which fails a trial that produced no assistant turns (see [§ Turn bounds](#turn-bounds)). A block with no evaluable source — only `id_fields`, or an empty `jsonpaths` list — asserts nothing and is refused before the run.
 - **Reserve `llm_judge` for genuinely subjective tasks.** An LLM judge giving 0.7 for "attempted the task" masks real failures. Don't use it as padding.
 - **CI portability:** the judge model is a run-level role (`models.judge`), so CI can point it at `mock/mock-judge` to run without live judge inference; for real evaluations set `models.judge` to your production judge model. (No per-task edit is needed — switch the whole run in one place.)
 - **Check specific values, not just existence.** Assert `equals: "Large (14\")"` instead of just checking the path exists. Assert `equals: "apple_pay"` instead of checking that any payment method was set.

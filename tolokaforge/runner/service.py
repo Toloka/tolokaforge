@@ -1546,19 +1546,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 db_probe_score=components.db_probe_score,
                 hash_weight=state_checks_config.hash_weight if state_checks_config else None,
             )
+            verdict = compose_runner_trial_verdict(
+                components.model_dump(),
+                grading_config.model_dump(),
+                judge_gate_failed=judge_gate_failed,
+                trace_gate_failed=trace_checks_result.gate_failed,
+            )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
             return pb2.GradeTrialResponse(
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
-
-        verdict = compose_runner_trial_verdict(
-            components.model_dump(),
-            grading_config.model_dump(),
-            judge_gate_failed=judge_gate_failed,
-            trace_gate_failed=trace_checks_result.gate_failed,
-        )
         # The gated component, not the judge's raw aggregate, is what the wire grade and
         # the reasons carry — so the write-back happens before either is built.
         components.llm_judge_score = verdict.judge_component
@@ -1587,6 +1586,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # CONFIG_INPUT the fold can skip on its own, so it reports itself.
         if state_checks_slot.inert_weight_reason:
             reasons += f" | {state_checks_slot.inert_weight_reason}"
+
+        # A fold that counted nothing is not described by any component's reasons, so its
+        # own sentence is what stops a 0.0 arriving beside components that all read as passing.
+        if verdict.reason:
+            reasons += f" | {verdict.reason}"
 
         # Append golden action errors if any (critical for debugging golden replay failures)
         if hash_result and hash_result.golden_action_errors:
@@ -1897,6 +1901,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         follows ``fail_on_error`` — ``0.0`` when true (contributes to the
         weighted total as a fail), ``-1.0`` when false (component not
         evaluated).
+
+        A suite that ran and decided nothing — every check skipped, or the
+        file declared none — also returns ``-1.0``, the same answer the core
+        engine reaches through the shared
+        :attr:`CheckResultSet.decided_something`. Its aggregate over zero
+        verdicts is ``0.0``, which would fold as a component that failed.
         """
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
@@ -1977,6 +1987,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"GradeTrial: {trial_id} - custom checks: "
             f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
         )
+        if not result.decided_something:
+            return -1.0, wire_results
         return result.aggregate_score, wire_results
 
     async def _build_judge_state_diff(

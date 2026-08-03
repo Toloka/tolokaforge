@@ -342,9 +342,31 @@ class CheckResultSet(BaseModel):
         return len(self.results)
 
     @property
+    def _scored(self) -> list[CheckResult]:
+        """The results that reached a verdict, which is every one that did not skip."""
+        return [r for r in self.results if r.status != CheckStatus.SKIPPED]
+
+    @property
+    def decided_something(self) -> bool:
+        """Whether the suite reached a verdict on anything at all.
+
+        ``False`` for a suite whose every check skipped and for one whose file
+        declared no check, which are the same answer: nothing was decided. Both
+        substrates ask this before reading :attr:`aggregate_score`, because that
+        property's ``0.0`` over zero verdicts is indistinguishable from a suite that
+        ran and failed — a component scored against nothing, which is the vacuous
+        ``1.0`` sign-flipped.
+        """
+        return bool(self._scored)
+
+    @property
     def aggregate_score(self) -> float:
-        """Average score across all checks (excluding skipped)"""
-        scored = [r for r in self.results if r.status != CheckStatus.SKIPPED]
+        """Average score across the checks that reached a verdict, skips excluded.
+
+        ``0.0`` where none did, so a caller turning this into a component score has to
+        consult :attr:`decided_something` first.
+        """
+        scored = self._scored
         if not scored:
             return 0.0
         return sum(r.score for r in scored) / len(scored)
@@ -352,8 +374,7 @@ class CheckResultSet(BaseModel):
     @property
     def all_passed(self) -> bool:
         """True if all checks passed (ignoring skipped)"""
-        scored = [r for r in self.results if r.status != CheckStatus.SKIPPED]
-        return all(r.status == CheckStatus.PASSED for r in scored)
+        return all(r.status == CheckStatus.PASSED for r in self._scored)
 
 
 # =============================================================================

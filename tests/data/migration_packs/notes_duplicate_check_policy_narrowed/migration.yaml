@@ -17,6 +17,7 @@ migrations:
       reason: >
         The judge still reads whether the assistant warned the user about the near-duplicate,
         which no trace constraint can check from the tool record alone.
+    combine_weights: { llm_judge: 0.5, trace_checks: 0.5 }
     evidence:
       corpus: tests/data/migration_corpora/notes_duplicate_check
       observations: 17

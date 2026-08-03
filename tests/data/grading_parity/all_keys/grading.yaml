@@ -1,8 +1,14 @@
 combine:
   method: all
+  # Every component this pack configures carries a weight, which is what the gate
+  # requires. `method: all` aggregates the component set and reads no weight, so the
+  # values here cannot move this pack's verdict — only their presence matters.
   weights:
     state_checks: 0.5
     transcript_rules: 0.5
+    trace_checks: 0.5
+    llm_judge: 0.5
+    custom_checks: 0.5
   pass_threshold: 0.5
 
 state_checks:

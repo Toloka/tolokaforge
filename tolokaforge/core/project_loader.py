@@ -33,6 +33,7 @@ import difflib
 import os
 import re
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -450,6 +451,18 @@ def resolve_effective_run_config_data(
     # on conflict via ``deep_merge`` below.
     base = project.run_defaults.model_dump(exclude_unset=True)
     return deep_merge(base, run_config_data)
+
+
+def project_grading_combine(task_defaults: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The ``grading_defaults.combine`` layer inside a project's ``task_defaults``.
+
+    The base layer under each task's own ``grading.yaml.combine``. ``None`` when the
+    project sets no grading defaults, which is also the answer for no project at all —
+    both mean there is no layer beneath the task's own block.
+    """
+    if not task_defaults:
+        return None
+    return (task_defaults.get("grading_defaults") or {}).get("combine")
 
 
 def resolve_effective_grading_combine(

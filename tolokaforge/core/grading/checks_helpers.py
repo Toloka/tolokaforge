@@ -22,7 +22,7 @@ Usage in ``checks.py``:
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from typing import Any, TypeGuard
 
 from tolokaforge.core.grading.checks_interface import (
@@ -39,7 +39,7 @@ from tolokaforge.core.grading.checks_interface import (
 
 
 def custom_checks_enabled(
-    custom_checks: dict[str, Any] | None,
+    custom_checks: Mapping[str, Any] | None,
 ) -> TypeGuard[dict[str, Any]]:
     """Whether a pack's raw ``grading.custom_checks`` block opts into execution.
 

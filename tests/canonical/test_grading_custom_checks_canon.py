@@ -54,7 +54,8 @@ class TestCombineGradeComponentsRoutesCustomChecks:
             "state_checks": {"jsonpaths": []},
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == pytest.approx(0.7)
         assert binary_pass is False
@@ -69,7 +70,8 @@ class TestCombineGradeComponentsRoutesCustomChecks:
             "custom_checks": {"enabled": True, "file": "checks.py"},
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == pytest.approx(1.0)
         assert binary_pass is True
@@ -95,7 +97,8 @@ class TestCombineGradeComponentsGuardsAgainstSilentPass:
             "custom_checks": {"enabled": True, "file": "checks.py"},
         }
 
-        score, binary_pass = combine_grade_components(components, grading_config)
+        folded = combine_grade_components(components, grading_config)
+        score, binary_pass = folded.score, folded.binary_pass
 
         assert score == 0.0
         assert binary_pass is False

@@ -187,41 +187,38 @@ in-process: the evaluator replays golden actions against db-service over HTTP.
 """
 
 _HASH_SOURCE_SHAPE_REASON = (
-    "both substrates fold the hash verdict by one shared rule, but only one of the three "
-    "hash-source shapes is proven to hand them the same verdict. Proven: golden_actions, "
-    "by the enforcing_test — both replay the actions and compare against the resulting "
-    "state. Not proven: expected_state_hash alone, because no runner path reads the "
-    "translated expected_hash (#693), so the runner compares the trial against the "
-    "*initial* state where core compares it against the author's literal. Not proven: "
-    "hash.enabled with no declared source, where core produces no verdict at all while "
-    "the runner's refusal semantics produce a binary one — measured on a pack with live "
-    "assertions scoring 0.5, core scores the component 0.5 and the runner 0.8 at "
-    "weight 0.6. Moving either shape moves refusal-task verdicts, which needs its own "
-    "corpus measurement"
+    "both substrates fold the hash verdict by one shared rule, and of the two authorable "
+    "hash-source shapes only one is proven to hand them the same verdict. Proven: "
+    "golden_actions, by the enforcing_test — both replay the actions and compare against the "
+    "resulting state. Not proven: expected_state_hash alone, because no runner path reads the "
+    "translated expected_hash (#693), so the runner compares the trial against the *initial* "
+    "state where core compares it against the author's literal. An enabled hash with no "
+    "declared source is refused at the authoring gate, so the third shape is unauthorable — it "
+    "survives only in a bundle recorded before that rule, where core produces no verdict at "
+    "all while the runner's refusal semantics produce a binary one, and retrace replays it "
+    "unchanged. Moving #693's shape moves refusal-task verdicts, which needs its own corpus "
+    "measurement"
 )
 
 _COMBINE_METHOD_PARITY_REASON = (
     "both substrates read combine.method and both discriminate on it, but their final "
-    "scores agree only when the two build the same component set. Two things prevent that. "
-    "#744 — combine.weights drops a scored component core-side and invents 1.0 for it "
-    "runner-side — is fixable. The other is architectural and permanent: core produces no "
-    "llm_judge component (GradingEngine.grade_trajectory leaves it unset) and cannot "
-    "produce a db_probes one, both RUNNER_ONLY by design, so on a judge- or probe-graded "
-    "pack core's component map is empty where the runner's is scored. Since all and any "
-    "aggregate that map alone, the disagreement is a verdict flip, not a magnitude. The "
-    "canonical differential proves the dispatch over deterministic components, which is "
-    "the whole of what is provable here"
+    "scores agree only when the two build the same component set. What prevents that is "
+    "architectural and permanent: core produces no llm_judge component "
+    "(GradingEngine.grade_trajectory leaves it unset) and cannot produce a db_probes one, "
+    "both RUNNER_ONLY by design, so on a judge- or probe-graded pack core's component map is "
+    "empty where the runner's is scored. Since all and any aggregate that map alone, the "
+    "disagreement is a verdict flip, not a magnitude. The canonical differential proves the "
+    "dispatch over deterministic components, which is the whole of what is provable here"
 )
 
 _COMBINE_WEIGHTS_MEMBERSHIP_REASON = (
-    "both substrates scale the components they fold by the author's weights, but they "
-    "disagree on which components the map holds at all: a scored component with no "
-    "declared weight is dropped from core's numerator, its denominator and its "
-    "aggregation, while the runner includes it at an invented weight of 1.0. Measured on "
-    "state_checks 0.0 and transcript_rules 1.0 with only state_checks weighted, at "
-    "pass_threshold 0.8 — weighted scores 0.0 core-side and 0.5 runner-side, and the same "
-    "config under any flips the verdict rather than scaling it: core (0.0, False) against "
-    "runner (1.0, True)"
+    "both substrates scale the components they fold by the author's weights and both refuse "
+    "the same way when a scored component carries none, so the membership question is "
+    "differentially provable. What remains is architectural and permanent: core produces no "
+    "llm_judge component (GradingEngine.grade_trajectory leaves it unset) and cannot produce "
+    "a db_probes one, both RUNNER_ONLY by design, so on a judge- or probe-graded pack the two "
+    "component sets differ whatever the map says — and all/any aggregate that set alone, so "
+    "the disagreement is a verdict flip rather than a magnitude"
 )
 
 _TRANSCRIPT_AGGREGATION_REASON = (
@@ -354,19 +351,17 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
         runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
         reason=_COMBINE_METHOD_PARITY_REASON,
-        tracking_issue=744,
     ),
     GradingKey(
         author_key="combine.weights",
         kind=KeyKind.AGGREGATION,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="GradingCombineConfig.weights",
         runner_field="GradingConfig.weights",
         core_evaluator="tolokaforge.core.grading.combine.GradingEngine.grade_trajectory",
         runner_evaluator="tolokaforge.runner.grading.combine_grade_components",
         reason=_COMBINE_WEIGHTS_MEMBERSHIP_REASON,
-        tracking_issue=744,
     ),
     GradingKey(
         author_key="combine.pass_threshold",
@@ -389,7 +384,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
         reason=_HASH_SOURCE_SHAPE_REASON,
-        tracking_issue=741,
         family_root=True,
     ),
     GradingKey(
@@ -404,7 +398,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
         reason=_HASH_SOURCE_SHAPE_REASON,
-        tracking_issue=741,
     ),
     GradingKey(
         author_key="state_checks.hash.golden_actions",

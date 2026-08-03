@@ -263,6 +263,44 @@ class TestCheckResultSet:
         assert result_set.aggregate_score == 1.0
         assert result_set.skipped == 1
 
+    def test_a_suite_that_skipped_everything_decided_nothing(self):
+        """The ``0.0`` an all-skipping suite aggregates is not a verdict about anything.
+
+        ``aggregate_score`` has no answer over zero verdicts and returns ``0.0``, which is
+        indistinguishable from a suite that ran and failed — so a caller turning it into a
+        component score has to ask this first. Both no-verdict shapes answer the same way,
+        because "every check skipped" and "the file declared no check" are one fact about
+        the suite: it decided nothing.
+        """
+        all_skipped = CheckResultSet(
+            results=[
+                CheckResult(check_name="c1", status=CheckStatus.SKIPPED, score=0.0),
+                CheckResult(check_name="c2", status=CheckStatus.SKIPPED, score=1.0),
+            ]
+        )
+
+        assert all_skipped.decided_something is False
+        assert all_skipped.aggregate_score == 0.0
+        assert all_skipped.skipped == 2
+        assert CheckResultSet(results=[]).decided_something is False
+
+    def test_one_unskipped_check_is_a_verdict(self):
+        """The other side of the same boundary, so the predicate is not always ``False``.
+
+        One failing check among skips decided something — that the trial failed it — and the
+        ``0.0`` it aggregates *is* a verdict, which is what makes the skipped case a
+        different answer rather than the same number twice.
+        """
+        one_failed = CheckResultSet(
+            results=[
+                CheckResult(check_name="c1", status=CheckStatus.SKIPPED, score=1.0),
+                CheckResult(check_name="c2", status=CheckStatus.FAILED, score=0.0),
+            ]
+        )
+
+        assert one_failed.decided_something is True
+        assert one_failed.aggregate_score == 0.0
+
     def test_all_passed(self):
         result_set = CheckResultSet(
             results=[

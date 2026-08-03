@@ -8,6 +8,7 @@ import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
@@ -63,6 +64,7 @@ from tolokaforge.core.project_loader import (
     find_project_yaml,
     load_effective_run_config,
     load_project_config,
+    project_grading_combine,
 )
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
@@ -1423,12 +1425,19 @@ def _extract_log_errors(logs: list[dict]) -> list[str]:
     return errors
 
 
-def _load_task_under_its_project(task_file: Path) -> tuple[TaskConfig, Path]:
+def _load_task_under_its_project(
+    task_file: Path,
+) -> tuple[TaskConfig, Path, dict[str, Any] | None]:
     """Load a task the way a run loads it — under its enclosing project's defaults.
 
     The shared-domain merge (a ``task.yaml`` carrying a ``domain:`` ref) happens
     inside ``load_task_yaml``, so both the flat and the shared-domain layout
     resolve here.
+
+    Returns the task, its effective directory, and the project's
+    ``grading_defaults.combine`` layer — the third because the grading gate reads
+    the *effective* combine, and a task inheriting its weights from the project
+    declares none of its own.
 
     ``project.default_environment`` is deliberately not layered: the orchestrator
     forwards it so the adapter can bind it into a ``TaskDescription``'s
@@ -1438,14 +1447,15 @@ def _load_task_under_its_project(task_file: Path) -> tuple[TaskConfig, Path]:
 
     project_yaml = find_project_yaml(task_file)
     if project_yaml is None:
-        return load_task_yaml(task_file)
+        return (*load_task_yaml(task_file), None)
     try:
         project = load_project_config(project_yaml)
     except Exception as exc:
         raise RuntimeError(f"enclosing project {project_yaml} failed to load: {exc}") from exc
-    return load_task_yaml(
-        task_file,
-        project_task_defaults=project.task_defaults.model_dump(exclude_defaults=True) or None,
+    task_defaults = project.task_defaults.model_dump(exclude_defaults=True) or None
+    return (
+        *load_task_yaml(task_file, project_task_defaults=task_defaults),
+        project_grading_combine(task_defaults),
     )
 
 
@@ -1461,6 +1471,7 @@ def validate(tasks: str):
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
+    from tolokaforge.core.grading.config_validation import CombineLayer
     from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
 
     task_files = glob.glob(tasks, recursive=True)
@@ -1474,7 +1485,7 @@ def validate(tasks: str):
 
     for task_file in task_files:
         try:
-            task_config, task_dir = _load_task_under_its_project(Path(task_file))
+            task_config, task_dir, project_combine = _load_task_under_its_project(Path(task_file))
             # Schema breaks in the referenced grading.yaml — e.g. the removed
             # free-text ``rubric: str`` / ``output_schema`` — fail here with a
             # migration message rather than only at run time.
@@ -1484,6 +1495,7 @@ def validate(tasks: str):
                 inventory=tool_inventory_under_adapter(
                     task_config, task_dir, task_config.adapter_type
                 ),
+                combine_layer=CombineLayer(project_combine),
             )
             # Only here, and deliberately not in the pre-run gate: a migration
             # declaration cannot affect a grade, so a run must not abort on it.

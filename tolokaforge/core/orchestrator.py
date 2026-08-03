@@ -1333,6 +1333,7 @@ class Orchestrator:
             report = validate_grading_yaml(
                 task_dir / task.grading,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
+                combine_layer=self.adapter.grading_combine_layer(),
                 fail_on=fail_on,
             )
         except (ValueError, RuntimeError, OSError) as exc:

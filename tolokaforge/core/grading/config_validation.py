@@ -1,18 +1,22 @@
-"""Checking grading authoring against the tools a task gives its actors.
+"""Checking grading authoring against the tools a task gives its actors and its fold.
 
 Substrate-neutral and pure — no adapter, no filesystem: an adapter resolves the
-task's tool set into a :class:`ToolInventory`, and :func:`inspect_grading_authoring`
-reads only that. A tool set the adapter cannot report is
-:meth:`ToolInventory.unresolvable` — distinct from a task that declares no
-tools, because the two decide opposite things: nothing is checkable against the
-first, while every tool name is wrong against the second.
+task's tool set into a :class:`ToolInventory` and the task's effective ``combine``,
+and :func:`inspect_grading_authoring` reads only those. A tool set the adapter
+cannot report is :meth:`ToolInventory.unresolvable` — distinct from a task that
+declares no tools, because the two decide opposite things: nothing is checkable
+against the first, while every tool name is wrong against the second. An effective
+combine no caller could resolve is ``None``, and reads the same way.
 
 The defects here are the author's, and every one of them is otherwise charged to
 the agent or to nobody: a misspelled tool name in a ``present`` matcher scores the
 component 0.0 with the message a genuine agent failure carries, the same typo in
 an ``absent`` matcher passes every trial, an uncompilable ``regex`` raises inside
-the evaluator once the tokens are already spent, and a binding correlated against
-a field of another type is red on every trajectory whatever the agent did.
+the evaluator once the tokens are already spent, a binding correlated against a
+field of another type is red on every trajectory whatever the agent did, a section
+declaring nothing scores nothing while reading as configured, and a component and its
+weight naming each other only one way leaves the two substrates folding different maps
+for the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -22,15 +26,22 @@ the gate has no false-reject mode. The severity of each rule is documented in
 from __future__ import annotations
 
 import re
-from collections.abc import Iterable, Iterator, Mapping
+from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.grade_components import (
+    COMPONENT_BY_NAME,
+    GRADE_COMPONENTS,
+    component_requested,
+)
+from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
 from tolokaforge.core.models import (
     BoundValue,
+    GradingCombineConfig,
     GradingFindingSeverity,
     ToolExpectations,
     TraceBinding,
@@ -118,6 +129,36 @@ class ToolInventory:
 
 
 @dataclass(frozen=True)
+class CombineLayer:
+    """The project layer beneath a task's own ``combine``, or the fact that none resolved.
+
+    The weight rules need the *effective* combine, and the authored file holds only
+    half of it: a task declaring no ``combine`` at all still inherits the project's
+    weights. A caller that cannot say what the project layer is reports
+    :meth:`unresolvable` — distinct from a caller reporting *no* project layer,
+    because the two decide opposite things. Reading a project's defaults as absent
+    would refuse every task that inherits its weights, which is why the two states
+    cannot share one value.
+    """
+
+    project_combine: dict[str, Any] | None
+    known: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.known and self.project_combine:
+            raise ValueError(
+                "an unresolvable combine layer carries project defaults: every weight "
+                f"rule is skipped, so {self.project_combine} would be resolved and then "
+                "ignored. Report the defaults with known=True, or report nothing"
+            )
+
+    @classmethod
+    def unresolvable(cls) -> CombineLayer:
+        """The layer of a caller that cannot say what a task's project supplies."""
+        return cls(project_combine=None, known=False)
+
+
+@dataclass(frozen=True)
 class Finding:
     """One authoring defect, addressed by where in the block it was written."""
 
@@ -157,6 +198,17 @@ class AuthoringReport:
         if fail_on is GradingFindingSeverity.ERROR:
             return self.errors
         return self.errors + self.advisories
+
+    def with_unchecked(self, *skips: Skip) -> AuthoringReport:
+        """This report plus what the *caller* could not check on its own account.
+
+        A rule the caller could not supply the inputs for is unchecked by the same
+        definition as one this module could not answer, and belongs in the same
+        channel — otherwise a caller that gated nothing reads as a clean bill of health.
+        """
+        return AuthoringReport(
+            errors=self.errors, advisories=self.advisories, unchecked=self.unchecked + skips
+        )
 
 
 @dataclass(frozen=True)
@@ -203,6 +255,70 @@ _UNRESOLVABLE_REASON = (
     "name in this block is checkable"
 )
 
+UNRESOLVED_COMBINE_REASON = (
+    "no caller resolved this task's effective combine, so which configured components "
+    "carry a weight — and which weights name a component the pack configures — is not "
+    "checkable"
+)
+"""What a pack gate reports when it could not resolve the fold it is gating.
+
+Reported by the caller through :meth:`AuthoringReport.with_unchecked`, because only a
+caller gating a whole pack owes the answer: a caller checking a block *fragment*
+against a recorded tool set performs no fold and is asked nothing about weights.
+"""
+
+
+_TRANSCRIPT_RULE_KEYS: tuple[str, ...] = (
+    "must_contain",
+    "disallow_regex",
+    "max_turns",
+    "min_assistant_turns",
+    "required_actions",
+    "communicate_info",
+)
+"""The flat ``transcript_rules`` keys that declare a rule over the transcript.
+
+``tool_expectations`` is not among them because it declares its rules one level down,
+in ``required_tools`` and ``disallowed_tools`` — a block carrying it empty asserts as
+little as one omitting it. Held against ``TranscriptRulesConfig`` by the gate's unit
+tests, so a rule key added to the model joins this tuple rather than reading as
+nothing and refusing a pack that grades.
+"""
+
+
+# What each section must declare to assert anything, addressed to the author. Three
+# entries, because the other two components answer this question at model
+# construction: an empty ``trace_checks`` and an empty ``llm_judge`` are both
+# unrepresentable, so no gate rule can reach one.
+_WHAT_EACH_SECTION_MUST_DECLARE: Mapping[str, str] = {
+    "state_checks": (
+        "a non-empty jsonpaths list, a db_probes list, or hash.enabled beside an "
+        f"{' or '.join(HASH_SOURCE_KEYS)}"
+    ),
+    "transcript_rules": (
+        "a rule over the transcript — must_contain, disallow_regex, max_turns, "
+        "min_assistant_turns, required_actions, communicate_info, or a tool_expectations "
+        "carrying a required_tools or disallowed_tools entry"
+    ),
+    "custom_checks": (
+        "enabled: true beside the file holding the checks, or enabled: false to record "
+        "the opt-out explicitly"
+    ),
+}
+
+_ASSERTS_NOTHING = (
+    "the {section} block {because}, so it asserts nothing and scores nothing. "
+    "Declare {what}, or drop the block"
+)
+
+_AN_EMPTY_BLOCK = "declares nothing at all"
+
+_NO_STATE_SOURCE = "declares no source any substrate can read"
+
+_NO_TRANSCRIPT_RULE = "declares no rule any substrate can evaluate"
+
+_NO_OPT_IN_DECISION = "leaves enabled unwritten, which the component's own default reads as off"
+
 # The JSON types whose values are never strings. A schema declaring one of them for
 # an argument settles that a reference comparing the bound value against text cannot
 # hold; ``string``, and a property writing no type at all, settle nothing.
@@ -240,9 +356,12 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
 
 
 def inspect_grading_authoring(
-    grading: Mapping[str, Any], inventory: ToolInventory
+    grading: Mapping[str, Any],
+    inventory: ToolInventory,
+    *,
+    effective_combine: GradingCombineConfig | None = None,
 ) -> AuthoringReport:
-    """Report what a task's tools say about the grading block it is graded by.
+    """Report what a task's tools and its fold say about the grading block it is graded by.
 
     The block is expected to have passed its own shape validation; the typed
     sub-blocks read here are constructed, so a malformed one raises its own load
@@ -251,12 +370,27 @@ def inspect_grading_authoring(
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
     inventory is unresolvable, and the rules that need nothing but the block —
     regex compilation, the hash-source declaration — still run.
+
+    Args:
+        grading: The authored block, as written.
+        inventory: The task's tool set.
+        effective_combine: The combine the task grades under, project defaults
+            layered beneath its own. The weight rules read the *effective* map
+            because a task declaring no ``combine`` at all still inherits one, so a
+            rule reading the authored block would refuse a pack that grades fine.
+            ``None`` leaves those two rules out entirely — the answer for a caller
+            checking a block fragment against a recorded tool set, which performs no
+            fold. A caller gating a whole pack that could not resolve one owes
+            :data:`UNRESOLVED_COMBINE_REASON` through
+            :meth:`AuthoringReport.with_unchecked`, so its gate does not read as a
+            clean bill of health.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
     binders = tuple(_trace_binding_sites(constraints))
     rules = _transcript_rules(grading)
     reports = [
+        _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
     ]
@@ -269,7 +403,204 @@ def inspect_grading_authoring(
         ]
     else:
         reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
+    if effective_combine is not None:
+        reports += [
+            _check_requested_components_are_weighted(grading, effective_combine),
+            _check_weights_name_requested_components(grading, effective_combine),
+        ]
     return _merged(reports)
+
+
+def _check_sections_declare_something(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A component section the author wrote declares something to evaluate.
+
+    An empty block cannot survive translation: the wire erases an authored empty
+    ``state_checks`` or ``transcript_rules`` to an absent section, so while the shape
+    is representable no predicate can answer "did the author write this?" the same way
+    on both substrates. Refusing it is what makes one predicate serve all three
+    artifacts, and it finishes a call the project has already made twice — an empty
+    ``trace_checks`` and an empty ``llm_judge`` are refused at model construction.
+
+    All three sections carry the rule one level further, because each has keys that
+    configure how a component runs rather than declaring what it checks: a
+    ``state_checks`` holding only ``id_fields``, a ``transcript_rules`` whose every
+    rule list is empty, and a ``custom_checks`` naming a file under no ``enabled``
+    flag all assert exactly as little as an empty block, and each took a free pass for
+    it — the first two scored a vacuous ``1.0``, and the third escapes the weight
+    rules too, so a pack configuring nothing else folds as one asking for nothing.
+    :data:`_A_NON_EMPTY_SECTION_STILL_DECLARES` holds the predicate and the sentence
+    for each.
+
+    The ``state_checks`` rule and :func:`_check_hash_source_declared` partition the
+    unevaluable state blocks between them rather than overlapping — see
+    :func:`_state_checks_has_a_source` for where the line falls — so each shape is
+    refused once, at the key its own fix belongs to.
+    """
+    errors = tuple(
+        Finding(
+            section,
+            _ASSERTS_NOTHING.format(section=section, because=because, what=what),
+        )
+        for section, what in _WHAT_EACH_SECTION_MUST_DECLARE.items()
+        if (because := _why_a_section_asserts_nothing(section, grading.get(section))) is not None
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _why_a_section_asserts_nothing(section: str, written: Any) -> str | None:
+    """Which of the two shapes *written* is, or ``None`` where it declares something.
+
+    A section that is not a mapping is left alone: the block is expected to have
+    passed its own shape validation, so a scalar there is a load error rather than an
+    authoring finding.
+    """
+    if not isinstance(written, Mapping):
+        return None
+    if not written:
+        return _AN_EMPTY_BLOCK
+    declares_something, because = _A_NON_EMPTY_SECTION_STILL_DECLARES[section]
+    return None if declares_something(written) else because
+
+
+def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
+    """Whether the block declares a state source at all.
+
+    ``db_probes`` counts although only the runner can read one: that a probe's DSN
+    resolves only inside the task's docker network is the documented substrate
+    asymmetry, not something the author wrote wrong.
+
+    A ``hash`` block counts as soon as it declares *either* the flag or something to
+    compare against, which is what divides this rule from
+    :func:`_check_hash_source_declared`: that rule owns every hash block whose two
+    halves disagree, and this one owns a block that declares no source at all —
+    including a hash block carrying neither. So each shape draws exactly one finding,
+    and no shape draws none.
+    """
+    hash_block = state_checks.get("hash")
+    if not isinstance(hash_block, Mapping):
+        hash_block = {}
+    return bool(
+        state_checks.get("jsonpaths")
+        or state_checks.get("db_probes")
+        or hash_block.get("enabled")
+        or any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
+    )
+
+
+def _transcript_rules_asserts_something(transcript_rules: Mapping[str, Any]) -> bool:
+    """Whether the block declares a rule over the transcript at all.
+
+    Every key is read for truth rather than for presence, because that is what both
+    substrates do: an empty ``required_actions`` list requires no action and an empty
+    ``must_contain`` list demands no phrase, so a block holding only empty lists is
+    scored against nothing and takes the vacuous ``1.0`` that averaging an empty
+    sub-check set produces. ``max_turns`` and ``min_assistant_turns`` are bounds
+    rather than lists, and a bound of ``0`` admits every turn count from either side,
+    so truthiness is the right reading for them too.
+
+    ``tool_expectations`` is read one level down, through the same two keys the
+    tool-name rule addresses, because the block itself declares nothing — its two
+    lists do.
+    """
+    expectations = transcript_rules.get("tool_expectations") or {}
+    return bool(
+        any(transcript_rules.get(key) for key in _TRANSCRIPT_RULE_KEYS)
+        or any(expectations.get(key) for key in _TOOL_EXPECTATION_HAZARDS)
+    )
+
+
+def _custom_checks_decides_its_opt_in(custom_checks: Mapping[str, Any]) -> bool:
+    """Whether the block says, either way, that its suite runs.
+
+    Presence rather than truth, because ``enabled: false`` *is* a decision — it
+    survives the wire intact and both substrates read it as an opt-out. What asserts
+    nothing is the block that leaves the key out: ``CustomChecksConfig.enabled``
+    defaults to ``False``, so the suite never runs, no weight is owed for it, and a
+    pack naming a ``checks.py`` grades as though it had named none.
+    """
+    return "enabled" in custom_checks
+
+
+# What each section must still declare once it is non-empty, and the sentence for the
+# block that does not. Total over :data:`_WHAT_EACH_SECTION_MUST_DECLARE`, so a
+# component whose empty block stops being refused at model construction cannot join
+# that table without an answer here.
+_A_NON_EMPTY_SECTION_STILL_DECLARES: Mapping[
+    str, tuple[Callable[[Mapping[str, Any]], bool], str]
+] = {
+    "state_checks": (_state_checks_has_a_source, _NO_STATE_SOURCE),
+    "transcript_rules": (_transcript_rules_asserts_something, _NO_TRANSCRIPT_RULE),
+    "custom_checks": (_custom_checks_decides_its_opt_in, _NO_OPT_IN_DECISION),
+}
+
+
+def _check_requested_components_are_weighted(
+    grading: Mapping[str, Any], combine: GradingCombineConfig
+) -> AuthoringReport:
+    """A component the pack configures carries a weight in the effective combine.
+
+    Configuring a section asks for the component to be scored; declaring no weight
+    for it leaves nothing in the config saying what share of the trial's score that
+    verdict carries, and the two substrates do not answer that the same way.
+    """
+    errors = tuple(
+        Finding(
+            f"combine.weights.{spec.name}",
+            f"the {spec.config_section} section is configured, so the {spec.name} component "
+            f"is scored, but the effective combine.weights declares {sorted(combine.weights)} "
+            f"and no weight for it: nothing in the config says what share of the score "
+            f"{spec.name} carries, and the two substrates do not answer that the same way. "
+            f"Declare combine.weights.{spec.name}, or drop the {spec.config_section} section",
+        )
+        for spec in GRADE_COMPONENTS
+        if component_requested(spec, grading.get(spec.config_section))
+        and spec.name not in combine.weights
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _check_weights_name_requested_components(
+    grading: Mapping[str, Any], combine: GradingCombineConfig
+) -> AuthoringReport:
+    """A weight in the effective combine names a component the pack configures.
+
+    The converse of :func:`_check_requested_components_are_weighted`, and refused for
+    the same reason in the other direction: no substrate produces a component the
+    pack never configured, so the weight weighs nothing an author can see.
+    """
+    requested = frozenset(
+        spec.name
+        for spec in GRADE_COMPONENTS
+        if component_requested(spec, grading.get(spec.config_section))
+    )
+    errors = tuple(
+        Finding(f"combine.weights.{name}", _unrequested_weight_message(name, requested))
+        for name in sorted(combine.weights)
+        if name not in requested
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _unrequested_weight_message(name: str, requested: frozenset[str]) -> str:
+    """Why one weight key weighs nothing, and which of the two fixes applies.
+
+    A key naming no component at all is the same defect one step further out — the
+    weight is unread either way — but it takes the other fix, because there is no
+    section to configure.
+    """
+    if name not in COMPONENT_BY_NAME:
+        return (
+            f"combine.weights declares a weight for {name!r}, which names no grading "
+            f"component: the components are {sorted(COMPONENT_BY_NAME)}. A weight no "
+            "substrate reads folds nothing. Correct the name, or drop the weight"
+        )
+    section = COMPONENT_BY_NAME[name].config_section
+    return (
+        f"combine.weights declares a weight for {name}, which this pack does not configure: "
+        f"its {section} section is absent or opted out and the pack configures "
+        f"{sorted(requested)}, so no substrate produces a {name} component and the weight "
+        f"weighs nothing. Configure the {section} section, or drop the weight"
+    )
 
 
 def _check_tool_names(sites: tuple[_MatcherSite, ...], inventory: ToolInventory) -> AuthoringReport:
@@ -357,14 +688,21 @@ def _check_regex_compiles(
 
 
 def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
-    """An expected state hash is read only where the hash check is enabled.
+    """The hash check and something to compare against are declared together.
 
-    Both substrates test the flag before reading the hash, so the comparison an
-    author wrote never runs and the pack grades without it in silence. The flag is
-    read for truth rather than for ``True``, because that is what decides the
-    grade: core branches on its truthiness and the runner coerces it, so a pack
-    written ``enabled: 1`` does read the hash and rejecting it here would be
-    stricter than either substrate.
+    Either half alone grades the state without the comparison the author wrote. A
+    source under a disabled flag is never read: both substrates test the flag first,
+    so the pack grades in silence without it. An enabled flag with no source is the
+    same defect from the other side, and it also splits the two substrates — core
+    produces no hash verdict at all while the runner compares the trial against the
+    initial state, so the same trial takes two different ``state_checks`` components.
+
+    Both halves read the flag for truth rather than for ``True``, because that is
+    what decides the grade: core branches on its truthiness and the runner coerces
+    it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
+    would be stricter than either substrate. A source is read the same way — an
+    empty ``golden_actions`` list replays nothing, which is why both substrates
+    treat it as no source at all.
     """
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
@@ -372,16 +710,31 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     hash_block = state_checks.get("hash")
     if not isinstance(hash_block, Mapping):
         return AuthoringReport()
-    if not hash_block.get("expected_state_hash") or hash_block.get("enabled"):
+    enabled = hash_block.get("enabled")
+    if enabled and not any(hash_block.get(key) for key in HASH_SOURCE_KEYS):
+        sources = " or ".join(HASH_SOURCE_KEYS)
+        return AuthoringReport(
+            errors=(
+                Finding(
+                    "state_checks.hash.enabled",
+                    f"hash grading is enabled but the block declares no {sources} to "
+                    "compare against: core produces no hash verdict at all while the "
+                    "runner compares the trial against its initial state, so the same "
+                    "trial takes two different state_checks components. Declare "
+                    f"{sources}, or drop the hash block",
+                ),
+            )
+        )
+    if not hash_block.get("expected_state_hash") or enabled:
         return AuthoringReport()
     return AuthoringReport(
         errors=(
             Finding(
                 "state_checks.hash.expected_state_hash",
-                "an expected state hash is declared while hash.enabled is "
-                f"{hash_block.get('enabled')!r}: both substrates read the flag before the "
-                "hash, so the comparison never runs and the state is graded without it. "
-                "Write enabled: true, or drop the hash",
+                f"an expected state hash is declared while hash.enabled is {enabled!r}: "
+                "both substrates read the flag before the hash, so the comparison never "
+                "runs and the state is graded without it. Write enabled: true, or drop "
+                "the hash",
             ),
         )
     )

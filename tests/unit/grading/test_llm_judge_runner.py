@@ -37,7 +37,7 @@ def test_combine_components_includes_llm_judge_when_score_set():
         "weights": {"llm_judge": 1.0},
         "llm_judge": {"rubric": {"criteria": [{"id": "a", "description": "d"}]}},
     }
-    score, _ = combine_grade_components(components, cfg)
+    score = combine_grade_components(components, cfg).score
     assert score == pytest.approx(0.6)
 
 
@@ -54,7 +54,7 @@ def test_combine_excludes_llm_judge_when_score_is_sentinel():
         "weights": {"state_checks": 1.0, "llm_judge": 1.0},
         "state_checks": {"hash_enabled": True},
     }
-    score, _ = combine_grade_components(components, cfg)
+    score = combine_grade_components(components, cfg).score
     # Only state_checks is active; the errored judge does NOT drag the score to 0.
     assert score == pytest.approx(0.8)
 

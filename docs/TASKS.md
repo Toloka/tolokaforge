@@ -310,7 +310,7 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 - Use `transcript_rules` to enforce tool usage patterns.
 - Use `trace_checks` when the condition is about **order, scoped absence, an argument the flat presence checks cannot express, a task with more than one correct route, or a condition that must hold without being scored** — see [Trace Checks](GRADING.md#trace-checks). Four worked packs: [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence; [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md), which grades two alternative diagnostic routes behind one shared `severity: gate` check that a diagnose-only agent trips by mutating, and requires the note to quote the stale value the route's own read returned; [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md), whose constraints [correlate arguments](GRADING.md#correlating-arguments-across-matchers) — the posted reason code has to have come back in a result the agent read, and the lot has to have been read first; and [`native_shared_domain`](../examples/native/native_shared_domain/README.md), where a shared `severity: gate` constraint and a `required` rubric criterion grade the two conjuncts of one policy, each holding the half it can see.
 - Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is how that move is [declared](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar) and checked against the judge's own recorded verdicts before it is trusted.
-- **Weight every component the pack configures.** A configured component missing from `combine.weights` is dropped by one substrate and folded in at an invented `1.0` by the other (#744).
+- **Weight every component the pack configures.** A configured component missing from `combine.weights` is refused before the run, and a component a substrate scored anyway makes the fold raise on both substrates rather than being handed a share nobody declared.
 - For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding — unless an idle agent already satisfies the state, in which case `transcript_rules` needs a weight of its own (below).
 
 See `docs/REFERENCE.md` for full schemas.
@@ -340,10 +340,10 @@ combine:
 The floor is a gate on the whole `transcript_rules` component rather than one more
 sub-check inside it: unmet, the component is `0.0` whatever the other keys scored,
 and `grade.reasons` carries `Assistant turn count 0 below min_assistant_turns of
-1`. **The `combine.weights` entry is not optional** — core admits a scored
-component only when `combine.weights` declares a weight for it, so a floor declared
-in a pack that weights `state_checks` alone is evaluated and then dropped before it
-can reach the final score.
+1`. **The `combine.weights` entry is not optional** — a configured component with no
+weight is refused before the run, in both directions, so a floor declared in a pack
+that weights `state_checks` alone never loads. Neither does the reverse: weighting
+`transcript_rules` in a pack that declares no floor.
 
 A floor above `max_turns` admits no turn count at all. `tolokaforge validate`
 rejects such a pack, naming both keys and both values, so an unsatisfiable window
@@ -354,18 +354,20 @@ turns with no prose satisfy `min_assistant_turns: 3`, so pair it with a phrase r
 when the refusal itself is the deliverable. See
 [`docs/GRADING.md`](GRADING.md#turn-bounds) § Turn bounds for the full semantics.
 
-**The floor closes the transcript half of this hole; the state half is open.**
-Core scores a `state_checks` block it has no evaluable source for a free `1.0` —
-one carrying only `id_fields`, only `db_probes`, or an empty `jsonpaths` list — so
-the component passes on evidence nothing produced. That is **#733**.
+**The floor closes the transcript half of this hole; the state half is closed at the
+gate.** A `state_checks` block carrying no source any substrate can read — only
+`id_fields`, or an empty `jsonpaths` list — asserts nothing, and both
+`tolokaforge validate` and the pre-run gate refuse it, naming every source you
+could declare instead and the option of dropping the block.
 
-The runner splits those three. An `id_fields`-only or empty-`jsonpaths` block
-records the not-evaluated sentinel and contributes nothing, which asks nothing of
-the agent either. A `db_probes`-only block is a **real** check the runner runs and
-core cannot: `state_checks.db_probes` is `RUNNER_ONLY` in the substrate-parity
-manifest, evaluated by `evaluate_db_probes`, because the probe DSN resolves only
-inside the task's docker network. So probes do assert something — just not on the
-core substrate, where the same pack takes the free `1.0`.
+A `db_probes`-only block is the case the gate admits, because a probe is a **real**
+source. It is only not a source *core* can read: `state_checks.db_probes` is
+`RUNNER_ONLY` in the substrate-parity manifest, evaluated by `evaluate_db_probes`,
+because the probe DSN resolves only inside the task's docker network. So core leaves
+`state_checks` unevaluated on such a pack and folds the components that were actually
+decided — failing the trial, with a reason naming what produced no verdict, when
+there are none. Probes assert something; just not on the substrate that
+`tolokaforge validate` grades with.
 
 Either way, give a refusal task at least one state assertion a wrong action would
 break on the substrate you grade on: an idle agent and an agent that acted wrongly
