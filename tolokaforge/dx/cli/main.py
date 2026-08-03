@@ -1380,6 +1380,7 @@ def validate(tasks: str):
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
+    from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
 
     task_files = glob.glob(tasks, recursive=True)
     if not task_files:
@@ -1396,12 +1397,16 @@ def validate(tasks: str):
             # Schema breaks in the referenced grading.yaml — e.g. the removed
             # free-text ``rubric: str`` / ``output_schema`` — fail here with a
             # migration message rather than only at run time.
+            grading_path = task_dir / task_config.grading
             report = validate_grading_yaml(
-                task_dir / task_config.grading,
+                grading_path,
                 inventory=tool_inventory_under_adapter(
                     task_config, task_dir, task_config.adapter_type
                 ),
             )
+            # Only here, and deliberately not in the pre-run gate: a migration
+            # declaration cannot affect a grade, so a run must not abort on it.
+            inspect_migration_declaration(grading_path)
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

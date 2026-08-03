@@ -18,12 +18,20 @@ evaluation:
 tasks/<category>/<task_id>/
 ├── task.yaml
 ├── grading.yaml
+├── migration.yaml              # optional, what the rubric is migrating into trace checks
 ├── initial_state.json          # optional
 ├── www/                        # optional, for full-site browser tasks
 ├── mock_web/                   # optional, for single-page browser tasks
 ├── rag/corpus/                 # optional
 └── README.md                   # optional
 ```
+
+`migration.yaml` records which rubric criteria the task's `trace_checks` constraints are a
+candidate for, have narrowed, or have replaced. It is a sidecar beside `grading.yaml`
+because nothing about grading reads it: it carries the author's claim and the evidence
+behind it so the claim can be checked against recorded judge verdicts. `tolokaforge
+validate` refuses a declaration its pack contradicts. See
+[`docs/GRADING.md`](GRADING.md) § Trace Checks.
 
 Categories: `terminal`, `browser`, `mobile`. Use `mobile` for app-style tasks that simulate phone interactions (restricted browser actions, no URL navigation). Use `browser` for full web browsing tasks. The mock-web service discovers static files from all categories automatically.
 

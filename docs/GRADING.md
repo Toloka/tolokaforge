@@ -1990,9 +1990,10 @@ that earns its weight and one that decorates a pack:
 #### What a correlation is a candidate to replace, and what it is not
 
 Both packs above name, in their `grading.yaml` headers, the judge criterion each new
-check is a candidate to replace. **Neither retires one.** The candidacy is a documented
-starting point for #683, which owns rubric migration, and the two findings below are
-what it has to honour — recorded here because correlation is what surfaced them.
+check is a candidate to replace. **Neither retires one.** A candidacy is declared
+machine-readably in a [`migration.yaml` sidecar](#declaring-a-migration-the-migrationyaml-sidecar),
+which is where the two findings below are honoured — recorded here because correlation is
+what surfaced them.
 
 | new check | candidate to replace | why it cannot yet |
 |---|---|---|
@@ -2007,6 +2008,52 @@ what it has to honour — recorded here because correlation is what surfaced the
 2. **#683's own gate is agreement against historical judge verdicts.** A pack gaining
    a correlation has no recorded-trial evidence and structurally cannot have any, so
    retiring a criterion beside the new check would pre-empt that gate with a guess.
+
+#### Declaring a migration: the `migration.yaml` sidecar
+
+A task directory may carry a `migration.yaml` beside its `grading.yaml`, naming each rubric
+criterion its constraints are a candidate for, have narrowed, or have replaced. The file is
+optional; a pack without one is unchanged. Nothing about grading reads it — it records the
+claim and the evidence behind it so the claim can be checked against recorded judge
+verdicts, which is why it is a sidecar and not a `grading.yaml` key: `GradingConfig` is
+`extra="ignore"`, so a `migration:` key there is silently dropped, and making it a real key
+needs a `GRADING_KEYS` manifest entry, whose every `KeyKind` describes score production.
+
+```yaml
+migrations:
+  - criterion: checked_duplicates_first        # the rubric criterion id
+    mode: candidate | narrowed | retired
+    by: [the_notes_were_listed_before_the_note_was_added]   # trace_checks ids in this pack
+    was: { kind: binary, required: true, weight: 1.0, description: "<the text measured against>" }
+    residual: { kind: none | text, reason: "<why nothing remains / what remains>" }
+    combine_weights: { llm_judge: 0.7, trace_checks: 0.3 }  # post-migration combine.weights
+    evidence: { corpus: tests/data/migration_corpora/notes, observations: 11, kappa: 1.0 }
+    acknowledged: [ { trial: <bundle path under evidence.corpus>, reason: "<why the judge was wrong>" } ]
+```
+
+`residual` is a model rather than a string because no one scalar carries both a sentinel and
+free text: `residual: none` parses to the non-empty string `'none'` while `residual: null`
+parses to `None`, so a single field answers the wrong question for one of the two modes
+whichever way it is spelled.
+
+Every rule below is an **error** naming what to write instead. They are checked by
+`tolokaforge validate`, and deliberately not by the pre-run gate: the file cannot affect a
+grade, so a run must not abort on authoring metadata.
+
+| rule | why |
+|---|---|
+| `candidate` — the criterion exists and `was` matches its current shape exactly; no `evidence` | a candidacy is against the criterion as it stands, and has measured nothing yet |
+| `narrowed` — the criterion exists, `was.description` differs from it, `evidence` and `residual.kind: text` | a narrow that shortened no text narrowed nothing |
+| `retired` — the criterion is **absent** from the rubric, `evidence` and `residual.kind: none` with a reason | zero disagreements satisfies `narrowed`'s condition and `retired`'s alike, so the choice is the author's and is recorded here |
+| every `by` id resolves in this pack's `trace_checks`, shared or inside a route | a migration is *by* the checks that replace the criterion |
+| **veto rule** — a `narrowed` / `retired` entry whose `was.required` is true may only name **shared** constraints carrying `severity: gate` | a required criterion is a trial-level veto with no score share, so retiring one moves the judge score not at all; a route-scoped gate is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate) and a scored constraint is a fraction of a component where a veto was |
+| **freed-share rule** — a `narrowed` / `retired` entry on a criterion that is *not* required must declare `combine_weights` | a scored criterion's weight is in the judge component's denominator, so removing one the agent failed makes the judge *more generous* — `+0.667` on `cache_debug`'s `explains_mechanism`, on a trial that scored it `0.0`. The other way out of the hazard is a counterfactual component that rises on no corpus trial, which needs a corpus this gate does not have |
+| every `acknowledged.trial` is a bundle under `evidence.corpus` | a waiver addresses a disagreement the verdict measured |
+
+A `candidate` entry is charged neither the veto rule nor the freed-share rule: it replaces
+nothing, so the criterion keeps its veto and its score share whatever it names. Both shipped
+candidacies name scored constraints, which is exactly what those two rules refuse for a
+narrow or a retirement.
 
 ### Declared limits, and what owns each
 
