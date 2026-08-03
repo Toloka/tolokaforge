@@ -417,7 +417,7 @@ posting to a route the gateway does not serve.
 |---|---|
 | `LLM_PROXY_BASE_URL` | Gateway base URL. **Setting this enables the transport**; everything else is optional. |
 | `LLM_PROXY_API_KEY` | Credential presented to the gateway. Omit only for gateways that authenticate by network position — litellm then falls through to its provider-env lookup and forwards the *provider's* key to the gateway host instead. |
-| `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. |
+| `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference another secret, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
 
@@ -425,6 +425,35 @@ All five resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend.
+
+### Header values may reference other secrets
+
+A value in `LLM_PROXY_HEADERS` may contain `$NAME` or `${NAME}`, resolved through the
+same `SecretManager`:
+
+```
+LLM_PROXY_HEADERS={"X-Team-Id":"research","X-Order-Id":"$SUNDAY_ORDER_ID"}
+SUNDAY_ORDER_ID=10000458
+```
+
+This exists so the JSON does not have to be a secret just because one header carries
+something sensitive. The header *names* and the overall shape stay legible, which is
+what a reviewer needs to see (what is this run telling the gateway about itself?),
+while the sensitive halves stay indirect. In CI that means the JSON can live in a
+plain repository **variable** without printing a secret into a public workflow log,
+because the variable only ever holds the placeholder.
+
+Two deliberate rules:
+
+* **An unresolved name is a hard error**, never an empty substitution. A blank
+  attribution header bills the call to nobody and a blank admission header fails at
+  the gateway, and both surface a long way from the misconfigured line. The error
+  names the header and the missing variable, and it fires at resolve time, before
+  any request goes out.
+* **`$$` is a literal `$`**, so a value that genuinely needs one is still writable.
+
+Only string values are expanded; a JSON number or boolean keeps its existing
+stringify path.
 Setting any companion variable while `LLM_PROXY_BASE_URL` is empty also raises,
 so a typo in the base-URL name cannot silently fall back to direct provider
 access.

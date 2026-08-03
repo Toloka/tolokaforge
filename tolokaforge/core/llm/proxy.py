@@ -105,9 +105,13 @@ matched preset and the ``providers:`` overlay. See ``docs/LLM_LAYER.md`` § prox
 from __future__ import annotations
 
 import json
+import re
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tolokaforge.secrets import SecretManager
 
 ENV_BASE_URL = "LLM_PROXY_BASE_URL"
 ENV_API_KEY = "LLM_PROXY_API_KEY"
@@ -201,8 +205,62 @@ class ProxyConfig:
         return headers
 
 
-def _parse_headers(raw: str | None) -> dict[str, str]:
-    """Parse ``LLM_PROXY_HEADERS`` (a JSON object of string values)."""
+#: One placeholder in a header VALUE: ``$$`` (a literal ``$``), ``${NAME}`` or ``$NAME``.
+#: Shell-style on purpose, so the same string is readable to anyone who has met an env
+#: file. Names follow the identifier rule env vars already obey.
+_PLACEHOLDER_RE = re.compile(
+    r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
+)
+
+
+def _expand_placeholders(value: str, header: str, secrets: SecretManager) -> str:
+    """Resolve ``$NAME`` / ``${NAME}`` in a header value through ``secrets``.
+
+    This is what lets ``LLM_PROXY_HEADERS`` stay a plain, reviewable, non-secret
+    string while the values it carries come from somewhere secret::
+
+        {"X-Tlk-Business-Id": "data-business", "X-Tlk-Sunday-Order-Id": "$SUNDAY_ORDER_ID"}
+
+    The header NAMES and the shape stay legible in the variable (so a reviewer can see
+    what the gateway is being told), and only the sensitive halves are indirect. In CI
+    that means the JSON can live in a repository *variable* and still not print a secret
+    into a public workflow log, since the log only ever shows the placeholder.
+
+    An unresolved name is a hard error, never an empty substitution: a header silently
+    sent as ``""`` (or worse, as the literal ``$SUNDAY_ORDER_ID``) misattributes cost or
+    fails admission at the gateway, and both surface far from the cause. ``$$`` escapes a
+    literal ``$`` for the rare value that needs one.
+    """
+    missing: list[str] = []
+
+    def _sub(match: re.Match[str]) -> str:
+        if match.group(1):
+            return "$"
+        name = match.group(2) or match.group(3)
+        resolved = secrets.get_secret(name)
+        if resolved is None or not resolved.strip():
+            missing.append(name)
+            return ""
+        return resolved
+
+    expanded = _PLACEHOLDER_RE.sub(_sub, value)
+    if missing:
+        raise ProxyConfigError(
+            f"{ENV_HEADERS} value for {header!r} references "
+            f"{', '.join(sorted(set(missing)))}, which is not set. Either set it (as an "
+            f"env var or a secret) or write the value literally. It is not substituted "
+            f"as empty on purpose: a blank attribution or admission header fails at the "
+            f"gateway, or bills to nobody, far away from this line. Use $$ for a "
+            f"literal dollar sign."
+        )
+    return expanded
+
+
+def _parse_headers(raw: str | None, secrets: SecretManager) -> dict[str, str]:
+    """Parse ``LLM_PROXY_HEADERS`` (a JSON object of string values).
+
+    Values may reference other secrets, see :func:`_expand_placeholders`.
+    """
     if raw is None or not raw.strip():
         return {}
     try:
@@ -225,7 +283,15 @@ def _parse_headers(raw: str | None) -> dict[str, str]:
             raise ProxyConfigError(
                 f"{ENV_HEADERS} value for {name!r} must be a scalar, got {type(value).__name__}"
             )
-        headers[name.strip()] = str(value)
+        # Only string values are expanded. A JSON number/bool cannot carry a
+        # placeholder, and stringifying one first would just invent a way to write
+        # ``$NAME`` that looks different from every other way.
+        resolved = (
+            _expand_placeholders(value, name.strip(), secrets)
+            if isinstance(value, str)
+            else str(value)
+        )
+        headers[name.strip()] = resolved
     return headers
 
 
@@ -293,7 +359,7 @@ def resolve_proxy_config() -> ProxyConfig | None:
     return ProxyConfig(
         base_url=base_url.rstrip("/"),
         api_key=(secrets.get_secret(ENV_API_KEY) or "").strip() or None,
-        headers=_parse_headers(secrets.get_secret(ENV_HEADERS)),
+        headers=_parse_headers(secrets.get_secret(ENV_HEADERS), secrets),
         request_id_header=(secrets.get_secret(ENV_REQUEST_ID_HEADER) or "").strip() or None,
         providers=_parse_providers(secrets.get_secret(ENV_PROVIDERS)),
     )

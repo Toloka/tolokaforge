@@ -115,6 +115,12 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
+      # Values that the $NAME placeholders in ARENA_AUTOMATION_LLM_PROXY_HEADERS resolve
+      # to. Job-level so every engine step sees them, which is safe because these are
+      # ordinary secret names: unlike LLM_PROXY_*, an unused one here is inert rather
+      # than a half-configured gateway. Add one line per placeholder used.
+      SUNDAY_ORDER_ID: ${{ secrets.ARENA_AUTOMATION_SUNDAY_ORDER_ID }}
+      GATEWAY_RUNNER_KEY: ${{ secrets.ARENA_AUTOMATION_GATEWAY_RUNNER_KEY }}
       # Run + PR permalinks, passed to the Slack notifier as <url|label> links.
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr }}
@@ -210,6 +216,9 @@ jobs:
           ROUTE: ${{ inputs.route || 'openrouter' }}
           PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
           PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
+          # A VARIABLE, not a secret: see the note in slack-integrate.yml. Sensitive
+          # halves are $NAME placeholders resolved from the secrets below.
+          PROXY_HEADERS: ${{ vars.ARENA_AUTOMATION_LLM_PROXY_HEADERS }}
         # OPENROUTER_API_KEY is always written: it is what the non-gateway route uses, and the
         # OpenRouter pricing/catalog HTTP calls need it on either route. LLM_PROXY_* is added
         # only when the gateway route was requested AND configured -- writing a base URL without
@@ -223,6 +232,14 @@ jobs:
             if [ -n "$PROXY_BASE_URL" ] && [ -n "$PROXY_API_KEY" ]; then
               printf '%s\n' "LLM_PROXY_BASE_URL=$PROXY_BASE_URL" >> .env
               printf '%s\n' "LLM_PROXY_API_KEY=$PROXY_API_KEY" >> .env
+              # Written ONLY inside this branch, never on its own: resolve_proxy_config
+              # treats a companion without a base URL as a hard error, on purpose, so
+              # a job-level env var here would break the openrouter route outright.
+              # Bare JSON, no surrounding quotes, is what the dotenv provider expects;
+              # any $NAME inside it resolves from the job-level secrets below.
+              if [ -n "$PROXY_HEADERS" ]; then
+                printf '%s\n' "LLM_PROXY_HEADERS=$PROXY_HEADERS" >> .env
+              fi
               echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
             else
               echo "::warning title=Gateway route unavailable::route=litellm was requested but ARENA_AUTOMATION_LLM_PROXY_BASE_URL / _API_KEY are not set; probing over OpenRouter instead"
