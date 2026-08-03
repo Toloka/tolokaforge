@@ -7,14 +7,16 @@ For each fixture this:
    calibration runs the real judge with no runner / gRPC stack);
 2. calls :meth:`tolokaforge.core.grading.judge.LLMJudge.run`;
 3. on COMPLETED, pairs each criterion's judge verdict against the fixture's human
-   label into a :class:`~rubric_calibrator.metrics.CriterionObservation`;
+   label into a
+   :class:`~tolokaforge.core.grading.agreement.CriterionObservation` — the human
+   label is the *reference* side, the judge's verdict the *candidate* side;
 4. on ERRORED, records the fixture id as a calibration *failure* (no pairs) — an
    errored judge is never silently scored.
 
-The LLM call is confined here; the metric maths lives in ``metrics.py`` and is
-tested without inference. A scripted ``llm_client`` may be injected (the same
-``LoopLLMClient`` shape the judge unit tests use) to exercise this plumbing
-deterministically.
+The LLM call is confined here; the agreement maths lives in
+:mod:`tolokaforge.core.grading.agreement` and is tested without inference. A
+scripted ``llm_client`` may be injected (the same ``LoopLLMClient`` shape the
+judge unit tests use) to exercise this plumbing deterministically.
 """
 
 from __future__ import annotations
@@ -23,6 +25,12 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from tolokaforge.core.grading.agreement import (
+    CalibrationReport,
+    CriterionObservation,
+    binarise,
+    build_report,
+)
 from tolokaforge.core.grading.judge import (
     JudgeResult,
     JudgeStatus,
@@ -33,12 +41,6 @@ from tolokaforge.core.grading.judge import (
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 
 from .fixture import GoldenFixture
-from .metrics import (
-    CalibrationReport,
-    CriterionObservation,
-    binarise,
-    build_report,
-)
 
 
 class DictDBReader:
@@ -117,14 +119,15 @@ def _pair_fixture(fixture: GoldenFixture, result: JudgeResult) -> list[Criterion
         judged = judged_by_id[cid]
         is_graded = kinds[cid] == "graded"
         expected_raw = fixture.expected_raw(cid)
+        judged_raw = judged.score if is_graded else judged.met
         observations.append(
             CriterionObservation(
-                fixture_id=fixture.id,
+                observation_id=fixture.id,
                 criterion_id=cid,
-                expected_met=binarise(expected_raw, is_graded=is_graded),
-                judged_met=binarise(judged.score if is_graded else judged.met, is_graded=is_graded),
-                expected_raw=expected_raw,
-                judged_raw=judged.score if is_graded else judged.met,
+                reference_met=binarise(expected_raw, is_graded=is_graded),
+                candidate_met=binarise(judged_raw, is_graded=is_graded),
+                reference_raw=expected_raw,
+                candidate_raw=judged_raw,
                 justification=judged.justification,
             )
         )

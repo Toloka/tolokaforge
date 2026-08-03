@@ -7,8 +7,8 @@ agreement clears the threshold. Exits non-zero when the gate fails so CI can
 block shipping an untrustworthy rubric.
 
 Why a ``tools/`` workspace member (not a ``tolokaforge`` CLI subcommand):
-calibration is complex, self-contained Python with its own deps (metrics,
-fixture schema, report rendering) and runs real inference offline from the
+calibration is complex, self-contained Python with its own deps (fixture schema,
+real-judge plumbing, report rendering) and runs real inference offline from the
 runner stack — exactly the "complex Python logic → tools/" case in AGENTS.md.
 The bundled ``scripts/analysis/calibrate_rubric.sh`` wraps it with the repo's
 ``.env`` loader.
@@ -27,8 +27,9 @@ from pathlib import Path
 import typer
 from rich.console import Console
 
+from tolokaforge.core.grading.agreement import decide_gate
+
 from .fixture import load_fixtures
-from .metrics import decide_gate
 from .report import render
 from .runner import run_calibration
 

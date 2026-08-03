@@ -2,8 +2,8 @@
 
 Reuses the Stage-4 scripted ``LoopLLMClient`` approach (``tests/unit/grading/
 test_judge.py``): the fake returns pre-set ``submit_report`` tool calls, so the
-REAL judge loop + rubric parsing + calibration runner + metrics run end-to-end
-deterministically. This tests OUR calibration plumbing (verdict pairing,
+REAL judge loop + rubric parsing + calibration runner + agreement maths run
+end-to-end deterministically. This tests OUR calibration plumbing (verdict pairing,
 agreement numbers, disagreement extraction, gate), not the LLM.
 """
 
@@ -13,9 +13,9 @@ from pathlib import Path
 
 import pytest
 from rubric_calibrator.fixture import GoldenFixture
-from rubric_calibrator.metrics import decide_gate
 from rubric_calibrator.runner import run_calibration
 
+from tolokaforge.core.grading.agreement import decide_gate
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import ToolCall

@@ -1,17 +1,22 @@
-"""Pure agreement-metric tests — no LLM.
+"""Unit tests for tolokaforge/core/grading/agreement.py — pure agreement maths.
 
-Pins the Stage-6 calibration maths: accuracy, Cohen's κ (including the
-chance-correction edge cases), disagreement extraction, ERRORED→failure, and the
-trust-gate threshold decision. These are the numbers the whole calibration gate
-rests on, so they are tested deterministically with hand-built observations.
+Pins the numbers every agreement decision rests on: accuracy, Cohen's κ
+(including the chance-correction edge cases), disagreement extraction, errored
+source → failure, and the threshold gate. Tested deterministically with
+hand-built observations — no LLM.
+
+The load-bearing case is κ on a **label-invariant** corpus: it is ``None`` while
+accuracy reads ``1.0``, so "perfect agreement" and "no evidence" are the same
+input and only κ tells them apart.
 """
-
-from __future__ import annotations
 
 import math
 
 import pytest
-from rubric_calibrator.metrics import (
+
+from tolokaforge.core.grading import rubric
+from tolokaforge.core.grading.agreement import (
+    GRADED_MET_THRESHOLD,
     CriterionObservation,
     accuracy,
     binarise,
@@ -24,16 +29,25 @@ from rubric_calibrator.metrics import (
 pytestmark = pytest.mark.unit
 
 
-def _obs(fixture, criterion, expected, judged, *, raw_e=None, raw_j=None, just=""):
+def _obs(observation, criterion, reference, candidate, *, raw_r=None, raw_c=None, just=""):
     return CriterionObservation(
-        fixture_id=fixture,
+        observation_id=observation,
         criterion_id=criterion,
-        expected_met=expected,
-        judged_met=judged,
-        expected_raw=expected if raw_e is None else raw_e,
-        judged_raw=judged if raw_j is None else raw_j,
+        reference_met=reference,
+        candidate_met=candidate,
+        reference_raw=reference if raw_r is None else raw_r,
+        candidate_raw=candidate if raw_c is None else raw_c,
         justification=just,
     )
+
+
+# ---------------------------------------------------------------------------
+# The threshold is single-sourced
+# ---------------------------------------------------------------------------
+
+
+def test_graded_met_threshold_is_the_engine_constant():
+    assert GRADED_MET_THRESHOLD is rubric.GRADED_MET_THRESHOLD
 
 
 # ---------------------------------------------------------------------------
@@ -93,7 +107,7 @@ def test_kappa_perfect_agreement_with_variation_is_one():
 
 
 def test_kappa_total_disagreement_balanced_is_minus_one():
-    # Both raters use both labels equally but always disagree → κ = -1.
+    # Both labellers use both labels equally but always disagree → κ = -1.
     obs = [
         _obs("f1", "c", True, False),
         _obs("f2", "c", False, True),
@@ -104,7 +118,7 @@ def test_kappa_total_disagreement_balanced_is_minus_one():
 
 
 def test_kappa_undefined_when_no_variation_and_full_agreement():
-    # Both raters say True everywhere: p_e == 1, κ undefined → None.
+    # Both labellers say True everywhere: p_e == 1, κ undefined → None.
     obs = [_obs("f1", "c", True, True), _obs("f2", "c", True, True)]
     assert cohen_kappa(obs) is None
 
@@ -114,10 +128,22 @@ def test_kappa_undefined_below_two_observations():
     assert cohen_kappa([]) is None
 
 
+def test_one_sided_corpus_is_perfect_accuracy_and_no_kappa_evidence():
+    # Five sources, every label not-met on both sides: accuracy cannot distinguish
+    # this from evidence of agreement, and κ is the only signal that does.
+    obs = [_obs(f"t{i}", "c", False, False) for i in range(5)]
+    assert accuracy(obs) == 1.0
+    assert cohen_kappa(obs) is None
+    report = build_report(obs, errored_fixture_ids=[])
+    assert report.total_observations == 5
+    assert decide_gate(report, threshold=0.6, metric="accuracy").shippable is True
+    assert decide_gate(report, threshold=0.6, metric="kappa").shippable is False
+
+
 def test_kappa_chance_level_near_zero():
-    # Judge agrees at exactly the chance rate → κ ≈ 0. Human: 2T/2F; judge picks
-    # T,F,T,F independent of the human, giving 2 agreements out of 4 (p_o=0.5),
-    # with marginals 0.5/0.5 → p_e=0.5 → κ=0.
+    # Candidate agrees at exactly the chance rate → κ ≈ 0. Reference: 2T/2F;
+    # candidate picks T,F,T,F independent of it, giving 2 agreements out of 4
+    # (p_o=0.5), with marginals 0.5/0.5 → p_e=0.5 → κ=0.
     obs = [
         _obs("f1", "c", True, True),
         _obs("f2", "c", True, False),
@@ -128,6 +154,23 @@ def test_kappa_chance_level_near_zero():
     assert k is not None and math.isclose(k, 0.0, abs_tol=1e-9)
 
 
+def test_kappa_is_blind_to_disagreement_direction():
+    # Balanced n=7 with exactly one disagreement, permissive vs strict: κ is
+    # identical, so a κ threshold cannot protect against one direction.
+    balanced = [
+        _obs("f1", "c", True, True),
+        _obs("f2", "c", True, True),
+        _obs("f3", "c", True, True),
+        _obs("f4", "c", False, False),
+        _obs("f5", "c", False, False),
+        _obs("f6", "c", False, False),
+    ]
+    permissive = [*balanced, _obs("f7", "c", False, True)]
+    strict = [*balanced, _obs("f7", "c", True, False)]
+    assert cohen_kappa(permissive) == pytest.approx(cohen_kappa(strict))
+    assert cohen_kappa(permissive) == pytest.approx(0.720, abs=5e-4)
+
+
 # ---------------------------------------------------------------------------
 # disagreement extraction
 # ---------------------------------------------------------------------------
@@ -136,19 +179,21 @@ def test_kappa_chance_level_near_zero():
 def test_extract_disagreements_only_mismatches():
     obs = [
         _obs("f1", "c1", True, True),
-        _obs("f2", "c2", True, False, raw_e=0.9, raw_j=0.2, just="judge saw nothing"),
+        _obs("f2", "c2", True, False, raw_r=0.9, raw_c=0.2, just="candidate saw nothing"),
     ]
     dis = extract_disagreements(obs)
     assert len(dis) == 1
-    assert dis[0].fixture_id == "f2"
+    assert dis[0].observation_id == "f2"
     assert dis[0].criterion_id == "c2"
-    assert dis[0].expected_raw == 0.9
-    assert dis[0].judged_raw == 0.2
-    assert dis[0].justification == "judge saw nothing"
+    assert dis[0].reference_met is True
+    assert dis[0].candidate_met is False
+    assert dis[0].reference_raw == 0.9
+    assert dis[0].candidate_raw == 0.2
+    assert dis[0].justification == "candidate saw nothing"
 
 
 # ---------------------------------------------------------------------------
-# build_report — per-criterion aggregation + errored fixtures
+# build_report — per-criterion aggregation + errored sources
 # ---------------------------------------------------------------------------
 
 
@@ -168,12 +213,12 @@ def test_build_report_per_criterion_and_overall():
     assert not report.has_errors
 
 
-def test_build_report_errored_fixture_counts_as_failure():
+def test_build_report_errored_source_counts_as_failure():
     obs = [_obs("f1", "c", True, True)]
     report = build_report(obs, errored_fixture_ids=["f2"])
     assert report.has_errors
     assert report.errored_fixture_ids == ("f2",)
-    # The errored fixture contributes no observations.
+    # The errored source contributes no observations.
     assert report.total_observations == 1
 
 
@@ -214,7 +259,7 @@ def test_gate_fails_below_threshold():
     assert any("below threshold" in r for r in gate.reasons)
 
 
-def test_gate_fails_on_errored_fixture_even_with_perfect_agreement():
+def test_gate_fails_on_errored_source_even_with_perfect_agreement():
     report = build_report(
         [_obs("f1", "c", True, True), _obs("f1", "c2", False, False)],
         errored_fixture_ids=["f2"],
