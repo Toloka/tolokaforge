@@ -119,10 +119,11 @@ class TestJsonpathStateRoot:
 class TestTauStylePackScoresItsHashVerdict:
     """A hash-on pack with no assertions scores the hash verdict itself.
 
-    ``check_jsonpaths`` scores an empty assertion list a vacuous ``1.0``; blending
-    that against a real hash verdict would award jsonpath credit for assertions
-    the author never wrote. Pinned across the whole weight domain because that
-    invariance *is* the tau-bench parity argument.
+    An empty assertion list declares nothing to evaluate, so it produces no verdict
+    for the fold to blend and the hash verdict passes through untouched — otherwise
+    the pack would collect jsonpath credit for assertions its author never wrote.
+    Pinned across the whole weight domain because that invariance *is* the tau-bench
+    parity argument.
     """
 
     @pytest.mark.parametrize("hash_weight", [0.0, 0.25, 0.5, 0.75, 1.0, None])
@@ -368,17 +369,29 @@ class TestUnevaluatedHashIsReported:
     """Hash grading that was configured but could not run says so on the grade
     rather than falling through to jsonpath-only grading in silence."""
 
+    _UNREPLAYABLE_HASH = {
+        "enabled": True,
+        "golden_actions": [{"name": "close_widget"}],
+        "weight": 0.6,
+    }
+
+    def test_a_pack_with_no_evaluable_source_is_unscored_and_still_says_why(self):
+        """#729's shape: an unreplayable hash beside an empty assertion list.
+
+        Neither source yields a verdict, so the component is absent from the grade
+        and the reason string beside it is the whole of what the pack can say. Any
+        number here would contradict that sentence. The case below shares this hash
+        config and differs only in having assertions to score, so an implementation
+        that produced no component at all would fail there rather than pass both.
+        """
+        grade = _grade({"jsonpaths": [], "hash": self._UNREPLAYABLE_HASH})
+
+        assert grade.components.state_checks is None
+        assert "golden_actions" in grade.reasons
+        assert "state hash was not checked" in grade.reasons
+
     def test_golden_actions_without_replay_context_name_the_skipped_check(self):
-        grade = _grade(
-            {
-                "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                "hash": {
-                    "enabled": True,
-                    "golden_actions": [{"name": "close_widget"}],
-                    "weight": 0.6,
-                },
-            }
-        )
+        grade = _grade({"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": self._UNREPLAYABLE_HASH})
         assert "golden_actions" in grade.reasons
         assert "state hash was not checked" in grade.reasons
         assert grade.components.state_checks == pytest.approx(0.5)

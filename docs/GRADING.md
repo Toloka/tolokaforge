@@ -913,13 +913,21 @@ trial's final state, and both levels are fixed:
 | `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
 | `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
 
-A source nobody configured contributes nothing rather than a score:
+A source that declares nothing to evaluate produces no verdict, and a source
+nobody configured contributes nothing rather than a score. An empty `jsonpaths`
+list is therefore not a source: asking "what fraction of zero assertions passed?"
+has the answer `1.0`, and that fraction of nothing never becomes a component score.
 
 - **hash only** (`jsonpaths` empty — the tau-bench shape): the component *is* the
   hash verdict, at every `weight`. An empty assertion list is not a pass.
-- **`jsonpaths` only** (no hash source declared): the component is the assertion
-  score. **Core-side only** — see the substrate note below.
+- **non-empty `jsonpaths` only** (no hash source declared): the component is the
+  assertion score. **Core-side only** — see the substrate note below.
 - **both**: `jsonpath_score × (1 − weight) + hash_score × weight`.
+- **neither** — an empty `jsonpaths` list with hash grading off, or on and unable
+  to produce a verdict: the component is **not evaluated**. It is absent from the
+  grade rather than present at a number, so `combine.weights` folds the components
+  that were actually decided. Core-side this is the answer for a `db_probes`-only
+  pack too, since core has no probe evaluator.
 
 `hash.weight` is consulted only in the third case, and it has **no default**:
 every candidate value there silently discards something the author asked for. So a
@@ -1002,9 +1010,11 @@ it.
 with neither source declared, or `golden_actions` with no task directory,
 `initial_state` or `mcp_server` to replay them against — yields **no** hash verdict
 and names the skipped check in `grade.reasons`, rather than a `0.0` that reads as a
-state the agent got wrong (#729). A golden replay that fails to *execute* is a
-grading error rather than a verdict on either substrate: core raises and the trial is
-left unscored, the runner answers `GradeTrial` with `success=false`.
+state the agent got wrong (#729). Beside an empty `jsonpaths` list there is then no
+verdict at all, so the whole component is unevaluated and no score sits next to the
+reason contradicting it. A golden replay that fails to *execute* is a grading error
+rather than a verdict on either substrate: core raises and the trial is left unscored,
+the runner answers `GradeTrial` with `success=false`.
 
 ### Best Practices
 
@@ -2789,9 +2799,18 @@ async driver `db_probes` connect with; the runner container joins the task's
 docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
 
 `db_probes` is the sole state source for the tasks that use it — it is not
-combined with hash or `jsonpaths` checks in the same task. It fills the
+combined with hash or `jsonpaths` checks in the same task. Runner-side it fills the
 `state_checks` component and combines with `transcript_rules` / `llm_judge`
 through the normal weighted combine below.
+
+**It is runner-only, so core declines to score a probe-only pack.** The DSN resolves
+inside the task's docker network, which the runner container joins and the host-side
+`GradingEngine` does not, so core has no probe evaluator and the pack's only state
+source produces no core-side verdict: `state_checks` is left **unevaluated** there
+rather than filled by whatever else the block happens to carry. Grading such a pack
+outside the runner therefore decides it on its remaining components — which is why
+`tolokaforge validate` and the host-side helpers are not a substitute for a real
+runner-side grade on these packs.
 
 A probe can encode **policy correctness**, not just existence: assert the
 specific value a policy selects (`resolution_path == "reschedule"`) rather than

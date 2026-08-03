@@ -1,6 +1,6 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Twelve locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
@@ -37,7 +37,11 @@ Twelve locks over :mod:`tolokaforge.core.grading.key_manifest`:
     without carrying a score itself, over packs a build ignoring the field would
     score identically;
 12. the constraint vocabulary the manifest addresses, the one the evaluator and
-    the runtime ledger read, and the one an author can write are the same set.
+    the runtime ledger read, and the one an author can write are the same set;
+13. a state source that declares nothing leaves ``state_checks`` unscored on both
+    substrates, and the one asymmetry the rule permits — a probe-only pack, which
+    only the runner can read — is asserted against the manifest's own claim rather
+    than assumed.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -50,6 +54,7 @@ carries that call's own result text — is locked at the end of this module.
 """
 
 import ast
+import asyncio
 import importlib
 import json
 import re
@@ -95,10 +100,12 @@ from tolokaforge.core.models import (
     ToolExecutorIdentity,
     Trajectory,
 )
+from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading import (
     combine_grade_components,
+    evaluate_db_probes,
     evaluate_jsonpath_checks,
     evaluate_transcript_rules,
     resolve_state_checks_component,
@@ -145,6 +152,15 @@ _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
     ("hash_matching", 1.0),
     ("hash_diverging", 0.0),
 )
+
+_JSONPATHS_KEY = "state_checks.jsonpaths"
+_PROBES_KEY = "state_checks.db_probes"
+
+# The one in-repo pack whose only state source is a probe, so it is the only fixture
+# that can show the RUNNER_ONLY asymmetry lock 13 asserts. It sits under
+# ``tests/data/tasks/`` rather than in the parity corpus because that corpus's packs
+# each isolate one key, and a probe-only pack isolates this one by construction.
+_PROBE_PACK = "db_probe_grading"
 
 _METHOD_KEY = "combine.method"
 _METHOD_CASE = "split_components"
@@ -2141,6 +2157,164 @@ def test_the_manifest_addresses_every_constraint_kind_and_no_other():
         f"field on that model "
         "is a constraint kind an author can write, so the two are the same set"
     )
+
+
+# --------------------------------------------------------------------------
+# 13. A state source that declares nothing is not scored, on either substrate
+# --------------------------------------------------------------------------
+
+
+def _messageless_trajectory(task_id: str) -> Trajectory:
+    """A trial carrying no transcript, so only the state sources can score it."""
+    return Trajectory(
+        task_id=task_id,
+        trial_index=0,
+        start_ts=_FIXTURE_TIMESTAMP,
+        end_ts=_FIXTURE_TIMESTAMP,
+        messages=[],
+    )
+
+
+def _jsonpath_presence(
+    assertions: list[dict[str, Any]], state: dict[str, Any]
+) -> tuple[float | None, float | None]:
+    """Each substrate's ``state_checks`` slot for one JSONPath assertion list.
+
+    One list drives both columns through each substrate's own production evaluator
+    and its own composer, so the two differ in nothing but what the author declared.
+    """
+    core_config = core_models.GradingConfig(
+        state_checks={"jsonpaths": assertions},
+        combine={"weights": {"state_checks": 1.0}},
+    )
+    core_component = (
+        GradingEngine(core_config)
+        .grade_trajectory(_messageless_trajectory("jsonpath_presence"), state)
+        .components.state_checks
+    )
+    runner_jsonpath, _ = evaluate_jsonpath_checks(assertions, state=state)
+    runner_component = resolve_state_checks_component(
+        hash_score=-1.0,
+        jsonpath_score=runner_jsonpath,
+        db_probe_score=-1.0,
+        hash_weight=None,
+    ).component
+    return core_component, runner_component
+
+
+@pytest.mark.parametrize("declared", [True, False])
+def test_an_empty_assertion_list_is_unscored_on_both_substrates(declared, test_data_dir):
+    """``state_checks.jsonpaths`` at its degenerate boundary: nothing declared.
+
+    The key claims ``BOTH_SCORE_PARITY``, and lock 3 proves it over a satisfying and
+    a violating trial — both of which declare assertions. This is the boundary no
+    cell of that sweep reaches: with nothing to evaluate, both substrates must leave
+    the component absent rather than one of them reporting the fraction of an empty
+    set. ``declared=True`` is the non-vacuity half — it reads the pack's own
+    assertions off disk, so an implementation scoring nothing at all fails there
+    instead of satisfying both rows.
+
+    Built from each substrate's config model rather than from a pack, because the
+    authoring gate refuses a ``state_checks`` block whose sources are all
+    unevaluable. What still reaches these folds is a directly constructed config, a
+    bundle recorded before that rule (which ``retrace`` replays), and the untyped
+    ``hash`` block being mutated after validation.
+    """
+    pack = _pack_dir(test_data_dir, _JSONPATHS_KEY)
+    authored = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["jsonpaths"]
+    assert authored, (
+        f"{pack}/grading.yaml declares no JSONPath assertions, so the declared column "
+        "below carries an empty list too and this test compares one cell against itself"
+    )
+    case = _load_case(pack, "satisfying")
+
+    core, runner = _jsonpath_presence(authored if declared else [], case.state)
+
+    if not declared:
+        assert core is None, (
+            f"core scored state_checks {core!r} over zero assertions — a fraction of "
+            "nothing read as a verdict, which is the whole of what this lock forbids"
+        )
+        assert runner is None, (
+            f"the runner scored state_checks {runner!r} over zero assertions, so its "
+            "not-evaluated sentinel is no longer reaching the shared composer"
+        )
+        return
+
+    assert isinstance(core, float) and isinstance(runner, float), (
+        f"a declared assertion list left state_checks unscored — core {core!r}, runner "
+        f"{runner!r}. The unscored rows above then hold for every input and prove nothing"
+    )
+    assert core == pytest.approx(runner), (
+        f"{_JSONPATHS_KEY} claims BOTH_SCORE_PARITY but the substrates score the pack's "
+        f"own assertions differently: core {core} vs runner {runner}"
+    )
+
+
+def _probe_component(
+    probes: list[dict[str, Any]], rows: list[dict[str, Any]], monkeypatch
+) -> float | None:
+    """The runner's ``state_checks`` slot from its real probe evaluator over ``rows``.
+
+    ``rows`` stands in for the postgres the probe queries, at the seam
+    ``_fetch_probe_rows`` exists to provide — the DSN resolves only inside the task's
+    docker network, which is why the manifest enforces this key at the integration
+    tier. The probe's own ``expect`` assertions and the fold that reads the score are
+    the real ones.
+    """
+
+    async def _rows(dsn: str, query: str) -> list[dict[str, Any]]:
+        return rows
+
+    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    probe_score, _ = asyncio.run(evaluate_db_probes(probes))
+    return resolve_state_checks_component(
+        hash_score=-1.0,
+        jsonpath_score=-1.0,
+        db_probe_score=probe_score,
+        hash_weight=None,
+    ).component
+
+
+@pytest.mark.parametrize(
+    ("rows", "expected"),
+    [
+        pytest.param([{"reason_code": "CAPA-01", "status": "open"}], 1.0, id="the_probe_holds"),
+        pytest.param([{"reason_code": "GUESS", "status": "open"}], 0.0, id="the_probe_fails"),
+    ],
+)
+def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
+    rows, expected, test_data_dir, monkeypatch
+):
+    """The one asymmetry this presence rule is allowed to have, asserted not assumed.
+
+    ``state_checks.db_probes`` is the pack's only state source and it is
+    ``RUNNER_ONLY``: the probe DSN resolves inside the task's docker network, which
+    the runner container joins and the host-side engine does not. So core evaluating
+    nothing here is the declared design rather than a regression, and the manifest
+    entry is read to say so. Both rows fill the runner's slot and they differ, so
+    what sits in it is the probe's verdict rather than a constant.
+    """
+    assert entry(_PROBES_KEY).coverage is SubstrateCoverage.RUNNER_ONLY, (
+        f"{_PROBES_KEY} no longer claims RUNNER_ONLY, so core leaving the component "
+        "unscored below is a parity gap rather than the declared asymmetry"
+    )
+    adapter = NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": "tasks/**/task.yaml"})
+    grading_config = adapter.get_grading_config(_PROBE_PACK)
+    probes = grading_config.state_checks.db_probes
+    assert probes, f"{_PROBE_PACK} declares no db_probes, so the runner column scores nothing"
+
+    core = (
+        GradingEngine(grading_config)
+        .grade_trajectory(_messageless_trajectory(_PROBE_PACK), {})
+        .components.state_checks
+    )
+
+    assert core is None, (
+        f"core scored state_checks {core!r} on a pack whose only state source it cannot "
+        "read, so the number can only have come from the empty assertion list beside it"
+    )
+    assert _probe_component(probes, rows, monkeypatch) == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------

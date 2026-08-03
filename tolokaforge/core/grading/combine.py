@@ -273,17 +273,24 @@ class GradingEngine:
         The two sources read two levels of ``final_env_state``: JSONPath assertions
         read it whole, so an author writes ``$.db.<table>``, and the hash reads the
         unwrapped database inside it (:func:`extract_db_state`).
+
+        ``None`` — the component was not evaluated — is the answer when neither
+        source produced a verdict. An empty assertion list is not a source: it
+        declares nothing to evaluate, so it yields no verdict and contributes
+        nothing to the fold.
         """
         checks = self.config.state_checks
         hash_score, hash_reasons, diff_result = self._check_state_hash(final_env_state)
-        jsonpath_score, jsonpath_reasons = self.state_checker.check_jsonpaths(
-            final_env_state, checks.jsonpaths
-        )
-        if hash_score is not None and not checks.jsonpaths:
-            # An empty assertion list scores a vacuous 1.0, which must not blend
-            # against a real hash verdict — a hash-failing tau-style pack would
-            # collect jsonpath credit for assertions it never made.
-            jsonpath_score = None
+        # Not called for an empty list: ``check_jsonpaths`` answers "what fraction of
+        # these assertions passed?", and its honest answer over zero assertions is
+        # ``1.0``. Keeping the vacuous value out of this scope is what stops it
+        # reaching the fold as a verdict.
+        jsonpath_score: float | None = None
+        jsonpath_reasons: list[str] = []
+        if checks.jsonpaths:
+            jsonpath_score, jsonpath_reasons = self.state_checker.check_jsonpaths(
+                final_env_state, checks.jsonpaths
+            )
 
         # Re-resolved here rather than trusted from load: ``state_checks.hash`` is an
         # untyped dict, so nothing stops a caller mutating it after validation.
