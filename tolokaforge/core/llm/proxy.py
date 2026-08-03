@@ -205,9 +205,7 @@ class ProxyConfig:
         return headers
 
 
-#: One placeholder in a header VALUE: ``$$`` (a literal ``$``), ``${NAME}`` or ``$NAME``.
-#: Shell-style on purpose, so the same string is readable to anyone who has met an env
-#: file. Names follow the identifier rule env vars already obey.
+#: ``$$`` (a literal ``$``), ``${NAME}`` or ``$NAME`` in a header value.
 _PLACEHOLDER_RE = re.compile(
     r"\$(?:(\$)|\{([A-Za-z_][A-Za-z0-9_]*)\}|([A-Za-z_][A-Za-z0-9_]*))",
 )
@@ -216,20 +214,8 @@ _PLACEHOLDER_RE = re.compile(
 def _expand_placeholders(value: str, header: str, secrets: SecretManager) -> str:
     """Resolve ``$NAME`` / ``${NAME}`` in a header value through ``secrets``.
 
-    This is what lets ``LLM_PROXY_HEADERS`` stay a plain, reviewable, non-secret
-    string while the values it carries come from somewhere secret::
-
-        {"X-Tlk-Business-Id": "data-business", "X-Tlk-Sunday-Order-Id": "$SUNDAY_ORDER_ID"}
-
-    The header NAMES and the shape stay legible in the variable (so a reviewer can see
-    what the gateway is being told), and only the sensitive halves are indirect. In CI
-    that means the JSON can live in a repository *variable* and still not print a secret
-    into a public workflow log, since the log only ever shows the placeholder.
-
-    An unresolved name is a hard error, never an empty substitution: a header silently
-    sent as ``""`` (or worse, as the literal ``$SUNDAY_ORDER_ID``) misattributes cost or
-    fails admission at the gateway, and both surface far from the cause. ``$$`` escapes a
-    literal ``$`` for the rare value that needs one.
+    See ``docs/LLM_LAYER.md`` § "Header values may reference other secrets" for the
+    rationale and the rules an unresolved name follows.
     """
     missing: list[str] = []
 
@@ -247,11 +233,9 @@ def _expand_placeholders(value: str, header: str, secrets: SecretManager) -> str
     if missing:
         raise ProxyConfigError(
             f"{ENV_HEADERS} value for {header!r} references "
-            f"{', '.join(sorted(set(missing)))}, which is not set. Either set it (as an "
-            f"env var or a secret) or write the value literally. It is not substituted "
-            f"as empty on purpose: a blank attribution or admission header fails at the "
-            f"gateway, or bills to nobody, far away from this line. Use $$ for a "
-            f"literal dollar sign."
+            f"{', '.join(sorted(set(missing)))}, which is not set. Set it, or write the "
+            f"value literally, or use $$ for a literal dollar sign. It is never "
+            f"substituted as empty: see docs/LLM_LAYER.md § proxy."
         )
     return expanded
 
@@ -283,9 +267,7 @@ def _parse_headers(raw: str | None, secrets: SecretManager) -> dict[str, str]:
             raise ProxyConfigError(
                 f"{ENV_HEADERS} value for {name!r} must be a scalar, got {type(value).__name__}"
             )
-        # Only string values are expanded. A JSON number/bool cannot carry a
-        # placeholder, and stringifying one first would just invent a way to write
-        # ``$NAME`` that looks different from every other way.
+        # Only strings expand; a JSON number/bool keeps its plain stringify path.
         resolved = (
             _expand_placeholders(value, name.strip(), secrets)
             if isinstance(value, str)

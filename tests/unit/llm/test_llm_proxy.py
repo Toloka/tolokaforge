@@ -276,12 +276,7 @@ class TestRequestHeaders:
 
 
 class TestHeaderPlaceholders:
-    """Header VALUES may reference other secrets, so the JSON itself need not be one.
-
-    The point is to keep ``LLM_PROXY_HEADERS`` reviewable. A reader (or a public CI log)
-    sees which headers the gateway is being told and that one of them is an indirection,
-    without seeing the sensitive half.
-    """
+    """Header VALUES may reference other secrets, so the JSON itself need not be one."""
 
     def test_a_placeholder_resolves_from_the_secret_manager(self, install_secrets: Any) -> None:
         install_secrets(
@@ -293,7 +288,6 @@ class TestHeaderPlaceholders:
         )
         proxy = resolve_proxy_config()
         assert proxy is not None
-        # The literal half is untouched and the indirect half is resolved.
         assert proxy.headers == {"X-Team-Id": "research", "X-Order-Id": "10000458"}
 
     def test_the_braced_form_works_and_composes_with_surrounding_text(
@@ -324,7 +318,6 @@ class TestHeaderPlaceholders:
         assert proxy.headers == {"X-Pair": "a/b"}
 
     def test_double_dollar_escapes_a_literal_dollar(self, install_secrets: Any) -> None:
-        """Otherwise a value that genuinely needs a ``$`` would be unwritable."""
         install_secrets(
             {
                 "LLM_PROXY_BASE_URL": "https://gateway.example.com",
@@ -356,13 +349,7 @@ class TestHeaderPlaceholders:
     def test_an_unresolved_placeholder_is_a_hard_error(
         self, install_secrets: Any, secrets_extra: dict[str, str], case: str
     ) -> None:
-        """Never an empty substitution.
-
-        A blank attribution header bills the call to nobody, and a blank admission
-        header fails at the gateway. Both surface far from this line, and neither
-        looks like a configuration mistake when it does. So refuse at resolve time,
-        which is before a single request goes out.
-        """
+        """Never an empty substitution: refused at resolve time, before any request."""
         install_secrets(
             {
                 "LLM_PROXY_BASE_URL": "https://gateway.example.com",
@@ -373,18 +360,12 @@ class TestHeaderPlaceholders:
         with pytest.raises(ProxyConfigError) as excinfo:
             resolve_proxy_config()
         message = str(excinfo.value)
-        # Name the header AND the missing variable: with several headers configured,
-        # "something is unset" is not actionable.
+        # Both, because "something is unset" is not actionable with several headers.
         assert "X-Order-Id" in message, case
         assert "ORDER_ID" in message, case
 
     def test_the_placeholder_never_reaches_the_wire_unresolved(self, install_secrets: Any) -> None:
-        """The failure mode this guards: a literal ``$NAME`` sent as the header value.
-
-        A gateway receiving that does not error usefully. It either bills the literal
-        string as an account id or rejects the request for a reason that reads as
-        network trouble.
-        """
+        """Guards the literal ``$NAME``-on-the-wire case: no gateway errors usefully."""
         install_secrets(
             {
                 "LLM_PROXY_BASE_URL": "https://gateway.example.com",
@@ -399,7 +380,7 @@ class TestHeaderPlaceholders:
     def test_a_non_string_value_still_works_and_takes_no_placeholder(
         self, install_secrets: Any
     ) -> None:
-        """JSON scalars keep their existing stringify path, unchanged by expansion."""
+        """JSON scalars keep their existing stringify path."""
         install_secrets(
             {
                 "LLM_PROXY_BASE_URL": "https://gateway.example.com",

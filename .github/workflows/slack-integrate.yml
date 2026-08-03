@@ -72,17 +72,10 @@ jobs:
       # => availability is "unknown" and every request integrates over OpenRouter as before.
       LLM_PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
       LLM_PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
-      # A repository VARIABLE on purpose, so the headers this automation sends stay
-      # readable in the repo settings and in this log. Any sensitive half is written as
-      # a $NAME placeholder and resolved from a secret at runtime (see
-      # docs/LLM_LAYER.md), so the variable itself carries nothing to protect.
-      #
-      # Without it the poller cannot reach a gateway that admits callers by a
-      # shared-secret header rather than by source IP, which hosted-runner egress
-      # cannot satisfy. Every model then comes back "not on the gateway" for a
-      # transport reason rather than a catalogue one.
+      # A VARIABLE, not a secret: sensitive halves are written as $NAME placeholders and
+      # resolved from the secrets below. See docs/LLM_LAYER.md § proxy.
       LLM_PROXY_HEADERS: ${{ vars.ARENA_AUTOMATION_LLM_PROXY_HEADERS }}
-      # Values the placeholders above resolve to. Add one line per placeholder used.
+      # One line per placeholder used above.
       SUNDAY_ORDER_ID: ${{ secrets.ARENA_AUTOMATION_SUNDAY_ORDER_ID }}
       GATEWAY_RUNNER_KEY: ${{ secrets.ARENA_AUTOMATION_GATEWAY_RUNNER_KEY }}
     steps:
