@@ -477,7 +477,10 @@ jobs:
 
       - name: Install Claude Code CLI
         if: steps.gate.outputs.clean == 'yes'
-        run: npm install -g @anthropic-ai/claude-code
+        # Scrubbed like the agent steps: an install script runs arbitrary code, and
+        # these two are gateway credentials the CLI install has no use for.
+        run: env -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY
+          npm install -g @anthropic-ai/claude-code
 
       - name: Start LiteLLM gateway (Anthropic /v1/messages -> OpenRouter; agent on the OpenRouter budget)
         # The resolve + finalize agent is the Claude Code CLI, which speaks the Anthropic Messages
