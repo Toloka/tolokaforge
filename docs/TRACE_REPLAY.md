@@ -208,6 +208,42 @@ the output subtree is then created inside it. `--dry-run` writes nothing at all.
 `trace_checks_result.yaml` is deliberately a name no trial bundle already holds, so a
 write that escaped the output subtree would create a file rather than clobber one.
 
+## From Python
+
+The command is two calls — the batch, then the report over its outcomes:
+
+```python
+from pathlib import Path
+
+from tolokaforge.core.grading.trace_replay import (
+    declared_trace_checks,
+    emit_trace_replay_report,
+    run_trace_replay_batch,
+)
+
+source, replay_id = Path("output/<run-id>"), "candidate-3"
+outcomes = run_trace_replay_batch(source, replay_id=replay_id)
+report = emit_trace_replay_report(
+    outcomes,
+    declared=declared_trace_checks(outcomes),
+    source=source,
+    replay_id=replay_id,
+)
+```
+
+**`declared_trace_checks(outcomes)` is the one supported way to build `declared`.**
+The report needs the block each bundle was measured against, and that is not derivable
+from the verdicts: a route that lost every trial has its constraints evaluated zero
+times, so a report built from the results alone would drop exactly the rows an author
+needs to see as `not_measured`. Reading `task.yaml` back for it would be a second
+source of truth, and would answer the *pack's* block for a bundle re-checked against
+`--constraints`. Each outcome carries the config it was replayed with; the projection
+reads them off the batch that produced them.
+
+Pass `dry_run=True` to the batch for the `--dry-run` shape, and use
+`build_trace_replay_report` in place of `emit_…` to get the report without writing
+it. Both return `None` where there was nothing to report.
+
 ## The authoring loop
 
 ```bash

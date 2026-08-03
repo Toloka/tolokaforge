@@ -1697,13 +1697,16 @@ Worked, over *d* definite matches and *u* undecidable ones:
 | any of the above carrying [`severity: gate`](#severity--a-check-that-must-hold) | undecided **trips the gate** — a scored constraint forfeits its weight there, and a gate's forfeit is the trial |
 
 Undecided is not a pass in the agent's favour and not an over-fail either: definite
-evidence answers the question wherever it can. The usual way to reach it is a
-bundle re-graded without its tool-call record, where every `status` and `executor`
-predicate is unreadable, every `result` on an unanswered call with it, and so is any
-binder that reads one. That is the permanent limit on grading a `trace_checks` pack
-from a bundle written before the record was persisted, and it is the right
-semantics rather than a defect to work around — the evidence really is absent, and
-the alternative is a silent pass.
+evidence answers the question wherever it can. A trial bundle carries its tool-call
+record as the `tool_log.yaml` sidecar, so a pack re-graded from one reaches the
+verdict the live run reached — which is what
+[`tolokaforge retrace`](TRACE_REPLAY.md) re-checks a whole recorded corpus for,
+spending nothing. A bundle written before that sidecar existed carries the message
+trace alone, and there every `status` and `executor` predicate is unreadable, every
+`result` on an unanswered call with it, and so is any binder that reads one — such a
+bundle reports undecided, permanently. That is the right semantics rather than a
+defect to work around: the evidence really is absent, and the alternative is a
+silent pass.
 
 ### Weighting the constraints
 
@@ -1751,12 +1754,13 @@ constraints said, and the grade names the gates that tripped.
 anywhere in this vocabulary, and a gate is the one check the author said must hold —
 an undecided gate that opened would be a silent pass on exactly that check, and would
 leave a gate *weaker* than the scored constraint it replaced. The consequence is
-sharpest on the case the [declared limits](#declared-limits-and-what-owns-each)
-already name: a bundle re-graded without its tool-call record cannot read `status` or
-`executor` (#682), so a gate reading either fails every re-graded trial. Write gates
-over evidence the message view carries — which tool was called, with which
-arguments, in which order — and keep `status` and `executor` for scored constraints,
-where the same limit costs a weight rather than the trial.
+sharpest on a bundle written before the tool-call record was persisted, which
+[cannot read `status` or `executor` at all](#when-a-constraint-cannot-be-decided), so
+a gate reading either fails every trial re-graded from one. Write gates over evidence
+the message view carries — which
+tool was called, with which arguments, in which order — and keep `status` and
+`executor` for scored constraints, where the same limit costs a weight rather than
+the trial.
 
 **A block of nothing but gates scores the gate verdict:** `1.0` when every gate held,
 `0.0` otherwise. There is no weighted average to take — every member is excluded from
@@ -2013,7 +2017,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| A bundle re-graded without its tool-call record cannot read `status` or `executor`, so those matchers are undecided | #682 |
 | Migrating an existing rubric criterion into a constraint. Correlation ships, and [what it can and cannot retire](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) is measured: two packs name the criterion each new check is a candidate to replace, and the decision waits on the two findings recorded there — every candidate is a `required: true` veto with no score share, and #683's gate is agreement against historical judge verdicts | #683 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
