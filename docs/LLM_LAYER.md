@@ -424,7 +424,9 @@ posting to a route the gateway does not serve.
 All five resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
-construction rather than running a whole evaluation with unattributed spend.
+construction rather than running a whole evaluation with unattributed spend. Setting
+any companion variable while `LLM_PROXY_BASE_URL` is empty also raises, so a typo in
+the base-URL name cannot silently fall back to direct provider access.
 
 ### Values may reference secrets
 
@@ -490,9 +492,6 @@ host→container boundary if it is enumerable, which for the environment means i
 every `.env` key unconditionally, so putting referenced names in `.env` is the way
 to make in-container resolution work if that is ever needed.
 
-Setting any companion variable while `LLM_PROXY_BASE_URL` is empty also raises,
-so a typo in the base-URL name cannot silently fall back to direct provider
-access.
 
 ### Which providers can be routed
 

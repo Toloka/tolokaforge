@@ -116,7 +116,12 @@ jobs:
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
       # Values the ${secret:NAME} references in ARENA_AUTOMATION_LLM_PROXY_HEADERS resolve
-      # to. Job-level is safe for these: unlike LLM_PROXY_*, an unused one is inert.
+      # to. Job-level because the .env step and `automation reprobe` both need them, and
+      # unlike LLM_PROXY_* an unused one here is inert rather than a half-configured
+      # gateway. But job-level also means every step, so the two agent invocations and
+      # the litellm proxy scrub them with `env -u`, the same way they scrub GH_TOKEN:
+      # GATEWAY_RUNNER_KEY is a network-admission credential, not a budget-bounded one.
+      # Grep `env -u` before adding a third.
       SUNDAY_ORDER_ID: ${{ secrets.ARENA_AUTOMATION_SUNDAY_ORDER_ID }}
       GATEWAY_RUNNER_KEY: ${{ secrets.ARENA_AUTOMATION_GATEWAY_RUNNER_KEY }}
       # Run + PR permalinks, passed to the Slack notifier as <url|label> links.
@@ -230,9 +235,16 @@ jobs:
               printf '%s\n' "LLM_PROXY_BASE_URL=$PROXY_BASE_URL" >> .env
               printf '%s\n' "LLM_PROXY_API_KEY=$PROXY_API_KEY" >> .env
               # Only inside this branch: a companion without a base URL is a hard error,
-              # so a job-level env var here would break the openrouter route. Bare JSON
-              # (no surrounding quotes) is what the dotenv provider expects.
+              # so a job-level env var here would break the openrouter route.
+              #
+              # jq COMPACTS, and that is load-bearing, not tidiness: the dotenv parser's
+              # unquoted-value branch is ``[^\s#]*``, so a value containing a space or a
+              # '#' fails the line match and the line is SKIPPED at debug level. Pretty
+              # printed JSON pasted into the variable would silently produce no headers,
+              # with the base URL still set so no orphan error fires either. ``-e`` also
+              # makes malformed JSON fail the step here rather than at resolve time.
               if [ -n "$PROXY_HEADERS" ]; then
+                PROXY_HEADERS="$(jq -ce . <<<"$PROXY_HEADERS")"
                 printf '%s\n' "LLM_PROXY_HEADERS=$PROXY_HEADERS" >> .env
               fi
               echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
@@ -474,7 +486,8 @@ jobs:
           # Pinned to the litellm version in uv.lock (repro + supply-chain: an unpinned latest could
           # ship a broken/hostile release that runs with secrets in env). Scrub the job's write-token
           # and Slack token from the proxy's environment - it only needs OPENROUTER_API_KEY.
-          env -u GH_TOKEN -u SLACK_BOT_TOKEN nohup uvx --from 'litellm[proxy]==1.87.0' litellm \
+          env -u GH_TOKEN -u SLACK_BOT_TOKEN -u SUNDAY_ORDER_ID -u GATEWAY_RUNNER_KEY \
+            nohup uvx --from 'litellm[proxy]==1.87.0' litellm \
             --config /tmp/litellm.config.yaml --host 127.0.0.1 --port 4000 \
             > /tmp/litellm.log 2>&1 &
           echo $! > /tmp/litellm.pid
@@ -551,7 +564,12 @@ jobs:
             # this step runs under `bash -e`; without the guard that non-zero would abort the
             # WHOLE resolve instead of degrading to the no-overlay path below. A stuck iteration
             # must fall through to the next one (and ultimately to needs-human), not hard-fail.
-            claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
+            # Scrubbed like GH_TOKEN above, and for the same reason: this agent's inputs
+            # include candidate-model output, and GATEWAY_RUNNER_KEY is a network-admission
+            # credential rather than a budget-bounded one. The step needs those values only
+            # for `automation reprobe`, not for the agent.
+            env -u SUNDAY_ORDER_ID -u GATEWAY_RUNNER_KEY \
+              claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
               --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
               --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
             # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
@@ -633,7 +651,8 @@ jobs:
           fill "$P/resolve_finalize.md" > /tmp/finalize.md
           # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort - the commit
           # step below decides success by whether files changed.
-          claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
+          env -u SUNDAY_ORDER_ID -u GATEWAY_RUNNER_KEY \
+            claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
             --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
             --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
 

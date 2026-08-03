@@ -28,8 +28,11 @@ _REF_RE = re.compile(r"\$\{secret:([A-Za-z_][A-Za-z0-9_]*)\}")
 
 #: Anything that opens a reference. Whatever survives substitution is malformed,
 #: so an unclosed or misspelled reference is refused instead of being passed
-#: through as literal text.
-_PARTIAL_RE = re.compile(r"\$\{secret\b")
+#: through as literal text. Case-insensitive on purpose: ``${SECRET:X}`` is a
+#: plausible typo, and letting it through would put it on the wire verbatim.
+#: ``${notsecret:X}`` and ``${secrets:X}`` still pass through, since the word
+#: boundary keeps them from reading as a misspelling of this syntax.
+_PARTIAL_RE = re.compile(r"\$\{secret\b", re.IGNORECASE)
 
 
 class UnresolvedReferenceError(Exception):
@@ -82,8 +85,10 @@ def expand_secret_refs(value: str, secrets: SecretManager, *, where: str) -> str
         names = tuple(sorted(set(missing)))
         refs = ", ".join(f"${{secret:{name}}}" for name in names)
         raise UnresolvedReferenceError(
-            f"{where} references {refs}, which is not set. Set it, or write the value "
-            f"literally. It is never substituted as empty: see docs/LLM_LAYER.md.",
+            f"{where} references {refs}, "
+            f"{'which is' if len(names) == 1 else 'none of which are'} set. Set it, or "
+            f"write the value literally. It is never substituted as empty: see "
+            f"docs/LLM_LAYER.md.",
             where=where,
             names=names,
         )
@@ -91,9 +96,10 @@ def expand_secret_refs(value: str, secrets: SecretManager, *, where: str) -> str
     if _PARTIAL_RE.search(expanded):
         raise UnresolvedReferenceError(
             f"{where} contains a malformed secret reference. The only accepted form is "
-            f"${{secret:NAME}}, with NAME matching [A-Za-z_][A-Za-z0-9_]*. A partial or "
-            f"misspelled reference is refused rather than passed through as literal "
-            f"text, which would put ${{secret:...}} on the wire.",
+            f"${{secret:NAME}}, with NAME matching [A-Za-z_][A-Za-z0-9_]*. Either the "
+            f"reference is partial or misspelled, or one appeared inside a RESOLVED "
+            f"value (expansion is single-level). Refused rather than passed through as "
+            f"literal text, which would put ${{secret:...}} on the wire.",
             where=where,
         )
 

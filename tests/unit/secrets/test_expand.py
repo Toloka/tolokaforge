@@ -104,6 +104,17 @@ class TestFailsLoud:
         with pytest.raises(UnresolvedReferenceError, match="malformed"):
             _expand(value, ORDER_ID="9000123", X="v")
 
+    @pytest.mark.parametrize("value", ["${SECRET:X}", "${Secret:X}"])
+    def test_a_case_variant_is_treated_as_a_typo_and_refused(self, value: str) -> None:
+        """Letting it through would put the literal text on the wire."""
+        with pytest.raises(UnresolvedReferenceError, match="malformed"):
+            _expand(value, X="v")
+
+    @pytest.mark.parametrize("value", ["${notsecret:X}", "${secrets:X}"])
+    def test_a_different_word_is_not_a_typo_of_this_syntax(self, value: str) -> None:
+        """The word boundary keeps unrelated ``${...}`` text passing through."""
+        assert _expand(value, X="v") == value
+
     def test_a_resolved_value_is_not_rescanned(self) -> None:
         """Expansion is single-level, and a nested reference is refused.
 
