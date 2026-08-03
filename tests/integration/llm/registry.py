@@ -2509,9 +2509,7 @@ _ALL: list[MC] = [
         # this route". A contributor with their own LiteLLM proxy would open the gate
         # and get model-not-found, and the RE2 ratchet accepts "400" / "bad request"
         # as proof its quirk is intact, so it would report green having tested
-        # nothing. Worse, when no gateway key is set the engine forwards the PROVIDER
-        # credential to the gateway host, so that contributor's OpenRouter key would
-        # go to a third party.
+        # nothing.
         #
         # So this names the one deployment that actually serves the route. Same
         # contract as ``LLM_PROXY_INT_TEST_API_KEY`` in test_gateway_live.py: absent
