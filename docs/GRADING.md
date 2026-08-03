@@ -2030,25 +2030,35 @@ judge still reads — is its justification.
 
 #### What a correlation is a candidate to replace, and what it is not
 
-Both packs above name, in their `grading.yaml` headers, the judge criterion each new
-check is a candidate to replace. **Neither retires one.** A candidacy is declared
-machine-readably in a [`migration.yaml` sidecar](#declaring-a-migration-the-migrationyaml-sidecar),
-which is where the two findings below are honoured — recorded here because correlation is
-what surfaced them.
+Both packs above declare, in a [`migration.yaml` sidecar](#declaring-a-migration-the-migrationyaml-sidecar)
+beside their `grading.yaml`, the judge criterion each new check is a `candidate` for.
+**Neither retires one**, and a `candidate` changes no grading: the criterion keeps its
+weight and its veto, and the declaration is the claim to be measured. Each pack's header
+comment points at its sidecar; what a retirement would still have to answer for is written
+in the sidecar beside the entry, and summarised here because correlation is what surfaced it.
 
-| new check | candidate to replace | why it cannot yet |
+| new check | candidate for | what a retirement would still owe |
 |---|---|---|
-| `lot_ops_01`'s two correlations | `names_lot` (binary, `required: true`) | the criterion accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value; and it is a required criterion, so see the first finding |
-| `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded) | they reach the half that asks the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
+| `lot_ops_01`'s two correlations | `names_lot` (binary, `required: true`) | a shared `severity: gate` constraint, because both correlations are *scored* and the criterion is a veto — the veto rule refuses the conversion at load. The criterion also accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value |
+| `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded, weight `1.0`) | a `combine_weights` map for the freed score share, which the freed-share rule requires of a scored conversion. The checks also reach only the half asking the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
 
-1. **Every retirement candidate in the corpus is `required: true`** — a trial-level
-   veto carrying **zero score share**. Migrating one converts that veto into either a
-   `severity: gate`, which is [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate),
-   or a fraction of a scored component. Both are strictly weaker than what they
-   replace, and the weakening is invisible in the component score.
-2. **#683's own gate is agreement against historical judge verdicts.** A pack gaining
-   a correlation has no recorded-trial evidence and structurally cannot have any, so
-   retiring a criterion beside the new check would pre-empt that gate with a guess.
+1. **The two conversions are unsafe in opposite directions, and a different rule refuses
+   each.** `names_lot` is `required: true` — a trial-level veto carrying **zero score
+   share** — so migrating it converts that veto into either a `severity: gate`, which is
+   [escapable inside `alternatives`](#shared-gates-and-path-gates-when-each-is-appropriate),
+   or a fraction of a scored component; both are strictly weaker than what they replace and
+   the weakening is invisible in the component score. `explains_mechanism` is `kind: graded`
+   with no `required` flag, so it carries the opposite hazard: its weight sits in the judge
+   component's denominator, and dropping it raises the component by `+0.667` on a trial that
+   scored it `0.0`. The [veto rule and the freed-share rule](#declaring-a-migration-the-migrationyaml-sidecar)
+   are what refuse each conversion at load.
+2. **The bar is agreement against recorded judge verdicts, and neither pack has a single
+   recorded trial.** [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) needs Cohen's κ over the
+   joined labels to be **defined**, which needs judge verdicts on both sides of the
+   criterion. It reads those verdicts out of the bundles under `--source`, reporting an entry
+   only where a bundle resolves to the pack declaring it — so for these two there is nothing
+   to reconcile yet rather than a verdict that falls short. A judge-labelled corpus per
+   rubric pack is **#793**.
 
 #### Declaring a migration: the `migration.yaml` sidecar
 
@@ -2109,7 +2119,7 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| Migrating an existing rubric criterion into a constraint. Correlation ships, and [what it can and cannot retire](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) is measured: two packs name the criterion each new check is a candidate to replace, and the decision waits on the two findings recorded there — every candidate is a `required: true` veto with no score share, and #683's gate is agreement against historical judge verdicts | #683 |
+| Migrating a rubric criterion into a constraint needs recorded judge verdicts to decide it, and one pack in the corpus has them. The machinery ships — the [`migration.yaml` declaration](#declaring-a-migration-the-migrationyaml-sidecar), its two load-time hazard rules, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md)'s bar — and one criterion is narrowed against a committed corpus. The other rubric packs have no recorded verdicts, so a [declared candidacy](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) there has nothing to be decided against | #793 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |

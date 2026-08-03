@@ -17,17 +17,10 @@
 # the agent read, so they name no reason code and no lot number: a new code in the
 # catalog, or a different lot, needs no edit here.
 #
-# CANDIDACY: `the_reason_code_posted_was_read_from_the_catalog` and
-# `the_lot_was_read_before_the_action_was_opened` are candidates to replace the
-# `names_lot` judge criterion below, which gestures at the same thing — that the
-# report is grounded in the lot the agent worked on. They do NOT retire it here.
-# `names_lot` is `required: true`, a trial-level veto carrying no score share, and
-# a constraint replacing it would be either a `severity: gate` (escapable inside
-# `alternatives`) or a fraction of a scored component — strictly weaker than the
-# veto it replaced. `names_lot` also accepts either `LOT-1007` or `lot 7`, where a
-# binding is one exact value. The retirement decision belongs to #683, whose gate
-# is agreement against historical judge verdicts; this pack has no recorded-trial
-# evidence to meet it. See docs/GRADING.md § Trace Checks.
+# CANDIDACY: both correlations are declared candidates to replace the `names_lot`
+# criterion below, in the `migration.yaml` beside this file — which is where what a
+# retirement would still have to answer for is written, and where `tolokaforge
+# validate` checks the claim against this rubric. Neither retires anything.
 combine:
   method: weighted
   weights:

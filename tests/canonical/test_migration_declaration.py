@@ -1,19 +1,22 @@
-"""The shipped packs' candidacies as declarations, and the refusals stated against them.
+"""The shipped declarations, read off disk, and the refusals stated against real packs.
 
-Two shipped packs name, in their ``grading.yaml`` headers, the judge criterion each new
-trace check is a candidate for. Expressed as ``candidate`` entries they must load against
-the packs as they actually stand — which is what makes them convertible from prose into a
-file the tooling reads — so this module writes the entries and reads the packs off disk.
+Every ``migration.yaml`` under ``examples/`` is enumerated from the filesystem and put
+through ``inspect_migration_declaration`` against the ``grading.yaml`` beside it, so a
+shipped declaration the pack contradicts — a renamed criterion, a dropped constraint id, a
+mode the pack's rules refuse — reds here rather than reaching whoever reads the migration
+report. The enumeration is pinned, because a guard over a subset says nothing about the
+declarations it skipped.
 
-The packs are the second source: every criterion id, constraint id, criterion text and
-declared shape below is written out here, so a rename or a re-weighting in either pack reds
-this module rather than silently making a candidacy unresolvable.
+The two candidacies are then compared entry by entry against the entry written out here:
+the file on disk is one source, this module is the other, so drift on either side reds
+instead of the two agreeing on a criterion the rubric no longer holds.
 
 ``cache_debug`` carries a ``required`` criterion beside a shared gate, a shared scored
 constraint and two routes' worth of route-scoped ones, so the veto rule's refusals are
 stated against a real block rather than a fixture. What a hand-built pack adds — the
 route-scoped *gate*, which no shipped pack declares — is in
-``tests/unit/grading/test_migration_declaration.py``.
+``tests/unit/grading/test_migration_declaration.py``. The narrowed arms' own entries are
+locked, with the corpus they rest on, in ``tests/canonical/test_rubric_migration.py``.
 """
 
 from __future__ import annotations
@@ -25,8 +28,11 @@ import pytest
 
 from tests.utils.migration_packs import write_migration_pack
 from tolokaforge.core.grading.migration_declaration import (
+    EVERY_DECLARED_FIELD,
+    MIGRATION_FILENAME,
     MigratedCriterion,
-    MigrationMode,
+    MigrationEntry,
+    criterion_shape_disagreement,
     inspect_migration_declaration,
 )
 from tolokaforge.core.models import Criterion
@@ -34,11 +40,23 @@ from tolokaforge.core.models import Criterion
 pytestmark = pytest.mark.canonical
 
 _REPO = Path(__file__).resolve().parents[2]
+_EXAMPLES = _REPO / "examples"
 
 _LOT_OPS = _REPO / "examples/native/multi_service_lot_ops/dataset/tasks/lot_ops_01/grading.yaml"
 _CACHE_DEBUG = (
     _REPO / "examples/native/multi_service_cache_debug/dataset/tasks/cache_debug/grading.yaml"
 )
+_NOTES_TESTCASES = _EXAMPLES / "native/native_shared_domain/dataset/notes/testcases"
+
+# Every criterion the shipped declarations claim, by the task directory declaring it. The
+# criterion is the join between a declaration and the rubric it migrates, so an entry
+# re-pointed at another criterion the pack happens to hold reds here and nowhere else.
+_SHIPPED_CRITERIA = {
+    _LOT_OPS.parent: ("names_lot",),
+    _CACHE_DEBUG.parent: ("explains_mechanism",),
+    _NOTES_TESTCASES / "add_note_duplicate_check_gated": ("checked_duplicates_first",),
+    _NOTES_TESTCASES / "add_note_duplicate_check_policy": ("checked_duplicates_first",),
+}
 
 _NAMES_LOT = "The report identifies the affected lot (LOT-1007 or lot 7)."
 _EXPLAINS_MECHANISM = (
@@ -80,7 +98,7 @@ def _inspect(tmp_path: Path, pack: Path, *entries: dict[str, Any]):
 
 
 def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
-    """``lot_ops_01``'s shipped candidacy, as the entry its header describes in prose."""
+    """``lot_ops_01``'s shipped candidacy, as the entry its header points at."""
     return {
         "criterion": "names_lot",
         "mode": "candidate",
@@ -97,44 +115,75 @@ def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
     } | overrides
 
 
-def test_the_lot_ops_candidacy_loads_as_a_declaration(tmp_path: Path):
-    """``lot_ops_01``'s two correlations, named in its header as candidates for
-    ``names_lot``. The criterion is ``required: true`` and both constraints are shared and
-    *scored*, which a narrow or a retirement would be refused for — and a candidacy is not,
-    because it replaces nothing and the criterion keeps its veto."""
-    declaration = _inspect(tmp_path, _LOT_OPS, _lot_ops_candidacy())
-    assert declaration is not None
-    entry = declaration.migrations[0]
-    assert (entry.criterion, entry.mode) == ("names_lot", MigrationMode.CANDIDATE)
-    assert entry.evidence is None
-
-
-def test_the_cache_debug_candidacy_loads_as_a_declaration(tmp_path: Path):
-    """``cache_debug``'s two grounded-claim checks, named in its header as candidates for
-    ``explains_mechanism`` — a *graded* criterion, and both checks are route-scoped, one per
-    route, because no read is common to both."""
-    declaration = _inspect(
-        tmp_path,
-        _CACHE_DEBUG,
-        {
-            "criterion": "explains_mechanism",
-            "mode": "candidate",
-            "by": [
-                "the_note_quotes_the_value_the_served_read_returned",
-                "the_note_quotes_the_value_the_cache_held",
-            ],
-            "was": {
-                "description": _EXPLAINS_MECHANISM,
-                "kind": "graded",
-                "required": False,
-                "weight": 1.0,
-            },
+def _cache_debug_candidacy(**overrides: Any) -> dict[str, Any]:
+    """``cache_debug``'s shipped candidacy, as the entry its header points at."""
+    return {
+        "criterion": "explains_mechanism",
+        "mode": "candidate",
+        "by": [
+            "the_note_quotes_the_value_the_served_read_returned",
+            "the_note_quotes_the_value_the_cache_held",
+        ],
+        "was": {
+            "description": _EXPLAINS_MECHANISM,
+            "kind": "graded",
+            "required": False,
+            "weight": 1.0,
         },
+    } | overrides
+
+
+def test_every_shipped_declaration_is_one_the_pack_beside_it_honours() -> None:
+    """Enumerated from disk rather than from a list of packs that declare something, so a
+    fifth sidecar cannot ship without a criterion written out here — and the load is the
+    check: ``inspect_migration_declaration`` raises on a criterion the rubric does not hold,
+    a ``by`` id the ``trace_checks`` block does not declare, or a mode the pack's own shape
+    refuses."""
+    declaring = {path.parent for path in _EXAMPLES.rglob(MIGRATION_FILENAME)}
+    assert declaring == set(_SHIPPED_CRITERIA), (
+        "the shipped declarations are not the ones written out here, so a subset of them was "
+        "loaded and the rest went unchecked"
     )
-    assert declaration is not None
-    entry = declaration.migrations[0]
-    assert (entry.criterion, entry.mode) == ("explains_mechanism", MigrationMode.CANDIDATE)
-    assert entry.combine_weights is None
+
+    declared = {}
+    for task_dir in sorted(declaring):
+        declaration = inspect_migration_declaration(task_dir / "grading.yaml")
+        assert declaration is not None, task_dir
+        declared[task_dir] = tuple(entry.criterion for entry in declaration.migrations)
+
+    assert declared == _SHIPPED_CRITERIA
+
+
+@pytest.mark.parametrize(
+    ("task_dir", "written"),
+    [
+        (_LOT_OPS.parent, _lot_ops_candidacy()),
+        (_CACHE_DEBUG.parent, _cache_debug_candidacy()),
+    ],
+    ids=["lot_ops_01", "cache_debug"],
+)
+def test_a_shipped_candidacy_declares_the_entry_its_header_points_at(
+    task_dir: Path, written: dict[str, Any]
+) -> None:
+    """Both packs' headers point at a sidecar rather than restating the claim, so what the
+    sidecar says is what a reader gets — and neither is charged the rule its shape would
+    otherwise trip. ``lot_ops_01``'s ``names_lot`` is ``required: true`` while both its
+    correlations are *scored*, which a narrow or a retirement is refused for; ``cache_debug``'s
+    ``explains_mechanism`` is *graded*, so a conversion would owe a ``combine_weights`` map.
+    A candidate replaces nothing, so it owes neither.
+
+    ``was.description`` is compared through the same normalisation the load rule uses, the
+    YAML block folding a newline onto the text the rubric declares.
+    """
+    declaration = inspect_migration_declaration(task_dir / "grading.yaml")
+    assert declaration is not None, f"{task_dir} ships no {MIGRATION_FILENAME}"
+    (entry,) = declaration.migrations
+    expected = MigrationEntry(**written)
+
+    assert entry.model_dump(exclude={"was"}) == expected.model_dump(exclude={"was"})
+    assert (
+        criterion_shape_disagreement(entry.was, expected.was, over=EVERY_DECLARED_FIELD) is None
+    ), entry.was.description
 
 
 def test_a_candidate_carrying_a_residual_is_refused(tmp_path: Path):

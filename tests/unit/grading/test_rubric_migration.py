@@ -11,9 +11,9 @@ corpus*, mutated one field at a time. No production grading is mocked: the const
 comes from the one production evaluator over the real recorded timelines, and the judge label
 comes from the real recorded ``grade.yaml``. What a test writes is the defect it is about.
 
-The n=7 corpora below are the shape #683's measurement M4 used — three met / four not-met
-with exactly one disagreement, κ ``0.720`` either way — because that is the corpus on which κ
-is provably blind to direction and the direction rule has to do the work alone.
+The n=7 corpora below are three met / four not-met with exactly one disagreement, κ ``0.720``
+either way, because that is the corpus on which κ is provably blind to direction and the
+direction rule has to do the work alone.
 """
 
 from __future__ import annotations
@@ -531,8 +531,8 @@ def test_a_contributing_trial_without_its_recorded_verdict_is_refused() -> None:
 
 #: ``cache_debug``'s rubric shape — one required gate plus two graded criteria whose weights sum
 #: to the ``1.5`` denominator that makes retiring the graded ``explains_mechanism`` raise the
-#: judge component. Written out rather than read from the pack: this is the shape #683's
-#: measurement M5 used, and the pack is free to change without re-basing the arithmetic below.
+#: judge component. Written out rather than read from the pack, so the pack is free to change
+#: without re-basing the arithmetic below.
 _SCORED_CRITERION = "explains_mechanism"
 
 

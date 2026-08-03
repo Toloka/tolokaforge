@@ -1,0 +1,25 @@
+# What this pack's two correlations are candidates to replace, declared machine-readably
+# so `tolokaforge validate` checks the claim against the rubric that still holds it and
+# `tolokaforge reconcile` can decide it once recorded judge verdicts for this pack exist
+# (#793). Nothing about grading reads this file, and a candidate retires nothing:
+# `names_lot` still scores and still vetoes.
+#
+# Two things a retirement here would have to answer for, and this pack answers neither yet.
+# `names_lot` is `required: true` — a trial-level veto carrying no score share — so a
+# constraint replacing it has to hold whichever route the agent took and has to fail the
+# trial, and both correlations named below are scored: the veto rule refuses the conversion
+# at load until that changes. And the criterion accepts either `LOT-1007` or `lot 7`, where
+# a binding is one exact value, so what the correlations reach is the report's grounding in
+# the lot the agent worked on rather than how the report words it.
+migrations:
+  - criterion: names_lot
+    mode: candidate
+    by:
+      - the_reason_code_posted_was_read_from_the_catalog
+      - the_lot_was_read_before_the_action_was_opened
+    was:
+      kind: binary
+      required: true
+      weight: 1.0
+      description: >
+        The report identifies the affected lot (LOT-1007 or lot 7).
