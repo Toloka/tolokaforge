@@ -36,11 +36,11 @@ from tolokaforge.runner.grading_ledger import (
     runner_dump_path,
 )
 from tolokaforge.runner.models import (
-    GradingConfig,
     KeyAccounting,
     KeyAccountingRecord,
-    StateChecksConfig,
-    TranscriptRulesConfig,
+    RunnerGradingConfig,
+    RunnerStateChecksConfig,
+    RunnerTranscriptRulesConfig,
 )
 
 pytestmark = pytest.mark.unit
@@ -135,7 +135,9 @@ def _grade(
 
 
 def test_populated_scored_key_with_no_record_names_the_expected_evaluator():
-    config = GradingConfig(state_checks=StateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK]))
+    config = RunnerGradingConfig(
+        state_checks=RunnerStateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK])
+    )
 
     audit = audit_accounted_keys(config, {})
 
@@ -146,7 +148,7 @@ def test_populated_scored_key_with_no_record_names_the_expected_evaluator():
 
 def test_core_only_key_arriving_populated_quotes_its_manifest_reason():
     item = entry("state_checks.hash.expected_state_hash")
-    config = GradingConfig(state_checks=StateChecksConfig(expected_hash="deadbeef"))
+    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
 
     audit = audit_accounted_keys(config, {})
 
@@ -157,8 +159,8 @@ def test_core_only_key_arriving_populated_quotes_its_manifest_reason():
 
 def test_an_explicitly_empty_check_is_not_populated():
     """``disallowed_tools: []`` written out is indistinguishable from unset."""
-    config = GradingConfig(
-        transcript_rules=TranscriptRulesConfig(
+    config = RunnerGradingConfig(
+        transcript_rules=RunnerTranscriptRulesConfig(
             tool_expectations={"required_tools": [], "disallowed_tools": []}
         )
     )
@@ -168,8 +170,8 @@ def test_an_explicitly_empty_check_is_not_populated():
 
 def test_config_inputs_are_outside_the_ledger_by_kind():
     """``numeric_string_fields`` reaches only hash grading, so it is never evaluated."""
-    config = GradingConfig(
-        state_checks=StateChecksConfig(
+    config = RunnerGradingConfig(
+        state_checks=RunnerStateChecksConfig(
             numeric_string_fields=["amount"],
             id_fields={"widgets": "widget_id"},
             relaxed_validation=True,
@@ -180,7 +182,7 @@ def test_config_inputs_are_outside_the_ledger_by_kind():
 
 
 def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
-    config = GradingConfig(state_checks=StateChecksConfig(expected_hash="deadbeef"))
+    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
 
     audit = audit_accounted_keys(
         config, {"state_checks.hash.expected_state_hash": HASH_DISABLED_SKIP}
@@ -215,7 +217,9 @@ def test_the_core_only_hash_key_is_a_skip_whichever_way_hash_grading_went(runner
 
 
 def test_an_evaluated_key_is_fully_accounted():
-    config = GradingConfig(state_checks=StateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK]))
+    config = RunnerGradingConfig(
+        state_checks=RunnerStateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK])
+    )
 
     audit = audit_accounted_keys(config, {"state_checks.jsonpaths": EVALUATED})
 
@@ -253,18 +257,20 @@ def test_runner_field_naming_an_unknown_model_fails_loud():
 
 def test_runner_field_naming_an_unknown_field_fails_loud():
     with pytest.raises(ValueError, match="has no field 'jsonpath_chekcs'"):
-        runner_dump_path(_probe_key("StateChecksConfig.jsonpath_chekcs"))
+        runner_dump_path(_probe_key("RunnerStateChecksConfig.jsonpath_chekcs"))
 
 
 def test_runner_dict_key_is_not_resolvable():
     with pytest.raises(ValueError, match="runner_dict_key"):
-        runner_dump_path(_probe_key("StateChecksConfig.jsonpath_checks", runner_dict_key="enabled"))
+        runner_dump_path(
+            _probe_key("RunnerStateChecksConfig.jsonpath_checks", runner_dict_key="enabled")
+        )
 
 
 def test_a_hash_family_member_another_evaluator_reads_fails_loud():
     """The family shares one outcome, so a second reader needs its own recording site."""
     foreign = _probe_key(
-        "StateChecksConfig.golden_actions",
+        "RunnerStateChecksConfig.golden_actions",
         runner_evaluator="tolokaforge.runner.grading.evaluate_golden_action_traces",
     )
 
@@ -467,7 +473,7 @@ def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
     """Fault injection: the drift the ledger exists to catch, end to end.
 
     The real evaluator still runs and still scores; only its per-author-key
-    accounting is dropped — what a future ``TranscriptRulesConfig`` key that
+    accounting is dropped — what a future ``RunnerTranscriptRulesConfig`` key that
     nothing decomposes would look like on the wire.
     """
     from tolokaforge.runner import service as service_module

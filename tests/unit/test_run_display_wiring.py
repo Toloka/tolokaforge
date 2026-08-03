@@ -734,7 +734,7 @@ def _make_task_for_run(task_id: str) -> Any:
 
 
 def _make_task_description_for_run(task_id: str) -> Any:
-    from tolokaforge.runner.models import GradingConfig, TaskDescription
+    from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
 
     return TaskDescription(
         task_id=task_id,
@@ -743,7 +743,7 @@ def _make_task_description_for_run(task_id: str) -> Any:
         description="d",
         adapter_type="native",
         system_prompt="sys",
-        grading=GradingConfig(llm_judge=None),
+        grading=RunnerGradingConfig(llm_judge=None),
     )
 
 

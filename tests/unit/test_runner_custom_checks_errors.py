@@ -27,7 +27,7 @@ import pytest
 
 from tolokaforge.core.grading.check_runner import InMemoryCheckExecutor
 from tolokaforge.core.grading.checks_interface import CheckResultSet
-from tolokaforge.runner.models import GradingConfig, InitialStateConfig
+from tolokaforge.runner.models import RunnerGradingConfig, RunnerInitialStateConfig
 from tolokaforge.runner.service import RunnerServiceImpl
 
 pytestmark = pytest.mark.unit
@@ -50,9 +50,9 @@ def _trial_context(*, custom_checks: dict[str, Any]) -> SimpleNamespace:
         name="reconcile",
         description="",
         category="",
-        initial_state=InitialStateConfig(),
+        initial_state=RunnerInitialStateConfig(),
     )
-    grading_config = GradingConfig(custom_checks=custom_checks)
+    grading_config = RunnerGradingConfig(custom_checks=custom_checks)
     return SimpleNamespace(
         task_description=task_description,
         grading_config=grading_config,

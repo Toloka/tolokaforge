@@ -113,10 +113,10 @@ from tolokaforge.runner.id_resolution import (
 )
 from tolokaforge.runner.models import (
     GoldenAction,
-    GradeComponents,
     HashGradingResult,
     KeyAccountingRecord,
     RecordedToolCall,
+    RunnerGradeComponents,
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
@@ -1301,7 +1301,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             return await self._grade_via_test_execution(trial_id, trial_context)
 
         # Initialize grading components
-        components = GradeComponents()
+        components = RunnerGradeComponents()
         state_diff: StateDiff | None = None
         transcript_result: TranscriptEvaluationResult | None = None
         hash_result: HashGradingResult | None = None
