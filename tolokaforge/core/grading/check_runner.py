@@ -686,11 +686,11 @@ def run_custom_checks(
         ToolCall,
         Transcript,
     )
-    from tolokaforge.core.grading.transcript_wire import _decode_tool_call
+    from tolokaforge.core.grading.transcript_wire import decode_tool_call
 
     def _tool_call(tc: dict[str, Any], message_index: int) -> ToolCall:
         if "function" in tc:
-            decoded = _decode_tool_call(tc, message_index)
+            decoded = decode_tool_call(tc, message_index)
             return ToolCall(name=decoded.name, arguments=decoded.arguments)
         return ToolCall(
             name=tc.get("name", ""),

@@ -133,3 +133,20 @@ def test_a_malformed_wire_entry_raises_naming_the_message(
 
     with pytest.raises(ValueError, match="wire message 0"):
         _run(checks_file, tmp_path, malformed)
+
+
+def test_a_wire_entry_without_id_raises_naming_the_message(
+    checks_file: Path, tmp_path: Path
+) -> None:
+    without_id = [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {"function": {"name": "update_counter", "arguments": json.dumps({"delta": 7})}}
+            ],
+        }
+    ]
+
+    with pytest.raises(ValueError, match="wire message 0"):
+        _run(checks_file, tmp_path, without_id)
