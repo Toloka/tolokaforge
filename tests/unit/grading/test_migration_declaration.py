@@ -9,10 +9,10 @@ Two rules are stated over the entry alone and are the reason the sidecar's shape
 it is:
 
 * the **freed-share rule** — a scored criterion in ``narrowed`` / ``retired`` mode must
-  declare ``combine_weights``. That is the *declaration* half of the rule, and it is the
-  whole of what this gate can charge: the other escape (the counterfactual judge component
-  rises on no corpus trial) needs a corpus, which ``validate`` does not have. Every
-  assertion below is about the declaration, and none is about the counterfactual.
+  declare ``combine_weights``, unconditionally. What the declared map *does* to any trial is
+  not checkable here — ``validate`` sees a pack and no corpus — so every assertion below is
+  about the declaration, and the standing case for the author who shifts nothing is that an
+  identity map loads.
 * the **veto rule** — a ``required: true`` criterion may only be replaced by a **shared**
   ``severity: gate`` constraint. Both halves of that carry weight independently, so the
   four cells of {shared, route-scoped} × {gate, scored} are each a standing case: the one
@@ -226,7 +226,7 @@ def test_a_candidate_naming_a_scored_constraint_keeps_its_veto_and_loads(tmp_pat
 
 
 # ---------------------------------------------------------------------------
-# The freed-share rule's declaration half. Nothing here is about the counterfactual.
+# The freed-share rule, whose one requirement is the declaration.
 # ---------------------------------------------------------------------------
 
 
@@ -253,22 +253,33 @@ def test_a_narrowed_scored_criterion_without_combine_weights_is_refused(tmp_path
         _inspect(tmp_path, _narrowing_a_scored_criterion())
 
 
-def test_the_refusal_names_the_escape_this_gate_cannot_charge(tmp_path: Path):
-    """An author who means the other escape is told where it is measured, because this gate
-    sees a pack and no corpus."""
-    with pytest.raises(ValueError, match="tolokaforge reconcile"):
+def test_the_refusal_names_the_identity_map_as_what_shifting_nothing_writes(tmp_path: Path):
+    """The rule has one requirement, so the refusal cannot send the author anywhere else: it
+    names the line an author who shifts nothing writes instead."""
+    with pytest.raises(ValueError, match="identity map"):
         _inspect(tmp_path, _narrowing_a_scored_criterion())
 
 
 def test_a_narrowed_scored_criterion_with_combine_weights_loads(tmp_path: Path):
     """A declared map satisfies the rule outright. This asserts the declaration and nothing
-    about the counterfactual, which does not exist until the differential is built."""
+    about what the map does to a trial, which needs the corpus this gate does not have."""
     declaration = _inspect(
         tmp_path,
         _narrowing_a_scored_criterion(combine_weights={"llm_judge": 0.7, "trace_checks": 0.3}),
     )
     assert declaration is not None
     assert declaration.migrations[0].combine_weights == {"llm_judge": 0.7, "trace_checks": 0.3}
+
+
+def test_a_narrowed_scored_criterion_declaring_the_identity_map_loads(tmp_path: Path):
+    """The standing case that keeps the unconditional rule from being unsatisfiable for an
+    author who shifts nothing: the pack's own map, redeclared, absorbs no freed share and is
+    accepted — the residual the rule leaves is surfaced by ``reconcile``, not gated here."""
+    declaration = _inspect(
+        tmp_path, _narrowing_a_scored_criterion(combine_weights={"llm_judge": 1.0})
+    )
+    assert declaration is not None
+    assert declaration.migrations[0].combine_weights == {"llm_judge": 1.0}
 
 
 def test_a_candidate_on_a_scored_criterion_needs_no_weight_map(tmp_path: Path):

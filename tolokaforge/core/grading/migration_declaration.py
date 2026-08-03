@@ -25,10 +25,10 @@ The two hazards, both measured:
 * **A freed score share.** A *scored* criterion's weight sits in the judge component's
   denominator, so retiring one the agent failed makes the judge more generous: dropping
   ``cache_debug``'s ``explains_mechanism`` (weight 1.0 of a 1.5 denominator) raises the
-  component by ``+0.667`` on a trial that scored it ``0.0``. Such an entry must declare
-  where the freed share goes **or** show that the counterfactual component never rises on
-  the corpus. Only the first is answerable here — this gate sees a pack and no corpus — so
-  the refusal names the second and where it is charged.
+  component by ``+0.667`` on a trial that scored it ``0.0``. Such an entry must therefore
+  declare ``combine_weights``, the post-migration map the freed share lands in —
+  unconditionally, since an author who shifts nothing declares the **identity map**, and an
+  explicit identity map is read in the diff where an implied claim is invisible.
 """
 
 from __future__ import annotations
@@ -275,8 +275,10 @@ class MigrationEntry(BaseModel):
         one the agent failed makes the judge more generous — measured at ``+0.667`` on
         ``cache_debug``'s ``explains_mechanism``, whose trial scored it ``0.0``.
 
-        Either escape removes the hazard, so a declared map satisfies the rule outright and
-        the counterfactual is never charged against such an entry.
+        The declaration is what removes the hazard and it is required unconditionally; an
+        author who shifts nothing declares the identity map. It is a claim rather than a
+        proof — a map absorbing nothing loads — and ``tolokaforge reconcile`` reports per
+        trial what the declared map does.
         """
         if self.was.required or self.mode is MigrationMode.CANDIDATE:
             return self
@@ -288,9 +290,9 @@ class MigrationEntry(BaseModel):
             "denominator, so removing one the agent scored badly raises the component — "
             "measured at +0.667 on cache_debug's explains_mechanism, on a trial that "
             "scored it 0.0. Declare combine_weights, the post-migration combine.weights "
-            "map the freed share lands in; or, if the counterfactual component rises on no "
-            "corpus trial, that is the other escape and 'tolokaforge reconcile' is where it "
-            "is measured, this gate having no corpus to measure it on"
+            "map the freed share lands in; an author who shifts nothing declares the "
+            "identity map, which a reviewer reads in the diff where an implied claim "
+            "would be invisible"
         )
 
     @model_validator(mode="after")
