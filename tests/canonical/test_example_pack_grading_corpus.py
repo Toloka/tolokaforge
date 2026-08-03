@@ -1,6 +1,6 @@
 """The shipped example corpus grades what it configures, and its packs discriminate.
 
-Thirteen claims over the packs an author reads as the reference:
+Fourteen claims over the packs an author reads as the reference:
 
 1. **No example pack configures a component it never weights.** Core drops a scored
    component carrying no declared weight and the runner folds it in at an invented
@@ -63,12 +63,19 @@ Thirteen claims over the packs an author reads as the reference:
 13. **Agreement with the recorded pass is counted from two sources.** The verdict
     recomputed now against the ``binary_pass`` the live run wrote, over the corpus
     whose recorded column varies.
+14. **``native_shared_domain``'s duplicate-check policy has two halves, and each is
+    vetoed by the mechanism that can see it.** The ordering half is a shared
+    ``severity: gate`` trace constraint and the warning half is the required rubric
+    criterion, so a trial that listed but never warned fails the judge's gate alone
+    while one that never listed fails the trace gate alone — an attribution the one
+    conjoined criterion could not make.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Sequence
+from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
@@ -83,7 +90,8 @@ from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_ya
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
-from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import COMPONENT_BY_NAME, GRADE_COMPONENTS
+from tolokaforge.core.grading.rubric import aggregate_rubric, parse_submit_report
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_replay import (
     ConstraintDiscrimination,
@@ -115,6 +123,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.artifacts import FileArtifactWriter, read_recorded_tool_log
 from tolokaforge.core.project_loader import load_project_config
 from tolokaforge.dx.cli.main import cli
+from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
@@ -1210,6 +1219,213 @@ def test_the_lot_ops_correct_run_regrades_from_its_own_bundle_to_the_live_verdic
     assert result.gate_failed is False
     assert _failed(result) == []
     assert timeline.records_present is True
+
+
+_NOTES_TASK = (
+    _EXAMPLES
+    / "native"
+    / "native_shared_domain"
+    / "dataset"
+    / "notes"
+    / "testcases"
+    / "add_note_duplicate_check_gated"
+    / "task.yaml"
+)
+
+# What the pack is expected to declare, written out here so the block, the weight map
+# and the criterion the rubric keeps are each compared against a second source. The
+# weight map is a compatibility surface for this pack — a trial's score is not
+# comparable across a change to it — so it is pinned rather than read.
+_NOTES_GATE = "the_notes_were_listed_before_the_note_was_added"
+_NOTES_WEIGHTS = {"llm_judge": 0.7, "trace_checks": 0.3}
+_NOTES_VETO_CRITERION = "checked_duplicates_first"
+_NOTES_SCORED_CRITERIA = ("note_saved", "clarity")
+
+_NOTES_PROMPT = (
+    'Please save a note titled "Team standup" with the body '
+    '"Daily standup at 9:30 in the Maple room."'
+)
+_THE_EXISTING_NOTES = (
+    '[{"id": "N-002", "title": "Team stand-up", "body": "Daily stand-up at 9:30"}]'
+)
+
+
+def _listed(sequence: int) -> RecordedToolCall:
+    return recorded_call("list_notes", sequence=sequence, output=_THE_EXISTING_NOTES)
+
+
+def _added(sequence: int) -> RecordedToolCall:
+    return recorded_call(
+        "add_note",
+        sequence=sequence,
+        arguments={"title": "Team standup", "body": "Daily standup at 9:30 in the Maple room."},
+        output='{"id": "N-003"}',
+    )
+
+
+@dataclass(frozen=True)
+class _NotesScenario:
+    """One trial of the pack, and what each of its two vetoes says about it.
+
+    ``warned`` is *supplied* rather than read out of ``reply``, because it is a judge's
+    reading of the reply — which is precisely the half of the policy this pack keeps in
+    its rubric. The trace gate's verdict is never supplied: it is the shipped
+    evaluator's over ``calls``, which is the other half.
+    """
+
+    name: str
+    calls: tuple[RecordedToolCall, ...]
+    reply: str
+    warned: bool
+    judge_gate_failed: bool
+    failed_trace_gates: tuple[str, ...]
+    judge_component: float
+    score: float
+    binary_pass: bool
+
+
+_NOTES_SCENARIOS = (
+    _NotesScenario(
+        name="listed_and_warned",
+        calls=(_listed(0), _added(1)),
+        reply='A similar note "Team stand-up" already exists; saving yours as asked.',
+        warned=True,
+        judge_gate_failed=False,
+        failed_trace_gates=(),
+        judge_component=1.0,
+        score=1.0,
+        binary_pass=True,
+    ),
+    _NotesScenario(
+        name="listed_but_never_warned",
+        calls=(_listed(0), _added(1)),
+        reply="Saved your note.",
+        warned=False,
+        judge_gate_failed=True,
+        failed_trace_gates=(),
+        judge_component=0.0,
+        score=0.3,
+        binary_pass=False,
+    ),
+    _NotesScenario(
+        name="never_listed",
+        calls=(_added(0),),
+        reply='A similar note "Team stand-up" already exists; saving yours as asked.',
+        warned=True,
+        judge_gate_failed=False,
+        failed_trace_gates=(_NOTES_GATE,),
+        judge_component=1.0,
+        score=0.7,
+        binary_pass=False,
+    ),
+)
+
+
+def _notes_grading() -> GradingConfig:
+    return _grading_config(_NOTES_TASK)[1]
+
+
+def _notes_submission(warned: bool) -> dict[str, object]:
+    """A judge ``submit_report`` over the pack's three criteria.
+
+    Put through ``parse_submit_report`` rather than written as ``CriterionResult``s so
+    the binary criterion's ``{0.0, 1.0}`` derivation and the marker-consistency check
+    are production's rather than this table's.
+    """
+    submitted: dict[str, object] = {
+        _NOTES_VETO_CRITERION: warned,
+        f"{_NOTES_VETO_CRITERION}_justification": (
+            f"What the reply told the user.\nVERDICT: {'MET' if warned else 'NOT MET'}"
+        ),
+    }
+    for criterion_id in _NOTES_SCORED_CRITERIA:
+        submitted[criterion_id] = 1.0
+        submitted[f"{criterion_id}_justification"] = "In full.\nSCORE: 1.0"
+    return submitted
+
+
+def _notes_runner_config(grading: GradingConfig) -> dict[str, object]:
+    """The pack's ``combine`` in the flat shape the runner's fold takes it in.
+
+    Each component's section rides along as an empty mapping: the fold reads a section
+    only to tell a *configured* component from a merely weighted one, and never a field
+    of it.
+    """
+    return {
+        "combine_method": grading.combine.method,
+        "weights": dict(grading.combine.weights),
+        "pass_threshold": grading.combine.pass_threshold,
+        COMPONENT_BY_NAME["llm_judge"].config_section: {},
+        COMPONENT_BY_NAME["trace_checks"].config_section: {},
+    }
+
+
+def test_the_notes_pack_declares_one_shared_gate_and_weights_both_components() -> None:
+    """The gate is shared and gating, and the judge no longer carries the pack alone.
+
+    Shared rather than route-scoped because a route gate is consulted only when its own
+    route wins, and this veto has to hold whichever way the trial went. Neither
+    component reaches ``pass_threshold`` by itself — measured here rather than asserted,
+    since that is what makes a passing trial one that did both halves of the policy.
+    """
+    grading = _notes_grading()
+    trace_checks = grading.trace_checks
+    assert trace_checks is not None
+
+    declared = [(constraint.id, constraint.severity) for constraint in trace_checks.constraints]
+    assert declared == [(_NOTES_GATE, TraceConstraintSeverity.GATE)]
+    assert trace_checks.alternatives is None
+    assert grading.combine.weights == _NOTES_WEIGHTS
+    assert max(grading.combine.weights.values()) < grading.combine.pass_threshold
+
+
+@pytest.mark.parametrize(
+    "scenario", _NOTES_SCENARIOS, ids=[scenario.name for scenario in _NOTES_SCENARIOS]
+)
+def test_each_half_of_the_notes_policy_is_vetoed_by_the_mechanism_that_can_see_it(
+    scenario: _NotesScenario,
+) -> None:
+    """The attribution one conjoined criterion could not make.
+
+    Three trials, and the two veto columns disagree on two of them: a trial that listed
+    but never warned fails the judge's required gate with no trace gate down, and one
+    that never listed fails the trace gate with the judge's own gate up. Both are a
+    failed trial — so ``binary_pass`` alone would not tell them apart, and the columns
+    are asserted separately for that reason.
+
+    ``judge_component`` is the third column that matters: the graded criteria score in
+    full on every row, so the ``0.0`` on the middle row is the veto zeroing the
+    component and not a low weighted average. That zeroing is the runner fold's, which
+    is why the fold is what this drives rather than the aggregate alone.
+    """
+    grading = _notes_grading()
+    trace_checks = grading.trace_checks
+    assert trace_checks is not None
+    assert grading.llm_judge is not None
+    rubric = grading.llm_judge.rubric
+    assert rubric is not None
+
+    trace = evaluate_trace_checks(
+        _timeline(scenario.calls, (_NOTES_PROMPT, scenario.reply)), trace_checks
+    )
+    judge = aggregate_rubric(
+        rubric, parse_submit_report(_notes_submission(scenario.warned), rubric)
+    )
+    verdict = compose_runner_trial_verdict(
+        {
+            COMPONENT_BY_NAME["llm_judge"].runner_score_field: judge.score,
+            COMPONENT_BY_NAME["trace_checks"].runner_score_field: trace.score,
+        },
+        _notes_runner_config(grading),
+        judge_gate_failed=judge.gate_failed,
+        trace_gate_failed=trace.gate_failed,
+    )
+
+    assert judge.gate_failed is scenario.judge_gate_failed
+    assert tuple(trace.failed_gate_ids) == scenario.failed_trace_gates
+    assert verdict.judge_component == pytest.approx(scenario.judge_component)
+    assert verdict.score == pytest.approx(scenario.score)
+    assert verdict.binary_pass is scenario.binary_pass
 
 
 # Which route each of the two bundles below was scored on, in the order they are

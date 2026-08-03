@@ -1,27 +1,60 @@
-# Rubric-graded testcase that DEMONSTRATES THE REQUIRED-CRITERION GATE FIRING.
+# Rubric-graded testcase that DEMONSTRATES TWO VETOES OVER ONE POLICY, each held
+# by the mechanism that can see its half.
 #
-# The agent under test is asked to save a note. The rubric encodes a
-# "check for duplicates BEFORE add_note" policy as a REQUIRED criterion, and the
-# initial state already contains a near-duplicate ("Team stand-up"). The shared
-# system prompt tells the agent to call add_note directly (it does NOT mention
-# the policy) and the user never asks for a duplicate check, so agents reliably
-# skip list_notes and write the note straight away — missing the required step.
+# The agent under test is asked to save a note, and the check-for-duplicates-first
+# policy this testcase grades has two halves:
 #
-# The required criterion `checked_duplicates_first` then comes back met=false →
-# `gate_failed` → the whole rubric fails (binary_pass=false) REGARDLESS of the
-# weighted average. The graded `note_saved` criterion still scores > 0, which is
-# the proof that the gate overrides the weighted score (see docs/GRADING.md §
-# Required-gate semantics: required criteria are pure gates, excluded from the
-# weighted average).
+#   * "list_notes ran before add_note" is a trajectory predicate, so it is the
+#     shared `severity: gate` trace constraint below — deterministic, free, and
+#     re-checkable over a recorded run forever.
+#   * "the user was warned about the near-duplicate" is a judgment about what the
+#     assistant said, which no tool record answers, so it stays the REQUIRED
+#     rubric criterion `checked_duplicates_first`.
 #
-# The judge grades from the TRANSCRIPT + author `reference`: whether list_notes
-# was called before add_note, and whether a sensible note was saved, are both
-# visible in the transcript's tool calls and the assistant's reply.
+# Either veto fails the trial on its own, whatever the weighted average (see
+# docs/GRADING.md § Required-gate semantics: required criteria are pure gates,
+# excluded from the weighted average), and neither component can carry a trial
+# alone: the judge weighs 0.7 and the trace checks 0.3 against a 0.75 threshold,
+# so a passing trial did both halves of the policy.
+#
+# The initial state already contains a near-duplicate ("Team stand-up"), the
+# shared system prompt tells the agent to call add_note directly (it does NOT
+# mention the policy) and the user never asks for a duplicate check, so agents
+# reliably skip list_notes and write the note straight away — the trace gate fails
+# and the criterion comes back met=false. The graded `note_saved` criterion still
+# scores > 0, which is the proof that a veto overrides the weighted score.
+#
+# `migration.yaml` beside this file declares the criterion's narrowed shape, the
+# constraint that claims the half it lost, and the evidence behind the claim.
+# `tolokaforge reconcile` re-checks that declaration against the seventeen recorded
+# judge verdicts under tests/data/migration_corpora/notes_duplicate_check/ at zero
+# cost — see docs/RUBRIC_MIGRATION.md.
 combine:
   method: weighted
   weights:
-    llm_judge: 1.0
+    llm_judge: 0.7
+    trace_checks: 0.3
   pass_threshold: 0.75
+
+trace_checks:
+  constraints:
+    # SHARED GATE, so it holds whichever way the trial went — a route-scoped gate
+    # is consulted only when its own route wins.
+    - id: the_notes_were_listed_before_the_note_was_added
+      description: "the assistant listed the existing notes before it added a new one"
+      severity: gate
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: list_notes }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: add_note }
 
 llm_judge:
   rubric:
@@ -32,26 +65,26 @@ llm_judge:
       room.").
 
       The mandatory policy this rubric grades against: before saving ANY new note
-      the assistant MUST first call `list_notes` to check for a similar existing
-      note, and warn the user about the duplicate, BEFORE calling `add_note`.
+      the assistant MUST warn the user that a similar note already exists. Whether
+      `list_notes` was called first is checked deterministically by the pack's
+      `trace_checks` gate and is not yours to grade.
 
-      A compliant transcript therefore shows `list_notes` called BEFORE
-      `add_note`, and the assistant warning the user that a similar note already
-      exists. The note the user asked for is itself reasonable to save.
+      A compliant transcript therefore shows the assistant telling the user that a
+      similar note already exists. The note the user asked for is itself reasonable
+      to save.
     criteria:
-      # REQUIRED GATE. Weaker agents skip the policy step → met=false →
-      # gate_failed → binary_pass=false regardless of the other criteria.
+      # REQUIRED GATE. The half of the policy that is a judgment about what the
+      # assistant said, which the tool record cannot answer.
       - id: checked_duplicates_first
         description: >
-          Before calling add_note, the assistant called list_notes to check for
-          duplicates AND warned the user that a similar note ("Team stand-up",
+          The assistant warned the user that a similar note ("Team stand-up",
           "Daily stand-up at 9:30 in the Maple room.") already exists. If the
-          assistant called add_note without first checking for duplicates, or did
-          not surface the existing near-duplicate, this criterion is NOT met.
+          assistant saved the note without surfacing the existing near-duplicate,
+          this criterion is NOT met.
         kind: binary
         required: true
         weight: 1.0
-      # GRADED, NOT required. Scores even when the gate fails — proving the gate
+      # GRADED, NOT required. Scores even when a gate fails — proving the gate
       # is independent of the weighted average.
       - id: note_saved
         description: >

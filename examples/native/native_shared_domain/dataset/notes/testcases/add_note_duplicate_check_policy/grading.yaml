@@ -1,27 +1,50 @@
-# Rubric-graded testcase that DEMONSTRATES THE REQUIRED CRITERION BEING MET.
+# Rubric-graded testcase that DEMONSTRATES BOTH VETOES BEING SATISFIED.
 #
 # Everything a grade reads here is identical to `add_note_duplicate_check_gated`:
-# the same rubric, the same weights, the same near-duplicate initial state. The
-# one difference between the two testcases is the agent's system prompt, which
-# here states the check-first policy the shared prompt omits — so a competent
-# agent lists, warns, and the required `checked_duplicates_first` criterion comes
-# back met=true where its sibling's comes back met=false.
+# the same rubric, the same trace constraint, the same weights, the same
+# near-duplicate initial state. The one difference between the two testcases is the
+# agent's system prompt, which here states the check-first policy the shared prompt
+# omits — so a competent agent lists the notes before adding one and warns the user,
+# passing the `trace_checks` gate and the required `checked_duplicates_first`
+# criterion where its sibling fails both.
 #
 # That is the point of the pair: the two testcases are the two arms of one
-# experiment, and the rubric block must stay identical between them or the
-# criterion the two arms label is no longer the same criterion. A canonical guard
-# in tests/canonical/test_example_pack_grading_corpus.py holds them together, and
-# the recorded trials of both arms are the judge-labelled corpus under
+# experiment, and every block a grade reads must stay identical between them or the
+# criterion the two arms label is no longer the same criterion. A canonical guard in
+# tests/canonical/test_rubric_migration.py holds them together, and the recorded
+# trials of both arms are the judge-labelled corpus under
 # tests/data/migration_corpora/notes_duplicate_check/ (see docs/RUBRIC_MIGRATION.md).
 #
-# The judge grades from the TRANSCRIPT + author `reference`: whether list_notes
-# was called before add_note, and whether a sensible note was saved, are both
-# visible in the transcript's tool calls and the assistant's reply.
+# `migration.yaml` beside this file declares the criterion's narrowed shape, the
+# constraint that claims the half it lost, and the evidence behind the claim. Both
+# arms declare it identically, which is what keeps the pooled evidence one
+# measurement quoted twice rather than two claims `reconcile` would refuse to pool.
 combine:
   method: weighted
   weights:
-    llm_judge: 1.0
+    llm_judge: 0.7
+    trace_checks: 0.3
   pass_threshold: 0.75
+
+trace_checks:
+  constraints:
+    # SHARED GATE, so it holds whichever way the trial went — a route-scoped gate
+    # is consulted only when its own route wins.
+    - id: the_notes_were_listed_before_the_note_was_added
+      description: "the assistant listed the existing notes before it added a new one"
+      severity: gate
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: list_notes }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: add_note }
 
 llm_judge:
   rubric:
@@ -32,26 +55,26 @@ llm_judge:
       room.").
 
       The mandatory policy this rubric grades against: before saving ANY new note
-      the assistant MUST first call `list_notes` to check for a similar existing
-      note, and warn the user about the duplicate, BEFORE calling `add_note`.
+      the assistant MUST warn the user that a similar note already exists. Whether
+      `list_notes` was called first is checked deterministically by the pack's
+      `trace_checks` gate and is not yours to grade.
 
-      A compliant transcript therefore shows `list_notes` called BEFORE
-      `add_note`, and the assistant warning the user that a similar note already
-      exists. The note the user asked for is itself reasonable to save.
+      A compliant transcript therefore shows the assistant telling the user that a
+      similar note already exists. The note the user asked for is itself reasonable
+      to save.
     criteria:
-      # REQUIRED GATE. Weaker agents skip the policy step → met=false →
-      # gate_failed → binary_pass=false regardless of the other criteria.
+      # REQUIRED GATE. The half of the policy that is a judgment about what the
+      # assistant said, which the tool record cannot answer.
       - id: checked_duplicates_first
         description: >
-          Before calling add_note, the assistant called list_notes to check for
-          duplicates AND warned the user that a similar note ("Team stand-up",
+          The assistant warned the user that a similar note ("Team stand-up",
           "Daily stand-up at 9:30 in the Maple room.") already exists. If the
-          assistant called add_note without first checking for duplicates, or did
-          not surface the existing near-duplicate, this criterion is NOT met.
+          assistant saved the note without surfacing the existing near-duplicate,
+          this criterion is NOT met.
         kind: binary
         required: true
         weight: 1.0
-      # GRADED, NOT required. Scores even when the gate fails — proving the gate
+      # GRADED, NOT required. Scores even when a gate fails — proving the gate
       # is independent of the weighted average.
       - id: note_saved
         description: >

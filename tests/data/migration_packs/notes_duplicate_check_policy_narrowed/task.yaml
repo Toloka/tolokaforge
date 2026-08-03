@@ -2,13 +2,15 @@ task_id: "notes_add_note_duplicate_check_policy"
 name: "Fixture — the notes duplicate-check criterion, narrowed (policy arm)"
 category: "test"
 description: >
-  The second of the pair of stand-ins for the shipped notes duplicate-check
-  testcases, carrying the migration the shipped packs have not taken yet. It declares
-  the task_id of the met arm — the bundles under
-  tests/data/migration_corpora/notes_duplicate_check/met/ — where its sibling
-  notes_duplicate_check_narrowed declares the not-met arm's, so `tolokaforge reconcile
-  --packs tests/data/migration_packs` resolves the whole corpus and pools both arms
-  into one entry.
+  The second of a pair of stand-ins for the shipped notes duplicate-check testcases,
+  declaring the same narrow while declaring no post-migration weight map — which is what
+  makes the source of `reconcile`'s counterfactual measurable, since the map it folds
+  under can then only have come from the declaration. It declares the task_id of the met
+  arm — the bundles under tests/data/migration_corpora/notes_duplicate_check/met/ — where
+  its sibling notes_duplicate_check_narrowed declares the not-met arm's, so `tolokaforge
+  reconcile --packs tests/data/migration_packs` resolves the whole corpus and pools both
+  arms into one entry. These task_ids are the shipped ones, which is why tests/data is
+  never a default pack root.
 
   Its grading.yaml and migration.yaml are byte-identical to the sibling's on purpose:
   pooling keys on the criterion text and the resolved constraints, so a drift between

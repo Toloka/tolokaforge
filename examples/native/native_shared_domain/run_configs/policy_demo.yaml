@@ -1,5 +1,5 @@
 # Policy-arm run config — runs ONLY the add_note_duplicate_check_policy testcase,
-# the arm of the duplicate-check pair whose REQUIRED criterion is MET.
+# the arm of the duplicate-check pair that satisfies both of its vetoes.
 #
 # Same models and orchestrator settings as `gate_demo.yaml`, deliberately: the two
 # testcases differ by the agent's system prompt and nothing else, so the recorded
@@ -9,8 +9,9 @@
 # experiment with one independent variable.
 #
 # The check-first policy IS in this testcase's own system_prompt.md, so the same
-# cheap agent that skips list_notes under `gate_demo.yaml` lists, warns, and the
-# required `checked_duplicates_first` criterion comes back met.
+# cheap agent that skips list_notes under `gate_demo.yaml` lists and warns: the
+# `trace_checks` gate holds and the required `checked_duplicates_first` criterion
+# comes back met.
 #
 # Run with:
 #   scripts/with_env.sh uv run tolokaforge run --config examples/native/native_shared_domain/run_configs/policy_demo.yaml

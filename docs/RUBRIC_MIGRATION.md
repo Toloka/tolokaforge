@@ -229,8 +229,8 @@ directory name carries the run it came from.
 
 **The two halves are the two arms of one experiment, and the independent variable is one
 paragraph of system prompt.** The arms are two testcases of
-`examples/native/native_shared_domain/`, byte-identical in rubric, weights, initial state, user
-message and backstory. `add_note_duplicate_check_gated` inherits the shared system prompt, which
+`examples/native/native_shared_domain/`, byte-identical in rubric, trace constraint, weights,
+initial state, user message and backstory. `add_note_duplicate_check_gated` inherits the shared system prompt, which
 does not mention the check-first policy, so agents skip `list_notes` and the criterion is not
 met. `add_note_duplicate_check_policy` ships **its own** `system_prompt.md`, carrying the shared
 prompt verbatim with the policy paragraph appended, so a competent agent lists, warns, and the
@@ -252,11 +252,17 @@ met/passed and five not-met/failed with nothing off the agreeing diagonal, and r
 falsifier, and both verdicts are locked in
 `tests/canonical/test_rubric_migration.py`.
 
-The shipped packs have not taken the migration yet, so the declarations the corpus is reconciled
-against are fixtures under `tests/data/migration_packs/` — one per arm, because a bundle resolves
-its constraints through its own `task_id` — reached with `--packs tests/data/migration_packs`.
-Their declarations are identical, which is what keeps the pooled evidence one measurement quoted
-twice; a drift between them is a pooling refusal.
+Both arms carry the declaration of the narrow this corpus is the evidence for, so the default
+`--packs examples/` resolves it: that is the CI re-verification, and it is over the pack a
+reviewer reads rather than over a fixture. Their two `migration.yaml` files are byte-identical,
+which is what keeps the pooled evidence one measurement quoted twice; a drift between them is a
+pooling refusal.
+
+Fixture packs under `tests/data/migration_packs/` declare the same narrow with **no**
+`combine_weights`, reached with `--packs tests/data/migration_packs` — which is the only way the
+counterfactual's *source* is measurable, since a report that folded under the pack's own map
+would be indistinguishable there. They carry the shipped `task_id`s, so `tests/data` is
+deliberately never a default root: a `task_id` resolving in two roots is an error.
 
 The corpus is deliberately heterogeneous: the `not_met/` bundles are `schema_version: 1` and
 record-less (no `tool_log.yaml`), which does not block a constraint reading no `status` or

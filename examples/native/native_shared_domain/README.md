@@ -39,13 +39,15 @@ examples/native/native_shared_domain/
           task.yaml
           grading.yaml
           initial_state.json
-        add_note_duplicate_check_gated/  # rubric REQUIRED-gate-fire showcase
+        add_note_duplicate_check_gated/  # two vetoes over one policy, both firing
           task.yaml
           grading.yaml
+          migration.yaml                 # what the trace gate took off the rubric
           initial_state.json
-        add_note_duplicate_check_policy/ # the same rubric, MET — the gate's other arm
+        add_note_duplicate_check_policy/ # the same grading, both vetoes satisfied
           task.yaml
           grading.yaml
+          migration.yaml                 # byte-identical to the sibling's
           initial_state.json
           system_prompt.md               # the shared prompt verbatim + the policy paragraph
 ```
@@ -116,51 +118,58 @@ on the core stack the judge is no longer handed a phantom `search_kb` that
 would silently 404 against a rag-service that isn't running. See
 `docs/GRADING.md` § Judge KB faithfulness.
 
-## Required-gate-fire testcase (`add_note_duplicate_check_gated`)
+## Two-veto testcase (`add_note_duplicate_check_gated`)
 
 `summarize_notes_rubric` is the happy path (a good agent passes, score 1.0). This
-testcase is its counterpart: it demonstrates the **rubric REQUIRED-criterion gate
-firing** — a run where a `required` criterion is NOT met, so `gate_failed` forces
-`binary_pass: false` **even though the graded criteria still score well**.
+testcase is its counterpart: it demonstrates **one policy graded by two vetoes**, each
+held by the mechanism that can see its half, and both firing.
 
-The user asks to save a note. The rubric encodes a *check-for-duplicates-first*
-policy (the assistant should `list_notes` and warn about a near-duplicate **before**
-`add_note`) as a **`required`** criterion. The shared system prompt tells the agent
-to call `add_note` directly and the user never asks for the check, so agents
-reliably skip `list_notes` and save the note straight away. The initial state
-already contains a near-duplicate (`Team stand-up`), so the duplicate genuinely
-exists.
+The user asks to save a note under a *check-for-duplicates-first* policy — the
+assistant should `list_notes` and warn about a near-duplicate **before** `add_note`.
+The initial state already contains a near-duplicate (`Team stand-up`), so the
+duplicate genuinely exists, and the two conjuncts are checked separately:
 
-| Criterion | kind | required | role |
-|---|---|---|---|
-| `checked_duplicates_first` | binary | **yes** | gate — `list_notes` + warn must precede `add_note` |
-| `note_saved` | graded | no | the note was saved faithfully (uses per-criterion `expected`) |
-| `clarity` | graded | no | the reply is clear / professional |
+| the half | who checks it | why that one |
+|---|---|---|
+| `list_notes` ran before `add_note` | `the_notes_were_listed_before_the_note_was_added` — shared `trace_checks` constraint, `severity: gate` | a trajectory predicate: deterministic, free, re-checkable over a recorded run |
+| the user was warned about the near-duplicate | `checked_duplicates_first` — `kind: binary`, `required: true` | a judgment about what the assistant *said*, which no tool record answers |
 
-Because the agent skips the check, the judge marks `checked_duplicates_first`
-`met: false` → `gate_failed` → `binary_pass: false`. The graded `note_saved` and
-`clarity` criteria still score (typically 1.0 each in `criterion_results`).
-**`gate_failed` overrides the weighted score**: a failed required criterion fails
-the trial outright, independent of `pass_threshold`, and the runner zeroes the
-`llm_judge` component (`components.llm_judge: 0.0`) — see `docs/GRADING.md`
-§ Required-gate semantics. The per-criterion `note_saved: score 1.0` in
-`grade.yaml` is the proof that the gate, not a low weighted average, is what
-failed the trial.
+The rest of the rubric is unchanged: `note_saved` (graded, uses per-criterion
+`expected`) and `clarity` (graded) — neither required.
+
+The shared system prompt tells the agent to call `add_note` directly and the user
+never asks for the check, so agents reliably skip `list_notes` and save the note
+straight away: the **trace gate** fails and the judge marks
+`checked_duplicates_first` `met: false`, so the **required-criterion gate** fails
+too. The graded `note_saved` and `clarity` criteria still score (typically 1.0 each
+in `criterion_results`). **Either gate overrides the weighted score**: it fails the
+trial outright, independent of `pass_threshold`, and a failed required criterion
+additionally zeroes the `llm_judge` component (`components.llm_judge: 0.0`) — see
+`docs/GRADING.md` § Required-gate semantics. The per-criterion `note_saved:
+score 1.0` in `grade.yaml` is the proof that a gate, not a low weighted average, is
+what failed the trial.
+
+`combine.weights` is `{llm_judge: 0.7, trace_checks: 0.3}` against
+`pass_threshold: 0.75`, so neither component reaches the threshold alone and a
+passing trial did both halves of the policy. Three standing scenarios are locked in
+`tests/canonical/test_example_pack_grading_corpus.py`: listing and warning scores in
+full, listing without warning fails the judge's gate alone, and never listing fails
+the trace gate alone — the attribution one conjoined criterion could not make.
 
 The agent is a deliberately cheap model (`openai/gpt-4o-mini`) via
-`run_configs/gate_demo.yaml`; because the policy is not in the agent's prompt, the
-gate fires regardless of agent strength.
+`run_configs/gate_demo.yaml`; because the policy is not in the agent's prompt, both
+gates fire regardless of agent strength.
 
-## Criterion-met testcase (`add_note_duplicate_check_policy`)
+## Both-vetoes-satisfied testcase (`add_note_duplicate_check_policy`)
 
-The other arm of the same rubric. Everything a grade reads is identical to
-`add_note_duplicate_check_gated` — the same rubric byte for byte, the same weights,
-the same near-duplicate initial state, the same user message and backstory. The one
-difference is the agent's system prompt: this testcase ships its own
+The other arm of the same grading. Everything a grade reads is identical to
+`add_note_duplicate_check_gated` — the same rubric and trace constraint byte for byte,
+the same weights, the same near-duplicate initial state, the same user message and
+backstory. The one difference is the agent's system prompt: this testcase ships its own
 `system_prompt.md`, which is the shared prompt **verbatim** with a check-first policy
 paragraph **appended**. The same cheap `openai/gpt-4o-mini` agent that skips
-`list_notes` under `gate_demo.yaml` then lists, warns, and
-`checked_duplicates_first` comes back `met: true` → no `gate_failed` → `score: 1.0`.
+`list_notes` under `gate_demo.yaml` then lists and warns, so the trace gate holds,
+`checked_duplicates_first` comes back `met: true`, and the trial scores `1.0`.
 
 The prompt is a full copy rather than an addition because a task-level
 `system_prompt` is a **path** that *replaces* the inherited one on merge; extending
@@ -174,6 +183,33 @@ corpus (`tests/data/migration_corpora/notes_duplicate_check/`), which is what le
 `tolokaforge reconcile` measure a rubric-to-trace-check migration against real judge
 verdicts with Cohen's κ **defined** — one arm supplies the not-met labels and this
 one the met labels. See `docs/RUBRIC_MIGRATION.md`.
+
+## The declared migration (`migration.yaml`)
+
+Both arms carry a byte-identical `migration.yaml` beside their `grading.yaml`, declaring
+that `checked_duplicates_first` is `mode: narrowed` **by** the trace gate: the criterion
+text the evidence was gathered against, the `residual` the judge still reads (the warning
+to the user), the post-migration `combine_weights`, and the corpus the claim rests on.
+Nothing about grading reads the file.
+
+```sh
+uv run tolokaforge reconcile --source tests/data/migration_corpora/notes_duplicate_check
+```
+
+That spends nothing and exits `0`: 17 observations, accuracy `1.0`, Cohen's κ `1.0`,
+twelve met/passed and five not-met/failed with nothing off the agreeing diagonal, verdict
+`no_counter_evidence`. It is run against the **pack**, not a fixture, so editing the
+constraint changes what is recomputed over the frozen corpus and the CI lock reds. The
+declarations are identical between the arms because the evidence is *pooled* across them —
+one measurement quoted twice, and a drift is a pooling refusal.
+
+`no_counter_evidence` means no trial in this corpus contradicted the claim over 17
+observations — never that the constraint is equivalent to the criterion, and never that
+the bar chose to narrow rather than retire. It cannot: zero disagreements satisfies both,
+so the mode is the author's recorded judgment and the `residual` is its justification.
+The `met/` half was produced by a prompt instructing exactly what the constraint measures,
+which `docs/RUBRIC_MIGRATION.md` § Reading the evidence states as the design limitation it
+is.
 
 ## Run
 

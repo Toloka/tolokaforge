@@ -1848,7 +1848,7 @@ took.
 
 A forbidden tool called, another customer's record touched, an order mutated by a
 diagnose-only agent — all route-independent, so all shared gates. The last is a
-shipped pack: see [`cache_debug`](#three-worked-packs), whose one gate is shared for
+shipped pack: see [`cache_debug`](#four-worked-packs), whose one gate is shared for
 exactly this reason.
 
 This rule is guidance rather than a guarantee, and the reason is worth stating
@@ -1869,7 +1869,7 @@ same trial differently. `tests/canonical/test_example_pack_grading_corpus.py` ho
 every shipped example pack to that, reading the combine that is *effective* after
 the project layer merges.
 
-### Three worked packs
+### Four worked packs
 
 [`examples/native/multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md)
 grades the process alongside the substrate. Its three constraints are the three
@@ -1986,6 +1986,47 @@ that earns its weight and one that decorates a pack:
   task's own guidance says not to guess it, so the catalog is the only place `CAPA-01`
   comes from. Read the prompt before shipping a correlation; the substrate probe will
   not tell you the answer was in the question.
+
+[`examples/native/native_shared_domain`](../examples/native/native_shared_domain/README.md)
+is the migration reference — the one shipped pack where a judge criterion and a trace
+constraint grade the same policy, each holding the half it can see. Its
+`add_note_duplicate_check_gated` / `add_note_duplicate_check_policy` pair grades a
+check-for-duplicates-first policy with two conjuncts:
+
+| the half | who checks it | why that one |
+|---|---|---|
+| `list_notes` ran before `add_note` | `the_notes_were_listed_before_the_note_was_added`, shared, `severity: gate` | a trajectory predicate: deterministic, free, and re-checkable over a recorded run forever |
+| the user was warned about the near-duplicate | `checked_duplicates_first`, `kind: binary`, `required: true` | a judgment about what the assistant *said*, which no tool record answers |
+
+Three authoring choices in it are the ones to copy:
+
+- **The veto survives on both halves, and that is a load-time rule rather than a
+  convention.** The criterion was `required: true`, so it carried a trial-level veto and
+  **no score share** — retiring or narrowing it moves the judge score not at all, and only
+  the veto is at stake. The declaration is therefore only accepted because the constraint
+  claiming it is **shared** and carries `severity: gate`
+  ([the veto rule](#declaring-a-migration-the-migrationyaml-sidecar)); the criterion keeps
+  `required: true` for the conjunct it kept. Two vetoes over one policy, and either fails
+  the trial alone.
+- **The judge's `reference` stops asking for the half it no longer grades.** A reference
+  still describing the ordering would have the judge charging a conjunct the gate already
+  owns, so the narrow would be a text change and nothing else. It says outright that the
+  ordering is checked deterministically and is not the judge's to grade.
+- **Neither component can carry a trial by itself.** `combine.weights` is
+  `{llm_judge: 0.7, trace_checks: 0.3}` against `pass_threshold: 0.75`, so a pass means
+  both halves happened — a `trace_checks` weight is mandatory rather than optional here,
+  because a scored component with no declared weight is dropped core-side and folded in at
+  an invented `1.0` runner-side (#744).
+
+The pair is also the corpus behind its own migration: both arms declare it in a
+[`migration.yaml`](#declaring-a-migration-the-migrationyaml-sidecar), and
+[`tolokaforge reconcile`](RUBRIC_MIGRATION.md) re-checks the declaration against the
+seventeen recorded judge verdicts under
+`tests/data/migration_corpora/notes_duplicate_check/` at zero cost — 17 observations,
+κ `1.0`, `no_counter_evidence`. What that verdict does and does not say is
+[RUBRIC_MIGRATION.md § Reading the evidence](RUBRIC_MIGRATION.md#reading-the-evidence);
+the mode is the **author's** recorded judgment, and the residual claim — the warning the
+judge still reads — is its justification.
 
 #### What a correlation is a candidate to replace, and what it is not
 

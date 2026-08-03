@@ -17,10 +17,15 @@ Each half is therefore the other's falsifier, and κ is defined only over the un
 label-invariance of either half taken alone is what the bar's evidence condition exists to
 catch, so both the one-sided verdict and the union verdict are locked here.
 
-The packs are fixtures under ``tests/data/migration_packs/``, not the shipped ones: the shipped
-pack has not taken the migration yet, and reaching them is what ``--packs`` is for. There is one
-fixture per arm because a bundle resolves its constraints through its own ``task_id``, and their
-declarations are identical because pooling keys on the criterion text and the resolved
+Two pack roots reconcile this corpus and both are locked here. The **shipped** arms under
+``examples/`` declare the migration they took, and the default ``--packs`` root resolves them,
+which is what makes the re-verification bite on the pack a reviewer reads: editing the shipped
+constraint changes what is recomputed over the frozen corpus. The **fixtures** under
+``tests/data/migration_packs/`` declare the same criterion while declaring no weight map, which
+is the only reason the counterfactual's *source* is measurable — they share the shipped
+``task_id``s, so ``tests/data`` is deliberately not a default root. Either root holds one pack
+per arm, because a bundle resolves its constraints through its own ``task_id``, and each root's
+two declarations are identical because pooling keys on the criterion text and the resolved
 constraints — a drift between them is a pooling refusal, not a quietly merged pair of claims.
 
 **No number here is re-derived from the maths.** ``tests/unit/grading/test_agreement.py``
@@ -576,6 +581,81 @@ def test_the_command_exits_zero_over_the_union_and_says_what_that_means(
     assert "no_counter_evidence over 17 observations" in result.output
     assert "kappa 1.000" in result.output
     assert "pass rate 12/17 → 12/17" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The shipped arms, which took the migration this corpus is the evidence for
+# ---------------------------------------------------------------------------
+
+_SHIPPED_PACKS = _REPO / "examples"
+_SHIPPED_DECLARATION = _GATED_ARM / "migration.yaml"
+_SHIPPED_POLICY_DECLARATION = _POLICY_ARM / "migration.yaml"
+
+#: The post-migration map both shipped arms hold and both shipped declarations claim. A
+#: trial's score on this pack is not comparable across a change to it, so it is written
+#: out here rather than read from either source.
+_SHIPPED_WEIGHTS = {"llm_judge": 0.7, "trace_checks": 0.3}
+
+
+def test_the_shipped_arms_reconcile_clean_through_the_default_pack_root(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The migration's evidence, re-verified against the packs that actually ship.
+
+    Driven through the **default** ``--packs`` root, which is the whole re-verification
+    claim: the constraint block comes from the shipped pack, so editing it changes what is
+    recomputed over this frozen corpus and reds here. Every reconciliation above resolves
+    the fixtures instead and would notice nothing.
+
+    The root is relative, so the working directory is pinned to the repository rather than
+    inherited — "the default resolves the shipped packs" is a claim about running from the
+    repository root, and it is stated rather than assumed.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli("--source", str(_copied(_CORPUS, tmp_path)), "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "no_counter_evidence over 17 observations" in result.output
+    assert "kappa 1.000" in result.output
+    assert "pass rate 12/17 → 12/17" in result.output
+    assert _SHIPPED_DECLARATION.read_bytes() == _SHIPPED_POLICY_DECLARATION.read_bytes()
+
+
+def test_the_shipped_narrow_folds_under_the_map_its_own_declaration_carries(
+    tmp_path: Path,
+) -> None:
+    """Three sources for the post-migration weight map, none derived from another.
+
+    The shipped ``grading.yaml`` holds it, the shipped ``migration.yaml`` declares it, and
+    the report folds the *after* columns under it. That the first two agree is the
+    reviewable fact the freed-share rule is about; that the third reads the *declaration*
+    is what the fixture entry above measures from the other side, declaring no map at all
+    and reporting ``0.500`` where these rows report ``0.700``.
+
+    The pass rate is unchanged for a stated reason rather than by luck: the veto the judge
+    held passes to the trace gate, which fails on exactly the five trials whose criterion
+    the judge failed.
+    """
+    declared = yaml.safe_load(_SHIPPED_DECLARATION.read_text())["migrations"][0]
+    current = yaml.safe_load((_GATED_ARM / "grading.yaml").read_text())["combine"]["weights"]
+    (entry,) = reconcile_corpus(
+        _copied(_CORPUS, tmp_path), replay_id="canon", packs=[_SHIPPED_PACKS], dry_run=True
+    ).entries
+
+    assert declared["combine_weights"] == _SHIPPED_WEIGHTS
+    assert current == _SHIPPED_WEIGHTS
+    assert entry.verdict is ReconcileVerdict.NO_COUNTER_EVIDENCE
+    counterfactual = entry.counterfactual
+    assert counterfactual.weights_declared == _SHIPPED_WEIGHTS
+    assert len(counterfactual.trials) == 17
+    for row in counterfactual.trials:
+        from_the_met_arm = Path(row.trial).parent.name == "met"
+        assert row.weights_after == _SHIPPED_WEIGHTS
+        assert row.score_after == pytest.approx(1.0 if from_the_met_arm else 0.7)
+        assert row.binary_pass_after is from_the_met_arm
+        assert row.binary_pass_after is row.binary_pass_before
+    assert sum(row.binary_pass_after for row in counterfactual.trials) == 12
 
 
 def _tree_digest(root: Path) -> dict[str, str]:
