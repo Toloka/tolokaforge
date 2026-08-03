@@ -177,7 +177,7 @@ def _drive_trial(
     agent_config: ModelConfig,
     user_config: ModelConfig | None,
 ) -> None:
-    """One orchestrator-style trial write: eight YAML files inside the
+    """One orchestrator-style trial write: nine YAML files inside the
     trial bundle (``tools_schemas.yaml`` and ``prompts.yaml`` included)."""
     capabilities = build_capabilities(
         agent_config.name, agent_config.provider, overrides=agent_config.capabilities
@@ -189,6 +189,7 @@ def _drive_trial(
     writer.write_tools_schemas(trial_dir, sanitized)
     writer.write_prompts(trial_dir, agent_prompt=_AGENT_PROMPT, user_prompt=sim_prompt)
     writer.write_trajectory(trial_dir, _trajectory(task_id, trial_index))
+    writer.write_tool_log(trial_dir, _trajectory(task_id, trial_index))
     writer.write_task(trial_dir, _task_snapshot(task_id, trial_index, agent_config, user_config))
     writer.write_env(trial_dir, {"final_state": {"trial": trial_index}})
     writer.write_metrics(trial_dir, _trajectory(task_id, trial_index))
@@ -230,6 +231,7 @@ def test_output_directory_layout_snapshot(tmp_path: Path) -> None:
         "metrics.yaml",
         "prompts.yaml",
         "task.yaml",
+        "tool_log.yaml",
         "tools_schemas.yaml",
         "trajectory.yaml",
     ]

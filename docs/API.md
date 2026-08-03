@@ -77,8 +77,9 @@ Reading the result:
   attempted call in trial-wide execution order, carrying `call_id`, `sequence`,
   `tool_name`, `arguments`, `executor`, `status`, untruncated `output`,
   `latency_seconds` and `timestamp`. Read `call.tool_name` (not `log["tool"]`) and
-  `call.status is ToolExecutionStatus.SUCCESS` (not `log["success"]`). It is not
-  written to any artifact — it lives only on the in-process `Trajectory`.
+  `call.status is ToolExecutionStatus.SUCCESS` (not `log["success"]`). It is
+  persisted as the bundle's `tool_log.yaml` sidecar — see
+  [OUTPUT_FORMAT.md](OUTPUT_FORMAT.md) § `tool_log.yaml`.
 
 Errors:
 

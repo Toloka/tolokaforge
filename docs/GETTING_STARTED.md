@@ -121,6 +121,19 @@ uv run tolokaforge rejudge --source results/quick_start_<timestamp> \
 bundle. Replay artifacts land under `<source>/replays/<replay_id>/`; originals are
 never modified. See [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md).
 
+Re-checking a pack's deterministic `trace_checks` over the same recorded run is free —
+no agent, no judge, no tokens:
+
+```bash
+uv run tolokaforge retrace --source results/quick_start_<timestamp>
+```
+
+It re-scores each constraint off the recorded trials and reports, per constraint,
+whether the corpus separated them or every trial answered the same way — which is how
+you find out a constraint is not worth shipping. Same `--source` shapes; artifacts land
+under `<source>/trace_replay/<replay_id>/`. See
+[`docs/TRACE_REPLAY.md`](TRACE_REPLAY.md).
+
 ## External Task Packs
 
 You can load tasks from external benchmark packs without copying them into this repo:

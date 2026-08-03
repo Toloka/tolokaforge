@@ -9,10 +9,11 @@ Per-trial seam (see ADR-0004):
   Protocol the orchestrator depends on for per-trial artifacts.
 * :class:`~tolokaforge.core.output.artifacts.FileArtifactWriter` — the
   disk-backed implementation; composes
-  :class:`tolokaforge.core.output_writer.OutputWriter` for the eight
+  :class:`tolokaforge.core.output_writer.OutputWriter` for the nine
   per-trial YAML files (``task.yaml``, ``trajectory.yaml``,
-  ``env.yaml``, ``metrics.yaml``, ``grade.yaml``, ``logs.yaml``,
-  ``tools_schemas.yaml``, ``prompts.yaml``) inside each trial bundle.
+  ``tool_log.yaml``, ``env.yaml``, ``metrics.yaml``, ``grade.yaml``,
+  ``logs.yaml``, ``tools_schemas.yaml``, ``prompts.yaml``) inside each
+  trial bundle.
 
 Run-level seam (see ADR-0005):
 
@@ -25,8 +26,11 @@ Run-level seam (see ADR-0005):
   — the disk-backed and in-memory implementations; the latter records
   payloads on a :class:`RunAggregateBundle`.
 
-Helper:
+Helpers:
 
+* :func:`~tolokaforge.core.output.artifacts.read_recorded_tool_log` —
+  reads a bundle's ``tool_log.yaml`` back, keeping "no record written"
+  apart from "no tool called".
 * :func:`~tolokaforge.core.output.artifacts.model_id_slug` —
   deterministic filesystem-safe ``(provider, name)`` slug used wherever
   an artifact path needs a model identifier (cache files, debug dumps).

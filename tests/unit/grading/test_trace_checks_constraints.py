@@ -23,6 +23,7 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from pydantic import ValidationError
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_timeline, build_turn_timeline
@@ -43,6 +44,7 @@ from tolokaforge.core.models import (
     ToolExecutionStatus,
     TraceChecksConfig,
     TraceChecksResult,
+    TraceConstraintResult,
     TraceConstraintSeverity,
     TraceMatcher,
 )
@@ -190,6 +192,7 @@ def test_a_constraint_is_decided_only_where_every_completion_agrees(label: str):
         "about the pairing if one did"
     )
     assert result.passed is (cell.verdict == "pass"), result.message
+    assert result.undecided is (cell.verdict == "undecided"), result.message
     assert ("cannot be decided" in result.message) is (cell.verdict == "undecided"), result.message
     if cell.verdict == "undecided":
         assert "status" in result.message
@@ -242,7 +245,57 @@ def test_a_composite_combines_its_branches_three_valued(label: str):
     result = evaluate_constraint(timeline, require)
 
     assert result.passed is (verdict == "pass"), result.message
+    assert result.undecided is (verdict == "undecided"), result.message
     assert ("cannot be decided" in result.message) is (verdict == "undecided"), result.message
+
+
+def test_undecided_is_carried_as_a_field_and_is_neither_of_the_facts_beside_it():
+    """Two ways to fail, told apart without reading prose — and told apart from both neighbours.
+
+    ``passed=False`` alone cannot say whether the agent failed the constraint or
+    whether nobody wrote down what it did, and a reader recovering that from
+    ``message`` is matching on a sentence. Three timelines over the same declared
+    refund pin the field against the two values it could be mistaken for: the
+    executed-and-failed run fails decidably, so ``undecided`` is not ``not
+    passed``; and the run that executed one call and left another unanswered is
+    undecided *with* a record view, so it is not ``not records_present`` either.
+    """
+    turns = (("user", "Refund it."), ("assistant", "Refunding."))
+    failed = recorded_call(_REFUND, sequence=0, status=ToolExecutionStatus.ERROR)
+    declared = ToolCall(id=failed.call_id, name=_REFUND, arguments=failed.arguments)
+    unanswered = ToolCall(id="never_ran", name=_REFUND, arguments={})
+
+    executed = build_timeline(turns=turns, recorded=[failed])
+    regraded = build_timeline(turns=turns, unexecuted=[declared])
+    partly_executed = build_timeline(turns=turns, recorded=[failed], unexecuted=[unanswered])
+
+    verdicts = {
+        label: evaluate_constraint(timeline, {"present": {"match": _REFUND_MATCH}})
+        for label, timeline in (
+            ("executed", executed),
+            ("regraded", regraded),
+            ("partly_executed", partly_executed),
+        )
+    }
+
+    assert [timeline.records_present for timeline in (executed, regraded, partly_executed)] == [
+        True,
+        False,
+        True,
+    ]
+    assert {label: (item.passed, item.undecided) for label, item in verdicts.items()} == {
+        "executed": (False, False),
+        "regraded": (False, True),
+        "partly_executed": (False, True),
+    }
+
+
+def test_an_undecided_pass_is_not_a_verdict_the_host_will_read():
+    """The pair the field cannot form: no completion settles it, so none of them passes."""
+    with pytest.raises(ValidationError, match="passed and is undecided at once"):
+        TraceConstraintResult(
+            id="the_refund_succeeded", kind="present", passed=True, weight=1.0, undecided=True
+        )
 
 
 def test_an_unmatched_side_fails_by_name_unless_the_author_opted_out():

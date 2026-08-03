@@ -2,7 +2,7 @@
 
 This document describes the tolokaforge CLI's shared building blocks. Per-command usage lives in `--help` output.
 
-The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
+The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
 
 ## Display layer
 
@@ -262,7 +262,7 @@ Line history persists to `~/.tolokaforge_history` via `prompt_toolkit`'s `FileHi
 
 ### Extras dependency
 
-The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
+The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
 
 ## Dry run
 
@@ -376,7 +376,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `prepare`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `prepare`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -388,7 +388,10 @@ Abbreviated transcript of the `Commands:` region:
 ```
 Runs:
   analyze  Analyze a single trial trajectory.
+  browse   Open a run's output directory in the OS default handler.
   prepare  Prepare a queue-backed run directory for distributed workers.
+  rejudge  Re-judge the rubric stage of recorded trials offline...
+  retrace  Re-check the trace constraints of recorded trials, spending...
   run      Run benchmark with specified configuration
   status   Show live/status snapshot for a run directory.
   worker   Run a queue worker process (distributed execution mode).
@@ -415,7 +418,7 @@ Adapters:
 
 ### Adding a new top-level command
 
-The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/test_cli_help_grouping.py::test_every_registered_command_has_a_group` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
+The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/dx/test_cli_grouped_help.py::TestGroupedCommandsGroupContract::test_all_registered_commands_are_mapped` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
 
 ## Task validation
 
@@ -462,7 +465,7 @@ Rendered after the display region closes, on both success and failure, before th
 
 On failure the outcome line becomes `✗ Run failed in <duration>` (bold red glyph); the underlying exception continues to propagate to Click, which renders its own traceback and exit code. The banner is complementary — it does not swallow the failure.
 
-When a budget cuts the run short (see [§ Cost, time, and sample limits](#cost-time-and-sample-limits)) the outcome line becomes `⏸ Run stopped (<reason>) in <duration>` — yellow glyph via the `warn` theme token. `<reason>` is one of `cost limit`, `time limit`, or `sample limit`, read from `LIMIT_HIT.json` under the run directory. Report and browse lines are unchanged. The stopped variant supersedes the success / failure axis: a run that both hit a budget and raised on drain still renders the stopped shape.
+When a budget cuts the run short (see [§ Cost and time limits](#cost-and-time-limits)) the outcome line becomes `⏸ Run stopped (<reason>) in <duration>` — yellow glyph via the `warn` theme token. `<reason>` is one of `cost limit`, `time limit`, or `sample limit`, read from `LIMIT_HIT.json` under the run directory. Report and browse lines are unchanged. The stopped variant supersedes the success / failure axis: a run that both hit a budget and raised on drain still renders the stopped shape.
 
 `<duration>` is `MM:SS` under one hour, `HH:MM:SS` above — the same shape the Live run panel's bottom bar uses. It is measured with `time.monotonic()` bracketing the run.
 

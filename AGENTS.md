@@ -454,8 +454,8 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 
 1. **Browser automation** requires Chromium: `uv run playwright install --with-deps chromium`
 2. **Golden-set tests** depend on Git LFS data under `tests/data/projects/`. Missing LFS content → fixture failures. Run `git lfs pull` first if needed.
-3. **Formatting drift**: `ruff format --check` may report pre-existing drift in ~8 files. Known, not your fault.
-4. **`black --check`** exits non-zero on pre-existing files. Same known drift.
+3. **Formatting drift**: `ruff format --check` reports pre-existing drift across the tree — no number is quoted here because a count in a doc goes stale silently. Run `mcp__dev__format_check` scoped to the files you touched (`paths=…`) and treat only *your* files' drift as yours to fix.
+4. **`black --check` is clean tree-wide**, so a `black` failure is drift in the code you just wrote, not the known `ruff format` backlog. Both formatters must pass on a file you touch, and they disagree often enough that satisfying one is not satisfying the other.
 5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
 6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`. Not required for normal development.
 7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
@@ -489,6 +489,7 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 | Grading | `docs/GRADING.md` |
 | Rubric grading design | `docs/RUBRIC_GRADING_DESIGN.md` |
 | Judge replay (offline re-judging) | `docs/JUDGE_REPLAY.md` |
+| Trace replay (re-checking trace constraints) | `docs/TRACE_REPLAY.md` |
 | Configuration | `docs/CONFIG.md` |
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |

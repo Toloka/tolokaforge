@@ -455,7 +455,8 @@ class Trajectory(BaseModel):
     final_env_state: dict[str, Any] = Field(default_factory=dict)
     metrics: Metrics = Field(default_factory=Metrics)
     # The trial's ordered tool-call record, one entry per call across every
-    # executor. Not written to ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
+    # executor. Persisted as the ``tool_log.yaml`` sidecar, not as a key on
+    # ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
     tool_log: list[RecordedToolCall] = Field(default_factory=list)
     grade: Grade | None = None
     # Grading ran for this trial and could not produce a verdict; this is the

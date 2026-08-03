@@ -675,6 +675,7 @@ def _evaluate_constraint(
         id=constraint.id,
         kind=kind,
         passed=truth is _Truth.TRUE,
+        undecided=truth is _Truth.UNKNOWN,
         weight=constraint.weight,
         severity=constraint.severity,
         message=(
@@ -817,11 +818,13 @@ def _unbound_result(
     constraint: TraceConstraint, kind: TraceConstraintKind, candidates: _Candidates
 ) -> TraceConstraintResult:
     """The verdict of a bound constraint whose binder yielded no assignment at all."""
-    passed = _unbound_truth(constraint.bind) is _Truth.TRUE
+    truth = _unbound_truth(constraint.bind)
+    passed = truth is _Truth.TRUE
     return TraceConstraintResult(
         id=constraint.id,
         kind=kind,
         passed=passed,
+        undecided=truth is _Truth.UNKNOWN,
         weight=constraint.weight,
         severity=constraint.severity,
         message="" if passed else f"{kind.value} is unbound: {candidates.emptiness}",

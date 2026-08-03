@@ -10,7 +10,9 @@ The test suite is organized into **3 categories**: unit, canonical, and integrat
 | Canonical | `tests/canonical/` | Fast (< 5s each), except the packaging/entry-point smoke tests that build a wheel and install it into a scratch venv (~10–25s) | Golden snapshots; the packaging/entry-point smoke tests also require the `uv` CLI (they skip loud without it) | `@pytest.mark.canonical` |
 | Integration | `tests/integration/` | Slow (5-60s each) | Docker, API keys | `@pytest.mark.integration` |
 
-Current baseline: see [BASELINE.md](BASELINE.md) for up-to-date numbers.
+Current baseline: run the lane you care about (`mcp__dev__run_tests marker=unit`,
+`marker=canonical`) — the counts move with every merge, so they are not written down
+here.
 
 ## Running Tests
 
@@ -104,7 +106,10 @@ tests/
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
+    ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary
+    ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
+    ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```
 
@@ -147,6 +152,13 @@ Compare output against committed golden snapshots in `snapshots/`.
   reconciliation failure, not a shortcut. `build_timeline` lands every call on the
   last assistant turn, while `build_turn_timeline` takes the calls per turn — which
   is what an ordering or turn-window property needs.
+- Schema version stamps documented (`test_schema_version_stamps_documented.py`) — the
+  stamps `docs/OUTPUT_FORMAT.md` § Schema Version Stamps publishes, both the table's
+  rows and the bare `schema_version: N` literals the prose repeats, must equal the
+  constants that write them. Every other stamp test compares a stamp against its own
+  constant, so a bump nobody documented reds nothing; the table is the second source. A
+  failure means the constants moved and the docs table follows — never the other way
+  round.
 - Gate semantics parity (`test_gate_semantics_parity.py`) — the judge's required
   criterion and a trace check's `severity: gate` are one gate scored by two
   implementations, driven against one shared answer table. A failure names the cell

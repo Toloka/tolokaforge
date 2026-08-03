@@ -611,6 +611,7 @@ class GrpcRunnerClient:
                             # field. Such a runner rejects a pack declaring severity
                             # at RegisterTrial, so its verdicts are all scored.
                             "severity": tc.severity or TraceConstraintSeverity.SCORED.value,
+                            "undecided": tc.undecided,
                         }
                         for tc in grade.trace_checks
                     ],
