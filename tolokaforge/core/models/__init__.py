@@ -1,0 +1,243 @@
+"""Pydantic models for configuration and data structures.
+
+Per-concern submodules hold the actual definitions:
+
+- :mod:`.grade_components` — :class:`GradeComponents`
+- :mod:`.grade` — :class:`Grade` and the rubric-judge audit records
+- :mod:`.trajectory` — :class:`Trajectory`, :class:`Message`,
+  :class:`Metrics`, and the rate-limit probe accounting rows
+- :mod:`.model_config` — :class:`ModelConfig` +
+  :class:`OpenRouterConfig`
+- :mod:`.run_config` — :class:`RunConfig` and every orchestrator /
+  compute / storage / observability sub-block
+- :mod:`.task_config` — :class:`TaskConfig`, :class:`ProjectConfig`,
+  and the grading + defaults surface
+
+This package's ``__init__`` is a re-export shim: every name a caller
+imported via ``from tolokaforge.core.models import X`` before the split
+is re-exported from here for a soft-migration window. New call sites
+should prefer the submodule paths.
+
+Types canonically defined outside this package (``runner.models`` wire
+types, ``tools.registry`` enums) are re-exported here so a caller
+reaches one module for the whole wire vocabulary.
+"""
+
+from tolokaforge.core.grading.combine_method import (
+    CombineMethod,
+    validate_combine_method,
+)
+from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
+from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
+from tolokaforge.core.models.grade import (
+    CustomCheckDetail,
+    Grade,
+    JudgeInputs,
+    JudgeKbGating,
+    JudgeStatus,
+    JudgeUsage,
+)
+from tolokaforge.core.models.grade_components import GradeComponents
+from tolokaforge.core.models.model_config import ModelConfig, OpenRouterConfig
+from tolokaforge.core.models.run_config import (
+    DOCKER_RUNTIME_ALIAS_TARGET,
+    LEGACY_DOCKER_RUNTIME_ALIAS,
+    RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
+    RATE_LIMIT_PROBE_MIN_EPISODE_S,
+    ComputeConfig,
+    EngineConfig,
+    EvaluationConfig,
+    HarnessAdapterConfig,
+    LocalDockerComputeConfig,
+    LocalStorageConfig,
+    LoggingConfig,
+    MetricsConfig,
+    ObservabilityConfig,
+    OrchestratorConfig,
+    QueueStorageConfig,
+    RateLimitProbeConfig,
+    RunConfig,
+    RunDefaults,
+    S3StorageConfig,
+    StorageBackend,
+    StorageConfig,
+    StuckHeuristics,
+    TimeoutConfig,
+    TracingConfig,
+    TypeSenseConfig,
+    validate_rate_limit_probe_budget,
+)
+from tolokaforge.core.models.task_config import (
+    SEED_KIND_BY_EXTENSION,
+    ActorSpec,
+    AssetsConfig,
+    CommunicateInfo,
+    GradingCombineConfig,
+    GradingConfig,
+    GradingDefaults,
+    InitializationAction,
+    InitialStateConfig,
+    LLMJudgeDefaults,
+    ProjectConfig,
+    RequiredAction,
+    SeedKind,
+    SeedRef,
+    StateChecksConfig,
+    StuckHeuristicsDefaults,
+    TaskConfig,
+    TaskDefaults,
+    TaskDiscoveryConfig,
+    TaskInventoryConfig,
+    TaskMetadata,
+    TimeoutDefaults,
+    ToolsConfig,
+    TranscriptRulesConfig,
+    UserSimulatorConfig,
+)
+from tolokaforge.core.models.trajectory import (
+    Message,
+    MessageRole,
+    Metrics,
+    RateLimitProbeBucketMetrics,
+    RateLimitProbeRoleMetrics,
+    TerminationReason,
+    ToolCall,
+    ToolUsage,
+    Trajectory,
+    TrialStatus,
+)
+
+# Cross-package wire types re-exported so callers reach one module for
+# the whole recorded-tool-call + wire-schema vocabulary. Canonical
+# homes stay in ``runner.models`` (rubric / criterion / judge config /
+# environment manifest / tool expectations / service specs / recorded
+# tool call) and ``tools.registry`` (tool execution status).
+from tolokaforge.runner.models import (
+    Criterion,
+    CriterionResult,
+    EnvironmentManifest,
+    EnvironmentPatch,
+    JudgeCustomization,
+    LLMJudgeConfig,
+    ReadinessKind,
+    ReadinessSpec,
+    RecordedToolCall,
+    ResetSpec,
+    Rubric,
+    ServiceIsolation,
+    ServiceNetworkAccess,
+    ServiceSpec,
+    StackPatch,
+    ToolCallRecorder,
+    ToolExecutorIdentity,
+    ToolExpectations,
+)
+from tolokaforge.tools.registry import ToolExecutionStatus
+
+__all__ = [
+    # Grade concern
+    "CustomCheckDetail",
+    "Grade",
+    "GradeComponents",
+    "JudgeInputs",
+    "JudgeKbGating",
+    "JudgeStatus",
+    "JudgeUsage",
+    # Trajectory concern
+    "Message",
+    "MessageRole",
+    "Metrics",
+    "RateLimitProbeBucketMetrics",
+    "RateLimitProbeRoleMetrics",
+    "TerminationReason",
+    "ToolCall",
+    "ToolUsage",
+    "Trajectory",
+    "TrialStatus",
+    # Model config
+    "ModelConfig",
+    "OpenRouterConfig",
+    # Run config
+    "ComputeConfig",
+    "DOCKER_RUNTIME_ALIAS_TARGET",
+    "EngineConfig",
+    "EvaluationConfig",
+    "HarnessAdapterConfig",
+    "LEGACY_DOCKER_RUNTIME_ALIAS",
+    "LocalDockerComputeConfig",
+    "LocalStorageConfig",
+    "LoggingConfig",
+    "MetricsConfig",
+    "ObservabilityConfig",
+    "OrchestratorConfig",
+    "QueueStorageConfig",
+    "RATE_LIMIT_PROBE_ATTEMPT_CEILING_S",
+    "RATE_LIMIT_PROBE_MIN_EPISODE_S",
+    "RateLimitProbeConfig",
+    "RunConfig",
+    "RunDefaults",
+    "S3StorageConfig",
+    "StorageBackend",
+    "StorageConfig",
+    "StuckHeuristics",
+    "TimeoutConfig",
+    "TracingConfig",
+    "TypeSenseConfig",
+    "validate_rate_limit_probe_budget",
+    # Task config
+    "ActorSpec",
+    "AssetsConfig",
+    "CommunicateInfo",
+    "GradingCombineConfig",
+    "GradingConfig",
+    "GradingDefaults",
+    "InitialStateConfig",
+    "InitializationAction",
+    "LLMJudgeDefaults",
+    "ProjectConfig",
+    "RequiredAction",
+    "SEED_KIND_BY_EXTENSION",
+    "SeedKind",
+    "SeedRef",
+    "StateChecksConfig",
+    "StuckHeuristicsDefaults",
+    "TaskConfig",
+    "TaskDefaults",
+    "TaskDiscoveryConfig",
+    "TaskInventoryConfig",
+    "TaskMetadata",
+    "TimeoutDefaults",
+    "ToolsConfig",
+    "TranscriptRulesConfig",
+    "UserSimulatorConfig",
+    # Cross-package re-exports (runner.models canonical wire types)
+    "Criterion",
+    "CriterionResult",
+    "EnvironmentManifest",
+    "EnvironmentPatch",
+    "JudgeCustomization",
+    "LLMJudgeConfig",
+    "ReadinessKind",
+    "ReadinessSpec",
+    "RecordedToolCall",
+    "ResetSpec",
+    "Rubric",
+    "ServiceIsolation",
+    "ServiceNetworkAccess",
+    "ServiceSpec",
+    "StackPatch",
+    "ToolCallRecorder",
+    "ToolExecutorIdentity",
+    "ToolExpectations",
+    "ToolExecutionStatus",
+    # Third-party sibling re-exports (kept for import-site compatibility)
+    "CombineMethod",
+    "CostSource",
+    "ProviderRawCall",
+    "ReasoningConfig",
+    "StructuredReasoning",
+    "Usage",
+    "resolve_hash_weight",
+    "validate_combine_method",
+]
