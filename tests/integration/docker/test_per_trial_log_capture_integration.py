@@ -26,6 +26,7 @@ required (the in-memory conductor runs no agent loop).
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -48,6 +49,10 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.artifacts import InMemoryArtifactWriter
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.runtime import ProvisionError
+from tolokaforge.core.service_readiness import (
+    InMemoryServiceReadinessProbe,
+    ServiceReadinessProbe,
+)
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.core.trial_executor import ProvisioningTrialExecutor
 from tolokaforge.runner.models import ResetSpec, ServiceSpec
@@ -91,13 +96,22 @@ def _make_trial_spec(trial_id: str, *, manifest: EnvironmentManifest | None = No
     )
 
 
+def _ready_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
+    """Readiness-gate seam yielding an always-ready probe: the fixture runner is
+    an ``nginx`` HTTP stand-in, not a gRPC server, so the production grpc probe
+    would correctly reject it. These tests exercise log capture, not readiness."""
+    del kind
+    return lambda: InMemoryServiceReadinessProbe(ok=True)
+
+
 @pytest.mark.skipif(not is_docker_daemon_available(), reason="Docker not available")
 class TestProvisionFailureLogCapture:
     def test_reset_recipe_failure_captures_service_logs_before_teardown(
         self, tmp_path: Path
     ) -> None:
         backend = PerTrialRuntimeBackend(
-            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=False)
+            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=False),
+            readiness_probe_loader=_ready_loader,
         )
         spec = _make_trial_spec(trial_id="task-1:0")
 
@@ -138,7 +152,8 @@ class TestSuccessPathCapture:
 
     def test_on_success_false_captures_nothing(self, tmp_path: Path) -> None:
         backend = PerTrialRuntimeBackend(
-            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=False)
+            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=False),
+            readiness_probe_loader=_ready_loader,
         )
         handle = backend.provision(self._success_spec("task-1:0"))
         try:
@@ -150,7 +165,8 @@ class TestSuccessPathCapture:
 
     def test_on_success_true_captures_logs(self, tmp_path: Path) -> None:
         backend = PerTrialRuntimeBackend(
-            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=True)
+            log_capture=LogCaptureConfig(output_root=tmp_path, tail=200, on_success=True),
+            readiness_probe_loader=_ready_loader,
         )
         handle = backend.provision(self._success_spec("task-1:0"))
         try:
@@ -204,7 +220,9 @@ class TestGradedFailLogCapture:
         self, tmp_path: Path
     ) -> None:
         log_capture = LogCaptureConfig(output_root=tmp_path, tail=200, on_success=False)
-        backend = PerTrialRuntimeBackend(log_capture=log_capture)
+        backend = PerTrialRuntimeBackend(
+            log_capture=log_capture, readiness_probe_loader=_ready_loader
+        )
         # No reset service: the healthy stack comes up and provision succeeds,
         # so the completed-but-red grade is the sole capture trigger.
         spec = _make_trial_spec(

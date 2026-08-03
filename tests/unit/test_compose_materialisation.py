@@ -132,6 +132,7 @@ class TestFirstPublishedPort:
     def test_extracts_first_target_port(self) -> None:
         entry = MagicMock()
         entry.TargetPort = 5432
+        entry.PublishedPort = 65432
         container = MagicMock()
         container.Publishers = [entry]
 
@@ -140,14 +141,33 @@ class TestFirstPublishedPort:
     def test_skips_zero_and_non_int_targets(self) -> None:
         zero_entry = MagicMock()
         zero_entry.TargetPort = 0
+        zero_entry.PublishedPort = 60000
         bad_entry = MagicMock()
         bad_entry.TargetPort = "not an int"
+        bad_entry.PublishedPort = 60001
         good_entry = MagicMock()
         good_entry.TargetPort = 8000
+        good_entry.PublishedPort = 68000
         container = MagicMock()
         container.Publishers = [zero_entry, bad_entry, good_entry]
 
         assert first_published_port(container) == 8000
+
+    def test_skips_exposed_but_unpublished_entry(self) -> None:
+        """A Dockerfile-``EXPOSE``d port surfaces as a publisher with
+        ``PublishedPort == 0`` (no host mapping); it must be skipped in favour
+        of the port the compose file actually publishes — otherwise a bare
+        ``image: nginx`` service resolves to its unreachable exposed ``80``."""
+        exposed_only = MagicMock()
+        exposed_only.TargetPort = 80
+        exposed_only.PublishedPort = 0
+        published = MagicMock()
+        published.TargetPort = 50051
+        published.PublishedPort = 57961
+        container = MagicMock()
+        container.Publishers = [exposed_only, published]
+
+        assert first_published_port(container) == 50051
 
     def test_returns_none_when_publishers_absent(self) -> None:
         container = MagicMock(spec=[])  # No Publishers attribute.
@@ -165,6 +185,7 @@ class TestResolveRagUrl:
         container = MagicMock()
         published_entry = MagicMock()
         published_entry.TargetPort = 8080
+        published_entry.PublishedPort = 60080
         container.Publishers = [published_entry]
 
         compose = MagicMock()
@@ -177,7 +198,7 @@ class TestResolveRagUrl:
         """A set ``rag_service`` narrows the scan to that single service
         instead of the ``RAG_SERVICE_CANDIDATES`` convention."""
         container = MagicMock()
-        container.Publishers = [MagicMock(TargetPort=8080)]
+        container.Publishers = [MagicMock(TargetPort=8080, PublishedPort=59090)]
         compose = MagicMock()
         compose.get_container.return_value = container
         compose.get_service_host_and_port.return_value = ("localhost", 59090)
@@ -241,7 +262,7 @@ class TestResolveEnvEndpoints:
             service_name, port
         )
         rag_container = MagicMock()
-        rag_container.Publishers = [MagicMock(TargetPort=8080)]
+        rag_container.Publishers = [MagicMock(TargetPort=8080, PublishedPort=68080)]
         compose.get_container.return_value = rag_container
 
         endpoints = resolve_env_endpoints(compose, "localhost", 60051)

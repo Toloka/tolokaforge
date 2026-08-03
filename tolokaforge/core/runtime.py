@@ -29,6 +29,7 @@ from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints, TrialSp
 
 if TYPE_CHECKING:  # pragma: no cover — type-only imports
     from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
+    from tolokaforge.core.service_readiness import DiagnosticPayload
     from tolokaforge.tools.registry import ToolResult
 
 __all__ = [
@@ -99,13 +100,25 @@ class ProvisionError(Exception):
     it partially materialised before raising. Callers may call
     :meth:`RuntimeBackend.teardown` again defensively — teardown is
     idempotent.
+
+    ``diagnostic`` carries a structured failure envelope when the readiness
+    gate rejects a service (resolved endpoint, probe outcome, docker-side listen
+    view); it is ``None`` for every other provisioning failure.
     """
 
-    def __init__(self, *, trial_id: str, stage: ProvisionStage, reason: str) -> None:
+    def __init__(
+        self,
+        *,
+        trial_id: str,
+        stage: ProvisionStage,
+        reason: str,
+        diagnostic: DiagnosticPayload | None = None,
+    ) -> None:
         super().__init__(f"[{stage}] trial={trial_id}: {reason}")
         self.trial_id = trial_id
         self.stage = stage
         self.reason = reason
+        self.diagnostic = diagnostic
 
 
 # ---------------------------------------------------------------------------

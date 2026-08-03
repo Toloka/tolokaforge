@@ -41,6 +41,27 @@ class ReadinessResult:
     detail: str | None = None
 
 
+@dataclass(frozen=True)
+class DiagnosticPayload:
+    """Failure envelope for a readiness-gate probe that came back not-ready.
+
+    Assembled at failure time from the live (not-yet-torn-down) container so the
+    ``ProvisionError`` names the mechanism, not just the symptom: the resolved
+    ``host:port`` the probe hit, the probe outcome, and the docker-side view of
+    where the service actually listens. The docker-introspection fields
+    (``docker_port_map`` / ``container_listen_addrs`` / ``per_network_ips``) are
+    best-effort — empty structures when the docker calls fail, never a raise.
+    """
+
+    service: str
+    kind: str
+    endpoint: ResolvedEndpoint
+    result: ReadinessResult
+    docker_port_map: dict[str, str]
+    container_listen_addrs: tuple[str, ...]
+    per_network_ips: dict[str, str]
+
+
 @runtime_checkable
 class ServiceReadinessProbe(Protocol):
     def probe(self, endpoint: ResolvedEndpoint, *, timeout: float) -> ReadinessResult:

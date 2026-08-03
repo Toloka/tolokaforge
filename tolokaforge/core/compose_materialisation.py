@@ -23,6 +23,7 @@ from __future__ import annotations
 import copy
 import logging
 import shutil
+import socket
 import subprocess
 import tempfile
 from collections.abc import Iterable, Mapping
@@ -406,15 +407,167 @@ def resolve_host_port(
 
 
 def first_published_port(container: Any) -> int | None:
-    """Extract the first published container-side port from a
+    """Extract the first *host-published* container-side port from a
     Testcontainers ``ComposeContainer``. Returns ``None`` when nothing
-    is published (or the shape is not what we expect)."""
+    is published (or the shape is not what we expect).
+
+    ``docker compose ps`` lists a Dockerfile ``EXPOSE``d-but-unpublished port
+    as a publisher with ``PublishedPort == 0``; such an entry is skipped so the
+    returned container port is one that actually maps to a host port (a bare
+    ``image: nginx`` service otherwise reports its exposed ``80`` ahead of the
+    port the compose file publishes)."""
     ports = getattr(container, "Publishers", None) or []
     for entry in ports:
         target = getattr(entry, "TargetPort", None)
-        if isinstance(target, int) and target > 0:
+        published = getattr(entry, "PublishedPort", None)
+        if isinstance(target, int) and target > 0 and isinstance(published, int) and published > 0:
             return target
     return None
+
+
+def capture_container_diagnostics(
+    compose: DockerCompose, service_name: str
+) -> tuple[dict[str, str], tuple[str, ...], dict[str, str]]:
+    """Best-effort docker-side view of where ``service_name`` actually listens.
+
+    Returns ``(docker_port_map, container_listen_addrs, per_network_ips)``:
+
+    * ``docker_port_map`` — ``{"<container_port>/<proto>": "<host_ip>:<host_port>"}``
+      from the container's compose publishers.
+    * ``container_listen_addrs`` — human-readable ``host:port`` (IPv6 bracketed)
+      for every LISTEN socket in the container's ``/proc/net/tcp[6]``, so a
+      loopback-only bind is visible next to a wildcard one.
+    * ``per_network_ips`` — ``{network_name: ip}`` from ``docker inspect``.
+
+    Assembled at readiness-gate failure time, against the still-running
+    container, so the ``ProvisionError`` names the mechanism (e.g. a service
+    that listens on ``127.0.0.1`` while its port is published to the host).
+    Never raises: each capture is independently guarded and degrades to an
+    empty structure, mirroring :func:`_fetch_service_logs`. A partial docker
+    failure yields partial diagnostics but never masks the readiness failure
+    behind an introspection error.
+    """
+    try:
+        container = compose.get_container(service_name=service_name)
+    except Exception as exc:  # noqa: BLE001 — service may be gone; diagnostics are best-effort
+        logger.debug(
+            "compose_materialisation: container for %r not resolvable: %s", service_name, exc
+        )
+        return {}, (), {}
+    port_map = _docker_port_map(container)
+    container_id = getattr(container, "ID", None) or ""
+    if not container_id:
+        return port_map, (), {}
+    return port_map, _container_listen_addrs(container_id), _container_network_ips(container_id)
+
+
+def _docker_port_map(container: Any) -> dict[str, str]:
+    """Map ``<container_port>/<proto>`` to ``<host_ip>:<host_port>`` from a
+    container's compose publishers. Empty when nothing is published."""
+    port_map: dict[str, str] = {}
+    for publisher in getattr(container, "Publishers", None) or []:
+        target = getattr(publisher, "TargetPort", None)
+        published = getattr(publisher, "PublishedPort", None)
+        if target is None or published is None:
+            continue
+        proto = getattr(publisher, "Protocol", None) or "tcp"
+        host_ip = getattr(publisher, "URL", None) or "0.0.0.0"  # noqa: S104 — report only
+        port_map[f"{target}/{proto}"] = f"{host_ip}:{published}"
+    return port_map
+
+
+def _container_listen_addrs(container_id: str) -> tuple[str, ...]:
+    """Decode LISTEN sockets from a container's ``/proc/net/tcp`` + ``tcp6``.
+
+    Runs ``docker exec <id> cat /proc/net/tcp /proc/net/tcp6`` and returns the
+    de-duplicated ``host:port`` listen addresses (IPv6 bracketed). Empty tuple
+    on any docker/parse failure — diagnostics are best-effort."""
+    try:
+        result = subprocess.run(
+            ["docker", "exec", container_id, "cat", "/proc/net/tcp", "/proc/net/tcp6"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; subprocess raises varied types
+        logger.debug(
+            "compose_materialisation: listen-addr capture for %s failed: %s", container_id, exc
+        )
+        return ()
+    return _parse_proc_net_listen(result.stdout)
+
+
+def _parse_proc_net_listen(proc_net_output: str) -> tuple[str, ...]:
+    """Extract LISTEN (state ``0A``) local addresses from ``/proc/net/tcp[6]``
+    text, de-duplicated in first-seen order. The header line is skipped
+    naturally: its 4th column is the string ``local_address``, not ``0A``."""
+    addrs: list[str] = []
+    for line in proc_net_output.splitlines():
+        fields = line.split()
+        if len(fields) < 4 or fields[3] != "0A":
+            continue
+        decoded = _decode_proc_net_endpoint(fields[1])
+        if decoded is not None:
+            addrs.append(decoded)
+    return tuple(dict.fromkeys(addrs))
+
+
+def _decode_proc_net_endpoint(token: str) -> str | None:
+    """Decode one ``<hex_ip>:<hex_port>`` ``/proc/net`` local-address token to
+    ``host:port`` (IPv6 bracketed). ``None`` on a malformed token."""
+    hex_ip, _, hex_port = token.partition(":")
+    if not hex_port:
+        return None
+    try:
+        port = int(hex_port, 16)
+    except ValueError:
+        return None
+    ip = _decode_proc_net_ip(hex_ip)
+    if ip is None:
+        return None
+    return f"[{ip}]:{port}" if ":" in ip else f"{ip}:{port}"
+
+
+def _decode_proc_net_ip(hex_ip: str) -> str | None:
+    """Decode a ``/proc/net/tcp[6]`` hex address to a printable IP. The kernel
+    stores each 32-bit word little-endian, so bytes are reversed per word
+    before :func:`socket.inet_ntop`. ``None`` on an unexpected width."""
+    try:
+        raw = bytes.fromhex(hex_ip)
+    except ValueError:
+        return None
+    if len(raw) == 4:
+        return socket.inet_ntop(socket.AF_INET, raw[::-1])
+    if len(raw) == 16:
+        network_order = b"".join(raw[i : i + 4][::-1] for i in range(0, 16, 4))
+        return socket.inet_ntop(socket.AF_INET6, network_order)
+    return None
+
+
+def _container_network_ips(container_id: str) -> dict[str, str]:
+    """Return ``{network_name: ip}`` for a container via ``docker inspect``.
+    Empty on any docker/parse failure — diagnostics are best-effort."""
+    fmt = "{{range $k,$v := .NetworkSettings.Networks}}{{$k}}={{$v.IPAddress}} {{end}}"
+    try:
+        result = subprocess.run(
+            ["docker", "inspect", "-f", fmt, container_id],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+    except Exception as exc:  # noqa: BLE001 — best-effort; subprocess raises varied types
+        logger.debug(
+            "compose_materialisation: network-ip capture for %s failed: %s", container_id, exc
+        )
+        return {}
+    ips: dict[str, str] = {}
+    for token in result.stdout.split():
+        name, sep, ip = token.partition("=")
+        if sep and name and ip:
+            ips[name] = ip
+    return ips
 
 
 def resolve_rag_url(

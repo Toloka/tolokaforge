@@ -71,6 +71,25 @@ provisioning them per the manifest's isolation rules. See
 [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md) for
 the backend lifecycle.
 
+### Runner readiness contract
+
+The runner is gated for readiness at two independent layers, and they answer
+different questions:
+
+- **Container-internal `HEALTHCHECK`** (`runner.Dockerfile`) opens a gRPC channel
+  to `localhost:50051` *inside the container*. It answers "has the gRPC server
+  bound its port?" and is what `docker compose up --wait` blocks on — but a
+  loopback probe cannot tell whether the port is reachable from outside the
+  container.
+- **Host-side readiness gate** (`PerTrialRuntimeBackend.provision`, per-trial
+  runs) opens a gRPC channel to the runner's *published host port* from the
+  orchestrator process. It answers "can the engine actually invoke this runner?"
+  — the guarantee the container-loopback healthcheck cannot give. The runner is
+  always probed with the `grpc` kind; provisioning fails fast with an actionable
+  `ProvisionError` (naming the resolved `host:port` and the container's listen
+  addresses) rather than surfacing as a downstream client-connect timeout. See
+  [RUNTIME_BACKENDS.md § Readiness gate](RUNTIME_BACKENDS.md#readiness-gate).
+
 ## Runner Image Contents
 
 `runner.Dockerfile` is a multi-stage build on a `python:3.12-slim` base

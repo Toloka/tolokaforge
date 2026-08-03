@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import subprocess
 import textwrap
+from collections.abc import Callable
 from pathlib import Path
 
 from testcontainers.compose import DockerCompose
@@ -24,8 +25,25 @@ from testcontainers.compose import DockerCompose
 from tests.canonical._factories import make_task_description
 from tolokaforge.core.compose_materialisation import RUNNER_PORT_DEFAULT
 from tolokaforge.core.models import ModelConfig
+from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
+from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe, ServiceReadinessProbe
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, NetworkPolicy, TrialSpec
 from tolokaforge.runner.models import ServiceSpec
+
+
+def _ready_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
+    del kind
+    return lambda: InMemoryServiceReadinessProbe(ok=True)
+
+
+def make_backend() -> PerTrialRuntimeBackend:
+    """Real per-trial backend with the readiness gate satisfied by an in-memory
+    probe. The harness runner is an ``nginx`` HTTP stand-in, not a gRPC server,
+    so the production grpc probe would correctly reject it — these tests
+    exercise network topology, not runner readiness, and inject a passing probe
+    through the loader seam."""
+    return PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+
 
 RUNNER_SERVICE = "runner"
 APP_SERVICE = "app"

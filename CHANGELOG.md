@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Feat
 
 - **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
+- **runtime**: `PerTrialRuntimeBackend.provision` gates on host-side readiness before returning — the runner is always probed for gRPC channel-readiness on its published host port, and any service declaring `readiness:` is probed by its kind. A container that is Docker-healthy but host-unreachable (loopback-only or IPv6-only bind) now fails fast with a `ProvisionError` whose `diagnostic` names the resolved endpoint, probe outcome, and the container's actual listen addresses, instead of a downstream 30 s client-connect timeout (#803)
 
 ## v0.13.1 (2026-08-03)
 

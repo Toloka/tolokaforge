@@ -30,6 +30,7 @@ from __future__ import annotations
 
 import logging
 import shutil
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -42,26 +43,31 @@ from tolokaforge.core.compose_materialisation import (
     LogCaptureConfig,
     apply_network_policy_to_compose_file,
     capture_compose_service_logs,
+    capture_container_diagnostics,
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
+    first_published_port,
     make_project_temp_dir,
     resolve_env_endpoints,
+    resolve_host_port,
     resolve_runner_endpoint,
     shutdown_compose,
     trial_services_dir,
     write_capture_manifest,
 )
 from tolokaforge.core.models import SeedRef
+from tolokaforge.core.plugin_registry import load_readiness_probe
 from tolokaforge.core.run_display_events import ContainerSnapshot, build_component_id
 from tolokaforge.core.runtime import EnvHandle, IsolationMode, ProvisionError
+from tolokaforge.core.service_readiness import DiagnosticPayload, ResolvedEndpoint
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, RunnerClient
 from tolokaforge.core.trial import DEFAULT_TOOL_TIMEOUT_S, EnvEndpoints
 from tolokaforge.docker.logging import LogRouter
 from tolokaforge.runner.models import EnvironmentManifest
 
 if TYPE_CHECKING:
-    from tolokaforge.core.plugin_registry import RuntimeBackendBuildContext
+    from tolokaforge.core.plugin_registry import ReadinessProbeFactory, RuntimeBackendBuildContext
     from tolokaforge.core.trial import TrialSpec
     from tolokaforge.tools.registry import ToolResult
 
@@ -163,15 +169,23 @@ class PerTrialRuntimeBackend:
     and :meth:`capture_service_logs` write ``docker compose logs`` output under
     ``log_capture.output_root/trials/<task>/<idx>/services/`` before teardown."""
 
+    readiness_probe_loader: Callable[[str], ReadinessProbeFactory] = load_readiness_probe
+    """Resolves a readiness-probe ``kind`` to its factory, defaulting to the
+    entry-point registry loader. Production runs use the registered probes;
+    orchestrator-level tests inject a loader returning an
+    :class:`~tolokaforge.core.service_readiness.InMemoryServiceReadinessProbe`
+    so the provision-time readiness gate is exercised without a live listener."""
+
     _clients: dict[str, RunnerClient] = field(default_factory=dict)
     _connected_trials: set[str] = field(default_factory=set)
     """Trial ids whose runner client has passed ``connect()``. Connect
     is deferred until the first per-trial RPC call: the compose stack's
-    ``--wait`` flag has already gated container readiness; connecting
-    the gRPC channel at provision time inflates every trial's
-    provisioning latency by the connect cost even when the trial never
-    exercises the RPC surface. First RPC use triggers connect via
-    :meth:`_client_for`."""
+    ``--wait`` flag has already gated container readiness and the provision
+    readiness gate has already proven the runner's gRPC endpoint reachable
+    (via a throwaway channel), so a persistent client channel at provision
+    time would only inflate every trial's provisioning latency by the connect
+    cost even when the trial never exercises the RPC surface. First RPC use
+    triggers connect via :meth:`_client_for`."""
 
     # ---- Run-level lifecycle ----
 
@@ -288,6 +302,22 @@ class PerTrialRuntimeBackend:
             )
         runner_host, runner_host_port = runner_endpoint
 
+        # Host-side readiness gate: a Docker-Healthy container can still be
+        # unreachable from this process (loopback-only bind, IPv6-only listen).
+        # Probe every gated endpoint now so an unreachable service fails fast
+        # here with a diagnostic naming the mechanism, instead of surfacing as
+        # a downstream client-connect timeout. Failure cleans up like any other
+        # provision-stage failure.
+        try:
+            targets = self._readiness_targets(
+                manifest, compose, runner_host, runner_host_port, spec.trial_id
+            )
+            self._run_readiness_gate(services=targets, compose=compose, trial_id=spec.trial_id)
+        except ProvisionError:
+            self._capture_provision_failure_logs(spec.trial_id, service_names, compose)
+            cleanup_partial_materialisation(compose, temp_dir)
+            raise
+
         # resolve_env_endpoints is best-effort for db_url + rag_url — a task
         # compose file that omits `db-service:8000` gets endpoints with
         # `db_url=None`. The runner-side DBServiceClient reads DB_SERVICE_URL
@@ -321,10 +351,12 @@ class PerTrialRuntimeBackend:
         )
 
     def await_ready(self, handle: EnvHandle) -> None:
-        # ``.start(wait=True)`` in :meth:`provision` already blocks on
-        # docker compose healthchecks. Kept explicit for Protocol shape;
-        # future backends that don't gate readiness in provision slot in
-        # without changing the surface.
+        # No-op: :meth:`provision` already establishes readiness — ``.start(
+        # wait=True)`` blocks on docker compose healthchecks, then the host-side
+        # readiness gate proves each gated endpoint is client-reachable before
+        # the handle is returned. Kept explicit for Protocol shape; future
+        # backends that gate readiness here instead slot in without changing the
+        # surface.
         del handle
 
     def endpoints(self, handle: EnvHandle) -> EnvEndpoints:
@@ -534,6 +566,108 @@ class PerTrialRuntimeBackend:
                         f"(seed {seed_name!r}, kind {seed.kind!r}) failed: {exc}"
                     ),
                 ) from exc
+
+    # ---- Readiness gate ----
+
+    def _readiness_targets(
+        self,
+        manifest: EnvironmentManifest,
+        compose: DockerCompose,
+        runner_host: str,
+        runner_host_port: int,
+        trial_id: str,
+    ) -> dict[str, tuple[str, ResolvedEndpoint]]:
+        """Build the readiness-gate probe map ``service -> (kind, endpoint)``.
+
+        The runner substrate is always probed with the ``grpc`` kind on its
+        resolved host port — its default client-invocability contract. Every
+        service that declares a ``readiness`` spec is additionally probed by
+        that spec's kind on its first published port. A declared-readiness
+        service that exposes no resolvable host port is a provisioning failure:
+        the contract cannot be honoured, so probing cannot be silently skipped.
+        """
+        targets: dict[str, tuple[str, ResolvedEndpoint]] = {
+            manifest.runner_service: (
+                "grpc",
+                ResolvedEndpoint(host=runner_host, port=runner_host_port),
+            )
+        }
+        for service_name, service_spec in manifest.services.items():
+            if service_spec.readiness is None or service_name == manifest.runner_service:
+                continue
+            endpoint = self._resolve_service_endpoint(compose, service_name)
+            if endpoint is None:
+                raise ProvisionError(
+                    trial_id=trial_id,
+                    stage="provision",
+                    reason=(
+                        f"service {service_name!r} declares a "
+                        f"{service_spec.readiness.kind!r} readiness contract but exposes "
+                        "no resolvable published port to probe"
+                    ),
+                )
+            targets[service_name] = (service_spec.readiness.kind, endpoint)
+        return targets
+
+    def _resolve_service_endpoint(
+        self, compose: DockerCompose, service_name: str
+    ) -> ResolvedEndpoint | None:
+        """Resolve a declared-readiness service's host-side endpoint via its
+        first published port. ``None`` when the service is absent from the
+        stack or publishes no port."""
+        try:
+            container = compose.get_container(service_name=service_name)
+        except Exception as exc:  # noqa: BLE001 — service not in stack; treat as unresolvable
+            logger.debug(
+                "PerTrialRuntimeBackend: readiness service %r absent: %s", service_name, exc
+            )
+            return None
+        container_port = first_published_port(container)
+        if container_port is None:
+            return None
+        host, host_port = resolve_host_port(compose, service_name, container_port)
+        if host is None or host_port is None:
+            return None
+        return ResolvedEndpoint(host=host, port=host_port)
+
+    def _run_readiness_gate(
+        self,
+        *,
+        services: dict[str, tuple[str, ResolvedEndpoint]],
+        compose: DockerCompose,
+        trial_id: str,
+    ) -> None:
+        """Probe every gated service; raise :class:`ProvisionError` on the first
+        not-ready result, carrying a :class:`DiagnosticPayload` assembled from
+        the still-running container. The probe opens and closes a throwaway
+        client — it proves reachability, and does not stand in for the deferred
+        per-trial runner-client connect (see :attr:`_connected_trials`)."""
+        for service_name, (kind, endpoint) in services.items():
+            probe = self.readiness_probe_loader(kind)()
+            result = probe.probe(endpoint, timeout=self.connect_timeout)
+            if result.ok:
+                continue
+            port_map, listen_addrs, network_ips = capture_container_diagnostics(
+                compose, service_name
+            )
+            raise ProvisionError(
+                trial_id=trial_id,
+                stage="provision",
+                reason=(
+                    f"service {service_name!r} ({kind}) not ready at "
+                    f"{endpoint.host}:{endpoint.port} within {self.connect_timeout}s: "
+                    f"{result.detail}"
+                ),
+                diagnostic=DiagnosticPayload(
+                    service=service_name,
+                    kind=kind,
+                    endpoint=endpoint,
+                    result=result,
+                    docker_port_map=port_map,
+                    container_listen_addrs=listen_addrs,
+                    per_network_ips=network_ips,
+                ),
+            )
 
     # ---- Internal helpers ----
 
