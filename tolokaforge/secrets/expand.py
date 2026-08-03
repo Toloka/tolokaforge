@@ -86,9 +86,9 @@ def expand_secret_refs(value: str, secrets: SecretManager, *, where: str) -> str
         refs = ", ".join(f"${{secret:{name}}}" for name in names)
         raise UnresolvedReferenceError(
             f"{where} references {refs}, "
-            f"{'which is' if len(names) == 1 else 'none of which are'} set. Set it, or "
-            f"write the value literally. It is never substituted as empty: see "
-            f"docs/LLM_LAYER.md.",
+            f"{'which is not' if len(names) == 1 else 'none of which are'} set. Set "
+            f"{'it' if len(names) == 1 else 'them'}, or write the value literally. It is "
+            f"never substituted as empty: see docs/LLM_LAYER.md.",
             where=where,
             names=names,
         )

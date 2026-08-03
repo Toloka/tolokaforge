@@ -505,7 +505,29 @@ Common keys:
 Routing calls through an LLM gateway (a LiteLLM proxy or equivalent) instead of
 calling providers directly (`LLM_PROXY_BASE_URL`, `LLM_PROXY_API_KEY`,
 `LLM_PROXY_HEADERS`, `LLM_PROXY_REQUEST_ID_HEADER`, `LLM_PROXY_PROVIDERS`) is
-documented in [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway).
+documented in [`docs/LLM_LAYER.md` § proxy](LLM_LAYER.md#proxy--routing-calls-through-an-llm-gateway),
+including how a value may reference a secret as `${secret:NAME}`.
+
+### Writing `.env` by hand or from a script
+
+`DotEnvProvider` accepts `KEY=value`, `KEY="value"` and `KEY='value'`. The
+unquoted form is `[^\s#]*`, so **an unquoted value containing whitespace or `#`
+does not parse and the whole line is dropped.** Anything that depended on that
+key then reads as unset. The provider logs a warning naming the key (never the
+value) when it drops a line, so check the log if a variable you are sure you set
+appears missing. Quote the value, or keep it free of whitespace.
+
+This bites hardest with JSON values such as `LLM_PROXY_HEADERS`: pretty-printed
+JSON is dropped, compact JSON is fine. A workflow that writes one should pipe it
+through `jq -ce` and refuse outright if a name or value still contains whitespace,
+since a silently header-less gateway call bills to nobody or fails admission far
+from the cause. `.github/workflows/integrate-model.yml` does both.
+
+Two shell notes for the same case. A `${secret:NAME}` reference survives being
+written through a shell **variable**, because bash does not rescan the result of a
+parameter expansion. Inlined into script text instead, bash reads `${secret:X}` as
+substring syntax and silently yields an empty string, so the engine never sees the
+reference and cannot raise on it.
 
 ## Output Structure
 

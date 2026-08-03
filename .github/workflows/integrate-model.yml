@@ -241,20 +241,19 @@ jobs:
               # Only inside this branch: a companion without a base URL is a hard error,
               # so a job-level env var here would break the openrouter route.
               #
-              # The ${secret:NAME} references inside the value stay LITERAL here, because
-              # bash does not rescan the result of a parameter expansion. Never inline one
-              # into this script's text instead: bash reads ${secret:X} as substring
-              # syntax and silently yields an empty string, so the engine would never see
-              # the reference and its hard-error guard could not fire.
-              #
-              # jq COMPACTS, and that is load-bearing, not tidiness: the dotenv parser's
-              # unquoted-value branch is ``[^\s#]*``, so a value containing a space or a
-              # '#' fails the line match and the line is SKIPPED at debug level. Pretty
-              # printed JSON pasted into the variable would silently produce no headers,
-              # with the base URL still set so no orphan error fires either. ``-e`` also
-              # makes malformed JSON fail the step here rather than at resolve time.
+              # References stay literal through the shell; never inline one in the
+              # script text. jq compacts because the dotenv parser drops a line whose
+              # unquoted value has whitespace. Both: docs/CONFIG.md § secrets.
               if [ -n "$PROXY_HEADERS" ]; then
                 PROXY_HEADERS="$(jq -ce . <<<"$PROXY_HEADERS")"
+                # jq cannot help a space or '#' inside a name/value; refuse rather
+                # than run with no headers. docs/CONFIG.md § secrets.
+                case "$PROXY_HEADERS" in
+                  *[[:space:]\#]*)
+                    echo "::error title=LLM_PROXY_HEADERS not representable in .env::a header name or value contains whitespace or '#'; the dotenv parser would drop the line"
+                    exit 1
+                    ;;
+                esac
                 printf '%s\n' "LLM_PROXY_HEADERS=$PROXY_HEADERS" >> .env
               fi
               echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"

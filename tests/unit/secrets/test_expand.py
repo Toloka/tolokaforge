@@ -72,15 +72,21 @@ class TestFailsLoud:
     def test_an_unresolved_name_raises(self, secrets: dict[str, str], case: str) -> None:
         with pytest.raises(UnresolvedReferenceError) as excinfo:
             _expand("${secret:ORDER_ID}", **secrets)
+        message = str(excinfo.value)
         # Both the location and the name: "something is unset" is not actionable.
-        assert "TEST_VALUE" in str(excinfo.value), case
-        assert "ORDER_ID" in str(excinfo.value), case
+        assert "TEST_VALUE" in message, case
+        assert "ORDER_ID" in message, case
         assert excinfo.value.names == ("ORDER_ID",), case
+        # The negation, pinned: an earlier revision said "which IS set" and then told
+        # the operator to set it, which is the opposite of the truth in the one message
+        # this whole feature depends on being clear.
+        assert "which is not set" in message, case
 
     def test_every_missing_name_is_reported_at_once(self) -> None:
         with pytest.raises(UnresolvedReferenceError) as excinfo:
             _expand("${secret:A}/${secret:B}")
         assert excinfo.value.names == ("A", "B")
+        assert "none of which are set" in str(excinfo.value)
 
     @pytest.mark.parametrize(
         ("value", "case"),
