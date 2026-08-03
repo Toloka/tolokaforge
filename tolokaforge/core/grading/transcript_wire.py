@@ -26,6 +26,7 @@ from typing import Any
 from tolokaforge.core.models import Message, MessageRole, ToolCall, Trajectory
 
 __all__ = [
+    "decode_tool_call",
     "decode_transcript_wire",
     "encode_transcript_wire",
     "split_leading_system_message",
@@ -87,12 +88,19 @@ def _decode_entry(entry: dict[str, Any], index: int) -> Message:
     return Message(
         role=MessageRole(entry["role"]),
         content=entry["content"],
-        tool_calls=[_decode_tool_call(raw, index) for raw in raw_calls] or None,
+        tool_calls=[decode_tool_call(raw, index) for raw in raw_calls] or None,
         tool_call_id=entry.get("tool_call_id"),
     )
 
 
-def _decode_tool_call(raw: dict[str, Any], message_index: int) -> ToolCall:
+def decode_tool_call(raw: dict[str, Any], message_index: int) -> ToolCall:
+    """Decode a single wire-shaped ``tool_calls`` entry into a :class:`ToolCall`.
+
+    Raises :class:`ValueError` naming ``message_index`` on any missing key,
+    absent id, or unparseable ``arguments`` JSON. Shared by
+    :func:`decode_transcript_wire` and by the grading check runner so both
+    paths reject the same malformed shapes.
+    """
     if "function" not in raw:
         raise ValueError(
             f"wire message {message_index}: tool call has no 'function'; "
