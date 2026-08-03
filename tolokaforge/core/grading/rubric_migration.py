@@ -63,13 +63,17 @@ from tolokaforge.core.grading.agreement import (
     cohen_kappa,
 )
 from tolokaforge.core.grading.config_validation import inspect_grading_authoring
-from tolokaforge.core.grading.grade_components import COMPONENT_BY_NAME, GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import (
+    COMPONENT_BY_NAME,
+    GRADE_COMPONENTS,
+    runner_score_field,
+)
 from tolokaforge.core.grading.migration_declaration import (
     EVERY_DECLARED_FIELD,
     MigratedCriterion,
     MigrationEntry,
     MigrationMode,
-    ResidualKind,
+    MigrationResidual,
     criterion_shape_disagreement,
     inspect_migration_declaration,
 )
@@ -117,6 +121,7 @@ __all__ = [
     "TrialCounterfactual",
     "TrialEvidence",
     "TrialExclusion",
+    "Unavailable",
     "UnreadableTrial",
     "UnrecomputedTrial",
     "emit_reconcile_report",
@@ -206,6 +211,7 @@ class RefusalKind(str, Enum):
     STALE_ACKNOWLEDGEMENT = "stale_acknowledgement"
     RECORDED_RUBRIC_CONTRADICTS_WAS = "recorded_rubric_contradicts_was"
     CORPUS_STRADDLES_A_PACK_REVISION = "corpus_straddles_a_pack_revision"
+    DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT = "declared_evidence_contradicts_measurement"
 
 
 class Refusal(BaseModel):
@@ -290,10 +296,25 @@ class TrialCounterfactual(BaseModel):
 
     The *before* columns are read from the bundle's own ``grade.yaml``; the *after* columns are
     recomposed by the runner's own verdict function over the reduced rubric, the recomputed
-    trace component and the map the entry **declares**. Both weight maps and both veto sets ride
-    here per trial rather than once per entry, because each is a fact about the trial that
-    recorded it — and for a ``required`` criterion the two maps are *identical*, which is why the
-    veto sets are stated beside them: they are the only thing that moves.
+    trace component and the map the entry **declares** — or, where it declares none, the map the
+    trial was graded under, nothing having been freed to move. Both weight maps and both veto
+    sets ride here per trial rather than once per entry, because each is a fact about the trial
+    that recorded it.
+
+    The veto sets are stated beside the weight maps because a ``required`` criterion carries no
+    score share: whatever a declared map moves for one is the author's own rebalance rather than
+    the conversion's arithmetic, while the veto is what the conversion itself moves.
+
+    **The component and score columns are mode-blind, and the veto set is not.** The *after*
+    judge component drops the criterion from the judge's side whatever the mode declares, so for
+    a ``narrowed`` entry it is the bound of a **full retirement** rather than the narrow's own
+    effect: the narrowed text has no recorded label anywhere, since the corpus was graded
+    against the text it replaced, so the narrow's own component is not computable from it. The
+    veto set is mode-aware because requiredness is *declared* rather than judged — a narrow
+    leaves the criterion in the rubric still vetoing, which the report can state exactly.
+
+    ``judge_component_after`` is ``None`` where the reduced rubric holds no criterion at all: a
+    judge that scores nothing has no component, and any number here would read as one it scored.
     """
 
     trial: str
@@ -302,7 +323,7 @@ class TrialCounterfactual(BaseModel):
     vetoes_before: list[str]
     vetoes_after: list[str]
     judge_component_before: float
-    judge_component_after: float
+    judge_component_after: float | None
     score_before: float
     score_after: float
     binary_pass_before: bool
@@ -352,13 +373,16 @@ class ReconciledEntry(BaseModel):
     no field ranking or comparing modes: on a corpus with zero disagreements ``narrowed`` and
     ``retired`` satisfy the same condition, so the evidence *cannot* choose between them and
     a field suggesting it had would be read as a recommendation.
+
+    ``residual`` is the declaration's own block rather than its two fields flattened, because a
+    kind and a reason are only meaningful together: a reason with no kind names something
+    without saying whether it survives, and the pair is absent exactly for a ``candidate``.
     """
 
     task_ids: list[str]
     criterion: str
     mode: MigrationMode
-    residual_kind: ResidualKind | None
-    residual_reason: str | None
+    residual: MigrationResidual | None
     by: list[str]
     observations: int
     contingency: ContingencyTable
@@ -433,6 +457,19 @@ class RecordedTrialVerdict:
 
 
 @dataclass(frozen=True)
+class Unavailable:
+    """Why one side of a trial's label pair has no verdict to compare.
+
+    The pair a trial contributes is all-or-nothing, so the reason it contributes none is one
+    value rather than an exclusion class and a sentence travelling together: every producer
+    returns it whole and :class:`ExcludedTrial` is built from it in one place.
+    """
+
+    exclusion: TrialExclusion
+    reason: str
+
+
+@dataclass(frozen=True)
 class TrialEvidence:
     """What one recorded trial contributes to one declared entry.
 
@@ -453,7 +490,7 @@ class TrialEvidence:
     judge_met: bool | None = None
     constraint_passed: bool | None = None
     justification: str = ""
-    unavailable: tuple[TrialExclusion, str] | None = None
+    unavailable: Unavailable | None = None
     recorded_verdict: RecordedTrialVerdict | None = None
 
     def __post_init__(self) -> None:
@@ -672,8 +709,11 @@ def _exclusion(trial: TrialEvidence, entry: MigrationEntry) -> ExcludedTrial | N
         )
     if trial.unavailable is None:
         return None
-    exclusion, reason = trial.unavailable
-    return ExcludedTrial(trial=trial.trial, exclusion=exclusion, reason=reason)
+    return ExcludedTrial(
+        trial=trial.trial,
+        exclusion=trial.unavailable.exclusion,
+        reason=trial.unavailable.reason,
+    )
 
 
 _DisagreementRows = Mapping[DisagreementDirection, list[DisagreementRow]]
@@ -712,6 +752,65 @@ def _recorded_rubric_refusals(
     ]
     straddling = _straddling_revision_refusal(contributing)
     return refusals if straddling is None else [*refusals, straddling]
+
+
+#: κ is compared with the declaration at the precision the report prints it. Three decimals is
+#: what the console shows and therefore what an author copies into ``evidence.kappa``, so
+#: comparing past it would refuse a number that was copied correctly.
+_DECLARED_KAPPA_PRECISION = 3
+
+
+def _same_kappa(declared: float | None, measured: float | None) -> bool:
+    """Whether two readings of κ agree, undefined included, at the precision it is reported."""
+    if declared is None or measured is None:
+        return declared is measured
+    return round(declared, _DECLARED_KAPPA_PRECISION) == round(measured, _DECLARED_KAPPA_PRECISION)
+
+
+def _declared_evidence_refusal(
+    entry: MigrationEntry, *, observations: int, kappa: float | None
+) -> Refusal | None:
+    """Where the numbers the entry declares contradict the ones this run measured.
+
+    ``evidence`` is what a reviewer reads *instead of* re-running the command, so it is the
+    measurement or it is nothing. The rule is stated as a bound rather than an equality because
+    ``evidence.observations`` counts the whole corpus the entry names while ``--source`` may
+    deliberately be a part of it: pointing at one arm of a two-arm corpus is how each half is
+    shown to be the other's falsifier, and refusing that invocation would turn a diagnostic into
+    an authoring error. So a run measuring **fewer** observations says nothing, one measuring
+    **more** has read a corpus the declaration under-counts, and one reaching the declared count
+    must reproduce the declared κ.
+
+    The residue, stated because the tier cannot close it: a declaration over-counting its own
+    corpus is indistinguishable from a reconciliation over a subset, so only a run that reaches
+    the declared count catches a κ that drifted.
+    """
+    declared = entry.evidence
+    if declared is None or observations < declared.observations:
+        return None
+    if observations > declared.observations:
+        return Refusal(
+            kind=RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT,
+            message=(
+                f"evidence.observations declares {declared.observations} and this "
+                f"reconciliation measured {observations}, so the corpus carries more evidence "
+                "than the declaration was written against and the numbers a reviewer reads are "
+                f"not the ones the command reaches. Re-run reconcile over {declared.corpus} and "
+                "write what it reports"
+            ),
+        )
+    if _same_kappa(declared.kappa, kappa):
+        return None
+    return Refusal(
+        kind=RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT,
+        message=(
+            f"evidence.kappa declares {declared.kappa} and this reconciliation measured "
+            f"{kappa} over the {declared.observations} observations the declaration claims. A "
+            "reviewer reads the declared evidence instead of re-running the command, so it is "
+            f"the measurement or it is nothing. Re-run reconcile over {declared.corpus} and "
+            "write the kappa it reports"
+        ),
+    )
 
 
 def _direction_and_waiver_refusals(
@@ -758,18 +857,16 @@ def _runner_components(recorded: Mapping[str, Any]) -> dict[str, float]:
     the judge's own recorded aggregate and the *after* column the reduced one.
 
     Raises:
-        KeyError: naming a composed component the recorded grade carries. ``state_checks`` has
-            no single runner field (:data:`GRADE_COMPONENTS` says so with ``None``), so its
-            recorded value cannot be routed back through the fold that produced it.
+        KeyError: from :func:`runner_score_field`, naming a composed component the recorded
+            grade carries. ``state_checks`` has no single runner field, so its recorded value
+            cannot be routed back through the fold that produced it.
     """
     lowered: dict[str, float] = {}
     for spec in GRADE_COMPONENTS:
         value = recorded.get(spec.core_field)
         if value is None or spec.name == "llm_judge":
             continue
-        if spec.runner_score_field is None:
-            raise KeyError(spec.name)
-        lowered[spec.runner_score_field] = float(value)
+        lowered[runner_score_field(spec.name)] = float(value)
     return lowered
 
 
@@ -804,15 +901,17 @@ def _flat_grading_config(
     return flat
 
 
-def _judge_component_of(rubric: Rubric, results: Sequence[CriterionResult]) -> tuple[float, bool]:
+def _judge_component_of(
+    rubric: Rubric, results: Sequence[CriterionResult]
+) -> tuple[float | None, bool]:
     """The judge's aggregate over ``rubric``, and whether its required gate failed.
 
-    An empty rubric is the judge component *not evaluated* rather than a free ``1.0``: retiring
-    a pack's last criterion deletes the judge, and folding in the aggregate's vacuous pass would
-    hand the trial a component nothing scored.
+    An empty rubric is the judge component *not evaluated* — ``None`` — rather than a free
+    ``1.0``: retiring a pack's last criterion deletes the judge, and folding in the aggregate's
+    vacuous pass would hand the trial a component nothing scored.
     """
     if not rubric.criteria:
-        return -1.0, False
+        return None, False
     aggregate = aggregate_rubric(rubric, list(results))
     return aggregate.score, aggregate.gate_failed
 
@@ -839,6 +938,42 @@ def _reproduces_the_recorded_verdict(
         recorded_score=grade.get("score"),
         recorded_pass=grade.get("binary_pass"),
     )
+
+
+def _scored(field: str, score: float | None) -> dict[str, float]:
+    """The component under ``field``, or nothing where the component was not evaluated.
+
+    An unevaluated judge is *absent* from the fold rather than present at a sentinel: the fold
+    weights every component it is handed, so a placeholder would be averaged in as a score.
+    """
+    return {} if score is None else {field: score}
+
+
+_VETO_SURVIVES_THE_MIGRATION: Mapping[MigrationMode, bool] = MappingProxyType(
+    {
+        # A candidacy's counterfactual is the projection of the conversion it is a candidate
+        # *for*, which is a full retirement — it is the measurement the candidacy is waiting
+        # for, and projecting a narrow would need a narrowed text the entry does not carry.
+        MigrationMode.CANDIDATE: False,
+        MigrationMode.NARROWED: True,
+        MigrationMode.RETIRED: False,
+    }
+)
+"""Total over the modes, so a new one states whether its criterion still vetoes afterwards."""
+
+
+def _vetoes_after(entry: MigrationEntry, rubric: Rubric) -> set[str]:
+    """The rubric-side vetoes the migration leaves standing.
+
+    A narrow leaves the criterion in the rubric, still ``required: true`` — the shipped narrow's
+    whole shape — so an *after* set omitting it would report the veto as lost where the pack
+    keeps it, defeating the purpose of stating the veto set at all. A retirement removes the
+    criterion, so its veto goes and the trace gate is what holds one.
+    """
+    vetoes = {item.id for item in rubric.criteria if item.required}
+    if not _VETO_SURVIVES_THE_MIGRATION[entry.mode]:
+        vetoes.discard(entry.criterion)
+    return vetoes
 
 
 def _counterfactual_for_trial(
@@ -869,8 +1004,8 @@ def _counterfactual_for_trial(
             reason=_A_COMPOSED_COMPONENT.format(name=exc.args[0]),
         )
 
-    judge_field = COMPONENT_BY_NAME["llm_judge"].runner_score_field
-    trace_field = COMPONENT_BY_NAME["trace_checks"].runner_score_field
+    judge_field = runner_score_field("llm_judge")
+    trace_field = runner_score_field("trace_checks")
     trace_section = COMPONENT_BY_NAME["trace_checks"].config_section
     rubric = _recorded_rubric(recorded.grading_config)
     results = [CriterionResult(**row) for row in recorded.grade.get("criterion_results") or ()]
@@ -878,7 +1013,7 @@ def _counterfactual_for_trial(
 
     before_score, before_gate = _judge_component_of(rubric, results)
     before = compose_runner_trial_verdict(
-        {**carried, judge_field: before_score},
+        {**carried, **_scored(judge_field, before_score)},
         _flat_grading_config(
             recorded.grading_config, weights=weights_before, judge_scored=bool(rubric.criteria)
         ),
@@ -899,7 +1034,7 @@ def _counterfactual_for_trial(
     )
     weights_after = dict(entry.combine_weights or weights_before)
     after = compose_runner_trial_verdict(
-        {**carried, judge_field: after_score, trace_field: recorded.trace_component},
+        {**carried, **_scored(judge_field, after_score), trace_field: recorded.trace_component},
         _flat_grading_config(
             {**recorded.grading_config, trace_section: _THE_MIGRATION_DECLARES_TRACE_CHECKS},
             weights=weights_after,
@@ -913,11 +1048,9 @@ def _counterfactual_for_trial(
         weights_before=weights_before,
         weights_after=weights_after,
         vetoes_before=sorted(item.id for item in rubric.criteria if item.required),
-        vetoes_after=sorted(
-            {item.id for item in reduced.criteria if item.required} | recorded.gate_constraint_ids
-        ),
+        vetoes_after=sorted(_vetoes_after(entry, rubric) | recorded.gate_constraint_ids),
         judge_component_before=before.judge_component,
-        judge_component_after=after.judge_component,
+        judge_component_after=None if after_score is None else after.judge_component,
         score_before=before.score,
         score_after=after.score,
         binary_pass_before=before.binary_pass,
@@ -958,10 +1091,6 @@ def reconcile_entry(
     contributing = [trial for trial in trials if trial.trial not in excluded_trials]
 
     rows = _disagreement_rows(entry, contributing)
-    refusals = [
-        *_recorded_rubric_refusals(entry, contributing),
-        *_direction_and_waiver_refusals(entry, contributing, rows),
-    ]
     observations = [
         CriterionObservation(
             observation_id=trial.trial,
@@ -975,12 +1104,17 @@ def reconcile_entry(
         for trial in contributing
     ]
     kappa = cohen_kappa(observations)
+    declared = _declared_evidence_refusal(entry, observations=len(observations), kappa=kappa)
+    refusals = [
+        *_recorded_rubric_refusals(entry, contributing),
+        *_direction_and_waiver_refusals(entry, contributing, rows),
+        *([] if declared is None else [declared]),
+    ]
     return ReconciledEntry(
         task_ids=sorted(set(task_ids)),
         criterion=entry.criterion,
         mode=entry.mode,
-        residual_kind=None if entry.residual is None else entry.residual.kind,
-        residual_reason=None if entry.residual is None else entry.residual.reason,
+        residual=entry.residual,
         by=list(entry.by),
         observations=len(observations),
         contingency=_contingency(contributing),
@@ -1076,7 +1210,7 @@ def _resolve_pack(task_id: str, roots: Sequence[Path]) -> _ResolvedPack | None:
     grading_path = _grading_path_of(task_id, roots)
     try:
         declaration = inspect_migration_declaration(grading_path)
-    except (ValueError, ValidationError) as exc:
+    except (ValueError, ValidationError, RuntimeError, yaml.YAMLError) as exc:
         raise ReconcileError(
             f"the migration declared beside {grading_path} does not load, so there is no "
             f"claim to check against the corpus: {exc}"
@@ -1134,13 +1268,19 @@ def _recorded_rubric(grading_config: Mapping[str, Any]) -> Rubric:
 
 
 def _recorded_criteria(task: Mapping[str, Any]) -> dict[str, MigratedCriterion]:
-    """The rubric a bundle recorded, by criterion id, in the shape ``was`` is written in."""
+    """The rubric a bundle recorded, by criterion id, in the shape ``was`` is written in.
+
+    Built with ``model_construct``, deliberately skipping the authoring validators: a recorded
+    criterion is *data*, so a bundle whose judge graded a criterion with a blank description
+    records a fact about that trial rather than an authoring defect for this run to refuse — and
+    refusing it would fail the reconciliation under the wrong file's message. The values are
+    already typed, coming off :class:`~tolokaforge.core.models.Criterion`, so nothing here is
+    unvalidated input; the field list is ``was``'s own, so a field added to it is carried across
+    or fails loud rather than being silently dropped.
+    """
     return {
-        criterion.id: MigratedCriterion(
-            description=criterion.description,
-            kind=criterion.kind,
-            required=criterion.required,
-            weight=criterion.weight,
+        criterion.id: MigratedCriterion.model_construct(
+            **{name: getattr(criterion, name) for name in EVERY_DECLARED_FIELD}
         )
         for criterion in _recorded_rubric(task.get("grading_config") or {}).criteria
     }
@@ -1148,7 +1288,7 @@ def _recorded_criteria(task: Mapping[str, Any]) -> dict[str, MigratedCriterion]:
 
 def _judge_verdict(
     criterion_id: str, grade: Mapping[str, Any] | None
-) -> tuple[bool | None, str, tuple[TrialExclusion, str] | None]:
+) -> tuple[bool | None, str, Unavailable | None]:
     """The judge's recorded label for one criterion, or why the bundle carries none.
 
     ``JudgeStatus.ERRORED`` is *not* a not-met label: an errored judge reached no verdict, and
@@ -1159,10 +1299,12 @@ def _judge_verdict(
         return (
             None,
             "",
-            (
-                TrialExclusion.JUDGE_DID_NOT_COMPLETE,
-                f"judge_status is {status!r}, not 'completed', so the judge reached no verdict "
-                "to compare — an errored or absent judge is not a not-met label",
+            Unavailable(
+                exclusion=TrialExclusion.JUDGE_DID_NOT_COMPLETE,
+                reason=(
+                    f"judge_status is {status!r}, not 'completed', so the judge reached no "
+                    "verdict to compare — an errored or absent judge is not a not-met label"
+                ),
             ),
         )
     recorded = grade.get("criterion_results") if grade else None
@@ -1170,10 +1312,12 @@ def _judge_verdict(
         return (
             None,
             "",
-            (
-                TrialExclusion.NO_CRITERION_RESULTS,
-                "the recorded grade carries no criterion_results, so nothing says what the "
-                "judge concluded per criterion",
+            Unavailable(
+                exclusion=TrialExclusion.NO_CRITERION_RESULTS,
+                reason=(
+                    "the recorded grade carries no criterion_results, so nothing says what "
+                    "the judge concluded per criterion"
+                ),
             ),
         )
     for result in recorded:
@@ -1182,17 +1326,19 @@ def _judge_verdict(
     return (
         None,
         "",
-        (
-            TrialExclusion.NO_VERDICT_FOR_CRITERION,
-            f"the recorded grade holds no verdict for criterion {criterion_id!r}, so this "
-            "trial's judge never labelled it",
+        Unavailable(
+            exclusion=TrialExclusion.NO_VERDICT_FOR_CRITERION,
+            reason=(
+                f"the recorded grade holds no verdict for criterion {criterion_id!r}, so this "
+                "trial's judge never labelled it"
+            ),
         ),
     )
 
 
 def _constraint_verdict(
     entry: MigrationEntry, verdicts: Mapping[str, Any]
-) -> tuple[bool | None, tuple[TrialExclusion, str] | None]:
+) -> tuple[bool | None, Unavailable | None]:
     """The recomputed label: every constraint the entry is ``by`` had to decide, and pass.
 
     A conjunction, because that is what the declaration claims — the criterion is replaced by
@@ -1204,15 +1350,17 @@ def _constraint_verdict(
     for constraint_id in entry.by:
         result = verdicts.get(constraint_id)
         if result is None:
-            return None, (
-                TrialExclusion.CONSTRAINT_VERDICT_UNAVAILABLE,
-                f"the recomputation reached no verdict for constraint {constraint_id!r} — a "
-                "route-scoped constraint is measured only on the trials its route won",
+            return None, Unavailable(
+                exclusion=TrialExclusion.CONSTRAINT_VERDICT_UNAVAILABLE,
+                reason=(
+                    f"the recomputation reached no verdict for constraint {constraint_id!r} — "
+                    "a route-scoped constraint is measured only on the trials its route won"
+                ),
             )
         if result.undecided:
-            return None, (
-                TrialExclusion.CONSTRAINT_VERDICT_UNAVAILABLE,
-                f"constraint {constraint_id!r} is undecided on this trial: {result.message}",
+            return None, Unavailable(
+                exclusion=TrialExclusion.CONSTRAINT_VERDICT_UNAVAILABLE,
+                reason=f"constraint {constraint_id!r} is undecided on this trial: {result.message}",
             )
         passed = passed and result.passed
     return passed, None
@@ -1289,42 +1437,84 @@ def _resolved_constraints(pack: _ResolvedPack, entry: MigrationEntry) -> str:
     )
 
 
-def _pool_key(pack: _ResolvedPack, entry: MigrationEntry) -> tuple[str, str, str]:
-    return (
-        entry.criterion,
-        " ".join(entry.was.description.split()),
-        _resolved_constraints(pack, entry),
+_THE_CLAIM_AN_ENTRY_MAKES = {"mode", "residual", "combine_weights"}
+"""What an entry claims *about* the criterion, as against which criterion it claims.
+
+Two entries agreeing on the criterion, its text and the constraints still differ if one narrows
+where the other retires, or lands the freed share elsewhere. Pooling those folds them into one
+verdict under whichever was read first, discarding the second's tolerance and its map — and the
+two tolerances are not interchangeable: :data:`_FORBIDDEN_DIRECTIONS` gives a permissive
+disagreement to a narrow and refuses it to a retirement, so a retirement folded under a narrow's
+mode passes on exactly the evidence that must refuse it.
+"""
+
+
+@dataclass(frozen=True, order=True)
+class _PoolKey:
+    """What two declarations must agree on before their trials are one measurement.
+
+    ``criterion`` and ``was_text`` say the two packs claim the same criterion, ``constraints``
+    that they recompute it the same way, and ``claim`` that they claim the same thing about it —
+    see :data:`_THE_CLAIM_AN_ENTRY_MAKES`.
+
+    Ordered, so the report's entries come out in a stable order rather than in the order the
+    corpus's directory listing happened to file them.
+    """
+
+    criterion: str
+    was_text: str
+    constraints: str
+    claim: str
+
+
+def _pool_key(pack: _ResolvedPack, entry: MigrationEntry) -> _PoolKey:
+    return _PoolKey(
+        criterion=entry.criterion,
+        was_text=" ".join(entry.was.description.split()),
+        constraints=_resolved_constraints(pack, entry),
+        claim=entry.model_dump_json(include=_THE_CLAIM_AN_ENTRY_MAKES),
     )
 
 
-def _refuse_pooling_two_different_claims(pools: Mapping[tuple[str, str, str], _Pool]) -> None:
+def _refuse_pooling_two_different_claims(pools: Mapping[_PoolKey, _Pool]) -> None:
     """One criterion claimed by two tasks that do not declare the same thing."""
-    by_criterion: dict[str, tuple[str, str, str]] = {}
+    by_criterion: dict[str, _PoolKey] = {}
     for key, pool in pools.items():
-        first = by_criterion.setdefault(key[0], key)
+        first = by_criterion.setdefault(key.criterion, key)
         if first == key:
             continue
         raise ReconcileError(
-            f"criterion {key[0]!r} is declared by {sorted(pools[first].task_ids)} and "
-            f"{sorted(pool.task_ids)} with a different criterion text or different "
-            "constraints, so their trials measure two different claims and cannot be pooled "
-            "into one verdict. Make the declarations identical, or reconcile each task alone"
+            f"criterion {key.criterion!r} is declared by {sorted(pools[first].task_ids)} and "
+            f"{sorted(pool.task_ids)} with a different criterion text, different constraints, or "
+            "a different claim about it (mode, residual or combine_weights), so their trials "
+            "measure two different claims and cannot be pooled into one verdict. Make the "
+            "declarations identical, or reconcile each task alone"
         )
 
 
 def _pooled_evidence(
     packs: Mapping[str, _ResolvedPack], by_task: Mapping[str, list[Path]]
-) -> tuple[dict[tuple[str, str, str], _Pool], list[UnreadableTrial]]:
-    """Read every bundle once and file its evidence under each entry it can speak to."""
-    pools: dict[tuple[str, str, str], _Pool] = {}
+) -> tuple[dict[_PoolKey, _Pool], list[UnreadableTrial]]:
+    """Read every bundle once and file its evidence under each entry it can speak to.
+
+    Each pack's entries are keyed once here rather than once per bundle: a key resolves the whole
+    ``trace_checks`` block and dumps it, which is a fact about the (pack, entry) pair and says
+    nothing about the trial being filed under it.
+    """
+    pools: dict[_PoolKey, _Pool] = {}
     unreadable: list[UnreadableTrial] = []
     for task_id, pack in sorted(packs.items()):
         _refuse_a_block_the_corpus_cannot_be_graded_against(pack, by_task[task_id])
         override = _override_from(pack)
+        keyed = tuple((entry, _pool_key(pack, entry)) for entry in pack.entries)
         unreadable.extend(
             failure
             for bundle in by_task[task_id]
-            if (failure := _file_one_bundle(bundle, pack=pack, override=override, pools=pools))
+            if (
+                failure := _file_one_bundle(
+                    bundle, pack=pack, keyed=keyed, override=override, pools=pools
+                )
+            )
             is not None
         )
     return pools, unreadable
@@ -1344,21 +1534,37 @@ def _file_one_bundle(
     bundle: Path,
     *,
     pack: _ResolvedPack,
+    keyed: Sequence[tuple[MigrationEntry, _PoolKey]],
     override: TraceChecksOverride,
-    pools: dict[tuple[str, str, str], _Pool],
+    pools: dict[_PoolKey, _Pool],
 ) -> UnreadableTrial | None:
-    """Re-check one bundle and file its evidence, or name why it could not be read."""
+    """Re-check one bundle and file its evidence, or name why it could not be read.
+
+    The recorded rubric is read here, inside the net, because it is read from the bundle's own
+    ``task.yaml``: a rubric that will not parse is one unreadable bundle, and letting it out would
+    abort the whole reconciliation under the message of whatever file was being resolved at the
+    time.
+    """
     try:
         task = recorded_task(bundle)
+        criteria = _recorded_criteria(task)
         inputs = read_trace_replay_inputs(bundle, override=override)
         result = replay_trace_checks(inputs)
     except (MissingTraceReplayInputError, TimelineInconsistencyError) as exc:
         return UnreadableTrial(trial=str(bundle), reason=str(exc))
+    except ValidationError as exc:
+        return UnreadableTrial(
+            trial=str(bundle),
+            reason=(
+                f"the rubric recorded in {bundle / 'task.yaml'} does not read as one, so nothing "
+                f"says what shape the criterion had when this trial was graded: {exc}. Drop the "
+                "bundle from the corpus, or reconcile it against the tree that wrote it"
+            ),
+        )
 
     verdicts = {constraint.id: constraint for constraint in result.constraints}
-    criteria = _recorded_criteria(task)
-    for entry in pack.entries:
-        pool = pools.setdefault(_pool_key(pack, entry), _Pool(entry=entry, task_ids=[], trials=[]))
+    for entry, key in keyed:
+        pool = pools.setdefault(key, _Pool(entry=entry, task_ids=[], trials=[]))
         if pack.task_id not in pool.task_ids:
             pool.task_ids.append(pack.task_id)
         pool.trials.append(

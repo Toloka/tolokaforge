@@ -154,6 +154,15 @@ the engine first leaves you inside the one window this gate cannot close, and �
 any pack bearing `state_checks` or `transcript_rules` — inside a registration failure
 the JSON payload will raise anyway.
 
+**The image's own dependency resolution is a second, unversioned skew, and no gate sees it.**
+The image installs the wheel with **pip**, which resolves each declared range itself rather
+than reading `uv.lock`, so a range loose enough to admit two majors gives the container a
+different library than the host venv — with no protocol version to disagree about. The failure
+lands at run time inside the container: see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#every-tool-call-fails-mcp-server-closed-connection)
+§ Every Tool Call Fails. `make docker-build-core` is the fix, and an upper bound on the major
+is what keeps the resolution honest.
+
 That is what an engine upgrade needs: rebuild the image from the same tree
 (`make docker-build-core`) or pin an image tag that matches. The gate sits at
 registration rather than per call deliberately — an old engine sends no `call_id`,

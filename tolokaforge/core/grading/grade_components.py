@@ -81,3 +81,22 @@ COMPONENT_BY_NAME: Mapping[str, GradeComponentSpec] = MappingProxyType(
 )
 """The enumeration keyed by wire name, so a caller needing one component looks it up here
 rather than re-deriving the field names it lives under."""
+
+
+def runner_score_field(name: str) -> str:
+    """The runner field one component's score lives on.
+
+    :attr:`GradeComponentSpec.runner_score_field` is ``None`` for a composed slot, so a
+    caller that wants a *key* — to write a component into the runner's fold, or to read one
+    back out of it — would otherwise carry a branch for a value it cannot use, or pass
+    ``None`` on as though it were a field name.
+
+    Raises:
+        KeyError: with ``name`` as its only argument, for a composed component or for a
+            name no component declares. Both are the same answer to the caller: there is no
+            field, so a message naming the component is the whole of what it can say.
+    """
+    spec = COMPONENT_BY_NAME[name]
+    if spec.runner_score_field is None:
+        raise KeyError(name)
+    return spec.runner_score_field

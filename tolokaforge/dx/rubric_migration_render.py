@@ -50,6 +50,11 @@ def _number(value: float | None) -> str:
     return "undefined" if value is None else f"{value:.3f}"
 
 
+def _judge_component(value: float | None) -> str:
+    """``None`` is a rubric the migration emptied — a judge scoring nothing, not scoring zero."""
+    return "not evaluated" if value is None else f"{value:.3f}"
+
+
 def _headline(entry: ReconciledEntry) -> str:
     style = _VERDICT_STYLE[entry.verdict]
     tasks = ", ".join(entry.task_ids)
@@ -96,8 +101,9 @@ def _counterfactual_lines(entry: ReconciledEntry) -> list[str]:
     The declared map is named on its own line even where it moves nothing, because that is the
     reviewable fact: the freed-share rule is satisfied by declaring a map, and an author who
     shifts nothing declares the identity map. The veto columns are printed beside the weight
-    columns for the measured reason that a ``required`` criterion frees no share at all — the
-    two maps are then identical and the vetoes are the only thing that moved.
+    columns because a ``required`` criterion frees no score share at all — whatever a declared
+    map moves for one is the author's own rebalance rather than the conversion's arithmetic,
+    while the veto is what the conversion itself moves.
     """
     counterfactual = entry.counterfactual
     declared = counterfactual.weights_declared
@@ -108,7 +114,8 @@ def _counterfactual_lines(entry: ReconciledEntry) -> list[str]:
     for row in counterfactual.trials:
         lines.append(f"    {row.trial}")
         lines.append(
-            f"      judge {row.judge_component_before:.3f} → {row.judge_component_after:.3f}"
+            f"      judge {row.judge_component_before:.3f}"
+            f" → {_judge_component(row.judge_component_after)}"
             f" · trial {row.score_before:.3f}/{row.binary_pass_before}"
             f" → {row.score_after:.3f}/{row.binary_pass_after}"
         )
@@ -133,10 +140,10 @@ def _counterfactual_lines(entry: ReconciledEntry) -> list[str]:
 
 def _render_entry(entry: ReconciledEntry, *, console: Console) -> None:
     console.print(_headline(entry))
-    if entry.residual_kind is not None:
+    if entry.residual is not None:
         console.print(
-            f"  residual ({entry.residual_kind.value}), as the author declared it: "
-            f"{entry.residual_reason}"
+            f"  residual ({entry.residual.kind.value}), as the author declared it: "
+            f"{entry.residual.reason}"
         )
     for line in _contingency_lines(entry):
         console.print(line)

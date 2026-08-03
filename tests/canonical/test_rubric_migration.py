@@ -210,9 +210,9 @@ def test_the_report_states_the_mode_the_author_declared_and_quotes_its_residual(
     entry = _entry_over_the_not_met_half(tmp_path)
 
     assert entry.mode.value == declared["mode"]
-    assert entry.residual_kind is not None
-    assert entry.residual_kind.value == declared["residual"]["kind"]
-    assert entry.residual_reason.split() == declared["residual"]["reason"].split()
+    assert entry.residual is not None
+    assert entry.residual.kind.value == declared["residual"]["kind"]
+    assert entry.residual.reason.split() == declared["residual"]["reason"].split()
     assert entry.by == declared["by"]
 
 
@@ -246,8 +246,7 @@ def test_the_report_names_which_side_of_the_pair_is_the_reference(tmp_path: Path
                 "task_ids",
                 "criterion",
                 "mode",
-                "residual_kind",
-                "residual_reason",
+                "residual",
                 "by",
                 "observations",
                 "contingency",
@@ -356,21 +355,33 @@ def test_the_counterfactual_reports_what_the_narrow_does_to_every_not_met_trial(
     assert [row.binary_pass_after for row in counterfactual.trials] == [False] * 5
 
 
-def test_the_veto_transfers_from_the_criterion_to_the_trace_gate_on_every_trial(
+def test_the_narrow_leaves_two_vetoes_over_one_policy_on_every_trial(
     tmp_path: Path,
 ) -> None:
-    """For a ``required`` criterion the two weight maps are *identical*, so a weight-shift report
-    would be silent about the only thing the migration changes. The veto sets are what says it."""
+    """A ``narrowed`` criterion stays in the rubric and stays ``required: true``, so the *after*
+    veto set carries **both** it and the trace gate — the shipped narrow's whole shape, and the
+    fact an after-set built by dropping the criterion would misreport as a veto lost.
+
+    Read beside the weight columns, which say nothing here: this entry declares no map and the
+    criterion frees no score share, so the two maps are identical and the veto set is the only
+    thing carrying the change. That the criterion's own id survives the migration is asserted
+    from the declaration's ``mode`` rather than from the report, so a counterfactual that dropped
+    it reds against ``narrowed`` written on disk.
+    """
     counterfactual = _entry_over_the_not_met_half(tmp_path).counterfactual
     declared = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]
 
+    assert declared["mode"] == "narrowed"
     assert declared["was"]["required"] is True
     assert "combine_weights" not in declared
     assert len(counterfactual.trials) == 5
     for row in counterfactual.trials:
         assert row.weights_before == row.weights_after
         assert row.vetoes_before == ["checked_duplicates_first"]
-        assert row.vetoes_after == ["the_notes_were_listed_before_the_note_was_added"]
+        assert row.vetoes_after == [
+            "checked_duplicates_first",
+            "the_notes_were_listed_before_the_note_was_added",
+        ]
 
 
 def test_no_reported_weight_map_is_the_map_the_pack_holds_today(tmp_path: Path) -> None:

@@ -28,6 +28,7 @@ import yaml
 
 from tests.utils.migration_packs import write_migration_pack
 from tolokaforge.core.grading.migration_declaration import (
+    MIGRATION_FILENAME,
     MigratedCriterion,
     MigrationAcknowledgement,
     MigrationEntry,
@@ -44,6 +45,7 @@ from tolokaforge.core.grading.rubric_migration import (
     RefusalKind,
     TrialEvidence,
     TrialExclusion,
+    Unavailable,
     migration_counterfactual,
     reconcile_corpus,
     reconcile_entry,
@@ -196,18 +198,28 @@ def _recorded_verdict(*, judge_met: bool, constraint_passed: bool) -> RecordedTr
     )
 
 
+class _WhateverTheRubricRecorded:
+    """A default that ``recorded=None`` has to be distinguishable from.
+
+    ``None`` is a bundle whose recorded rubric held no such criterion, which several tests below
+    are *about*, so it cannot double as "the caller said nothing".
+    """
+
+
 def _trial(
     name: str,
     *,
     judge_met: bool | None = None,
     constraint_passed: bool | None = None,
-    recorded: MigratedCriterion | None = -1,  # type: ignore[assignment]
-    unavailable: tuple[TrialExclusion, str] | None = None,
+    recorded: MigratedCriterion | None | type[_WhateverTheRubricRecorded] = (
+        _WhateverTheRubricRecorded
+    ),
+    unavailable: Unavailable | None = None,
 ) -> TrialEvidence:
     labelled = judge_met is not None and constraint_passed is not None
     return TrialEvidence(
         trial=name,
-        recorded_criterion=_was() if recorded == -1 else recorded,
+        recorded_criterion=_was() if recorded is _WhateverTheRubricRecorded else recorded,
         judge_met=judge_met,
         constraint_passed=constraint_passed,
         justification=f"the judge's reading of {name}",
@@ -377,7 +389,10 @@ def test_a_criterion_with_zero_correspondence_reports_no_observation_at_all() ->
         trials=[
             _trial(
                 f"corpus/t{index}",
-                unavailable=(TrialExclusion.CONSTRAINT_VERDICT_UNAVAILABLE, "undecided here"),
+                unavailable=Unavailable(
+                    exclusion=TrialExclusion.CONSTRAINT_VERDICT_UNAVAILABLE,
+                    reason="undecided here",
+                ),
             )
             for index in range(3)
         ],
@@ -506,6 +521,79 @@ def test_a_candidate_is_not_charged_the_recorded_rubric_check() -> None:
     assert len(reconciled.counterfactual.trials) == 2
 
 
+@pytest.mark.parametrize(
+    ("declared", "names"),
+    [
+        (MigrationEvidence(corpus="corpus", observations=5, kappa=0.72), "measured 7"),
+        (MigrationEvidence(corpus="corpus", observations=7, kappa=0.5), "declares 0.5"),
+    ],
+    ids=["more-observations-than-the-declaration-counted", "a-kappa-the-run-does-not-reach"],
+)
+def test_a_declared_evidence_block_the_measurement_contradicts_is_refused(
+    declared: MigrationEvidence, names: str
+) -> None:
+    """``evidence`` is what a reviewer reads *instead of* re-running the command.
+
+    Two cells, because the rule reads the two fields differently. A run measuring **more**
+    observations than the declaration counted has read a corpus the declaration was not written
+    against. A run reaching the declared count must reproduce the declared κ — measured 0.720
+    here, against 0.5 written down.
+    """
+    entry = _entry(MigrationMode.NARROWED).model_copy(update={"evidence": declared})
+
+    reconciled = reconcile_entry(
+        entry, task_ids=[_CORPUS_TASK_ID], trials=_n7(disagreeing="permissive")
+    )
+
+    assert reconciled.verdict is ReconcileVerdict.REFUSED
+    (refusal,) = [
+        row
+        for row in reconciled.refusals
+        if row.kind is RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT
+    ]
+    assert names in refusal.message
+    assert "corpus" in refusal.message
+
+
+def test_a_reconciliation_over_part_of_the_declared_corpus_charges_the_declaration_nothing() -> (
+    None
+):
+    """The rule is a bound, and this is the boundary it exists for.
+
+    Pointing ``--source`` at part of the declared corpus is a documented diagnostic — it is how
+    each half of the committed two-arm corpus is shown to be the other's falsifier — so a run
+    measuring fewer observations than the declaration counted says nothing about it. The κ
+    written here is wrong on purpose: below the declared count, neither field is charged, which
+    is the residue the docs state rather than a case this tier can close.
+    """
+    entry = _entry(MigrationMode.NARROWED).model_copy(
+        update={"evidence": MigrationEvidence(corpus="corpus", observations=100, kappa=0.5)}
+    )
+
+    reconciled = reconcile_entry(
+        entry, task_ids=[_CORPUS_TASK_ID], trials=_n7(disagreeing="permissive")
+    )
+
+    assert reconciled.observations == 7
+    assert reconciled.refusals == []
+    assert reconciled.verdict is ReconcileVerdict.NO_COUNTER_EVIDENCE
+
+
+def test_a_declared_kappa_written_at_the_precision_it_is_reported_is_not_a_contradiction() -> None:
+    """κ is compared at three decimals, which is what the report prints and therefore what an
+    author copies: the corpus below measures ``0.7197``, and refusing the ``0.72`` written down
+    would refuse a number that was copied correctly."""
+    reconciled = reconcile_entry(
+        _entry(MigrationMode.NARROWED),
+        task_ids=[_CORPUS_TASK_ID],
+        trials=_n7(disagreeing="permissive"),
+    )
+
+    assert reconciled.kappa == pytest.approx(0.7197, abs=1e-3)
+    assert _entry(MigrationMode.NARROWED).evidence is not None
+    assert reconciled.refusals == []
+
+
 def test_a_trial_cannot_be_both_labelled_and_unlabelled() -> None:
     """The invariant that keeps one trial from being counted and excluded at once."""
     with pytest.raises(ValueError, match="both a label pair and a reason it has none"):
@@ -513,7 +601,9 @@ def test_a_trial_cannot_be_both_labelled_and_unlabelled() -> None:
             trial="corpus/t0",
             judge_met=True,
             constraint_passed=True,
-            unavailable=(TrialExclusion.NO_CRITERION_RESULTS, "no results"),
+            unavailable=Unavailable(
+                exclusion=TrialExclusion.NO_CRITERION_RESULTS, reason="no results"
+            ),
         )
 
 
@@ -707,7 +797,8 @@ def test_an_entry_declaring_no_map_carries_the_map_its_trial_was_graded_under() 
 def test_retiring_a_pack_s_last_criterion_leaves_the_judge_component_unevaluated() -> None:
     """A rubric with nothing left in it is a judge that scores nothing, not one that scores
     ``1.0``: folding in the aggregate's vacuous pass would hand the trial a component no
-    criterion produced."""
+    criterion produced. Reported as ``None`` rather than as a sentinel, because a number here
+    is read as a score the judge gave."""
     entry = _entry(MigrationMode.RETIRED)
     recorded = _recorded_verdict(judge_met=True, constraint_passed=True)
     only_one = {
@@ -746,7 +837,7 @@ def test_retiring_a_pack_s_last_criterion_leaves_the_judge_component_unevaluated
     (row,) = migration_counterfactual(entry, [trial]).trials
 
     assert row.judge_component_before == 1.0
-    assert row.judge_component_after == -1.0
+    assert row.judge_component_after is None
 
 
 def test_a_recorded_composed_component_is_named_rather_than_dropped() -> None:
@@ -804,16 +895,36 @@ def test_a_verdict_the_composition_cannot_reproduce_is_named_and_not_used_as_a_b
     assert "score=0.75" in gap.reason
 
 
-def test_the_migrated_criterion_leaves_the_veto_set_and_the_trace_gate_joins_it() -> None:
-    """For a ``required`` criterion the two weight maps are identical and say nothing, which is
-    why the veto sets are reported beside them: the transfer of the veto is the whole change."""
+@pytest.mark.parametrize(
+    ("mode", "vetoes_after"),
+    [
+        (MigrationMode.NARROWED, [_CRITERION, _CONSTRAINT]),
+        (MigrationMode.RETIRED, [_CONSTRAINT]),
+        (MigrationMode.CANDIDATE, [_CONSTRAINT]),
+    ],
+)
+def test_the_veto_set_after_the_migration_is_the_one_the_declared_mode_leaves(
+    mode: MigrationMode, vetoes_after: list[str]
+) -> None:
+    """The one mode-aware column, and every mode's cell, because the two answers are opposite.
+
+    A **narrow** leaves the criterion in the rubric and leaves it ``required: true``, so the
+    after set carries **both** vetoes — the shipped narrow's whole shape, which an after set
+    built by dropping the criterion would misreport as a veto lost. A **retirement** removes it,
+    so its veto goes and the trace gate is what holds one. A **candidacy** projects the
+    retirement it is a candidate *for*, having no narrowed text to project instead.
+
+    The weight maps are identical in every row here — this entry declares no map and a
+    ``required`` criterion frees no share — which is why the veto set is the column carrying the
+    change and why it is worth being exact about.
+    """
     (row,) = migration_counterfactual(
-        _entry(MigrationMode.RETIRED), [_trial("corpus/t0", judge_met=True, constraint_passed=True)]
+        _entry(mode), [_trial("corpus/t0", judge_met=True, constraint_passed=True)]
     ).trials
 
-    assert _CRITERION in row.vetoes_before
-    assert _CRITERION not in row.vetoes_after
-    assert row.vetoes_after == [_CONSTRAINT]
+    assert row.vetoes_before == [_CRITERION]
+    assert row.vetoes_after == sorted(vetoes_after)
+    assert row.weights_before == row.weights_after
 
 
 def test_the_trace_gate_the_migration_installs_fails_the_after_verdict_it_gates() -> None:
@@ -979,7 +1090,9 @@ def test_a_pack_declaring_no_migration_leaves_nothing_to_reconcile(tmp_path: Pat
         _reconcile(_corpus(tmp_path), root)
 
 
-def _second_task(tmp_path: Path, corpus: Path, *, task_id: str, **pack: Any) -> Path:
+def _second_task(
+    tmp_path: Path, corpus: Path, *, task_id: str, grading_text: str = _GRADING, **pack: Any
+) -> Path:
     """A second task's bundles, re-stamped from the first task's, and its own pack."""
     for bundle in sorted(corpus.iterdir())[:2]:
         twin = corpus.parent / f"{task_id}_{bundle.name}"
@@ -991,7 +1104,7 @@ def _second_task(tmp_path: Path, corpus: Path, *, task_id: str, **pack: Any) -> 
     root = tmp_path / "packs"
     write_migration_pack(
         root / task_id,
-        grading_text=_GRADING,
+        grading_text=grading_text,
         task_id=task_id,
         migration={"migrations": [_declared(**pack)]},
     )
@@ -1034,16 +1147,46 @@ def test_two_tasks_declaring_one_criterion_differently_cannot_be_pooled(tmp_path
     assert _CORPUS_TASK_ID in str(raised.value) and "notes_sibling" in str(raised.value)
 
 
-def test_a_declaration_the_pack_refuses_is_a_named_refusal_and_not_a_traceback(
+#: The pack with its rubric criterion removed, which is what makes a ``retired`` entry
+#: *loadable*: the load rule refuses a retirement whose criterion the pack still scores.
+_GRADING_AFTER_A_RETIREMENT = _GRADING[: _GRADING.index("\nllm_judge:")]
+
+
+def test_two_tasks_claiming_one_criterion_under_different_modes_cannot_be_pooled(
     tmp_path: Path,
 ) -> None:
-    """Every rule the sidecar is refused for at authoring time is refused here too.
+    """The two declarations agree on the criterion, its text and the constraint, and differ in
+    what they *claim* about it — which pooling must not fold away.
 
-    The corpus reaches the pack through the same gate ``tolokaforge validate`` applies, so a
-    pack whose declaration cannot be honoured is reported as such rather than reaching the
-    operator as an unhandled error from a module they did not invoke.
+    Folded, the two entries become one verdict under whichever mode was read first, and the
+    other's tolerance and weight map are silently discarded. The consequence is locked next door
+    — a permissive disagreement is ``no_counter_evidence`` for a narrow and ``refused`` for a
+    retirement — so a retirement folded under a narrow's mode would pass on exactly the evidence
+    that must refuse it.
+
+    The sibling pack ships its rubric without the criterion, because that is the only shape a
+    ``retired`` entry loads in — the load rule refuses a retirement the pack still scores. Its
+    ``trace_checks`` block is byte-identical, so nothing but the claim differs.
     """
-    root = tmp_path / "packs"
+    corpus = _corpus(tmp_path)
+    packs = _packs(tmp_path)
+    _second_task(
+        tmp_path,
+        corpus,
+        task_id="notes_sibling",
+        grading_text=_GRADING_AFTER_A_RETIREMENT,
+        mode="retired",
+        residual={"kind": "none", "reason": "the gate reads the whole of it"},
+    )
+
+    with pytest.raises(ReconcileError) as raised:
+        _reconcile(corpus, packs)
+
+    assert _CORPUS_TASK_ID in str(raised.value) and "notes_sibling" in str(raised.value)
+    assert "a different claim about it (mode, residual or combine_weights)" in str(raised.value)
+
+
+def _the_veto_rule_refuses_it(root: Path) -> None:
     write_migration_pack(
         root / "notes",
         grading_text=_GRADING.replace("severity: gate", "severity: scored"),
@@ -1051,8 +1194,58 @@ def test_a_declaration_the_pack_refuses_is_a_named_refusal_and_not_a_traceback(
         migration={"migrations": [_declared()]},
     )
 
-    with pytest.raises(ReconcileError, match="does not load"):
+
+def _the_sidecar_is_a_list(root: Path) -> None:
+    write_migration_pack(
+        root / "notes",
+        grading_text=_GRADING,
+        task_id=_CORPUS_TASK_ID,
+        migration=[_declared()],
+    )
+
+
+def _the_sidecar_is_not_yaml(root: Path) -> None:
+    write_migration_pack(
+        root / "notes",
+        grading_text=_GRADING,
+        task_id=_CORPUS_TASK_ID,
+        migration={"migrations": [_declared()]},
+    )
+    (root / "notes" / MIGRATION_FILENAME).write_text("migrations: [ {criterion: x\n")
+
+
+@pytest.mark.parametrize(
+    ("write_the_pack", "names"),
+    [
+        (_the_veto_rule_refuses_it, "shared 'constraints:' with severity: gate"),
+        (_the_sidecar_is_a_list, "is not a YAML mapping"),
+        (_the_sidecar_is_not_yaml, "while parsing a flow mapping"),
+    ],
+    ids=["a-rule-the-pack-refuses", "a-list-shaped-sidecar", "yaml-that-does-not-parse"],
+)
+def test_a_declaration_that_will_not_load_is_a_named_refusal_and_not_a_traceback(
+    tmp_path: Path, write_the_pack: Any, names: str
+) -> None:
+    """Every way the load gate says no, because it says no in three exception classes.
+
+    The corpus reaches the pack through the same gate ``tolokaforge validate`` applies, and that
+    gate documents raising ``ValueError`` for a rule the pack contradicts, ``RuntimeError`` for a
+    file that is not a mapping, and ``pydantic.ValidationError`` for an entry's own shape — plus
+    ``yaml.YAMLError`` for a file that does not parse at all. Catching one of them leaves the
+    others reaching the operator as an unhandled error from a module they did not invoke, and the
+    message names the wrong file when it does.
+
+    Each row asserts the underlying defect's own words survive into the refusal, so a handler
+    that caught the class and swallowed the cause reds too.
+    """
+    root = tmp_path / "packs"
+    write_the_pack(root)
+
+    with pytest.raises(ReconcileError) as raised:
         _reconcile(_corpus(tmp_path), root)
+
+    assert "does not load" in str(raised.value)
+    assert names in str(raised.value)
 
 
 def test_a_bundle_that_cannot_be_read_is_named_and_blocks_the_migration(tmp_path: Path) -> None:
@@ -1092,6 +1285,65 @@ def test_a_block_the_corpus_cannot_be_graded_against_stops_the_run(tmp_path: Pat
 
     with pytest.raises(ReconcileError, match="cannot be graded against the tools"):
         _reconcile(_corpus(tmp_path), root)
+
+
+def _patch_recorded_criterion(bundle: Path, **fields: Any) -> None:
+    """Rewrite the criterion the bundle's own ``task.yaml`` records, in place."""
+    task = yaml.safe_load((bundle / "task.yaml").read_text())
+    criteria = task["grading_config"]["llm_judge"]["rubric"]["criteria"]
+    (target,) = [row for row in criteria if row["id"] == _CRITERION]
+    target.update(fields)
+    (bundle / "task.yaml").write_text(yaml.safe_dump(task))
+
+
+def test_a_blank_recorded_description_is_bundle_data_and_not_an_authoring_defect(
+    tmp_path: Path,
+) -> None:
+    """A recorded criterion is *data*: the authoring rule that a description may not be blank is
+    about what an author writes, and charging it to a bundle would fail the whole reconciliation
+    under the wrong file's message.
+
+    So the bundle is read, and what the rubric it recorded says about ``was`` is reported through
+    the rule that exists for it: a description mismatch, naming the bundle and the field. Not an
+    unreadable trial and not a raise.
+    """
+    corpus = _corpus(tmp_path)
+    patched = sorted(corpus.iterdir())[0]
+    _patch_recorded_criterion(patched, description="   ")
+
+    report = _reconcile(corpus, _packs(tmp_path))
+
+    assert report.unreadable_trials == []
+    (entry,) = report.entries
+    refusal = next(
+        row for row in entry.refusals if row.kind is RefusalKind.RECORDED_RUBRIC_CONTRADICTS_WAS
+    )
+    assert str(patched) in refusal.message
+    assert "description" in refusal.message
+
+
+def test_a_recorded_rubric_that_does_not_read_as_one_is_one_unreadable_bundle(
+    tmp_path: Path,
+) -> None:
+    """A key the rubric model does not declare — a field a past release wrote and this one does
+    not — is one bundle's defect, so it is one ``UnreadableTrial`` naming that bundle's
+    ``task.yaml``, and the other four are still measured.
+
+    Uncaught it aborts the whole run, and under the message of whatever file the resolver was
+    holding rather than the one that could not be read.
+    """
+    corpus = _corpus(tmp_path)
+    patched = sorted(corpus.iterdir())[0]
+    _patch_recorded_criterion(patched, weight_hint=0.5)
+
+    report = _reconcile(corpus, _packs(tmp_path))
+
+    (unreadable,) = report.unreadable_trials
+    assert unreadable.trial == str(patched)
+    assert "task.yaml" in unreadable.reason
+    assert "weight_hint" in unreadable.reason
+    assert report.entries[0].observations == 4
+    assert any(str(patched) in reason for reason in report.blocking)
 
 
 def test_the_report_lands_under_the_subtree_the_reconciliation_owns(tmp_path: Path) -> None:

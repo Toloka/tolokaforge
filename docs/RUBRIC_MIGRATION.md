@@ -34,15 +34,22 @@ trial; neither of the free commands does.
 ## Usage
 
 ```bash
-# Check every migration the packs behind a corpus declare.
-tolokaforge reconcile --source tests/data/migration_corpora/notes_duplicate_check
+# Check every migration the packs behind a corpus declare. --dry-run because this corpus is
+# committed: the report lands under --source, so without it the run dirties the tree.
+tolokaforge reconcile --source tests/data/migration_corpora/notes_duplicate_check --dry-run
+
+# Over a corpus of your own, keeping the report artifact.
+tolokaforge reconcile --source results/<run-id>
 
 # Resolve packs somewhere other than examples/ (repeatable).
 tolokaforge reconcile --source <corpus> --packs tests/data/migration_packs
-
-# Reconcile and report, writing no artifact.
-tolokaforge reconcile --source <corpus> --dry-run
 ```
+
+**Reconciling a committed corpus wants `--dry-run`.** The report is written *under* `--source`
+(see [Output](#output)), so a run over anything tracked by git leaves a `reconcile/` directory
+behind in it. `.gitignore` covers the replay commands' output directories under any root, so
+such a run is not silently committed — but a dry run is what a verdict-only invocation wants,
+and it reaches exactly the same verdict.
 
 | Flag | Meaning |
 |---|---|
@@ -74,6 +81,7 @@ its load-time refusals are in [GRADING.md § Trace Checks](GRADING.md#trace-chec
 | `was` | The pre-migration criterion shape, verified against the rubric each bundle recorded. |
 | `mode` | `candidate` / `narrowed` / `retired`. Decides which disagreement directions are tolerated. |
 | `residual` | The author's claim about what remains. Rendered, never graded. |
+| `evidence` | Where the verdicts live, and what they measured. `observations` and `kappa` are checked against what this run measures — [refusal 5](#what-an-entry-is-refused-for). |
 | `acknowledged` | Waivers, each naming its trial and why the judge's verdict is the one to discount. |
 
 ## The bar
@@ -121,6 +129,16 @@ nothing, retires nothing and changes no grade.
 3. **A `was` block the recorded rubric contradicts**, naming the bundle and the field.
 4. **A corpus straddling a pack revision** — two bundles recording different shapes for one
    criterion, naming both.
+5. **A declared `evidence` block the measurement contradicts.** `evidence.observations` and
+   `evidence.kappa` are what a reviewer reads *instead of* re-running the command, so they are
+   the measurement or they are nothing. The rule is a **bound**, because `--source` may
+   deliberately be part of the corpus the declaration names: a run measuring *fewer*
+   observations says nothing, one measuring **more** has read a corpus the declaration
+   under-counts, and one that reaches the declared count must reproduce the declared κ. κ is
+   compared at three decimals — the precision the report prints, and therefore the number an
+   author copies. The residue this tier cannot close: a declaration over-*counting* its own
+   corpus is indistinguishable from a reconciliation over a subset, so only a run reaching the
+   declared count catches a κ that drifted.
 
 ### Why `was` is checked against the bundle and not the pack
 
@@ -184,10 +202,26 @@ trial that contributed an observation. Per trial:
 
 | field | what it is |
 |---|---|
-| `judge_component_before` / `_after` | the judge component the trial was graded on, and the one the reduced rubric produces |
+| `judge_component_before` / `_after` | the judge component the trial was graded on, and the one the reduced rubric produces. `_after` is `null` where the reduced rubric holds no criterion at all — a judge scoring nothing has no component |
 | `score_before` / `_after`, `binary_pass_before` / `_after` | the trial verdict, before and after |
 | `weights_before` / `_after` | the `combine.weights` map the trial was graded under, and the one the migration folds under |
-| `vetoes_before` / `_after` | what could veto the trial: required criterion ids, plus the entry's `severity: gate` constraints after |
+| `vetoes_before` / `_after` | what could veto the trial: required criterion ids, plus the entry's `severity: gate` constraints after. Mode-aware — see below |
+
+**The component and score columns are mode-blind; the veto set is not.** The *after* judge
+component drops the criterion from the judge's side whatever `mode` says, so for a `narrowed`
+entry it is **the bound of a full retirement** rather than the narrow's own effect. That is the
+only projection a recorded corpus can support: the narrowed text has no recorded label anywhere,
+because every trial was graded against the text it replaced, so what the judge *would* award for
+the residue is not computable from the evidence — only what it awards for nothing at all is. Read
+the after columns as "at most this much moves", and the shipped narrow's rows accordingly.
+
+The veto set is mode-aware because requiredness is **declared** rather than judged, so the
+report can state it exactly. A `narrowed` criterion stays in the rubric and stays
+`required: true`, so `vetoes_after` carries **both** it and the trace gate — two vetoes over one
+policy, which is the shipped narrow's whole shape and what a set omitting the kept one would
+misreport as a veto lost. A `retired` criterion is gone, so its veto goes and the gate is what
+holds one; a `candidate`'s counterfactual projects the retirement it is a candidate *for*, so it
+reads the same way.
 
 The *before* columns come from the bundle's own `grade.yaml`. The *after* columns are recomposed
 by the same function the runner folds a live trial through
@@ -226,6 +260,14 @@ directory name carries the run it came from.
 |---|---|---|---|
 | `not_met/` | 5 | `notes_add_note_duplicate_check_gated` | not met on every one |
 | `met/` | 12 | `notes_add_note_duplicate_check_policy` | met on every one |
+
+**The `not_met/` half is deliberately heterogeneous in its agent, and that is the measured
+finding rather than an untidiness.** Two of its five trials ran `anthropic/claude-sonnet-4-6` as
+the agent and three ran `openai/gpt-4o-mini`; all five skipped `list_notes`. So the
+stronger-model lever is **measured failed** rather than untried, which is why the second label
+had to be bought with a prompt. The `met/` half is twelve `openai/gpt-4o-mini` trials. Each
+bundle's `task.yaml` carries its own `model_config`, so the attribution travels with the corpus
+rather than living only here.
 
 **The two halves are the two arms of one experiment, and the independent variable is one
 paragraph of system prompt.** The arms are two testcases of

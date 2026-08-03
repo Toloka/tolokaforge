@@ -99,6 +99,11 @@ at. The cost of that is stated rather than discovered: a *task* named `replays` 
 `trace_replay` would hide its own trials from discovery, which is the trade for an
 isolation that holds whatever either command writes into its tree.
 
+`reconcile` ([RUBRIC_MIGRATION.md](RUBRIC_MIGRATION.md)) is **not** a third reserved name, and
+does not need to be: its isolation comes from its *write set* rather than from discovery. It
+writes exactly one file — `reconcile/<replay_id>/reconcile_report.yaml` — and never a per-bundle
+marker, so nothing it leaves under `--source` can be mistaken for a bundle by anything.
+
 Judge replay's own markers are untouched — `retrace` declares its own and never calls
 `discover_trial_bundles`.
 

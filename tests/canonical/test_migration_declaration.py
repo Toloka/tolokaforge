@@ -15,8 +15,11 @@ instead of the two agreeing on a criterion the rubric no longer holds.
 constraint and two routes' worth of route-scoped ones, so the veto rule's refusals are
 stated against a real block rather than a fixture. What a hand-built pack adds — the
 route-scoped *gate*, which no shipped pack declares — is in
-``tests/unit/grading/test_migration_declaration.py``. The narrowed arms' own entries are
-locked, with the corpus they rest on, in ``tests/canonical/test_rubric_migration.py``.
+``tests/unit/grading/test_migration_declaration.py``, which also owns every rule stated over
+the entry alone: the residual-kind directions and the freed-share rule need no real rubric to
+be about, so re-stating them here would lock one rule twice and neither more firmly. The
+narrowed arms' own entries are locked, with the corpus they rest on, in
+``tests/canonical/test_rubric_migration.py``.
 """
 
 from __future__ import annotations
@@ -87,6 +90,23 @@ def test_was_carries_the_rubric_criterion_shape_field_for_field(tmp_path: Path) 
         assert declared[name].default == current[name].default, name
 
 
+def test_the_compared_field_set_is_every_field_was_declares_and_no_other() -> None:
+    """:data:`EVERY_DECLARED_FIELD` is *derived* from the model, so what needs locking is the
+    derivation's two consequences rather than the list.
+
+    The set is written out here because a field added to ``was`` silently joins two comparisons
+    — the load-time cross-check and the recorded-rubric verification — and that is a contract
+    change, not a model tidy-up: a reviewer should see this literal move with it.
+
+    And every one of those fields must have a counterpart on the rubric criterion, because the
+    comparison reads both sides by the same names. A field with no counterpart raises
+    ``AttributeError`` at comparison time rather than dropping out of it, which is the intended
+    loudness — this assertion is where it is caught before a pack ever meets it.
+    """
+    assert set(EVERY_DECLARED_FIELD) == {"description", "kind", "required", "weight"}
+    assert set(EVERY_DECLARED_FIELD) <= set(Criterion.model_fields)
+
+
 def _inspect(tmp_path: Path, pack: Path, *entries: dict[str, Any]):
     return inspect_migration_declaration(
         write_migration_pack(
@@ -102,10 +122,10 @@ def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
     return {
         "criterion": "names_lot",
         "mode": "candidate",
-        "by": [
-            "the_reason_code_posted_was_read_from_the_catalog",
-            "the_lot_was_read_before_the_action_was_opened",
-        ],
+        # The lot correlation alone. `by` is a conjunction, and the pack's other correlation is
+        # about the reason code — a different proposition, which a trial could get wrong while
+        # grounding the lot correctly, so naming it would count that against the lot's claim.
+        "by": ["the_lot_was_read_before_the_action_was_opened"],
         "was": {
             "description": _NAMES_LOT,
             "kind": "binary",
@@ -228,8 +248,14 @@ def test_a_narrowed_veto_claimed_by_a_shared_gate_loads(tmp_path: Path):
 
 
 def test_a_narrowed_veto_claimed_by_a_shared_scored_constraint_is_refused(tmp_path: Path):
-    with pytest.raises(ValueError, match="the_note_was_written is scored"):
+    """One refusal, and both halves of what it has to say: which constraint is too weak and why,
+    and the shape to write instead. Split across two tests these built the identical pack twice
+    and asserted over the identical message."""
+    with pytest.raises(ValueError) as raised:
         _inspect(tmp_path, _CACHE_DEBUG, _narrowing_a_veto(by=["the_note_was_written"]))
+
+    assert "the_note_was_written is scored" in str(raised.value)
+    assert "shared 'constraints:' with severity: gate" in str(raised.value)
 
 
 def test_a_narrowed_veto_claimed_by_a_route_scoped_constraint_is_refused(tmp_path: Path):
@@ -243,11 +269,6 @@ def test_a_narrowed_veto_claimed_by_a_route_scoped_constraint_is_refused(tmp_pat
         )
 
 
-def test_the_veto_refusal_names_the_shape_to_write_instead(tmp_path: Path):
-    with pytest.raises(ValueError, match="shared 'constraints:' with severity: gate"):
-        _inspect(tmp_path, _CACHE_DEBUG, _narrowing_a_veto(by=["the_note_was_written"]))
-
-
 def test_a_retired_criterion_the_pack_still_scores_is_refused(tmp_path: Path):
     """A retirement the rubric did not follow leaves the judge scoring what the constraints
     are said to have replaced."""
@@ -258,27 +279,4 @@ def test_a_retired_criterion_the_pack_still_scores_is_refused(tmp_path: Path):
             _narrowing_a_veto(
                 mode="retired", residual={"kind": "none", "reason": "the gate is the whole of it"}
             ),
-        )
-
-
-def test_a_retired_entry_claiming_a_textual_residual_is_refused(tmp_path: Path):
-    """One of the two directions no spelling of a bare ``residual`` string could tell apart:
-    ``residual: none`` parses to the non-empty string ``'none'``, so a sentinel would satisfy
-    the requirement that something remains."""
-    with pytest.raises(ValueError, match="mode: retired carries residual.kind: text"):
-        _inspect(
-            tmp_path,
-            _CACHE_DEBUG,
-            _narrowing_a_veto(mode="retired", residual={"kind": "text", "reason": "the account"}),
-        )
-
-
-def test_a_narrowed_entry_claiming_no_residual_is_refused(tmp_path: Path):
-    """The other direction: ``residual: null`` parses to ``None``, so a retirement meaning
-    exactly "nothing remains" would fail a non-empty check written over one string."""
-    with pytest.raises(ValueError, match="mode: narrowed carries residual.kind: none"):
-        _inspect(
-            tmp_path,
-            _CACHE_DEBUG,
-            _narrowing_a_veto(residual={"kind": "none", "reason": "nothing remains"}),
         )

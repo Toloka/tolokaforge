@@ -72,9 +72,9 @@ dependencies = [
     # docker-compose project per trial. Imported at module level by
     # tolokaforge.core.per_trial_runtime, so it must ship with the wheel.
     "testcontainers>=4.14.2,<5",
-    # MCP server support — needed by any task that declares an mcp_server.py.
-    # Previously optional, promoted to core because the recommended task
-    # authoring pattern (FastMCP server subprocess) requires it.
+    # MCP server support — needed by any task that declares an mcp_server.py,
+    # which the recommended task authoring pattern (FastMCP server subprocess)
+    # does.
     # Upper-bounded on the major: ``mcp.server.fastmcp``, the one module
     # ``core/tools_interface.py`` imports, does not exist in 2.x. The runner
     # image installs the wheel with pip and resolves this range itself rather

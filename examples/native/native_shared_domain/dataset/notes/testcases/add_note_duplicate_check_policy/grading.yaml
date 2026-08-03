@@ -8,6 +8,12 @@
 # passing the `trace_checks` gate and the required `checked_duplicates_first`
 # criterion where its sibling fails both.
 #
+# Read that as a caveat rather than as a result: this arm's prompt states the very
+# thing the trace constraint measures, so it passes the gate by construction and its
+# trials cannot distinguish "the constraint matches the criterion" from "the agent did
+# what it was told". That bounds what the pooled evidence can say — see
+# docs/RUBRIC_MIGRATION.md#reading-the-evidence, § the experimental-design limitation.
+#
 # That is the point of the pair: the two testcases are the two arms of one
 # experiment, and every block a grade reads must stay identical between them or the
 # criterion the two arms label is no longer the same criterion. A canonical guard in

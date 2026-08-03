@@ -29,4 +29,7 @@ migrations:
     evidence:
       corpus: tests/data/migration_corpora/notes_duplicate_check
       observations: 17
+      # kappa 1.0 is a property of the corpus's design as much as of the criterion: the met half
+      # was bought with a prompt stating exactly what the constraint measures. See
+      # docs/RUBRIC_MIGRATION.md#reading-the-evidence.
       kappa: 1.0

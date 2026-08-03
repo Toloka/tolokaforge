@@ -17,10 +17,13 @@
 # the agent read, so they name no reason code and no lot number: a new code in the
 # catalog, or a different lot, needs no edit here.
 #
-# CANDIDACY: both correlations are declared candidates to replace the `names_lot`
+# CANDIDACY: the lot correlation is a declared candidate to replace the `names_lot`
 # criterion below, in the `migration.yaml` beside this file — which is where what a
 # retirement would still have to answer for is written, and where `tolokaforge
-# validate` checks the claim against this rubric. Neither retires anything.
+# validate` checks the claim against this rubric. It retires nothing. The reason-code
+# correlation is deliberately not part of that claim: `by` is a conjunction, and the
+# reason code is a different proposition from the lot, so a trial that got the lot
+# right and the code wrong would count against a claim about the lot.
 combine:
   method: weighted
   weights:

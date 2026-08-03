@@ -5,6 +5,8 @@ This module provides helper functions for the GradeTrial RPC implementation:
 - compute_state_diff: Compute human-readable diff between two stable states
 - evaluate_transcript_rules: Evaluate transcript rules against the trial's event timeline
 - combine_grade_components: Combine component scores into final grade
+- compose_runner_trial_verdict: Apply the judge and trace gates around that fold, so an
+  offline recomputation reaches the runner's verdict without repeating either gate
 
 See docs/GRPC_PROTOCOL.md for grading algorithm specification.
 """
@@ -23,7 +25,7 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
-from tolokaforge.core.grading.grade_components import COMPONENT_BY_NAME, GRADE_COMPONENTS
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, runner_score_field
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
@@ -1123,7 +1125,7 @@ def combine_grade_components(
     )
 
 
-_JUDGE_SCORE_FIELD = COMPONENT_BY_NAME["llm_judge"].runner_score_field
+_JUDGE_SCORE_FIELD = runner_score_field("llm_judge")
 
 
 @dataclass(frozen=True)

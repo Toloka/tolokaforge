@@ -2001,12 +2001,12 @@ check-for-duplicates-first policy with two conjuncts:
 Three authoring choices in it are the ones to copy:
 
 - **The veto survives on both halves, and that is a load-time rule rather than a
-  convention.** The criterion was `required: true`, so it carried a trial-level veto and
+  convention.** The criterion is `required: true`, so it carries a trial-level veto and
   **no score share** — retiring or narrowing it moves the judge score not at all, and only
   the veto is at stake. The declaration is therefore only accepted because the constraint
   claiming it is **shared** and carries `severity: gate`
-  ([the veto rule](#declaring-a-migration-the-migrationyaml-sidecar)); the criterion keeps
-  `required: true` for the conjunct it kept. Two vetoes over one policy, and either fails
+  ([the veto rule](#declaring-a-migration-the-migrationyaml-sidecar)); the criterion stays
+  `required: true` for the conjunct it holds. Two vetoes over one policy, and either fails
   the trial alone.
 - **The judge's `reference` stops asking for the half it no longer grades.** A reference
   still describing the ordering would have the judge charging a conjunct the gate already
@@ -2030,16 +2030,23 @@ judge still reads — is its justification.
 
 #### What a correlation is a candidate to replace, and what it is not
 
-Both packs above declare, in a [`migration.yaml` sidecar](#declaring-a-migration-the-migrationyaml-sidecar)
-beside their `grading.yaml`, the judge criterion each new check is a `candidate` for.
+`lot_ops_01` and `cache_debug` each declare, in a [`migration.yaml` sidecar](#declaring-a-migration-the-migrationyaml-sidecar)
+beside their `grading.yaml`, the judge criterion their new checks are a `candidate` for.
 **Neither retires one**, and a `candidate` changes no grading: the criterion keeps its
 weight and its veto, and the declaration is the claim to be measured. Each pack's header
 comment points at its sidecar; what a retirement would still have to answer for is written
 in the sidecar beside the entry, and summarised here because correlation is what surfaced it.
 
+`by` is a **conjunction** — every constraint it names must pass for the recomputed label to
+count as met — so a check is named there only where it is about the same proposition as the
+criterion. `lot_ops_01`'s reason-code correlation is therefore *not* part of its candidacy: a
+trial that grounded the lot correctly and got the reason code wrong would count against a claim
+about the lot. It is a candidate for nothing the pack currently declares, which is the honest
+state — no criterion in that rubric is about the code.
+
 | new check | candidate for | what a retirement would still owe |
 |---|---|---|
-| `lot_ops_01`'s two correlations | `names_lot` (binary, `required: true`) | a shared `severity: gate` constraint, because both correlations are *scored* and the criterion is a veto — the veto rule refuses the conversion at load. The criterion also accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value |
+| `lot_ops_01`'s lot correlation | `names_lot` (binary, `required: true`) | a shared `severity: gate` constraint, because the correlation is *scored* and the criterion is a veto — the veto rule refuses the conversion at load. The criterion also accepts *either* `LOT-1007` or `lot 7`, where a binding is one exact value |
 | `cache_debug`'s two grounded-claim checks | `explains_mechanism` (graded, weight `1.0`) | a `combine_weights` map for the freed score share, which the freed-share rule requires of a scored conversion. The checks also reach only the half asking the note to be grounded in the observed divergence, not the causal account of why the write leaves the cache stale, which no exact or textual check expresses |
 
 1. **The two conversions are unsafe in opposite directions, and a different rule refuses

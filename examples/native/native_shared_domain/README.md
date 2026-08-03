@@ -193,10 +193,13 @@ to the user), the post-migration `combine_weights`, and the corpus the claim res
 Nothing about grading reads the file.
 
 ```sh
-uv run tolokaforge reconcile --source tests/data/migration_corpora/notes_duplicate_check
+uv run tolokaforge reconcile \
+  --source tests/data/migration_corpora/notes_duplicate_check --dry-run
 ```
 
-That spends nothing and exits `0`: 17 observations, accuracy `1.0`, Cohen's κ `1.0`,
+`--dry-run` because the report is written *under* `--source` and this corpus is committed, so
+a plain run leaves a `reconcile/` directory in the tracked tree; the verdict is the same either
+way. That spends nothing and exits `0`: 17 observations, accuracy `1.0`, Cohen's κ `1.0`,
 twelve met/passed and five not-met/failed with nothing off the agreeing diagonal, verdict
 `no_counter_evidence`. It is run against the **pack**, not a fixture, so editing the
 constraint changes what is recomputed over the frozen corpus and the CI lock reds. The

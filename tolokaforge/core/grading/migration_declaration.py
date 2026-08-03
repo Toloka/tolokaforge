@@ -501,20 +501,30 @@ def _declared_shape_rejection(
     return None
 
 
-EVERY_DECLARED_FIELD = ("description", "kind", "required", "weight")
-"""Every field ``was`` claims, so a field added to it is compared by every tier that checks it."""
+EVERY_DECLARED_FIELD: tuple[str, ...] = tuple(MigratedCriterion.model_fields)
+"""Every field ``was`` claims, derived from the model that declares them.
+
+Written out, this was a second list to keep in step with :class:`MigratedCriterion`, and the
+failure mode of it falling behind is a field silently dropping out of both tiers that compare
+``was`` — the load-time cross-check and the recorded-rubric verification — leaving the author's
+claim about it unchecked. Derived, a new field is compared the moment it exists.
+"""
 
 _WHAT_A_NARROW_LEAVES_ALONE = ("kind", "required")
 
 
 def _declared_shape(criterion: MigratedCriterion | Criterion) -> dict[str, Any]:
-    """One criterion's shape, its description reduced to the words it is made of."""
-    return {
-        "description": _text(criterion.description),
-        "kind": criterion.kind,
-        "required": criterion.required,
-        "weight": criterion.weight,
-    }
+    """One criterion's shape, its description reduced to the words it is made of.
+
+    Read off :data:`EVERY_DECLARED_FIELD` by name, so a field added to ``was`` that the
+    criterion being compared does not carry raises :class:`AttributeError` here rather than
+    dropping out of the comparison. That is the intent: the two shapes are comparable only
+    while both sides declare the same fields, and a rubric criterion that stopped carrying
+    one is a change no silent skip should absorb.
+    """
+    shape: dict[str, Any] = {name: getattr(criterion, name) for name in EVERY_DECLARED_FIELD}
+    shape["description"] = _text(shape["description"])
+    return shape
 
 
 def criterion_shape_disagreement(
