@@ -131,7 +131,7 @@ def _row_line(row: ConstraintDiscriminationRow) -> str:
         f"  {_row_label(row)}: [{style}]{row.verdict.value}[/{style}]{decided} — "
         f"evaluated {row.trials_evaluated}, decided {row.trials_decided} "
         f"({row.passed_trials} passed, {row.failed_trials} failed), "
-        f"undecided {row.undecided_trials}, agrees with the recorded pass on "
+        f"undecided {row.undecided_trials}, agrees with the recorded verdict on "
         f"{row.agreed_with_recorded_pass}/{row.trials_labelled}"
     )
 

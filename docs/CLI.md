@@ -2,7 +2,7 @@
 
 This document describes the tolokaforge CLI's shared building blocks. Per-command usage lives in `--help` output.
 
-The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
+The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
 
 ## Display layer
 
@@ -262,7 +262,7 @@ Line history persists to `~/.tolokaforge_history` via `prompt_toolkit`'s `FileHi
 
 ### Extras dependency
 
-The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
+The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
 
 ## Dry run
 
@@ -465,7 +465,7 @@ Rendered after the display region closes, on both success and failure, before th
 
 On failure the outcome line becomes `✗ Run failed in <duration>` (bold red glyph); the underlying exception continues to propagate to Click, which renders its own traceback and exit code. The banner is complementary — it does not swallow the failure.
 
-When a budget cuts the run short (see [§ Cost, time, and sample limits](#cost-time-and-sample-limits)) the outcome line becomes `⏸ Run stopped (<reason>) in <duration>` — yellow glyph via the `warn` theme token. `<reason>` is one of `cost limit`, `time limit`, or `sample limit`, read from `LIMIT_HIT.json` under the run directory. Report and browse lines are unchanged. The stopped variant supersedes the success / failure axis: a run that both hit a budget and raised on drain still renders the stopped shape.
+When a budget cuts the run short (see [§ Cost and time limits](#cost-and-time-limits)) the outcome line becomes `⏸ Run stopped (<reason>) in <duration>` — yellow glyph via the `warn` theme token. `<reason>` is one of `cost limit`, `time limit`, or `sample limit`, read from `LIMIT_HIT.json` under the run directory. Report and browse lines are unchanged. The stopped variant supersedes the success / failure axis: a run that both hit a budget and raised on drain still renders the stopped shape.
 
 `<duration>` is `MM:SS` under one hour, `HH:MM:SS` above — the same shape the Live run panel's bottom bar uses. It is measured with `time.monotonic()` bracketing the run.
 

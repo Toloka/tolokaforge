@@ -24,8 +24,9 @@ operation into a paid one is how an operator pays by accident.
 - **Iterate on a candidate constraint without touching the pack.**
   `--constraints <file>` supplies the block, so the loop is write → `retrace` → read
   the discrimination → commit only what discriminated.
-- **Audit a recorded verdict.** The re-check is compared against the pass the live
-  run wrote, per constraint, so a disagreement between the two is visible.
+- **Audit a recorded verdict.** Each constraint's re-check is compared against the
+  verdict the live run recorded *for that constraint*, so a disagreement between the
+  two is visible.
 
 ## Usage
 
@@ -45,7 +46,7 @@ uv run tolokaforge retrace --source <run-dir> --constraints candidate.yaml
 | `--source` | A run dir (`trials/<task>/<idx>/` subtree), a flat collection of bundle dirs, or a single bundle dir. |
 | `--trial` | Re-check a single bundle dir instead of the whole `--source`. |
 | `--constraints` | A grading document carrying a `trace_checks:` key, or a bare `constraints:` / `alternatives:` block. **Replaces** each bundle's block wholesale — never merges. Default: the block each bundle recorded. |
-| `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
+| `--replay-id` | Name for the artifact subdirectory — letters, digits, `.`, `_` and `-` only, and not `.` or `..`. Default: a timestamped id. |
 | `--dry-run` | Discover, classify and rebuild each timeline, then report what would be re-checked. Nothing is written, so there is no discrimination table: nothing was measured. |
 
 A merge of two constraint lists has no auditable meaning: partial satisfaction across
@@ -59,10 +60,12 @@ replaces.
 |---|---|
 | every discovered bundle was re-checked or declared-skipped | `0` |
 | a constraint separated nothing (`always_true`, `always_false`, `never_decided`, `undecided_in_part`, `not_measured`) | `0` |
-| a re-check disagrees with the `binary_pass` the live run recorded | `0` |
+| a re-check disagrees with the verdict the live run recorded for that constraint | `0` |
 | a bundle cannot be classified or reconstructed | `1`, after the per-bundle lines and the report |
 | `--constraints` cannot be loaded, or fails the authoring gate | `1`, before any trial is re-checked; nothing is written |
 | `--source` holds no bundle at all | `1`, naming the source; nothing is loaded |
+| two bundles claim one task while declaring different `trace_checks` blocks | `1`, naming both; the batch ran, no report was written |
+| `--replay-id` is not a single directory name | `2`, Click's usage code; nothing is loaded |
 
 **Exit zero on a non-discriminating constraint is deliberate.** Both that and a
 disagreement with the recorded grade are *results* — an author iterating on a
@@ -75,10 +78,21 @@ be a new explicit flag, not a change to this default.
 
 A directory is a trace-replay bundle iff it directly contains **`task.yaml` +
 `trajectory.yaml`**. Not `grade.yaml`: a trial is worth re-checking whether or not it
-was ever graded. Discovery never walks the `trace_replay/` subtree, so a source
-pointed at a run that already holds replay output does not re-check what sits there.
-Judge replay's own markers and its `replays/` tree are untouched — the two commands'
-discovery never meets.
+was ever graded.
+
+**`trace_replay` and `replays` are reserved directory names.** A bundle sitting beneath
+a directory with either name, at any depth under `--source`, is not discovered:
+`trace_replay/` is this command's own output and `replays/` is
+[judge replay's](JUDGE_REPLAY.md), so neither command's discovery reads the other's
+artifacts, and a source re-pointed at a run that already holds replay output re-checks
+its trials rather than its results. The depth is unrestricted because a
+previously-replayed subtree can be nested anywhere beneath whatever the operator points
+at. The cost of that is stated rather than discovered: a *task* named `replays` or
+`trace_replay` would hide its own trials from discovery, which is the trade for an
+isolation that holds whatever either command writes into its tree.
+
+Judge replay's own markers are untouched — `retrace` declares its own and never calls
+`discover_trial_bundles`.
 
 Each discovered bundle gets one of four dispositions, all of them reported:
 
@@ -183,20 +197,35 @@ Undecided trials are excluded from `passed_trials` / `failed_trials` and counted
 `undecided_trials`, and `trials_evaluated` sits beside `trials_decided` — so a verdict
 resting on one observation is visible as one.
 
-**Agreement with the recorded grade is a second, independent source.**
-`trials_labelled` counts the decided trials whose bundle recorded a `binary_pass`, and
-`agreed_with_recorded_pass` how many of those the re-check agrees with: one number is
-the constraint verdict recomputed now, the other the pass the live run wrote. They are
-not expected to be equal — a trial fails for reasons beyond one constraint — so the
-pair is evidence to read, not a check that must hold.
+**Agreement with the recorded grade is a second, independent source, joined by
+constraint id.** `trials_labelled` counts the trials on which *this constraint* was
+decided both by the re-check and by the live run that wrote the bundle, and
+`agreed_with_recorded_pass` how many of those the two agree on. One number is the
+constraint verdict recomputed now, the other the verdict the live run froze into
+`grade.yaml`'s `trace_check_results`.
+
+A trial is not labelled where there is nothing to compare: the re-check was undecided,
+the recorded verdict was undecided, the bundle was never graded, or the bundle recorded
+no verdict for this id at all — which is the ordinary case under `--constraints`, where
+the block names constraints the pack never had. So `trials_labelled` can be well short
+of `trials_decided`, and the evidence block is where to look before reading anything
+into that.
+
+The trial-level `binary_pass` is reported per trial, in the report's `trials` rows,
+never as a constraint's comparand: a trial fails for reasons beyond any one constraint,
+so a constraint verdict compared against it would count a disagreement whenever some
+*other* component failed the trial.
 
 ## Output
 
 Artifacts land under `<source>/trace_replay/<replay_id>/`, a deliberate sibling of
-judge replay's `replays/` so neither command's discovery walks the other's output:
+judge replay's `replays/` — both names being reserved from discovery is what keeps
+neither command reading the other's output:
 
-- `trace_replay_report.yaml` — the run-level report: per-trial rows, the
-  discrimination table, the evidence block, and the supplied block's gate notes.
+- `trace_replay_report.yaml` — the run-level report: per-trial rows (each carrying the
+  trial's `provenance`, `tool_log_present` and the `binary_pass` the live run
+  recorded), the discrimination table, the evidence block, and the supplied block's
+  gate notes.
 - `<bundle-rel-path>/trace_checks_result.yaml` — the recomputed `TraceChecksResult`
   per re-checked bundle, under the bundle's discovered relative path.
 
@@ -206,7 +235,10 @@ that is false by construction when `--source` *is* a single bundle directory, be
 the output subtree is then created inside it. `--dry-run` writes nothing at all.
 
 `trace_checks_result.yaml` is deliberately a name no trial bundle already holds, so a
-write that escaped the output subtree would create a file rather than clobber one.
+write that escaped the output subtree would create a file rather than clobber one. The
+guarantee is scoped to that subtree, which is why `--replay-id` is held to a single
+directory name: a separator or `..` in it would name a tree outside `--source`
+altogether.
 
 ## From Python
 
@@ -243,6 +275,13 @@ reads them off the batch that produced them.
 Pass `dry_run=True` to the batch for the `--dry-run` shape, and use
 `build_trace_replay_report` in place of `emit_…` to get the report without writing
 it. Both return `None` where there was nothing to report.
+
+Both raise `TraceReplayReportError` rather than reporting something they cannot stand
+behind: a `declared` mapping missing a bundle the batch re-checked or naming
+constraints the batch never evaluated did not come from this batch, and a corpus in
+which two bundles claim one `task_id` while declaring *different* blocks has no single
+row to be reported in — point the source at one revision of the pack, or supply
+`--constraints` to measure one block over all of it.
 
 ## The authoring loop
 

@@ -31,6 +31,7 @@ from collections.abc import Mapping, Sequence
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
+from types import MappingProxyType
 from typing import Any
 
 import yaml
@@ -58,6 +59,8 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.artifacts import read_recorded_tool_log
 
 __all__ = [
+    "JUDGE_REPLAY_DIRNAME",
+    "RESERVED_DIRNAMES",
     "TRACE_CHECKS_RESULT_FILENAME",
     "TRACE_REPLAY_DIRNAME",
     "TRACE_REPLAY_REPORT_FILENAME",
@@ -75,6 +78,7 @@ __all__ = [
     "TraceReplayOutcomeStatus",
     "TraceReplayOverrideNotes",
     "TraceReplayReport",
+    "TraceReplayReportError",
     "TrialTraceReplay",
     "TrialTraceReplayOutcome",
     "build_trace_replay_report",
@@ -93,6 +97,18 @@ __all__ = [
 #: Subdirectory replay artifacts are written under; excluded from discovery so a
 #: source pointed at a previous run's output never re-checks bundles nested there.
 TRACE_REPLAY_DIRNAME = "trace_replay"
+#: Judge replay's output subtree, excluded from discovery beside this command's own.
+#: A local literal rather than an import of ``replay.REPLAYS_DIRNAME``: that module
+#: loads the judge and its LLM client at import time, and the import boundary that
+#: makes this one incapable of spending forbids reaching it. A shared leaf module
+#: carrying the layout for both is #787.
+JUDGE_REPLAY_DIRNAME = "replays"
+#: Directory names reserved anywhere under a source: a bundle sitting beneath one is
+#: not discovered, at any depth, because a previously-replayed subtree can be nested
+#: arbitrarily. The trade is deliberate — a *task* named ``replays`` would hide its
+#: own trials — and it is what keeps the two replay commands from reading each
+#: other's output whatever either one writes into its tree.
+RESERVED_DIRNAMES = frozenset({TRACE_REPLAY_DIRNAME, JUDGE_REPLAY_DIRNAME})
 #: Per-bundle artifact name. Deliberately one no trial bundle already holds, so a
 #: write that escaped the output subtree creates a file rather than clobbering one.
 TRACE_CHECKS_RESULT_FILENAME = "trace_checks_result.yaml"
@@ -209,6 +225,19 @@ class TraceChecksOverrideError(ValueError):
     """
 
 
+class TraceReplayReportError(ValueError):
+    """One report cannot be built over these outcomes, and the message says which pair.
+
+    Every cause is a mismatch between the batch and the constraint blocks it is being
+    reported against, never a defect in a bundle — those are already per-trial
+    failures by the time a report is built. A row keyed by ``(task_id,
+    constraint_id)`` is a claim about one pack's block, so a corpus in which two
+    bundles claim one task while declaring different blocks has no single row to make
+    it in, and a ``declared`` mapping that did not come from this batch cannot say
+    what a trial was measured against.
+    """
+
+
 @dataclass(frozen=True)
 class TraceChecksOverride:
     """A constraint block supplied on the command line, and the file it came from.
@@ -218,6 +247,11 @@ class TraceChecksOverride:
     validated, derived here so the two cannot drift. The block's own rejections
     describe what is wrong with a ``trace_checks`` block but not *which* file
     carries it, so they are re-raised naming the path.
+
+    Frozen, and ``block`` is stored as a read-only copy of what the caller passed, so
+    a mapping mutated after construction cannot make ``block`` and ``config``
+    disagree. Carrying a mapping also makes the type unhashable despite being frozen:
+    it is compared by value and never used as a key.
     """
 
     path: Path
@@ -231,6 +265,7 @@ class TraceChecksOverride:
             raise TraceChecksOverrideError(
                 f"constraint override {self.path} cannot be used as written: {exc}"
             ) from exc
+        object.__setattr__(self, "block", MappingProxyType(dict(self.block)))
         object.__setattr__(self, "config", config)
 
 
@@ -381,9 +416,11 @@ class TrialTraceReplayOutcome:
     that won no trial is only reportable from it. ``failure`` classifies a
     ``FAILED`` disposition for the evidence block.
 
-    ``recorded_binary_pass`` is the pass the live run wrote into ``grade.yaml``,
-    ``None`` where the bundle was never graded — the independent source the report
-    counts each recomputed constraint verdict's agreement against.
+    ``recorded_constraints`` is what the live run concluded per constraint, the
+    independent source the report joins each recomputed verdict to by id;
+    ``recorded_binary_pass`` is the trial-level pass beside it, reported per trial
+    rather than per constraint because a trial fails for reasons beyond any one
+    constraint. Both are ``None`` where the bundle was never graded.
     """
 
     bundle: Path
@@ -392,22 +429,53 @@ class TrialTraceReplayOutcome:
     provenance: ConstraintProvenance | None = None
     evidence: BundleEvidence | None = None
     result: TraceChecksResult | None = None
-    artifacts_dir: Path | None = None
     override_authoring: AuthoringReport | None = None
     task_id: str | None = None
     config: TraceChecksConfig | None = None
     failure: TraceReplayFailure | None = None
+    recorded_constraints: tuple[TraceConstraintResult, ...] | None = None
     recorded_binary_pass: bool | None = None
 
 
-def _load_yaml_mapping(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
+def _load_yaml(path: Path) -> Any:
     try:
-        loaded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        return yaml.safe_load(path.read_text(encoding="utf-8"))
     except yaml.YAMLError as exc:
         raise MissingTraceReplayInputError(f"unreadable YAML at {path}: {exc}") from exc
+
+
+def _load_yaml_mapping(path: Path) -> dict[str, Any] | None:
+    """A mapping off *path*, ``None`` where the file is absent *or* holds anything else.
+
+    For the inputs whose absence and whose wrong shape are one refusal at the call
+    site: a bundle with no ``task.yaml`` and one whose ``task.yaml`` is a list are
+    both "not a trial bundle", and the caller names both possibilities.
+    """
+    if not path.exists():
+        return None
+    loaded = _load_yaml(path)
     return loaded if isinstance(loaded, dict) else None
+
+
+def _carried_mapping(path: Path) -> dict[str, Any] | None:
+    """The mapping a bundle carries at *path*, ``None`` only where it carries none.
+
+    The strict reading, for the two inputs whose *absence* is a supported state: an
+    ungraded trial has no ``grade.yaml``, and a bundle older than the stamp has no
+    ``schema_version`` in ``metrics.yaml``. Folding a wrong-shaped file into that
+    ``None`` would report a bundle that cannot say what the live run concluded as one
+    nobody graded — dropping it out of the agreement denominator silently — and an
+    unreadable stamp as an unstamped bundle.
+    """
+    if not path.exists():
+        return None
+    loaded = _load_yaml(path)
+    if isinstance(loaded, dict):
+        return loaded
+    raise MissingTraceReplayInputError(
+        f"{path} holds {type(loaded).__name__} where a mapping belongs, so the bundle "
+        "cannot say what it recorded — which is a different state from not carrying it"
+    )
 
 
 def _is_bundle(path: Path) -> bool:
@@ -422,6 +490,10 @@ def discover_trace_bundles(source: Path) -> list[Path]:
     or not it was ever graded. Handles the three recorded layouts uniformly — a run
     dir with a ``trials/<task>/<idx>/`` subtree, a flat collection of bundle dirs,
     or a single bundle dir. Returned sorted for stable batches.
+
+    Nothing beneath a :data:`RESERVED_DIRNAMES` directory is discovered, at any
+    depth: a source re-pointed at a run that already holds either replay command's
+    output re-checks the trials, never the artifacts.
     """
     source = Path(source)
     if _is_bundle(source):
@@ -429,10 +501,25 @@ def discover_trace_bundles(source: Path) -> list[Path]:
     bundles = {
         marker.parent
         for marker in source.rglob("trajectory.yaml")
-        if TRACE_REPLAY_DIRNAME not in marker.relative_to(source).parts
+        if RESERVED_DIRNAMES.isdisjoint(marker.relative_to(source).parts)
         and _is_bundle(marker.parent)
     }
     return sorted(bundles)
+
+
+def _recorded_task(bundle: Path) -> dict[str, Any]:
+    """The bundle's ``task.yaml``, read once per bundle and threaded onward.
+
+    Every reader of it — the eligibility classification, the constraint block, the
+    task id — takes the mapping rather than the path, because parsing it per reader
+    costs more than the whole re-check it feeds.
+    """
+    task = _load_yaml_mapping(bundle / "task.yaml")
+    if task is None:
+        raise MissingTraceReplayInputError(
+            f"not a trial bundle: {bundle / 'task.yaml'} is missing or not a mapping"
+        )
+    return task
 
 
 def classify_trace_trial(
@@ -446,22 +533,24 @@ def classify_trace_trial(
     :class:`MissingTraceReplayInputError` when ``task.yaml`` is missing or is not a
     mapping: that is not a constraint-less trial, it is not a trial bundle.
     """
-    task = _load_yaml_mapping(Path(bundle) / "task.yaml")
-    if task is None:
-        raise MissingTraceReplayInputError(
-            f"not a trial bundle: {Path(bundle) / 'task.yaml'} is missing or not a mapping"
-        )
+    bundle = Path(bundle)
+    return _classify_trace_trial(_recorded_task(bundle), override)
+
+
+def _classify_trace_trial(
+    task: dict[str, Any], override: TraceChecksOverride | None
+) -> TraceReplayEligibility:
     if override is not None or _declared_trace_checks(task) is not None:
         return TraceReplayEligibility.ELIGIBLE
     return TraceReplayEligibility.NOT_APPLICABLE
 
 
-def _declared_trace_checks(task: dict[str, Any] | None) -> Any:
-    return ((task or {}).get("grading_config") or {}).get("trace_checks")
+def _declared_trace_checks(task: dict[str, Any]) -> Any:
+    return (task.get("grading_config") or {}).get("trace_checks")
 
 
 def _resolve_trace_checks(
-    bundle: Path, task: dict[str, Any] | None, override: TraceChecksOverride | None
+    bundle: Path, task: dict[str, Any], override: TraceChecksOverride | None
 ) -> tuple[TraceChecksConfig, ConstraintProvenance]:
     if override is not None:
         return override.config, ConstraintProvenance.OVERRIDE
@@ -551,19 +640,33 @@ def _recorded_binary_pass(bundle: Path, grade: dict[str, Any]) -> bool | None:
     )
 
 
+def _recorded_constraints(bundle: Path, recorded: Any) -> tuple[TraceConstraintResult, ...] | None:
+    """The per-constraint verdicts a live run froze, read as the model that wrote them.
+
+    A non-list is refused rather than iterated: it is the bundle's account of what the
+    live run concluded, and the report joins the recomputation to it by constraint id.
+    Read through :class:`TraceConstraintResult` itself, which forbids unknown keys —
+    the same strictness the sibling summary and ``binary_pass`` are read with, because
+    a verdict this reader cannot fully account for is not a verdict to compare against.
+    """
+    if recorded is None:
+        return None
+    if not isinstance(recorded, list):
+        raise MissingTraceReplayInputError(
+            f"{bundle / 'grade.yaml'} holds {type(recorded).__name__} where the live run's "
+            "per-constraint verdicts belong, so the bundle cannot say what it concluded"
+        )
+    return tuple(TraceConstraintResult.model_validate(item) for item in recorded)
+
+
 def _recorded_grade(bundle: Path) -> _RecordedGrade:
-    grade = _load_yaml_mapping(bundle / "grade.yaml")
+    grade = _carried_mapping(bundle / "grade.yaml")
     if grade is None:
         return _RecordedGrade(constraints=None, summary=None, binary_pass=None)
-    recorded = grade.get("trace_check_results")
     summary = grade.get("trace_checks_summary")
     try:
         return _RecordedGrade(
-            constraints=(
-                None
-                if recorded is None
-                else tuple(TraceConstraintResult.model_validate(item) for item in recorded)
-            ),
+            constraints=_recorded_constraints(bundle, grade.get("trace_check_results")),
             summary=None if summary is None else TraceChecksSummary.model_validate(summary),
             binary_pass=_recorded_binary_pass(bundle, grade),
         )
@@ -575,7 +678,7 @@ def _recorded_grade(bundle: Path) -> _RecordedGrade:
 
 def _schema_version(bundle: Path) -> int | None:
     """The bundle's schema stamp, ``None`` where the bundle predates the stamp."""
-    stamped = (_load_yaml_mapping(bundle / "metrics.yaml") or {}).get("schema_version")
+    stamped = (_carried_mapping(bundle / "metrics.yaml") or {}).get("schema_version")
     if stamped is None or (isinstance(stamped, int) and not isinstance(stamped, bool)):
         return stamped
     raise MissingTraceReplayInputError(
@@ -584,9 +687,9 @@ def _schema_version(bundle: Path) -> int | None:
     )
 
 
-def _task_id(bundle: Path, task: dict[str, Any] | None) -> str:
+def _task_id(bundle: Path, task: dict[str, Any]) -> str:
     """Which task a bundle's trial belongs to, half of a discrimination row's key."""
-    declared = (task or {}).get("task_id")
+    declared = task.get("task_id")
     if isinstance(declared, str) and declared:
         return declared
     raise MissingTraceReplayInputError(
@@ -608,7 +711,12 @@ def read_trace_replay_inputs(
     an eligible one.
     """
     bundle = Path(bundle)
-    task = _load_yaml_mapping(bundle / "task.yaml")
+    return _read_trace_replay_inputs(bundle, _recorded_task(bundle), override)
+
+
+def _read_trace_replay_inputs(
+    bundle: Path, task: dict[str, Any], override: TraceChecksOverride | None
+) -> TraceReplayInputs:
     config, provenance = _resolve_trace_checks(bundle, task, override)
     trajectory, tool_log_present = _load_trajectory(bundle)
     recorded = _recorded_grade(bundle)
@@ -750,11 +858,12 @@ def _replay_one_bundle(
     authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
-        if classify_trace_trial(bundle, override=override) is TraceReplayEligibility.NOT_APPLICABLE:
+        task = _recorded_task(bundle)
+        if _classify_trace_trial(task, override) is TraceReplayEligibility.NOT_APPLICABLE:
             return TrialTraceReplayOutcome(
                 bundle=bundle, status=TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
             )
-        inputs = read_trace_replay_inputs(bundle, override=override)
+        inputs = _read_trace_replay_inputs(bundle, task, override)
     except MissingTraceReplayInputError as exc:
         return _failed(bundle, str(exc), exc.failure)
     except TimelineInconsistencyError as exc:
@@ -769,22 +878,22 @@ def _replay_one_bundle(
             override_authoring=authoring,
             task_id=inputs.task_id,
             config=inputs.config,
+            recorded_constraints=inputs.recorded_constraints,
             recorded_binary_pass=inputs.recorded_binary_pass,
         )
 
     result = replay_trace_checks(inputs)
-    destination = _trace_replay_destination(source, bundle, replay_id)
-    _write_trace_checks_result(destination, result)
+    _write_trace_checks_result(_trace_replay_destination(source, bundle, replay_id), result)
     return TrialTraceReplayOutcome(
         bundle=bundle,
         status=TraceReplayOutcomeStatus.REPLAYED,
         provenance=inputs.provenance,
         evidence=inputs.evidence,
         result=result,
-        artifacts_dir=destination,
         override_authoring=authoring,
         task_id=inputs.task_id,
         config=inputs.config,
+        recorded_constraints=inputs.recorded_constraints,
         recorded_binary_pass=inputs.recorded_binary_pass,
     )
 
@@ -853,10 +962,15 @@ class ConstraintDiscriminationRow(BaseModel):
     ``decided_verdict`` is set only for ``UNDECIDED_IN_PART``, where the decided
     trials agreed but the evidence was incomplete.
 
-    ``trials_labelled`` counts the decided trials whose bundle recorded a
-    ``binary_pass``, and ``agreed_with_recorded_pass`` how many of those the
-    recomputed verdict agrees with. Two independent sources: the constraint verdict
-    recomputed now, and the pass the live run wrote.
+    ``trials_labelled`` counts the trials on which *this constraint* was decided
+    both now and by the live run that wrote the bundle, and
+    ``agreed_with_recorded_pass`` how many of those the two agree on. The join is by
+    constraint id: comparing a constraint's verdict against the trial-level
+    ``binary_pass`` would count a disagreement whenever a trial failed for any other
+    reason. Where either side is undecided there is nothing to compare, so the trial
+    is not labelled — and a bundle that recorded no verdict for the constraint, an
+    ungraded trial or one re-checked against an override naming constraints its pack
+    never had, is not labelled either.
     """
 
     task_id: str
@@ -880,13 +994,22 @@ class TrialTraceReplay(BaseModel):
 
     ``tool_log_present`` is the reader's file-presence answer, so a fully-recorded
     trial that happened to call no tool is not reported as record-less.
+    ``provenance`` says whether this trial was measured against its own pack's block
+    or a supplied one, per trial rather than per run: a batch given an override
+    re-checks every bundle against it, including ones whose pack declared nothing.
+
+    ``recorded_binary_pass`` is the trial-level verdict the live run wrote, ``None``
+    on an ungraded trial. It sits here rather than in a constraint row because it is
+    a statement about the trial — the per-constraint agreement is on the rows.
     """
 
     bundle: str
+    provenance: ConstraintProvenance
     score: float
     winning_path: str
     gate_failed: bool
     tool_log_present: bool
+    recorded_binary_pass: bool | None
 
     model_config = {"extra": "forbid"}
 
@@ -965,7 +1088,12 @@ def declared_trace_checks(
 
 @dataclass(frozen=True)
 class _TrialVerdict:
-    """One trial's verdict on one constraint, beside the pass the live run recorded."""
+    """One trial's verdict on one constraint, beside the one the live run recorded.
+
+    ``recorded_pass`` is that constraint's recorded verdict, ``None`` where the live
+    run recorded none for it or recorded it undecided — in both cases there is no
+    second opinion to agree or disagree with.
+    """
 
     passed: bool
     undecided: bool
@@ -980,6 +1108,7 @@ class _RowTally:
     constraint_id: str
     route: str
     position: int
+    config: TraceChecksConfig
     verdicts: list[_TrialVerdict] = field(default_factory=list)
 
 
@@ -1038,13 +1167,66 @@ def _discrimination_row(tally: _RowTally) -> ConstraintDiscriminationRow:
 
 
 def _seed_declared_rows(
-    tallies: dict[tuple[str, str], _RowTally], task_id: str, config: TraceChecksConfig
+    tallies: dict[tuple[str, str], _RowTally],
+    bundle: Path,
+    task_id: str,
+    config: TraceChecksConfig,
 ) -> None:
-    """Give every constraint the block declares a row before a verdict is counted."""
+    """Give every constraint the block declares a row before a verdict is counted.
+
+    Refuses a task whose bundles were measured against *different* blocks. A row is
+    one claim about one pack's block; two revisions of a pack folded into it would
+    tally two predicates under one id and could read ``DISCRIMINATING`` off the
+    difference between the blocks rather than between the trials.
+    """
     for position, (constraint_id, route) in enumerate(_declared_constraints(config)):
-        tallies.setdefault(
-            (task_id, constraint_id), _RowTally(task_id, constraint_id, route, position)
+        seeded = tallies.setdefault(
+            (task_id, constraint_id), _RowTally(task_id, constraint_id, route, position, config)
         )
+        if seeded.config != config:
+            raise TraceReplayReportError(
+                f"{bundle} re-checks task {task_id!r} against a different trace_checks block "
+                f"than an earlier bundle of the same task did, so constraint {constraint_id!r} "
+                "has no single row to be reported in. Point --source at one revision of the "
+                "pack, or supply --constraints to measure one block over all of them"
+            )
+
+
+def _recorded_verdicts(outcome: TrialTraceReplayOutcome) -> dict[str, bool]:
+    """The live run's decided verdict per constraint id, for the report to join against.
+
+    An undecided recorded verdict is left out: it is ``passed=False`` on the wire and
+    counting it as a recorded failure would report missing evidence as a disagreement.
+    """
+    return {
+        item.id: item.passed for item in outcome.recorded_constraints or () if not item.undecided
+    }
+
+
+def _declared_block(declared: Mapping[Path, TraceChecksConfig], bundle: Path) -> TraceChecksConfig:
+    """The block a re-checked bundle was measured against, refusing a foreign mapping."""
+    config = declared.get(bundle)
+    if config is None:
+        raise TraceReplayReportError(
+            f"no constraint block for {bundle}: declared must come from "
+            "declared_trace_checks(outcomes) over the same batch, which reads each "
+            "bundle's block off the outcome that was re-checked against it"
+        )
+    return config
+
+
+def _row_for_verdict(
+    tallies: Mapping[tuple[str, str], _RowTally], bundle: Path, task_id: str, constraint_id: str
+) -> _RowTally:
+    """The seeded row a verdict belongs in, refusing one the declared block never had."""
+    tally = tallies.get((task_id, constraint_id))
+    if tally is None:
+        raise TraceReplayReportError(
+            f"{bundle} reached a verdict on constraint {constraint_id!r}, which the block "
+            f"declared for task {task_id!r} does not declare — declared must come from "
+            "declared_trace_checks(outcomes) over the same batch"
+        )
+    return tally
 
 
 def _tally_trials(
@@ -1054,16 +1236,19 @@ def _tally_trials(
 
     Seeded from ``declared`` and only then fed the emitted verdicts, because a
     constraint inside a route that won no trial is emitted by nothing and would
-    otherwise leave the report rather than being reported unmeasured.
+    otherwise leave the report rather than being reported unmeasured. Each verdict
+    carries the live run's verdict on the *same* constraint, joined by id.
     """
     tallies: dict[tuple[str, str], _RowTally] = {}
     for outcome in outcomes:
         if outcome.result is None or outcome.task_id is None:
             continue
-        _seed_declared_rows(tallies, outcome.task_id, declared[outcome.bundle])
+        task_id, bundle = outcome.task_id, outcome.bundle
+        _seed_declared_rows(tallies, bundle, task_id, _declared_block(declared, bundle))
+        recorded = _recorded_verdicts(outcome)
         for item in outcome.result.constraints:
-            tallies[(outcome.task_id, item.id)].verdicts.append(
-                _TrialVerdict(item.passed, item.undecided, outcome.recorded_binary_pass)
+            _row_for_verdict(tallies, bundle, task_id, item.id).verdicts.append(
+                _TrialVerdict(item.passed, item.undecided, recorded.get(item.id))
             )
     return sorted(tallies.values(), key=lambda tally: (tally.task_id, tally.position))
 
@@ -1110,6 +1295,32 @@ def _override_notes(
     )
 
 
+def _trial_row(outcome: TrialTraceReplayOutcome, source: Path) -> TrialTraceReplay:
+    """One re-checked trial's row, refusing an outcome that cannot describe itself.
+
+    A result is written by the one path that also resolves the block's provenance and
+    reads the bundle's evidence, so an outcome carrying one and not the others did not
+    come from that path. Dropping it from the report instead would leave the batch's
+    size unaccountable — the trial would be neither reported nor missing.
+    """
+    result, evidence, provenance = outcome.result, outcome.evidence, outcome.provenance
+    if result is None or evidence is None or provenance is None:
+        raise TraceReplayReportError(
+            f"the outcome for {outcome.bundle} carries a re-checked result without the "
+            "provenance of the block it was measured against or the evidence its bundle "
+            "carried, so the trial cannot be reported"
+        )
+    return TrialTraceReplay(
+        bundle=str(_bundle_rel(outcome.bundle, source)),
+        provenance=provenance,
+        score=result.score,
+        winning_path=result.winning_path,
+        gate_failed=result.gate_failed,
+        tool_log_present=evidence.tool_log_present,
+        recorded_binary_pass=outcome.recorded_binary_pass,
+    )
+
+
 def build_trace_replay_report(
     outcomes: Sequence[TrialTraceReplayOutcome],
     *,
@@ -1131,17 +1342,7 @@ def build_trace_replay_report(
     """
     if not outcomes:
         return None
-    trials = [
-        TrialTraceReplay(
-            bundle=str(_bundle_rel(outcome.bundle, source)),
-            score=outcome.result.score,
-            winning_path=outcome.result.winning_path,
-            gate_failed=outcome.result.gate_failed,
-            tool_log_present=outcome.evidence.tool_log_present,
-        )
-        for outcome in outcomes
-        if outcome.result is not None and outcome.evidence is not None
-    ]
+    trials = [_trial_row(outcome, source) for outcome in outcomes if outcome.result is not None]
     return TraceReplayReport(
         replay_id=replay_id,
         trials=trials,

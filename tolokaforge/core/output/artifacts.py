@@ -128,14 +128,20 @@ def read_recorded_tool_log(trial_dir: Path) -> tuple[list[RecordedToolCall], boo
     reports missing evidence as an observation.
 
     Raises:
-        ValueError: the file is present and is not a list of recorded calls.
+        ValueError: the file is present and does not read as a list of recorded
+            calls — including the truncated YAML an interrupted run leaves, which
+            a caller distinguishing a missing record from a broken one has to be
+            able to catch as one kind of defect.
     """
     path = Path(trial_dir) / TOOL_LOG_FILENAME
     if not path.exists():
         return [], False
 
-    with open(path, encoding="utf-8") as f:
-        record = yaml.safe_load(f)
+    try:
+        with open(path, encoding="utf-8") as f:
+            record = yaml.safe_load(f)
+    except yaml.YAMLError as error:
+        raise ValueError(f"unreadable YAML at {path}: {error}") from error
     if not isinstance(record, list):
         raise ValueError(
             f"{path} is the trial's tool-call record and must be a YAML list of "

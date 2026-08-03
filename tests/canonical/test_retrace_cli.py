@@ -12,15 +12,18 @@ The whole exit contract, one test per row:
    ``0`` deliberately: an author iterating on a candidate expects to read it and keep
    working, and a CI job must not go red because a corpus turned out uninformative.
 3. **A re-check disagreeing with the recorded grade also exits ``0``** — the
-   agreement count is reported and the command succeeds; #683 reads the report file,
-   not the exit code. A change making either of these non-zero breaks a test on purpose.
+   agreement count is reported and the command succeeds; a downstream consumer reads
+   the report file, not the exit code. A change making either of these non-zero breaks
+   a test on purpose.
 4. **A selector matching nothing exits ``1``** — empty discovery prints no table and
    claims nothing, which is what a reporter that prints nothing and returns success
    would otherwise be.
 5. **A bundle that cannot be reconstructed exits ``1`` naming the file**, while the
    readable trials are still measured and still reported.
 6. **A mis-authored override exits ``1`` before anything is replayed**, and nothing is
-   written.
+   written. A ``--replay-id`` that is not one directory name is refused at the option
+   for the same reason: the read-only guarantee is scoped to one subtree, and the id
+   is what keeps the writes inside it.
 
 And what the console has to carry for the numbers to be readable:
 
@@ -54,7 +57,13 @@ from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.trace_replay import TRACE_REPLAY_DIRNAME
 from tolokaforge.core.logging import StructuredLogger
-from tolokaforge.core.models import Grade, GradeComponents, RecordedToolCall
+from tolokaforge.core.models import (
+    Grade,
+    GradeComponents,
+    RecordedToolCall,
+    TraceConstraintKind,
+    TraceConstraintResult,
+)
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.dx.cli.main import cli
 
@@ -153,19 +162,27 @@ def _read_the_order() -> list[RecordedToolCall]:
     return [recorded_call("get_order", sequence=0, arguments={"id": "O-1"}, output='{"t": 1}')]
 
 
+def _recorded_read_verdict(passed: bool) -> TraceConstraintResult:
+    """What a live run froze for ``the_order_was_read``, the report's second source."""
+    return TraceConstraintResult(
+        id="the_order_was_read", kind=TraceConstraintKind.PRESENT, passed=passed, weight=1.0
+    )
+
+
 def _write_bundle(
     trial_dir: Path,
     calls: list[RecordedToolCall],
     *,
     trace_checks: dict[str, Any] = _TRACE_CHECKS,
     wire_tools: list[dict[str, Any]] | None = None,
+    recorded_verdicts: list[TraceConstraintResult] | None = None,
 ) -> Path:
     """One graded bundle on disk, written by the writer the eval flow uses.
 
-    The recorded pass is ``True`` on every bundle: it is the independent source the
-    report counts the recomputed verdicts' agreement against, so a corpus whose
-    trials do not all pass is a corpus on which the two sources disagree — which is
-    a finding the command reports rather than an operational failure.
+    ``recorded_verdicts`` is what the live run concluded per constraint — the
+    independent source the report joins each recomputed verdict to by id. A bundle
+    given none is graded but records no per-constraint verdict, which is a trial the
+    agreement count has nothing to compare against rather than one that agreed.
     """
     trajectory = make_trajectory(
         task_id="refund_task",
@@ -174,7 +191,13 @@ def _write_bundle(
     )
     graded = trajectory.model_copy(
         update={
-            "grade": Grade(binary_pass=True, score=1.0, components=GradeComponents(), reasons="")
+            "grade": Grade(
+                binary_pass=True,
+                score=1.0,
+                components=GradeComponents(),
+                reasons="",
+                trace_check_results=recorded_verdicts or [],
+            )
         }
     )
     writer = FileArtifactWriter()
@@ -241,8 +264,8 @@ def test_a_constraint_that_separates_nothing_is_a_finding_and_still_exits_zero(
     Every trial read the order, so ``the_order_was_read`` passed on all of them:
     the constraint separates nothing over this corpus, which is exactly what an
     author iterating on a candidate needs to be told without the command failing.
-    #683 consumes the report file rather than the exit code, so making this exit
-    non-zero would have to break this test on purpose.
+    A downstream consumer reads the report file rather than the exit code, so making
+    this exit non-zero would have to break this test on purpose.
     """
     source = _corpus(tmp_path, [_read_the_order(), _read_the_order()])
 
@@ -258,19 +281,60 @@ def test_a_replay_disagreeing_with_the_recorded_grade_is_reported_and_still_exit
 ) -> None:
     """Standing single case on the other deliberate half of the exit contract.
 
-    Both bundles recorded a passing trial, and one of them fails the constraint on
-    re-check — the recomputed verdict and the pass the live run wrote are two
-    independent sources, and here they disagree on one trial of two. The command
-    reports the agreement count and exits ``0``: a disagreement is what an author
-    ran the command to find, and #683 consumes it out of the report file rather than
-    off the exit code.
+    Both trials read the order, so the re-check passes ``the_order_was_read`` on both —
+    and one of them recorded a *failure* on that same constraint, which is what a
+    corpus whose recorded grades no longer reproduce looks like. The two sources are
+    joined by constraint id, so the count is one of two: a change that compared the
+    constraint against the trial-level pass instead would read two of two here, since
+    both trials recorded a pass.
+
+    The command reports it and exits ``0``. A disagreement is what an author ran the
+    command to find, and a downstream consumer reads the report file, not the exit
+    code.
     """
-    source = _corpus(tmp_path, [_read_the_order(), []])
+    source = tmp_path
+    for index, passed in enumerate((True, False)):
+        _write_bundle(
+            source / "trials" / "refund_task" / str(index),
+            _read_the_order(),
+            recorded_verdicts=[_recorded_read_verdict(passed)],
+        )
 
     result = _retrace("--source", str(source))
 
     assert result.exit_code == 0, result.output
-    assert "agrees with the recorded pass on 1/2" in result.output
+    assert "agrees with the recorded verdict on 1/2" in result.output
+
+
+@pytest.mark.parametrize(
+    "replay_id",
+    [
+        pytest.param("..", id="the_parent_of_the_subtree_the_replay_owns"),
+        pytest.param("../../escaped", id="a_path_walking_out_of_the_source"),
+        pytest.param("nested/id", id="a_separator_naming_a_tree_of_its_own"),
+        pytest.param(".", id="the_subtree_itself"),
+    ],
+)
+def test_a_replay_id_that_is_not_a_directory_name_is_refused_before_anything_runs(
+    tmp_path: Path, replay_id: str
+) -> None:
+    """A replay id names one directory, and the refusal is what keeps it inside the source.
+
+    The read-only guarantee is scoped to a subtree — ``<source>/trace_replay/<id>/`` —
+    so an id carrying a separator writes into a tree the operator never named and
+    ``..`` walks out of the source entirely, which is where the guarantee stops
+    meaning anything. Refused at the option, so nothing is discovered, nothing is read
+    and nothing is written; the exit is Click's usage code because a malformed option
+    value is a usage error, the way ``--time-limit`` treats one.
+    """
+    source = _corpus(tmp_path, [_read_the_order()])
+
+    result = _retrace("--source", str(source), "--replay-id", replay_id)
+
+    assert result.exit_code == 2, result.output
+    assert "is not a directory name" in result.output
+    assert not (source / TRACE_REPLAY_DIRNAME).exists()
+    assert list(tmp_path.glob("escaped")) == []
 
 
 def test_a_source_holding_no_bundle_exits_one_rather_than_reporting_an_empty_table(

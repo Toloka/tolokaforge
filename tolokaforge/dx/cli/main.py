@@ -3,6 +3,7 @@
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
@@ -29,6 +30,7 @@ from tolokaforge.core.grading.replay import (
 from tolokaforge.core.grading.trace_replay import (
     TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
+    TraceReplayReportError,
     build_trace_replay_report,
     declared_trace_checks,
     emit_trace_replay_report,
@@ -968,6 +970,27 @@ def rejudge(
         raise SystemExit(1)
 
 
+#: A replay id names one directory under ``<source>/trace_replay/``, so it is held to
+#: the characters a single directory name is built from. Without it ``..`` walks out of
+#: the subtree the read-only guarantee is scoped to and a separator writes into a tree
+#: the operator never named.
+_REPLAY_ID_CHARACTERS = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _checked_replay_id(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Refuse a ``--replay-id`` that is anything but one directory name."""
+    if value is None or (_REPLAY_ID_CHARACTERS.fullmatch(value) and value not in {".", ".."}):
+        return value
+    raise click.BadParameter(
+        f"{value!r} is not a directory name: a replay id may hold letters, digits, "
+        "'.', '_' and '-' only, and cannot be '.' or '..'. It names one directory "
+        "under <source>/trace_replay/, and a separator or '..' in it would write "
+        "outside the subtree the replay owns",
+        ctx=ctx,
+        param=param,
+    )
+
+
 @cli.command(name="retrace")
 @click.option(
     "--source",
@@ -1000,7 +1023,9 @@ def rejudge(
 @click.option(
     "--replay-id",
     default=None,
-    help="Name for this replay's artifact subdirectory (default: timestamped id).",
+    callback=_checked_replay_id,
+    help="Name for this replay's artifact subdirectory — letters, digits, '.', '_' and "
+    "'-' only (default: timestamped id).",
 )
 @click.option(
     "--dry-run",
@@ -1049,15 +1074,18 @@ def retrace(
     # A dry run has to build the report to report anything and must not write it, so
     # the writing path is the only one that emits. Both answer None on empty
     # discovery, which is the signal below.
-    report = (
-        build_trace_replay_report(
-            outcomes, declared=declared, source=source_path, replay_id=replay_id
+    try:
+        report = (
+            build_trace_replay_report(
+                outcomes, declared=declared, source=source_path, replay_id=replay_id
+            )
+            if dry_run
+            else emit_trace_replay_report(
+                outcomes, declared=declared, source=source_path, replay_id=replay_id
+            )
         )
-        if dry_run
-        else emit_trace_replay_report(
-            outcomes, declared=declared, source=source_path, replay_id=replay_id
-        )
-    )
+    except TraceReplayReportError as exc:
+        raise click.ClickException(str(exc)) from exc
     if report is None:
         raise click.ClickException(
             f"no trial bundle under {source_path} — a selector matching nothing validates "

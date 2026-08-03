@@ -330,7 +330,10 @@ must keep apart:
 
 Absence is the permanent shape of a bundle written before this artifact existed —
 not an error, and not the same fact as an empty trial. A present file that does
-not parse as a list of recorded calls raises, naming the path.
+not read as a list of recorded calls raises, naming the path — including the
+truncated YAML an interrupted run leaves, which must never fall through to the
+absent reading and report a broken record as a bundle written before records
+existed.
 
 The [provision-failure bundle](#provision-failure-bundle) carries no
 `tool_log.yaml`: the trial body never ran, so there is no record to write.

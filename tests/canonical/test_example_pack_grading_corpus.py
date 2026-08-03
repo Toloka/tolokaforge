@@ -1304,11 +1304,15 @@ def _write_lot_ops_bundle(
 ) -> None:
     """One ``lot_ops_01`` bundle, graded live and written the way a real run writes it.
 
-    ``with_tool_log=False`` drops the record sidecar, which is the shape of a bundle
-    written before the record was persisted — and the shape on which the flagship
-    correlation cannot read ``status``. The recorded grade is the live one either
-    way: it is the independent source the report counts agreement against, so it
-    must not be recomputed from the degraded bundle.
+    ``with_tool_log=False`` removes the record sidecar from a bundle the writer has
+    already stamped, which is the provision-failure shape: stamped current, carrying no
+    record, because the trial body never ran. That is the shape on which the flagship
+    correlation cannot read ``status``, and it is the one worth writing here — a bundle
+    written before the record existed would also be *unstamped*, and the stamp is
+    evidence rather than a gate, so the record's absence is what the re-check turns on.
+    The recorded grade is the live one either way: it is the independent source the
+    report counts agreement against, so it must not be recomputed from the degraded
+    bundle.
     """
     FileArtifactWriter().write_trial_bundle(
         trial_dir,
@@ -1440,11 +1444,16 @@ def test_a_record_less_corpus_reports_the_flagship_correlation_as_never_decided(
     ``NEVER_DECIDED`` with nothing decided — the answer an author needs, where
     "failed on every trial" would be an accusation the corpus cannot support.
 
-    The other two constraints are decided on the same bundles and carry the
-    agreement counts, because this corpus is the one whose recorded ``binary_pass``
-    column *varies*: the doubled post is the trial the live run failed. So the two
-    rows disagree on how often the recomputed verdict matches the live pass, which a
-    count computed against a constant could not produce.
+    The agreement counts are the other half of the claim. The two constraints that
+    stay decided reproduce the live run's verdict on all three trials, and the
+    undecided one is labelled on none — so the same corpus shows that a recomputation
+    with no evidence drops out of the agreement denominator instead of being counted
+    as a disagreement with the grade it cannot contradict. The doubled post is the
+    trial the live run failed overall, and it changes none of these numbers: agreement
+    is joined per constraint, not against the trial-level pass.
+    (:func:`tests.unit.grading.test_trace_replay.test_agreement_is_counted_against_the_recorded_verdict_of_the_same_constraint`
+    is where a count short of its denominator is locked; here every decided verdict
+    agrees, because the recorded grade *is* this evaluator's own.)
     """
     source = _lot_ops_corpus(
         tmp_path,
@@ -1465,8 +1474,9 @@ def test_a_record_less_corpus_reports_the_flagship_correlation_as_never_decided(
     assert report.evidence.bundles_with_tool_log == 0
     lot = _row(report, _LOT_OPS_CONSTRAINTS[1][0])
     gate = _row(report, _LOT_OPS_CONSTRAINTS[2][0])
-    assert (lot.trials_labelled, lot.agreed_with_recorded_pass) == (3, 1)
+    assert (lot.trials_labelled, lot.agreed_with_recorded_pass) == (3, 3)
     assert (gate.trials_labelled, gate.agreed_with_recorded_pass) == (3, 3)
+    assert [trial.recorded_binary_pass for trial in report.trials] == [True, True, False]
 
 
 def test_a_correlation_decided_on_one_trial_of_three_is_reported_undecided_in_part(
@@ -1479,6 +1489,12 @@ def test_a_correlation_decided_on_one_trial_of_three_is_reported_undecided_in_pa
     on one observation, which is the exact misleading answer the feature exists to
     prevent. ``UNDECIDED_IN_PART`` says what was decided, how much of the corpus
     decided it, and which way.
+
+    The one decided trial is also the one labelled: the guessed code is decidably
+    false now and was recorded false by the live run, so the two sources agree on the
+    only trial where both have an opinion. The two undecided trials recorded a *pass*
+    on this constraint — the live run had the record — and counting that as a
+    disagreement would blame the constraint for evidence the bundle no longer carries.
     """
     source = _lot_ops_corpus(
         tmp_path,
@@ -1493,7 +1509,7 @@ def test_a_correlation_decided_on_one_trial_of_three_is_reported_undecided_in_pa
     assert row.decided_verdict is False
     assert (row.trials_evaluated, row.trials_decided, row.undecided_trials) == (3, 1, 2)
     assert (row.passed_trials, row.failed_trials) == (0, 1)
-    assert (row.trials_labelled, row.agreed_with_recorded_pass) == (1, 0)
+    assert (row.trials_labelled, row.agreed_with_recorded_pass) == (1, 1)
 
 
 def test_a_cache_debug_route_that_won_no_trial_is_reported_unmeasured_not_unanimous(

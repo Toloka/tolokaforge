@@ -3,7 +3,7 @@
 Locks the contract of :mod:`tolokaforge.core.grading.trace_replay`:
 
 * discovery keys on ``task.yaml`` + ``trajectory.yaml``, so a trial is re-checkable
-  whether or not it was ever graded, and never walks the command's own output;
+  whether or not it was ever graded, and never walks either replay command's output;
 * a bundle declaring no ``trace_checks`` is a declared skip until an override
   supplies a block, which it replaces wholesale;
 * evidence about what the bundle recorded comes from the reader's file-presence
@@ -18,6 +18,12 @@ Locks the contract of :mod:`tolokaforge.core.grading.trace_replay`:
   than as an anonymous validation error;
 * a discrimination row is keyed by task *and* constraint id, and a bundle that
   cannot name its task is a named failure rather than a row belonging to nobody;
+* agreement with the live run is counted against the *same constraint's* recorded
+  verdict, joined by id — never against the trial-level pass, which a trial can fail
+  for reasons no one constraint is responsible for;
+* the report refuses what it cannot report rather than dropping it: a task measured
+  against two different blocks, a ``declared`` mapping from outside the batch, and an
+  outcome carrying a result without the provenance of the block it came from;
 * the degenerate corpora answer as themselves — one bundle reports the single
   observation its unanimity rests on, and an empty one produces no report at all.
 
@@ -28,6 +34,7 @@ the real :func:`load_trace_checks_override`.
 
 from __future__ import annotations
 
+from dataclasses import replace
 from pathlib import Path
 from typing import Any
 
@@ -42,8 +49,10 @@ from tolokaforge.core.grading.trace_replay import (
     TRACE_REPLAY_REPORT_FILENAME,
     ConstraintDiscrimination,
     ConstraintProvenance,
+    TraceChecksOverride,
     TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
+    TraceReplayReportError,
     build_trace_replay_report,
     declared_trace_checks,
     discover_trace_bundles,
@@ -52,7 +61,13 @@ from tolokaforge.core.grading.trace_replay import (
     read_trace_replay_inputs,
     run_trace_replay_batch,
 )
-from tolokaforge.core.models import Grade, GradeComponents, Trajectory
+from tolokaforge.core.models import (
+    Grade,
+    GradeComponents,
+    TraceConstraintKind,
+    TraceConstraintResult,
+    Trajectory,
+)
 from tolokaforge.core.output.artifacts import FileArtifactWriter, read_recorded_tool_log
 from tolokaforge.core.output_writer import TRIAL_BUNDLE_SCHEMA_VERSION
 
@@ -104,6 +119,32 @@ def _answered_without_calling_anything(task_id: str = "refund_task") -> Trajecto
     return make_trajectory(task_id=task_id, messages=make_trial_messages([], _TURNS), tool_log=[])
 
 
+def _recorded_verdict(
+    *, passed: bool, undecided: bool = False, constraint_id: str = "the_order_was_looked_up"
+) -> TraceConstraintResult:
+    """One per-constraint verdict as a live run would have frozen it into ``grade.yaml``."""
+    return TraceConstraintResult(
+        id=constraint_id,
+        kind=TraceConstraintKind.PRESENT,
+        passed=passed,
+        weight=1.0,
+        undecided=undecided,
+    )
+
+
+def _recorded_grade(
+    *, binary_pass: bool, constraints: list[TraceConstraintResult] | None = None
+) -> Grade:
+    """The grade a live run froze: the trial-level pass and the per-constraint verdicts."""
+    return Grade(
+        binary_pass=binary_pass,
+        score=1.0,
+        components=GradeComponents(),
+        reasons="",
+        trace_check_results=constraints or [],
+    )
+
+
 def _write_bundle(
     trial_dir: Path,
     trajectory: Trajectory | None = None,
@@ -115,10 +156,10 @@ def _write_bundle(
     """A bundle on disk, written the way the eval flow writes one.
 
     ``with_tool_log=False`` is the shape of a bundle written before the record was
-    persisted: every other artifact present, the sidecar absent. ``grade`` writes the
-    verdict a live run would have frozen, which is what the report counts the
-    recomputed constraint verdicts' agreement against; without one the bundle is an
-    ungraded trial, which is still re-checkable.
+    persisted: every other artifact present, the sidecar absent. ``grade`` writes what
+    a live run would have frozen — the per-constraint verdicts the report joins the
+    recomputation to, and the trial-level pass beside them; without one the bundle is
+    an ungraded trial, which is still re-checkable.
     """
     trajectory = trajectory if trajectory is not None else _looked_up_the_order()
     writer = FileArtifactWriter()
@@ -171,16 +212,65 @@ def test_discovery_is_layout_agnostic_over_the_three_recorded_shapes(tmp_path: P
     assert discover_trace_bundles(flat / "a") == [flat / "a"]
 
 
-def test_a_bundle_nested_under_the_output_subtree_is_not_discovered(tmp_path: Path) -> None:
-    """Discovery never walks the subtree the command writes into.
+@pytest.mark.parametrize(
+    "nested_under",
+    [
+        pytest.param(Path("trace_replay") / "earlier", id="this_commands_own_output_at_the_top"),
+        pytest.param(Path("replays") / "earlier", id="judge_replays_output_at_the_top"),
+        pytest.param(Path("trials") / "replays" / "earlier", id="judge_replays_output_nested"),
+        pytest.param(
+            Path("trials") / "trace_replay" / "earlier", id="this_commands_own_output_nested"
+        ),
+    ],
+)
+def test_a_bundle_under_a_reserved_directory_is_not_discovered(
+    tmp_path: Path, nested_under: Path
+) -> None:
+    """Two directory names are reserved anywhere under a source, at any depth.
 
-    A source re-pointed at a run that already holds replay output would otherwise
-    re-check whatever came to sit under it.
+    ``trace_replay/`` is this command's output and ``replays/`` is judge replay's, and
+    a source re-pointed at a run that already holds either would otherwise re-check
+    what sits under it — for ``replays/`` that means grading a *replayed* bundle as
+    though it were a trial. The names are written out here rather than imported:
+    reserving a name is a claim about the string, and a test that read it off the
+    module could not tell a renamed constant from a widened rule.
+
+    At any depth, because a previously-replayed subtree can be nested arbitrarily
+    under whatever the operator points ``--source`` at. The deliberate cost is that a
+    *task* named ``replays`` would hide its own trials, which is why both names are
+    documented as reserved rather than left to be discovered.
     """
     live = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
-    _write_bundle(tmp_path / TRACE_REPLAY_DIRNAME / "earlier" / "refund_task" / "0")
+    _write_bundle(tmp_path / nested_under / "refund_task" / "0")
 
     assert discover_trace_bundles(tmp_path) == [live]
+
+
+def test_each_bundles_task_file_is_parsed_once_for_the_whole_re_check(
+    tmp_path: Path,
+) -> None:
+    """The eligibility, the constraint block and the task id are three readers, one parse.
+
+    ``task.yaml`` carries the whole ``grading_config``, so parsing it is not free — and
+    it dominates a re-check whose evaluation costs well under a millisecond. Each
+    reader therefore takes the mapping rather than the path. Asserted as "read once per
+    bundle" rather than as a duration, because a wall-clock threshold on a machine
+    nobody controls is a flake, while the number of times a file is opened is exact.
+    """
+    bundles = [_write_bundle(tmp_path / "trials" / "refund_task" / str(index)) for index in (0, 1)]
+    reads: list[str] = []
+    unpatched = Path.read_text
+
+    def counting(self: Path, *args: Any, **kwargs: Any) -> str:
+        reads.append(str(self))
+        return unpatched(self, *args, **kwargs)
+
+    with pytest.MonkeyPatch.context() as patched:
+        patched.setattr(Path, "read_text", counting)
+        outcomes = run_trace_replay_batch(tmp_path, replay_id="r1")
+
+    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.REPLAYED] * 2
+    assert [reads.count(str(bundle / "task.yaml")) for bundle in bundles] == [1, 1]
 
 
 def test_a_bundle_declaring_no_trace_checks_is_skipped_until_an_override_supplies_them(
@@ -381,6 +471,27 @@ def test_a_grading_document_and_a_bare_block_supply_the_same_constraints(
     assert [item.id for item in bare.config.constraints] == ["the_order_was_looked_up"]
 
 
+def test_an_override_holds_its_own_copy_of_the_block_it_validated(tmp_path: Path) -> None:
+    """The authored block and the config derived from it cannot be made to disagree.
+
+    ``config`` is derived once, at construction, from the mapping handed in — so a
+    caller that goes on mutating that mapping would leave the override reporting a
+    block the authoring gate never validated, and the gate addresses its findings by
+    where the operator wrote them. The block is copied behind a read-only view, so the
+    mutation lands nowhere and the view itself refuses one.
+    """
+    authored: dict[str, Any] = {"constraints": list(_TRACE_CHECKS["constraints"])}
+    override = TraceChecksOverride(path=tmp_path / "constraints.yaml", block=authored)
+
+    authored["constraints"] = []
+    authored["alternatives"] = []
+
+    assert override.block == _TRACE_CHECKS
+    assert [item.id for item in override.config.constraints] == ["the_order_was_looked_up"]
+    with pytest.raises(TypeError):
+        override.block["constraints"] = []  # type: ignore[index]
+
+
 def test_an_override_carrying_no_constraint_block_names_the_file(tmp_path: Path) -> None:
     """Pointing ``--constraints`` at the wrong document says which document it was.
 
@@ -503,6 +614,105 @@ def test_a_bundle_whose_recorded_tool_list_is_unreadable_fails_without_stopping_
     assert not (tmp_path / TRACE_REPLAY_DIRNAME / "r1" / "trials" / "refund_task" / "0").exists()
 
 
+def _dumped(payload: Any) -> str:
+    """A fixture file's text, built from the payload rather than typed as one.
+
+    Indentation typed into a YAML string mis-nests silently and would make a
+    rejection test pass for the wrong shape.
+    """
+    return yaml.safe_dump(payload, sort_keys=False)
+
+
+@pytest.mark.parametrize(
+    ("filename", "written", "said"),
+    [
+        pytest.param(
+            "tool_log.yaml",
+            "- call_id: a\n  arguments: {\n",
+            "unreadable YAML",
+            id="truncated_record",
+        ),
+        pytest.param(
+            "tool_log.yaml",
+            _dumped({"call_id": "a"}),
+            "must be a YAML list of recorded calls",
+            id="a_record_that_is_not_a_list",
+        ),
+        pytest.param(
+            "grade.yaml",
+            _dumped([{"binary_pass": True}]),
+            "holds list where a mapping belongs",
+            id="a_grade_that_is_not_a_mapping",
+        ),
+        pytest.param(
+            "grade.yaml",
+            _dumped({"binary_pass": True, "trace_check_results": 5}),
+            "holds int where the live run's per-constraint verdicts belong",
+            id="per_constraint_verdicts_that_are_not_a_list",
+        ),
+        pytest.param(
+            "grade.yaml",
+            _dumped(
+                {
+                    "binary_pass": True,
+                    "trace_check_results": [
+                        {
+                            "id": "the_order_was_looked_up",
+                            "kind": "present",
+                            "passed": True,
+                            "weight": 1.0,
+                            "a_key_this_reader_cannot_account_for": 1,
+                        }
+                    ],
+                }
+            ),
+            "records trace-check verdicts that do not validate",
+            id="a_verdict_carrying_an_unaccountable_key",
+        ),
+        pytest.param(
+            "metrics.yaml",
+            _dumped([{"schema_version": TRIAL_BUNDLE_SCHEMA_VERSION}]),
+            "holds list where a mapping belongs",
+            id="metrics_that_are_not_a_mapping",
+        ),
+    ],
+)
+def test_a_bundle_input_the_reader_cannot_account_for_fails_only_that_bundle(
+    tmp_path: Path, filename: str, written: str, said: str
+) -> None:
+    """Every corrupt input is one named failure, and never the batch's last word.
+
+    Six shapes over three of a bundle's files, because each is a state the reader has
+    to keep apart from a state it *is* allowed to read as absent. A missing
+    ``tool_log.yaml`` is a record-less bundle and a missing ``grade.yaml`` is an
+    ungraded trial — both fine — so a file that is present and unreadable must refuse
+    rather than fall through to that reading: it would otherwise report a truncated
+    record as a bundle written before records existed, a corrupt grade as a trial
+    nobody graded, and an unreadable stamp as an unstamped one.
+
+    The verdict rows are strict on purpose. The recorded verdicts are one of the two
+    sources the report joins by constraint id, and they are read through the very
+    model that wrote them — so a verdict list that is not a list, and an entry
+    carrying a key that model does not declare, are both refused. Reading them more
+    loosely than they were written would make the reader a second, weaker schema for
+    the harness's own artifact.
+
+    The batch runs on either way: the healthy bundle beside each broken one is
+    re-checked, and the broken one's output directory is never created.
+    """
+    broken = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    healthy = _write_bundle(tmp_path / "trials" / "refund_task" / "1")
+    (broken / filename).write_text(written, encoding="utf-8")
+
+    failed, replayed = run_trace_replay_batch(tmp_path, replay_id="r1")
+
+    assert failed.status is TraceReplayOutcomeStatus.FAILED
+    assert str(broken / filename) in (failed.reason or "")
+    assert said in (failed.reason or "")
+    assert (replayed.bundle, replayed.status) == (healthy, TraceReplayOutcomeStatus.REPLAYED)
+    assert not (tmp_path / TRACE_REPLAY_DIRNAME / "r1" / "trials" / "refund_task" / "0").exists()
+
+
 @pytest.mark.parametrize(
     ("written", "said"),
     [
@@ -602,12 +812,12 @@ def test_a_one_bundle_corpus_reports_the_single_observation_its_verdict_rests_on
 
     ``ALWAYS_TRUE`` over one trial is a far weaker claim than over twenty, and the
     counts beside the verdict are the only thing that says which one it is — so they
-    are asserted rather than the verdict alone. The recorded pass is counted here
+    are asserted rather than the verdict alone. The recorded verdict is counted here
     too: one labelled trial, agreeing with the recomputation.
     """
     _write_bundle(
         tmp_path / "trials" / "refund_task" / "0",
-        grade=Grade(binary_pass=True, score=1.0, components=GradeComponents(), reasons=""),
+        grade=_recorded_grade(binary_pass=True, constraints=[_recorded_verdict(passed=True)]),
     )
 
     outcomes = run_trace_replay_batch(tmp_path, replay_id="r1")
@@ -625,6 +835,75 @@ def test_a_one_bundle_corpus_reports_the_single_observation_its_verdict_rests_on
     assert (tmp_path / TRACE_REPLAY_DIRNAME / "r1" / TRACE_REPLAY_REPORT_FILENAME).is_file()
 
 
+def test_agreement_is_counted_against_the_recorded_verdict_of_the_same_constraint(
+    tmp_path: Path,
+) -> None:
+    """The two sources compared are one constraint's verdict, recomputed and recorded.
+
+    Four bundles that all satisfy the constraint, so the recomputation is ``passed``
+    on every one and the only thing the agreement count can vary with is what each
+    bundle *recorded* for that constraint. Every trial-level ``binary_pass`` is
+    ``False`` — the trials failed for reasons beyond this constraint, which is the
+    ordinary case — so a count taken against the trial verdict instead reads two
+    agreements as zero and cannot produce the number below.
+
+    Three of the four are labelled: the fourth recorded the constraint *undecided*,
+    which is ``passed: false`` on the wire, and counting that as a recorded failure
+    would report the live run's missing evidence as a disagreement. Of the three, one
+    recorded a failure the re-check contradicts, so the count is short of the
+    denominator and a builder that assumed agreement is caught too.
+    """
+    recorded = [
+        _recorded_grade(binary_pass=False, constraints=[_recorded_verdict(passed=True)]),
+        _recorded_grade(binary_pass=False, constraints=[_recorded_verdict(passed=True)]),
+        _recorded_grade(binary_pass=False, constraints=[_recorded_verdict(passed=False)]),
+        _recorded_grade(
+            binary_pass=False, constraints=[_recorded_verdict(passed=False, undecided=True)]
+        ),
+    ]
+    for index, grade in enumerate(recorded):
+        _write_bundle(tmp_path / "trials" / "refund_task" / str(index), grade=grade)
+
+    _, report = _report(tmp_path)
+
+    assert report is not None
+    (row,) = report.discrimination
+    assert row.verdict is ConstraintDiscrimination.ALWAYS_TRUE
+    assert (row.trials_evaluated, row.trials_decided, row.passed_trials) == (4, 4, 4)
+    assert (row.trials_labelled, row.agreed_with_recorded_pass) == (3, 2)
+    assert [trial.recorded_binary_pass for trial in report.trials] == [False] * 4
+
+
+def test_a_bundle_recording_no_verdict_for_the_constraint_is_not_labelled(
+    tmp_path: Path,
+) -> None:
+    """Standing single case: nothing recorded is nothing to agree with.
+
+    An ungraded trial and a trial re-checked against a constraint its pack never had
+    are the same state from the report's side — the bundle holds no verdict for this
+    id — and both are re-checkable. Neither may enter the agreement denominator,
+    which would otherwise silently compare the recomputation against a default.
+    """
+    _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    _write_bundle(
+        tmp_path / "trials" / "refund_task" / "1",
+        grade=_recorded_grade(
+            binary_pass=True,
+            constraints=[
+                _recorded_verdict(passed=True, constraint_id="a_constraint_since_renamed")
+            ],
+        ),
+    )
+
+    _, report = _report(tmp_path)
+
+    assert report is not None
+    (row,) = report.discrimination
+    assert (row.trials_evaluated, row.trials_decided) == (2, 2)
+    assert (row.trials_labelled, row.agreed_with_recorded_pass) == (0, 0)
+    assert [trial.recorded_binary_pass for trial in report.trials] == [None, True]
+
+
 def test_an_empty_corpus_produces_no_report_and_writes_nothing(tmp_path: Path) -> None:
     """Standing single case at the degenerate boundary: nothing found, nothing claimed.
 
@@ -637,6 +916,79 @@ def test_an_empty_corpus_produces_no_report_and_writes_nothing(tmp_path: Path) -
     assert outcomes == []
     assert emit_trace_replay_report(outcomes, declared={}, source=tmp_path, replay_id="r1") is None
     assert not (tmp_path / TRACE_REPLAY_DIRNAME).exists()
+
+
+def test_one_task_measured_against_two_blocks_is_refused_rather_than_folded(
+    tmp_path: Path,
+) -> None:
+    """A row is one claim about one block, so two revisions of a pack cannot share it.
+
+    Both bundles name ``refund_task`` and both declare ``the_order_was_looked_up``, but
+    one requires the order specifically and the other any call at all. Folded into one
+    row the counts would mix two predicates, and the row could read
+    ``DISCRIMINATING`` off the difference between the *blocks* rather than between the
+    trials — the corpus-spanning form of the defect keying rows on the id alone
+    creates, which :func:`test_two_packs_reusing_one_constraint_id_get_a_row_each`
+    locks the other half of.
+
+    The message has to name a way out, because the operator's corpus is not wrong —
+    it just spans revisions, and ``--constraints`` measures one block over all of it.
+    """
+    _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    _write_bundle(
+        tmp_path / "trials" / "refund_task" / "1",
+        trace_checks={
+            "constraints": [
+                {
+                    "id": "the_order_was_looked_up",
+                    "description": "the agent called something",
+                    "require": {"present": {"match": {"kind": "tool_call"}}},
+                }
+            ]
+        },
+    )
+
+    with pytest.raises(TraceReplayReportError) as raised:
+        _report(tmp_path)
+
+    assert "a different trace_checks block" in str(raised.value)
+    assert "refund_task" in str(raised.value)
+    assert "--constraints" in str(raised.value)
+
+
+@pytest.mark.parametrize(
+    ("declared_from", "said"),
+    [
+        pytest.param(dict, "no constraint block for", id="a_bundle_the_mapping_omits"),
+        pytest.param(
+            "unrelated", "does not declare", id="a_block_that_declares_another_constraint"
+        ),
+    ],
+)
+def test_a_declared_mapping_from_outside_the_batch_is_refused_by_name(
+    tmp_path: Path, declared_from: object, said: str
+) -> None:
+    """``declared`` is derivable, and the one supported way to build it is named.
+
+    It stays a parameter because the signature is frozen, so a caller *can* hand the
+    builder a mapping that did not come from this batch — an empty one, or one whose
+    block declares different constraints. Both used to be a bare ``KeyError`` out of a
+    published function, which tells the caller nothing about where the mapping should
+    have come from.
+    """
+    bundle = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    outcomes = run_trace_replay_batch(tmp_path, replay_id="r1")
+    declared = (
+        {}
+        if declared_from is dict
+        else {bundle: override_file(tmp_path / "other", _STATUS_TRACE_CHECKS).config}
+    )
+
+    with pytest.raises(TraceReplayReportError) as raised:
+        build_trace_replay_report(outcomes, declared=declared, source=tmp_path, replay_id="r1")
+
+    assert said in str(raised.value)
+    assert "declared_trace_checks(outcomes)" in str(raised.value)
 
 
 def test_a_bundle_naming_no_task_fails_rather_than_folding_into_another_pack(
@@ -662,6 +1014,59 @@ def test_a_bundle_naming_no_task_fails_rather_than_folding_into_another_pack(
     assert (replayed.bundle, replayed.status) == (healthy, TraceReplayOutcomeStatus.REPLAYED)
 
 
+def test_a_report_names_the_block_each_trial_was_measured_against(tmp_path: Path) -> None:
+    """Provenance is a per-trial fact, because an override re-checks every bundle.
+
+    One bundle declares a block and the other declares none, and a supplied override
+    makes both re-checkable — so the run cannot say "these came from the packs" or
+    "these came from a file" without saying it per trial. Reported off the outcome
+    rather than inferred from the run having had an override at all.
+    """
+    _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+    _write_bundle(tmp_path / "trials" / "refund_task" / "1", trace_checks=None)
+    override = override_file(tmp_path / "supplied", _TRACE_CHECKS)
+
+    for supplied, expected in (
+        (None, [ConstraintProvenance.RECORDED]),
+        (override, [ConstraintProvenance.OVERRIDE] * 2),
+    ):
+        outcomes = run_trace_replay_batch(tmp_path, replay_id="r1", override=supplied)
+        report = build_trace_replay_report(
+            outcomes,
+            declared=declared_trace_checks(outcomes),
+            source=tmp_path,
+            replay_id="r1",
+        )
+        assert report is not None
+        assert [trial.provenance for trial in report.trials] == expected
+
+
+def test_a_result_without_its_provenance_is_refused_rather_than_dropped(tmp_path: Path) -> None:
+    """Standing single case: a trial the report cannot describe must not just vanish.
+
+    A result is written by the one path that also resolves the block's provenance and
+    reads the bundle's evidence, so an outcome carrying one without the others did not
+    come from that path. Filtering it out instead would leave the batch's size
+    unaccountable — the trial would be neither reported nor reported missing — which is
+    the failure mode the dispositions exist to prevent.
+    """
+    _write_bundle(tmp_path / "trials" / "refund_task" / "0")
+
+    (outcome,) = run_trace_replay_batch(tmp_path, replay_id="r1")
+    stripped = replace(outcome, provenance=None)
+
+    with pytest.raises(TraceReplayReportError) as raised:
+        build_trace_replay_report(
+            [stripped],
+            declared=declared_trace_checks([stripped]),
+            source=tmp_path,
+            replay_id="r1",
+        )
+
+    assert str(outcome.bundle) in str(raised.value)
+    assert "provenance" in str(raised.value)
+
+
 def test_an_unreadable_recorded_pass_fails_rather_than_reading_as_ungraded(
     tmp_path: Path,
 ) -> None:
@@ -673,8 +1078,7 @@ def test_an_unreadable_recorded_pass_fails_rather_than_reading_as_ungraded(
     saying so, and agreement is the one number in the report that has two sources.
     """
     bundle = _write_bundle(
-        tmp_path / "trials" / "refund_task" / "0",
-        grade=Grade(binary_pass=True, score=1.0, components=GradeComponents(), reasons=""),
+        tmp_path / "trials" / "refund_task" / "0", grade=_recorded_grade(binary_pass=True)
     )
     grade = yaml.safe_load((bundle / "grade.yaml").read_text(encoding="utf-8"))
     grade["binary_pass"] = "yes"

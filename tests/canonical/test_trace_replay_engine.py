@@ -9,17 +9,17 @@ Four claims, over the two bundle populations that matter:
    asserted because either alone is blind: the digest set cannot see a file created
    under a name nothing held, and the root's file set cannot see one rewritten in
    place.
-2. **The schema stamp is evidence, never a gate.** The three ``tau_retail_mini``
-   bundles committed under ``tests/data/projects/`` predate the stamp entirely, carry
-   no ``tool_log.yaml``, and re-check fine — so a version gate would reject bundles
+2. **The schema stamp is evidence, never a gate.** Every trial bundle committed under
+   ``tests/data/projects/`` — both project roots — predates the stamp entirely, carries
+   no ``tool_log.yaml``, and re-checks fine, so a version gate would reject bundles
    whose only defect is age.
 3. **A mis-authored override stops the batch before it re-checks anything.** A
    constraint naming a tool the recorded wire list does not carry is one defect in
    one file; replayed, it would arrive as every trial failing that constraint.
 4. **A bundle that recorded no tool list leaves the override unchecked, not clean.**
-   The same override that aborts against a recorded tool set is admitted against
-   those three committed bundles, and the skip carries its reason — so an operator
-   never reads "no findings" off a gate that could not run.
+   The same override that aborts against a recorded tool set is admitted against every
+   committed bundle, and the skip carries its reason — so an operator never reads "no
+   findings" off a gate that could not run.
 """
 
 from __future__ import annotations
@@ -51,10 +51,15 @@ from tolokaforge.core.output.artifacts import FileArtifactWriter
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
-_RECORDED_RUNS = Path(__file__).resolve().parents[1] / "data" / "projects" / "tau_retail_mini"
+#: Every trial bundle committed under the repo's project fixtures, across both project
+#: roots — the whole population of bundles written before the record and the stamp
+#: existed, which is the population a version gate would have refused.
+_RECORDED_RUNS = Path(__file__).resolve().parents[1] / "data" / "projects"
 # Every call each committed bundle persisted, in discovery order, so a sweep that
-# built empty timelines fails instead of passing over them.
-_RECORDED_CALL_COUNTS = [3, 6, 5]
+# built empty timelines fails instead of passing over them. The length is the corpus
+# size: a bundle added to or lost from the fixtures moves this list, not a literal
+# count sitting beside it and agreeing with nothing.
+_RECORDED_CALL_COUNTS = [13, 3, 6, 5]
 
 _TRACE_CHECKS = {
     "constraints": [
@@ -202,30 +207,36 @@ def test_the_committed_unstamped_bundles_are_re_checked_rather_than_rejected(
 ) -> None:
     """Age is not a defect: bundles predating the stamp carry ids, so they replay.
 
-    Every one of these is unstamped and record-less, which is what a stamp gate would
-    read as "too old to re-check". They validate, build timelines from the message
-    view alone, and reach the evaluator — the stamp only tells an operator which
-    artifacts to expect. Run dry, because the source is a committed fixture and a
-    dry run is also where "nothing is written" is worth asserting.
+    Every trial bundle committed in the repo, over both project roots — all of them
+    unstamped and record-less, which is what a stamp gate would read as "too old to
+    re-check". They validate, build timelines from the message view alone, and reach
+    the evaluator; the stamp only tells an operator which artifacts to expect. The
+    corpus is the whole committed population rather than one project's, so a bundle
+    added under either root is swept rather than silently left out. Run dry, because
+    the source is a committed fixture and a dry run is also where "nothing is written"
+    is worth asserting.
 
     Supplied an override rather than reading a recorded block: none of the committed
     runs declares a ``trace_checks`` block, and an override is what makes them
-    reachable by the loader at all. Without it the sweep would classify three skips
-    and measure nothing.
+    reachable by the loader at all. Without it the sweep would classify skips and
+    measure nothing.
     """
-    source = _RECORDED_RUNS / "output"
+    source = _RECORDED_RUNS
     override = override_file(tmp_path, _TRACE_CHECKS)
     bundles = discover_trace_bundles(source)
     outcomes = run_trace_replay_batch(source, replay_id="stamp", override=override, dry_run=True)
+    expected = len(_RECORDED_CALL_COUNTS)
 
-    assert len(bundles) == len(_RECORDED_CALL_COUNTS)
-    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.WOULD_REPLAY] * 3
-    assert [outcome.evidence.schema_version for outcome in outcomes] == [None] * 3
-    assert [outcome.evidence.tool_log_present for outcome in outcomes] == [False] * 3
+    assert len(bundles) == expected
+    assert [outcome.status for outcome in outcomes] == (
+        [TraceReplayOutcomeStatus.WOULD_REPLAY] * expected
+    )
+    assert [outcome.evidence.schema_version for outcome in outcomes] == [None] * expected
+    assert [outcome.evidence.tool_log_present for outcome in outcomes] == [False] * expected
 
     timelines = [read_trace_replay_inputs(bundle, override=override).timeline for bundle in bundles]
     assert [len(attempted_calls(timeline)) for timeline in timelines] == _RECORDED_CALL_COUNTS
-    assert [timeline.records_present for timeline in timelines] == [False] * 3
+    assert [timeline.records_present for timeline in timelines] == [False] * expected
     assert not (source / TRACE_REPLAY_DIRNAME).exists()
 
 
@@ -277,14 +288,13 @@ def test_a_bundle_that_recorded_no_wire_tool_list_leaves_the_override_unchecked(
     """Not knowing the tools is reported as not knowing them, never as nothing wrong.
 
     The very override that aborts against a recorded wire list is admitted against
-    these three committed bundles, which carry no ``tools_schemas.yaml`` at all —
+    every committed bundle, none of which carries a ``tools_schemas.yaml`` at all —
     that asymmetry is the whole claim, and it is why the override names a tool no
     inventory could ever declare. An empty inventory read as authoritative would
-    reject all three; an unresolvable one routes the tool-name rule into
-    ``unchecked`` and says why, so a gate that could not run never reads as a clean
-    bill of health.
+    reject them all; an unresolvable one routes the tool-name rule into ``unchecked``
+    and says why, so a gate that could not run never reads as a clean bill of health.
     """
-    source = _RECORDED_RUNS / "output"
+    source = _RECORDED_RUNS
     assert not any(
         (bundle / "tools_schemas.yaml").exists() for bundle in discover_trace_bundles(source)
     )
@@ -295,14 +305,17 @@ def test_a_bundle_that_recorded_no_wire_tool_list_leaves_the_override_unchecked(
         override=override_file(tmp_path, _MISSPELLED_TOOL_CHECKS),
         dry_run=True,
     )
+    expected = len(_RECORDED_CALL_COUNTS)
 
-    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.WOULD_REPLAY] * 3
+    assert [outcome.status for outcome in outcomes] == (
+        [TraceReplayOutcomeStatus.WOULD_REPLAY] * expected
+    )
     reports = [outcome.override_authoring for outcome in outcomes]
-    assert [report.errors for report in reports] == [()] * 3
+    assert [report.errors for report in reports] == [()] * expected
     assert [[skip.reason for skip in report.unchecked] for report in reports] == [
         [
             "the tool set of this task could not be resolved, so no tool name and no "
             "argument name in this block is checkable"
         ]
-    ] * 3
+    ] * expected
     assert not (source / TRACE_REPLAY_DIRNAME).exists()
