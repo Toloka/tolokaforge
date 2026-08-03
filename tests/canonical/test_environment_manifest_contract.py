@@ -19,7 +19,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
-from tolokaforge.core.models import ResetSpec, ServiceSpec
+from tolokaforge.core.models import ReadinessSpec, ResetSpec, ServiceSpec
 from tolokaforge.core.trial import (
     EnvironmentManifest,
     InitialStateRef,
@@ -325,6 +325,45 @@ class TestServiceNetworkAccessContract:
         assert m.services == {}
         assert m.restricted_services == frozenset()
         assert isinstance(m.restricted_services, frozenset)
+
+
+# ---------------------------------------------------------------------------
+# ReadinessSpec — per-service readiness declaration
+# ---------------------------------------------------------------------------
+
+
+class TestServiceReadinessContract:
+    def test_default_readiness_is_none(self) -> None:
+        spec = ServiceSpec(isolation="shared")
+        assert spec.readiness is None
+
+    @pytest.mark.parametrize("kind", ["grpc", "http", "tcp"])
+    def test_readiness_kinds_round_trip(self, kind: str) -> None:
+        spec = ServiceSpec(isolation="shared", readiness=ReadinessSpec(kind=kind))
+        reloaded = ServiceSpec.model_validate_json(spec.model_dump_json())
+        assert reloaded.readiness is not None
+        assert reloaded.readiness.kind == kind
+
+    def test_unknown_readiness_kind_is_rejected(self) -> None:
+        with pytest.raises(ValidationError, match="kind"):
+            ServiceSpec(isolation="shared", readiness=ReadinessSpec(kind="banana"))
+
+    def test_readiness_spec_forbids_extra_fields(self) -> None:
+        with pytest.raises(ValidationError):
+            ReadinessSpec.model_validate({"kind": "grpc", "path": "/ready"})
+
+    def test_service_without_readiness_still_validates(self) -> None:
+        spec = ServiceSpec.model_validate({"isolation": "ephemeral"})
+        assert spec.readiness is None
+
+    @pytest.mark.parametrize("isolation", ["shared", "reset", "ephemeral"])
+    def test_readiness_is_orthogonal_to_isolation(self, isolation: str) -> None:
+        kwargs: dict[str, object] = {"isolation": isolation, "readiness": ReadinessSpec(kind="tcp")}
+        if isolation == "reset":
+            kwargs["reset"] = ResetSpec(seed="baseline")
+        spec = ServiceSpec(**kwargs)  # type: ignore[arg-type]
+        assert spec.readiness is not None
+        assert spec.readiness.kind == "tcp"
 
 
 # ---------------------------------------------------------------------------
@@ -774,11 +813,13 @@ class TestManifestWireShape:
                 "isolation": "reset",
                 "reset": {"seed": "baseline"},
                 "network_access": "default",
+                "readiness": None,
             },
             "default": {
                 "isolation": "shared",
                 "reset": None,
                 "network_access": "default",
+                "readiness": None,
             },
         }
         assert wire["initial_state"] == {"db": {"from_": "./fixtures/seed.sql", "kind": "sql"}}

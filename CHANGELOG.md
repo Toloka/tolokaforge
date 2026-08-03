@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
+
 ## v0.13.1 (2026-08-03)
 
 ### Feat

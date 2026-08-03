@@ -48,6 +48,8 @@ from tolokaforge.runner.models import EnvironmentManifest as EnvironmentManifest
 from tolokaforge.runner.models import EnvironmentPatch as EnvironmentPatch
 from tolokaforge.runner.models import JudgeCustomization as JudgeCustomization
 from tolokaforge.runner.models import LLMJudgeConfig as LLMJudgeConfig
+from tolokaforge.runner.models import ReadinessKind as ReadinessKind
+from tolokaforge.runner.models import ReadinessSpec as ReadinessSpec
 from tolokaforge.runner.models import RecordedToolCall as RecordedToolCall
 from tolokaforge.runner.models import ResetSpec as ResetSpec
 from tolokaforge.runner.models import Rubric as Rubric
