@@ -1672,7 +1672,13 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-            if tool_choice and self.capabilities.params_policy.supports_tool_choice:
+            # Suppress only the value the provider has no word for; an explicit
+            # REQUIRED/NONE still goes through (see GenerationParams).
+            suppressed = (
+                tool_choice == "auto"
+                and not self.capabilities.params_policy.supports_tool_choice_auto
+            )
+            if tool_choice and not suppressed:
                 kwargs["tool_choice"] = tool_choice
 
         kwargs["messages"] = self._convert_messages(system, messages)

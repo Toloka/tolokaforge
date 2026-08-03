@@ -2451,8 +2451,9 @@ _ALL: list[MC] = [
     # is a capability of the model:
     #
     #   * ``tool_choice`` — Cohere's Chat API has no ``AUTO``, only ``REQUIRED``
-    #     and ``NONE``, and omission is its documented equivalent of ``auto``.
-    #     The preset omits it, which is correct rather than a workaround.
+    #     and ``NONE``, and omission is its documented equivalent of ``auto``. The
+    #     preset omits that one value (``supports_tool_choice_auto: false``), which
+    #     is correct rather than a workaround; REQUIRED/NONE still go through.
     #   * ``$ref``/``$defs`` — the Azure serving stack's schema converter cannot
     #     resolve them and 500s, so the preset inlines them via ``strict``.
     MC(

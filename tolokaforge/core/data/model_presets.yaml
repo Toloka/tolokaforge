@@ -30,7 +30,7 @@ default:
 presets:
   # Cohere Command A+ (reached here through a LiteLLM gateway's ``azure_ai`` route).
   #
-  # ``supports_tool_choice: false`` is PERMANENT AND CORRECT, not a workaround.
+  # ``supports_tool_choice_auto: false`` is PERMANENT AND CORRECT, not a workaround.
   # Cohere's Chat API accepts only ``REQUIRED`` and ``NONE`` for ``tool_choice`` —
   # there is no ``AUTO`` (https://docs.cohere.com/reference/chat) — and its documented
   # behaviour when the parameter is OMITTED is "the model is free to choose whether to
@@ -45,6 +45,9 @@ presets:
   # prompt and tools, WITHOUT the parameter the model returns a correct
   # ``get_weather({'city': 'Budapest', 'unit': 'c'})``; WITH ``tool_choice="auto"`` the
   # call never leaves litellm.
+  #
+  # The flag is deliberately about the VALUE, not the parameter: Cohere does support
+  # ``tool_choice`` with ``REQUIRED``/``NONE``, and those still go through untouched.
   #
   # Do NOT "fix" this proxy-side with ``allowed_openai_params: ['tool_choice']`` or a
   # ``model_info: supports_tool_choice: true`` override: both would push the
@@ -68,7 +71,7 @@ presets:
     schema_sanitizer: strict
     response_policy: array_dict_map
     params:
-      supports_tool_choice: false
+      supports_tool_choice_auto: false
 
   # Claude 4.8 (Opus + Sonnet) — same adaptive-thinker contract as 4.7:
   # ignores ``reasoning_effort``, requires the canonical litellm ``thinking=``
