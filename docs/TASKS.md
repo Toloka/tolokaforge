@@ -360,7 +360,11 @@ gate.** A `state_checks` block carrying no source any substrate can read — onl
 `tolokaforge validate` and the pre-run gate refuse it, naming every source you
 could declare instead and the option of dropping the block.
 
-A `db_probes`-only block is the case the gate admits, because a probe is a **real**
+A `db_probes`-only block is what a probe pack declares, and probe-only is the whole of
+what it may declare: a probe beside a non-empty `jsonpaths`, or beside a `hash` block that
+is enabled with a source, is refused at load on both substrates, because those sources
+score the same component and one of the two verdicts would be discarded with nothing
+saying which. The block on its own is admitted because a probe is a **real**
 source. It is only not a source *core* can read: `state_checks.db_probes` is
 `RUNNER_ONLY` in the substrate-parity manifest, evaluated by `evaluate_db_probes`,
 because the probe DSN resolves only inside the task's docker network. So core leaves

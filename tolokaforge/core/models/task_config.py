@@ -13,7 +13,10 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_valid
 
 from tolokaforge.core.deprecations import canonicalize_actor_config
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.grading.state_composition import (
+    refuse_probes_beside_another_state_source,
+    resolve_hash_weight,
+)
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
@@ -358,16 +361,25 @@ class StateChecksConfig(BaseModel):
         if data.get("env_assertions"):
             raise ValueError(
                 "state_checks.env_assertions has been removed — it never produced "
-                "grading signal on either substrate. Replace it with the check that "
-                "matches what you are asserting:\n"
+                "grading signal on either substrate. Declare the source that matches "
+                "what you are asserting, and pick one: db_probes is exclusive with the "
+                "other two, and jsonpaths beside a hash source needs a hash.weight to "
+                "fold them by. Each block below loads on its own:\n"
+                "  # state_checks.jsonpaths — per-record state assertions\n"
                 "  state_checks:\n"
-                "    jsonpaths:                     # per-record state assertions\n"
+                "    jsonpaths:\n"
                 "      - path: $.db.orders[0].status\n"
                 "        equals: shipped\n"
-                "    hash:                          # whole-state comparison\n"
+                "  — or —\n"
+                "  # state_checks.hash — whole-state comparison\n"
+                "  state_checks:\n"
+                "    hash:\n"
                 "      enabled: true\n"
                 "      golden_actions: [...]        # or expected_state_hash\n"
-                "    db_probes:                     # substrate SQL assertions\n"
+                "  — or —\n"
+                "  # state_checks.db_probes — substrate SQL assertions\n"
+                "  state_checks:\n"
+                "    db_probes:\n"
                 "      - name: order_shipped\n"
                 "        dsn: postgresql://...\n"
                 "        query: SELECT status FROM orders WHERE id = 1\n"
@@ -399,6 +411,22 @@ class StateChecksConfig(BaseModel):
                     f"got {field!r}"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _refuse_probes_beside_another_state_source(self) -> Self:
+        """Reject at load a probe declared beside a source this component also scores.
+
+        Defined above the weight rule, which Pydantic therefore runs second: a block
+        declaring probes, assertions and a hash source with no weight satisfies both
+        conditions, and a weight is not the fix for a block refused outright.
+        """
+        refuse_probes_beside_another_state_source(
+            db_probes=self.db_probes,
+            jsonpaths=self.jsonpaths,
+            hash_config=self.hash,
+            context="grading.yaml state_checks",
+        )
+        return self
 
     @model_validator(mode="after")
     def _validate_hash_weight_declaration(self) -> Self:

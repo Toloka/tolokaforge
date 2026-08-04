@@ -40,6 +40,7 @@ from tolokaforge.core.grading.state_checks import (
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
     inert_hash_weight_reason,
+    refuse_probes_beside_another_state_source,
     resolve_hash_weight,
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
@@ -112,6 +113,11 @@ class GradingEngine:
             GoldenReplayError: a state hash the config asked for could not be computed,
                 so no component is scored and the trial is left ungraded rather than
                 graded on the sources that happened to work.
+            ValueError: ``state_checks`` declares ``db_probes`` beside a source this fold
+                also scores, so one ``state_checks`` component holds two verdicts with no
+                declared share between them. Re-resolved here rather than trusted from
+                load, because the ``hash`` block is an untyped dict a caller can mutate
+                after validation.
         """
         components = GradeComponents()
         reasons_parts = []
@@ -307,8 +313,22 @@ class GradingEngine:
         source produced a verdict. An empty assertion list is not a source: it
         declares nothing to evaluate, so it yields no verdict and contributes
         nothing to the fold.
+
+        ``db_probes`` cannot share the component with either of them, and the refusal is
+        re-resolved here for the same reason the weight is: the ``hash`` block is an
+        untyped dict, so nothing stops a caller mutating it after validation.
+
+        Raises:
+            ValueError: the block declares ``db_probes`` beside a source this fold would
+                also score, so the component has two verdicts and no declared share.
         """
         checks = self.config.state_checks
+        refuse_probes_beside_another_state_source(
+            db_probes=checks.db_probes,
+            jsonpaths=checks.jsonpaths,
+            hash_config=checks.hash,
+            context="grading.yaml state_checks",
+        )
         hash_score, hash_reasons, diff_result, replay = self._check_state_hash(final_env_state)
         # Not called for an empty list: ``check_jsonpaths`` answers "what fraction of
         # these assertions passed?", and its honest answer over zero assertions is

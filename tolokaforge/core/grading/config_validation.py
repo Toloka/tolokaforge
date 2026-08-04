@@ -19,9 +19,10 @@ field of another type is red on every trajectory whatever the agent did, a golde
 action naming no callable tool leaves the replay with no world to hash and the trial
 with no verdict, a golden path authored against a task that declares no initial-state
 file or no MCP server module has no world to replay in at all, a section declaring
-nothing scores nothing while reading as configured, and a component and its weight
-naming each other only one way leaves the two substrates folding different maps for
-the same trial.
+nothing scores nothing while reading as configured, a probe declared beside a state
+source the fold also scores leaves one component holding two verdicts and each
+substrate discarding a different one, and a component and its weight naming each other
+only one way leaves the two substrates folding different maps for the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -44,7 +45,11 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
-from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
+from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
+    HASH_SOURCE_KEYS,
+    probes_conflict_with_another_state_source,
+)
 from tolokaforge.core.models import (
     BoundValue,
     GradingCombineConfig,
@@ -359,6 +364,15 @@ _NO_TRANSCRIPT_RULE = "declares no rule any substrate can evaluate"
 
 _NO_OPT_IN_DECISION = "leaves enabled unwritten, which the component's own default reads as off"
 
+# The half of the refusal only a report has room for: the shared message names the shape
+# and the fix, and this says which substrate would have discarded which verdict.
+_WHICH_SUBSTRATE_DISCARDS_WHICH = (
+    "The two substrates would not even discard the same verdict: only the runner "
+    "evaluates a probe, so runner-side the probe's score fills the component and the hash "
+    "and jsonpath verdicts are dropped, while core has no probe evaluator and folds those "
+    "two without it — one trial, two state_checks components."
+)
+
 # The JSON types whose values are never strings. A schema declaring one of them for
 # an argument settles that a reference comparing the bound value against text cannot
 # hold; ``string``, and a property writing no type at all, settle nothing.
@@ -466,9 +480,10 @@ def inspect_grading_authoring(
     error rather than being reported as an authoring finding.
 
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
-    inventory is unresolvable. The rules outside that set still run: regex compilation
-    and the hash-source declaration, which read nothing but the block, and the
-    replay-world rule, which reads the world and skips on its own account.
+    inventory is unresolvable. The rules outside that set still run: regex compilation,
+    the hash-source declaration and the state-source exclusivity, which read nothing but
+    the block, and the replay-world rule, which reads the world and skips on its own
+    account.
 
     Args:
         grading: The authored block, as written.
@@ -496,6 +511,7 @@ def inspect_grading_authoring(
         _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
+        _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
     ]
     if inventory.known:
@@ -580,6 +596,10 @@ def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
     halves disagree, and this one owns a block that declares no source at all —
     including a hash block carrying neither. So each shape draws exactly one finding,
     and no shape draws none.
+
+    Two sources are :func:`_check_probes_are_the_only_state_source`'s, which completes
+    the partition from the other end: this rule owns a block with no source, that one a
+    block with two, one of which is a probe.
     """
     hash_block = state_checks.get("hash")
     if not isinstance(hash_block, Mapping):
@@ -853,6 +873,39 @@ def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return None
     hash_block = state_checks.get("hash")
     return hash_block if isinstance(hash_block, Mapping) else None
+
+
+def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> AuthoringReport:
+    """``db_probes`` is the whole of what a block declaring it may declare.
+
+    A probe beside a source the fold also scores hands one ``state_checks`` component two
+    candidate scores with no share to fold them by, and both config models refuse the
+    block at load — so an advisory here would tell the author their pack is fine while
+    ``tolokaforge validate`` and the run's pre-flight reject it.
+
+    The mirror of the no-source rule rather than an extension of it: that one owns a block
+    declaring no source at all, this one a block declaring two, one of which is a probe —
+    see :func:`_state_checks_has_a_source` for the whole partition. Reads the block alone,
+    like :func:`_check_hash_source_declared` beside it: no tool name, no replay world, no
+    fold.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return AuthoringReport()
+    if not probes_conflict_with_another_state_source(
+        db_probes=state_checks.get("db_probes") or (),
+        jsonpaths=state_checks.get("jsonpaths") or (),
+        hash_config=_hash_block(grading),
+    ):
+        return AuthoringReport()
+    return AuthoringReport(
+        errors=(
+            Finding(
+                "state_checks.db_probes",
+                f"{CONFLICTING_STATE_SOURCES_MESSAGE} {_WHICH_SUBSTRATE_DISCARDS_WHICH}",
+            ),
+        )
+    )
 
 
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:

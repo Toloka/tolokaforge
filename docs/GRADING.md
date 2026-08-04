@@ -996,16 +996,6 @@ other shape yields at most one score *core-side*, so a weight there would have
 nothing to divide: it loads, its range is still checked, and `grade.reasons` records
 that it was declared but not consulted — on both substrates, from one constant.
 
-**The gate over-approximates in one known way, and it errs toward asking the author a
-question rather than guessing an answer: `db_probes` declared alongside.** `db_probes`
-is the sole state source for the tasks that declare it, so runner-side its score fills
-the component outright and the fold is never reached — the weight the gate demanded is
-then reported as unconsulted. Core-side that is not over-approximation at all: the core
-engine has no `db_probes` evaluator, so it *does* fold the hash with the jsonpaths and
-*does* consult the weight. Teaching the shared predicate about `db_probes` would
-therefore trade a load-time rejection for a grade-time raise on the core substrate,
-which is why it stays. #731 owns the precedence itself.
-
 **Which substrate graded the trial still matters, for three hash-source shapes.** The
 fold is one function (`core/grading/state_composition.py`) and both the core engine
 and the runner's `GradeTrial` call it, so the *rule* is shared; the runner carries
@@ -2288,6 +2278,7 @@ Findings come in three classes:
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
+| `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — batched into this report where the block carries no `hash` mapping, and raised as a config load error before the gate is reached where it does | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
@@ -2341,6 +2332,28 @@ vacuous pass for it while reading as configured:
 Each rule reads its keys for **truth**, not presence, because that is what both
 substrates do: an empty `golden_actions` replays nothing, an empty `required_actions`
 requires nothing.
+
+**Two state sources, one of them a probe, is refused as well** — the mirror of the
+no-source rule above, and the two divide the block between them. `db_probes` beside a
+non-empty `jsonpaths`, or beside a `hash` block that is enabled and names
+`expected_state_hash` or `golden_actions`, hands one component two candidate scores with
+no share to fold them by, and the substrates would not even discard the same one: only
+the runner evaluates a probe, while core folds the hash with the assertions. Neither
+config model loads the block, so core raises where the grading config is built and the
+runner at `RegisterTrial`, naming both sources and the two fixes — keep the probes and
+drop the other source, or drop the probes and let the hash and `jsonpaths` grade the
+state. Probes beside a *disabled* hash still load: that hash produces no verdict, so
+nothing is discarded, and an enabled hash with nothing to compare against is refused at
+the flag by its own rule.
+
+**Which surface an author hears it from depends on whether the block writes a `hash`
+mapping**, because `tolokaforge validate` constructs the core `state_checks` config on any
+declared `hash` block before it runs the gate. Probes beside `jsonpaths` alone reach the
+gate, so the finding is batched at `state_checks.db_probes` beside every other finding in
+the pack. Probes beside a `hash` mapping are refused by that construction first, so the
+same sentence arrives as a load error and it is the only defect reported — the rest of the
+pack is checked on the next run of `validate`. Both refuse the pack; they differ in how
+much else the author is told at the same time.
 
 **Every golden action names a tool the task gives its actors.** A name that resolves to
 nothing costs the whole trial: both substrates resolve the authored names before the
@@ -2981,10 +2994,30 @@ actionable reason — never a silent pass. The runner image ships `asyncpg`, the
 async driver `db_probes` connect with; the runner container joins the task's
 docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
 
-`db_probes` is the sole state source for the tasks that use it — it is not
-combined with hash or `jsonpaths` checks in the same task. Runner-side it fills the
-`state_checks` component and combines with `transcript_rules` / `llm_judge`
-through the normal weighted combine below.
+`db_probes` is the sole state source for a task that declares it: a probe declared
+beside a non-empty `jsonpaths`, or beside a `hash` block that is enabled with a source,
+is **refused** — those sources score the same component, so one verdict would fill it
+and discard the other. There are two fixes, and which one you want depends on what
+should decide the state: **drop the probes** and let the hash and `jsonpaths` grade it,
+or **drop the other source** and let the probe grade it. The probe is the only one of
+the three that reads the live substrate through an independent role, and the only one
+core cannot read at all — so a pack you grade outside the runner keeps its verdict by
+taking the first fix, and a pack whose real oracle is the database takes the second.
+The refusal is at load and on both substrates, from one message:
+core raises where the grading config is built and the runner at `RegisterTrial`, so no
+trial is paid for first. `tolokaforge validate` reports it earlier still, at
+`state_checks.db_probes` — batched with the pack's other findings where the block writes
+no `hash` mapping, and as the load error above where it does
+(see [What is validated before a run](#what-is-validated-before-a-run)). A run's
+pre-flight resolves each pack's description before it reaches the gate, so there both
+shapes are the load error and the pass stops at the first pack carrying one. The fold is
+the last line of defence behind all of them: `resolve_state_checks_component` raises on a
+probe score arriving beside a hash or JSONPath verdict, so a config that reached grading
+without passing a gate — one built directly against the runner, or recorded before the
+rule — fails loud rather than discarding a verdict
+(see [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrial-error-semantics)). Runner-side the
+probe score *is* the `state_checks` component, and it combines with `transcript_rules` /
+`llm_judge` through the normal weighted combine below.
 
 **It is runner-only, so core declines to score a probe-only pack.** The DSN resolves
 inside the task's docker network, which the runner container joins and the host-side

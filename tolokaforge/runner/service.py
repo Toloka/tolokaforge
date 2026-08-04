@@ -1447,9 +1447,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             accounted_keys[JSONPATHS_KEY] = EVALUATED
             logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
 
-        # A.3) DB PROBES (substrate SQL assertions) — the sole state source for
-        # tasks that use it; combining db_probes with hash/jsonpath checks in one
-        # task is out of scope, so its score fills the state_checks component.
+        # A.3) DB PROBES (substrate SQL assertions) — the block's only state source:
+        # a hash verdict or a jsonpath score declared beside a probe is refused, so a
+        # probe score is the state_checks component rather than one of two candidates.
         if state_checks_config and state_checks_config.db_probes:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating "

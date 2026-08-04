@@ -13,7 +13,10 @@ from pathlib import Path
 import pytest
 
 from tolokaforge.core.grading.golden_replay import FailedGoldenAction, GoldenReplayRecord
-from tolokaforge.core.grading.state_composition import INERT_HASH_WEIGHT_REASON
+from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
+    INERT_HASH_WEIGHT_REASON,
+)
 from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
     build_grade_reasons,
@@ -299,10 +302,7 @@ class TestStateChecksSlot:
             ("both, weight 0.0 gives the jsonpaths the verdict", 0.0, 0.5, -1.0, 0.0, 0.5, False),
             ("neither", -1.0, -1.0, -1.0, None, None, False),
             ("db_probes alone", -1.0, -1.0, 0.4, None, 0.4, False),
-            ("db_probes outrank a hash verdict", 1.0, -1.0, 0.4, None, 0.4, False),
-            ("db_probes outrank a jsonpath score", -1.0, 0.75, 0.4, None, 0.4, False),
-            ("db_probes outrank a fold of both", 1.0, 0.5, 0.4, 0.6, 0.4, True),
-            ("db_probes outrank both before a weight is needed", 1.0, 0.5, 0.4, None, 0.4, False),
+            ("db_probes alone, an inert weight is not consulted", -1.0, -1.0, 0.4, 0.6, 0.4, True),
         ],
     )
     def test_composed_value(
@@ -334,6 +334,36 @@ class TestStateChecksSlot:
             resolve_state_checks_component(
                 hash_score=1.0, jsonpath_score=0.5, db_probe_score=-1.0, hash_weight=None
             )
+
+    @pytest.mark.parametrize(
+        ("case", "hash_score", "jsonpath_score", "db_probe_score", "hash_weight"),
+        [
+            ("beside a hash verdict", 1.0, -1.0, 0.4, None),
+            ("beside a jsonpath score", -1.0, 0.75, 0.4, None),
+            ("beside a fold of both", 1.0, 0.5, 0.4, 0.6),
+            ("beside both, before a weight is needed", 1.0, 0.5, 0.4, None),
+            ("the probe passing where both other sources failed", 0.0, 0.0, 1.0, None),
+        ],
+    )
+    def test_a_probe_score_beside_another_source_refuses_to_fold(
+        self, case, hash_score, jsonpath_score, db_probe_score, hash_weight
+    ):
+        """A second scored source has no share of the component, so neither verdict wins.
+
+        The last row is what makes the rule unconditional on magnitude rather than a
+        precedence between scores: the probe passing over two failures is refused exactly
+        like the probe failing under them. The no-weight rows also pin the order of the two
+        refusals — an author told to declare a ``hash.weight`` for a block that is being
+        refused outright would be fixing the wrong key.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            resolve_state_checks_component(
+                hash_score=hash_score,
+                jsonpath_score=jsonpath_score,
+                db_probe_score=db_probe_score,
+                hash_weight=hash_weight,
+            )
+        assert str(excinfo.value) == CONFLICTING_STATE_SOURCES_MESSAGE, case
 
 
 @pytest.mark.parametrize(("hash_weight", "expected"), [(0.6, 0.8), (0.25, 0.625)])

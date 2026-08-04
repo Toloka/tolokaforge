@@ -27,6 +27,7 @@ from tolokaforge.core.grading.state_checks import (
     to_hashable,
 )
 from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
@@ -57,6 +58,20 @@ _HALF_SATISFIED_JSONPATHS = [
 
 _MATCHING_HASH = consistent_hash(to_hashable(_DB_STATE))
 _MISMATCHING_HASH = "0" * 64
+
+#: A declared hash source, for the cases that only read whether one is declared.
+_A_GOLDEN_SOURCE = [{"name": "close_widget"}]
+
+#: One probe, in the shape both substrates take it: core reads the mapping as written,
+#: the runner parses it into an ``extra="forbid"`` ``DbProbe``.
+_DB_PROBES = [
+    {
+        "name": "widget_closed",
+        "dsn": "postgresql://grader:grader_pw@app-db:5432/app",
+        "query": "SELECT status FROM widgets WHERE id = 'W1'",
+        "expect": [{"path": "$.rows[0].status", "equals": "closed"}],
+    }
+]
 
 #: A ``shop_orders_02`` action that resolves, runs whole, and leaves the initial state
 #: untouched — so a replay over that pack reaches a verdict without the pack's own
@@ -255,8 +270,6 @@ class TestLoadTimePredicateDiscriminates:
     to divide. Rejecting any of them would demand a number the composer never reads.
     """
 
-    _GOLDEN = [{"name": "close_widget"}]
-
     @pytest.mark.parametrize(
         ("case", "state_checks", "rejected"),
         [
@@ -264,7 +277,7 @@ class TestLoadTimePredicateDiscriminates:
                 "golden_actions and assertions, no weight",
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                    "hash": {"enabled": True, "golden_actions": _GOLDEN},
+                    "hash": {"enabled": True, "golden_actions": _A_GOLDEN_SOURCE},
                 },
                 True,
             ),
@@ -280,7 +293,7 @@ class TestLoadTimePredicateDiscriminates:
                 "golden_actions and assertions, with a weight",
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                    "hash": {"enabled": True, "golden_actions": _GOLDEN, "weight": 0.6},
+                    "hash": {"enabled": True, "golden_actions": _A_GOLDEN_SOURCE, "weight": 0.6},
                 },
                 False,
             ),
@@ -323,7 +336,7 @@ class TestLoadTimePredicateDiscriminates:
             ),
             (
                 "golden_actions with no assertions, no weight",
-                {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN}},
+                {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _A_GOLDEN_SOURCE}},
                 False,
             ),
             (
@@ -347,6 +360,157 @@ class TestLoadTimePredicateDiscriminates:
         with pytest.raises(ValidationError) as excinfo:
             StateChecksConfig(**state_checks)
         assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
+
+
+class TestNeitherSubstrateLoadsProbesBesideAnotherSource:
+    """The combination is refused at load, by both config models, from one predicate.
+
+    Core reads the author's ``hash`` block and the runner the flattened fields the
+    adapter writes onto its own model, so the block is refused when ``grading.yaml``
+    loads and a spec that reached the wire without passing a gate is refused at
+    ``RegisterTrial`` — before the trial is paid for, rather than graded by a precedence
+    rule no author chose.
+
+    Every accepted row is a shape one of the two substrates still scores: a disabled hash
+    produces no verdict, an enabled hash with nothing to compare against is refused at
+    the flag by its own rule, and probes alone are what a probe pack declares. Rejecting
+    any of them would make the load stricter than the fold.
+    """
+
+    @staticmethod
+    def _runner_config(*, jsonpaths, hash_block, db_probes) -> RunnerStateChecksConfig:
+        """Build the runner model over the flattened naming its adapter writes."""
+        hash_block = hash_block or {}
+        return RunnerStateChecksConfig(
+            jsonpath_checks=jsonpaths,
+            hash_enabled=hash_block.get("enabled", False),
+            expected_hash=hash_block.get("expected_state_hash"),
+            golden_actions=[
+                {"tool_name": action["name"]} for action in hash_block.get("golden_actions", [])
+            ],
+            hash_weight=hash_block.get("weight"),
+            db_probes=db_probes,
+        )
+
+    @pytest.mark.parametrize(
+        ("case", "db_probes", "jsonpaths", "hash_block", "refused"),
+        [
+            (
+                "probes beside live assertions",
+                _DB_PROBES,
+                _HALF_SATISFIED_JSONPATHS,
+                None,
+                True,
+            ),
+            (
+                "probes beside an expected_state_hash",
+                _DB_PROBES,
+                [],
+                {"enabled": True, "expected_state_hash": _MATCHING_HASH},
+                True,
+            ),
+            (
+                "probes beside golden actions",
+                _DB_PROBES,
+                [],
+                {"enabled": True, "golden_actions": _A_GOLDEN_SOURCE},
+                True,
+            ),
+            ("probes alone, what a probe pack declares", _DB_PROBES, [], None, False),
+            (
+                "probes beside a disabled hash carrying a source",
+                _DB_PROBES,
+                [],
+                {"enabled": False, "expected_state_hash": _MATCHING_HASH},
+                False,
+            ),
+            (
+                "probes beside an enabled hash with nothing to compare against",
+                _DB_PROBES,
+                [],
+                {"enabled": True},
+                False,
+            ),
+            (
+                "both other sources and no probes, folded by their weight",
+                [],
+                _HALF_SATISFIED_JSONPATHS,
+                {"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": 0.6},
+                False,
+            ),
+        ],
+    )
+    def test_shape(self, case, db_probes, jsonpaths, hash_block, refused):
+        core_block = {"jsonpaths": jsonpaths, "hash": hash_block, "db_probes": db_probes}
+        if not refused:
+            assert StateChecksConfig(**core_block).db_probes == db_probes
+            runner = self._runner_config(
+                jsonpaths=jsonpaths, hash_block=hash_block, db_probes=db_probes
+            )
+            assert len(runner.db_probes) == len(db_probes)
+            return
+
+        with pytest.raises(ValidationError) as core_error:
+            StateChecksConfig(**core_block)
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(core_error.value)
+
+        with pytest.raises(ValidationError) as runner_error:
+            self._runner_config(jsonpaths=jsonpaths, hash_block=hash_block, db_probes=db_probes)
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(runner_error.value)
+
+    @pytest.mark.parametrize("substrate", ["core", "runner"])
+    def test_three_sources_with_no_weight_name_the_conflict(self, substrate):
+        """The exclusivity rule reports first, and the weight rule never gets to.
+
+        Probes, assertions and a hash source with no weight satisfy both validators'
+        conditions, and Pydantic runs them in definition order — so a reorder would send
+        the author to declare a ``hash.weight`` for a block refused outright, whose weight
+        nothing would ever consult.
+        """
+        hash_block = {"enabled": True, "expected_state_hash": _MATCHING_HASH}
+        with pytest.raises(ValidationError) as excinfo:
+            if substrate == "core":
+                StateChecksConfig(
+                    jsonpaths=_HALF_SATISFIED_JSONPATHS, hash=hash_block, db_probes=_DB_PROBES
+                )
+            else:
+                self._runner_config(
+                    jsonpaths=_HALF_SATISFIED_JSONPATHS,
+                    hash_block=hash_block,
+                    db_probes=_DB_PROBES,
+                )
+
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(excinfo.value)
+        assert MISSING_HASH_WEIGHT_MESSAGE not in str(excinfo.value)
+
+
+class TestProbesCannotShareTheComponent:
+    """``db_probes`` beside a source this fold also scores refuses to grade the trial.
+
+    Core has no probe evaluator, so left alone it would fold the hash with the
+    assertions and report a ``state_checks`` the runner would have taken from the probe
+    instead — one trial, two components, and no declared share between them.
+
+    Each case declares the probes, loads, and only then adds the second source, because
+    the claim is about grade time: the block is re-resolved there rather than trusted
+    from load, ``hash`` being an untyped dict nothing stops a caller mutating.
+    """
+
+    def test_assertions_added_after_load_refuse_to_fold(self):
+        engine = _engine({"db_probes": _DB_PROBES})
+        engine.config.state_checks.jsonpaths = _HALF_SATISFIED_JSONPATHS
+
+        with pytest.raises(ValueError) as excinfo:
+            engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(excinfo.value)
+
+    def test_a_hash_source_added_after_load_refuses_to_fold(self):
+        engine = _engine({"db_probes": _DB_PROBES, "hash": {"enabled": True}})
+        engine.config.state_checks.hash["expected_state_hash"] = _MATCHING_HASH
+
+        with pytest.raises(ValueError) as excinfo:
+            engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(excinfo.value)
 
 
 class TestInertWeightIsReportedNotDropped:
@@ -728,6 +892,24 @@ class TestRunnerRejectsTheUndecidableConfig:
 
         assert response.success is False
         assert MISSING_HASH_WEIGHT_MESSAGE in response.error
+
+    def test_probes_beside_assertions_are_rejected(self, runner_service, mock_grpc_context):
+        """A probe is scored on this substrate alone, so it grades that spec by itself.
+
+        The assertions are added to the serialised spec for the same reason the weight is
+        stripped from it above: the engine-side model refuses to build the shape, so what
+        reaches a runner carrying it is an engine predating the rule. Registration refuses
+        it rather than letting the probe decide a component core would have folded from
+        the assertions.
+        """
+        trial_id = "gate_probes_beside_assertions:0"
+        payload = _spec_payload(trial_id, {"jsonpath_checks": [], "db_probes": _DB_PROBES})
+        payload["task"]["grading"]["state_checks"]["jsonpath_checks"] = _HALF_SATISFIED_JSONPATHS
+
+        response = _register(runner_service, mock_grpc_context, trial_id, payload)
+
+        assert response.success is False
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in response.error
 
     @pytest.mark.parametrize("source_key", sorted(_SOURCES))
     def test_the_same_spec_registers_with_its_weight(

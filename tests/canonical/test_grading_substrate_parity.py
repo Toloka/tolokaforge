@@ -40,8 +40,8 @@ Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
     the runtime ledger read, and the one an author can write are the same set;
 13. a state source that declares nothing leaves ``state_checks`` unscored on both
     substrates, and the one asymmetry the rule permits — a probe-only pack, which
-    only the runner can read — is asserted against the manifest's own claim rather
-    than assumed.
+    only the runner can read, and which is the whole of what a pack declaring a probe
+    may be — is asserted against the manifest's own claim rather than assumed.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -59,10 +59,10 @@ import importlib
 import json
 import re
 import shutil
-from collections.abc import Sequence
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from types import UnionType
+from types import MappingProxyType, UnionType
 from typing import Any, Union, get_args, get_origin
 
 import pytest
@@ -127,6 +127,7 @@ pytestmark = pytest.mark.canonical
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _PARITY_GLOB = "grading_parity/**/task.yaml"
+_TASKS_GLOB = "tasks/**/task.yaml"
 _ALL_KEYS_TASK = "all_keys"
 
 COMPOSITION_PARITY_WEIGHTS: tuple[float, ...] = (0.0, 0.25, 0.6, 1.0)
@@ -544,8 +545,12 @@ def _pack_dir(test_data_dir: Path, author_key: str) -> Path:
     return test_data_dir / "grading_parity" / _task_id_for(author_key)
 
 
+def _adapter_for(test_data_dir: Path, tasks_glob: str) -> NativeAdapter:
+    return NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": tasks_glob})
+
+
 def _parity_adapter(test_data_dir: Path) -> NativeAdapter:
-    return NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": _PARITY_GLOB})
+    return _adapter_for(test_data_dir, _PARITY_GLOB)
 
 
 _MISSING = object()
@@ -1077,50 +1082,110 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
 # --------------------------------------------------------------------------
 
 
-def test_adapter_translation_carries_every_runner_key(test_data_dir):
-    pack = test_data_dir / "grading_parity" / _ALL_KEYS_TASK
-    declared = _declared_author_keys(yaml.safe_load((pack / "grading.yaml").read_text()))
-    # A family root carries no field of its own — its leaves do — so authorability
-    # is "the core config accepts this key", which a root satisfies by being the
-    # block its leaves live under.
-    authorable = {
-        item.author_key for item in GRADING_KEYS if item.core_field is not None or item.family_root
-    }
-    assert declared == authorable, (
-        f"{pack / 'grading.yaml'} must declare every manifest key the core config "
-        f"accepts; missing {sorted(authorable - declared)}"
-    )
+_TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
+    {_ALL_KEYS_TASK: _PARITY_GLOB, _PROBE_PACK: _TASKS_GLOB}
+)
+"""The packs whose declared keys together carry the manifest, and the glob loading each.
 
-    grading = _parity_adapter(test_data_dir).to_task_description(_ALL_KEYS_TASK).grading
-    owners: dict[str, BaseModel | None] = {
+Two packs rather than one because ``state_checks.db_probes`` is exclusive with the other
+state sources: a pack declaring the probes cannot declare beside them the hash block and
+the JSONPath assertions ``all_keys`` carries. So the manifest's totality is a union over
+packs each of which is authorable on its own, and the two live under different roots —
+hence a glob apiece.
+"""
+
+_TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType({_PROBES_KEY: _PROBE_PACK})
+"""The pack that must carry a key to the runner as something other than the field default.
+
+``all_keys`` owns every key this map does not name, so a key added to the manifest has an
+owner from the start and fails the lock until that pack declares it. Ownership is per key
+rather than per pack because declaring a key is not translating it: ``db_probe_grading``
+writes ``combine.method: weighted`` and ``llm_judge: null``, both of which reach the runner
+as exactly the field default, so a per-pack claim over it would assert nothing about
+translation and be red besides.
+"""
+
+
+def _translation_carriers(
+    grading: runner_models.RunnerGradingConfig,
+) -> dict[str, BaseModel | None]:
+    """The models a manifest ``runner_field`` addresses, keyed by the name it uses."""
+    return {
         "RunnerGradingConfig": grading,
         "RunnerStateChecksConfig": grading.state_checks,
         "RunnerTranscriptRulesConfig": grading.transcript_rules,
         "TraceChecksConfig": grading.trace_checks,
     }
 
+
+def _assert_translated_non_default(
+    carriers: Mapping[str, BaseModel | None], *, author_key: str, runner_field: str, owner: str
+) -> None:
+    model_name, _, field_name = runner_field.partition(".")
+    carrier = carriers.get(model_name)
+    assert carrier is not None, (
+        f"{author_key}: adapter translation of {owner} produced no {model_name} to carry "
+        f"{runner_field!r}"
+    )
+    actual = getattr(carrier, field_name)
+    default = type(carrier).model_fields[field_name].get_default(call_default_factory=True)
+    assert actual != default, (
+        f"{author_key} must reach the runner from {owner}/grading.yaml, and arrives as the "
+        f"default {default!r} — either that pack does not declare it, or declares it at the "
+        f"default, or NativeAdapter.to_task_description drops it on the floor"
+    )
+
+
+def test_adapter_translation_carries_every_runner_key(test_data_dir):
+    """Every manifest key is declared by a translation pack, and reaches the runner from it.
+
+    The two claims are read at different grains. Totality is a union over the pack set,
+    because no one authorable pack can declare every key. Arrival is per key, against the
+    single pack that owns it.
+    """
+    adapters = {
+        task_id: _adapter_for(test_data_dir, tasks_glob)
+        for task_id, tasks_glob in _TRANSLATION_PACK_GLOBS.items()
+    }
+    declared = {
+        task_id: _declared_author_keys(
+            yaml.safe_load((adapter.get_task_dir(task_id) / "grading.yaml").read_text())
+        )
+        for task_id, adapter in adapters.items()
+    }
+    # A family root carries no field of its own — its leaves do — so authorability
+    # is "the core config accepts this key", which a root satisfies by being the
+    # block its leaves live under.
+    authorable = {
+        item.author_key for item in GRADING_KEYS if item.core_field is not None or item.family_root
+    }
+    union: set[str] = set().union(*declared.values())
+    assert union == authorable, (
+        f"the packs {sorted(declared)} must together declare every manifest key the core "
+        f"config accepts and nothing outside it; missing {sorted(authorable - union)}, "
+        f"declared but not authorable {sorted(union - authorable)}"
+    )
+
+    carriers = {
+        task_id: _translation_carriers(adapter.to_task_description(task_id).grading)
+        for task_id, adapter in adapters.items()
+    }
     # Several element-addressed entries name one field, and the assertion below is
     # about the field arriving — so it is made once per field rather than once per
     # entry, which would report the same translation ten times over.
-    carried: set[str] = set()
+    carried: set[tuple[str, str]] = set()
     for item in GRADING_KEYS:
         if item.core_field is None or item.runner_field is None:
             continue
-        if item.runner_field in carried:
+        owner = _TRANSLATION_OWNERS.get(item.author_key, _ALL_KEYS_TASK)
+        if (owner, item.runner_field) in carried:
             continue
-        carried.add(item.runner_field)
-        model_name, _, field_name = item.runner_field.partition(".")
-        owner = owners.get(model_name)
-        assert owner is not None, (
-            f"{item.author_key}: adapter translation produced no {model_name} to carry "
-            f"{item.runner_field!r}"
-        )
-        actual = getattr(owner, field_name)
-        default = type(owner).model_fields[field_name].get_default(call_default_factory=True)
-        assert actual != default, (
-            f"{item.author_key} is declared in {pack.name}/grading.yaml but arrives at "
-            f"the runner as the default {default!r} — NativeAdapter.to_task_description "
-            f"drops it on the floor"
+        carried.add((owner, item.runner_field))
+        _assert_translated_non_default(
+            carriers[owner],
+            author_key=item.author_key,
+            runner_field=item.runner_field,
+            owner=owner,
         )
 
 
@@ -2307,18 +2372,19 @@ def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
 ):
     """The one asymmetry this presence rule is allowed to have, asserted not assumed.
 
-    ``state_checks.db_probes`` is the pack's only state source and it is
-    ``RUNNER_ONLY``: the probe DSN resolves inside the task's docker network, which
-    the runner container joins and the host-side engine does not. So core evaluating
-    nothing here is the declared design rather than a regression, and the manifest
-    entry is read to say so. Both rows fill the runner's slot and they differ, so
-    what sits in it is the probe's verdict rather than a constant.
+    ``state_checks.db_probes`` is the pack's only state source — enforced rather than
+    conventional, since a probe beside a non-empty ``jsonpaths`` or an enabled hash with a
+    source loads on neither substrate — and it is ``RUNNER_ONLY``: the probe DSN resolves
+    inside the task's docker network, which the runner container joins and the host-side
+    engine does not. So core evaluating nothing here is the declared design rather than a
+    regression, and the manifest entry is read to say so. Both rows fill the runner's slot
+    and they differ, so what sits in it is the probe's verdict rather than a constant.
     """
     assert entry(_PROBES_KEY).coverage is SubstrateCoverage.RUNNER_ONLY, (
         f"{_PROBES_KEY} no longer claims RUNNER_ONLY, so core leaving the component "
         "unscored below is a parity gap rather than the declared asymmetry"
     )
-    adapter = NativeAdapter({"base_dir": str(test_data_dir), "tasks_glob": "tasks/**/task.yaml"})
+    adapter = _adapter_for(test_data_dir, _TASKS_GLOB)
     grading_config = adapter.get_grading_config(_PROBE_PACK)
     probes = grading_config.state_checks.db_probes
     assert probes, f"{_PROBE_PACK} declares no db_probes, so the runner column scores nothing"

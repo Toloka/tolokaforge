@@ -60,6 +60,7 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.state_composition import CONFLICTING_STATE_SOURCES_MESSAGE
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     GradingCombineConfig,
@@ -146,6 +147,23 @@ def _bound_block(
 def _golden_actions(*actions: dict[str, Any], enabled: bool = True) -> dict[str, Any]:
     """A hash block replaying *actions*, in the shape an author writes it."""
     return {"state_checks": {"hash": {"enabled": enabled, "golden_actions": list(actions)}}}
+
+
+# One probe and one assertion, as an author writes them. Both are read for truthiness
+# alone by the rule that refuses their co-occurrence, so the contents are only realistic
+# enough that the block loads.
+_A_DB_PROBE = {
+    "name": "the_corrective_action_landed",
+    "dsn": "postgresql://grader:grader_pw@app-db:5432/mfg",
+    "query": "SELECT status FROM corrective_actions WHERE lot_id = 7",
+    "expect": [{"path": "$.row_count", "equals": 1}],
+}
+_A_JSONPATH_ASSERTION = {"path": "$.db.widgets[0].status", "equals": "closed"}
+
+
+def _probes_beside(**state_checks: Any) -> dict[str, Any]:
+    """A ``state_checks`` block declaring one probe and whatever else *state_checks* holds."""
+    return {"state_checks": {"db_probes": [_A_DB_PROBE], **state_checks}}
 
 
 # Every world a task can give a golden replay, written out rather than resolved from a
@@ -274,6 +292,17 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_hash_source_declared",
         channel="errors",
         message="Declare expected_state_hash or golden_actions",
+    ),
+    _Rule(
+        label="probes_beside_a_source_that_scores_the_same_component",
+        task=_HELPDESK,
+        grading=_probes_beside(jsonpaths=[_A_JSONPATH_ASSERTION]),
+        checker="_check_probes_are_the_only_state_source",
+        channel="errors",
+        # The report-only tail rather than the shared sentence other tests already lock:
+        # this row is the only assertion that the finding says which substrate would have
+        # discarded which verdict.
+        message="only the runner evaluates a probe",
     ),
     _Rule(
         label="golden_action_naming_an_undeclared_tool",
@@ -488,6 +517,65 @@ def test_an_uncompilable_regex_is_caught_before_the_tokens_are_spent(tmp_path: P
 
     with pytest.raises(ValueError, match="unterminated subpattern"):
         validate_grading_yaml(_write_grading(tmp_path, grading), inventory=_inventory(_HELPDESK))
+
+
+# A second defect, carried alongside the probe in both tests below, so which of the two
+# surfaces answered is readable off the raise: the gate batches every finding it has, and
+# a load error raised before the gate runs cannot know about this one.
+_A_PATTERN_THAT_DOES_NOT_COMPILE = {"transcript_rules": {"disallow_regex": ["unterminated(["]}}
+
+
+def test_probes_beside_jsonpaths_reach_the_author_batched_with_every_other_finding(
+    tmp_path: Path,
+) -> None:
+    """The shape the pre-run gate is the reporting surface for.
+
+    A block carrying no ``hash`` mapping constructs no config before the gate runs, so
+    this shape is refused by the gate itself and the author gets it in the batch — the
+    pattern below is reported in the same raise, which is the whole point of a gate
+    finding over a load error.
+    """
+    grading = {
+        **_probes_beside(jsonpaths=[_A_JSONPATH_ASSERTION]),
+        **_A_PATTERN_THAT_DOES_NOT_COMPILE,
+    }
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(
+            _write_grading(tmp_path, grading), inventory=ToolInventory.unresolvable()
+        )
+
+    message = str(excinfo.value)
+    assert "cannot be graded as written" in message, message
+    assert f"state_checks.db_probes: {CONFLICTING_STATE_SOURCES_MESSAGE}" in message, message
+    assert "does not compile" in message, message
+
+
+def test_probes_beside_a_hash_block_are_refused_before_the_gate_is_reached(
+    tmp_path: Path,
+) -> None:
+    """The same sentence, off the other surface, which reports one defect rather than all.
+
+    ``validate`` constructs the core ``StateChecksConfig`` on any declared ``hash``
+    mapping before it calls the gate, so this half of the rule is a load error and the
+    uncompilable pattern beside it is never reported — the author fixes the probe, runs
+    ``validate`` again, and hears about the pattern then. Both surfaces refuse the pack
+    naming the same sentence; asserting the absence of the second finding is what pins
+    which one answered, so a reorder of the loader cannot move this silently.
+    """
+    grading = {
+        **_probes_beside(hash={"enabled": True, "expected_state_hash": "aaaa"}),
+        **_A_PATTERN_THAT_DOES_NOT_COMPILE,
+    }
+
+    with pytest.raises(ValidationError) as excinfo:
+        validate_grading_yaml(
+            _write_grading(tmp_path, grading), inventory=ToolInventory.unresolvable()
+        )
+
+    message = str(excinfo.value)
+    assert CONFLICTING_STATE_SOURCES_MESSAGE in message, message
+    assert "does not compile" not in message, message
 
 
 # ---------------------------------------------------------------------------
@@ -1158,6 +1246,78 @@ def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
     report = inspect_grading_authoring({"state_checks": state_checks}, _inventory(_HELPDESK))
 
     assert [finding.where for finding in report.errors] == [address]
+
+
+# Every source shape a probe can be declared beside, and the address each draws its one
+# finding at. The refused rows are the ones where two sources score the same component;
+# the admitted rows are the smallest edits to them that discard nothing, and the last
+# three belong to the hash rule instead — which is where the partition is held.
+_A_PROBE_BESIDE = (
+    pytest.param({}, [], id="nothing_else_at_all"),
+    pytest.param({"jsonpaths": []}, [], id="an_empty_assertion_list"),
+    pytest.param({"hash": {}}, [], id="a_hash_block_declaring_neither_half"),
+    pytest.param({"hash": {"enabled": False}}, [], id="a_hash_block_with_the_flag_off"),
+    pytest.param(
+        {"jsonpaths": [_A_JSONPATH_ASSERTION]}, ["state_checks.db_probes"], id="one_assertion"
+    ),
+    pytest.param(
+        {"hash": {"enabled": True, "expected_state_hash": "aaaa"}},
+        ["state_checks.db_probes"],
+        id="an_enabled_hash_over_a_literal",
+    ),
+    pytest.param(
+        {"hash": {"enabled": True, "golden_actions": [{"name": "write_file"}]}},
+        ["state_checks.db_probes"],
+        id="an_enabled_hash_over_a_replay",
+    ),
+    pytest.param(
+        {"hash": {"enabled": 1, "expected_state_hash": "aaaa"}},
+        ["state_checks.db_probes"],
+        id="a_flag_written_one_rather_than_true",
+    ),
+    pytest.param(
+        {"hash": {"enabled": True}},
+        ["state_checks.hash.enabled"],
+        id="an_enabled_hash_with_nothing_to_compare",
+    ),
+    pytest.param(
+        {"hash": {"enabled": True, "golden_actions": []}},
+        ["state_checks.hash.enabled"],
+        id="an_enabled_hash_over_an_empty_replay",
+    ),
+    pytest.param(
+        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        ["state_checks.hash.expected_state_hash"],
+        id="a_source_the_flag_never_reads",
+    ),
+)
+
+
+@pytest.mark.parametrize(("beside", "addresses"), _A_PROBE_BESIDE)
+def test_the_state_sources_a_probe_may_be_declared_beside(
+    beside: dict[str, Any], addresses: list[str]
+) -> None:
+    """Two rules over ``state_checks`` partition its *over*-declared shapes too.
+
+    Only the runner evaluates a probe, so a probe beside a source the fold also scores
+    leaves one component holding two verdicts and each substrate discarding a different
+    one. The admitted rows are what keeps that from being a blanket refusal of the key: a
+    disabled hash, a hash block declaring neither half, and an empty assertion list each
+    produce no second verdict, so nothing is discarded beside the probe.
+
+    The last three rows are the partition against :func:`_check_hash_source_declared`,
+    which owns every hash block whose flag and source disagree — a probe does not move
+    that ownership, and asserting the whole list rather than membership is what shows the
+    two rules never report one defect twice.
+
+    The inventory is unresolvable and the replay world is left so, which makes every row
+    the proof that this rule reads the authored block alone: no tool name, no world, no
+    fold.
+    """
+    report = inspect_grading_authoring(_probes_beside(**beside), ToolInventory.unresolvable())
+
+    assert [finding.where for finding in report.errors] == addresses
+    assert report.advisories == ()
 
 
 # The other two sections rule 1 reaches, refused and surviving shapes in one table

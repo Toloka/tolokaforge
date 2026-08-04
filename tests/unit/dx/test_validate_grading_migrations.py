@@ -198,10 +198,13 @@ def test_validate_rejects_env_assertions(tmp_path: Path):
     out = result.stderr
     assert "0 valid, 1 invalid" in out
     assert "state_checks.env_assertions has been removed" in out
-    # The message is the migration: every replacement is named.
-    assert "jsonpaths" in out
-    assert "hash" in out
-    assert "db_probes" in out
+    # The message is the migration: every replacement is named, and named as an
+    # alternative rather than as a sibling — the three sources do not compose, so a
+    # snippet printing them under one block would hand the author a config no substrate
+    # loads.
+    for replacement in ("state_checks.jsonpaths", "state_checks.hash", "state_checks.db_probes"):
+        assert replacement in out, out
+    assert "pick one" in out, out
 
 
 def test_validate_rejects_db_hash_check(tmp_path: Path):

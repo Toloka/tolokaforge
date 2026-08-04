@@ -50,7 +50,11 @@ from tolokaforge.core.deprecations import (
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
-from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
+from tolokaforge.core.grading.state_composition import (
+    refuse_probes_beside_another_state_source,
+    resolve_hash_weight,
+    validate_hash_weight,
+)
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
@@ -378,6 +382,39 @@ class RunnerStateChecksConfig(BaseModel):
             return None
         return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
 
+    def _authored_hash_block(self) -> dict[str, Any]:
+        """The author-facing ``state_checks.hash`` block these flattened fields carry.
+
+        Every rule shared with core reads the author's key names, so this model
+        translates into them once rather than once per rule.
+        """
+        return {
+            "enabled": self.hash_enabled,
+            "expected_state_hash": self.expected_hash,
+            "golden_actions": self.golden_actions,
+            "weight": self.hash_weight,
+        }
+
+    @model_validator(mode="after")
+    def _refuse_probes_beside_another_state_source(self) -> StateChecksConfig:
+        """Reject a probe declared beside a source this component also scores.
+
+        The runner is the only substrate that evaluates a probe, so such a spec would be
+        graded here by a precedence rule no author chose and graded differently by core.
+        It is refused at ``RegisterTrial``, before the trial is paid for.
+
+        Defined above the weight rule, which Pydantic therefore runs second: a spec
+        carrying probes, assertions and a hash source with no weight satisfies both
+        conditions, and a weight is not the fix for a spec refused outright.
+        """
+        refuse_probes_beside_another_state_source(
+            db_probes=self.db_probes,
+            jsonpaths=self.jsonpath_checks,
+            hash_config=self._authored_hash_block(),
+            context="task_description grading.state_checks",
+        )
+        return self
+
     @model_validator(mode="after")
     def _validate_hash_weight_declaration(self) -> RunnerStateChecksConfig:
         """Reject the one shape whose ``state_checks`` score is undecidable.
@@ -389,12 +426,7 @@ class RunnerStateChecksConfig(BaseModel):
         by a fold rule the author never chose.
         """
         resolve_hash_weight(
-            {
-                "enabled": self.hash_enabled,
-                "expected_state_hash": self.expected_hash,
-                "golden_actions": self.golden_actions,
-                "weight": self.hash_weight,
-            },
+            self._authored_hash_block(),
             jsonpaths=self.jsonpath_checks,
             context=_HASH_WEIGHT_CONTEXT,
         )
