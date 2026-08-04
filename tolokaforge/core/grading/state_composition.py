@@ -86,6 +86,37 @@ def resolve_hash_weight(
     return weight
 
 
+def probes_conflict_with_another_state_source(
+    *,
+    db_probes: Sequence[Any],
+    jsonpaths: Sequence[Any],
+    hash_config: Mapping[str, Any] | None,
+) -> bool:
+    """Whether ``db_probes`` is declared beside a source that scores the same component.
+
+    "A source that also scores" is a non-empty ``jsonpaths``, or a ``hash`` block that is
+    enabled *and* declares one of :data:`HASH_SOURCE_KEYS`. A disabled hash produces no
+    verdict, and an enabled one with nothing to compare against is the authoring gate's
+    shape at the hash key, where the fix applies — neither discards anything here.
+
+    Reads the **author-facing** key names, so a substrate that flattens the ``hash``
+    block translates into them rather than restating the rule. Every key is read for
+    truth rather than presence, as the neighbouring rules read theirs: an empty
+    ``golden_actions`` replays nothing and an empty ``jsonpaths`` asserts nothing.
+
+    A predicate as well as :func:`refuse_probes_beside_another_state_source` because the
+    authoring gate reports the shape rather than raising on it, and one definition of
+    which shape it is keeps the pre-run report and the two load errors the same rule.
+    """
+    if not db_probes:
+        return False
+    hash_config = hash_config or {}
+    hash_is_a_source = bool(hash_config.get("enabled", False)) and any(
+        hash_config.get(key) for key in HASH_SOURCE_KEYS
+    )
+    return bool(jsonpaths or hash_is_a_source)
+
+
 def refuse_probes_beside_another_state_source(
     *,
     db_probes: Sequence[Any],
@@ -100,23 +131,12 @@ def refuse_probes_beside_another_state_source(
     with the assertions and never sees the probe. One trial, two ``state_checks``
     components, and no declared share to fold them by — so the pair is refused instead.
 
-    "A source that also scores" is a non-empty ``jsonpaths``, or a ``hash`` block that is
-    enabled *and* declares one of :data:`HASH_SOURCE_KEYS`. A disabled hash produces no
-    verdict, and an enabled one with nothing to compare against is the authoring gate's
-    shape at the hash key, where the fix applies — neither discards anything here.
-
-    Reads the **author-facing** key names, so a substrate that flattens the ``hash``
-    block translates into them rather than restating the rule.
+    Which shape that is belongs to :func:`probes_conflict_with_another_state_source`.
     """
-    if not db_probes:
-        return
-    hash_config = hash_config or {}
-    hash_is_a_source = bool(hash_config.get("enabled", False)) and any(
-        hash_config.get(key) for key in HASH_SOURCE_KEYS
-    )
-    if not (jsonpaths or hash_is_a_source):
-        return
-    raise ValueError(f"{context}: {CONFLICTING_STATE_SOURCES_MESSAGE}")
+    if probes_conflict_with_another_state_source(
+        db_probes=db_probes, jsonpaths=jsonpaths, hash_config=hash_config
+    ):
+        raise ValueError(f"{context}: {CONFLICTING_STATE_SOURCES_MESSAGE}")
 
 
 def compose_state_checks_score(

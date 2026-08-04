@@ -40,8 +40,8 @@ Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
     the runtime ledger read, and the one an author can write are the same set;
 13. a state source that declares nothing leaves ``state_checks`` unscored on both
     substrates, and the one asymmetry the rule permits — a probe-only pack, which
-    only the runner can read — is asserted against the manifest's own claim rather
-    than assumed.
+    only the runner can read, and which is the whole of what a pack declaring a probe
+    may be — is asserted against the manifest's own claim rather than assumed.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -2370,12 +2370,13 @@ def test_a_probe_only_pack_is_unscored_core_side_and_scored_by_the_runner(
 ):
     """The one asymmetry this presence rule is allowed to have, asserted not assumed.
 
-    ``state_checks.db_probes`` is the pack's only state source and it is
-    ``RUNNER_ONLY``: the probe DSN resolves inside the task's docker network, which
-    the runner container joins and the host-side engine does not. So core evaluating
-    nothing here is the declared design rather than a regression, and the manifest
-    entry is read to say so. Both rows fill the runner's slot and they differ, so
-    what sits in it is the probe's verdict rather than a constant.
+    ``state_checks.db_probes`` is the pack's only state source — enforced rather than
+    conventional, since a probe beside a non-empty ``jsonpaths`` or an enabled hash with a
+    source loads on neither substrate — and it is ``RUNNER_ONLY``: the probe DSN resolves
+    inside the task's docker network, which the runner container joins and the host-side
+    engine does not. So core evaluating nothing here is the declared design rather than a
+    regression, and the manifest entry is read to say so. Both rows fill the runner's slot
+    and they differ, so what sits in it is the probe's verdict rather than a constant.
     """
     assert entry(_PROBES_KEY).coverage is SubstrateCoverage.RUNNER_ONLY, (
         f"{_PROBES_KEY} no longer claims RUNNER_ONLY, so core leaving the component "

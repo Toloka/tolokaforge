@@ -121,6 +121,7 @@ from tolokaforge.core.grading.grade_components import (
     component_requested,
 )
 from tolokaforge.core.grading.rubric import aggregate_rubric, parse_submit_report
+from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_replay import (
     ConstraintDiscrimination,
@@ -837,6 +838,144 @@ def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> N
     assert unprobed == [], (
         "the gate did not refuse a golden replay with no MCP server module to call for "
         "these packs, so the rule never ran here and the clean sweep above proves nothing"
+    )
+
+
+# The address the state-source exclusivity rule reports under, and a probe injected
+# beside whatever each pack already declares as the positive control.
+_PROBES_ADDRESS = "state_checks.db_probes"
+_AN_INJECTED_PROBE = {
+    "name": "a_probe_no_pack_declares",
+    "dsn": "postgresql://grader:grader_pw@app-db:5432/probe",
+    "query": "SELECT 1 AS present",
+    "expect": [{"path": "$.row_count", "equals": 1}],
+}
+
+# How many of the 93 declare a state source the fold also scores, so the control's two
+# arms cannot silently collapse into one: 24 packs where injecting a probe must be
+# refused, and 69 where it must not, because the injection leaves them probe-only.
+_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 24
+
+
+def _probe_exclusivity_findings(report: AuthoringReport) -> list[str]:
+    """Only what the state-source exclusivity rule reported, out of the whole report.
+
+    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 35
+    packs the gate walk does not, and they name tools no actor is given on purpose.
+    """
+    return [
+        f"{finding.where}: {finding.message}"
+        for finding in report.errors + report.advisories
+        if finding.where == _PROBES_ADDRESS
+    ]
+
+
+def _declares_a_state_source_the_fold_scores(grading: Mapping[str, Any]) -> bool:
+    """Whether the pack already declares a state source a probe could not share with.
+
+    Written out here rather than read off the rule, so the control's expectation and the
+    rule are two sources: a non-empty ``jsonpaths``, or a ``hash`` block that is enabled
+    and names something to compare against.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return False
+    hash_block = state_checks.get("hash")
+    if not isinstance(hash_block, Mapping):
+        hash_block = {}
+    return bool(state_checks.get("jsonpaths")) or bool(
+        hash_block.get("enabled") and any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
+    )
+
+
+def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> dict[str, Any]:
+    """*grading* with one more ``db_probes`` entry and every other source left as written.
+
+    Injected into every pack rather than one, because 3 of the 93 declare a probe at all.
+    Nothing else is touched, which is what splits the walk: a pack already declaring a
+    source the fold scores becomes the refused shape, and a pack declaring none — 69 of
+    them — becomes a probe-only block, which is the shape this rule exists to leave alone.
+    """
+    state_checks = {**(grading.get("state_checks") or {})}
+    state_checks["db_probes"] = [*(state_checks.get("db_probes") or []), _AN_INJECTED_PROBE]
+    return {**grading, "state_checks": state_checks}
+
+
+def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None:
+    """No shipped pack declares a probe beside a state source the fold also scores.
+
+    Over all 93 authored packs: the probe packs sit under ``examples/native`` and
+    ``tests/data/tasks``, and the packs carrying the sources they may not join are spread
+    across both roots and ``tests/data/grading_parity``, which is outside
+    :func:`_gated_packs` entirely.
+
+    The control **splits on what each pack already declares**, because the rule is a
+    boundary rather than a refusal of the key: injecting a probe into a pack with a
+    non-empty ``jsonpaths`` or an enabled hash over a source has to be refused, and
+    injecting one into a pack declaring neither has to be admitted — that block is
+    probe-only, which is exactly what a probe pack ships. A control that injected blindly
+    and expected a finding everywhere would assert the opposite of the rule on 69 of the
+    93. Both arms are collected, and the size of the refused arm is pinned so a corpus
+    that stopped declaring hash and JSONPath sources could not leave the positive arm
+    vacuous.
+
+    The tool inventory is deliberately unresolvable: this rule reads no tool, and the
+    packs outside the two task roots name tools no actor is given on purpose.
+    """
+    findings: dict[str, list[str]] = {}
+    unprobed: list[str] = []
+    refused_a_probe_only_block: list[str] = []
+    with_a_source_of_their_own: list[str] = []
+    packs = _authored_packs()
+
+    for task_yaml in packs:
+        task, task_dir = load_task_yaml(task_yaml)
+        assert task.grading is not None
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        world = replay_world_under_adapter(task, task.adapter_type)
+        pack = str(task_yaml.relative_to(_REPO))
+        report = inspect_grading_authoring(
+            grading, ToolInventory.unresolvable(), replay_world=world
+        )
+        if reported := _probe_exclusivity_findings(report):
+            findings[pack] = reported
+        probed = _probe_exclusivity_findings(
+            inspect_grading_authoring(
+                _a_probe_beside_whatever_the_pack_declares(grading),
+                ToolInventory.unresolvable(),
+                replay_world=world,
+            )
+        )
+        declares_another_source = _declares_a_state_source_the_fold_scores(grading)
+        if declares_another_source:
+            with_a_source_of_their_own.append(pack)
+        if declares_another_source and not probed:
+            unprobed.append(pack)
+        if probed and not declares_another_source:
+            refused_a_probe_only_block.append(pack)
+
+    assert len(packs) == _AUTHORED_PACK_COUNT, (
+        f"the guard inspected {len(packs)} blocks, not {_AUTHORED_PACK_COUNT}. A corpus "
+        "proof over a subset says nothing about the packs it skipped"
+    )
+    assert findings == {}, (
+        "these packs declare db_probes beside a state source the fold also scores, so one "
+        "state_checks component holds two verdicts and each substrate discards a different "
+        "one"
+    )
+    assert len(with_a_source_of_their_own) == _PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE, (
+        f"{len(with_a_source_of_their_own)} packs declare a state source a probe may not "
+        f"join, not {_PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE}, so the positive arm "
+        "below covers a different corpus than the one measured"
+    )
+    assert unprobed == [], (
+        "the gate did not refuse a probe injected beside these packs' own state source, so "
+        "the rule never ran here and the clean sweep above proves nothing"
+    )
+    assert refused_a_probe_only_block == [], (
+        "the gate refused a probe-only block on these packs, which is the shape every "
+        "probe pack in the repository ships — the rule is refusing the key rather than its "
+        "co-occurrence with another source"
     )
 
 
