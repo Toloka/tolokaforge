@@ -31,11 +31,11 @@ from tolokaforge.core.grading.key_manifest import (
     scored_keys_claiming_runner,
 )
 from tolokaforge.runner.models import (
-    GradingConfig,
     KeyAccounting,
     KeyAccountingRecord,
-    StateChecksConfig,
-    TranscriptRulesConfig,
+    RunnerGradingConfig,
+    RunnerStateChecksConfig,
+    RunnerTranscriptRulesConfig,
 )
 
 EVALUATED = KeyAccountingRecord(outcome=KeyAccounting.EVALUATED)
@@ -73,12 +73,13 @@ DB_PROBES_KEY = _manifest_key("state_checks.db_probes")
 LLM_JUDGE_KEY = _manifest_key("llm_judge")
 CUSTOM_CHECKS_KEY = _manifest_key("custom_checks")
 
-# Every model the runner's GradingConfig reaches, with where its fields sit in
-# ``GradingConfig.model_dump()``.
+# Every model the runner's RunnerGradingConfig reaches, with where its fields sit
+# in ``RunnerGradingConfig.model_dump()``. Keys match the Python class names so a
+# manifest ``runner_field="RunnerXxx.field"`` resolves via a single lookup.
 _RUNNER_CONFIG_MODELS: dict[str, tuple[type[BaseModel], tuple[str, ...]]] = {
-    "GradingConfig": (GradingConfig, ()),
-    "StateChecksConfig": (StateChecksConfig, ("state_checks",)),
-    "TranscriptRulesConfig": (TranscriptRulesConfig, ("transcript_rules",)),
+    "RunnerGradingConfig": (RunnerGradingConfig, ()),
+    "RunnerStateChecksConfig": (RunnerStateChecksConfig, ("state_checks",)),
+    "RunnerTranscriptRulesConfig": (RunnerTranscriptRulesConfig, ("transcript_rules",)),
 }
 
 # ``scored_keys_claiming_runner()`` widened by the scored keys the manifest
@@ -206,7 +207,7 @@ def accountable_author_keys() -> frozenset[str]:
 
 
 def runner_dump_path(item: GradingKey) -> tuple[str, ...]:
-    """Where ``item``'s value sits in the runner ``GradingConfig.model_dump()``.
+    """Where ``item``'s value sits in the runner ``RunnerGradingConfig.model_dump()``.
 
     Raises ``ValueError`` when ``runner_field`` names a model or a field the runner
     grading config does not declare, so a malformed manifest entry fails the
@@ -236,7 +237,7 @@ def runner_dump_path(item: GradingKey) -> tuple[str, ...]:
 
 
 def audit_accounted_keys(
-    grading_config: GradingConfig, accounted_keys: Mapping[str, KeyAccountingRecord]
+    grading_config: RunnerGradingConfig, accounted_keys: Mapping[str, KeyAccountingRecord]
 ) -> LedgerAudit:
     """Subtract ``accounted_keys`` from the scored keys ``grading_config`` populates.
 

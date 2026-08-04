@@ -68,6 +68,19 @@ dependencies = [
     "docker>=7.0.0",
     "grpcio>=1.60.0",
     "grpcio-health-checking>=1.60.0",
+    # The generated ``tolokaforge/runner/runner_pb2.py`` module declares a
+    # ``ValidateProtobufRuntimeVersion(_runtime_version.Domain.PUBLIC, 7, 35, 1, …)``
+    # call at import time (see the ``python -m grpc_tools.protoc`` output that
+    # produced it), so any Python protobuf runtime older than 7.35.1 raises
+    # ``TypeError: Descriptors cannot be created directly`` (or the analogous
+    # runtime-version check) the moment the runner tries to import its wire
+    # types. ``grpcio>=1.60.0`` does not itself carry a floor high enough to
+    # force a fresh ``pip install`` off the ``protobuf==6.x`` line PyPI's
+    # resolver otherwise picks, so pin the floor explicitly here — the same
+    # constraint the wheel-subset ``[project.scripts] tolokaforge run-trial``
+    # entry needs, and the reason the runner Docker image never trips this
+    # today (it installs off a locked wheel set, not a fresh PyPI resolve).
+    "protobuf>=7.35.1",
     # Per-trial runtime backend uses testcontainers to materialise one
     # docker-compose project per trial. Imported at module level by
     # tolokaforge.core.per_trial_runtime, so it must ship with the wheel.
@@ -176,6 +189,75 @@ packages = ["tolokaforge"]
 ".python-version" = "tolokaforge/_python_version.txt"
 
 [tool.hatch.build.targets.sdist]
+
+# =============================================================================
+# Runner-subset wheel — Docker-only build artifact, NEVER published to PyPI.
+# =============================================================================
+#
+# ``hatch build --target custom`` (equivalently
+# ``uv run hatch build --target custom``) produces
+# ``dist/tolokaforge_runner_subset-<version>-py3-none-any.whl`` — a slimmed
+# variant of the base wheel that contains only the Python files the runner
+# container's runtime graph reaches. The runner Docker image installs this
+# wheel; pip cannot pull it from PyPI. See
+# ``docs/adr/0025-runner-wheel-split.md``.
+#
+# ``tolokaforge/core/_runner_subset.py`` is the single source of truth for
+# the partition. The ``only-include`` / ``exclude`` lists below mirror its
+# three tuples verbatim; the canonical drift-lock test in
+# ``tests/canonical/test_runner_subset_partition.py`` fails CI if the two
+# ever disagree.
+#
+# The base wheel — ``[tool.hatch.build.targets.wheel]`` above — and its
+# PyPI-facing metadata are unchanged.
+[tool.hatch.build.targets.custom]
+path = "scripts/hatch/hatch_runner_subset_builder.py"
+only-include = [
+    # RUNNER_SUBSET_PACKAGES — whole subpackages in the subset.
+    "tolokaforge/runner",
+    "tolokaforge/secrets",
+    "tolokaforge/tools",
+    "tolokaforge/core/models",
+    "tolokaforge/core/llm",
+    "tolokaforge/core/grading",
+    # RUNNER_SUBSET_LOOSE_FILES — shared-spine files outside a whole package.
+    "tolokaforge/__init__.py",
+    "tolokaforge/core/__init__.py",
+    "tolokaforge/core/_runner_subset.py",
+    "tolokaforge/core/deprecations.py",
+    "tolokaforge/core/hash.py",
+    "tolokaforge/core/logging.py",
+    "tolokaforge/core/loop.py",
+    "tolokaforge/core/netpolicy_constants.py",
+    "tolokaforge/core/pricing.py",
+    "tolokaforge/core/run_display_events.py",
+    "tolokaforge/core/trial.py",
+    # RUNNER_SUBSET_DATA_FILES — non-Python assets runtime code reads at
+    # import time. Ship them into the subset wheel so the runner image's
+    # pricing / preset tables are non-empty (GitHub #830). The
+    # ``.python-version`` dotfile lands via the ``force-include`` table
+    # below (source path differs from destination path).
+    "tolokaforge/core/data/pricing.json",
+    "tolokaforge/core/data/model_presets.yaml",
+]
+exclude = [
+    # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
+    # otherwise-included subpackage.
+    "tolokaforge/core/grading/combine.py",
+    "tolokaforge/core/grading/replay.py",
+    "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/transcript.py",
+    "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/tools/user_tools.py",
+]
+
+# Force-include the repo-root ``.python-version`` dotfile into the subset
+# wheel as ``tolokaforge/_python_version.txt`` — mirrors the base wheel's
+# ``[tool.hatch.build.targets.wheel.force-include]`` block so the pinned
+# Python version is discoverable via ``importlib.resources`` from either
+# wheel variant.
+[tool.hatch.build.targets.custom.force-include]
+".python-version" = "tolokaforge/_python_version.txt"
 
 [tool.black]
 line-length = 100
@@ -371,6 +453,12 @@ dev = [
     "mcp>=0.1.0",
     "build>=1.0.0",
     "commitizen>=4.0.0",
+    # ``hatchling`` is our PEP 517 build backend (see ``[build-system].requires``);
+    # the canonical subset-wheel tests drive it directly via
+    # ``python -m hatchling build -t custom`` — pinning it in the dev group keeps
+    # it in the ``uv sync --dev`` closure so those tests do not depend on the
+    # ephemeral build-backend install being present.
+    "hatchling>=1.31.0",
     "psycopg[binary]>=3.2.0",
     "tolokaforge-adapter-terminal-bench",
     "dev-mcp",

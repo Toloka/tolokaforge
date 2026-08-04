@@ -243,10 +243,14 @@ class DotEnvProvider(SecretProvider):
 
             match = self._LINE_PATTERN.match(line)
             if not match:
-                logger.debug(
-                    "DotEnvProvider: skipping invalid line %d: %r",
+                # Warned, not debug: a dropped line reads as "unset" downstream. Only
+                # the key is logged, never the value. See docs/CONFIG.md § secrets.
+                name, _, _ = stripped.partition("=")
+                logger.warning(
+                    "DotEnvProvider: dropping unparseable line %d (key %r); if the "
+                    "value contains whitespace or '#', quote it",
                     line_num,
-                    line[:50],
+                    name.strip()[:64],
                 )
                 continue
 

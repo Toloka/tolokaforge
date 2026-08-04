@@ -17,6 +17,7 @@ runner container, ``init_default_from(...)`` is reconstructed from the
 """
 
 from tolokaforge.secrets.config import SecretConfig, SecretSource
+from tolokaforge.secrets.expand import UnresolvedReferenceError, expand_secret_refs
 from tolokaforge.secrets.log_filter import install_global_redactor
 from tolokaforge.secrets.manager import (
     MissingSecretError,
@@ -47,4 +48,6 @@ __all__ = [
     "get_default",
     "get_default_or_none",
     "install_global_redactor",
+    "expand_secret_refs",
+    "UnresolvedReferenceError",
 ]

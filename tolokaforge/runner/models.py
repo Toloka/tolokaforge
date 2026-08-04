@@ -1,13 +1,31 @@
-"""
-Pydantic Models for Runner Service
+"""Runner-side wire schema — Pydantic models the runner service exchanges.
 
-This module contains all Pydantic models used by the Runner service:
-- TaskDescription and related models (from TASK_DESCRIPTION_SCHEMA.md)
-- RecordedToolCall and the ToolCallRecorder contract for tool execution history
-- DB client response models
-- Grading result models
+The types in this module fall into three tiers:
 
-All models use Pydantic v2 BaseModel for validation and serialization.
+- **Shared wire types re-exported by :mod:`tolokaforge.core.models`** —
+  ``Criterion`` / ``CriterionResult`` / ``Rubric`` / ``JudgeCustomization`` /
+  ``LLMJudgeConfig`` / ``EnvironmentManifest`` (and its supporting
+  ``EnvironmentPatch`` / ``StackPatch`` / ``ResetSpec`` / ``ServiceSpec`` /
+  ``ServiceIsolation`` / ``ServiceNetworkAccess``) / ``ToolExpectations`` /
+  ``RecordedToolCall`` / ``ToolCallRecorder`` / ``ToolExecutorIdentity``.
+  Their canonical home stays here; the ``core.models`` shim re-exports them
+  so callers reach one module for the whole recorded-tool-call + wire-schema
+  vocabulary.
+- **Runner-only wire types with a ``Runner`` prefix** —
+  ``RunnerGradingConfig`` / ``RunnerStateChecksConfig`` /
+  ``RunnerTranscriptRulesConfig`` / ``RunnerRequiredAction`` /
+  ``RunnerInitialStateConfig`` / ``RunnerInitializationAction`` /
+  ``RunnerUserSimulatorConfig`` / ``RunnerGradeComponents``. Each is the
+  strict, wire-shaped Pydantic model the runner produces or consumes;
+  ``tolokaforge.core.models`` carries the sibling YAML-authoring shape under
+  the unprefixed name for the same concern. The two live side by side
+  because the wire form (flat, ``extra="forbid"``) and the authoring form
+  (nested, ``extra="ignore"``) validate different things.
+- **Genuinely runner-only types (no core-side sibling)** — ``TaskDescription``
+  and the tool-manifest / DB-client / grading-result nested models that
+  travel only on the runner service surface.
+
+All models use Pydantic v2 ``BaseModel`` for validation and serialization.
 """
 
 from __future__ import annotations
@@ -156,7 +174,7 @@ class TableSchema(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class InitialStateConfig(BaseModel):
+class RunnerInitialStateConfig(BaseModel):
     """
     Complete initial state specification.
 
@@ -185,7 +203,7 @@ class InitialStateConfig(BaseModel):
 # =============================================================================
 
 
-class InitializationAction(BaseModel):
+class RunnerInitializationAction(BaseModel):
     """
     Action to execute before trial starts.
 
@@ -204,7 +222,7 @@ class InitializationAction(BaseModel):
 # =============================================================================
 
 
-class UserSimulatorConfig(BaseModel):
+class RunnerUserSimulatorConfig(BaseModel):
     """Configuration for the user simulator."""
 
     mode: Literal["scripted", "llm"] = "llm"
@@ -263,7 +281,7 @@ class GoldenAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class RequiredAction(BaseModel):
+class RunnerRequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
 
     action_id: str
@@ -296,7 +314,7 @@ class DbProbe(BaseModel):
 _HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
 
 
-class StateChecksConfig(BaseModel):
+class RunnerStateChecksConfig(BaseModel):
     """State-based grading configuration."""
 
     # Hash comparison
@@ -355,7 +373,7 @@ class StateChecksConfig(BaseModel):
         return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
 
     @model_validator(mode="after")
-    def _validate_hash_weight_declaration(self) -> StateChecksConfig:
+    def _validate_hash_weight_declaration(self) -> RunnerStateChecksConfig:
         """Reject the one shape whose ``state_checks`` score is undecidable.
 
         Calls the same predicate the core config calls, over this model's flattened
@@ -392,14 +410,14 @@ class ToolExpectations(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class TranscriptRulesConfig(BaseModel):
+class RunnerTranscriptRulesConfig(BaseModel):
     """Transcript-based grading configuration."""
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
     max_turns: int | None = None
     tool_expectations: ToolExpectations | None = None
-    required_actions: list[RequiredAction] = Field(default_factory=list)
+    required_actions: list[RunnerRequiredAction] = Field(default_factory=list)
     communicate_info: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
@@ -620,7 +638,7 @@ class LLMJudgeConfig(BaseModel):
         return data
 
 
-class GradingConfig(BaseModel):
+class RunnerGradingConfig(BaseModel):
     """
     Complete grading configuration.
 
@@ -656,8 +674,8 @@ class GradingConfig(BaseModel):
     #     for dispatch (today their behaviour is part of the default path).
     grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
 
-    state_checks: StateChecksConfig | None = None
-    transcript_rules: TranscriptRulesConfig | None = None
+    state_checks: RunnerStateChecksConfig | None = None
+    transcript_rules: RunnerTranscriptRulesConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
 
     # Custom Python checks (``@init`` + ``@check`` in a pack's ``checks.py``).
@@ -1579,17 +1597,17 @@ class TaskDescription(BaseModel):
     user_tools: list[ToolSchema] = Field(default_factory=list)  # User-side device tools
 
     # --- State ---
-    initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
-    initialization_actions: list[InitializationAction] = Field(default_factory=list)
+    initial_state: RunnerInitialStateConfig = Field(default_factory=RunnerInitialStateConfig)
+    initialization_actions: list[RunnerInitializationAction] = Field(default_factory=list)
 
     # --- User Simulator ---
-    user_simulator: UserSimulatorConfig = Field(default_factory=UserSimulatorConfig)
+    user_simulator: RunnerUserSimulatorConfig = Field(default_factory=RunnerUserSimulatorConfig)
 
     # --- Search ---
     search: SearchConfig = Field(default_factory=SearchConfig)
 
     # --- Grading ---
-    grading: GradingConfig = Field(default_factory=GradingConfig)
+    grading: RunnerGradingConfig = Field(default_factory=RunnerGradingConfig)
 
     # --- Metadata ---
     source_files: dict[str, str] = Field(default_factory=dict)  # For debugging
@@ -1915,7 +1933,7 @@ class TranscriptEvaluationResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class GradeComponents(BaseModel):
+class RunnerGradeComponents(BaseModel):
     """Component scores for grading."""
 
     hash_match: bool | None = None

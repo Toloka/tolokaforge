@@ -115,6 +115,19 @@ jobs:
       SLACK_BOT_TOKEN: ${{ secrets.ARENA_AUTOMATION_SLACK_BOT_TOKEN }}
       SLACK_CHANNEL: ${{ vars.ARENA_AUTOMATION_SLACK_CHANNEL }}
       SLACK_MENTIONS: ${{ vars.ARENA_AUTOMATION_SLACK_MENTIONS }}
+      # Values the ${secret:NAME} references in the LLM_PROXY_HEADERS variable resolve to.
+      # Named LLM_PROXY_* because they are gateway configuration, not automation config;
+      # they are NOT companions in the resolve_proxy_config sense (that check names only
+      # _API_KEY / _HEADERS / _REQUEST_ID_HEADER / _PROVIDERS), so an unused one is inert.
+      #
+      # Job-level because the .env step and `automation reprobe` both need them, but that
+      # means every step, so the two agent invocations and the litellm proxy scrub them
+      # with `env -u`. The runner key is a network-admission credential rather than a
+      # budget-bounded one. Note `env -u` denies them to those processes, not to code the
+      # agent may have written: later `uv run automation` commands in the same step still
+      # carry them, so keep these rotate-friendly. Grep `env -u` before adding a third.
+      LLM_PROXY_SUNDAY_ORDER_ID: ${{ secrets.LLM_PROXY_SUNDAY_ORDER_ID }}
+      LLM_PROXY_GATEWAY_RUNNER_KEY: ${{ secrets.LLM_PROXY_GATEWAY_RUNNER_KEY }}
       # Run + PR permalinks, passed to the Slack notifier as <url|label> links.
       RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
       PR_URL: ${{ github.server_url }}/${{ github.repository }}/pull/${{ github.event.pull_request.number || inputs.pr }}
@@ -210,6 +223,8 @@ jobs:
           ROUTE: ${{ inputs.route || 'openrouter' }}
           PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
           PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
+          # A VARIABLE, not a secret: see the note in slack-integrate.yml.
+          PROXY_HEADERS: ${{ vars.LLM_PROXY_HEADERS }}
         # OPENROUTER_API_KEY is always written: it is what the non-gateway route uses, and the
         # OpenRouter pricing/catalog HTTP calls need it on either route. LLM_PROXY_* is added
         # only when the gateway route was requested AND configured -- writing a base URL without
@@ -223,6 +238,24 @@ jobs:
             if [ -n "$PROXY_BASE_URL" ] && [ -n "$PROXY_API_KEY" ]; then
               printf '%s\n' "LLM_PROXY_BASE_URL=$PROXY_BASE_URL" >> .env
               printf '%s\n' "LLM_PROXY_API_KEY=$PROXY_API_KEY" >> .env
+              # Only inside this branch: a companion without a base URL is a hard error,
+              # so a job-level env var here would break the openrouter route.
+              #
+              # References stay literal through the shell; never inline one in the
+              # script text. jq compacts because the dotenv parser drops a line whose
+              # unquoted value has whitespace. Both: docs/CONFIG.md § secrets.
+              if [ -n "$PROXY_HEADERS" ]; then
+                PROXY_HEADERS="$(jq -ce . <<<"$PROXY_HEADERS")"
+                # jq cannot help a space or '#' inside a name/value; refuse rather
+                # than run with no headers. docs/CONFIG.md § secrets.
+                case "$PROXY_HEADERS" in
+                  *[[:space:]\#]*)
+                    echo "::error title=LLM_PROXY_HEADERS not representable in .env::a header name or value contains whitespace or '#'; the dotenv parser would drop the line"
+                    exit 1
+                    ;;
+                esac
+                printf '%s\n' "LLM_PROXY_HEADERS=$PROXY_HEADERS" >> .env
+              fi
               echo "every openrouter/openai call in this run (candidate + user simulator) goes through the LLM gateway"
             else
               echo "::warning title=Gateway route unavailable::route=litellm was requested but ARENA_AUTOMATION_LLM_PROXY_BASE_URL / _API_KEY are not set; probing over OpenRouter instead"
@@ -443,7 +476,10 @@ jobs:
 
       - name: Install Claude Code CLI
         if: steps.gate.outputs.clean == 'yes'
-        run: npm install -g @anthropic-ai/claude-code
+        # Scrubbed like the agent steps: an install script runs arbitrary code, and
+        # these two are gateway credentials the CLI install has no use for.
+        run: env -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY
+          npm install -g @anthropic-ai/claude-code
 
       - name: Start LiteLLM gateway (Anthropic /v1/messages -> OpenRouter; agent on the OpenRouter budget)
         # The resolve + finalize agent is the Claude Code CLI, which speaks the Anthropic Messages
@@ -462,7 +498,9 @@ jobs:
           # Pinned to the litellm version in uv.lock (repro + supply-chain: an unpinned latest could
           # ship a broken/hostile release that runs with secrets in env). Scrub the job's write-token
           # and Slack token from the proxy's environment - it only needs OPENROUTER_API_KEY.
-          env -u GH_TOKEN -u SLACK_BOT_TOKEN nohup uvx --from 'litellm[proxy]==1.87.0' litellm \
+          env -u GH_TOKEN -u SLACK_BOT_TOKEN \
+            -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY \
+            nohup uvx --from 'litellm[proxy]==1.87.0' litellm \
             --config /tmp/litellm.config.yaml --host 127.0.0.1 --port 4000 \
             > /tmp/litellm.log 2>&1 &
           echo $! > /tmp/litellm.pid
@@ -539,7 +577,12 @@ jobs:
             # this step runs under `bash -e`; without the guard that non-zero would abort the
             # WHOLE resolve instead of degrading to the no-overlay path below. A stuck iteration
             # must fall through to the next one (and ultimately to needs-human), not hard-fail.
-            claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
+            # Scrubbed like GH_TOKEN above, and for the same reason: this agent's inputs
+            # include candidate-model output, and GATEWAY_RUNNER_KEY is a network-admission
+            # credential rather than a budget-bounded one. The step needs those values only
+            # for `automation reprobe`, not for the agent.
+            env -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY \
+              claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
               --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
               --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
             # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
@@ -621,7 +664,8 @@ jobs:
           fill "$P/resolve_finalize.md" > /tmp/finalize.md
           # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort - the commit
           # step below decides success by whether files changed.
-          claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
+          env -u LLM_PROXY_SUNDAY_ORDER_ID -u LLM_PROXY_GATEWAY_RUNNER_KEY \
+            claude -p "$(cat /tmp/finalize.md)" --model "$AGENT_MODEL" \
             --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
             --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
 

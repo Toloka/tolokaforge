@@ -17,7 +17,7 @@ from tolokaforge.adapters import (
     ensure_registered_adapter,
     register_adapter,
 )
-from tolokaforge.runner.models import GradingConfig, TaskDescription
+from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     ToolLifecycleContext,
@@ -49,11 +49,11 @@ class TestOpenAdapterType:
 
 class TestDeclarativeGradingMethod:
     def test_grading_method_defaults_none(self):
-        assert GradingConfig().grading_method is None
+        assert RunnerGradingConfig().grading_method is None
 
     def test_grading_method_round_trips(self):
-        gc = GradingConfig(grading_method="test_execution")
-        assert GradingConfig.model_validate_json(gc.model_dump_json()).grading_method == (
+        gc = RunnerGradingConfig(grading_method="test_execution")
+        assert RunnerGradingConfig.model_validate_json(gc.model_dump_json()).grading_method == (
             "test_execution"
         )
 
@@ -203,7 +203,7 @@ class TestGradingMethodErrorHandling:
         from pydantic import ValidationError
 
         with pytest.raises(ValidationError):
-            GradingConfig(grading_method="test-execution")  # hyphen — should be underscore
+            RunnerGradingConfig(grading_method="test-execution")  # hyphen — should be underscore
 
     def test_test_execution_without_exec_tool_returns_actionable_error(self):
         """If an adapter asks for test-execution grading but ships no exec-capable
