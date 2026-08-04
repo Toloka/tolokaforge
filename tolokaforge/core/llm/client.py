@@ -39,6 +39,7 @@ from tenacity import (
 )
 from tenacity.wait import wait_base
 
+from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
@@ -2105,8 +2106,14 @@ class LLMClient:
         )
 
 
-class UserSimulator:
-    """User simulator for benchmarking."""
+class UserSimulator(Actor):
+    """User simulator for benchmarking.
+
+    Declares :class:`~tolokaforge.core.actors.actor.Actor` conformance so
+    the turn-loop seam can accept any Protocol-satisfying actor kind, not
+    just this concrete simulator. Behaviour is unchanged — the existing
+    :meth:`reply` already matches the Protocol signature.
+    """
 
     def __init__(
         self,

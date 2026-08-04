@@ -17,6 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.actors.turn_policy import AgentOnlyTurnPolicy, ConversationalTurnPolicy
 from tolokaforge.core.conductor import (
     ConductorContext,
     InMemoryConductor,
@@ -26,16 +27,20 @@ from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.plugin_registry import (
     RUNTIME_BACKENDS_GROUP,
     SERVICE_READINESS_PROBES_GROUP,
+    TURN_POLICIES_GROUP,
     RuntimeBackendBuildContext,
     TrialGraderContext,
+    TurnPolicyContext,
     available_conductors,
     available_readiness_probes,
     available_runtime_backends,
     available_trial_graders,
+    available_turn_policies,
     load_conductor,
     load_readiness_probe,
     load_runtime_backend,
     load_trial_grader,
+    load_turn_policy,
 )
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.service_readiness import (
@@ -119,11 +124,21 @@ def test_readiness_probe_kinds_resolve_to_their_class(kind: str, expected_cls: t
     assert isinstance(probe, expected_cls)
 
 
+def test_turn_policy_names_resolve_to_their_class() -> None:
+    context = TurnPolicyContext(user_simulator=MagicMock())
+    conversational = load_turn_policy("conversational")(context)
+    assert isinstance(conversational, ConversationalTurnPolicy)
+
+    agent_only = load_turn_policy("agent_only")(TurnPolicyContext(user_simulator=None))
+    assert isinstance(agent_only, AgentOnlyTurnPolicy)
+
+
 def test_available_listings_match_the_builtin_set() -> None:
     assert available_runtime_backends() == ["in_memory", "per_trial", "shared"]
     assert available_trial_graders() == ["runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
+    assert available_turn_policies() == ["agent_only", "conversational"]
 
 
 def test_raw_entry_point_probe_lists_runtime_backends() -> None:
@@ -136,3 +151,8 @@ def test_raw_entry_point_probe_lists_readiness_probes() -> None:
         ep.name for ep in importlib.metadata.entry_points(group=SERVICE_READINESS_PROBES_GROUP)
     )
     assert names == ["grpc", "http", "tcp"]
+
+
+def test_raw_entry_point_probe_lists_turn_policies() -> None:
+    names = sorted(ep.name for ep in importlib.metadata.entry_points(group=TURN_POLICIES_GROUP))
+    assert names == ["agent_only", "conversational"]

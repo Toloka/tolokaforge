@@ -64,6 +64,67 @@ jobs:
       run: uv run pre-commit run --all-files --show-diff-on-failure
 
   # ============================================================================
+  # Wheel-install gate — the ONE thing every other job is blind to
+  # ============================================================================
+  # Every other job `uv sync`s a source checkout, so `builder.repo_root()` is the
+  # repo and the runner image's build context always resolves. Consumers install
+  # the engine as a wheel, where `repo_root()` is `site-packages` — and that path
+  # shipped broken TWICE (v0.14.0 and v0.14.1): the runner context resolved to
+  # non-existent repo-root paths and every Docker-runtime run died in
+  # `build_images()` before a single trial. This job installs the built wheel into
+  # a clean venv and drives the real production entry point. No Docker needed —
+  # assembling the context is where the bug lives.
+  wheel-install-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+    - uses: actions/checkout@v5
+
+    - name: Install uv
+      uses: astral-sh/setup-uv@v7
+      with:
+        version: "0.9.5"
+        enable-cache: true
+        cache-dependency-glob: "uv.lock"
+
+    - name: Set up Python (pinned in .python-version)
+      run: uv python install "$(cat .python-version)"
+
+    - name: Build the wheel
+      run: uv build --wheel
+
+    - name: Install the wheel into a clean venv (no source tree on the path)
+      run: |
+        uv venv /tmp/wheelenv
+        VIRTUAL_ENV=/tmp/wheelenv uv pip install dist/*.whl
+
+    - name: Runner build context must assemble from the installed wheel
+      # cd / so the source checkout cannot be picked up via CWD.
+      run: |
+        cd /
+        /tmp/wheelenv/bin/python - <<'PY'
+        from pathlib import Path
+        from tolokaforge.docker.builder import assemble_build_context, repo_root
+        from tolokaforge.docker.stacks.core import core_stack
+
+        root = repo_root()
+        assert not (root / "pyproject.toml").is_file(), (
+            f"expected a wheel install, but {root} looks like a source checkout"
+        )
+
+        svc = core_stack().services["runner"]
+        build_dir = assemble_build_context(root, svc.dockerfile, svc.context_files)
+        required = [
+            "pyproject.toml", "README.md", "LICENSE",
+            ".python-version", "scripts/hatch", "tolokaforge",
+        ]
+        missing = [n for n in required if not (build_dir / n).exists()]
+        assert not missing, f"assembled runner context is missing {missing}"
+        print("runner build context assembles from a wheel install:", sorted(required))
+        PY
+
+  # ============================================================================
   # PR smoke tests - fast required gate
   # ============================================================================
   test-smoke:

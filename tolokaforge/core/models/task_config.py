@@ -36,6 +36,7 @@ __all__ = [
     "GradingDefaults",
     "InitializationAction",
     "InitialStateConfig",
+    "InteractionMode",
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
@@ -55,6 +56,26 @@ __all__ = [
     "TranscriptRulesConfig",
     "UserSimulatorConfig",
 ]
+
+
+InteractionMode = Literal["conversational", "agent_only"]
+"""Shape of the trial's turn loop — whether a user party participates.
+
+- ``conversational`` (default): user simulator dispatched every turn.
+  Matches τ-bench-style benchmarks where the user is a genuine
+  information source.
+- ``agent_only``: no user turn dispatched after the first message.
+  The agent runs to ``###STOP###`` (routed to
+  :attr:`TerminationReason.AGENT_DONE`), ``max_turns``, or
+  ``episode_timeout_s``. Matches code-migration / agent-driven eval
+  shape where the task lives entirely in the system prompt and the
+  agent decides when it's done. The user simulator is never
+  constructed on this route.
+
+Future values (e.g. ``multi_actor``) will land alongside dedicated
+:class:`TurnPolicy` implementations registered in the
+``tolokaforge.turn_policies`` entry-point group.
+"""
 
 
 class InitializationAction(BaseModel):
@@ -218,6 +239,13 @@ class TaskConfig(BaseModel):
     adapter_type: str = "native"  # Adapter runtime type (native, tlk_mcp_core, tau, …)
     max_turns: int | None = None  # Optional per-task turn cap override
     initial_user_message: str | None = None  # If provided, sent directly as first user message
+    interaction_mode: InteractionMode = "conversational"
+    """Turn-loop shape. ``conversational`` (default) dispatches the user
+    simulator every turn — backward-compatible with every existing pack.
+    ``agent_only`` skips user-turn dispatch entirely; the agent runs to
+    ``###STOP###`` / ``max_turns`` / ``episode_timeout_s``. Selects a
+    concrete :class:`TurnPolicy` via the ``tolokaforge.turn_policies``
+    entry-point registry (see ADR-0027)."""
     initial_state: InitialStateConfig = Field(default_factory=InitialStateConfig)
     tools: ToolsConfig = Field(default_factory=ToolsConfig)
     actors: dict[str, ActorSpec] | None = None
@@ -575,6 +603,12 @@ class TaskDefaults(BaseModel):
 
     adapter_type: str | None = None
     max_turns: int | None = Field(default=None, ge=1)
+    interaction_mode: InteractionMode | None = None
+    """Project-side default for :attr:`TaskConfig.interaction_mode`.
+    ``None`` leaves the engine default (``conversational``) in effect;
+    a task's own ``interaction_mode`` overrides. Enables a project to
+    declare "every task under me is agent_only" once instead of per
+    task.yaml."""
     system_prompt: str | None = None
     actors: dict[str, ActorSpec] | None = None
     """Named actor map inherited by every task. ``actors.user`` configures

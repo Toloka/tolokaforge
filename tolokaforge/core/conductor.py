@@ -643,23 +643,33 @@ class InProcessConductor:
         user_tool_executor = None
         user_tool_schemas: list[dict[str, Any]] = []
 
-        sim = task.resolve_user_simulator()
-        user_llm_config = user_config if sim.mode == "llm" else None
-        # The simulator hits the same provider quota as the agent, so a probe
-        # run has to cover it too — otherwise a simulator 429 kills the trial
-        # the agent-side probe was keeping alive. It gets the shorter
-        # simulator-scoped per-call budget: its throughput is not what the probe
-        # measures, and both budgets are spent inside one uninterruptible turn.
+        # ``interaction_mode='agent_only'`` runs the agent as a monologue —
+        # the turn loop never dispatches a user actor, so constructing a
+        # simulator here would sink the LLM budget its scripted / persona /
+        # backstory carry with it into a component the runner never wakes.
+        # The runner accepts ``user_simulator=None`` under this mode; the
+        # ``AgentOnlyTurnPolicy`` factory ignores ``TurnPolicyContext.user_simulator``.
         rate_limit_probe = self.config.orchestrator.rate_limit_probe
-        user_simulator = UserSimulator(
-            mode=sim.mode,
-            llm_config=user_llm_config,
-            persona=sim.persona,
-            backstory=sim.backstory,
-            scripted_flow=sim.scripted_flow,
-            tool_schemas=user_tool_schemas if user_tool_executor else None,
-            rate_limit_probe=rate_limit_probe.for_simulator(),
-        )
+        user_simulator: UserSimulator | None
+        if task.interaction_mode == "conversational":
+            sim = task.resolve_user_simulator()
+            user_llm_config = user_config if sim.mode == "llm" else None
+            # The simulator hits the same provider quota as the agent, so a probe
+            # run has to cover it too — otherwise a simulator 429 kills the trial
+            # the agent-side probe was keeping alive. It gets the shorter
+            # simulator-scoped per-call budget: its throughput is not what the probe
+            # measures, and both budgets are spent inside one uninterruptible turn.
+            user_simulator = UserSimulator(
+                mode=sim.mode,
+                llm_config=user_llm_config,
+                persona=sim.persona,
+                backstory=sim.backstory,
+                scripted_flow=sim.scripted_flow,
+                tool_schemas=user_tool_schemas if user_tool_executor else None,
+                rate_limit_probe=rate_limit_probe.for_simulator(),
+            )
+        else:
+            user_simulator = None
 
         # Task-scope stuck_heuristics is canonical (populated by the M2
         # loader's per-task merge from ``project.task_defaults``); the
@@ -732,6 +742,7 @@ class InProcessConductor:
             strict=self.strict,
             events=self.events,
             probe_stats=_build_probe_stats(rate_limit_probe),
+            interaction_mode=task.interaction_mode,
         )
 
         # Use initial_user_message if provided (e.g., tool-use style tasks).

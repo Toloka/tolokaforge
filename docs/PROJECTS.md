@@ -186,6 +186,9 @@ task_defaults:
   adapter_type: "native"
   max_turns: 20
   system_prompt: "./shared/system_prompt.md"
+  # interaction_mode: "agent_only"   # optional; leave unset to inherit
+                                     # engine default "conversational".
+                                     # See ADR-0028.
   timeouts:
     trial_seconds: 600
     tool_call_seconds: 60

@@ -387,6 +387,8 @@ initial_state:
 
 system_prompt: null
 
+interaction_mode: "conversational"   # or "agent_only" — see below
+
 tools:
   agent:
     enabled: ["browser", "read_file", "write_file", "db_query", "search_kb"]
@@ -414,6 +416,25 @@ metadata:
 
 grading: "grading.yaml"
 ```
+
+### `interaction_mode:` — turn-loop shape
+
+Selects whether the trial dispatches a user simulator alongside the agent.
+Two values today, room for future values (e.g. `multi_actor`) as new
+`TurnPolicy` implementations register in the `tolokaforge.turn_policies`
+entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
+
+- **`conversational`** (default) — user simulator dispatched every turn.
+  τ-bench and every existing pack expects this shape; leaving the field
+  unset keeps that behavior byte-for-byte.
+- **`agent_only`** — no user turn dispatched after the initial message.
+  The agent runs to `###STOP###` (routed to `TerminationReason.AGENT_DONE`),
+  `max_turns`, or `episode_timeout_s`. The user simulator is never
+  constructed. Requires a non-empty `initial_user_message` at pack
+  authoring time (fails loud at run-start otherwise — the agent-only
+  route has no simulator to synthesize a bootstrap message). Matches
+  agent-driven eval shapes (code migration, autonomous tool-use) where
+  the task lives entirely in the system prompt.
 
 ## Grading Specification (`grading.yaml`)
 
