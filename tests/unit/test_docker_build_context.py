@@ -576,6 +576,22 @@ def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monk
                 f"assembled runner context is missing '{expected}', which the "
                 "runner Dockerfile COPYs for its hatchling build stage"
             )
+        # Content assertions — a broken rename or empty copy would pass the
+        # existence check above but fail the Dockerfile stage. The .python-
+        # version entry is the tuple-form rename (source is
+        # ``_python_version.txt``, destination is ``.python-version``); a
+        # regression that dropped the tuple handling would land an empty
+        # file or the wrong name here.
+        assert (build_dir / ".python-version").read_text() == "3.12\n", (
+            ".python-version content mismatch — the (source, destination) tuple "
+            "form in ``assemble_build_context`` must copy source bytes to the "
+            "renamed destination"
+        )
+        for name in ("pyproject.toml", "README.md", "LICENSE"):
+            assert (build_dir / name).read_text() == f"# {name}\n", (
+                f"{name} content mismatch — flat-copy of an absolute path landed "
+                "an empty or wrong-source file"
+            )
     finally:
         shutil.rmtree(build_dir, ignore_errors=True)
 
