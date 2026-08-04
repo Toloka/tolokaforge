@@ -238,6 +238,7 @@ only-include = [
     "tolokaforge/runner",
     "tolokaforge/secrets",
     "tolokaforge/tools",
+    "tolokaforge/core/actors",
     "tolokaforge/core/models",
     "tolokaforge/core/llm",
     "tolokaforge/core/grading",
@@ -264,6 +265,7 @@ only-include = [
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
     # otherwise-included subpackage.
+    "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/state_checks.py",

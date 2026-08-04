@@ -945,7 +945,7 @@ class TestSeedMessageRetryLoop:
         runner.user_simulator.reply.side_effect = RuntimeError("Error code: 429")
 
         with pytest.raises(RuntimeError, match="429"):
-            runner._seed_first_user_message("")
+            runner._bootstrap_via_simulator()
 
         assert runner.user_simulator.reply.call_count == 1
 
@@ -957,7 +957,7 @@ class TestSeedMessageRetryLoop:
         runner.user_simulator.reply.side_effect = RuntimeError("Error code: 429")
 
         with pytest.raises(RuntimeError, match="429"):
-            runner._seed_first_user_message("")
+            runner._bootstrap_via_simulator()
 
         assert runner.user_simulator.reply.call_count == 4
 
@@ -973,7 +973,7 @@ class TestSeedMessageRetryLoop:
             runner.user_simulator.reply.side_effect = RuntimeError("upstream 503")
 
             with pytest.raises(RuntimeError, match="503"):
-                runner._seed_first_user_message("")
+                runner._bootstrap_via_simulator()
 
             assert runner.user_simulator.reply.call_count == 1
 

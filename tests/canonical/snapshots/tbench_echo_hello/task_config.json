@@ -24,6 +24,7 @@
     "system_prompt": null
   },
   "initial_user_message": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
+  "interaction_mode": "conversational",
   "max_turns": null,
   "metadata": {
     "complexity": null,

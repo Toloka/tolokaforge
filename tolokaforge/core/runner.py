@@ -4,6 +4,8 @@ import time
 from datetime import datetime, timezone
 from typing import Any
 
+from tolokaforge.core.actors.actor import Actor
+from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
@@ -27,6 +29,7 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
+from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -111,7 +114,7 @@ class TrialRunner:
         task_id: str,
         trial_index: int,
         agent_client: LLMClient,
-        user_simulator: UserSimulator,
+        user_simulator: UserSimulator | None,
         tool_executor: ToolExecutor,
         tool_schemas: list[dict[str, Any]],
         max_turns: int = 50,
@@ -124,6 +127,7 @@ class TrialRunner:
         strict: bool = False,
         events: RunDisplayEvents = _NULL_EVENTS,
         probe_stats: RateLimitProbeStats | None = None,
+        interaction_mode: InteractionMode = "conversational",
     ):
         self.task_id = task_id
         self.trial_index = trial_index
@@ -139,6 +143,7 @@ class TrialRunner:
         self.request_limiter = request_limiter
         self.verbose = verbose
         self.strict = strict
+        self.interaction_mode = interaction_mode
         self._events = events
         # Non-``None`` only under rate-limit probe mode. Shared by the agent and
         # user observations so both roles' 429s land in one per-trial total, and
@@ -299,7 +304,23 @@ class TrialRunner:
             )
 
             try:
-                self._seed_first_user_message(initial_user_message)
+                # Deferred import: the plugin registry pulls the conductor
+                # protocol, which pulls this runner module — an eager top-level
+                # import would loop.
+                from tolokaforge.core.plugin_registry import (
+                    TurnPolicyContext,
+                    load_turn_policy,
+                )
+
+                policy = load_turn_policy(self.interaction_mode)(
+                    TurnPolicyContext(user_simulator=self.user_simulator)
+                )
+                task_config = TaskConfig(
+                    task_id=self.task_id,
+                    description="",
+                    interaction_mode=self.interaction_mode,
+                )
+                self._seed_first_user_message(task_config, policy, initial_user_message)
 
                 outcome = ToolCallingLoop(
                     llm_client=self.agent_client,
@@ -315,7 +336,7 @@ class TrialRunner:
                         trial_id=trial_id,
                     ),
                     should_terminate=self._agent_termination,
-                    user_turn=self._agent_user_turn,
+                    user_turn=lambda messages: self._policy_user_turn(policy, messages),
                     recorder=self.tool_call_recorder,
                     request_limiter=self.request_limiter,
                     normalize_tool_arguments=self._normalize_tool_arguments,
@@ -491,70 +512,39 @@ class TrialRunner:
         folded = text.casefold()
         return any(marker.casefold() in folded for marker in _AGENT_DONE_MARKERS)
 
-    def _seed_first_user_message(self, initial_user_message: str) -> None:
+    def _seed_first_user_message(
+        self,
+        task_config: TaskConfig,
+        policy: TurnPolicy,
+        initial_user_message: str,
+    ) -> None:
         """Determine and append the first user message before the loop runs.
 
-        If ``initial_user_message`` is provided, use it directly (tool-use / Tau
-        style). Otherwise generate it via the user simulator (legacy behaviour),
-        retrying on rate limits — and *only* on rate limits: any other error is
-        re-raised on the first attempt. The task instruction lives in the
-        simulator's backstory and is NOT sent to the agent.
+        Delegates to ``policy.bootstrap(...)``: a policy may short-circuit to a
+        caller-provided literal (tool-use / Tau style, agent-monologue seed),
+        route to a user simulator to synthesise turn 0 (today's default
+        conversational path), or raise :class:`ValueError` when a required seed
+        is missing (agent-only with no ``initial_user_message``).
 
-        This runs before the loop, so no episode-timeout check can interrupt it
-        mid-flight, but its wall time is *consumed from* the episode budget
-        rather than added to it: ``run()`` sets ``self.start_time`` before
-        calling this and hands that same ``start_time`` to the loop.
+        The simulator invocation retries on rate limits — and *only* on rate
+        limits: any other error is re-raised on the first attempt. This runs
+        before the loop, so no episode-timeout check can interrupt it mid-flight,
+        but its wall time is *consumed from* the episode budget rather than
+        added to it: ``run()`` sets ``self.start_time`` before calling this and
+        hands that same ``start_time`` to the loop.
         """
-        if initial_user_message.strip():
-            first_user_text = initial_user_message
+        seed = initial_user_message if initial_user_message.strip() else None
+        decision = policy.bootstrap(task_config, seed)
+
+        if decision.first_user_message is not None:
+            first_user_text = decision.first_user_message
             self.logger.debug("Using provided initial_user_message directly")
+        elif decision.bootstrap_via_simulator:
+            first_user_text = self._bootstrap_via_simulator()
         else:
-            greeting_context = [
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content="Hi! How can I help you today?",
-                    ts=datetime.now(tz=timezone.utc),
-                )
-            ]
-            first_user_result = None
-            # Probe mode collapses this to one attempt. This loop only ever
-            # retries 429s (see the ``is_rate_limit and`` guard below), and under
-            # probe mode the simulator's own client already polls 429s at a fixed
-            # interval for up to its per-call budget — strictly more tolerant
-            # than 4 attempts of 2/4/8 s backoff — so the outer attempts are
-            # redundant. Dropping them also keeps this step's worst case at one
-            # simulator budget instead of ``init_attempts`` of them, which is
-            # what makes the budget invariant alone sufficient to bound the trial
-            # under its ``max(300, episode_s * 2)`` queue lease. Non-429 errors
-            # are unaffected: they were never retried here, and the client's own
-            # five-attempt exponential path still covers them under probe mode.
-            init_attempts = 1 if self._rate_limit_probe_active else 4
-            for attempt in range(1, init_attempts + 1):
-                try:
-                    first_user_result = self.user_simulator.reply(
-                        greeting_context, observation=self._user_observation
-                    )
-                    break
-                except Exception as exc:
-                    is_rate_limit = self._is_rate_limit_error(exc)
-                    if is_rate_limit and attempt < init_attempts:
-                        wait_s = min(2**attempt, 12)
-                        self.logger.warning(
-                            "Initial user generation rate-limited; retrying",
-                            attempt=attempt,
-                            max_attempts=init_attempts,
-                            wait_s=wait_s,
-                            error=str(exc),
-                        )
-                        time.sleep(wait_s)
-                        continue
-                    raise
-
-            if first_user_result is None:
-                raise RuntimeError("Failed to generate initial user message")
-
-            first_user_text = first_user_result.text
-            self.logger.debug("User simulator generated first message")
+            raise RuntimeError(
+                "BootstrapDecision must supply first_user_message or bootstrap_via_simulator=True"
+            )
 
         self.messages.append(
             Message(
@@ -563,6 +553,59 @@ class TrialRunner:
                 ts=datetime.now(tz=timezone.utc),
             )
         )
+
+    def _bootstrap_via_simulator(self) -> str:
+        """Synthesise turn 0 by dispatching the user simulator against a canned
+        agent greeting. Retries on rate limits only.
+
+        Probe mode collapses this to one attempt. The retry loop only ever
+        catches 429s (see the ``is_rate_limit`` guard below), and under probe
+        mode the simulator's own client already polls 429s at a fixed interval
+        for up to its per-call budget — strictly more tolerant than 4 attempts
+        of 2/4/8 s backoff — so the outer attempts are redundant. Dropping
+        them also keeps this step's worst case at one simulator budget instead
+        of ``init_attempts`` of them, which is what makes the budget invariant
+        alone sufficient to bound the trial under its
+        ``max(300, episode_s * 2)`` queue lease. Non-429 errors are unaffected:
+        they were never retried here, and the client's own five-attempt
+        exponential path still covers them under probe mode.
+        """
+        if self.user_simulator is None:
+            raise RuntimeError(
+                "bootstrap_via_simulator requires a user simulator; the conductor "
+                "must construct one for interaction_mode='conversational'."
+            )
+        greeting_context = [
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="Hi! How can I help you today?",
+                ts=datetime.now(tz=timezone.utc),
+            )
+        ]
+        init_attempts = 1 if self._rate_limit_probe_active else 4
+        for attempt in range(1, init_attempts + 1):
+            try:
+                first_user_result = self.user_simulator.reply(
+                    greeting_context, observation=self._user_observation
+                )
+                self.logger.debug("User simulator generated first message")
+                return first_user_result.text
+            except Exception as exc:
+                is_rate_limit = self._is_rate_limit_error(exc)
+                if is_rate_limit and attempt < init_attempts:
+                    wait_s = min(2**attempt, 12)
+                    self.logger.warning(
+                        "Initial user generation rate-limited; retrying",
+                        attempt=attempt,
+                        max_attempts=init_attempts,
+                        wait_s=wait_s,
+                        error=str(exc),
+                    )
+                    time.sleep(wait_s)
+                    continue
+                raise
+
+        raise RuntimeError("Failed to generate initial user message")
 
     def _agent_termination(
         self, result: GenerationResult, turn: int, messages: list[Message]
@@ -592,8 +635,34 @@ class TrialRunner:
 
         return None
 
-    def _agent_user_turn(self, messages: list[Message]) -> UserTurnResult:
-        """Agent user turn: simulator reply, ``###STOP###`` detection, user tools.
+    def _policy_user_turn(self, policy: TurnPolicy, messages: list[Message]) -> UserTurnResult:
+        """Route the loop's optional user turn through ``policy.next_actor``.
+
+        The loop invokes this shim only when the just-completed agent turn
+        produced no tool calls (``loop.py``'s ``_advance_user_turn`` gate), so
+        the :class:`TurnState` handed to the policy sets
+        ``last_agent_had_tool_calls=False``. ``turn_index`` is the count of
+        assistant messages so far — the next actor the policy hands back is the
+        speaker of turn ``turn_index + 1``.
+
+        A :class:`~tolokaforge.core.actors.turn_policy.ConversationalTurnPolicy`
+        returns the user actor here (byte-for-byte the historical dispatch);
+        :class:`~tolokaforge.core.actors.turn_policy.AgentOnlyTurnPolicy` returns
+        ``None`` and the shim returns an empty :class:`UserTurnResult` — the
+        loop appends nothing and advances to the next agent turn.
+        """
+        state = TurnState(
+            messages=messages,
+            last_agent_had_tool_calls=False,
+            turn_index=sum(1 for m in messages if m.role == MessageRole.ASSISTANT),
+        )
+        actor_turn = policy.next_actor(state)
+        if actor_turn is None:
+            return UserTurnResult()
+        return self._dispatch_user_actor(actor_turn.actor, messages)
+
+    def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
+        """Run one user actor turn: reply, ``###STOP###`` detection, user tools.
 
         Embeds user tool-call results in the user message text (Anthropic does
         not support ``tool_use`` from the USER role) while preserving the
@@ -619,7 +688,7 @@ class TrialRunner:
                 )
             )
 
-        user_result = self.user_simulator.reply(messages, observation=self._user_observation)
+        user_result = actor.reply(messages, observation=self._user_observation)
 
         if "###STOP###" in user_result.text:
             pre_stop_text, _, _ = user_result.text.partition("###STOP###")
