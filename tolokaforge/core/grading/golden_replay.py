@@ -14,10 +14,30 @@ namespace into the other, and #815 owns unifying them.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Sequence
+from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
+
+
+class InitialStateSource(str, Enum):
+    """What a task's ``initial_state.json_db`` gives a golden replay to load.
+
+    One vocabulary for both readers of the fact: the engine, which builds a world out of
+    it or refuses to, and the authoring gate, which refuses the pack before a trial pays
+    for either.
+    """
+
+    JSON_FILE = "json_file"
+    """A path the replay resolves under the task directory and reads."""
+
+    INLINE = "inline"
+    """A mapping written into ``task.yaml``, which is no file for the replay to load."""
+
+    ABSENT = "absent"
+    """Nothing at all."""
+
 
 _UNRESOLVABLE_ACTIONS = (
     "golden actions naming no tool the replay can call: {offenders}. Skipping them would "
@@ -35,11 +55,21 @@ _UNBUILDABLE_WORLD = (
 )
 
 _NO_TASK_DIR = "this grading engine was given no task directory"
-_NO_INITIAL_STATE = "task.yaml declares no initial_state.json_db"
-_INLINE_INITIAL_STATE = (
-    "task.yaml declares initial_state.json_db inline, where the replay loads a JSON file "
-    "under the task directory"
-)
+
+# How a task withholding the initial state reads to whoever holds the engine, per shape
+# it withheld it in, and ``None`` for the shape that withholds nothing. Total over
+# :class:`InitialStateSource`, so a fourth shape cannot join the enum without an answer
+# here. The authoring gate carries its own sentences for the same two facts, addressed to
+# the pack's author rather than to the engine's caller.
+_ABSENT_INITIAL_STATE: Mapping[InitialStateSource, str | None] = {
+    InitialStateSource.JSON_FILE: None,
+    InitialStateSource.ABSENT: "task.yaml declares no initial_state.json_db",
+    InitialStateSource.INLINE: (
+        "task.yaml declares initial_state.json_db inline, where the replay loads a JSON "
+        "file under the task directory"
+    ),
+}
+
 _NO_MCP_SERVER = "task.yaml declares no tools.agent.mcp_server"
 
 _INCOMPLETE_REPLAY = (
@@ -69,6 +99,15 @@ class UnbuildableGoldenReplayWorld(GoldenReplayError):
     that one built a partial world and still hashed against it, while this one has no
     world at all, so no action is ever attempted.
     """
+
+
+def classify_initial_state(json_db: str | Mapping[str, Any] | None) -> InitialStateSource:
+    """Which of the three shapes a task wrote its ``initial_state.json_db`` in."""
+    if not json_db:
+        return InitialStateSource.ABSENT
+    if isinstance(json_db, str):
+        return InitialStateSource.JSON_FILE
+    return InitialStateSource.INLINE
 
 
 @dataclass(frozen=True)
@@ -102,23 +141,34 @@ def require_golden_replay_world(
     present — the replay loads a file under ``task_dir``, so a mapping there is a world
     it cannot build.
     """
-    absent: list[str] = []
-    if task_dir is None:
-        absent.append(_NO_TASK_DIR)
-    if not initial_state_json_db:
-        absent.append(_NO_INITIAL_STATE)
-    elif not isinstance(initial_state_json_db, str):
-        absent.append(_INLINE_INITIAL_STATE)
-    if not mcp_server:
-        absent.append(_NO_MCP_SERVER)
+    if (
+        task_dir is not None
+        and isinstance(initial_state_json_db, str)
+        and initial_state_json_db
+        and mcp_server
+    ):
+        return GoldenReplayWorld(
+            task_dir=task_dir,
+            initial_state_path=initial_state_json_db,
+            mcp_server_path=mcp_server,
+        )
+    absent = _absent_replay_facts(task_dir, initial_state_json_db, mcp_server)
+    raise UnbuildableGoldenReplayWorld(_UNBUILDABLE_WORLD.format(absent="; ".join(absent)))
 
-    if absent:
-        raise UnbuildableGoldenReplayWorld(_UNBUILDABLE_WORLD.format(absent="; ".join(absent)))
-    return GoldenReplayWorld(
-        task_dir=task_dir,
-        initial_state_path=initial_state_json_db,
-        mcp_server_path=mcp_server,
-    )
+
+def _absent_replay_facts(
+    task_dir: Path | None,
+    initial_state_json_db: str | dict[str, Any] | None,
+    mcp_server: str | None,
+) -> Iterator[str]:
+    """Each fact the replay was not given, in the order the one raise names them."""
+    if task_dir is None:
+        yield _NO_TASK_DIR
+    withheld_state = _ABSENT_INITIAL_STATE[classify_initial_state(initial_state_json_db)]
+    if withheld_state is not None:
+        yield withheld_state
+    if not mcp_server:
+        yield _NO_MCP_SERVER
 
 
 @dataclass(frozen=True)

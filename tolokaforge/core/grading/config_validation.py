@@ -38,6 +38,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.golden_replay import InitialStateSource
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
     GRADE_COMPONENTS,
@@ -161,19 +162,6 @@ class CombineLayer:
     def unresolvable(cls) -> CombineLayer:
         """The layer of a caller that cannot say what a task's project supplies."""
         return cls(project_combine=None, known=False)
-
-
-class InitialStateSource(str, Enum):
-    """What a task's ``initial_state.json_db`` gives a golden replay to load."""
-
-    A_JSON_FILE = "a_json_file"
-    """A path the replay resolves under the task directory and reads."""
-
-    INLINE = "inline"
-    """A mapping written into ``task.yaml``, which is no file for the replay to load."""
-
-    ABSENT = "absent"
-    """Nothing at all."""
 
 
 @dataclass(frozen=True)
@@ -429,11 +417,14 @@ _NAMELESS_GOLDEN_ACTION = (
 
 _GOLDEN_ACTIONS_ADDRESS = "state_checks.hash.golden_actions"
 
-# How a task withholding the initial state reads, per shape it withheld it in. Two
-# shapes, one key: a replay loads a JSON file under the task directory, so an inline
-# mapping supplies it as little as an unwritten key does, and an author fixes either by
-# writing the same key with the other value.
-_NO_INITIAL_STATE_FILE: Mapping[InitialStateSource, str] = {
+# How a task withholding the initial state reads to the pack's author, per shape it
+# withheld it in, and ``None`` for the shape that withholds nothing. Two shapes, one key:
+# a replay loads a JSON file under the task directory, so an inline mapping supplies it as
+# little as an unwritten key does, and an author fixes either by writing the same key with
+# the other value. Total over :class:`InitialStateSource`, so a fourth shape cannot join
+# the enum without an answer here.
+_NO_INITIAL_STATE_FILE: Mapping[InitialStateSource, str | None] = {
+    InitialStateSource.JSON_FILE: None,
     InitialStateSource.ABSENT: "this task declares no initial_state.json_db",
     InitialStateSource.INLINE: (
         "this task declares initial_state.json_db inline, where the replay loads a JSON "
@@ -468,23 +459,20 @@ def inspect_grading_authoring(
     effective_combine: GradingCombineConfig | None = None,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
 ) -> AuthoringReport:
-    """Report what a task's tools and its fold say about the grading block it is graded by.
+    """Report what a task's tools, its replay world and its fold say about its grading block.
 
     The block is expected to have passed its own shape validation; the typed
     sub-blocks read here are constructed, so a malformed one raises its own load
     error rather than being reported as an authoring finding.
 
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
-    inventory is unresolvable, and the rules that need nothing but the block —
-    regex compilation, the hash-source declaration — still run.
+    inventory is unresolvable. The rules outside that set still run: regex compilation
+    and the hash-source declaration, which read nothing but the block, and the
+    replay-world rule, which reads the world and skips on its own account.
 
     Args:
         grading: The authored block, as written.
         inventory: The task's tool set.
-        replay_world: What the task gives its golden actions to be replayed against.
-            The default, :meth:`ReplayWorld.unresolvable`, is the answer for a caller
-            holding no ``task.yaml`` — it skips the one rule that reads the world where
-            that rule would have run, and fails nothing.
         effective_combine: The combine the task grades under, project defaults
             layered beneath its own. The weight rules read the *effective* map
             because a task declaring no ``combine`` at all still inherits one, so a
@@ -495,6 +483,10 @@ def inspect_grading_authoring(
             :data:`UNRESOLVED_COMBINE_REASON` through
             :meth:`AuthoringReport.with_unchecked`, so its gate does not read as a
             clean bill of health.
+        replay_world: What the task gives its golden actions to be replayed against.
+            The default, :meth:`ReplayWorld.unresolvable`, is the answer for a caller
+            holding no ``task.yaml`` — it skips the one rule that reads the world where
+            that rule would have run, and fails nothing.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -908,8 +900,9 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
 
 def _withheld_replay_facts(world: ReplayWorld) -> Iterator[tuple[str, str]]:
     """Each fact the task does not give the replay, and the ``task.yaml`` key that would."""
-    if world.initial_state is not InitialStateSource.A_JSON_FILE:
-        yield _NO_INITIAL_STATE_FILE[world.initial_state], "initial_state.json_db"
+    withheld_state = _NO_INITIAL_STATE_FILE[world.initial_state]
+    if withheld_state is not None:
+        yield withheld_state, "initial_state.json_db"
     if not world.mcp_server:
         yield _NO_MCP_SERVER_MODULE, "tools.agent.mcp_server"
 

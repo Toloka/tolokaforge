@@ -414,7 +414,7 @@ class TestAGoldenReplayWithNoWorldRefusesToGrade:
     Every case below carries the assertions the trial half-satisfies, so an
     implementation that fell through to them would return ``0.5`` on ``state_checks``
     for a pack whose primary state source never ran — the same number a trial that
-    matched the hash on half its assertions earns, which is the defect (#729).
+    matched the hash on half its assertions earns, which is the defect.
     """
 
     _UNREPLAYABLE_HASH = {
@@ -579,12 +579,14 @@ class TestAGoldenReplayWithNoWorldRefusesToGrade:
 
 
 class TestFailedGoldenReplayIsNotAScore:
-    """A golden replay that could not execute produces no verdict at all.
+    """A replay that began and failed part-way through produces no verdict either.
 
-    The pack below carries live assertions and a weight, so any implementation
-    that turned the failure into an absent hash score would return the full,
-    unweighted jsonpath score (``0.5``) — a pass-shaped number for an
-    infrastructure failure.
+    The world below is declared whole — a task directory, a ``json_db`` path and a server
+    module — so the refusal that precedes the replay does not fire and what raises is the
+    execution itself: the initial-state file the task names is not on disk. The pack
+    carries live assertions and a weight, so any implementation that turned the failure
+    into an absent hash score would return the full, unweighted jsonpath score (``0.5``) —
+    a pass-shaped number for an infrastructure failure.
     """
 
     def test_replay_failure_raises_instead_of_scoring(self, tmp_path):
@@ -600,22 +602,6 @@ class TestFailedGoldenReplayIsNotAScore:
                 },
                 task_dir=tmp_path,
                 task_initial_state=InitialStateConfig(json_db="absent_initial_state.json"),
-                task_mcp_server="mcp_server.py",
-            )
-
-    def test_missing_initial_state_declaration_raises(self):
-        with pytest.raises(GoldenReplayError, match="initial_state.json_db"):
-            _grade(
-                {
-                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                    "hash": {
-                        "enabled": True,
-                        "golden_actions": [{"name": "close_widget"}],
-                        "weight": 0.6,
-                    },
-                },
-                task_dir=Path("."),
-                task_initial_state=InitialStateConfig(),
                 task_mcp_server="mcp_server.py",
             )
 

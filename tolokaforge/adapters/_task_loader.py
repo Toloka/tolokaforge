@@ -64,12 +64,12 @@ from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
     CombineLayer,
-    InitialStateSource,
     ReplayWorld,
     Skip,
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.grading.golden_replay import classify_initial_state
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     GradingCombineConfig,
@@ -522,22 +522,16 @@ def replay_world_under_adapter(task: TaskConfig, adapter_type: str) -> ReplayWor
     use would reject packs that run fine.
 
     ``mcp_server`` is read the way :meth:`BaseAdapter.grade` reads it into the grading
-    engine, and a ``json_db`` written as an inline mapping supplies no file — the shape
-    :func:`require_golden_replay_world` refuses to build a world from at grade time.
+    engine, and the ``json_db`` shape through :func:`classify_initial_state`, the reading
+    :func:`require_golden_replay_world` builds a world by at grade time — so an inline
+    mapping supplies no file here either.
     """
     from tolokaforge.runner.models import AdapterType
 
     if adapter_type != AdapterType.NATIVE.value:
         return ReplayWorld.unresolvable()
-    json_db = task.initial_state.json_db
-    if not json_db:
-        initial_state = InitialStateSource.ABSENT
-    elif isinstance(json_db, str):
-        initial_state = InitialStateSource.A_JSON_FILE
-    else:
-        initial_state = InitialStateSource.INLINE
     return ReplayWorld(
-        initial_state=initial_state,
+        initial_state=classify_initial_state(task.initial_state.json_db),
         mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
     )
 

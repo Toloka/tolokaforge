@@ -36,6 +36,8 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _A_NON_EMPTY_SECTION_STILL_DECLARES,
+    _NO_INITIAL_STATE_FILE,
+    _NO_MCP_SERVER_MODULE,
     _TEXTUAL_MATCHER_FIELDS,
     _TOOL_EXPECTATION_HAZARDS,
     _TRANSCRIPT_RULE_KEYS,
@@ -44,10 +46,14 @@ from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
     CombineLayer,
     Finding,
-    InitialStateSource,
     ReplayWorld,
     ToolInventory,
     inspect_grading_authoring,
+)
+from tolokaforge.core.grading.golden_replay import (
+    _ABSENT_INITIAL_STATE,
+    _NO_MCP_SERVER,
+    InitialStateSource,
 )
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
@@ -146,8 +152,8 @@ def _golden_actions(*actions: dict[str, Any], enabled: bool = True) -> dict[str,
 # pack: the one shape this issue is about — an initial-state file beside no MCP server
 # module — is authorable and ships nowhere, so no pack can supply it. The corpus guard
 # in ``tests/canonical/test_example_pack_grading_corpus.py`` resolves the real ones.
-_A_BUILDABLE_WORLD = ReplayWorld(initial_state=InitialStateSource.A_JSON_FILE, mcp_server=True)
-_NO_SERVER_MODULE = ReplayWorld(initial_state=InitialStateSource.A_JSON_FILE, mcp_server=False)
+_A_BUILDABLE_WORLD = ReplayWorld(initial_state=InitialStateSource.JSON_FILE, mcp_server=True)
+_NO_SERVER_MODULE = ReplayWorld(initial_state=InitialStateSource.JSON_FILE, mcp_server=False)
 _NO_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=True)
 _AN_INLINE_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.INLINE, mcp_server=True)
 _A_TASK_SUPPLYING_NEITHER = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=False)
@@ -933,6 +939,42 @@ def test_every_replay_fact_a_task_withholds_from_its_golden_path_is_its_own_erro
     assert report.unchecked == ()
 
 
+#: The two ``task.yaml`` keys a withheld world sends its reader to write.
+_THE_KEYS_A_WITHHELD_WORLD_NAMES = frozenset({"initial_state.json_db", "tools.agent.mcp_server"})
+
+
+@pytest.mark.parametrize(
+    "sentences",
+    [
+        pytest.param(
+            (*_NO_INITIAL_STATE_FILE.values(), _NO_MCP_SERVER_MODULE),
+            id="the_gate_refusing_a_pack",
+        ),
+        pytest.param(
+            (*_ABSENT_INITIAL_STATE.values(), _NO_MCP_SERVER),
+            id="the_engine_refusing_a_grade",
+        ),
+    ],
+)
+def test_both_withheld_world_vocabularies_name_the_same_task_yaml_keys(
+    sentences: tuple[str | None, ...],
+) -> None:
+    """Two message sets, two audiences, one set of keys to write.
+
+    The gate addresses the pack's author before a trial is paid for and the engine
+    addresses whoever holds it once one is, so the two sets of sentences are deliberately
+    not shared. What a reader *acts on* is the same either way — a ``task.yaml`` key — and
+    a set that stopped naming one would leave half of them nothing to fix.
+    """
+    named = {
+        key
+        for key in _THE_KEYS_A_WITHHELD_WORLD_NAMES
+        if any(key in sentence for sentence in sentences if sentence is not None)
+    }
+
+    assert named == _THE_KEYS_A_WITHHELD_WORLD_NAMES
+
+
 def test_a_literal_expected_hash_beside_golden_actions_needs_no_world() -> None:
     """The shape ``tests/data/grading_parity/all_keys`` ships, and the rule's exclusion.
 
@@ -1026,7 +1068,7 @@ def test_an_unresolvable_replay_world_may_not_carry_task_facts() -> None:
     layer carry, for the same reason.
     """
     with pytest.raises(ValueError, match="carries task facts"):
-        ReplayWorld(initial_state=InitialStateSource.A_JSON_FILE, mcp_server=True, known=False)
+        ReplayWorld(initial_state=InitialStateSource.JSON_FILE, mcp_server=True, known=False)
 
 
 # The rest of a loadable config, because ``combine`` is required: without it every
