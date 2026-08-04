@@ -282,9 +282,12 @@ def test_an_unresolvable_golden_action_fails_the_grade_and_leaves_the_trial_alon
 
     The error has to name both the action as written and the tools the trial registered:
     that pair is the whole of what tells an author the golden path is broken rather than
-    the agent. A runner that skipped the action instead answers ``success=true`` with a
-    ``state_checks`` computed against a golden world the action never touched, annotating
-    the grade where an unbuildable world has to refuse one.
+    the agent. The registered half is asserted as the rendered candidate list, because
+    ``_TOOL_NAME`` is a substring of the offending ``_UNREGISTERED_TOOL`` and a bare
+    name assertion would hold on an error naming only the typo. A runner that skipped the
+    action instead answers ``success=true`` with a ``state_checks`` computed against a
+    golden world the action never touched, annotating the grade where an unbuildable
+    world has to refuse one.
     """
     trial_id = f"{_TASK_ID}_unresolvable:0"
     task = _task_description(
@@ -310,7 +313,7 @@ def test_an_unresolvable_golden_action_fails_the_grade_and_leaves_the_trial_alon
 
         assert result["success"] is False, result
         assert _UNREGISTERED_TOOL in result["error"], result["error"]
-        assert _TOOL_NAME in result["error"], result["error"]
+        assert f"[{_TOOL_NAME!r}]" in result["error"], result["error"]
         assert _state(runner_client, trial_id) == before, (
             f"grading a pack whose golden action names {_UNREGISTERED_TOOL!r} moved the "
             f"trial's database off {before} — it was snapshotted or reset on the way to "

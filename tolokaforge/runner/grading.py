@@ -1226,7 +1226,7 @@ def build_grade_reasons(
             else:
                 reasons.append("State: hash mismatch")
 
-    replay_reason = incomplete_replay_reason(golden_replay) if golden_replay else None
+    replay_reason = incomplete_replay_reason(golden_replay) if golden_replay is not None else None
     if replay_reason:
         reasons.append(replay_reason)
 

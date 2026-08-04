@@ -1590,7 +1590,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             transcript_result_dict,
             judge_reasons=judge_reasons or None,
             trace_checks_result=trace_checks_result.model_dump(mode="json"),
-            golden_replay=hash_result.golden_replay if hash_result else None,
+            golden_replay=hash_result.golden_replay if hash_result is not None else None,
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"

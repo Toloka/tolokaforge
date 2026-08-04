@@ -337,7 +337,7 @@ class GradingEngine:
             hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=hash_weight
         )
         reasons = jsonpath_reasons + hash_reasons
-        replay_reason = incomplete_replay_reason(replay) if replay else None
+        replay_reason = incomplete_replay_reason(replay) if replay is not None else None
         if replay_reason:
             reasons.append(replay_reason)
         if inert_reason:

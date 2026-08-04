@@ -725,7 +725,7 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     resolved = resolve_golden_action_names(
         [action.tool_name for action in grading_config.golden_actions],
         candidates=trial_context.agent_tools.keys(),
-        match=exact_then_single_underscore_suffix,
+        match=_tool_registered_for_trial,
     )
 
     # 2. Get current trial state from DB Service

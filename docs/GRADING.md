@@ -1042,9 +1042,10 @@ the runner answers `GradeTrial` with `success=false`.
 **An action name that resolves to nothing is one of those failures, on both
 substrates.** Every authored name is resolved before the first action runs, so a
 partially replayed golden world is never built and nothing is ever hashed against one.
-An action with no `name` key, `name: ""`, or `name: null` resolves to nothing the same
-way and draws the same error, and one raise names every offending action, its index,
-and the set it was resolved against — an author correcting a golden path sees the whole
+An action with no `name` key, `name: ""`, `name: null`, or a `name` that is no string at
+all resolves to nothing the same way and draws the same error, and one raise names every
+offending action, its index, and the set it was resolved against — an author correcting
+a golden path sees the whole
 list rather than paying for a replay per typo. Both shapes are refused earlier still,
 wherever the authoring gate can resolve the task's tool set — see
 [What is validated before a run](#what-is-validated-before-a-run) for the namespace it
@@ -2271,7 +2272,7 @@ Findings come in three classes:
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
-| a golden action declaring no name — the key absent, `""`, or `null` — under the same flag | error | as above |
+| a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
 | a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
@@ -2323,10 +2324,10 @@ nothing costs the whole trial: both substrates resolve the authored names before
 first action runs and refuse the replay outright, so the tokens are spent and no
 state-hash verdict comes back at all (see
 [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)). An action with no
-`name` key, `name: ""`, or
-`name: null` resolves to nothing the same way and draws the same error, and each
-offending action is addressed by its own index — a name may repeat, and a nameless
-action carries nothing else to tell it apart by.
+`name` key, `name: ""`, `name: null`, or — the `hash` block being untyped — a `name`
+written as anything but a string resolves to nothing the same way and draws the same
+error, and each offending action is addressed by its own index — a name may repeat, and a
+nameless action carries nothing else to tell it apart by.
 
 The gate resolves those names against **the tools the task declares** —
 `tools.agent.enabled ∪ tools.user.enabled` — which is stricter than either substrate

@@ -739,18 +739,24 @@ _GOLDEN_ACTIONS_NO_REPLAY_CAN_RUN = (
     pytest.param({"kwargs": {"widget_id": "W1"}}, id="no_name_key"),
     pytest.param({"name": ""}, id="name_written_empty"),
     pytest.param({"name": None}, id="name_written_null"),
+    pytest.param({"name": ["close_widget"]}, id="name_written_as_a_list"),
 )
 
 
 @pytest.mark.parametrize("action", _GOLDEN_ACTIONS_NO_REPLAY_CAN_RUN)
 def test_every_golden_action_shape_no_replay_can_run_is_refused(action: dict[str, Any]) -> None:
-    """The four shapes that leave a trial paid for and unscored draw one finding each.
+    """Every shape that leaves a trial paid for and unscored draws one finding each.
 
-    All four resolve to nothing wherever a replay reads them, and both substrates refuse
-    the replay outright rather than skipping the action — so the pack costs a full trial
-    and takes no state-hash verdict. ``name: null`` never reaches a replay at all: it fails
-    ``GoldenAction`` construction inside the adapter with a Pydantic message about a
-    string, so the gate naming the action is the only reading an author can act on.
+    All of them resolve to nothing wherever a replay reads them, and both substrates
+    refuse the replay outright rather than skipping the action — so the pack costs a full
+    trial and takes no state-hash verdict. ``name: null`` never reaches a replay at all:
+    it fails ``GoldenAction`` construction inside the adapter with a Pydantic message
+    about a string, so the gate naming the action is the only reading an author can act
+    on. The ``hash`` block is untyped, so a name written as a list reaches the rule as an
+    unhashable value and is refused rather than tested for membership: the gate answers
+    with findings and raises for nothing, and a bare ``TypeError`` reaches
+    ``tolokaforge validate`` carrying no address and passes the pre-run preflight's
+    ``(ValueError, RuntimeError, OSError)`` arm as a harness fault.
     """
     report = inspect_grading_authoring(_golden_actions(action), _inventory(_HELPDESK))
 

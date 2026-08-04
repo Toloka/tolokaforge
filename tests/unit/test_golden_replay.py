@@ -164,6 +164,23 @@ def test_an_action_declaring_no_name_is_refused_rather_than_skipped(
         _check(_trial_state(pack_tools, _PLACE_ORDER), nameless)
 
 
+def test_an_action_whose_name_is_no_string_is_refused_as_one_naming_nothing(
+    pack_tools, golden_actions
+) -> None:
+    """The ``hash`` block is untyped, so a name may arrive as a list — and must not raise.
+
+    The subclass is the assertion. Reaching the matcher, an unhashable name answers its
+    membership test with a ``TypeError``, which the wrapper flattens into the base
+    ``GoldenReplayError`` — so the pack defect arrives as "Error executing golden actions"
+    rather than as the class whose message names the offending action and the pack's
+    tools.
+    """
+    listed = [copy.deepcopy(golden_actions[0]), {"name": ["confirm_payment"]}]
+
+    with pytest.raises(UnresolvableGoldenAction, match=r"\[1\] None"):
+        _check(_trial_state(pack_tools, _PLACE_ORDER), listed)
+
+
 def test_every_unresolvable_action_is_named_in_one_raise(pack_tools, golden_actions) -> None:
     """Two defects, one exception — an author fixing a golden path sees the whole list."""
     both_misspelled = _misspell_payment(golden_actions)

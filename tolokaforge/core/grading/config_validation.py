@@ -783,6 +783,10 @@ def _check_golden_action_names(
     replay substrate — core resolves against the pack's ``TOOLS`` map and the runner
     against the tools it registered for the trial, and neither is readable here without
     importing the pack's server module. #815 owns unifying the three.
+
+    A name that is not a string at all — the block being untyped — is refused as one
+    resolving to nothing rather than tested for membership, which an unhashable value
+    answers with a ``TypeError``.
     """
     errors = tuple(
         Finding(
@@ -790,7 +794,7 @@ def _check_golden_action_names(
             _unreplayable_golden_action_message(name, inventory),
         )
         for index, name in enumerate(_authored_golden_action_names(grading))
-        if not name or name not in inventory.declared
+        if not name or not isinstance(name, str) or name not in inventory.declared
     )
     return AuthoringReport(errors=errors)
 

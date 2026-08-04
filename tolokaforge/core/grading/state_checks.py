@@ -93,6 +93,18 @@ def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
     return name if name in tools else None
 
 
+def _authored_action_name(action: dict[str, Any]) -> str | None:
+    """The name an action declares, or ``None`` where it declares no string at all.
+
+    The ``hash`` block is untyped (#730), so a name may arrive as a list or a mapping.
+    Such a name is as unreplayable as a missing one and draws the same
+    ``UnresolvableGoldenAction``; reaching the matcher instead, its membership test
+    would answer an unhashable value with a ``TypeError``.
+    """
+    name = action.get("name")
+    return name if isinstance(name, str) else None
+
+
 def extract_db_state(final_env_state: dict[str, Any]) -> dict[str, Any]:
     """Return the level of a final environment state that a hash is computed over.
 
@@ -385,7 +397,7 @@ class StateChecker:
 
         # 4. Resolve every authored name
         resolved_names = resolve_golden_action_names(
-            [action.get("name") for action in golden_actions],
+            [_authored_action_name(action) for action in golden_actions],
             candidates=tools_map.keys(),
             match=_tool_in_pack,
         )
