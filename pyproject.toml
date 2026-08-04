@@ -248,9 +248,14 @@ only-include = [
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
     # otherwise-included subpackage.
+    "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/combine.py",
+    "tolokaforge/core/grading/config_validation.py",
+    "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
+    "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/transcript.py",
     "tolokaforge/core/llm/fallback_client.py",
     "tolokaforge/tools/user_tools.py",

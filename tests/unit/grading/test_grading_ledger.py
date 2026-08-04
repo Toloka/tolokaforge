@@ -338,7 +338,7 @@ def test_only_the_kinds_a_block_declares_have_to_be_accounted_for():
     seven kinds nothing evaluated, failing every task that writes less than the
     whole vocabulary.
     """
-    config = GradingConfig(trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK))
+    config = RunnerGradingConfig(trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK))
     accounted = evaluate_trace_checks(_inspected_then_shipped(), config.trace_checks).accounted_keys
 
     assert audit_accounted_keys(config, accounted).error is None
@@ -411,7 +411,7 @@ def test_a_kind_declared_only_inside_a_route_is_accounted_for_like_a_shared_one(
     ``constraints`` alone records nothing the pack actually asserts — and
     ``GradeTrial`` then rejects every trial the pack grades.
     """
-    config = GradingConfig(trace_checks=TraceChecksConfig(**_ROUTED_TRACE_BLOCK))
+    config = RunnerGradingConfig(trace_checks=TraceChecksConfig(**_ROUTED_TRACE_BLOCK))
     graded = evaluate_trace_checks(_inspected_then_shipped(), config.trace_checks)
     silent = evaluate_trace_checks(build_turn_timeline([]), config.trace_checks)
 
@@ -526,7 +526,7 @@ def test_a_constraint_whose_binder_selected_nothing_accounts_its_nested_kinds_as
     """
     timeline = _inspected_then_shipped_widget_w1()
     for policy, verdict in (({}, False), ({"on_unbound": "pass"}, True)):
-        config = GradingConfig(
+        config = RunnerGradingConfig(
             trace_checks=TraceChecksConfig(
                 constraints=[_bound_composite("no_binder_fires", "recall_widget", **policy)]
             )
@@ -547,7 +547,7 @@ def test_a_constraint_whose_binder_selected_nothing_accounts_its_nested_kinds_as
         assert result.constraints[0].kind is TraceConstraintKind.ALL_OF, policy
         assert result.constraints[0].passed is verdict, policy
 
-    beside_an_evaluated_sibling = GradingConfig(
+    beside_an_evaluated_sibling = RunnerGradingConfig(
         trace_checks=TraceChecksConfig(
             constraints=[
                 _bound_composite("no_binder_fires", "recall_widget"),
@@ -572,7 +572,7 @@ def test_a_binder_whose_value_the_trial_never_recorded_accounts_its_nested_kinds
     config populates. The composite still carries the constraint's own verdict, which
     is a failing sub-check rather than a silent resolution.
     """
-    config = GradingConfig(
+    config = RunnerGradingConfig(
         trace_checks=TraceChecksConfig(
             constraints=[
                 {

@@ -112,25 +112,34 @@ shim; before the fix, the subset shipped Python only and a runner image
 booted with an empty pricing table."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
+    "tolokaforge/core/grading/agreement.py",
     "tolokaforge/core/grading/combine.py",
+    "tolokaforge/core/grading/config_validation.py",
+    "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
+    "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/trace_replay.py",
     "tolokaforge/core/grading/transcript.py",
     "tolokaforge/core/llm/fallback_client.py",
     "tolokaforge/tools/user_tools.py",
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.
 
-Four of them (``core.grading.combine``, ``core.grading.replay``,
-``core.grading.state_checks``, ``core.tools.user_tools``) reach
+Six of them (``core.grading.combine``, ``core.grading.replay``,
+``core.grading.rubric_migration``, ``core.grading.state_checks``,
+``core.grading.trace_replay``, ``core.tools.user_tools``) reach
 orchestrator-only siblings (``core.evaluators``, ``core.output.artifacts``,
-``core.utils.diff``, ``core.env_state``) — including any of these in the
-subset would drag those orchestrator-only surfaces along with them, or
-fail at import time inside the runner container. Two (``core.grading
-.transcript``, ``core.llm.fallback_client``) have only shared-spine
-imports but are consumed exclusively by orchestrator-side code and would
-ship as dead weight. The runner container's runtime closure reaches none
-of them.
+``core.utils.diff``, ``core.env_state``, ``adapters._task_loader``) —
+including any of these in the subset would drag those orchestrator-only
+surfaces along with them, or fail at import time inside the runner
+container. The remaining five (``core.grading.agreement``,
+``core.grading.config_validation``, ``core.grading.migration_declaration``,
+``core.grading.transcript``, ``core.llm.fallback_client``) have only
+shared-spine imports but are consumed exclusively by orchestrator-side code
+— the pre-run authoring gate and the rubric-to-trace-check migration both
+run on the host, before any trial is scheduled — and would ship as dead
+weight. The runner container's runtime closure reaches none of them.
 """
 
 

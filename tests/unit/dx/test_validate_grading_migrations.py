@@ -59,7 +59,7 @@ from tolokaforge.core.grading.config_validation import ToolInventory
 from tolokaforge.core.models import GradingDefaults, StateChecksConfig
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.dx.cli.main import cli
-from tolokaforge.runner.models import TranscriptRulesConfig as RunnerTranscriptRules
+from tolokaforge.runner.models import RunnerTranscriptRulesConfig as RunnerTranscriptRules
 
 pytestmark = pytest.mark.unit
 

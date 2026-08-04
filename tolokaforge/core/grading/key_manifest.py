@@ -545,7 +545,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.min_assistant_turns",
-        runner_field="TranscriptRulesConfig.min_assistant_turns",
+        runner_field="RunnerTranscriptRulesConfig.min_assistant_turns",
         core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
     ),

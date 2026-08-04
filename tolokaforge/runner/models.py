@@ -396,7 +396,7 @@ class RunnerStateChecksConfig(BaseModel):
         }
 
     @model_validator(mode="after")
-    def _refuse_probes_beside_another_state_source(self) -> StateChecksConfig:
+    def _refuse_probes_beside_another_state_source(self) -> RunnerStateChecksConfig:
         """Reject a probe declared beside a source this component also scores.
 
         The runner is the only substrate that evaluates a probe, so such a spec would be
@@ -466,7 +466,7 @@ class RunnerTranscriptRulesConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def _validate_turn_window(self) -> TranscriptRulesConfig:
+    def _validate_turn_window(self) -> RunnerTranscriptRulesConfig:
         """Reject the window no assistant-turn count satisfies.
 
         Calls the same predicate the core config calls, so an engine and a runner

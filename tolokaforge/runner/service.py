@@ -124,13 +124,13 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerGradeComponents,
+    RunnerTranscriptRulesConfig,
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
     TraceChecksConfig,
     TraceChecksResult,
     TranscriptEvaluationResult,
-    RunnerTranscriptRulesConfig,
 )
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
@@ -1758,7 +1758,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
                 "(no messages or tool calls)"
             )
-            rules_dict = RunnerTranscriptRulesConfig(min_assistant_turns=activity_floor).model_dump()
+            rules_dict = RunnerTranscriptRulesConfig(
+                min_assistant_turns=activity_floor
+            ).model_dump()
             skipped_siblings = dict.fromkeys(
                 transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
             )

@@ -23,8 +23,7 @@ from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, componen
 from tolokaforge.core.models import GradeComponents as CoreGradeComponents
 from tolokaforge.core.models import GradingConfig, StateChecksConfig
 from tolokaforge.runner import runner_pb2
-from tolokaforge.runner.models import GradeComponents as RunnerGradeComponents
-from tolokaforge.runner.models import GradingConfig as RunnerGradingConfig
+from tolokaforge.runner.models import RunnerGradeComponents, RunnerGradingConfig
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
