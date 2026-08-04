@@ -1089,16 +1089,29 @@ admissible at all is open (#816) — the sentence annotates such a verdict, it d
 sanction it, and the reproduced case is a trial that failed its task scoring `1.0` because
 the golden path stopped at the same place the agent did.
 
-**Core detects both shapes; the returned one is core's alone.** Core reads what `invoke`
-answered and takes a truthy top-level `"error"` as a declared failure — a mapping for a
-pack whose tools return one, the JSON string of one for a tau-style pack whose tools
-`json.dumps` their answer, both of which reach a replay in this repository. Truthiness
-rather than key presence, so `{"error": null}` stays the success it reads as; top level
-only, so a nested domain `"error"` field in a returned state slice is not one. The runner's
-replay loop records a raise and does not read what its tool returned. A tool reporting
-failure as a bare prose string — `"Error: invalid characters in expression"` — is detected
-on neither substrate by design: telling one from legitimate output needs substring matching
-over prose, which false-positives on any tool whose own output mentions the word (#855).
+**A reported failure is read on both substrates, by one predicate.** Each reads what the
+action's tool answered and takes a truthy top-level `"error"` as a declared failure, through
+the same `declared_failure`: core reads what `invoke` returned, the runner the text its tool
+wrapper returned. Both shapes the predicate accepts are reached — core is handed a mapping
+by a pack whose tools return one and the JSON string of one by a tau-style pack whose tools
+`json.dumps` their answer, while every payload the runner reads is a string,
+`ToolWrapper.execute` being typed `-> str`. An `MCP_SERVER` pack is covered too, because
+FastMCP renders a returned mapping as one `json.dumps` text block that decodes cleanly.
+Truthiness rather than key presence, so `{"error": null}` stays the success it reads as; top
+level only, so a nested domain `"error"` field in a returned state slice is not one.
+
+**A raised failure is read core-side and on the runner's tau and MCP-async paths**, whose
+wrappers re-raise, so the replay loop's `except Exception` sees the exception. For an
+`MCP_SERVER` pack the runner records nothing: the protocol answers a raising tool with
+`isError: true` beside error prose, `MCPServerToolWrapper.execute` returns that prose as a
+normal result, and `declared_failure` correctly reads no payload in it — recovering the flag
+is #853. So a golden action raising inside an MCP subprocess is annotated core-side and
+silent runner-side.
+
+A tool reporting failure as a bare prose string — `"Error: invalid characters in
+expression"` — is detected on neither substrate by design: telling one from legitimate
+output needs substring matching over prose, which false-positives on any tool whose own
+output mentions the word (#855).
 
 ### Best Practices
 

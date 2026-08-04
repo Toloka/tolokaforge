@@ -57,6 +57,7 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayRecord,
+    declared_failure,
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
@@ -255,6 +256,23 @@ def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | 
     if name in registered:
         return name
     return next((candidate for candidate in registered if candidate.endswith(f"_{name}")), None)
+
+
+async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> object:
+    """What a registered tool answered a replayed golden action with.
+
+    Every shape ``agent_tools`` can hold hands its answer back, because the answer is what
+    :func:`declared_failure` reads a reported failure out of: a shape whose return were
+    dropped would record no failure a pack signalling through it declared.
+    """
+    if hasattr(tool, "execute"):
+        return await tool.execute(arguments)
+    if not callable(tool):
+        return None
+    if inspect.iscoroutinefunction(tool):
+        return await tool(arguments)
+    loop = asyncio.get_event_loop()
+    return await loop.run_in_executor(None, lambda: tool(arguments))
 
 
 # =============================================================================
@@ -2300,22 +2318,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
 
             try:
-                # Execute tool
-                if hasattr(tool, "execute"):
-                    await tool.execute(arguments)
-                elif callable(tool):
-                    if inspect.iscoroutinefunction(tool):
-                        await tool(arguments)
-                    else:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, lambda t=tool, a=arguments: t(a))
-                logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
-
+                returned = await _invoke_golden_tool(tool, arguments)
             except Exception as e:
                 # Golden action failure — log with full traceback for debugging
                 logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
                 logger.error(traceback.format_exc())
                 replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
+                continue
+
+            reported = declared_failure(returned)
+            if reported is None:
+                logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
+                continue
+
+            logger.error(
+                f"GradeTrial: Golden action {i} ({tool_name}) reported a failure: {reported}"
+            )
+            replay_failures.append(FailedGoldenAction.from_reported_failure(i, tool_name, reported))
 
         # For MCP_SERVER tasks: sync subprocess state to db-service so the
         # hash reflects what the golden actions actually produced.

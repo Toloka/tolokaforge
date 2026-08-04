@@ -29,6 +29,12 @@ replay recorded nothing at all, and the same wrong trial scored ``1.0`` beside a
 completely clean grade. A runner that resolved a name inside its replay loop rather than
 ahead of it scores the trial against the same partial world and annotates the grade
 instead of refusing it; the runner cases below rule that out.
+
+The runner half is driven through its own ``_execute_hash_grading`` over a db-client that
+answers the hash path, because what reaches it is not the mapping core reads but the text
+its wrapper flattened one out of: measured over the real MCP subprocess, the same declined
+call arrives as ``'{\\n  "error": "Order \\'O-999\\' not found"\\n}'``, and every payload it
+reads — success and failure alike — is a ``str``.
 """
 
 from __future__ import annotations
@@ -36,7 +42,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
-from collections.abc import Callable
+from collections.abc import Awaitable, Callable
 from pathlib import Path
 from typing import Any
 
@@ -53,7 +59,8 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.state_checks import StateChecker
-from tolokaforge.runner.models import GoldenAction, TaskDescription
+from tolokaforge.runner.grading import build_grade_reasons
+from tolokaforge.runner.models import GoldenAction, HashGradingResult, TaskDescription
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
@@ -520,3 +527,137 @@ async def test_a_resolvable_name_reaches_the_db_client_the_refusal_guards() -> N
         await service._execute_hash_grading(
             context.trial_id, context, [GoldenAction(tool_name="place_order")]
         )
+
+
+class _AnsweringDBClient:
+    """The hash path answered rather than refused, so the replay loop is reached at all.
+
+    One hash for the trial and for the golden world, which compares equal — the record the
+    loop built is what these cases read, and a mismatch would send the caller on to
+    ``get_stable_state`` for a diff no state behind this client can produce.
+    """
+
+    async def get_stable_hash(self, _trial_id: str, **_kwargs: Any) -> str:
+        return "0" * 64
+
+    async def create_snapshot(self, _trial_id: str, _label: str) -> None:
+        return None
+
+    async def reset_trial(self, _trial_id: str) -> None:
+        return None
+
+    async def restore_snapshot(self, _trial_id: str, _label: str) -> None:
+        return None
+
+
+class _AnsweringTool:
+    """A registered tool answering one payload, reached through ``execute`` as a wrapper is.
+
+    No ``MCPServerToolWrapper``, so ``_find_mcp_server_wrapper`` answers ``None`` and the
+    subprocess state syncs stay out of these cases.
+    """
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    async def execute(self, _arguments: dict[str, Any]) -> str:
+        return self._answer
+
+
+def _answering_async_callable(answer: str) -> Callable[[dict[str, Any]], Awaitable[str]]:
+    async def call(_arguments: dict[str, Any]) -> str:
+        return answer
+
+    return call
+
+
+def _answering_sync_callable(answer: str) -> Callable[[dict[str, Any]], str]:
+    def call(_arguments: dict[str, Any]) -> str:
+        return answer
+
+    return call
+
+
+#: Every shape the replay loop reaches a registered tool through, each of which has to hand
+#: its answer back: a shape whose return were dropped would record nothing any pack
+#: signalling through it declared, and the record would read as a whole golden path.
+#: ``RegisterTrial`` leaves ``ToolWrapper`` instances behind, which is the ``execute`` one.
+_TOOL_SHAPES = (
+    pytest.param(_AnsweringTool, id="execute"),
+    pytest.param(_answering_async_callable, id="async-callable"),
+    pytest.param(_answering_sync_callable, id="sync-callable"),
+)
+
+
+async def _replay_as_the_runner_does(
+    answer: str, build_tool: Callable[[str], Any] = _AnsweringTool
+) -> HashGradingResult:
+    service = RunnerServiceImpl.__new__(RunnerServiceImpl)
+    service.db_client = _AnsweringDBClient()
+    context = TrialContextRuntime(
+        trial_id="golden_replay_reported:0",
+        task_description=TaskDescription(
+            task_id="golden_replay_reported",
+            name="A golden action reporting its failure in what it returned",
+            category="test",
+            description="A hash-graded trial whose golden action is declined by its tool",
+            adapter_type="native",
+            system_prompt="You are a test assistant.",
+        ),
+    )
+    context.agent_tools = {"confirm_payment": build_tool(answer)}
+    return await service._execute_hash_grading(
+        context.trial_id,
+        context,
+        [GoldenAction(tool_name="confirm_payment", arguments={"order_id": "O-999"})],
+    )
+
+
+def _reasons_for(result: HashGradingResult) -> str:
+    return build_grade_reasons(
+        {"hash_score": result.hash_score, "hash_match": result.hash_match},
+        golden_replay=result.golden_replay,
+    )
+
+
+@pytest.mark.parametrize("build_tool", _TOOL_SHAPES)
+async def test_the_runner_records_the_failure_its_tool_reported_in_what_it_returned(
+    build_tool: Callable[[str], Any],
+) -> None:
+    """The runner's half of the same defect, through the payload its wrapper really returns.
+
+    The answer here is byte-for-byte what an ``MCP_SERVER`` pack produces — FastMCP renders a
+    returned mapping as one text block of ``json.dumps(payload, indent=2)``, which the
+    wrapper hands over as a ``str`` — so the case is the wire shape rather than a mapping the
+    runner never sees. Read through ``build_grade_reasons`` as well as off the record,
+    because the sentence is what a reader of ``grade.reasons`` is told.
+    """
+    reported = await _replay_as_the_runner_does(
+        '{\n  "error": "Order \'O-999\' not found"\n}', build_tool
+    )
+
+    assert reported.golden_replay.failures == (
+        FailedGoldenAction(
+            index=0,
+            name="confirm_payment",
+            kind=GoldenActionFailure.REPORTED,
+            error="Order 'O-999' not found",
+        ),
+    )
+    reasons = _reasons_for(reported)
+    assert "GOLDEN REPLAY ERRORS:" in reasons, reasons
+    assert "1 of 1" in reasons, reasons
+    assert "[0] confirm_payment reported Order 'O-999' not found" in reasons, reasons
+
+
+async def test_the_runner_records_nothing_for_a_tool_that_answered_a_success_payload() -> None:
+    """The control: the case above is not a loop that records every action it replays.
+
+    Every payload the runner reads is a ``str``, success and failure alike, so without this
+    a predicate applied to the wrong half of that population would pass the case above and
+    annotate every hash-graded trial in the tree.
+    """
+    succeeded = await _replay_as_the_runner_does('{\n  "id": "O-001",\n  "status": "paid"\n}')
+
+    assert succeeded.golden_replay == GoldenReplayRecord(authored=1)
+    assert _reasons_for(succeeded) == "State: hash match"
