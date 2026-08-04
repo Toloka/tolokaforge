@@ -782,14 +782,37 @@ class Orchestrator:
         :class:`EnvironmentManifest`, then dedupes by compose-file
         identity.
 
-        The run's tasks must be consistent: either every task in the run
-        declares the same ``environment_manifest.compose_file`` or none do.
-        Mixed runs (some tasks with, some without; or different compose
-        files across tasks) fail loud — a single ``SharedStackRuntimeBackend``
-        can only materialise one substrate per run, and a mixed declaration
-        signals an ambiguous operator intent.
+        For a **shared** runtime, the run's tasks must be consistent:
+        either every task in the run declares the same
+        ``environment_manifest.compose_file`` or none do. Mixed runs
+        (some tasks with, some without; or different compose files
+        across tasks) fail loud — a single ``SharedStackRuntimeBackend``
+        can only materialise one substrate per run, and a mixed
+        declaration signals an ambiguous operator intent.
+
+        For **per_trial** runtime this constraint does not apply — the
+        backend resolves ``task.environment_manifest`` independently per
+        trial. Heterogeneous compose files are legitimate (e.g. the MB
+        adapter emits one pack per problem, each with its own
+        problem-specific compose). Return ``None`` — per-trial doesn't
+        consume a run-level shared manifest.
         """
         from tolokaforge.core.project_loader import resolve
+
+        # Per-trial short-circuit — resolves via the same signal
+        # ``_construct_runtime_backend`` uses to pick the backend, so the
+        # two decisions stay in lock-step. Both the operator override
+        # ``orchestrator.runtime`` and the task-driven per-trial signal
+        # suppress the shared-stack heterogeneity check. Inlined rather
+        # than routed through ``_resolve_effective_runtime_choice`` so
+        # the override path works when the adapter isn't loaded yet
+        # (unit-test seams).
+        override = self.config.orchestrator.runtime
+        if override == "per_trial":
+            return None
+        if override is None and self.adapter is not None:
+            if self._select_backend_from_tasks() == "per_trial":
+                return None
 
         project_env = self.project.default_environment if self.project is not None else None
         manifests_by_compose: dict[str, EnvironmentManifest] = {}
