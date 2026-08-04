@@ -97,6 +97,12 @@ SUBSET_DEPENDENCIES: tuple[str, ...] = (
     "structlog>=24.0.0",
     "grpcio>=1.60.0",
     "grpcio-health-checking>=1.60.0",
+    # See the pyproject.toml comment: the generated runner_pb2 module the
+    # subset wheel ships requires the 7.x protobuf runtime, so mirror the
+    # base wheel's explicit floor here so a fresh ``pip install
+    # tolokaforge-runner-subset`` (or the runner Docker image install step)
+    # never resolves the older 6.x line PyPI's default picks.
+    "protobuf>=7.35.1",
     "mcp>=0.1.0",
     # Domain-tool runtime deps (formerly ``[project.optional-dependencies].runner``).
     "asyncpg>=0.29.0",
