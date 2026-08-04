@@ -162,7 +162,7 @@ A `tolokaforge config-dump` command does **not** exist and is not part of the
 committed surface; it is reserved and tracked as
 [#626](https://github.com/Toloka/tolokaforge/issues/626).
 
-**Subset-native CLI shim ([ADR-0026](adr/0026-subset-native-cli-shim.md)).**
+**Subset-native CLI shim ([ADR-0027](adr/0027-subset-native-cli-shim.md)).**
 Inside the published runner image, `tolokaforge` binds to a subset-native shim
 (`tolokaforge.runner._cli:main`), *not* the base wheel's
 `tolokaforge._entry:main`. The two ADR-0024 subcommands above are preserved

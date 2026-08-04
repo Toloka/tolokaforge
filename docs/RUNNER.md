@@ -176,7 +176,7 @@ target; the custom builder at
 renames the distribution to `tolokaforge-runner-subset`, replaces the base
 wheel's dependency list with the runner-runtime deps, and binds the
 subset-native CLI shim
-([ADR-0026](adr/0026-subset-native-cli-shim.md)) — `tolokaforge =
+([ADR-0027](adr/0027-subset-native-cli-shim.md)) — `tolokaforge =
 tolokaforge.runner._cli:main` — as the subset wheel's sole `[console_scripts]`
 entry. The base wheel's other entry-point tables (runtime backends,
 trial-grader factories, conductors) still point at orchestrator-only modules
@@ -229,7 +229,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
   landed via a `force-include` remap of the repo-root `.python-version`
   dotfile, mirroring the base wheel's identical remap.
 
-**Subset-native CLI shim ([ADR-0026](adr/0026-subset-native-cli-shim.md)):**
+**Subset-native CLI shim ([ADR-0027](adr/0027-subset-native-cli-shim.md)):**
 
 - `tolokaforge/runner/_cli.py` — the module bound as the subset wheel's
   `tolokaforge` console script. Preserves the ADR-0024 committed exec

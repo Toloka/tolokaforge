@@ -2,7 +2,7 @@
 envelope parse, error marshal, result marshal — no subprocess, no gRPC.
 
 The shim is bound as the subset wheel's ``[project.scripts]`` entry
-(``tolokaforge = tolokaforge.runner._cli:main``) per ADR-0026 and mirrors
+(``tolokaforge = tolokaforge.runner._cli:main``) per ADR-0027 and mirrors
 the base wheel's ADR-0022 § Surface 3 wire framing, so the shape of these
 tests parallels ``tests/unit/test_run_trial_command.py``.
 """

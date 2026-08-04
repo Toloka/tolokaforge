@@ -54,7 +54,7 @@ def _mock_wheel_resolver(tmp_path: Path):
     # ``tolokaforge.docker.stacks.core`` no longer resolves a host-side
     # wheel — the runner Dockerfile builds the runner-subset wheel in the
     # ``hatch build --target custom`` stage of the multi-stage image
-    # (ADR-0025 § subset target; ADR-0026 § the shim's build path). The
+    # (ADR-0025 § subset target; ADR-0027 § the shim's build path). The
     # remaining ``resolve_wheel`` consumers (``builder`` for the rag stack,
     # ``stacks.full`` for its own service) still need the mock so
     # ``core_stack()`` / ``full_stack()`` can compose without a real wheel

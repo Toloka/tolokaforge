@@ -216,7 +216,7 @@ def test_runner_build_context_ships_source_tree_for_multi_stage_hatch_build() ->
     """The runner Dockerfile is multi-stage: its ``wheel-builder`` stage
     runs ``hatch build --target custom`` in-container to produce the
     runner-subset wheel, then the ``builder`` stage installs it (ADR-0025 /
-    ADR-0026). The build context therefore carries the source files hatch
+    ADR-0027). The build context therefore carries the source files hatch
     needs — pyproject.toml, README, LICENSE, .python-version, the custom
     builder script, and the ``tolokaforge/`` source tree — not a
     pre-resolved host-side wheel.

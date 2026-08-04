@@ -22,7 +22,7 @@ Every override in this module exists so the subset wheel:
   (which the runner image used to install behind
   ``pip install tolokaforge[runner]``);
 - declares one console-script entry — ``tolokaforge = tolokaforge.runner._cli:main`` —
-  binding the subset-native CLI shim (ADR-0026) that preserves the ADR-0024
+  binding the subset-native CLI shim (ADR-0027) that preserves the ADR-0024
   ``docker exec`` surface (``tolokaforge --version`` / ``tolokaforge run-trial``)
   inside the slim image. The base wheel's ``tolokaforge = tolokaforge._entry:main``
   is deliberately not carried through: ``tolokaforge._entry`` / ``dx/cli/*`` are
@@ -57,7 +57,7 @@ SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
 # entry-point table pip writes into ``site-packages/…-dist-info/entry_points.txt``
 # for the subset wheel. Kept as a module constant so ``pip show``,
 # ``importlib.metadata.entry_points``, and the canonical drift-lock test all
-# read the same string. See ADR-0026 for the shim.
+# read the same string. See ADR-0027 for the shim.
 SUBSET_ENTRY_POINTS: str = "[console_scripts]\ntolokaforge = tolokaforge.runner._cli:main\n"
 
 
@@ -137,7 +137,7 @@ class RunnerSubsetBuilder(WheelBuilder):
 
         The single ``[console_scripts]`` entry binds the subset-native CLI
         shim so pip registers a ``tolokaforge`` console script inside the
-        runner image. See ADR-0026 for the full rationale."""
+        runner image. See ADR-0027 for the full rationale."""
         return SUBSET_ENTRY_POINTS
 
     def write_project_metadata(

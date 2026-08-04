@@ -1,10 +1,17 @@
-# 0026. Subset-native CLI shim — bridging the ADR-0024 exec surface and the ADR-0025 partition
+# 0027. Subset-native CLI shim — bridging the ADR-0024 exec surface and the ADR-0025 partition
 
 - **Status:** Proposed
 - **Date:** 2026-08-04
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
+
+> **Numbering note.** This ADR was authored on M15 as "ADR-0026" against a
+> tree whose highest-numbered ADR was 0025. During the mid-milestone rebase
+> onto `main`, an existing service-readiness ADR shipped as 0026, so this
+> record moved to 0027. Earlier commits on the M15 branch that mention
+> "ADR-0026" (via `docs/adr/0026-subset-native-cli-shim.md`) refer to the
+> ADR now published here.
 
 ## Context and Problem Statement
 

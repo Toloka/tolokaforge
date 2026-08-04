@@ -82,7 +82,7 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         # any runtime path. Shipping it inside the subset lets the follow-up
         # build script and image-side introspection consume it verbatim.
         "tolokaforge/core/_runner_subset.py",
-        # Subset-native CLI shim (ADR-0026). Not reached by the runner boot
+        # Subset-native CLI shim (ADR-0027). Not reached by the runner boot
         # closure — the shim is invoked via ``docker exec tolokaforge …`` on
         # a running container after boot, so its imports (``click``,
         # ``importlib.metadata``) are cold at ``python -m tolokaforge.runner``.
@@ -366,7 +366,7 @@ def test_pyproject_custom_target_points_at_builder_script() -> None:
     """The custom build target must reference the runner-subset builder
     script; that file is what teaches hatchling to rename the distribution,
     swap the dependency list, and register the subset-native CLI shim as
-    the subset wheel's ``[console_scripts]`` entry (ADR-0026)."""
+    the subset wheel's ``[console_scripts]`` entry (ADR-0027)."""
     custom = _load_pyproject_custom_target()
     script_rel = custom.get("path")
     assert script_rel == "scripts/hatch/hatch_runner_subset_builder.py", (
@@ -379,7 +379,7 @@ def test_pyproject_custom_target_points_at_builder_script() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Subset-native CLI shim (ADR-0026) — the subset wheel's ``[project.scripts]``
+# Subset-native CLI shim (ADR-0027) — the subset wheel's ``[project.scripts]``
 # binds ``tolokaforge = tolokaforge.runner._cli:main``. The shim itself lives
 # in the subset partition and must obey the same import-boundary rules the
 # rest of the shared spine does; the tests below lock those two invariants.
@@ -422,17 +422,17 @@ def test_cli_shim_is_in_the_subset() -> None:
     console-script binding target."""
     assert (
         REPO_ROOT / CLI_SHIM_PATH
-    ).is_file(), f"ADR-0026 subset-native CLI shim missing on disk: {CLI_SHIM_PATH}"
+    ).is_file(), f"ADR-0027 subset-native CLI shim missing on disk: {CLI_SHIM_PATH}"
     assert is_in_runner_subset(CLI_SHIM_PATH), (
         f"{CLI_SHIM_PATH} classifies out-of-subset — the subset wheel would "
-        "install without the ADR-0026 shim, and `docker exec … tolokaforge …` "
+        "install without the ADR-0027 shim, and `docker exec … tolokaforge …` "
         "would fail with 'executable file not found in $PATH' inside the "
         "runner image."
     )
 
 
 def test_cli_shim_does_not_reach_orchestrator_or_dx() -> None:
-    """The ADR-0026 shim binds to the runner subset's public surface only —
+    """The ADR-0027 shim binds to the runner subset's public surface only —
     LLM client, tool-calling loop, gRPC client, trial models — and must not
     reach into ``tolokaforge/dx/*``, ``tolokaforge/adapters/*``, or the
     orchestrator-only sibling modules inside ``tolokaforge/core/*``. A
@@ -465,7 +465,7 @@ def test_cli_shim_does_not_reach_orchestrator_or_dx() -> None:
     assert not violations, (
         "subset-native CLI shim reaches base-wheel-only surfaces — the "
         "runner image would import a module the subset does not ship, or "
-        "the ADR-0026 partition contract would be violated:\n"
+        "the ADR-0027 partition contract would be violated:\n"
         + "\n".join(f"  - {v}" for v in violations)
     )
 
@@ -539,7 +539,7 @@ def _wheel_members(wheel_path: Path) -> frozenset[str]:
 
 
 def test_subset_wheel_binds_cli_shim_console_script(subset_wheel_path: Path) -> None:
-    """The subset wheel's ``entry_points.txt`` must bind the ADR-0026 shim
+    """The subset wheel's ``entry_points.txt`` must bind the ADR-0027 shim
     as the ``tolokaforge`` console script. Without this, ``docker exec
     tolokaforge-runner tolokaforge --version`` fails with "executable
     file not found in $PATH" — the ADR-0024 committed exec surface would
@@ -550,7 +550,7 @@ def test_subset_wheel_binds_cli_shim_console_script(subset_wheel_path: Path) -> 
         f"section:\n{entry_points_txt}"
     )
     assert "tolokaforge = tolokaforge.runner._cli:main" in entry_points_txt, (
-        "subset wheel entry_points.txt does not bind the ADR-0026 shim: "
+        "subset wheel entry_points.txt does not bind the ADR-0027 shim: "
         f"expected 'tolokaforge = tolokaforge.runner._cli:main', got:\n"
         f"{entry_points_txt}"
     )
@@ -562,7 +562,7 @@ def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:
     members = _wheel_members(subset_wheel_path)
     assert "tolokaforge/runner/_cli.py" in members, (
         "subset wheel does not ship tolokaforge/runner/_cli.py — the "
-        f"ADR-0026 shim's binding target is missing from the wheel. "
+        f"ADR-0027 shim's binding target is missing from the wheel. "
         f"Wheel members starting with tolokaforge/runner/: "
         f"{sorted(m for m in members if m.startswith('tolokaforge/runner/'))}"
     )
@@ -593,13 +593,13 @@ def test_subset_wheel_metadata_is_the_subset_distribution(subset_wheel_path: Pat
     ``tolokaforge-runner-subset`` (not ``tolokaforge``) so pip's install
     metadata inside the runner image makes clear which build variant is
     installed. ``importlib.metadata.version('tolokaforge-runner-subset')``
-    — the version resolution the ADR-0026 shim's ``--version`` uses — is
+    — the version resolution the ADR-0027 shim's ``--version`` uses — is
     what this METADATA line services."""
     metadata_txt = _wheel_read(subset_wheel_path, "*.dist-info/METADATA")
     assert "Name: tolokaforge-runner-subset" in metadata_txt, (
         "subset wheel METADATA is missing the tolokaforge-runner-subset "
         "distribution name — importlib.metadata.version() lookups in the "
-        f"ADR-0026 shim would fail inside the runner image:\n{metadata_txt[:300]}"
+        f"ADR-0027 shim would fail inside the runner image:\n{metadata_txt[:300]}"
     )
 
 

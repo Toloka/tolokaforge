@@ -31,7 +31,7 @@ The six surfaces the smoke covers, in order:
    envelope on stdout. Two probes cover the wire's two contracts: a
    well-formed ``start`` envelope should surface an ``error`` envelope of
    ``error_type: "ProvisionError"`` (adapter-required tasks route through
-   the base wheel per ADR-0026), and a garbage envelope should surface an
+   the base wheel per ADR-0027), and a garbage envelope should surface an
    ``error`` envelope of ``error_type: "ProtocolError"``. The smoke asserts
    the envelope shape, not the trial-execution semantics.
 5. **Runner boot import graph** — importing :mod:`tolokaforge.runner.__main__`
@@ -357,7 +357,7 @@ def test_subset_venv_run_trial_valid_envelope_emits_provision_error(
     """``tolokaforge run-trial`` with a well-formed ``start`` envelope must
     emit a terminal ``error`` envelope of type ``ProvisionError``.
 
-    Per ADR-0026, the subset-native ``run-trial`` shim cannot compose a
+    Per ADR-0027, the subset-native ``run-trial`` shim cannot compose a
     :class:`~tolokaforge.core.models.TrialSpec` from a bare :class:`TaskConfig`
     — that composition needs adapter machinery the subset does not carry.
     The shim surfaces the gap as ``ProvisionError``; asserting the envelope

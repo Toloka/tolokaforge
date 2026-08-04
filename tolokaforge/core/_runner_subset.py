@@ -81,7 +81,7 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
 entry — the top-level ``tolokaforge/__init__.py`` and the shared-spine
 files at the root of ``tolokaforge/core/``.
 
-The subset-native CLI shim (:mod:`tolokaforge.runner._cli` — the ADR-0026
+The subset-native CLI shim (:mod:`tolokaforge.runner._cli` — the ADR-0027
 entry the subset wheel binds under ``[project.scripts]``) is *not* listed
 here because it lives under :data:`RUNNER_SUBSET_PACKAGES` and is shipped
 via that whole-package entry. Listed here anyway would double-include the

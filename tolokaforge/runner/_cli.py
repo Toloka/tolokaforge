@@ -242,7 +242,7 @@ def _run_from_start(message: StartMessage) -> dict[str, Any]:
     and :mod:`tolokaforge.core.llm.client` only happen here.
     """
     # Fail fast when the shim is invoked without enough to build a trial —
-    # the ADR-0026 § Consequences trade-off names this explicitly: the
+    # the ADR-0027 § Consequences trade-off names this explicitly: the
     # subset-native ``run-trial`` cannot exercise adapter-specific setup.
     if message.task is None:
         raise ProvisionError("start envelope is missing 'task'")
@@ -353,7 +353,7 @@ def _cli(ctx: click.Context) -> None:
     """Tolokaforge runner-subset CLI shim.
 
     The runner Docker image installs the subset wheel and binds this shim as
-    its ``tolokaforge`` console script (ADR-0026). Two subcommands preserve
+    its ``tolokaforge`` console script (ADR-0027). Two subcommands preserve
     the runner image's committed ``docker exec`` surface:
 
     \b
@@ -406,7 +406,7 @@ def _run_trial() -> None:
     Trial-execution semantics inside the subset image are narrower than the
     base wheel's ``tolokaforge run-trial``: the shim orchestrates in-process
     against the local gRPC runner and cannot spin up compose stacks, switch
-    backends, or exercise adapter-specific setup. See ADR-0026 for the full
+    backends, or exercise adapter-specific setup. See ADR-0027 for the full
     contract.
     """
     _install_signal_handlers()
@@ -424,7 +424,7 @@ def main() -> None:
     # Click's ``version_option`` accepts ``version=None`` and resolves the
     # version from ``importlib.metadata`` at option-parse time when
     # ``package_name`` is set — matching the "fail loud if the metadata
-    # lookup fails" requirement of ADR-0026.
+    # lookup fails" requirement of ADR-0027.
     _cli(prog_name="tolokaforge", standalone_mode=True)
 
 
