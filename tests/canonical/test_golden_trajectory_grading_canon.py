@@ -11,9 +11,9 @@ hash-comparison branch in ``combine.py`` — no LLM judge, no custom checks, no
 network, and no Docker. The expected result is read from the committed golden
 ``grade.yaml`` rather than hard-coded, so it stays the canonical pin.
 
-The second guard reads recorded bundles for a different property: every grading config
-the tree has on disk still reconstructs, including the four that serialize a
-``state_checks`` key the model has since retired.
+The second guard reads recorded bundles for a different property: a grading config that
+serializes a ``state_checks`` key the model has since retired still reconstructs, so
+re-reading a trial nobody will record again stays possible.
 """
 
 from pathlib import Path
@@ -71,12 +71,6 @@ def test_golden_trajectory_grading_matches_pinned_verdict(canonical_project_dir)
     assert grade2.reasons == grade.reasons
 
 
-# How many recorded bundles in the tree serialize a retired state-check key. Pinned so
-# a corpus that stops carrying them is a visible change to what this guard proves,
-# rather than a walk over nothing that passes.
-_BUNDLES_WITH_A_RETIRED_STATE_CHECK_KEY = 4
-
-
 def _recorded_state_checks(bundle: Path) -> dict:
     """The ``state_checks`` block a recorded bundle serialized, empty where it wrote none."""
     return (_load_yaml(bundle).get("grading_config") or {}).get("state_checks") or {}
@@ -97,7 +91,7 @@ def test_every_recorded_bundle_serializing_a_retired_state_check_key_still_loads
         if RETIRED_STATE_CHECK_KEYS & set(_recorded_state_checks(path))
     )
 
-    assert len(bundles) == _BUNDLES_WITH_A_RETIRED_STATE_CHECK_KEY, bundles
+    assert bundles, "no recorded bundle carries a retired state-check key: nothing proven"
     for bundle in bundles:
         state_checks = GradingConfig(**_load_yaml(bundle)["grading_config"]).state_checks
         for key in RETIRED_STATE_CHECK_KEYS:

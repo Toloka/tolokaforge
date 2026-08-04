@@ -138,10 +138,10 @@ container. The remaining six (``core.grading.agreement``,
 ``core.grading.config_validation``, ``core.grading.migration_declaration``,
 ``core.grading.transcript``, ``core.grading.unknown_keys``,
 ``core.llm.fallback_client``) have only shared-spine imports but are consumed
-exclusively by orchestrator-side code — the pre-run authoring gate, the
-``project.yaml`` loader and the rubric-to-trace-check migration all run on the
-host, before any trial is scheduled — and would ship as dead weight. The runner
-container's runtime closure reaches none of them.
+exclusively by orchestrator-side code — the pre-run authoring gate and the
+rubric-to-trace-check migration both run on the host, before any trial is
+scheduled — and would ship as dead weight. The runner container's runtime
+closure reaches none of them.
 """
 
 

@@ -312,18 +312,6 @@ caller gating a whole pack owes the answer: a caller checking a block *fragment*
 against a recorded tool set performs no fold and is asked nothing about weights.
 """
 
-UNRESOLVED_PROJECT_COMBINE_KEYS_REASON = (
-    "no caller resolved the project layer beneath this task's combine, so a key the "
-    "project's own combine block does not declare was not refused here"
-)
-"""What the same gate reports about the *key names* in that unresolved layer.
-
-A sibling of :data:`UNRESOLVED_COMBINE_REASON` rather than a restatement: one says
-which shares the fold could not be checked, the other that the project's block was
-never read for a key it does not declare. A single entry would leave whichever
-question it did not name reading as answered.
-"""
-
 
 _TRANSCRIPT_RULE_KEYS: tuple[str, ...] = (
     "must_contain",
@@ -894,6 +882,14 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
     candidate scores with no share to fold them by, and both config models refuse the
     block at load — so an advisory here would tell the author their pack is fine while
     ``tolokaforge validate`` and the run's pre-flight reject it.
+
+    Which means this finding reaches only a caller reading a block *fragment* without
+    constructing it — :mod:`tolokaforge.core.grading.trace_replay` and
+    :mod:`tolokaforge.core.grading.rubric_migration`, over a recorded bundle.
+    :func:`~tolokaforge.adapters._task_loader.validate_grading_yaml` constructs
+    ``StateChecksConfig`` on every declared block, so it hears the model's load error
+    first and this rule never runs for it. The duplication is deliberate: it is what
+    lets a corpus tool report the shape rather than abort on it.
 
     The mirror of the no-source rule rather than an extension of it: that one owns a block
     declaring no source at all, this one a block declaring two, one of which is a probe —

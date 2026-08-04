@@ -855,7 +855,7 @@ on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitt
 these keys requires a runner image built from the same release. Old engine + new runner
 is safe **for these keys**: an engine that predates them ignores what it does not
 declare, since a model's `extra` setting is fixed when the engine is built. An engine
-from this release onward refuses instead — see
+from this release onward refuses a key it does not declare instead of ignoring it — see
 [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
@@ -1225,7 +1225,8 @@ carrying a `transcript_rules:` block, as `null` when the pack declares no floor,
 an older image rejects such a pack at `RegisterTrial` whether or not it asks for a
 floor. Old engine + new runner is safe **for this key**: an engine that predates it
 ignores what it does not declare, since a model's `extra` setting is fixed when the
-engine is built. An engine from this release onward refuses instead — see
+engine is built. An engine from this release onward refuses a key it does not declare
+instead of ignoring it — see
 [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 
 ### `tool_expectations`
@@ -1274,7 +1275,8 @@ call status. See [Substrate Parity](#substrate-parity).
 requires a runner image built from the same release — `RegisterTrial` rejects it
 otherwise. Old engine + new runner is safe **for this key**: an engine that predates it
 ignores what it does not declare, since a model's `extra` setting is fixed when the
-engine is built. An engine from this release onward refuses instead — see
+engine is built. An engine from this release onward refuses a key it does not declare
+instead of ignoring it — see
 [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 
 ---
@@ -2334,7 +2336,6 @@ Findings come in three classes:
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
-| the project layer beneath a task's `combine`, where no caller resolved it, whose own keys are therefore unread | unchecked | `task_defaults.grading_defaults.combine` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
 | a `bind.values[*].field` whose property writes no `type` | unchecked | per extraction |
@@ -2351,10 +2352,8 @@ false-reject mode. It is surfaced beside the task all the same — `validate` pr
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, a property
-whose schema writes no `type`, a replay world no caller resolved, a project `combine`
-layer no caller resolved — whose own key names are unread as a result, separately from
-the weights it would have contributed — and a task naming no grading source under an
-adapter that resolves its own all land here.
+whose schema writes no `type`, a replay world no caller resolved, and a task naming no
+grading source under an adapter that resolves its own all land here.
 
 **A missing grading source is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter
@@ -2583,7 +2582,9 @@ rule or source simply leaves the fold, and the surviving weight renormalises to 
 the author never asked for. For the three blocks the engine's own models define
 (`combine`, `state_checks`, `transcript_rules`) `tolokaforge validate` says more than
 the model's bare `extra_forbidden` can: the file, the offending key, its closest
-declared field, the whole accepted set, and which layer wrote it.
+declared field and the whole accepted set. `trace_checks` draws that bare refusal, and
+`llm_judge` draws it only on the `rubric` / `model_ref` shapes its own migration names,
+which are the shapes `validate` constructs it for at all.
 
 `state_checks` has two exceptions, and they are not leniency. A **populated**
 `env_assertions` or `db_hash_check` draws the migration message naming the check that
@@ -2600,8 +2601,10 @@ when the block was never weighted. #533 owns the tier; #874 owns its `project.ya
 instance.
 
 **`custom_checks` is refused only at grade time.** `GradingConfig.custom_checks` is a
-raw `dict[str, Any]`, so nothing inside it reaches the authoring gate: a misspelled
-`timout_seconds` passes `tolokaforge validate` (measured). The `CustomChecksConfig` that
+raw `dict[str, Any]`, so no key *name* inside it is checked at authoring time: a
+misspelled `timout_seconds` passes `tolokaforge validate` (measured). The gate does read
+the block's `enabled` key — the two rows naming `custom_checks` in the findings table
+above are its rules — and nothing else in it. The `CustomChecksConfig` that
 *does* refuse it is `extra="forbid"` and is constructed when the suite runs — core-side
 in the grading engine, runner-side at grade time — so the author hears it after the
 trial is paid for. #873 owns closing that gap.
@@ -3154,12 +3157,11 @@ a project declaring an unknown key there fails project load, naming the dotted p
 to it.
 
 For the block inside a `grading.yaml`, `tolokaforge validate` says what the model
-alone cannot: the file, the offending key, its closest declared field, the accepted
-set, and **which of the two layers wrote the key** — the task's own block or the
-project defaults beneath it — since an author sent to the wrong file fixes nothing.
-Where no caller resolved the project layer, its key names go unread and the gate
-reports that on its [`unchecked` channel](#what-is-validated-before-a-run) rather
-than passing the pack silently.
+alone cannot: the file, the offending key, its closest declared field and the whole
+accepted set, so the fix needs no trip to the schema. A typo in a `project.yaml` is
+answered one step earlier and by the model alone — that file fails to load before any
+task under it is read, so the message is the dotted path above rather than the
+did-you-mean.
 
 `combine.method` names the rule that folds the scored components into one score and
 one pass flag. Three methods are supported, and both substrates dispatch on the same

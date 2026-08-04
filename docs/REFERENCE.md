@@ -195,11 +195,13 @@ llm_judge:                                 # judge MODEL is run-level (models.ju
         weight: 0.5
 ```
 
-Each typed block above refuses a key its model does not declare, naming the closest
-declared field and the block's whole accepted set — `state_checks`'s two retired keys are
-the one exception, drawing their own migration message instead. The block *names* are
-lenient, so `state_cheks:` drops a whole component and is caught only when the correct
-name carries a weight. See
+Each typed block above refuses a key its model does not declare. `combine`,
+`state_checks` and `transcript_rules` name the closest declared field and the block's
+whole accepted set, `state_checks`'s two retired keys excepted — those draw their own
+migration message. `trace_checks` and `llm_judge` refuse such a key as their model's
+bare `Extra inputs are not permitted`, and `llm_judge` only on the `rubric` /
+`model_ref` shapes its migration names. The block *names* are lenient, so `state_cheks:`
+drops a whole component and is caught only when the correct name carries a weight. See
 [GRADING.md § Which keys a grading block refuses](GRADING.md#which-keys-a-grading-block-refuses).
 
 `grading.llm_judge.rubric` is a structured `Rubric`, not a free-text blob; the

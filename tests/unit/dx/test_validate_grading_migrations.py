@@ -22,7 +22,7 @@ migration:
   names that were declared but never dispatched are rejected naming the rule each
   one meant; a block that is not a mapping is rejected naming the file, the key and
   the shape received; a key the block does not declare is rejected naming the closest
-  declared field, the accepted set, and which of the two layers wrote it.
+  declared field and the accepted set.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
   its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
   substrates' models naming both keys and both values; a key the block does not
@@ -60,7 +60,7 @@ from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
 )
-from tolokaforge.core.grading.config_validation import CombineLayer, ToolInventory
+from tolokaforge.core.grading.config_validation import ToolInventory
 from tolokaforge.core.models import GradingCombineConfig, GradingDefaults, StateChecksConfig
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.core.project_loader import resolve_effective_grading_combine
@@ -538,13 +538,11 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
 
 
 # ---------------------------------------------------------------------------
-# state_checks' own field names — and the blocks this gate used to read past
+# state_checks' own field names — every declared block, not only a hash-declaring one
 #
-# The gate constructed the model only for a block declaring a ``hash`` or a retired
-# key, which is 5 of the 27 blocks the shipped corpus authors: the other 22 met their
-# first check at grade time, after the trial was paid for (#739). Every declared block
-# is constructed here now, which is what makes the refusal below an authoring answer
-# rather than a run-time one.
+# The gate constructs the model on any declared block, so every rule it carries is an
+# authoring answer rather than one a pack first hears at grade time with the trial
+# already paid for.
 # ---------------------------------------------------------------------------
 
 
@@ -556,17 +554,21 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
             "unknown key 'jsonpaths_typo'",
         ),
         ({"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}}, "must be a non-empty key field"),
+        ({"jsonpaths": _ASSERTIONS, True: 1}, "grading keys must be strings"),
     ],
-    ids=["a_misspelled_key", "a_rule_the_model_always_carried"],
+    ids=["a_misspelled_key", "a_rule_the_model_always_carried", "a_key_yaml_read_as_a_boolean"],
 )
 def test_validate_gates_a_state_checks_block_that_declares_no_hash(
     tmp_path: Path, state_checks: dict, match: str
 ):
-    """Both arms passed this gate while the model was reached only by hash-declaring packs.
+    """Every arm here loaded clean while only a hash-declaring block reached the model.
 
     The second is the one an out-of-tree pack is likelier to meet: not a typo but a rule
     ``StateChecksConfig`` always carried, which such a pack was always violating and now
-    hears about at ``validate`` instead of at grade time.
+    hears about at ``validate`` instead of at grade time. The third is not a misspelling
+    at all — YAML reads a bare ``on:`` / ``no:`` as a boolean and a bare ``3:`` as an int
+    — and the did-you-mean suggester raises ``TypeError: 'bool' object is not iterable``
+    on one, so the refusal partitions such a key out and says to quote it instead.
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(_write_grading(tmp_path, state_checks), inventory=_UNRESOLVED)
@@ -759,25 +761,23 @@ def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path
 #
 # Every field in the block has a default a dropped key silently substituted, so the
 # refusal is on the model (total over every construction path) and its author-facing
-# message is at the gate, which is the only tier that knows the file and the layer.
+# message is at the gate, the only tier that knows the file.
 # ---------------------------------------------------------------------------
 
 
-_COMBINE_TYPOS = {"methd": "all", "pass_treshold": 0.95, "wieghts": _WEIGHTS}
 _COMBINE_FIELDS = ("method", "weights", "pass_threshold")
 
 
-@pytest.mark.parametrize("key", tuple(_COMBINE_TYPOS))
-def test_the_combine_block_refuses_a_key_it_does_not_declare(key: str):
+def test_the_combine_block_refuses_a_key_it_does_not_declare():
     """On the model, so ``project.yaml`` load and direct Python are refused too.
 
-    Each of these graded a pack by a value nobody wrote: ``methd: all`` folded as
-    ``weighted``, ``pass_treshold: 0.95`` at ``0.8``, ``wieghts`` over ``{}``.
+    Which key the refusal names, and nothing about the grade: what a dropped key did to
+    one is asserted at the merge that folded it, in the test below.
     """
     with pytest.raises(ValidationError) as excinfo:
-        GradingCombineConfig(**{key: _COMBINE_TYPOS[key]})
+        GradingCombineConfig(pass_treshold=0.95)
 
-    assert [error["loc"] for error in excinfo.value.errors()] == [(key,)]
+    assert [error["loc"] for error in excinfo.value.errors()] == [("pass_treshold",)]
 
 
 def test_a_misspelled_threshold_no_longer_resolves_to_the_default():
@@ -807,44 +807,6 @@ def test_validate_names_the_key_its_closest_field_and_the_accepted_set(tmp_path:
     for field in _COMBINE_FIELDS:
         assert field in message, message
     assert "the task's own combine block" in message, message
-
-
-def test_validate_names_the_project_layer_for_a_key_the_task_did_not_write(tmp_path: Path):
-    """A typo inherited from the project sends its author to ``project.yaml``, not here.
-
-    The task's own block is clean, so a refusal naming this file's ``combine`` would
-    send the author to edit a block that has nothing wrong with it.
-    """
-    grading = _write_combine(tmp_path, {"weights": _WEIGHTS})
-
-    with pytest.raises(ValueError) as excinfo:
-        validate_grading_yaml(
-            grading, inventory=_UNRESOLVED, combine_layer=CombineLayer({"methd": "all"})
-        )
-
-    message = str(excinfo.value)
-    assert "task_defaults.grading_defaults.combine" in message, message
-    assert "did you mean 'method'?" in message, message
-    assert "the task's own combine block" not in message, message
-
-
-def test_validate_reports_an_unresolvable_project_layer_as_its_own_unchecked_entry(
-    tmp_path: Path,
-):
-    """A caller that could not resolve the project layer refused nothing inside it.
-
-    Addressed apart from the weight skip beside it: the two answer different questions
-    about the same unresolved layer — which components carry a share, and whether the
-    project's own block declares a key at all — so one address cannot report both.
-    """
-    report = validate_grading_yaml(
-        _write_combine(tmp_path, {"weights": _WEIGHTS}), inventory=_UNRESOLVED
-    )
-
-    skipped = {skip.where: skip.reason for skip in report.unchecked}
-    assert "task_defaults.grading_defaults.combine" in skipped, skipped
-    assert "combine.weights" in skipped, skipped
-    assert skipped["task_defaults.grading_defaults.combine"] != skipped["combine.weights"], skipped
 
 
 def test_validate_cli_reports_a_misspelled_combine_key_as_invalid(tmp_path: Path):
