@@ -41,7 +41,7 @@ tool registry.
 | Adapter key | `native` (built-in, no install needed) |
 | Task detection | Glob pattern matching `**/task.yaml` |
 | Tool loading | MCP server subprocess (`mcp_server.py`) |
-| Grading | `grading.yaml`, covering the five dimensions listed in [GRADING.md](GRADING.md) |
+| Grading | `grading.yaml`, covering the grading dimensions listed in [GRADING.md](GRADING.md) |
 | `harness_adapter` in `run.yaml` | Not needed (auto-selected) |
 
 ---

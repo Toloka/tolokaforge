@@ -31,6 +31,7 @@ _REFERENCE_DOC = _DOCS_DIR / "REFERENCE.md"
 _GRADING_SECTION_HEADING = "## grading.yaml Example"
 _SUBSTRATE_PARITY_HEADING = "## Substrate Parity"
 _REFERENCE_GRADING_HEADING = "### grading.yaml"
+_SCORE_COMBINATION_HEADING = "## Score Combination"
 
 _ANY_HEADING = re.compile(r"^#{1,6} ")
 _LINK_TARGET = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
@@ -95,11 +96,12 @@ def test_every_link_in_the_native_adapter_doc_resolves_and_no_citation_names_a_l
 
 
 def test_the_native_adapter_doc_points_at_the_grading_schema_by_a_resolvable_anchor():
-    """The grading section's answer is the two pointers, and both anchors resolve.
+    """The grading section's answer is its pointers, and every anchor resolves.
 
     ``GRADING.md`` § Substrate Parity answers which keys exist and where;
-    ``REFERENCE.md`` § grading.yaml shows worked key syntax. Each anchor is derived
-    from the heading actually present in the destination, so renaming either heading
+    ``REFERENCE.md`` § grading.yaml shows worked key syntax; ``GRADING.md`` § Score
+    Combination defines how the components fold. Each anchor is derived from the
+    heading actually present in the destination, so renaming any of the headings
     reds this test instead of orphaning the reader.
     """
     grading_section = section(
@@ -109,6 +111,7 @@ def test_the_native_adapter_doc_points_at_the_grading_schema_by_a_resolvable_anc
     )
     parity_link = f"(GRADING.md#{_anchor_into(_GRADING_DOC, _SUBSTRATE_PARITY_HEADING)})"
     reference_link = f"(REFERENCE.md#{_anchor_into(_REFERENCE_DOC, _REFERENCE_GRADING_HEADING)})"
+    combination_link = f"(GRADING.md#{_anchor_into(_GRADING_DOC, _SCORE_COMBINATION_HEADING)})"
 
     assert parity_link in grading_section, (
         f"{_GRADING_SECTION_HEADING!r} must send the reader to GRADING.md § Substrate "
@@ -117,4 +120,8 @@ def test_the_native_adapter_doc_points_at_the_grading_schema_by_a_resolvable_anc
     assert reference_link in grading_section, (
         f"{_GRADING_SECTION_HEADING!r} must send the reader to REFERENCE.md § "
         f"grading.yaml via {reference_link}"
+    )
+    assert combination_link in grading_section, (
+        f"{_GRADING_SECTION_HEADING!r} must send the reader to GRADING.md § Score "
+        f"Combination via {combination_link}"
     )

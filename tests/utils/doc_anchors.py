@@ -27,7 +27,7 @@ def anchor(heading: str) -> str:
 
 
 def section(lines: Sequence[str], heading: str, doc_name: str) -> str:
-    """``heading``'s own text, up to the next heading at the same level or above."""
+    """``heading``'s own text, up to the next heading of level 1–3."""
     starts = [index for index, line in enumerate(lines) if line.rstrip() == heading]
     assert len(starts) == 1, f"{heading!r} appears {len(starts)} times in {doc_name}"
     body = lines[starts[0] + 1 :]
