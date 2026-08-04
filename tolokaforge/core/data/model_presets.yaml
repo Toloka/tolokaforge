@@ -123,6 +123,37 @@ presets:
     response_policy: array_dict_map
     reasoning_codec: openai
 
+  # qwen/qwen3.8-max — model-specific overlay landed via auto-resolve
+  # (Slack-requested integration, PR #845). Declared BEFORE the generic
+  # ``qwen`` preset so first-match-wins routing picks it up for this one route
+  # only; every other qwen/* route keeps the bundled ``qwen`` axes untouched.
+  # It is the bundled ``qwen`` preset (passthrough schema + json_coerce
+  # response + dict_map_hints prompt) with ONE axis swapped:
+  #
+  #   reasoning_codec: openai -> gemini
+  #
+  # Why: the sole preset-fixable observe failure was
+  # ``test_unsigned_thinking_replay`` (0/15). The ``openai`` codec's
+  # ``encode_for_replay`` is a no-op (returns ``{}``), so turn-1 reasoning
+  # TEXT never round-trips into the turn-2 request payload. qwen3.8-max DOES
+  # emit unsigned reasoning text (observe trajectories: 1310 ``summary_text``
+  # blocks, all ``signature: null``) — the identical surface Gemini Pro
+  # exposes over OpenRouter, which is exactly what ``GeminiReasoningCodec``
+  # extracts and re-emits as ``reasoning_details`` on replay. No signatures
+  # are invented (the codec tolerates ``signature: null`` and preserves None),
+  # so no false capability is manufactured. Reprobe went 5/5 on the
+  # fix-target. THINKING_REPLAY_ROUNDTRIP (needs signed blocks) and
+  # PROMPT_CACHING (Anthropic cache_control) remain genuine ceilings — see
+  # registry.py.
+  qwen3_8_max_unsigned_reasoning_replay:
+    match:
+      - "qwen/qwen3.8-max"
+      - "*qwen3.8-max"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: gemini
+
   qwen:
     # Qwen 3.x emits dict-map arguments as either native dicts (matching the
     # task docs + DictMapHints) or stringified JSON. The pre-bugfix ``strict``
