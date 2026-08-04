@@ -837,6 +837,60 @@ def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: 
     assert "max_turns (3)" in out
 
 
+_A_GOLDEN_REPLAY = """
+    combine:
+      method: weighted
+      weights:
+        state_checks: 1.0
+    state_checks:
+      hash:
+        enabled: true
+        golden_actions:
+          - name: http_request
+    """
+
+# A task whose golden path has a world to be replayed in except for the server module:
+# ``initial_state.json`` is written beside it, and ``http_request`` is a builtin the task
+# declares, so the only fact left for a rejection to be about is ``mcp_server``.
+_A_TASK_WITHHOLDING_ITS_SERVER_MODULE = textwrap.dedent("""
+    task_id: golden_replay_probe
+    description: "Probe task for golden-replay world validation."
+    initial_state:
+      json_db: "initial_state.json"
+    tools:
+      agent:
+        enabled: ["http_request"]
+    grading: "grading.yaml"
+    """).strip()
+
+
+def test_validate_cli_reports_a_golden_replay_with_no_world_as_invalid(tmp_path: Path):
+    """``validate`` reads the task, not only the block it grades by.
+
+    The two facts a golden replay is executed against live in ``task.yaml``, so the
+    command resolves them for the gate; resolve nothing and this pack validates clean and
+    then raises inside the grading engine, once a trial is already paid for. Driven through
+    the CLI rather than through ``validate_grading_yaml`` because the resolving is the
+    command's own — the gate itself is exercised in
+    ``tests/unit/grading/test_grading_authoring_gate.py``.
+    """
+    task_dir = tmp_path / "golden_replay_with_no_world"
+    task_dir.mkdir()
+    (task_dir / "initial_state.json").write_text("{}")
+    (task_dir / "task.yaml").write_text(_A_TASK_WITHHOLDING_ITS_SERVER_MODULE)
+    (task_dir / "grading.yaml").write_text(textwrap.dedent(_A_GOLDEN_REPLAY).strip())
+
+    result = CliRunner(mix_stderr=False).invoke(
+        cli, ["validate", "--tasks", str(task_dir / "task.yaml")]
+    )
+
+    assert result.exit_code != 0
+    out = " ".join(result.stderr.split())
+    assert "0 valid, 1 invalid" in out
+    assert "this task declares no tools.agent.mcp_server" in out
+    assert "state_checks.hash.golden_actions" in out
+
+
 # ---------------------------------------------------------------------------
 # trace_checks — the block is constructed, so the whole matcher vocabulary is
 # validated at validate time

@@ -1468,6 +1468,7 @@ def validate(tasks: str):
     import glob
 
     from tolokaforge.adapters._task_loader import (
+        replay_world_under_adapter,
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
@@ -1495,6 +1496,7 @@ def validate(tasks: str):
                 inventory=tool_inventory_under_adapter(
                     task_config, task_dir, task_config.adapter_type
                 ),
+                replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
                 combine_layer=CombineLayer(project_combine),
             )
             # Only here, and deliberately not in the pre-run gate: a migration

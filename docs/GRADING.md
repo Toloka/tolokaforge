@@ -185,11 +185,12 @@ Neither carries a tracking issue of its own: the one shape still unproven is
 
 The fold rule is shared on every shape — both substrates call
 `compose_state_checks_score` — but the *inputs* to it still differ for one of the two
-authorable source shapes:
+authorable source shapes, and for the two the authoring gate refuses:
 
-- **`golden_actions`** — proven. Both substrates replay the actions and hash the
-  resulting state, so the same trial yields the same verdict and therefore the same
-  component. This is the shape the `enforcing_test` drives.
+- **`golden_actions`** — proven, whenever the task supplies the world the replay needs.
+  Both substrates replay the actions and hash the resulting state, so the same trial
+  yields the same verdict and therefore the same component. This is the shape the
+  `enforcing_test` drives.
 - **`expected_state_hash` alone** — not proven. The adapter translates it onto the
   runner's `expected_hash` field and **no runner path reads it** (#693), so the
   runner falls back on refusal semantics and compares the trial against the
@@ -201,6 +202,12 @@ authorable source shapes:
   component is `0.5` on both hash outcomes, the runner's is `0.8` on a match and `0.2`
   on a divergence. What remains reachable is a directly built config and a bundle
   recorded before the rule.
+- **`golden_actions` with no world to replay them in** — not proven, and **refused at
+  the authoring gate** for the same reason. Core raises `UnbuildableGoldenReplayWorld`
+  and the trial is left unscored (below), while the runner has nothing to lack: its
+  replay world *is* the live trial — the tools `RegisterTrial` registered, over
+  db-service's state — so it replays, hashes and produces a real binary verdict. What
+  remains reachable is a directly built engine and a config no gate saw.
 
 The rows say *signal* parity rather than *score* parity because bringing the two
 substrates into line on `expected_state_hash` moves refusal-task verdicts across the
@@ -779,6 +786,7 @@ state_checks:
   hash:
     enabled: true
     weight: 1.0
+    expected_state_hash: "3f2a…"   # or golden_actions — an enabled hash needs a source
   numeric_string_fields:      # per-field allow-list; matched by record key at any depth
     - custom_refund_amount    # e.g. the d365 travel refund field
 ```
@@ -988,23 +996,17 @@ other shape yields at most one score *core-side*, so a weight there would have
 nothing to divide: it loads, its range is still checked, and `grade.reasons` records
 that it was declared but not consulted — on both substrates, from one constant.
 
-**The gate over-approximates in two known ways, and both err toward asking the
-author a question rather than guessing an answer.**
+**The gate over-approximates in one known way, and it errs toward asking the author a
+question rather than guessing an answer: `db_probes` declared alongside.** `db_probes`
+is the sole state source for the tasks that declare it, so runner-side its score fills
+the component outright and the fold is never reached — the weight the gate demanded is
+then reported as unconsulted. Core-side that is not over-approximation at all: the core
+engine has no `db_probes` evaluator, so it *does* fold the hash with the jsonpaths and
+*does* consult the weight. Teaching the shared predicate about `db_probes` would
+therefore trade a load-time rejection for a grade-time raise on the core substrate,
+which is why it stays. #731 owns the precedence itself.
 
-1. **Golden actions with no replay context.** Whether the engine has the
-   `task_dir` / `initial_state` / `mcp_server` a replay needs is unknowable from
-   `grading.yaml`, so a pack that would produce no hash verdict for that reason is
-   still asked for a weight. It lands only on configs already silently broken (#729).
-2. **`db_probes` declared alongside.** `db_probes` is the sole state source for the
-   tasks that declare it, so runner-side its score fills the component outright and
-   the fold is never reached — the weight the gate demanded is then reported as
-   unconsulted. Core-side that is not over-approximation at all: the core engine has
-   no `db_probes` evaluator, so it *does* fold the hash with the jsonpaths and *does*
-   consult the weight. Teaching the shared predicate about `db_probes` would
-   therefore trade a load-time rejection for a grade-time raise on the core
-   substrate, which is why it stays. #731 owns the precedence itself.
-
-**Which substrate graded the trial still matters, for two hash-source shapes.** The
+**Which substrate graded the trial still matters, for three hash-source shapes.** The
 fold is one function (`core/grading/state_composition.py`) and both the core engine
 and the runner's `GradeTrial` call it, so the *rule* is shared; the runner carries
 the weight as the flattened `state_checks.hash_weight` on its `StateChecksConfig` and
@@ -1020,24 +1022,43 @@ substrate feeds that fold:
   leaving the two substrates to disagree over it, so it is reachable only from a config
   built directly against the engine and from a bundle recorded before the rule — the
   bundles `retrace` replays, where core's *no verdict* is the answer stated below.
+- **`golden_actions` with no world to replay them in** — **not authorable** either, and
+  the divergence is the sharper one: core computes no expected state at all and raises,
+  leaving the trial unscored, while the runner has nothing to lack. Its replay world *is*
+  the live trial — the tools `RegisterTrial` registered, over db-service's state — so it
+  replays, hashes and folds a real binary verdict with the assertions. The gate refuses
+  the shape wherever a caller can resolve what the task supplies, so it too survives only
+  in a directly built engine and in a config no gate saw.
 - **`expected_state_hash` alone.** No runner path reads the translated
   `expected_hash` (#693), so the runner again compares the trial against the initial
   state where core compares it against the author's literal.
 
-Only **`golden_actions`** is proven to hand both substrates the same verdict, and
-therefore the same component — see
+Only **`golden_actions` replayed in a world the task supplies** is proven to hand both
+substrates the same verdict, and therefore the same component — see
 [Substrate Parity](#substrate-parity) for the manifest rows and the test that proves
 it.
 
-**Core-side**, hash grading that was configured but could not run — `hash.enabled`
-with neither source declared, or `golden_actions` with no task directory,
-`initial_state` or `mcp_server` to replay them against — yields **no** hash verdict
-and names the skipped check in `grade.reasons`, rather than a `0.0` that reads as a
-state the agent got wrong (#729). Beside an empty `jsonpaths` list there is then no
-verdict at all, so the whole component is unevaluated and no score sits next to the
-reason contradicting it. A golden replay that fails to *execute* is a grading error
-rather than a verdict on either substrate: core raises and the trial is left unscored,
-the runner answers `GradeTrial` with `success=false`.
+**Core-side**, a hash block declaring no source at all — `hash.enabled` with neither
+`expected_state_hash` nor `golden_actions` — yields **no** hash verdict and names the
+skipped check in `grade.reasons`, rather than a `0.0` that reads as a state the agent got
+wrong. Beside an empty `jsonpaths` list there is then no verdict at all, so the whole
+component is unevaluated and no score sits next to the reason contradicting it.
+
+**A golden replay that cannot be executed is a grading error rather than a verdict**, on
+either substrate: core raises and the trial is left unscored, the runner answers
+`GradeTrial` with `success=false`. Having no world to replay *in* is one of those
+failures. Core raises `UnbuildableGoldenReplayWorld`
+(`tolokaforge.core.grading.golden_replay`), naming in one message every task-level fact
+the replay needs and does not have — `initial_state.json_db` as a path to a JSON file
+rather than an inline mapping, `tools.agent.mcp_server`, and the task directory the
+caller passes. So a pack never collects the `state_checks` score its JSONPath assertions
+earned while the hash they are weighed against went uncomputed. Which source is
+*effective* decides whether a world is needed at all: a truthy `expected_state_hash` is
+compared in process and returns before `golden_actions` is read, so a pack declaring both
+never replays and needs none. The shape is refused earlier still, wherever a caller can
+resolve what the task supplies — see
+[What is validated before a run](#what-is-validated-before-a-run) — so the raise is
+reachable only from a config no gate saw.
 
 **An action name that resolves to nothing is one of those failures, on both
 substrates.** Every authored name is resolved before the first action runs, so a
@@ -2273,9 +2294,11 @@ Findings come in three classes:
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
+| a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
 | a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
+| what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
@@ -2292,8 +2315,8 @@ severity: nothing reads it to decide whether to raise, so the gate has no
 false-reject mode. It is surfaced beside the task all the same — `validate` prints
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
-commits no `fixtures/tools.json`, an `args` address below its first segment, and a
-property whose schema writes no `type` all land here.
+commits no `fixtures/tools.json`, an `args` address below its first segment, a property
+whose schema writes no `type`, and a replay world no caller resolved all land here.
 
 **A section the author wrote declares something to evaluate.** An empty block asserts
 nothing and scores nothing, and it cannot survive translation either: the wire erases
@@ -2342,6 +2365,32 @@ because a source under a falsy flag is resolved by nobody and refusing it would 
 stricter than the grade. That leaves one shape refused by neither rule and graded by no
 substrate: a `golden_actions` list under `hash.enabled: false`, whatever its names.
 #832 owns closing it, at the flag rather than at the name.
+
+**A golden replay needs a world to be built in, and the task supplies it.** Two facts,
+both written in `task.yaml` and neither of them readable from `grading.yaml`:
+`initial_state.json_db` as a path to a JSON file under the task directory — an inline
+mapping there supplies no file — and `tools.agent.mcp_server`, the module holding the
+tools the actions call. Without them core hashes nothing and raises rather than grading
+around the hash (see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)), so
+the gate refuses the shape and the whole trial is never paid for. Each withheld fact is
+its own error naming its own key, for the reason each unreplayable action is: an author
+supplying two of them otherwise pays a grading pass per omission.
+
+The rule reads the block in the order both substrates read it — the flag, then
+`expected_state_hash`, then `golden_actions` — so a pack declaring a truthy
+`expected_state_hash` beside its golden actions is outside it entirely: core compares
+the trial against the author's literal and returns before the replay is reached, so that
+pack needs no world and demanding one would send its author to declare facts nothing
+reads. `golden_actions` is read for truthiness and never for shape, so a non-list value
+is refused for the world it lacks while the name rule above reports nothing about it —
+what that value *is* stays #832's.
+
+The world is the caller's to resolve, the way the tool set is: `tolokaforge validate` and
+the run's pre-flight both hold the `TaskConfig`, and a caller holding none — the
+trace-replay batch and the rubric migration, which check a `trace_checks` fragment
+against a bundle's recorded tools — reports `unchecked` where the rule would have run and
+nowhere else. A task an adapter other than the native one owns reports `unchecked` too,
+because `tools.agent.mcp_server` is the native reading of a task's server module.
 
 An explicit opt-out is *not* "declares nothing": `custom_checks: {enabled: false}`
 states a decision, survives the wire intact, and is read the same way by both

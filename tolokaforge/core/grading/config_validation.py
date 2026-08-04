@@ -1,12 +1,14 @@
-"""Checking grading authoring against the tools a task gives its actors and its fold.
+"""Checking grading authoring against what a task gives its actors, its replay and its fold.
 
 Substrate-neutral and pure — no adapter, no filesystem: an adapter resolves the
-task's tool set into a :class:`ToolInventory` and the task's effective ``combine``,
-and :func:`inspect_grading_authoring` reads only those. A tool set the adapter
-cannot report is :meth:`ToolInventory.unresolvable` — distinct from a task that
-declares no tools, because the two decide opposite things: nothing is checkable
-against the first, while every tool name is wrong against the second. An effective
-combine no caller could resolve is ``None``, and reads the same way.
+task's tool set into a :class:`ToolInventory`, the world its golden actions replay in
+into a :class:`ReplayWorld` and the task's effective ``combine``, and
+:func:`inspect_grading_authoring` reads only those. A tool set the adapter cannot
+report is :meth:`ToolInventory.unresolvable` — distinct from a task that declares no
+tools, because the two decide opposite things: nothing is checkable against the first,
+while every tool name is wrong against the second. A replay world reads the same way
+through :meth:`ReplayWorld.unresolvable`, and an effective combine no caller could
+resolve is ``None``.
 
 The defects here are the author's, and every one of them is otherwise charged to
 the agent or to nobody: a misspelled tool name in a ``present`` matcher scores the
@@ -15,9 +17,11 @@ an ``absent`` matcher passes every trial, an uncompilable ``regex`` raises insid
 the evaluator once the tokens are already spent, a binding correlated against a
 field of another type is red on every trajectory whatever the agent did, a golden
 action naming no callable tool leaves the replay with no world to hash and the trial
-with no verdict, a section declaring nothing scores nothing while reading as
-configured, and a component and its weight naming each other only one way leaves the
-two substrates folding different maps for the same trial.
+with no verdict, a golden path authored against a task that declares no initial-state
+file or no MCP server module has no world to replay in at all, a section declaring
+nothing scores nothing while reading as configured, and a component and its weight
+naming each other only one way leaves the two substrates folding different maps for
+the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -34,6 +38,7 @@ from typing import Any
 
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.golden_replay import InitialStateSource
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
     GRADE_COMPONENTS,
@@ -157,6 +162,40 @@ class CombineLayer:
     def unresolvable(cls) -> CombineLayer:
         """The layer of a caller that cannot say what a task's project supplies."""
         return cls(project_combine=None, known=False)
+
+
+@dataclass(frozen=True)
+class ReplayWorld:
+    """What a task gives a golden-action replay to be executed against.
+
+    Two task-level facts, neither of them readable from ``grading.yaml``: what
+    ``initial_state.json_db`` gives the replay to load, and whether
+    ``tools.agent.mcp_server`` names the module holding the tools the actions call. A
+    caller that cannot say what a task supplies reports :meth:`unresolvable` — distinct
+    from a caller reporting a task that supplies neither, because the two decide
+    opposite things: nothing is checkable against the first, while no golden replay can
+    be built at all against the second.
+    """
+
+    initial_state: InitialStateSource
+    mcp_server: bool
+    known: bool = True
+
+    def __post_init__(self) -> None:
+        if not self.known and (
+            self.initial_state is not InitialStateSource.ABSENT or self.mcp_server
+        ):
+            raise ValueError(
+                "an unresolvable replay world carries task facts: the rule that reads them "
+                f"is skipped, so initial_state={self.initial_state.value} / "
+                f"mcp_server={self.mcp_server} would be resolved and then ignored. Report "
+                "the facts with known=True, or report nothing"
+            )
+
+    @classmethod
+    def unresolvable(cls) -> ReplayWorld:
+        """The world of a caller that cannot say what a task gives a golden replay."""
+        return cls(initial_state=InitialStateSource.ABSENT, mcp_server=False, known=False)
 
 
 @dataclass(frozen=True)
@@ -376,22 +415,60 @@ _NAMELESS_GOLDEN_ACTION = (
     "{declared}: there is nothing for either substrate to resolve, so {hazard}"
 )
 
+_GOLDEN_ACTIONS_ADDRESS = "state_checks.hash.golden_actions"
+
+# How a task withholding the initial state reads to the pack's author, per shape it
+# withheld it in, and ``None`` for the shape that withholds nothing. Two shapes, one key:
+# a replay loads a JSON file under the task directory, so an inline mapping supplies it as
+# little as an unwritten key does, and an author fixes either by writing the same key with
+# the other value. Total over :class:`InitialStateSource`, so a fourth shape cannot join
+# the enum without an answer here.
+_NO_INITIAL_STATE_FILE: Mapping[InitialStateSource, str | None] = {
+    InitialStateSource.JSON_FILE: None,
+    InitialStateSource.ABSENT: "this task declares no initial_state.json_db",
+    InitialStateSource.INLINE: (
+        "this task declares initial_state.json_db inline, where the replay loads a JSON "
+        "file under the task directory"
+    ),
+}
+
+_NO_MCP_SERVER_MODULE = (
+    "this task declares no tools.agent.mcp_server, whose tools the golden actions call"
+)
+
+_UNBUILDABLE_GOLDEN_WORLD = (
+    "{because}, so the golden actions have no world to be replayed in: core refuses to "
+    "grade the trial at all rather than collecting the state_checks score the block's "
+    "other sources earned beside a hash nothing computed, once the trial is already paid "
+    "for. Write {key} in task.yaml, or drop the hash block"
+)
+
+_UNRESOLVED_REPLAY_WORLD_REASON = (
+    "no caller resolved what this task gives a golden replay, so whether the replay has a "
+    "world to be built in is not checkable"
+)
+
+# Bound once so the signature's default is the value, not a call in the annotation.
+_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
+
 
 def inspect_grading_authoring(
     grading: Mapping[str, Any],
     inventory: ToolInventory,
     *,
     effective_combine: GradingCombineConfig | None = None,
+    replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
 ) -> AuthoringReport:
-    """Report what a task's tools and its fold say about the grading block it is graded by.
+    """Report what a task's tools, its replay world and its fold say about its grading block.
 
     The block is expected to have passed its own shape validation; the typed
     sub-blocks read here are constructed, so a malformed one raises its own load
     error rather than being reported as an authoring finding.
 
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
-    inventory is unresolvable, and the rules that need nothing but the block —
-    regex compilation, the hash-source declaration — still run.
+    inventory is unresolvable. The rules outside that set still run: regex compilation
+    and the hash-source declaration, which read nothing but the block, and the
+    replay-world rule, which reads the world and skips on its own account.
 
     Args:
         grading: The authored block, as written.
@@ -406,6 +483,10 @@ def inspect_grading_authoring(
             :data:`UNRESOLVED_COMBINE_REASON` through
             :meth:`AuthoringReport.with_unchecked`, so its gate does not read as a
             clean bill of health.
+        replay_world: What the task gives its golden actions to be replayed against.
+            The default, :meth:`ReplayWorld.unresolvable`, is the answer for a caller
+            holding no ``task.yaml`` — it skips the one rule that reads the world where
+            that rule would have run, and fails nothing.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -415,6 +496,7 @@ def inspect_grading_authoring(
         _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
+        _check_golden_replay_world(grading, replay_world),
     ]
     if inventory.known:
         reports += [
@@ -727,11 +809,8 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     empty ``golden_actions`` list replays nothing, which is why both substrates
     treat it as no source at all.
     """
-    state_checks = grading.get("state_checks")
-    if not isinstance(state_checks, Mapping):
-        return AuthoringReport()
-    hash_block = state_checks.get("hash")
-    if not isinstance(hash_block, Mapping):
+    hash_block = _hash_block(grading)
+    if hash_block is None:
         return AuthoringReport()
     enabled = hash_block.get("enabled")
     if enabled and not any(hash_block.get(key) for key in HASH_SOURCE_KEYS):
@@ -761,6 +840,71 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
             ),
         )
     )
+
+
+def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
+    """The authored ``state_checks.hash`` block, or ``None`` where the pack wrote none.
+
+    Every hash rule reads it through here, so a scalar written at either level is left
+    to the block's own shape validation rather than read as an authoring defect.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return None
+    hash_block = state_checks.get("hash")
+    return hash_block if isinstance(hash_block, Mapping) else None
+
+
+def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:
+    """A pack replaying golden actions is authored against a task that gives them a world.
+
+    The block is read in the order both substrates read it. A falsy ``hash.enabled`` is
+    a source nobody resolves, for the reason :func:`_check_hash_source_declared` gives at
+    length. A truthy ``expected_state_hash`` is the *effective* source whatever else the
+    block declares — core compares the trial against the author's literal and returns
+    before ``golden_actions`` is read — so such a pack needs no world, and refusing it
+    would send its author to declare facts nothing consults. Only then are the golden
+    actions read, for truthiness and never for shape: a truthy non-list value is refused
+    for the world it lacks, where :func:`_check_golden_action_names` reports nothing about
+    it at all and #832 owns the shape.
+
+    Each fact the task withholds is its own finding, addressed to the ``task.yaml`` key
+    that supplies it, because an author fixing a pack one exception at a time pays a
+    whole grading pass per omission — the cost
+    :func:`resolve_golden_action_names` already refuses to charge for action names.
+
+    Resolving the world is the caller's: one that cannot say what a task gives a replay
+    skips this rule where it would have run and fails nothing, exactly like an
+    unresolvable tool set — and only there, so a pack that replays nothing reports no
+    skip for a rule that had nothing to check.
+    """
+    hash_block = _hash_block(grading)
+    if hash_block is None or not hash_block.get("enabled"):
+        return AuthoringReport()
+    if hash_block.get("expected_state_hash") or not hash_block.get("golden_actions"):
+        return AuthoringReport()
+    if not world.known:
+        return AuthoringReport(
+            unchecked=(Skip(_GOLDEN_ACTIONS_ADDRESS, _UNRESOLVED_REPLAY_WORLD_REASON),)
+        )
+    return AuthoringReport(
+        errors=tuple(
+            Finding(
+                _GOLDEN_ACTIONS_ADDRESS,
+                _UNBUILDABLE_GOLDEN_WORLD.format(because=because, key=key),
+            )
+            for because, key in _withheld_replay_facts(world)
+        )
+    )
+
+
+def _withheld_replay_facts(world: ReplayWorld) -> Iterator[tuple[str, str]]:
+    """Each fact the task does not give the replay, and the ``task.yaml`` key that would."""
+    withheld_state = _NO_INITIAL_STATE_FILE[world.initial_state]
+    if withheld_state is not None:
+        yield withheld_state, "initial_state.json_db"
+    if not world.mcp_server:
+        yield _NO_MCP_SERVER_MODULE, "tools.agent.mcp_server"
 
 
 def _check_golden_action_names(
@@ -807,11 +951,8 @@ def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
     both yield ``None``: the ``hash`` block is untyped (#730), so there is no load error
     to defer to, and the index of the offending action is what an author acts on.
     """
-    state_checks = grading.get("state_checks")
-    if not isinstance(state_checks, Mapping):
-        return
-    hash_block = state_checks.get("hash")
-    if not isinstance(hash_block, Mapping) or not hash_block.get("enabled"):
+    hash_block = _hash_block(grading)
+    if hash_block is None or not hash_block.get("enabled"):
         return
     actions = hash_block.get("golden_actions")
     if not isinstance(actions, list):
