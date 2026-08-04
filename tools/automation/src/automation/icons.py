@@ -63,6 +63,9 @@ DEFAULT_ICONS: dict[str, str] = {
     "request_resolved": ":white_check_mark:",
     "request_ambiguous": ":warning:",
     "request_unresolved": ":x:",
+    # A model whose integration PR is already open: the poller starts no second run and the
+    # reply points at the existing PR (previously a silent log-only skip).
+    "pr_exists": ":information_source:",
     # A `via <route>` directive that could not be honoured.
     "route_downgraded": ":warning:",
 }
