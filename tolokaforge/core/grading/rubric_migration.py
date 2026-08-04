@@ -56,7 +56,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationError
 
-from tolokaforge.adapters._task_loader import load_task_yaml
+from tolokaforge.adapters._task_loader import grading_source_under_adapter, load_task_yaml
 from tolokaforge.core.grading.agreement import (
     CriterionObservation,
     accuracy,
@@ -1226,6 +1226,12 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
     Zero and two are the same defect from the operator's side — the search root is wrong —
     and both are named with the roots searched, because a corpus recorded against one tree
     reconciled against another is otherwise silently reconciled against nothing.
+
+    A pack that resolves and names no grading source is refused too, under every declared
+    adapter — unlike ``tolokaforge validate``, which passes such a pack where its declared
+    adapter resolves its own grading config, because a config resolved that way carries no
+    migration declaration and no ``trace_checks`` block for a recorded verdict to be
+    recomputed from.
     """
     written = ", ".join(str(root) for root in roots)
     found = _declaring_task_files(task_id, roots)
@@ -1242,7 +1248,20 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
             "to no single pack. Give each testcase its own task_id, or search one root"
         )
     task_config, task_dir = load_task_yaml(found[0])
-    return task_dir / task_config.grading
+    adapter_type = task_config.adapter_type
+    source = grading_source_under_adapter(task_config, task_dir, adapter_type)
+    if source.path is None:
+        raise ReconcileError(
+            f"{found[0]} declares task_id {task_id!r} and no grading block — no `grading:` "
+            "field and no sibling grading.yaml — so a corpus recording this task's verdicts "
+            "has nothing to reconcile them against: the migration is declared beside that "
+            "file, and the trace_checks block it names is what every recorded verdict is "
+            f"recomputed from. That holds under every declared adapter, {adapter_type!r} "
+            "included: one that grades from the file has none to read, and one that resolves "
+            "its own grading config writes neither. Declare `grading:` pointing at the block "
+            "this pack grades by, or add a grading.yaml beside its task.yaml"
+        )
+    return source.path
 
 
 def _resolve_pack(task_id: str, roots: Sequence[Path]) -> _ResolvedPack | None:
