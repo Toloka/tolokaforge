@@ -1201,9 +1201,9 @@ class TestBuildEnvEndpoints:
 def _task_description_with_judge(task_id: str, *, has_judge: bool):
     """Build a TaskDescription whose grading does / does not declare an llm_judge."""
     from tolokaforge.runner.models import (
-        GradingConfig,
         LLMJudgeConfig,
         Rubric,
+        RunnerGradingConfig,
         TaskDescription,
     )
 
@@ -1221,7 +1221,7 @@ def _task_description_with_judge(task_id: str, *, has_judge: bool):
         description="d",
         adapter_type="native",
         system_prompt="sys",
-        grading=GradingConfig(llm_judge=llm_judge),
+        grading=RunnerGradingConfig(llm_judge=llm_judge),
     )
 
 

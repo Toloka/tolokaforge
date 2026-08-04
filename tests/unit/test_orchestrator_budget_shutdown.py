@@ -47,7 +47,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
-from tolokaforge.runner.models import GradingConfig, TaskDescription
+from tolokaforge.runner.models import RunnerGradingConfig, TaskDescription
 
 pytestmark = pytest.mark.unit
 
@@ -104,7 +104,7 @@ def _task_description(task_id: str) -> TaskDescription:
         description="d",
         adapter_type="native",
         system_prompt="sys",
-        grading=GradingConfig(),
+        grading=RunnerGradingConfig(),
     )
 
 
