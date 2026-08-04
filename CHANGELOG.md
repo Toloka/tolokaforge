@@ -6,6 +6,7 @@ All notable changes to this project are documented in this file.
 
 ### Fix
 
+- **runner**: the persistent `bash_session` shell no longer recurses to a `RecursionError` when its backing process cannot stay alive. `_PtyBashSession.run` treated an empty read (the shell pipe closing — the process exited) as a timeout, routing a dead session into `_terminate_runaway`; for the compose engine (`docker exec` into a service container) that path reopens the exec and re-runs the sentinel, which reads EOF again and recurses without bound (one forked `docker exec` per level) whenever the target container is not running — surfacing at trial start as `Tool lifecycle start failed: maximum recursion depth exceeded`. EOF is now handled distinctly from a timeout: the session is closed and the failure surfaces cleanly (e.g. `open` raises `bash session failed to become ready`)
 - **runner-client**: `GrpcRunnerClient.health_check` now accepts both `healthy` and `degraded` runner statuses (per `docs/GRPC_PROTOCOL.md` § HealthCheck) as reachable-for-connect purposes. The prior strict `status == "healthy"` check made every trial pack without a `db-service` fail the 30-attempt connect loop even though the runner's `HealthCheck` RPC was successfully answering. Only `unhealthy` and `RpcError` remain as fail states (#801)
 
 ### Feat
