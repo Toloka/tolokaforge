@@ -1370,7 +1370,7 @@ class Orchestrator:
         The aggregate is over what the grading predicate rejects. Resolving each
         task's description happens outside the per-task catch, so whatever *that*
         raises — an adapter the host has not installed, a grading file that is
-        not YAML, or a grading key whose shape is neither a mapping nor absent,
+        not YAML, or a malformed grading shape, the file's own or one of its keys,
         the last two being what the native adapter answers while it builds the
         description — aborts on the first task carrying it, and the tasks after
         it are never read. The list is of packs that load and cannot be graded;

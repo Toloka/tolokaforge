@@ -114,7 +114,7 @@ def test_a_grading_key_that_is_not_a_mapping_is_refused_by_both_read_sites(
     message = str(excinfo.value)
     assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in message
     assert f"'{key}'" in message
-    assert type(shape).__name__ in message
+    assert f"got {type(shape).__name__} ({shape!r})" in message
 
 
 @pytest.mark.parametrize("site", _READ_SITES)
@@ -135,8 +135,7 @@ def test_a_grading_document_that_is_not_a_mapping_is_refused_by_both_read_sites(
 
     message = str(excinfo.value)
     assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in message
-    assert "is not a YAML mapping" in message
-    assert type(yaml.safe_load(document)).__name__ in message
+    assert f"is not a YAML mapping (got {type(yaml.safe_load(document)).__name__})" in message
 
 
 @pytest.mark.parametrize("key", _GRADING_KEYS)

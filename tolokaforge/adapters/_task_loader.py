@@ -49,7 +49,7 @@ from __future__ import annotations
 
 import json
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
@@ -309,7 +309,7 @@ def validate_grading_yaml(
 
         LLMJudgeConfig(**llm_judge)
 
-    # After the loop, so a malformed ``combine`` has already raised and the task-side
+    # The gate above has already refused a non-mapping ``combine``, so the task-side
     # value the merge reads is a mapping or nothing.
     effective_combine = None
     if combine_layer.known:
@@ -331,11 +331,13 @@ def validate_grading_yaml(
 def refuse_malformed_grading_shapes(grading_data: Any, *, grading_path: Path) -> None:
     """Refuse *grading_data*, and every key in it, that is neither a mapping nor absent.
 
-    Called by every surface that reads a ``grading.yaml`` — ``tolokaforge validate``,
-    :meth:`NativeAdapter.get_grading_config` and
-    :meth:`NativeAdapter.to_task_description` — on the raw parse, so one sentence
-    answers a malformed shape wherever the file is read and no reader decides a shape
-    for itself.
+    Called by every surface that loads a pack for validation or for a run —
+    ``tolokaforge validate``, :meth:`NativeAdapter.get_grading_config` and
+    :meth:`NativeAdapter.to_task_description` — on the raw parse, so one sentence answers
+    a malformed shape on the paths that grade a pack, and none of them decides a shape
+    for itself. The replay tools that read a ``grading.yaml`` for a narrower purpose —
+    an operator-supplied ``trace_checks`` override, a rubric-migration sidecar's
+    subject — answer a shape in their own words against the one block they want.
 
     A key carrying nothing — a bare ``state_checks:`` — is the *absent* block and is
     accepted, because that is what every reader already makes of it. Any other
@@ -354,7 +356,7 @@ def refuse_malformed_grading_shapes(grading_data: Any, *, grading_path: Path) ->
     """
     if grading_data is None:
         return
-    if not isinstance(grading_data, dict):
+    if not isinstance(grading_data, Mapping):
         raise RuntimeError(
             f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
         )
@@ -362,7 +364,7 @@ def refuse_malformed_grading_shapes(grading_data: Any, *, grading_path: Path) ->
     malformed: list[str] = []
     for key, sentence in _GRADING_BLOCK_SHAPES.items():
         value = grading_data.get(key)
-        if value is None or isinstance(value, dict):
+        if value is None or isinstance(value, Mapping):
             continue
         malformed.append(sentence.format(kind=type(value).__name__, value=value))
 
@@ -373,7 +375,7 @@ def refuse_malformed_grading_shapes(grading_data: Any, *, grading_path: Path) ->
 
 
 def _construct_declared_block(
-    block: dict[str, Any] | None,
+    block: Mapping[str, Any] | None,
     typed: _TypedGradingBlock,
     *,
     block_name: str,

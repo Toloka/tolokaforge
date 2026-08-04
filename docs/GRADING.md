@@ -2309,6 +2309,12 @@ makes one pass over every selected task before it schedules the first trial and
 aborts naming **every** offending task. The same pass runs at `tolokaforge prepare`,
 so a distributed enqueue is rejected once rather than by every worker identically.
 
+The named list is of packs that **load** and cannot be graded. A pack the loader itself
+refuses — a malformed grading shape, the file's own or one of its keys; a grading file
+that is not parseable YAML; an adapter backend the host has not installed — stops the
+pass where it stands with its own sentence, and the packs behind it are not read. #880
+owns folding that class into the named list.
+
 Findings come in three classes:
 
 | rule | class | where |
@@ -2600,11 +2606,14 @@ component the pack no longer configures, which is its own error — and says not
 when the block was never weighted. #533 owns the tier; #874 owns its `project.yaml`
 instance.
 
-**`custom_checks` is refused only at grade time.** `GradingConfig.custom_checks` is a
-raw `dict[str, Any]`, so no key *name* inside it is checked at authoring time: a
-misspelled `timout_seconds` passes `tolokaforge validate` (measured). The gate does read
-the block's `enabled` key — the two rows naming `custom_checks` in the findings table
-above are its rules — and nothing else in it. The `CustomChecksConfig` that
+**`custom_checks` key *names* are refused only at grade time.** Its *shape* is refused at
+load, on every surface, like every other grading key — see
+[§ What shape a grading key must be](#what-shape-a-grading-key-must-be). But
+`GradingConfig.custom_checks` is a raw `dict[str, Any]`, so no key *name* inside it is
+checked at authoring time: a misspelled `timout_seconds` passes `tolokaforge validate`
+(measured). The gate does read the block's `enabled` key — the two rows naming
+`custom_checks` in the findings table above are its rules — and nothing else in it. The
+`CustomChecksConfig` that
 *does* refuse it is `extra="forbid"` and is constructed when the suite runs — core-side
 in the grading engine, runner-side at grade time — so the author hears it after the
 trial is paid for. #873 owns closing that gap.
@@ -2629,19 +2638,27 @@ the other does not, rejected at `RegisterTrial` — is
 The tier above the key names: every key a `grading.yaml` may carry — `combine`,
 `state_checks`, `transcript_rules`, `trace_checks`, `llm_judge` and `custom_checks` —
 is a **mapping, or nothing at all**. A bare key with nothing under it is the *absent*
-block: every field falls through to its default, which is what the loader's own merge
-makes of it.
+block: the file reads exactly as one that never declared the key, which for `combine`
+means every field falls through to its default and for the other five means the
+component is absent (`GradingConfig.state_checks is None`).
+
+An **empty mapping** is a different shape from a bare key, and this gate is not what
+answers it — the rules policing a block's *contents* are. Measured: `state_checks: {}`,
+`transcript_rules: {}` and `custom_checks: {}` are refused by the rule that a block
+declaring nothing asserts nothing (the findings table above), `trace_checks: {}` by its
+own model, and `combine: {}` / `llm_judge: {}` are accepted.
 
 Any other shape is refused in one sentence naming the grading file, the key, what it
 received and how to write it. **The refusal is total over every grading key, and it is
-the same sentence on every surface that reads the file**: `tolokaforge validate`,
-`NativeAdapter.get_grading_config` and `NativeAdapter.to_task_description`. So a
-de-indented block is answered identically whether an author validates the pack, a run's
-pre-flight reads it, or the description build lowers it onto the wire — including on
-`tolokaforge run-trial`, which runs no pre-flight of its own and is protected by the
-read site. Every offending key is named in one raise, so a file that lost its
-indentation in more than one place is fixed in a single pass. A whole `grading.yaml`
-that is not a mapping at all draws the same refusal, naming the file and its shape.
+the same sentence on every surface that loads a pack for validation or for a run**:
+`tolokaforge validate`, `NativeAdapter.get_grading_config` and
+`NativeAdapter.to_task_description`. So a de-indented block is answered identically
+whether an author validates the pack, a run's pre-flight reads it, or the description
+build lowers it onto the wire — including on `tolokaforge run-trial`, which runs no
+pre-flight of its own and is protected by the read site. Every offending key is named in
+one raise, so a file that lost its indentation in more than one place is fixed in a
+single pass. A whole `grading.yaml` that is not a mapping at all draws the same refusal,
+naming the file and its shape.
 
 The refusal never consults truthiness, and that is the point. Writing a check directly
 under `state_checks:` instead of under one of the block's own keys makes the block a

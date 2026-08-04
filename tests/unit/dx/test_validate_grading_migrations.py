@@ -1184,9 +1184,10 @@ def test_validate_refuses_every_grading_key_that_is_not_a_mapping(
 
 @pytest.mark.parametrize("key", _GRADING_KEYS)
 def test_validate_accepts_a_grading_key_with_nothing_under_it(tmp_path: Path, key: str):
-    """A bare ``state_checks:`` is the *absent* block, not a malformed one: every field
-    falls through to its default, which is what the loader's own merge makes of it. So
-    the refusal cannot be written as a bare "not a mapping"."""
+    """A bare ``state_checks:`` is the *absent* block, not a malformed one: the file reads
+    exactly as one that never declared the key. So the refusal cannot be written as a bare
+    "not a mapping". An empty *mapping* is a different shape, answered — where it is
+    answered at all — by the rules policing a block's contents rather than by this gate."""
     validate_grading_yaml(_write_grading_key(tmp_path, key, None), inventory=_UNRESOLVED)
 
 
