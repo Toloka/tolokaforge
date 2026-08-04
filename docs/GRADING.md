@@ -2997,7 +2997,13 @@ docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
 `db_probes` is the sole state source for a task that declares it: a probe declared
 beside a non-empty `jsonpaths`, or beside a `hash` block that is enabled with a source,
 is **refused** — those sources score the same component, so one verdict would fill it
-and discard the other. The refusal is at load and on both substrates, from one message:
+and discard the other. There are two fixes, and which one you want depends on what
+should decide the state: **drop the probes** and let the hash and `jsonpaths` grade it,
+or **drop the other source** and let the probe grade it. The probe is the only one of
+the three that reads the live substrate through an independent role, and the only one
+core cannot read at all — so a pack you grade outside the runner keeps its verdict by
+taking the first fix, and a pack whose real oracle is the database takes the second.
+The refusal is at load and on both substrates, from one message:
 core raises where the grading config is built and the runner at `RegisterTrial`, so no
 trial is paid for first. `tolokaforge validate` and the run's pre-flight report it
 earlier still, at `state_checks.db_probes` — batched with the pack's other findings
