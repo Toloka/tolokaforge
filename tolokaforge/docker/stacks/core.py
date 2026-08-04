@@ -15,6 +15,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Literal
 
+from tolokaforge.docker.builder import get_image_definition
 from tolokaforge.docker.config import DockerConfig
 from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
@@ -194,18 +195,14 @@ def core_stack(
         image_name="tolokaforge-runner",
         dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
         context=".",
-        context_files=[
-            # Sources ``hatch build --target custom`` consumes in the
-            # wheel-builder stage. Every path is repo-relative; the temp
-            # build context assembler copies them flat into the isolated
-            # build directory (see ``builder.assemble_build_context``).
-            "pyproject.toml",
-            "README.md",
-            "LICENSE",
-            ".python-version",
-            "scripts/hatch/",
-            "tolokaforge/",
-        ],
+        # Sources ``hatch build --target custom`` consumes in the wheel-builder
+        # stage. Resolved by the builder rather than spelled out here: on a
+        # wheel install the repo-root paths do not exist (``repo_root()`` is
+        # ``site-packages``) and the factory swaps in the packaged copies. This
+        # list used to be duplicated here, which is how v0.14.0/v0.14.1 kept
+        # failing on an installed engine even after the builder was fixed —
+        # this is the code path the orchestrator's service stack actually takes.
+        context_files=get_image_definition("runner")["context_files"],
         ports=[PortConfig(container_port=50051, host_port=runner_port)],
         environment=runner_env,
         depends_on=runner_depends,

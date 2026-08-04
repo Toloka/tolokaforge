@@ -264,9 +264,9 @@ def test_build_image_runner_ships_source_tree_not_a_wheel(monkeypatch) -> None:
         # No host-side wheel is copied into the runner image build context;
         # the subset wheel is produced by the wheel-builder stage.
         wheels = list(root.glob("tolokaforge*.whl"))
-        assert wheels == [], (
-            f"runner build context must not contain a pre-built wheel; found: {wheels}"
-        )
+        assert (
+            wheels == []
+        ), f"runner build context must not contain a pre-built wheel; found: {wheels}"
         # Instead, the source-tree entries hatch consumes must be present.
         assert (root / "pyproject.toml").exists()
         assert (root / "scripts" / "hatch" / "hatch_runner_subset_builder.py").exists()
@@ -594,3 +594,28 @@ def test_runner_build_context_fails_loud_when_wheel_lacks_packaged_inputs(
 
     with pytest.raises(FileNotFoundError, match="force-include"):
         get_image_definition("runner")
+
+
+def test_core_stack_runner_context_comes_from_the_builder_not_a_copy() -> None:
+    """The orchestrator's service stack must take the runner build context from
+    the builder, never from its own copy of the list.
+
+    ``core_stack()`` is the path a real run takes (orchestrator ->
+    ``service_stack.start_all`` -> ``build_images``), and it used to spell the
+    repo-relative context list out a second time. So when the builder learned
+    to resolve packaged copies for a wheel install, the service stack kept
+    handing over repo-root paths and every installed-engine run still died in
+    ``build_images()`` with ``Declared context path not found: pyproject.toml``
+    — v0.14.0 and v0.14.1 both shipped that way.
+
+    Locking equality here means a future edit to one list cannot silently
+    diverge from the other, and the wheel-install branch reaches production."""
+    from tolokaforge.docker.stacks.core import core_stack
+
+    stack = core_stack()
+    assert (
+        stack.services["runner"].context_files == get_image_definition("runner")["context_files"]
+    ), (
+        "core_stack()'s runner context_files diverged from the builder's — the "
+        "service stack must not keep its own copy of the list"
+    )
