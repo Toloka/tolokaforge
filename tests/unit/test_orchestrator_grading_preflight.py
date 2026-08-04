@@ -152,6 +152,25 @@ def _write_replaying_task(root: Path, task_id: str, *, mcp_server: str | None) -
     )
 
 
+def _write_gradeless_task(root: Path, task_id: str) -> None:
+    """A task naming no grading source at all: no ``grading:`` key, no sibling file.
+
+    Nothing else about the pack is unusual — its one tool is the builtin every clean
+    pack here declares — so the only thing the gate can refuse it for is the absence.
+    """
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": task_id,
+                "description": f"pack {task_id}",
+                "tools": {"agent": {"enabled": ["http_request"]}},
+            }
+        )
+    )
+
+
 def _write_task_yaml(
     task_dir: Path,
     task_id: str,
@@ -319,6 +338,45 @@ def test_prepare_run_rejects_the_pack_before_enqueueing_anything(tmp_path: Path)
     assert not (output_dir / "run_queue.sqlite").exists()
 
 
+def test_a_task_declaring_no_grading_source_aborts_before_the_first_trial(tmp_path: Path) -> None:
+    """A pack the adapter cannot grade at all is refused where every other
+    ungradeable pack is.
+
+    ``get_grading_config`` raises on such a task while artifacts are written — the
+    last phase of a trial whose tokens are already spent — and the gate used to wave
+    it through on the grounds that a task with no grading block has no block to
+    check. The clean sibling is the control: a gate that refused every pack would
+    abort this run identically without it.
+    """
+    root = tmp_path / "pack"
+    _write_gradeless_task(root, "TASK-NO-GRADING-SOURCE")
+    _write_builtin_task(root, "TASK-B-CLEAN", CLEAN)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert conductor.call_log.runs == []
+    message = str(excinfo.value)
+    assert "TASK-NO-GRADING-SOURCE" in message, message
+    assert "`grading:`" in message, message
+    assert "TASK-B-CLEAN" not in message, message
+
+
+def test_prepare_run_rejects_a_task_declaring_no_grading_source(tmp_path: Path) -> None:
+    """The shape the gate's own reason for existing names: every worker of a
+    distributed run would otherwise die identically at grade time."""
+    root = tmp_path / "pack"
+    _write_gradeless_task(root, "TASK-NO-GRADING-SOURCE")
+    output_dir = tmp_path / "results" / "run_prepared"
+    orchestrator, _conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError, match="TASK-NO-GRADING-SOURCE"):
+        orchestrator.prepare_run(output_dir)
+
+    assert not (output_dir / "run_queue.sqlite").exists()
+
+
 # ---------------------------------------------------------------------------
 # Which findings are fatal — six cells, all six driven
 # ---------------------------------------------------------------------------
@@ -462,6 +520,50 @@ def test_what_the_gate_could_not_check_is_logged_beside_the_task(
         if "could not check" in record.getMessage()
     ] == [("TASK-UNCHECKABLE", "trace_checks.the_agent_called_the_tool.present.match.args.json.q")]
     assert "first segment only" in warned[0].reason
+    assert len(conductor.call_log.runs) == 1
+
+
+class _NativeAdapterResolvingToAnExternalType(NativeAdapter):
+    """A real native adapter whose descriptions resolve to an external adapter type.
+
+    The gate discriminates on the type the description carries, and
+    ``NativeAdapter.to_task_description`` hardcodes ``native`` — so nothing the native
+    loader reads can reach the non-native arm on its own. ``terminal_bench`` is a
+    registered adapter, so the description still passes the registration guard the
+    gate resolves through.
+    """
+
+    def to_task_description(self, task_id: str) -> TaskDescription:
+        description = super().to_task_description(task_id)
+        return description.model_copy(update={"adapter_type": "terminal_bench"})
+
+
+def test_a_gradeless_pack_an_adapter_answers_for_itself_reaches_its_trials(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """Only the adapter that grades from a file is owed one.
+
+    An adapter resolving its own grading config makes the same absence unanswerable
+    rather than a defect, so the gate reports it through ``unchecked`` and the run
+    proceeds. Both halves are the lock: passing the pack silently would read as a
+    clean bill of health, and refusing it would fail a run over an authoring claim
+    nothing here can make.
+    """
+    root = tmp_path / "pack"
+    _write_gradeless_task(root, "TASK-NO-GRADING-SOURCE")
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.adapter = _NativeAdapterResolvingToAnExternalType(
+        {"task_packs": [str(root)], "tasks_glob": "**/task.yaml"}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    warned = [record for record in caplog.records if "could not check" in record.getMessage()]
+    assert [(record.task_id, record.where) for record in warned] == [
+        ("TASK-NO-GRADING-SOURCE", "grading")
+    ]
+    assert "'terminal_bench'" in warned[0].reason
     assert len(conductor.call_log.runs) == 1
 
 

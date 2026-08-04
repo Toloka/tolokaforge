@@ -68,6 +68,15 @@ not load, and a pack whose constraints cannot be graded against the tool set a b
 recorded — the last because a constraint naming a tool the corpus never had would fail on
 every trial and read as a disagreement with the judge.
 
+A pack that names **no grading source at all** — no `grading:` field and no sibling
+`grading.yaml` — is an error too, naming the pack. It is refused under every `adapter_type` a
+pack may declare, which is stricter than
+[`tolokaforge validate`](CLI.md#task-validation), where the same absence passes with a `?`
+line for any adapter that resolves its own grading config: the migration is declared beside
+that file and the `trace_checks` block it names is what each recorded verdict is recomputed
+from, so a config resolved without a file leaves a corpus with nothing to be reconciled
+against.
+
 ## The declaration
 
 A task directory carries a `migration.yaml` beside its `grading.yaml`; the file's rules and

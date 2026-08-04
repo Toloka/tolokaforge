@@ -1468,11 +1468,13 @@ def validate(tasks: str):
     import glob
 
     from tolokaforge.adapters._task_loader import (
+        GradingSourceKind,
+        grading_source_under_adapter,
         replay_world_under_adapter,
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
-    from tolokaforge.core.grading.config_validation import CombineLayer
+    from tolokaforge.core.grading.config_validation import AuthoringReport, CombineLayer, Skip
     from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
 
     task_files = glob.glob(tasks, recursive=True)
@@ -1487,21 +1489,26 @@ def validate(tasks: str):
     for task_file in task_files:
         try:
             task_config, task_dir, project_combine = _load_task_under_its_project(Path(task_file))
-            # Schema breaks in the referenced grading.yaml — e.g. the removed
-            # free-text ``rubric: str`` / ``output_schema`` — fail here with a
-            # migration message rather than only at run time.
-            grading_path = task_dir / task_config.grading
-            report = validate_grading_yaml(
-                grading_path,
-                inventory=tool_inventory_under_adapter(
-                    task_config, task_dir, task_config.adapter_type
-                ),
-                replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
-                combine_layer=CombineLayer(project_combine),
-            )
-            # Only here, and deliberately not in the pre-run gate: a migration
-            # declaration cannot affect a grade, so a run must not abort on it.
-            inspect_migration_declaration(grading_path)
+            source = grading_source_under_adapter(task_config, task_dir, task_config.adapter_type)
+            if source.kind is GradingSourceKind.WITHHELD:
+                raise ValueError(source.reason)
+            if source.path is None:
+                report = AuthoringReport().with_unchecked(Skip("grading", source.reason))
+            else:
+                # Schema breaks in the referenced grading.yaml — e.g. the removed
+                # free-text ``rubric: str`` / ``output_schema`` — fail here with a
+                # migration message rather than only at run time.
+                report = validate_grading_yaml(
+                    source.path,
+                    inventory=tool_inventory_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
+                    replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
+                    combine_layer=CombineLayer(project_combine),
+                )
+                # Only here, and deliberately not in the pre-run gate: a migration
+                # declaration cannot affect a grade, so a run must not abort on it.
+                inspect_migration_declaration(source.path)
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

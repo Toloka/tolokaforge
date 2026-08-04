@@ -13,6 +13,8 @@ from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
+    GradingSourceKind,
+    grading_source_under_adapter,
     replay_world_under_adapter,
     tool_inventory_under_adapter,
     validate_grading_yaml,
@@ -1357,7 +1359,9 @@ class Orchestrator:
         call, an argument name its schema forbids, an uncompilable ``regex``, a
         state hash nothing reads, and every migration rejection the typed grading
         blocks carry are all heard here rather than at grade time — where the
-        first two are charged to the agent and the rest lose the trial.
+        first two are charged to the agent and the rest lose the trial. A task
+        naming no grading block at all is refused by the same pass, on the same
+        grounds: the adapter it declares grades from a file it has not supplied.
 
         Every grading offender is named in one raise: an author fixing a run's
         packs wants the list, not the first entry. What the gate could not check
@@ -1380,8 +1384,7 @@ class Orchestrator:
         if not rejected:
             return
         raise ValueError(
-            "These selected tasks carry a grading block that cannot be graded as "
-            "written, so no trial was run:\n"
+            "These selected tasks cannot be graded as written, so no trial was run:\n"
             + "\n".join(rejected)
             + f"\nevaluation.grading_validation.fail_on is {fail_on.value!r}, so a "
             "finding of that class or more severe fails the run. `tolokaforge validate "
@@ -1402,14 +1405,23 @@ class Orchestrator:
         the run's operator wants the list. Anything outside that set is the
         harness's own bug and propagates, rather than sending an author to read a
         file that is fine.
+
+        The task's grading source is resolved before its block is read, so a task
+        that names none is refused here too: the adapter that grades from a file
+        otherwise finds out while the trial's artifacts are written, with every
+        token already spent.
         """
         adapter_type = self._task_description(task.task_id).adapter_type
-        if not task.grading:
-            return None
         task_dir = self.adapter.get_task_dir(task.task_id)
+        source = grading_source_under_adapter(task, task_dir, adapter_type)
+        if source.kind is GradingSourceKind.WITHHELD:
+            return f"* {task.task_id} — {source.reason}"
+        if source.path is None:
+            self._warn_grading_unchecked(task.task_id, "grading", source.reason)
+            return None
         try:
             report = validate_grading_yaml(
-                task_dir / task.grading,
+                source.path,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
                 replay_world=replay_world_under_adapter(task, adapter_type),
                 combine_layer=self.adapter.grading_combine_layer(),
@@ -1418,13 +1430,21 @@ class Orchestrator:
         except (ValueError, RuntimeError, OSError) as exc:
             return f"* {task.task_id} — {exc}"
         for skip in report.unchecked:
-            self.logger.warning(
-                "Grading validation could not check part of this task's block",
-                task_id=task.task_id,
-                where=skip.where,
-                reason=skip.reason,
-            )
+            self._warn_grading_unchecked(task.task_id, skip.where, skip.reason)
         return None
+
+    def _warn_grading_unchecked(self, task_id: str, where: str, reason: str) -> None:
+        """Report one thing the gate could not check beside the task it read.
+
+        A gate that checked nothing must not read as a clean bill of health, whether
+        the unanswerable part is a rule inside the block or the whole grading source.
+        """
+        self.logger.warning(
+            "Grading validation could not check part of this task's block",
+            task_id=task_id,
+            where=where,
+            reason=reason,
+        )
 
     def _build_agent_client(self, agent_config: ModelConfig) -> LLMClient:
         """Build the agent-side wire client for this run.

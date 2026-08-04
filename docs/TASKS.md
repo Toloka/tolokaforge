@@ -71,14 +71,17 @@ grading: "grading.yaml"
 ### Minimal task
 
 The only required fields are `task_id` and `description`. Everything above is
-optional and defaults to a sane value:
+optional and defaults to a sane value, with one exception: a native task owes a
+grading source, supplied either by its own `grading:` field or by a `grading.yaml`
+beside its `task.yaml`. A Project cannot supply that source — `task_defaults`
+carries no `grading` field.
 
 | Field | Default when omitted |
 | --- | --- |
 | `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
 | `tools` | no tools enabled for agent or user |
 | `user_simulator` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
-| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; if there is none, the task has no grading configured |
+| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with neither is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
 
 So a task that inherits everything from its Project needs only:
 
@@ -86,6 +89,9 @@ So a task that inherits everything from its Project needs only:
 task_id: "api_endpoint_add"
 description: "Add a POST /orders endpoint backed by the orders table."
 ```
+
+Those two fields are a complete native pack only with a `grading.yaml` beside them,
+which is the source the `grading` row above describes.
 
 ## Initial State
 
