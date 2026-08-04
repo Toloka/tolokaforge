@@ -169,6 +169,24 @@ consumed verbatim by the hatch build target and locked against the runner
 container's actual runtime import closure by
 [`tests/canonical/test_runner_subset_partition.py`](../tests/canonical/test_runner_subset_partition.py).
 
+**Building the subset wheel.** The `[tool.hatch.build.targets.custom]`
+section of [`pyproject.toml`](../pyproject.toml) declares the subset build
+target; the custom builder at
+[`scripts/hatch/hatch_runner_subset_builder.py`](../scripts/hatch/hatch_runner_subset_builder.py)
+renames the distribution to `tolokaforge-runner-subset`, replaces the base
+wheel's dependency list with the runner-runtime deps, and strips console-script
+/ entry-point tables.
+
+```bash
+uv run hatch build --target custom
+# → dist/tolokaforge_runner_subset-<version>-py3-none-any.whl
+```
+
+The base `tolokaforge` wheel — `hatch build --target wheel` /
+`uv build --wheel` — is unchanged, still published to PyPI, and still installs
+via `pip install tolokaforge` / `pip install tolokaforge[runner]`. The subset
+wheel is a Docker-only artifact and is never uploaded to PyPI.
+
 **Whole subpackages in the subset:**
 
 | Path | Rationale |

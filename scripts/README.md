@@ -7,6 +7,8 @@ Utility scripts for developing with Tolokaforge.
     ├── with_env.sh                            # Load .env + run a command
     ├── with_profile.sh                        # Load profile (no .env) + run a command
     ├── generate_task_pack_compose_override.py  # Generate Docker compose overrides for task packs
+    ├── hatch/
+    │   └── hatch_runner_subset_builder.py     # Custom hatchling builder for the runner-subset wheel (Docker-only; hatch build --target custom)
     ├── setup/
     │   ├── cbm-onboard.sh                     # codebase-memory-mcp + Claude Code hooks into ~/.claude/ (make cbm-onboard)
     │   ├── cbm-offboard.sh                    # Reverse of cbm-onboard (make cbm-offboard)
