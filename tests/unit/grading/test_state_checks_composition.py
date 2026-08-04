@@ -38,7 +38,7 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.runner import runner_pb2 as pb2
-from tolokaforge.runner.models import StateChecksConfig as RunnerStateChecksConfig
+from tolokaforge.runner.models import RunnerStateChecksConfig
 
 pytestmark = pytest.mark.unit
 

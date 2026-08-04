@@ -94,6 +94,12 @@ The compose variant resolves its target container as
 replaced by `_`; both compose tools share this resolution so they target the
 identical container.
 
+The runner reaches that sibling container's daemon over the host docker socket.
+Materialisation bind-mounts `/var/run/docker.sock` into the runner service
+automatically whenever a task routes a shipped tool through the compose variant
+— the same trigger that bakes the docker CLI into the runner image — so the
+task-declared compose file does not need to (and should not) supply it.
+
 > **Compose runtime seam.** A default `docker compose up` names containers
 > `<project>-<service>-<N>` (hyphens plus an ordinal index) — that scheme does
 > not match the wrapper's `<compose_project_prefix><trial_id>_<service>`

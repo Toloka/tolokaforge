@@ -38,6 +38,7 @@ from tolokaforge.core.models import (
     TaskConfig,
     TimeoutConfig,
 )
+from tolokaforge.core.orchestrator import _tasks_use_compose_variant_tools
 from tolokaforge.core.output.artifacts import FileArtifactWriter, InMemoryArtifactWriter
 from tolokaforge.core.plugin_registry import (
     RuntimeBackendBuildContext,
@@ -149,6 +150,7 @@ def run_trial(
             run_id=_RUN_ID,
             seeds={},
             log_capture=log_capture,
+            mount_docker_socket=_tasks_use_compose_variant_tools([task]),
         )
     )
     trial_grader = load_trial_grader(grader)(

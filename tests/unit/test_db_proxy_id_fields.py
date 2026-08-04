@@ -221,12 +221,12 @@ def test_state_checks_config_rejects_blank_id_field():
     malformed override can never reach the proxy (where blank folds to 'id')."""
     from pydantic import ValidationError
 
-    from tolokaforge.runner.models import StateChecksConfig
+    from tolokaforge.runner.models import RunnerStateChecksConfig
 
     with pytest.raises(ValidationError):
-        StateChecksConfig(id_fields={"widgets": ""})  # blank key field
+        RunnerStateChecksConfig(id_fields={"widgets": ""})  # blank key field
     with pytest.raises(ValidationError):
-        StateChecksConfig(id_fields={"  ": "widget_id"})  # blank table name
-    assert StateChecksConfig(id_fields={"widgets": "widget_id"}).id_fields == {
+        RunnerStateChecksConfig(id_fields={"  ": "widget_id"})  # blank table name
+    assert RunnerStateChecksConfig(id_fields={"widgets": "widget_id"}).id_fields == {
         "widgets": "widget_id"
     }

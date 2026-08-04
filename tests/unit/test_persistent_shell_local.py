@@ -10,6 +10,7 @@ timeout. Also locks that the schema provider advertises ``command`` +
 from __future__ import annotations
 
 import os
+import subprocess
 import time
 
 import psutil
@@ -21,7 +22,7 @@ from tolokaforge.runner.tool_factory import (
     PersistentShellToolWrapper,
     ToolLifecycleContext,
 )
-from tolokaforge.tools.persistent_shell import LocalBashSession
+from tolokaforge.tools.persistent_shell import DockerComposeBashSession, LocalBashSession
 
 pytestmark = pytest.mark.unit
 
@@ -172,6 +173,45 @@ async def test_wrapper_requires_command_or_restart(tmp_path):
             await wrapper.execute({})
     finally:
         wrapper.stop()
+
+
+class _DeadExecSession(DockerComposeBashSession):
+    """Compose session whose backing process exits immediately.
+
+    Stands in for ``docker exec`` into a container that is not running (writes
+    an error, exits) without needing a container runtime, so every PTY read
+    hits EOF promptly. Exercises the compose engine's real ``open`` /
+    ``_terminate_runaway`` code — only the process spawn is swapped.
+    """
+
+    def _popen(self, cwd, slave_fd):
+        return subprocess.Popen(
+            ["sh", "-c", "echo 'no such container' >&2; exit 1"],
+            stdin=slave_fd,
+            stdout=slave_fd,
+            stderr=slave_fd,
+            preexec_fn=os.setsid,
+            close_fds=True,
+        )
+
+
+def test_compose_open_on_dead_exec_raises_not_recurses():
+    """Regression: a dead ``docker exec`` (EOF, no prompt) must surface a clean
+    failure, not blow the stack. An empty read is the shell process exiting, not
+    a runaway command; routing it through ``_terminate_runaway`` made the compose
+    engine reopen + re-run per EOF, forking one ``docker exec`` per level until
+    ``RecursionError``. A low recursion limit keeps a regression cheap to detect."""
+    import sys
+
+    session = _DeadExecSession("not-running-container")
+    original_limit = sys.getrecursionlimit()
+    sys.setrecursionlimit(80)
+    try:
+        with pytest.raises(RuntimeError, match="failed to become ready"):
+            session.open("/work")
+    finally:
+        sys.setrecursionlimit(original_limit)
+        session.close()
 
 
 def test_schema_advertises_command_and_restart_locally():

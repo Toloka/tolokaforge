@@ -538,7 +538,12 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
     from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
     from tolokaforge.core.models import ModelConfig
     from tolokaforge.runner import runner_pb2 as pb2
-    from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig, Rubric, TaskDescription
+    from tolokaforge.runner.models import (
+        LLMJudgeConfig,
+        Rubric,
+        RunnerGradingConfig,
+        TaskDescription,
+    )
     from tolokaforge.runner.service import TrialContextRuntime
 
     class _SpyJudge:
@@ -570,7 +575,9 @@ def test_grade_trial_populates_judge_report_kb_gating(monkeypatch):
         description="rubric task",
         adapter_type="native",
         system_prompt="system",
-        grading=GradingConfig(weights={"llm_judge": 1.0}, llm_judge=LLMJudgeConfig(rubric=rubric)),
+        grading=RunnerGradingConfig(
+            weights={"llm_judge": 1.0}, llm_judge=LLMJudgeConfig(rubric=rubric)
+        ),
     )
 
     service = _service(None)

@@ -436,24 +436,18 @@ class NativeAdapter(BaseAdapter):
             AdapterType,
             DbProbe,
             GoldenAction,
-            InitializationAction,
             InvocationStyle,
-            RequiredAction,
-            StateChecksConfig,
+            RunnerGradingConfig,
+            RunnerInitializationAction,
+            RunnerInitialStateConfig,
+            RunnerRequiredAction,
+            RunnerStateChecksConfig,
+            RunnerTranscriptRulesConfig,
+            RunnerUserSimulatorConfig,
             TaskDescription,
             ToolExpectations,
             ToolSchema,
             ToolSource,
-            TranscriptRulesConfig,
-        )
-        from tolokaforge.runner.models import (
-            GradingConfig as RunnerGradingConfig,
-        )
-        from tolokaforge.runner.models import (
-            InitialStateConfig as RunnerInitialStateConfig,
-        )
-        from tolokaforge.runner.models import (
-            UserSimulatorConfig as RunnerUserSimulatorConfig,
         )
         from tolokaforge.runner.tool_factory import create_search_kb_schema
 
@@ -610,14 +604,16 @@ class NativeAdapter(BaseAdapter):
                         records = [collection_data]
                     initial_tables[collection_name] = records
 
-        # Build initialization actions
-        initialization_actions: list[InitializationAction] = []
+        # Build initialization actions. The core-side ``InitializationAction``
+        # names the invoked tool ``func_name`` (author-facing); the runner-side
+        # wire type names it ``tool_name``. Map here so the wire consumer sees
+        # its expected shape without the author having to know either detail.
+        initialization_actions: list[RunnerInitializationAction] = []
         if task.initial_state and task.initial_state.initialization_actions:
             for action in task.initial_state.initialization_actions:
-                # action is already an InitializationAction Pydantic model from core.models
-                init_action = InitializationAction(
+                init_action = RunnerInitializationAction(
                     env_type=action.env_type,
-                    tool_name=action.tool_name,
+                    tool_name=action.func_name,
                     arguments=action.arguments,
                 )
                 initialization_actions.append(init_action)
@@ -663,7 +659,7 @@ class NativeAdapter(BaseAdapter):
                 if err:
                     raise ValueError(err)
 
-                state_checks = StateChecksConfig(
+                state_checks = RunnerStateChecksConfig(
                     hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
                     expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
                     golden_actions=golden_actions,
@@ -678,10 +674,10 @@ class NativeAdapter(BaseAdapter):
             # Build transcript rules
             transcript_data = grading_data.get("transcript_rules", {})
             if transcript_data:
-                required_actions: list[RequiredAction] = []
+                required_actions: list[RunnerRequiredAction] = []
                 for action in transcript_data.get("required_actions", []):
                     required_actions.append(
-                        RequiredAction(
+                        RunnerRequiredAction(
                             action_id=action.get("action_id", ""),
                             requestor=action.get("requestor", "user"),
                             tool_name=action.get("name", ""),
@@ -691,7 +687,7 @@ class NativeAdapter(BaseAdapter):
                     )
 
                 tool_expectations_data = transcript_data.get("tool_expectations")
-                transcript_rules = TranscriptRulesConfig(
+                transcript_rules = RunnerTranscriptRulesConfig(
                     must_contain=transcript_data.get("must_contain", []),
                     disallow_regex=transcript_data.get("disallow_regex", []),
                     max_turns=transcript_data.get("max_turns"),

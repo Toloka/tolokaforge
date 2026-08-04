@@ -129,15 +129,55 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     return False
 
 
-def _run_needs_docker_cli(adapter_type: str | None) -> bool:
-    """Return True iff the run's adapter shells out to docker inside the runner.
+# Tools whose compose variant runs inside a sibling compose service via
+# ``docker exec`` from the runner container. Extend this set when a new
+# tool ships a compose variant that needs the same runner-side docker CLI
+# + socket bind-mount treatment (see ``_run_needs_docker_cli`` and the
+# ``mount_docker_socket`` seam threaded through
+# :class:`tolokaforge.core.plugin_registry.RuntimeBackendBuildContext`).
+_COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_replace_editor"})
 
-    Terminal-bench tasks exec the docker CLI + compose plugin in the runner
-    (against the host daemon via the mounted socket), so their runner image must
-    carry the CLI. Detected from the configured adapter type so the slim default
-    image ships without it for every other run. Pure function for unit testing.
+
+def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
+    """Return True iff any task routes a shipped tool into a sibling service
+    via the compose variant (``tools.agent.<tool>.service: <name>``).
+
+    ``bash_session`` and ``str_replace_editor`` each ship a compose variant
+    that executes inside a sibling compose service by ``docker exec``-ing
+    from the runner container into it. The runner image needs the docker
+    CLI when any enabled tool is in that shape — e.g. the Migration Bench
+    adapter's task packs (``services.mb-server`` running the workload,
+    tools routed there via ``bash_session.service: mb-server``).
     """
-    return adapter_type == AdapterType.TERMINAL_BENCH
+    for task in tasks:
+        if task.tools is None:
+            continue
+        agent_config = task.tools.agent
+        enabled = agent_config.get("enabled", [])
+        for tool_name in _COMPOSE_VARIANT_TOOL_NAMES.intersection(enabled):
+            tool_cfg = agent_config.get(tool_name)
+            if isinstance(tool_cfg, dict) and tool_cfg.get("service"):
+                return True
+    return False
+
+
+def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
+    """Return True iff the run needs the docker CLI baked into the runner image.
+
+    Two triggers today:
+
+    - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
+      (against the host daemon via the mounted socket).
+    - Any task that routes a shipped tool through the compose variant (see
+      :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
+      into the sibling service.
+
+    Detected before build so the slim default image ships without the CLI for
+    every other run. Pure function for unit testing.
+    """
+    if adapter_type == AdapterType.TERMINAL_BENCH:
+        return True
+    return _tasks_use_compose_variant_tools(tasks)
 
 
 def _tasks_need_full_stack(tasks: list[Any]) -> bool:
@@ -742,14 +782,50 @@ class Orchestrator:
         :class:`EnvironmentManifest`, then dedupes by compose-file
         identity.
 
-        The run's tasks must be consistent: either every task in the run
-        declares the same ``environment_manifest.compose_file`` or none do.
-        Mixed runs (some tasks with, some without; or different compose
-        files across tasks) fail loud — a single ``SharedStackRuntimeBackend``
-        can only materialise one substrate per run, and a mixed declaration
-        signals an ambiguous operator intent.
+        For a **shared** runtime, the run's tasks must be consistent:
+        either every task in the run declares the same
+        ``environment_manifest.compose_file`` or none do. Mixed runs
+        (some tasks with, some without; or different compose files
+        across tasks) fail loud — a single ``SharedStackRuntimeBackend``
+        can only materialise one substrate per run, and a mixed
+        declaration signals an ambiguous operator intent.
+
+        For **per_trial** runtime this constraint does not apply — the
+        backend resolves ``task.environment_manifest`` independently per
+        trial. Heterogeneous compose files are legitimate (e.g. the MB
+        adapter emits one pack per problem, each with its own
+        problem-specific compose). Return ``None`` — per-trial doesn't
+        consume a run-level shared manifest.
+
+        Two call sites read this return value:
+
+        - :meth:`run` (the main run entry point): uses the manifest to
+          decide shared-stack materialisation and endpoint logging. Under
+          per-trial the ``None`` return routes through the task-scoped
+          resolution path.
+        - :meth:`run_worker` (distributed worker mode): raises when the
+          return is non-``None`` because a worker joining an env-manifest
+          run would connect to the parent's testcontainers-allocated
+          address, which isn't propagated. Under per-trial the guard is
+          skipped — workers materialise their own per-trial stacks and
+          never depend on a parent-allocated address.
         """
         from tolokaforge.core.project_loader import resolve
+
+        # Per-trial short-circuit — resolves via the same signal
+        # ``_construct_runtime_backend`` uses to pick the backend, so the
+        # two decisions stay in lock-step. Both the operator override
+        # ``orchestrator.runtime`` and the task-driven per-trial signal
+        # suppress the shared-stack heterogeneity check. Inlined rather
+        # than routed through ``_resolve_effective_runtime_choice`` so
+        # the override path works when the adapter isn't loaded yet
+        # (unit-test seams).
+        override = self.config.orchestrator.runtime
+        if override == "per_trial":
+            return None
+        if override is None and self.adapter is not None:
+            if self._select_backend_from_tasks() == "per_trial":
+                return None
 
         project_env = self.project.default_environment if self.project is not None else None
         manifests_by_compose: dict[str, EnvironmentManifest] = {}
@@ -871,6 +947,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
+                mount_docker_socket=_tasks_use_compose_variant_tools(self.tasks),
             )
         )
         self.logger.info(
@@ -1443,9 +1520,10 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type):
+                if _run_needs_docker_cli(adapter_type, self.tasks):
                     self.logger.info(
-                        "Terminal-bench adapter detected — enabling docker CLI in runner image"
+                        "Docker CLI required in runner image "
+                        "(terminal-bench adapter or compose-variant tools detected)"
                     )
                     core_stack_kwargs["enable_docker_cli"] = True
                 # Pick full_stack (db-service + runner + rag-service +
@@ -1470,7 +1548,11 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
-                per_trial_mode = self.config.orchestrator.runtime == "per_trial"
+                # Route through the effective-choice helper so both the
+                # operator override and the task-driven per-trial signal
+                # produce the same task-declared-stack decision (see
+                # sibling guard at the endpoint-logging site below).
+                per_trial_mode = self._resolve_effective_runtime_choice() == "per_trial"
                 # In per_trial mode OR shared+env_manifest mode the built-in engine
                 # containers go unused — the task-declared compose stack owns the
                 # runner + db-service. The engine images still need to be BUILT so
@@ -1567,7 +1649,14 @@ class Orchestrator:
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
-        if self.config.orchestrator.runtime == "per_trial" or run_env_manifest is not None:
+        # Route through ``_resolve_effective_runtime_choice`` so the guard
+        # covers both the operator override AND the task-driven per-trial
+        # signal. The direct ``config.orchestrator.runtime`` string check
+        # would miss the task-driven case now that
+        # ``_extract_run_env_manifest`` returns ``None`` for it — the
+        # ``else`` branch below would then log phantom default endpoints
+        # that never reach a trial spec, defeating this guard's intent.
+        if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
             # ``endpoints(handle)``. Shared+env_manifest resolves them once
             # at connect time from the materialised stack. In both cases the
