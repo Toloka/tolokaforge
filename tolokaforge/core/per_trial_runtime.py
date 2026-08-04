@@ -49,6 +49,7 @@ from tolokaforge.core.compose_materialisation import (
     copy_compose_context,
     first_published_port,
     make_project_temp_dir,
+    mount_docker_socket_into_runner,
     resolve_env_endpoints,
     resolve_host_port,
     resolve_runner_endpoint,
@@ -169,6 +170,12 @@ class PerTrialRuntimeBackend:
     and :meth:`capture_service_logs` write ``docker compose logs`` output under
     ``log_capture.output_root/trials/<task>/<idx>/services/`` before teardown."""
 
+    mount_docker_socket: bool = False
+    """Bind-mount the host docker socket into the runner at provision time.
+    Set by the factory when the run uses compose-variant tools, whose runner-side
+    wrappers ``docker exec`` into a sibling service (see
+    :func:`~tolokaforge.core.compose_materialisation.mount_docker_socket_into_runner`)."""
+
     readiness_probe_loader: Callable[[str], ReadinessProbeFactory] = load_readiness_probe
     """Resolves a readiness-probe ``kind`` to its factory, defaulting to the
     entry-point registry loader. Production runs use the registered probes;
@@ -255,6 +262,10 @@ class PerTrialRuntimeBackend:
                 manifest.limited_internet_allowlist,
                 restricted_services=manifest.restricted_services,
             )
+            if self.mount_docker_socket:
+                mount_docker_socket_into_runner(
+                    temp_dir / manifest.compose_file.name, manifest.runner_service
+                )
             compose = DockerCompose(
                 context=str(temp_dir),
                 compose_file_name=manifest.compose_file.name,
@@ -760,4 +771,8 @@ def per_trial_runtime_backend_factory(
     ctx: RuntimeBackendBuildContext,
 ) -> PerTrialRuntimeBackend:
     """Build a :class:`PerTrialRuntimeBackend` from a build context."""
-    return PerTrialRuntimeBackend(seeds=ctx.seeds, log_capture=ctx.log_capture)
+    return PerTrialRuntimeBackend(
+        seeds=ctx.seeds,
+        log_capture=ctx.log_capture,
+        mount_docker_socket=ctx.mount_docker_socket,
+    )

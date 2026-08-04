@@ -905,6 +905,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
+                mount_docker_socket=_tasks_use_compose_variant_tools(self.tasks),
             )
         )
         self.logger.info(
