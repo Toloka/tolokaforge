@@ -40,7 +40,11 @@ from tolokaforge.runner.grading import (
     compute_state_diff,
     evaluate_transcript_rules,
 )
-from tolokaforge.runner.models import RequiredAction, ToolExpectations, TranscriptRulesConfig
+from tolokaforge.runner.models import (
+    RunnerRequiredAction,
+    RunnerTranscriptRulesConfig,
+    ToolExpectations,
+)
 
 
 class TestGoldenMatchScoresOne:
@@ -440,10 +444,10 @@ class TestLLMJudgePlaceholderStatus:
 
 
 class TestTranscriptRulesEvaluation:
-    """Real-behaviour tests for the author-facing TranscriptRulesConfig grader.
+    """Real-behaviour tests for the author-facing RunnerTranscriptRulesConfig grader.
 
     ``evaluate_transcript_rules`` takes the trial's :class:`TrialTimeline` plus a
-    single ``TranscriptRulesConfig.model_dump()`` dict (the schema authors write
+    single ``RunnerTranscriptRulesConfig.model_dump()`` dict (the schema authors write
     in grading.yaml) and decomposes the config's fields into per-field sub-checks.
     These tests exercise each field honestly with realistic fixtures and prove the
     historical always-pass no-op bug is gone.
@@ -451,8 +455,8 @@ class TestTranscriptRulesEvaluation:
 
     @staticmethod
     def _config(**fields):
-        """Build a TranscriptRulesConfig dump with only the given fields set."""
-        return TranscriptRulesConfig(**fields).model_dump()
+        """Build a RunnerTranscriptRulesConfig dump with only the given fields set."""
+        return RunnerTranscriptRulesConfig(**fields).model_dump()
 
     @staticmethod
     def _timeline(
@@ -696,7 +700,7 @@ class TestTranscriptRulesEvaluation:
     def test_a_records_less_timeline_names_the_gap_on_a_required_action(self):
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="a1",
                     requestor="assistant",
                     tool_name="delete_customer",
@@ -741,7 +745,7 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("get_order", arguments={"order_id": "123"})])
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="get",
                     requestor="assistant",
                     tool_name="get_order",
@@ -758,7 +762,7 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("list_orders")])
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="get",
                     requestor="assistant",
                     tool_name="get_order",
@@ -779,7 +783,7 @@ class TestTranscriptRulesEvaluation:
         )
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="book",
                     requestor="assistant",
                     tool_name="book_reservation",
@@ -801,7 +805,7 @@ class TestTranscriptRulesEvaluation:
         )
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="book",
                     requestor="assistant",
                     tool_name="book_reservation",
@@ -819,7 +823,7 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("get_order", executor="user")])
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="get",
                     requestor="assistant",
                     tool_name="get_order",
@@ -835,7 +839,7 @@ class TestTranscriptRulesEvaluation:
         timeline = self._timeline(calls=[self._call("get_order", status="error")])
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="get",
                     requestor="assistant",
                     tool_name="get_order",
@@ -855,7 +859,7 @@ class TestTranscriptRulesEvaluation:
         )
         config = self._config(
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="get",
                     requestor="assistant",
                     tool_name="get_order",
@@ -895,7 +899,7 @@ class TestTranscriptRulesEvaluation:
     # --- regression: the old always-pass no-op bug -------------------------
 
     def test_violating_config_no_longer_silently_passes(self):
-        """REGRESSION: previously the full TranscriptRulesConfig dict was passed
+        """REGRESSION: previously the full RunnerTranscriptRulesConfig dict was passed
         as a single rule with no ``type`` key, hitting the unknown-type branch
         and ALWAYS returning passed=True / score=1.0. A config the transcript
         clearly violates must now fail.
@@ -905,7 +909,7 @@ class TestTranscriptRulesEvaluation:
         config = self._config(
             must_contain=["confirmation number"],
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="book",
                     requestor="assistant",
                     tool_name="book_reservation",
@@ -934,7 +938,7 @@ class TestTranscriptRulesEvaluation:
             must_contain=["cancelled"],  # pass
             max_turns=5,  # pass (1 assistant turn)
             required_actions=[
-                RequiredAction(
+                RunnerRequiredAction(
                     action_id="cancel",
                     requestor="assistant",
                     tool_name="cancel_booking",

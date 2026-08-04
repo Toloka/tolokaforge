@@ -106,9 +106,9 @@ class TestRefusalTaskGrading:
 
     def test_empty_golden_actions_list_is_valid(self):
         """An empty golden_actions list is a valid refusal task — not an error."""
-        from tolokaforge.runner.models import StateChecksConfig
+        from tolokaforge.runner.models import RunnerStateChecksConfig
 
-        config = StateChecksConfig(
+        config = RunnerStateChecksConfig(
             hash_enabled=True,
             golden_actions=[],  # Refusal task
         )
