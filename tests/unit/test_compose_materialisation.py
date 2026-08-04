@@ -34,6 +34,7 @@ from tolokaforge.core.compose_materialisation import (
     enforce_network_policy,
     first_published_port,
     make_project_temp_dir,
+    mount_docker_socket_into_runner,
     render_squid_config,
     resolve_env_endpoints,
     resolve_host_port,
@@ -840,3 +841,70 @@ class TestApplyNetworkPolicyToComposeFile:
         assert NETPOLICY_INTERNAL_NETWORK not in doc["services"]["app"]["networks"]
         assert doc["services"]["app"]["networks"] == ["tool_bridge"]
         assert NETPOLICY_INTERNAL_NETWORK in doc["services"]["runner"]["networks"]
+
+
+class TestMountDockerSocketIntoRunner:
+    def test_adds_socket_bind_mount_to_runner_service(self, tmp_path: Path) -> None:
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n  runner:\n    image: r:local\n  mb-server:\n    image: mb:local\n"
+        )
+        mount_docker_socket_into_runner(compose, "runner")
+
+        doc = yaml.safe_load(compose.read_text())
+        assert "/var/run/docker.sock:/var/run/docker.sock" in doc["services"]["runner"]["volumes"]
+        # Only the runner gains the socket; siblings are untouched.
+        assert "volumes" not in doc["services"]["mb-server"]
+
+    def test_preserves_existing_runner_volumes(self, tmp_path: Path) -> None:
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n  runner:\n    image: r:local\n    volumes:\n      - ./data:/data\n"
+        )
+        mount_docker_socket_into_runner(compose, "runner")
+
+        volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
+        assert "./data:/data" in volumes
+        assert "/var/run/docker.sock:/var/run/docker.sock" in volumes
+
+    def test_idempotent_when_socket_already_mounted(self, tmp_path: Path) -> None:
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  runner:\n"
+            "    image: r:local\n"
+            "    volumes:\n"
+            "      - /var/run/docker.sock:/var/run/docker.sock\n"
+        )
+        before = compose.read_text()
+        mount_docker_socket_into_runner(compose, "runner")
+
+        assert compose.read_text() == before
+        volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
+        assert volumes.count("/var/run/docker.sock:/var/run/docker.sock") == 1
+
+    def test_idempotent_for_long_form_socket_mount(self, tmp_path: Path) -> None:
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  runner:\n"
+            "    image: r:local\n"
+            "    volumes:\n"
+            "      - type: bind\n"
+            "        source: /var/run/docker.sock\n"
+            "        target: /var/run/docker.sock\n"
+        )
+        before = compose.read_text()
+        mount_docker_socket_into_runner(compose, "runner")
+
+        assert compose.read_text() == before
+        volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
+        assert len(volumes) == 1

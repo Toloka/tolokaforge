@@ -315,3 +315,43 @@ class TestRunDisplayEventsPropagation:
         )
 
         ctx.events.component_status_changed(component_id="probe", status="healthy")
+
+
+class TestMountDockerSocketPropagation:
+    """The compose-variant docker-socket trigger must reach the backend that
+    materialises the runner. The flag lives on the build context and each
+    factory threads it onto the backend; ``provision`` / ``_materialise_manifest``
+    then inject ``/var/run/docker.sock`` into the runner service. A drop here
+    silently reverts to no socket, so every compose-variant ``docker exec``
+    fails with a no-daemon error surfaced as ``bash session failed to
+    become ready``."""
+
+    def _ctx(self, *, env_manifest: EnvironmentManifest | None, mount: bool):
+        return RuntimeBackendBuildContext(
+            runner_address="sentinel:50051",
+            env_manifest=env_manifest,
+            run_id="test-run",
+            seeds={},
+            log_capture=None,
+            mount_docker_socket=mount,
+        )
+
+    def test_context_defaults_to_false(self) -> None:
+        ctx = RuntimeBackendBuildContext(
+            runner_address="sentinel:50051",
+            env_manifest=None,
+            run_id="test-run",
+            seeds={},
+            log_capture=None,
+        )
+        assert ctx.mount_docker_socket is False
+
+    def test_per_trial_factory_threads_flag(self) -> None:
+        backend = per_trial_runtime_backend_factory(self._ctx(env_manifest=None, mount=True))
+        assert backend.mount_docker_socket is True
+
+    def test_shared_factory_threads_flag(self) -> None:
+        backend = shared_runtime_backend_factory(
+            self._ctx(env_manifest=_manifest_all_shared(), mount=True)
+        )
+        assert backend._mount_docker_socket is True

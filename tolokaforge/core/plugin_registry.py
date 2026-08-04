@@ -144,6 +144,11 @@ class RuntimeBackendBuildContext:
     seeds: dict[str, SeedRef]
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
+    mount_docker_socket: bool = False
+    """Bind-mount the host docker socket into the materialised runner. Set when
+    the run routes a shipped tool through the compose variant
+    (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the
+    runner into a sibling service and so need the runner to reach the daemon."""
 
 
 @dataclass(frozen=True)

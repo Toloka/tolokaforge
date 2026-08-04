@@ -745,25 +745,41 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             judge_model_config=trial_spec.judge_model_config,
         )
 
-        # Initialize DB Service with initial_state (FAIL FAST)
+        # Initialize DB Service with initial_state — only when the trial
+        # actually declares DB state to initialise. Tasks that use no DB
+        # tables / schemas / unstable_fields (e.g. adapters that grade via
+        # `custom_checks` + an HTTP endpoint on a sidecar, and drive no
+        # runner-managed state) skip the DB call entirely, so the runner
+        # provisions cleanly even when no `db-service` sits in the trial's
+        # compose stack. Matches the guard the state-diff renderer already
+        # applies at `_maybe_render_state_diff` (checks `not initial_state.tables`).
+        # FAIL FAST is preserved for trials that DO declare DB state.
         initial_state = task_description.initial_state
-        try:
-            # Run async operation on dedicated event loop thread
-            self._run_async(
-                self.db_client.init_trial(
-                    trial_id=trial_id,
-                    tables=initial_state.tables,
-                    schemas=[s.model_dump() for s in initial_state.schemas],
-                    unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+        needs_db = bool(
+            initial_state.tables or initial_state.schemas or initial_state.unstable_fields
+        )
+        if needs_db:
+            try:
+                # Run async operation on dedicated event loop thread
+                self._run_async(
+                    self.db_client.init_trial(
+                        trial_id=trial_id,
+                        tables=initial_state.tables,
+                        schemas=[s.model_dump() for s in initial_state.schemas],
+                        unstable_fields=[u.model_dump() for u in initial_state.unstable_fields],
+                    )
                 )
-            )
-            logger.info(f"RegisterTrial: {trial_id} - DB Service initialized")
-        except Exception as e:
-            # FAIL FAST: DB init failure is a critical error
-            logger.error(f"RegisterTrial: Failed to initialize DB Service: {e}")
-            return pb2.RegisterTrialResponse(
-                success=False,
-                error=f"DB Service initialization failed: {e}",
+                logger.info(f"RegisterTrial: {trial_id} - DB Service initialized")
+            except Exception as e:
+                # FAIL FAST: DB init failure is a critical error
+                logger.error(f"RegisterTrial: Failed to initialize DB Service: {e}")
+                return pb2.RegisterTrialResponse(
+                    success=False,
+                    error=f"DB Service initialization failed: {e}",
+                )
+        else:
+            logger.info(
+                f"RegisterTrial: {trial_id} - no DB state declared; skipping DB Service init"
             )
 
         # Provision initial filesystem files (from initial_state.filesystem).
@@ -1826,8 +1842,27 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             dict(initial_tables) if initial_tables else None
         )
 
-        final_state_response = await self.db_client.get_state(trial_id)
-        final_env_state: dict[str, Any] = final_state_response.data
+        # Try to fetch the trial's final DB state. On failure — DB Service
+        # unreachable, trial never registered (empty initial_state skips the
+        # init in ``RegisterTrial`` above), etc. — degrade to an empty
+        # ``final_env_state`` so ``build_check_context`` still gets a
+        # well-formed input and the check runs against an honest empty state
+        # rather than crashing the grade path. Any real state a tool call
+        # wrote to a functional DB is preserved (matches the substrate parity
+        # test's expectation that a fixture DB with data drives discrimination
+        # even when ``initial_state.tables`` is empty).
+        try:
+            final_state_response = await self.db_client.get_state(trial_id)
+            final_env_state: dict[str, Any] = final_state_response.data
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
+            logger.warning(
+                "GradeTrial: %s - final DB state fetch failed (%s); grading against empty state",
+                trial_id,
+                exc,
+            )
+            final_env_state = {}
 
         ctx = build_check_context(
             initial_state_json_db=initial_state_json_db,

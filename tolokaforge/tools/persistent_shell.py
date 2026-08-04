@@ -146,7 +146,7 @@ class _PtyBashSession:
                 continue
             chunk = self._read()
             if not chunk:
-                return self._on_timeout(buf)
+                return self._on_process_exit(buf)
             buf += chunk
             parsed = self._split_on_sentinel(buf, marker)
             if parsed is not None:
@@ -218,6 +218,20 @@ class _PtyBashSession:
     def _on_timeout(self, buf: bytes) -> CommandResult:
         self._terminate_runaway()
         buf += self._drain(0.3)
+        output = buf.decode("utf-8", errors="replace").replace("\r\n", "\n")
+        return CommandResult(output=_truncate_middle(output), exit_code=None, timed_out=True)
+
+    def _on_process_exit(self, buf: bytes) -> CommandResult:
+        # An empty read from a ready descriptor means the shell pipe closed —
+        # the process exited and the session is dead. This is NOT a timeout:
+        # there is no runaway command to terminate and no live shell to
+        # preserve, so we must not enter ``_terminate_runaway``. The compose
+        # engine's terminate path reopens the exec and re-runs the sentinel,
+        # which reads EOF again and recurses without bound (one forked
+        # ``docker exec`` per level, until RecursionError) whenever the target
+        # container is not running. Close and report as timed-out so callers
+        # (e.g. ``open``) surface a clean failure instead of blowing the stack.
+        self.close()
         output = buf.decode("utf-8", errors="replace").replace("\r\n", "\n")
         return CommandResult(output=_truncate_middle(output), exit_code=None, timed_out=True)
 

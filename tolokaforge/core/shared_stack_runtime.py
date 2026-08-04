@@ -37,6 +37,7 @@ from tolokaforge.core.compose_materialisation import (
     compose_container_to_snapshot,
     copy_compose_context,
     make_project_temp_dir,
+    mount_docker_socket_into_runner,
     resolve_env_endpoints,
     resolve_runner_endpoint,
     run_services_dir,
@@ -903,6 +904,7 @@ class SharedStackRuntimeBackend:
         seeds: dict[str, SeedRef] | None = None,
         log_capture: LogCaptureConfig | None = None,
         *,
+        mount_docker_socket: bool = False,
         events: RunDisplayEvents | None = None,
     ):
         """Initialize the shared-stack runtime.
@@ -935,6 +937,7 @@ class SharedStackRuntimeBackend:
         self._compose_log_routers: list[LogRouter] = []
         self.seeds: dict[str, SeedRef] = dict(seeds or {})
         self.log_capture = log_capture
+        self._mount_docker_socket = mount_docker_socket
         self._events: RunDisplayEvents = events if events is not None else _NULL_EVENTS
 
         self.runner_client: GrpcRunnerClient | None
@@ -1048,6 +1051,10 @@ class SharedStackRuntimeBackend:
                 manifest.limited_internet_allowlist,
                 restricted_services=manifest.restricted_services,
             )
+            if self._mount_docker_socket:
+                mount_docker_socket_into_runner(
+                    temp_dir / manifest.compose_file.name, manifest.runner_service
+                )
             compose = DockerCompose(
                 context=str(temp_dir),
                 compose_file_name=manifest.compose_file.name,
@@ -1356,6 +1363,7 @@ def shared_runtime_backend_factory(
             run_id=ctx.run_id,
             seeds=ctx.seeds,
             log_capture=ctx.log_capture,
+            mount_docker_socket=ctx.mount_docker_socket,
             events=ctx.events,
         )
     return SharedStackRuntimeBackend(

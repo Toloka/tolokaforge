@@ -327,6 +327,45 @@ def apply_network_policy_to_compose_file(
         (compose_file.parent / SQUID_CONFIG_FILENAME).write_text(squid_conf)
 
 
+DOCKER_SOCKET_PATH = "/var/run/docker.sock"
+"""Host docker socket, bind-mounted into the runner for compose-variant tools."""
+
+
+def _volumes_mount_docker_socket(volumes: Iterable[Any]) -> bool:
+    """True iff ``volumes`` already bind-mounts :data:`DOCKER_SOCKET_PATH`.
+
+    Handles both compose volume forms: the short ``"src:dst[:mode]"`` string and
+    the long ``{"source": ..., "target": ...}`` mapping."""
+    for entry in volumes:
+        if isinstance(entry, str) and entry.split(":", 1)[0] == DOCKER_SOCKET_PATH:
+            return True
+        if isinstance(entry, Mapping) and entry.get("source") == DOCKER_SOCKET_PATH:
+            return True
+    return False
+
+
+def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> None:
+    """Bind-mount the host docker socket into ``runner_service`` in place.
+
+    The compose-variant ``bash_session`` / ``str_replace_editor`` tools run on
+    the runner and ``docker exec`` into a sibling service, so the runner must
+    reach the docker daemon. The runner image carries the docker CLI (baked in
+    when ``_run_needs_docker_cli`` fires), but the socket is a runtime bind mount
+    the task-declared compose file does not supply — materialisation injects it
+    here on the same trigger. Idempotent: an existing socket mount is left as-is.
+    """
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    service = doc["services"][runner_service]
+    volumes = service.get("volumes") or []
+    if _volumes_mount_docker_socket(volumes):
+        return
+    volumes.append(f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}")
+    service["volumes"] = volumes
+    with compose_file.open("w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+
+
 # ---------------------------------------------------------------------------
 # Filesystem + project layout
 # ---------------------------------------------------------------------------
