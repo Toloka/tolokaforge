@@ -348,13 +348,13 @@ aggregation, which is #685's territory, not the floor's. See
 
 ### What the guard cannot see
 
-`model_fields` introspection enumerates typed config fields, and all four core
-grading models are `extra="ignore"`. So `state_checks.hash.*`, the
+`model_fields` introspection enumerates typed config fields, and the contents of a
+**dict-typed** field are values rather than fields. So `state_checks.hash.*`, the
 `state_checks.jsonpaths[*]` operator vocabulary, and `custom_checks.*` internals
-are structurally outside the enumeration — the manifest records nested dict keys
-as **declared data**, verified only to live inside a dict-typed field. And a green
-parity suite proves each key *discriminates*, not that its discrimination is
-*correct*.
+are structurally outside the enumeration whatever their parent model does with an
+unknown key — the manifest records nested dict keys as **declared data**, verified
+only to live inside a dict-typed field. And a green parity suite proves each key
+*discriminates*, not that its discrimination is *correct*.
 
 An author key living inside the **elements** of a `list[SomeModel]` field is the
 one nested position that is *not* declared data. The field walker treats such a
@@ -2327,6 +2327,7 @@ Findings come in three classes:
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
+| the project layer beneath a task's `combine`, where no caller resolved it, whose own keys are therefore unread | unchecked | `task_defaults.grading_defaults.combine` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
 | a `bind.values[*].field` whose property writes no `type` | unchecked | per extraction |
@@ -2343,8 +2344,10 @@ false-reject mode. It is surfaced beside the task all the same — `validate` pr
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, a property
-whose schema writes no `type`, a replay world no caller resolved, and a task naming no
-grading source under an adapter that resolves its own all land here.
+whose schema writes no `type`, a replay world no caller resolved, a project `combine`
+layer no caller resolved — whose own key names are unread as a result, separately from
+the weights it would have contributed — and a task naming no grading source under an
+adapter that resolves its own all land here.
 
 **A missing grading source is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter
@@ -3087,6 +3090,22 @@ probe passes only for the one the after-hours policy permits.
 ---
 
 ## Score Combination
+
+The block declares exactly three keys — `method`, `weights` and `pass_threshold` —
+and any other key is refused at load. Every field here has a default, so a key the
+block does not declare would grade the pack by a value nobody wrote: `pass_treshold:
+0.95` folds at `0.8`. The refusal lives on the model, so it holds wherever the block
+is constructed, `project.yaml`'s `task_defaults.grading_defaults.combine` included —
+a project declaring an unknown key there fails project load, naming the dotted path
+to it.
+
+For the block inside a `grading.yaml`, `tolokaforge validate` says what the model
+alone cannot: the file, the offending key, its closest declared field, the accepted
+set, and **which of the two layers wrote the key** — the task's own block or the
+project defaults beneath it — since an author sent to the wrong file fixes nothing.
+Where no caller resolved the project layer, its key names go unread and the gate
+reports that on its [`unchecked` channel](#what-is-validated-before-a-run) rather
+than passing the pack silently.
 
 `combine.method` names the rule that folds the scored components into one score and
 one pass flag. Three methods are supported, and both substrates dispatch on the same

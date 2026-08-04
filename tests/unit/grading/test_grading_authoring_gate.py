@@ -43,6 +43,7 @@ from tolokaforge.core.grading.config_validation import (
     _TRANSCRIPT_RULE_KEYS,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
+    UNRESOLVED_PROJECT_COMBINE_KEYS_REASON,
     AuthoringReport,
     CombineLayer,
     Finding,
@@ -609,6 +610,7 @@ def test_an_unresolvable_inventory_fails_nothing_and_says_why(
         "the tool set of this task could not be resolved, so no tool name and no "
         "argument name in this block is checkable",
         UNRESOLVED_COMBINE_REASON,
+        UNRESOLVED_PROJECT_COMBINE_KEYS_REASON,
     ]
 
 

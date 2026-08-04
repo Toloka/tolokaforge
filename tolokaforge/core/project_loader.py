@@ -29,7 +29,6 @@ task-yaml delta.
 
 from __future__ import annotations
 
-import difflib
 import os
 import re
 import warnings
@@ -48,6 +47,7 @@ from tolokaforge.core.deprecations import (
     warn_deprecated,
     warn_legacy_run_config_dir,
 )
+from tolokaforge.core.grading.unknown_keys import suggest_closest_field
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
@@ -71,7 +71,7 @@ def construct_config(
 
     A key in *data* that is not a field of *model* raises a
     ``DeprecationWarning`` naming the file basename, the key, the closest
-    schema match (via :func:`difflib.get_close_matches`), and a
+    schema match (via the shared :func:`suggest_closest_field`), and a
     ``(tracked in #<n>)`` suffix pointing at the strict-flip follow-up
     issue so users can plan against a concrete retirement schedule. The
     key is then silently dropped. A genuine validation failure (type
@@ -94,19 +94,12 @@ def construct_config(
 
 
 def _unknown_key_line(model: type[BaseModel], key: str, source: Path, section: str) -> str:
-    suggestion = difflib.get_close_matches(key, list(model.model_fields), n=1)
     where = source.name + (f" ({section})" if section else "")
-    line = f"unknown key '{key}' in {where}"
-    if suggestion:
-        line += f" — did you mean '{suggestion[0]}'? "
-        line += f"Rename `{key}` to `{suggestion[0]}` (or remove it if unused). "
-    else:
-        line += (
-            f" — no close match on {model.__name__}. Remove the key or "
-            f"check the schema for the correct name. "
-        )
-    line += f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
-    return line
+    return (
+        f"unknown key '{key}' in {where}"
+        f"{suggest_closest_field(model, key)}"
+        f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
+    )
 
 
 # ── Filesystem discovery ────────────────────────────────────────────────

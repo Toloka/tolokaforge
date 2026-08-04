@@ -481,9 +481,14 @@ class GradingCombineConfig(BaseModel):
     ``weights`` defaults to an empty dict so a project-level defaults
     block may declare only a partial view (e.g. ``pass_threshold`` alone).
     Consumers that require weights validate presence at use-site.
+
+    ``extra="forbid"`` because every field here has a default a dropped key would
+    silently substitute: a ``pass_treshold`` typo graded the pack at ``0.8``
+    whatever the author wrote. The refusal holds on every construction path,
+    ``project.yaml``'s ``task_defaults.grading_defaults.combine`` included.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     method: CombineMethod = "weighted"
     weights: dict[str, float] = Field(default_factory=dict)

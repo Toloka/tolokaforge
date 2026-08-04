@@ -19,7 +19,8 @@ migration:
 * ``combine``: the aggregation ``method`` is a closed set, and the two retired
   names that were declared but never dispatched are rejected naming the rule each
   one meant; a block that is not a mapping is rejected naming the file, the key and
-  the shape received.
+  the shape received; a key the block does not declare is rejected naming the closest
+  declared field, the accepted set, and which of the two layers wrote it.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
   its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
   substrates' models naming both keys and both values.
@@ -48,6 +49,7 @@ from pathlib import Path
 import pytest
 import yaml
 from click.testing import CliRunner
+from pydantic import ValidationError
 
 from tests.utils.trace_checks_configs import every_kind_block
 from tolokaforge.adapters._task_loader import validate_grading_yaml
@@ -55,9 +57,10 @@ from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
 )
-from tolokaforge.core.grading.config_validation import ToolInventory
-from tolokaforge.core.models import GradingDefaults, StateChecksConfig
+from tolokaforge.core.grading.config_validation import CombineLayer, ToolInventory
+from tolokaforge.core.models import GradingCombineConfig, GradingDefaults, StateChecksConfig
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
+from tolokaforge.core.project_loader import resolve_effective_grading_combine
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.models import RunnerTranscriptRulesConfig as RunnerTranscriptRules
 
@@ -533,8 +536,8 @@ def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Pat
 # ---------------------------------------------------------------------------
 # combine.method — the aggregation an author names, rejected at validate time
 #
-# This gate closes the bad-*value* half of the combine typo space. A misspelled
-# *key* (``combine: {methd: any}``) is a different defect, tracked in #745.
+# This gate closes the bad-*value* half of the combine typo space; the misspelled
+# *key* half (``combine: {methd: any}``) is the section after it.
 # ---------------------------------------------------------------------------
 
 
@@ -663,6 +666,115 @@ def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path
     assert "0 valid, 1 invalid" in out
     assert "Use 'all'" in out
     assert "never worked" in out
+
+
+# ---------------------------------------------------------------------------
+# combine's own field names — a key the block does not declare, refused at load
+#
+# Every field in the block has a default a dropped key silently substituted, so the
+# refusal is on the model (total over every construction path) and its author-facing
+# message is at the gate, which is the only tier that knows the file and the layer.
+# ---------------------------------------------------------------------------
+
+
+_COMBINE_TYPOS = {"methd": "all", "pass_treshold": 0.95, "wieghts": _WEIGHTS}
+_COMBINE_FIELDS = ("method", "weights", "pass_threshold")
+
+
+@pytest.mark.parametrize("key", tuple(_COMBINE_TYPOS))
+def test_the_combine_block_refuses_a_key_it_does_not_declare(key: str):
+    """On the model, so ``project.yaml`` load and direct Python are refused too.
+
+    Each of these graded a pack by a value nobody wrote: ``methd: all`` folded as
+    ``weighted``, ``pass_treshold: 0.95`` at ``0.8``, ``wieghts`` over ``{}``.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        GradingCombineConfig(**{key: _COMBINE_TYPOS[key]})
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [(key,)]
+
+
+def test_a_misspelled_threshold_no_longer_resolves_to_the_default():
+    """The value consequence, at the merge a run is graded by rather than at the model.
+
+    The silent substitution is the regression: this resolution answered ``0.8`` for a
+    pack asking for ``0.95``, and every consumer downstream read the wrong threshold as
+    the author's own.
+    """
+    assert resolve_effective_grading_combine(None, {"pass_threshold": 0.95}).pass_threshold == 0.95
+
+    with pytest.raises(ValidationError):
+        resolve_effective_grading_combine(None, {"pass_treshold": 0.95})
+
+
+def test_validate_names_the_key_its_closest_field_and_the_accepted_set(tmp_path: Path):
+    """What the model's own ``extra_forbidden`` cannot say: the file, and the fix."""
+    grading = _write_combine(tmp_path, {"pass_treshold": 0.95, "weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "'pass_treshold'" in message, message
+    assert "did you mean 'pass_threshold'?" in message, message
+    for field in _COMBINE_FIELDS:
+        assert field in message, message
+    assert "the task's own combine block" in message, message
+
+
+def test_validate_names_the_project_layer_for_a_key_the_task_did_not_write(tmp_path: Path):
+    """A typo inherited from the project sends its author to ``project.yaml``, not here.
+
+    The task's own block is clean, so a refusal naming this file's ``combine`` would
+    send the author to edit a block that has nothing wrong with it.
+    """
+    grading = _write_combine(tmp_path, {"weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(
+            grading, inventory=_UNRESOLVED, combine_layer=CombineLayer({"methd": "all"})
+        )
+
+    message = str(excinfo.value)
+    assert "task_defaults.grading_defaults.combine" in message, message
+    assert "did you mean 'method'?" in message, message
+    assert "the task's own combine block" not in message, message
+
+
+def test_validate_reports_an_unresolvable_project_layer_as_its_own_unchecked_entry(
+    tmp_path: Path,
+):
+    """A caller that could not resolve the project layer refused nothing inside it.
+
+    Addressed apart from the weight skip beside it: the two answer different questions
+    about the same unresolved layer — which components carry a share, and whether the
+    project's own block declares a key at all — so one address cannot report both.
+    """
+    report = validate_grading_yaml(
+        _write_combine(tmp_path, {"weights": _WEIGHTS}), inventory=_UNRESOLVED
+    )
+
+    skipped = {skip.where: skip.reason for skip in report.unchecked}
+    assert "task_defaults.grading_defaults.combine" in skipped, skipped
+    assert "combine.weights" in skipped, skipped
+    assert skipped["task_defaults.grading_defaults.combine"] != skipped["combine.weights"], skipped
+
+
+def test_validate_cli_reports_a_misspelled_combine_key_as_invalid(tmp_path: Path):
+    """The author-facing surface, where the whole message has to arrive."""
+    task_file = _write_task(
+        tmp_path / "misspelled_combine_key",
+        yaml.safe_dump({"combine": {"pass_treshold": 0.95, "weights": _WEIGHTS}}),
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = " ".join(result.stderr.split())
+    assert "0 valid, 1 invalid" in out
+    assert "unknown key 'pass_treshold'" in out
+    assert "did you mean 'pass_threshold'?" in out
+    assert "combine accepts: method, weights, pass_threshold." in out
 
 
 # ---------------------------------------------------------------------------

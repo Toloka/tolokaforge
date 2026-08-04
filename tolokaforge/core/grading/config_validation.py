@@ -312,6 +312,18 @@ caller gating a whole pack owes the answer: a caller checking a block *fragment*
 against a recorded tool set performs no fold and is asked nothing about weights.
 """
 
+UNRESOLVED_PROJECT_COMBINE_KEYS_REASON = (
+    "no caller resolved the project layer beneath this task's combine, so a key the "
+    "project's own combine block does not declare was not refused here"
+)
+"""What the same gate reports about the *key names* in that unresolved layer.
+
+A sibling of :data:`UNRESOLVED_COMBINE_REASON` rather than a restatement: one says
+which shares the fold could not be checked, the other that the project's block was
+never read for a key it does not declare. A single entry would leave whichever
+question it did not name reading as answered.
+"""
+
 
 _TRANSCRIPT_RULE_KEYS: tuple[str, ...] = (
     "must_contain",

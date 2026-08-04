@@ -64,6 +64,7 @@ from tolokaforge.core.deprecations import (
 )
 from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
+    UNRESOLVED_PROJECT_COMBINE_KEYS_REASON,
     AuthoringReport,
     CombineLayer,
     ReplayWorld,
@@ -72,6 +73,7 @@ from tolokaforge.core.grading.config_validation import (
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import classify_initial_state
+from tolokaforge.core.grading.unknown_keys import GradingKeyLayer, refuse_unknown_grading_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     GradingCombineConfig,
@@ -115,7 +117,10 @@ def validate_grading_yaml(
     and ``transcript_rules`` are validated whenever either is declared; ``llm_judge``
     (the free-text ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised
     by :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
-    ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals.
+    ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals. A key
+    ``combine`` does not declare is refused here naming the closest declared field,
+    the accepted set and which of the two layers wrote it — what the model's own
+    ``extra="forbid"`` refuses on every other path in one line without an address.
 
     Validate is the earliest gate a task pack meets: the engine's own
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
@@ -142,7 +147,8 @@ def validate_grading_yaml(
             ``unchecked`` wherever that rule would have run.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
-            :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
+            :meth:`CombineLayer.unresolvable`, which skips the two weight rules and
+            the refusal of an unknown key in the project's own block into
             ``unchecked`` for the same reason as an unresolvable inventory and with
             the same consequence.
         fail_on: The least severe finding class that raises.
@@ -173,6 +179,13 @@ def validate_grading_yaml(
     # malformed ``weights`` / ``pass_threshold`` under the same gate.
     combine = grading_data.get("combine")
     if isinstance(combine, dict):
+        refuse_unknown_grading_keys(
+            GradingCombineConfig,
+            combine,
+            block_name="combine",
+            layer=GradingKeyLayer.TASK,
+            grading_path=grading_path,
+        )
         GradingCombineConfig(**combine)
     elif combine is not None:
         raise RuntimeError(
@@ -245,20 +258,33 @@ def validate_grading_yaml(
             "then 'constraints:' or 'alternatives:' indented beneath it."
         )
 
+    # The project layer is refused before it is merged, because the merge takes two
+    # bare dicts and can name neither the file nor which layer the key came from.
     # After the ``combine`` block's own validation above, so a malformed one has
-    # already raised and the value here is a mapping or nothing.
-    effective_combine = (
-        resolve_effective_grading_combine(
-            combine_layer.project_combine, grading_data.get("combine")
+    # already raised and the task-side value here is a mapping or nothing.
+    effective_combine = None
+    if combine_layer.known:
+        refuse_unknown_grading_keys(
+            GradingCombineConfig,
+            combine_layer.project_combine or {},
+            block_name="combine",
+            layer=GradingKeyLayer.PROJECT,
+            grading_path=grading_path,
         )
-        if combine_layer.known
-        else None
-    )
+        effective_combine = resolve_effective_grading_combine(
+            combine_layer.project_combine, combine
+        )
     report = inspect_grading_authoring(
         grading_data, inventory, replay_world=replay_world, effective_combine=effective_combine
     )
     if effective_combine is None:
-        report = report.with_unchecked(Skip("combine.weights", UNRESOLVED_COMBINE_REASON))
+        report = report.with_unchecked(
+            Skip("combine.weights", UNRESOLVED_COMBINE_REASON),
+            Skip(
+                "task_defaults.grading_defaults.combine",
+                UNRESOLVED_PROJECT_COMBINE_KEYS_REASON,
+            ),
+        )
     fatal = report.fatal(fail_on)
     if fatal:
         written = "\n".join(f"  - {finding.where}: {finding.message}" for finding in fatal)
