@@ -287,3 +287,67 @@ def test_declared_excluded_files_exist() -> None:
     ), "RUNNER_SUBSET_EXCLUDED_FILES names paths that no longer exist:\n" + "\n".join(
         f"  - {m}" for m in missing
     )
+
+
+def _load_pyproject_custom_target() -> dict[str, list[str]]:
+    """Read ``[tool.hatch.build.targets.custom]`` from ``pyproject.toml``.
+
+    Uses ``tomllib`` on 3.11+, ``tomli`` on 3.10 (already a transitive dev
+    dependency)."""
+    try:
+        import tomllib  # type: ignore[import-not-found]
+    except ModuleNotFoundError:  # Python 3.10 branch
+        import tomli as tomllib  # type: ignore[import-not-found,no-redef]
+
+    with (REPO_ROOT / "pyproject.toml").open("rb") as f:
+        data = tomllib.load(f)
+    return data["tool"]["hatch"]["build"]["targets"]["custom"]
+
+
+def test_pyproject_custom_target_mirrors_runner_subset_module() -> None:
+    """The ``only-include`` / ``exclude`` lists under
+    ``[tool.hatch.build.targets.custom]`` must mirror the three tuples in
+    :mod:`tolokaforge.core._runner_subset` exactly. The subset build's
+    package graph is derived from those tuples; drift between the two would
+    silently ship a wheel whose contents no longer match the audited
+    partition."""
+    custom = _load_pyproject_custom_target()
+
+    expected_only_include = {*RUNNER_SUBSET_PACKAGES, *RUNNER_SUBSET_LOOSE_FILES}
+    actual_only_include = set(custom.get("only-include", []))
+    only_missing = sorted(expected_only_include - actual_only_include)
+    only_extra = sorted(actual_only_include - expected_only_include)
+    assert (
+        not only_missing and not only_extra
+    ), "pyproject `[tool.hatch.build.targets.custom].only-include` drifted " "from RUNNER_SUBSET_PACKAGES ∪ RUNNER_SUBSET_LOOSE_FILES:\n" + "".join(
+        f"  - missing in pyproject: {m}\n" for m in only_missing
+    ) + "".join(
+        f"  - extra in pyproject:   {e}\n" for e in only_extra
+    )
+
+    expected_exclude = set(RUNNER_SUBSET_EXCLUDED_FILES)
+    actual_exclude = set(custom.get("exclude", []))
+    exclude_missing = sorted(expected_exclude - actual_exclude)
+    exclude_extra = sorted(actual_exclude - expected_exclude)
+    assert (
+        not exclude_missing and not exclude_extra
+    ), "pyproject `[tool.hatch.build.targets.custom].exclude` drifted from " "RUNNER_SUBSET_EXCLUDED_FILES:\n" + "".join(
+        f"  - missing in pyproject: {m}\n" for m in exclude_missing
+    ) + "".join(
+        f"  - extra in pyproject:   {e}\n" for e in exclude_extra
+    )
+
+
+def test_pyproject_custom_target_points_at_builder_script() -> None:
+    """The custom build target must reference the runner-subset builder
+    script; that file is what teaches hatchling to rename the distribution,
+    swap the dependency list, and strip entry points for the subset wheel."""
+    custom = _load_pyproject_custom_target()
+    script_rel = custom.get("path")
+    assert script_rel == "scripts/hatch/hatch_runner_subset_builder.py", (
+        "[tool.hatch.build.targets.custom].path must point at "
+        "scripts/hatch/hatch_runner_subset_builder.py; got: " + repr(script_rel)
+    )
+    assert (
+        REPO_ROOT / script_rel
+    ).is_file(), f"custom builder script does not exist on disk: {script_rel}"

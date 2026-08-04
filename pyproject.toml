@@ -172,6 +172,60 @@ packages = ["tolokaforge"]
 
 [tool.hatch.build.targets.sdist]
 
+# =============================================================================
+# Runner-subset wheel — Docker-only build artifact, NEVER published to PyPI.
+# =============================================================================
+#
+# ``hatch build --target custom`` (equivalently
+# ``uv run hatch build --target custom``) produces
+# ``dist/tolokaforge_runner_subset-<version>-py3-none-any.whl`` — a slimmed
+# variant of the base wheel that contains only the Python files the runner
+# container's runtime graph reaches. The runner Docker image installs this
+# wheel; pip cannot pull it from PyPI. See
+# ``docs/adr/0025-runner-wheel-split.md``.
+#
+# ``tolokaforge/core/_runner_subset.py`` is the single source of truth for
+# the partition. The ``only-include`` / ``exclude`` lists below mirror its
+# three tuples verbatim; the canonical drift-lock test in
+# ``tests/canonical/test_runner_subset_partition.py`` fails CI if the two
+# ever disagree.
+#
+# The base wheel — ``[tool.hatch.build.targets.wheel]`` above — and its
+# PyPI-facing metadata are unchanged.
+[tool.hatch.build.targets.custom]
+path = "scripts/hatch/hatch_runner_subset_builder.py"
+only-include = [
+    # RUNNER_SUBSET_PACKAGES — whole subpackages in the subset.
+    "tolokaforge/runner",
+    "tolokaforge/secrets",
+    "tolokaforge/tools",
+    "tolokaforge/core/models",
+    "tolokaforge/core/llm",
+    "tolokaforge/core/grading",
+    # RUNNER_SUBSET_LOOSE_FILES — shared-spine files outside a whole package.
+    "tolokaforge/__init__.py",
+    "tolokaforge/core/__init__.py",
+    "tolokaforge/core/_runner_subset.py",
+    "tolokaforge/core/deprecations.py",
+    "tolokaforge/core/hash.py",
+    "tolokaforge/core/logging.py",
+    "tolokaforge/core/loop.py",
+    "tolokaforge/core/netpolicy_constants.py",
+    "tolokaforge/core/pricing.py",
+    "tolokaforge/core/run_display_events.py",
+    "tolokaforge/core/trial.py",
+]
+exclude = [
+    # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
+    # otherwise-included subpackage.
+    "tolokaforge/core/grading/combine.py",
+    "tolokaforge/core/grading/replay.py",
+    "tolokaforge/core/grading/state_checks.py",
+    "tolokaforge/core/grading/transcript.py",
+    "tolokaforge/core/llm/fallback_client.py",
+    "tolokaforge/tools/user_tools.py",
+]
+
 [tool.black]
 line-length = 100
 target-version = ['py310']

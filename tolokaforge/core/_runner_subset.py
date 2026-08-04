@@ -23,10 +23,15 @@ are named whole with the orchestrator-only files listed in
 whole-package entry (the mixed root of ``core/`` and the top-level
 ``tolokaforge/__init__.py``) are named in :data:`RUNNER_SUBSET_LOOSE_FILES`.
 
-The follow-up ticket that adds the hatch build target consumes these tuples
-verbatim; the canonical test :mod:`tests.canonical.test_runner_subset_partition`
-locks them against the actual runtime closure and rejects drift in either
-direction.
+The runner-subset hatch build target consumes these tuples verbatim: the
+``only-include`` / ``exclude`` lists under ``[tool.hatch.build.targets.custom]``
+in ``pyproject.toml`` mirror them, and the custom builder script at
+``scripts/hatch/hatch_runner_subset_builder.py`` produces the
+``tolokaforge_runner_subset-<version>-py3-none-any.whl`` artifact from that
+enumeration. The canonical test
+:mod:`tests.canonical.test_runner_subset_partition` locks the enumeration
+against the actual runtime closure — and against the pyproject mirror — and
+rejects drift in either direction.
 """
 
 from __future__ import annotations
