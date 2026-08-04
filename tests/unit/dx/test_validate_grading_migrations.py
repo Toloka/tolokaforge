@@ -20,16 +20,18 @@ migration:
   unknown keys, the message naming the offending field.
 * ``combine``: the aggregation ``method`` is a closed set, and the two retired
   names that were declared but never dispatched are rejected naming the rule each
-  one meant; a block that is not a mapping is rejected naming the file, the key and
-  the shape received; a key the block does not declare is rejected naming the closest
+  one meant; a key the block does not declare is rejected naming the closest
   declared field and the accepted set.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
   its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
   substrates' models naming both keys and both values; a key the block does not
   declare is rejected on both models too.
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
-  that could only ever select nothing is rejected before a trial is paid for; a
-  block that is not a mapping is rejected naming the file, the key and the shape.
+  that could only ever select nothing is rejected before a trial is paid for.
+* The shape tier, above every key's own rules: a grading key declared as anything
+  other than a mapping or nothing at all is rejected naming the file, the key and
+  the shape received, for every key the author-facing schema declares and whether
+  the offending value is truthy or falsy.
 * The ``migration.yaml`` sidecar: ``validate`` reads it, so a declaration its pack
   contradicts is heard here rather than by whoever reads the migration report. It is
   the one gate that does, because the file cannot affect a grade and a run must not
@@ -55,13 +57,18 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 from tests.utils.trace_checks_configs import every_kind_block
-from tolokaforge.adapters._task_loader import validate_grading_yaml
+from tolokaforge.adapters._task_loader import _GRADING_BLOCK_SHAPES, validate_grading_yaml
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
 )
 from tolokaforge.core.grading.config_validation import ToolInventory
-from tolokaforge.core.models import GradingCombineConfig, GradingDefaults, StateChecksConfig
+from tolokaforge.core.models import (
+    GradingCombineConfig,
+    GradingConfig,
+    GradingDefaults,
+    StateChecksConfig,
+)
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.core.project_loader import resolve_effective_grading_combine
 from tolokaforge.dx.cli.main import cli
@@ -712,35 +719,6 @@ def test_validate_rejects_a_malformed_combine_block_beside_a_valid_method(
         validate_grading_yaml(_write_combine(tmp_path, combine), inventory=_UNRESOLVED)
 
 
-@pytest.mark.parametrize(
-    "combine",
-    [[{"method": "all_pass"}], "weighted", 3],
-    ids=["list", "string", "number"],
-)
-def test_validate_rejects_a_combine_block_that_is_not_a_mapping(tmp_path: Path, combine: object):
-    """The shape half of the same typo space, which the value gate reads past.
-
-    A block skipped here reports the pack valid and then fails the run inside
-    ``deep_merge`` with ``'list' object has no attribute 'items'``, naming neither the
-    file nor the key — and a retired method inside such a block never gets read at all.
-    """
-    grading = _write_combine(tmp_path, combine)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        validate_grading_yaml(grading, inventory=_UNRESOLVED)
-
-    message = str(excinfo.value)
-    assert str(grading) in message, message
-    assert "'combine'" in message, message
-    assert type(combine).__name__ in message, message
-
-
-def test_validate_accepts_a_combine_key_with_nothing_under_it(tmp_path: Path):
-    """``combine:`` alone is the absent block, not a malformed one: every field falls
-    through to its default, which is what the loader's own merge does with it."""
-    validate_grading_yaml(_write_combine(tmp_path, None), inventory=_UNRESOLVED)
-
-
 def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path):
     """The author-facing gate: ``tolokaforge validate`` is where a typo is heard."""
     task_file = _write_task(
@@ -937,32 +915,6 @@ def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
 
 
 @pytest.mark.parametrize(
-    "transcript_rules",
-    [[{"max_turns": 3}], "max_turns: 3", 3],
-    ids=["list", "string", "number"],
-)
-def test_validate_rejects_a_transcript_rules_block_that_is_not_a_mapping(
-    tmp_path: Path, transcript_rules: object
-):
-    """The shape half of the typo space the window gate reads past.
-
-    ``isinstance(..., dict)`` alone reports such a pack valid, and every rule the
-    block was meant to carry then grades as unset — a closed turn window included.
-    The same shape ``combine`` carries in
-    ``test_validate_rejects_a_combine_block_that_is_not_a_mapping``.
-    """
-    grading = _write_transcript_rules(tmp_path, transcript_rules)
-
-    with pytest.raises(RuntimeError) as excinfo:
-        validate_grading_yaml(grading, inventory=_UNRESOLVED)
-
-    message = str(excinfo.value)
-    assert str(grading) in message, message
-    assert "'transcript_rules'" in message, message
-    assert type(transcript_rules).__name__ in message, message
-
-
-@pytest.mark.parametrize(
     ("transcript_rules", "match"),
     [
         ({"min_assistant_turns": 0}, "greater than or equal to 1"),
@@ -1103,8 +1055,7 @@ def test_validate_cli_reports_a_golden_replay_with_no_world_as_invalid(tmp_path:
 #
 # The rejection wording is locked per rule in
 # tests/unit/grading/test_trace_checks_config.py. What belongs here is the gate
-# itself: that validate reaches the block at all, and that a block which is not a
-# mapping is rejected naming the file, the key and the shape received.
+# itself: that validate reaches the block at all.
 # ---------------------------------------------------------------------------
 
 
@@ -1165,34 +1116,122 @@ def test_validate_rejects_a_malformed_trace_checks_block(
         validate_grading_yaml(_write_trace_checks(tmp_path, trace_checks), inventory=_UNRESOLVED)
 
 
-@pytest.mark.parametrize(
-    "trace_checks",
-    [[{"id": "a"}], "constraints: []", 3],
-    ids=["list", "string", "number"],
+# ---------------------------------------------------------------------------
+# the shape tier — every grading key is a mapping or absent, whatever it carries
+#
+# One registry, ``_GRADING_BLOCK_SHAPES``, answers every key the author-facing
+# schema declares. It is a wider set than the blocks this gate constructs, and its
+# refusal never consults truthiness: an empty list reads as a block that scores
+# nothing, a populated one crashes whoever indexes it, and neither is what the
+# author wrote.
+# ---------------------------------------------------------------------------
+
+
+_NON_MAPPING_SHAPES = (
+    pytest.param([{"enabled": True}], id="populated_list"),
+    pytest.param("enabled", id="string"),
+    pytest.param(3, id="number"),
+    pytest.param([], id="empty_list"),
+    pytest.param("", id="empty_string"),
+    pytest.param(0, id="zero"),
+    pytest.param(False, id="false"),
 )
-def test_validate_rejects_a_trace_checks_block_that_is_not_a_mapping(
-    tmp_path: Path, trace_checks: object
-):
-    """A constraint written directly under ``trace_checks:`` makes the block a list.
+_GRADING_KEYS = tuple(_GRADING_BLOCK_SHAPES)
 
-    ``isinstance(..., dict)`` alone reports such a pack valid and every constraint
-    the block was meant to carry grades as unset. The same shape ``combine`` and
-    ``transcript_rules`` carry.
 
-    The remediation names **both** keys the block may carry: an author whose
-    alternatives-only pack lost its indentation is told to write the key that pack
-    actually has, not the one it does not.
+def _write_grading_key(tmp_path: Path, key: str, value: object) -> Path:
+    """Serialise *key* carrying *value*, weighted so the pack is otherwise gradeable.
+
+    ``combine`` is where that weight would live, so its own row is the key alone.
     """
-    grading = _write_trace_checks(tmp_path, trace_checks)
+    document: dict[str, object] = (
+        {"combine": value}
+        if key == "combine"
+        else {"combine": {"method": "weighted", "weights": {key: 1.0}}, key: value}
+    )
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(yaml.safe_dump(document))
+    return grading
+
+
+@pytest.mark.parametrize("value", _NON_MAPPING_SHAPES)
+@pytest.mark.parametrize("key", _GRADING_KEYS)
+def test_validate_refuses_every_grading_key_that_is_not_a_mapping(
+    tmp_path: Path, key: str, value: object
+):
+    """The falsy rows are the load-bearing ones.
+
+    A truthy non-mapping crashes whichever read site indexes it — unaddressed, naming
+    neither pack nor file nor key. A falsy one is worse: every read site gates on
+    truthiness, so the block becomes ``None``, the description builds clean, a trial is
+    scheduled and paid for, and the pack dies only while its artifacts are written.
+    A gate mirroring that truthiness would pass every truthy row here and leave the
+    silence fully intact.
+
+    The received shape is what discriminates this refusal from the weights rule, which
+    answers the same fixture for its own unrelated reason.
+    """
+    grading = _write_grading_key(tmp_path, key, value)
 
     with pytest.raises(RuntimeError) as excinfo:
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
     message = str(excinfo.value)
     assert str(grading) in message, message
-    assert "'trace_checks'" in message, message
-    assert type(trace_checks).__name__ in message, message
-    assert "'constraints:' or 'alternatives:'" in message, message
+    assert f"'{key}'" in message, message
+    assert f"got {type(value).__name__} ({value!r})" in message, message
+
+
+@pytest.mark.parametrize("key", _GRADING_KEYS)
+def test_validate_accepts_a_grading_key_with_nothing_under_it(tmp_path: Path, key: str):
+    """A bare ``state_checks:`` is the *absent* block, not a malformed one: the file reads
+    exactly as one that never declared the key. So the refusal cannot be written as a bare
+    "not a mapping". An empty *mapping* is a different shape, answered — where it is
+    answered at all — by the rules policing a block's contents rather than by this gate."""
+    validate_grading_yaml(_write_grading_key(tmp_path, key, None), inventory=_UNRESOLVED)
+
+
+def test_every_malformed_grading_key_is_named_in_one_raise(tmp_path: Path):
+    """An author fixing a de-indented file wants the list, not the first key in it."""
+    grading = tmp_path / "grading.yaml"
+    grading.write_text(yaml.safe_dump({"combine": [], "state_checks": "jsonpaths", "llm_judge": 3}))
+
+    with pytest.raises(RuntimeError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    for key in ("combine", "state_checks", "llm_judge"):
+        assert f"'{key}'" in message, message
+
+
+def test_every_grading_key_the_schema_declares_carries_a_shape_refusal():
+    """The registry is anchored on the author-facing key set rather than a list of six.
+
+    A key added to :class:`GradingConfig` without a sentence here is a key whose
+    malformed shape reaches a read site unanswered — which is how ``llm_judge`` sat
+    outside this gate while four of its neighbours were inside it.
+    """
+    assert set(_GRADING_BLOCK_SHAPES) == set(GradingConfig.model_fields)
+
+
+@pytest.mark.parametrize("key", _GRADING_KEYS)
+def test_every_shape_refusal_names_its_key_and_what_it_received(key: str):
+    """Sentinels rather than a real shape: ``'str' in "makes it a string"`` false-greens
+    an entry that interpolates neither placeholder."""
+    written = _GRADING_BLOCK_SHAPES[key].format(kind="<kind>", value="<value>")
+
+    assert f"'{key}'" in written, written
+    assert "<kind>" in written, written
+    assert "<value>" in written, written
+
+
+def test_the_trace_checks_shape_refusal_names_both_keys_the_block_may_carry(tmp_path: Path):
+    """An author whose alternatives-only pack lost its indentation is told to write the
+    key that pack actually has, not the one it does not."""
+    with pytest.raises(RuntimeError, match="'constraints:' or 'alternatives:'"):
+        validate_grading_yaml(
+            _write_grading_key(tmp_path, "trace_checks", [{"id": "a"}]), inventory=_UNRESOLVED
+        )
 
 
 # ---------------------------------------------------------------------------
