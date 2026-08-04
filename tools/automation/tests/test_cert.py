@@ -150,9 +150,9 @@ def test_self_referential_promotion_is_a_violation():
         known_unsupported={"thinking_replay_roundtrip", "prompt_caching"},
         probed=_deepseek_0731_probed(),
     )
-    assert any("SELF-REFERENTIAL" in v and "unsigned_thinking_replay" in v for v in violations), (
-        violations
-    )
+    assert any(
+        "SELF-REFERENTIAL" in v and "unsigned_thinking_replay" in v for v in violations
+    ), violations
     # The honest posture for the same baseline reconciles clean.
     ok, _ = cert.reconcile(
         required={
