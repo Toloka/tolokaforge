@@ -520,54 +520,33 @@ def test_an_uncompilable_regex_is_caught_before_the_tokens_are_spent(tmp_path: P
         validate_grading_yaml(_write_grading(tmp_path, grading), inventory=_inventory(_HELPDESK))
 
 
-# A second defect, carried alongside the probe in both tests below, so which of the two
-# surfaces answered is readable off the raise: the gate batches every finding it has, and
-# a load error raised before the gate runs cannot know about this one.
+# A second defect, carried alongside the probe below so which surface answered is
+# readable off the raise: the gate batches every finding it has, and a load error raised
+# before the gate runs cannot know about this one.
 _A_PATTERN_THAT_DOES_NOT_COMPILE = {"transcript_rules": {"disallow_regex": ["unterminated(["]}}
 
 
-def test_probes_beside_jsonpaths_reach_the_author_batched_with_every_other_finding(
-    tmp_path: Path,
+@pytest.mark.parametrize(
+    "beside",
+    [
+        {"jsonpaths": [_A_JSONPATH_ASSERTION]},
+        {"hash": {"enabled": True, "expected_state_hash": "aaaa"}},
+    ],
+    ids=["jsonpaths", "hash"],
+)
+def test_probes_beside_another_state_source_are_refused_before_the_gate_is_reached(
+    tmp_path: Path, beside: dict[str, Any]
 ) -> None:
-    """The shape the pre-run gate is the reporting surface for.
+    """One surface answers both halves of the rule: the model, not the gate.
 
-    A block carrying no ``hash`` mapping constructs no config before the gate runs, so
-    this shape is refused by the gate itself and the author gets it in the batch — the
-    pattern below is reported in the same raise, which is the whole point of a gate
-    finding over a load error.
+    ``validate`` constructs the core ``StateChecksConfig`` on every declared
+    ``state_checks`` block, so this rule is a load error whichever source the probe was
+    written beside, and the uncompilable pattern beside it is never reported — the author
+    fixes the probe, runs ``validate`` again, and hears about the pattern then. Asserting
+    the absence of the second finding is what pins which surface answered, so a reorder
+    of the loader cannot move this silently.
     """
-    grading = {
-        **_probes_beside(jsonpaths=[_A_JSONPATH_ASSERTION]),
-        **_A_PATTERN_THAT_DOES_NOT_COMPILE,
-    }
-
-    with pytest.raises(ValueError) as excinfo:
-        validate_grading_yaml(
-            _write_grading(tmp_path, grading), inventory=ToolInventory.unresolvable()
-        )
-
-    message = str(excinfo.value)
-    assert "cannot be graded as written" in message, message
-    assert f"state_checks.db_probes: {CONFLICTING_STATE_SOURCES_MESSAGE}" in message, message
-    assert "does not compile" in message, message
-
-
-def test_probes_beside_a_hash_block_are_refused_before_the_gate_is_reached(
-    tmp_path: Path,
-) -> None:
-    """The same sentence, off the other surface, which reports one defect rather than all.
-
-    ``validate`` constructs the core ``StateChecksConfig`` on any declared ``hash``
-    mapping before it calls the gate, so this half of the rule is a load error and the
-    uncompilable pattern beside it is never reported — the author fixes the probe, runs
-    ``validate`` again, and hears about the pattern then. Both surfaces refuse the pack
-    naming the same sentence; asserting the absence of the second finding is what pins
-    which one answered, so a reorder of the loader cannot move this silently.
-    """
-    grading = {
-        **_probes_beside(hash={"enabled": True, "expected_state_hash": "aaaa"}),
-        **_A_PATTERN_THAT_DOES_NOT_COMPILE,
-    }
+    grading = {**_probes_beside(**beside), **_A_PATTERN_THAT_DOES_NOT_COMPILE}
 
     with pytest.raises(ValidationError) as excinfo:
         validate_grading_yaml(

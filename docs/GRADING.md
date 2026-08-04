@@ -852,8 +852,11 @@ if you want the strict check to accept it.
 
 **Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
 on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
-these keys requires a runner image built from the same release. Old engine + new
-runner is safe **for this key** (core-side `extra="ignore"`).
+these keys requires a runner image built from the same release. Old engine + new runner
+is safe **for these keys**: an engine that predates them ignores what it does not
+declare, since a model's `extra` setting is fixed when the engine is built. An engine
+from this release onward refuses instead — see
+[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
@@ -1220,8 +1223,10 @@ runner-side `TranscriptRulesConfig` (`extra="forbid"`), so an engine of this rel
 requires a runner image built from it — the engine emits the field on **every** pack
 carrying a `transcript_rules:` block, as `null` when the pack declares no floor, so
 an older image rejects such a pack at `RegisterTrial` whether or not it asks for a
-floor. Old engine + new runner is safe **for this key** (core-side
-`extra="ignore"`).
+floor. Old engine + new runner is safe **for this key**: an engine that predates it
+ignores what it does not declare, since a model's `extra` setting is fixed when the
+engine is built. An engine from this release onward refuses instead — see
+[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 
 ### `tool_expectations`
 
@@ -1267,8 +1272,10 @@ call status. See [Substrate Parity](#substrate-parity).
 **Runner-engine version lock**: `tool_expectations` is declared on the runner-side
 `TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
 requires a runner image built from the same release — `RegisterTrial` rejects it
-otherwise. Old engine + new runner is safe **for this key** (core-side
-`extra="ignore"`).
+otherwise. Old engine + new runner is safe **for this key**: an engine that predates it
+ignores what it does not declare, since a model's `extra` setting is fixed when the
+engine is built. An engine from this release onward refuses instead — see
+[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 
 ---
 
@@ -2312,7 +2319,7 @@ Findings come in three classes:
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
-| `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — batched into this report where the block carries no `hash` mapping, and raised as a config load error before the gate is reached where it does | error | `state_checks.db_probes` |
+| `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
@@ -2397,14 +2404,11 @@ state. Probes beside a *disabled* hash still load: that hash produces no verdict
 nothing is discarded, and an enabled hash with nothing to compare against is refused at
 the flag by its own rule.
 
-**Which surface an author hears it from depends on whether the block writes a `hash`
-mapping**, because `tolokaforge validate` constructs the core `state_checks` config on any
-declared `hash` block before it runs the gate. Probes beside `jsonpaths` alone reach the
-gate, so the finding is batched at `state_checks.db_probes` beside every other finding in
-the pack. Probes beside a `hash` mapping are refused by that construction first, so the
-same sentence arrives as a load error and it is the only defect reported — the rest of the
-pack is checked on the next run of `validate`. Both refuse the pack; they differ in how
-much else the author is told at the same time.
+**One surface answers it, and it is the model rather than the gate.**
+`tolokaforge validate` constructs the core `state_checks` config on **every** declared
+block before it runs the gate, so this rule arrives as a load error whichever source the
+probe was written beside, and it is the only defect reported — the rest of the pack is
+checked on the next run of `validate`.
 
 **Every golden action names a tool the task gives its actors.** A name that resolves to
 nothing costs the whole trial: both substrates resolve the authored names before the
@@ -2566,6 +2570,56 @@ trial the pack ever ran adds no signal to the pack, and nothing about the block 
 so. That question is empirical, and [`tolokaforge retrace`](TRACE_REPLAY.md) answers it
 over a recorded corpus for free — per constraint, whether any trial it evaluated
 disagreed with any other, and how much of the corpus could decide it at all.
+
+### Which keys a grading block refuses
+
+A `grading.yaml` has two tiers of key, and they answer a misspelling differently.
+
+**Inside a typed block, an unknown key is a load error.** All five —
+`combine`, `state_checks`, `transcript_rules`, `trace_checks` and `llm_judge` — refuse
+a key their model does not declare, on every construction path. Nearly every field in
+them carries a default, so a dropped key would substitute one silently: the mis-keyed
+rule or source simply leaves the fold, and the surviving weight renormalises to a score
+the author never asked for. For the three blocks the engine's own models define
+(`combine`, `state_checks`, `transcript_rules`) `tolokaforge validate` says more than
+the model's bare `extra_forbidden` can: the file, the offending key, its closest
+declared field, the whole accepted set, and which layer wrote it.
+
+`state_checks` has two exceptions, and they are not leniency. A **populated**
+`env_assertions` or `db_hash_check` draws the migration message naming the check that
+replaces it, which the unknown-key refusal knows nothing about; an **inert** one
+(`env_assertions: []` / `db_hash_check: false`) is dropped, so a recorded trial bundle
+serialized against the old schema still loads.
+
+**The block-name tier is lenient.** `GradingConfig` and the `project.yaml` twin
+`GradingDefaults` ignore a key they do not declare, so `state_cheks:` for
+`state_checks:` drops a whole grading component. `tolokaforge validate` catches that
+**when the correct name is weighted in `combine.weights`** — the weight then names a
+component the pack no longer configures, which is its own error — and says nothing
+when the block was never weighted. #533 owns the tier; #874 owns its `project.yaml`
+instance.
+
+**`custom_checks` is refused only at grade time.** `GradingConfig.custom_checks` is a
+raw `dict[str, Any]`, so nothing inside it reaches the authoring gate: a misspelled
+`timout_seconds` passes `tolokaforge validate` (measured). The `CustomChecksConfig` that
+*does* refuse it is `extra="forbid"` and is constructed when the suite runs — core-side
+in the grading engine, runner-side at grade time — so the author hears it after the
+trial is paid for. #873 owns closing that gap.
+
+**A dict-typed field's contents are values, not keys**, so no `extra` setting reaches
+them: `state_checks.hash.*` and the `state_checks.jsonpaths[*]` operators are policed
+by their own rules instead (see
+[§ The `jsonpaths` assertion vocabulary](#the-jsonpaths-assertion-vocabulary) and the
+`hash` rules in the findings table above).
+
+**What this means for a pack read by an engine of another release.** An engine from
+this release onward **refuses** a grading key its own model does not declare, so a pack
+written for a later release fails to load on it instead of grading with the key
+silently ignored. An engine older than this release ignores such a key — a model's
+`extra` setting is fixed when the engine is built, so no already-shipped engine changes
+what it does. The runner-side half of the same skew — a key one substrate declares and
+the other does not, rejected at `RegisterTrial` — is
+[`RUNNER.md`](RUNNER.md#engine--image-version-lock).
 
 ---
 
@@ -3056,12 +3110,12 @@ core cannot read at all — so a pack you grade outside the runner keeps its ver
 taking the first fix, and a pack whose real oracle is the database takes the second.
 The refusal is at load and on both substrates, from one message:
 core raises where the grading config is built and the runner at `RegisterTrial`, so no
-trial is paid for first. `tolokaforge validate` reports it earlier still, at
-`state_checks.db_probes` — batched with the pack's other findings where the block writes
-no `hash` mapping, and as the load error above where it does
-(see [What is validated before a run](#what-is-validated-before-a-run)). A run's
-pre-flight resolves each pack's description before it reaches the gate, so there both
-shapes are the load error and the pass stops at the first pack carrying one. The fold is
+trial is paid for first. `tolokaforge validate` reports it earlier still, as the same
+load error: it constructs the core `state_checks` config on every declared block before
+it runs the gate (see
+[What is validated before a run](#what-is-validated-before-a-run)). A run's
+pre-flight resolves each pack's description before it reaches the gate, so the pass
+stops at the first pack carrying the shape. The fold is
 the last line of defence behind all of them: `resolve_state_checks_component` raises on a
 probe score arriving beside a hash or JSONPath verdict, so a config that reached grading
 without passing a gate — one built directly against the runner, or recorded before the

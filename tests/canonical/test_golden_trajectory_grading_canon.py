@@ -10,6 +10,10 @@ pre-computed ``expected_state_hash``, so grading takes the deterministic
 hash-comparison branch in ``combine.py`` — no LLM judge, no custom checks, no
 network, and no Docker. The expected result is read from the committed golden
 ``grade.yaml`` rather than hard-coded, so it stays the canonical pin.
+
+The second guard reads recorded bundles for a different property: every grading config
+the tree has on disk still reconstructs, including the four that serialize a
+``state_checks`` key the model has since retired.
 """
 
 from pathlib import Path
@@ -19,7 +23,7 @@ import yaml
 
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.models import GradingConfig, Trajectory
+from tolokaforge.core.models import RETIRED_STATE_CHECK_KEYS, GradingConfig, Trajectory
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -65,3 +69,36 @@ def test_golden_trajectory_grading_matches_pinned_verdict(canonical_project_dir)
     assert grade2.score == grade.score
     assert grade2.binary_pass == grade.binary_pass
     assert grade2.reasons == grade.reasons
+
+
+# How many recorded bundles in the tree serialize a retired state-check key. Pinned so
+# a corpus that stops carrying them is a visible change to what this guard proves,
+# rather than a walk over nothing that passes.
+_BUNDLES_WITH_A_RETIRED_STATE_CHECK_KEY = 4
+
+
+def _recorded_state_checks(bundle: Path) -> dict:
+    """The ``state_checks`` block a recorded bundle serialized, empty where it wrote none."""
+    return (_load_yaml(bundle).get("grading_config") or {}).get("state_checks") or {}
+
+
+def test_every_recorded_bundle_serializing_a_retired_state_check_key_still_loads(test_data_dir):
+    """``state_checks`` refuses a key it does not declare, and these are not that.
+
+    A recorded bundle serializes the whole grading config as the schema stood when the
+    trial ran, so ``env_assertions: []`` / ``db_hash_check: false`` are on disk in
+    trials nobody will re-record. They are dropped rather than refused, which is what
+    keeps re-reading such a bundle possible — and dropped rather than kept, so nothing
+    downstream reads a key the model retired.
+    """
+    bundles = sorted(
+        path
+        for path in test_data_dir.rglob("task.yaml")
+        if RETIRED_STATE_CHECK_KEYS & set(_recorded_state_checks(path))
+    )
+
+    assert len(bundles) == _BUNDLES_WITH_A_RETIRED_STATE_CHECK_KEY, bundles
+    for bundle in bundles:
+        state_checks = GradingConfig(**_load_yaml(bundle)["grading_config"]).state_checks
+        for key in RETIRED_STATE_CHECK_KEYS:
+            assert not hasattr(state_checks, key), f"{bundle}: {key} survived the load"

@@ -113,14 +113,17 @@ def validate_grading_yaml(
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
-    validate time with a clear migration message, not only at run time. ``combine``
-    and ``transcript_rules`` are validated whenever either is declared; ``llm_judge``
-    (the free-text ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised
-    by :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
-    ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals. A key
-    ``combine`` does not declare is refused here naming the closest declared field,
-    the accepted set and which of the two layers wrote it — what the model's own
+    validate time with a clear migration message, not only at run time. ``combine``,
+    ``state_checks``, ``transcript_rules`` and ``trace_checks`` are each constructed
+    whenever the block is declared, so every rule their models carry answers at
+    authoring time; ``llm_judge`` is constructed on the free-text ``rubric: str`` /
+    ``output_schema`` / ``model_ref`` shapes its own migration names. A key one of
+    those blocks does not declare is refused here naming the closest declared field,
+    the accepted set and which layer wrote it — what the models' own
     ``extra="forbid"`` refuses on every other path in one line without an address.
+    ``state_checks``'s two retired keys are not that refusal's business: populated,
+    each draws the migration message naming its replacement; inert, each is dropped so
+    a recorded bundle still loads.
 
     Validate is the earliest gate a task pack meets: the engine's own
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
@@ -208,17 +211,23 @@ def validate_grading_yaml(
 
         LLMJudgeConfig(**llm_judge)
 
-    # Same shape for state_checks: construct the block on a removed key, and on any
-    # declared ``hash`` block — whose composition weight is undecidable in one shape
-    # and is the reason a pack must hear about it before the run rather than after.
+    # The whole state_checks block, on any declared one: every rule it carries — a
+    # removed key's migration, a probe declared beside a source this component also
+    # scores, and a hash whose composition weight is undecidable in one shape — is a
+    # pack a run would refuse to grade, and it must hear that before paying for a trial
+    # rather than after.
     state_checks = grading_data.get("state_checks")
-    if isinstance(state_checks, dict) and (
-        "env_assertions" in state_checks
-        or "db_hash_check" in state_checks
-        or isinstance(state_checks.get("hash"), dict)
-    ):
-        from tolokaforge.core.models import StateChecksConfig
+    if isinstance(state_checks, dict):
+        from tolokaforge.core.models import RETIRED_STATE_CHECK_KEYS, StateChecksConfig
 
+        refuse_unknown_grading_keys(
+            StateChecksConfig,
+            state_checks,
+            block_name="state_checks",
+            layer=GradingKeyLayer.TASK,
+            grading_path=grading_path,
+            answered_elsewhere=RETIRED_STATE_CHECK_KEYS,
+        )
         StateChecksConfig(**state_checks)
 
     # The whole transcript_rules block, on any declared one: a turn window whose floor
@@ -230,6 +239,13 @@ def validate_grading_yaml(
     if isinstance(transcript_rules, dict):
         from tolokaforge.core.models import TranscriptRulesConfig
 
+        refuse_unknown_grading_keys(
+            TranscriptRulesConfig,
+            transcript_rules,
+            block_name="transcript_rules",
+            layer=GradingKeyLayer.TASK,
+            grading_path=grading_path,
+        )
         TranscriptRulesConfig(**transcript_rules)
     elif transcript_rules is not None:
         raise RuntimeError(

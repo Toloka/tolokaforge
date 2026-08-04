@@ -63,6 +63,7 @@ def refuse_unknown_grading_keys(
     block_name: str,
     layer: GradingKeyLayer,
     grading_path: Path,
+    answered_elsewhere: frozenset[str] = frozenset(),
 ) -> None:
     """Refuse *block* if it carries a key *model* does not declare.
 
@@ -72,10 +73,19 @@ def refuse_unknown_grading_keys(
     which of the two layers the key came from, and the whole accepted set, so the fix
     needs no trip to the schema. Every offending key is named in one refusal.
 
+    Args:
+        answered_elsewhere: Keys the model answers in its own words rather than as
+            unknown ones — a retired key drawing its migration message, which names a
+            replacement this refusal knows nothing about. Naming such a key here would
+            answer one mistake with two contradicting sentences.
+
     Raises:
-        ValueError: If *block* declares a key outside ``model.model_fields``.
+        ValueError: If *block* declares a key outside ``model.model_fields`` that
+            *answered_elsewhere* does not hold.
     """
-    unknown = [key for key in block if key not in model.model_fields]
+    unknown = [
+        key for key in block if key not in model.model_fields and key not in answered_elsewhere
+    ]
     if not unknown:
         return
     written = "\n".join(

@@ -195,6 +195,13 @@ llm_judge:                                 # judge MODEL is run-level (models.ju
         weight: 0.5
 ```
 
+Each typed block above refuses a key its model does not declare, naming the closest
+declared field and the block's whole accepted set — `state_checks`'s two retired keys are
+the one exception, drawing their own migration message instead. The block *names* are
+lenient, so `state_cheks:` drops a whole component and is caught only when the correct
+name carries a weight. See
+[GRADING.md § Which keys a grading block refuses](GRADING.md#which-keys-a-grading-block-refuses).
+
 `grading.llm_judge.rubric` is a structured `Rubric`, not a free-text blob; the
 old `rubric: "<text>"` shape, the `output_schema` field, and the per-task
 judge-model field were all removed (the judge's structured-output schema is

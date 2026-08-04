@@ -12,7 +12,9 @@ migration:
   message naming the field and showing the new shape.
 * ``state_checks``: ``env_assertions`` and ``db_hash_check`` are removed —
   neither ever produced grading signal on either substrate — and are rejected
-  naming the check that replaces each.
+  naming the check that replaces each, while an inert declaration of either is
+  dropped so a recorded bundle still loads; every other key the block does not
+  declare is rejected naming the closest declared field and the accepted set.
 * The ``llm_judge.customization`` block (and its project-defaults twin
   ``grading_defaults.llm_judge.customization``) rejects malformed values and
   unknown keys, the message naming the offending field.
@@ -23,7 +25,8 @@ migration:
   declared field, the accepted set, and which of the two layers wrote it.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
   its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
-  substrates' models naming both keys and both values.
+  substrates' models naming both keys and both values; a key the block does not
+  declare is rejected on both models too.
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
   that could only ever select nothing is rejected before a trial is paid for; a
   block that is not a mapping is rejected naming the file, the key and the shape.
@@ -235,8 +238,8 @@ def test_validate_rejects_db_hash_check(tmp_path: Path):
 def test_removed_state_check_keys_are_rejected_at_grading_load(tmp_path: Path):
     """The rejection lives on the model, so the run path fails too — not just validate.
 
-    ``StateChecksConfig`` is ``extra="ignore"``, so without this the populated key
-    would be dropped in silence on the very path that grades a trial.
+    The message naming the replacement is why these two keys are answered here rather
+    than by the model's ``extra="forbid"``, which knows of no replacement to name.
     """
     with pytest.raises(ValueError, match="env_assertions has been removed"):
         StateChecksConfig(env_assertions=[{"env_type": "user", "func_name": "assert_x"}])
@@ -245,15 +248,25 @@ def test_removed_state_check_keys_are_rejected_at_grading_load(tmp_path: Path):
 
 
 def test_inert_removed_keys_still_load(tmp_path: Path):
-    """An empty declaration requests nothing, so it is ignored rather than rejected.
+    """An empty declaration requests nothing, so it is dropped rather than rejected.
 
     Recorded trial bundles serialize the full grading config, including these keys at
-    their old defaults; re-reading such a bundle must not raise.
+    their old defaults; re-reading such a bundle must not raise. Dropped rather than
+    returned untouched, because the model's ``extra="forbid"`` reads whatever the
+    before-validator hands back — and asserted at the gate too, which refuses a key the
+    block does not declare before the model is ever constructed.
     """
     config = StateChecksConfig(env_assertions=[], db_hash_check=False, jsonpaths=[])
 
     assert not hasattr(config, "env_assertions")
     assert not hasattr(config, "db_hash_check")
+
+    validate_grading_yaml(
+        _write_grading(
+            tmp_path, {"env_assertions": [], "db_hash_check": False, "jsonpaths": _ASSERTIONS}
+        ),
+        inventory=_UNRESOLVED,
+    )
 
 
 def test_validate_accepts_customization_block(tmp_path: Path):
@@ -524,13 +537,86 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
-def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Path):
-    """Without a ``hash`` block, ``StateChecksConfig`` is never constructed here — the
-    reason every fixture above declares one rather than relying on jsonpaths alone."""
-    validate_grading_yaml(
-        _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}}),
-        inventory=_UNRESOLVED,
+# ---------------------------------------------------------------------------
+# state_checks' own field names — and the blocks this gate used to read past
+#
+# The gate constructed the model only for a block declaring a ``hash`` or a retired
+# key, which is 5 of the 27 blocks the shipped corpus authors: the other 22 met their
+# first check at grade time, after the trial was paid for (#739). Every declared block
+# is constructed here now, which is what makes the refusal below an authoring answer
+# rather than a run-time one.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state_checks", "match"),
+    [
+        (
+            {"jsonpaths": _ASSERTIONS, "jsonpaths_typo": _ASSERTIONS},
+            "unknown key 'jsonpaths_typo'",
+        ),
+        ({"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}}, "must be a non-empty key field"),
+    ],
+    ids=["a_misspelled_key", "a_rule_the_model_always_carried"],
+)
+def test_validate_gates_a_state_checks_block_that_declares_no_hash(
+    tmp_path: Path, state_checks: dict, match: str
+):
+    """Both arms passed this gate while the model was reached only by hash-declaring packs.
+
+    The second is the one an out-of-tree pack is likelier to meet: not a typo but a rule
+    ``StateChecksConfig`` always carried, which such a pack was always violating and now
+    hears about at ``validate`` instead of at grade time.
+    """
+    with pytest.raises(ValueError, match=match):
+        validate_grading_yaml(_write_grading(tmp_path, state_checks), inventory=_UNRESOLVED)
+
+
+def test_validate_names_a_misspelled_state_checks_key_and_the_accepted_set(tmp_path: Path):
+    """A dropped key was silent whenever a real source survived beside it.
+
+    A typo *alone* in this block already drew the asserts-nothing refusal, which names
+    neither the key nor the fix; a typo beside a declared ``jsonpaths`` drew nothing at
+    all, and the assertions the author wrote under it were never compared. Measured on
+    a block with no surviving source beside a weighted sibling: ``1.0`` and passing,
+    where the assertion the author wrote scored ``0.5`` and failing.
+    """
+    grading = _write_grading(
+        tmp_path, {"jsonpaths": _ASSERTIONS, "jsonpath": [{"path": "$.db.widgets[0].owner"}]}
     )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "unknown key 'jsonpath'" in message, message
+    assert "did you mean 'jsonpaths'?" in message, message
+    assert "the task's own state_checks block" in message, message
+    for field in StateChecksConfig.model_fields:
+        assert field in message, message
+
+
+def test_a_populated_retired_key_draws_its_migration_and_not_the_unknown_key_refusal(
+    tmp_path: Path,
+):
+    """The two answers are disjoint, and only one of them names a replacement.
+
+    A retired key is not a key the author misspelled — it is one that was removed, and
+    the message that names what to write instead is the whole point of keeping it. A
+    refusal calling it unknown would answer one mistake with two contradicting
+    sentences, one of them useless.
+    """
+    grading = _write_grading(
+        tmp_path, {"env_assertions": [{"env_type": "user", "func_name": "assert_x"}]}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert "state_checks.env_assertions has been removed" in message, message
+    assert "unknown key" not in message, message
 
 
 # ---------------------------------------------------------------------------
@@ -919,8 +1005,12 @@ def test_validate_rejects_a_transcript_rules_block_that_is_not_a_mapping(
     [
         ({"min_assistant_turns": 0}, "greater than or equal to 1"),
         ({"tool_expectations": {"required_toolz": ["db_update"]}}, "required_toolz"),
+        (
+            {"must_contain": ["shipped"], "must_contian": ["refunded"]},
+            "unknown key 'must_contian'",
+        ),
     ],
-    ids=["floor_below_the_domain", "misspelled_tool_expectations_key"],
+    ids=["floor_below_the_domain", "misspelled_tool_expectations_key", "misspelled_rule_key"],
 )
 def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     tmp_path: Path, transcript_rules: dict, match: str
@@ -928,14 +1018,53 @@ def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     """The gate constructs the whole block, so its siblings are validated too.
 
     A gate that read the two window fields off the raw dict and compared them
-    directly — never constructing the model — would leave both of these loading: a
-    floor of 0 asserting nothing, and a misspelled ``tool_expectations`` key grading
-    as an empty list.
+    directly — never constructing the model — would leave all three of these loading: a
+    floor of 0 asserting nothing, a misspelled ``tool_expectations`` key grading as an
+    empty list, and a misspelled rule key at the top of the block doing the same one
+    level up.
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(
             _write_transcript_rules(tmp_path, transcript_rules), inventory=_UNRESOLVED
         )
+
+
+@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
+def test_both_substrates_refuse_a_rule_key_the_block_does_not_declare(model: type):
+    """One answer, both models: the engine and the runner agree on what loads.
+
+    Every rule here defaults to asserting nothing, so the dropped key graded the trial
+    by the rules that survived — measured, ``must_contian: ['refund issued']`` scored
+    ``1.0`` and passing on a transcript the authored ``must_contain`` scored ``0.75``
+    and failing. The runner model has refused this since it was written; the engine's
+    is what a ``grading.yaml`` is read by.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        model(must_contian=["refund issued"])
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [("must_contian",)]
+
+
+def test_validate_names_a_misspelled_transcript_rule_key_and_the_accepted_set(tmp_path: Path):
+    """What the model's own ``extra_forbidden`` cannot say: the file, and the fix.
+
+    Written beside a rule that survives, which is the shape nothing caught: a typo alone
+    in this block already drew the asserts-nothing refusal, and that message names
+    neither the key nor what to write instead.
+    """
+    grading = _write_transcript_rules(
+        tmp_path, {"must_contain": ["shipped"], "must_contian": ["refunded"]}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "did you mean 'must_contain'?" in message, message
+    assert "the task's own transcript_rules block" in message, message
+    for field in CoreTranscriptRules.model_fields:
+        assert field in message, message
 
 
 def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: Path):

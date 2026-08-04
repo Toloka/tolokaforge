@@ -71,6 +71,7 @@ from tolokaforge.core.models.run_config import (
     validate_rate_limit_probe_budget,
 )
 from tolokaforge.core.models.task_config import (
+    RETIRED_STATE_CHECK_KEYS,
     SEED_KIND_BY_EXTENSION,
     ActorSpec,
     AssetsConfig,
@@ -232,6 +233,7 @@ __all__ = [
     "InitializationAction",
     "LLMJudgeDefaults",
     "ProjectConfig",
+    "RETIRED_STATE_CHECK_KEYS",
     "RequiredAction",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
