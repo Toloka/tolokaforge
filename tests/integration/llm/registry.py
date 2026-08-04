@@ -1465,23 +1465,48 @@ _ALL: list[MC] = [
     # The observe (default) baseline surfaced ONE preset-fixable failure:
     # ``unsigned_thinking_replay`` 0/15. The route surfaces reasoning as an
     # OpenAI ``reasoning_content`` summary (so THINKING_EMITS_BLOCKS passes
-    # 15/15 under the ``openai`` codec) but emits no structured
-    # ``reasoning_details`` / no signatures on the wire, and the plain OpenAI
-    # codec's ``encode_for_replay`` is a no-op — so the turn-1 reasoning text
-    # never reached turn 2. ``OpenAISummaryReplayReasoningCodec`` re-emits the
-    # summary block as an unsigned OpenRouter ``reasoning.text`` detail on
-    # replay; reprobe went 5/5 on the fix-target, so UNSIGNED_THINKING_REPLAY is
-    # ``required`` here (UNLIKE the deepseek-v4-flash / v4-pro siblings, whose
-    # generic ``openai`` codec had no replay path and declared it
-    # known_unsupported).
+    # 15/15 under the ``openai`` codec) but emits no signatures on the wire, and
+    # the plain OpenAI codec's ``encode_for_replay`` is a no-op — so the outgoing
+    # assistant dict carried no ``reasoning_details``. (The route does emit a
+    # ``reasoning_details`` envelope of its own, ``format: "unknown"``, which the
+    # OpenAI extract discards — live capture 2026-08-04, see
+    # ``tests/unit/llm/fixtures/openrouter_deepseek_v4_reasoning_response.json``.)
+    # ``OpenAISummaryReplayReasoningCodec``
+    # re-emits the summary block as an unsigned OpenRouter ``reasoning.text``
+    # detail on replay; reprobe went 5/5 on the fix-target, so
+    # UNSIGNED_THINKING_REPLAY is ``required`` here (UNLIKE the
+    # deepseek-v4-flash / v4-pro siblings, whose generic ``openai`` codec had no
+    # replay path and declared it known_unsupported).
+    #
+    # SCOPE of that ``required`` — verified live 2026-08-04. The capability is a
+    # PAYLOAD-level contract: ``test_unsigned_thinking_replay`` fires turn 1 live
+    # and MOCKS turn 2 (so does its signed sibling), asserting only that the
+    # outgoing request body carries the turn-1 text. A controlled A/B on this
+    # route — same conversation with vs without the replay payload — measured
+    # turn-2 ``prompt_tokens`` 523 vs 523 (delta 0) while ``reasoning_details``
+    # was confirmed on the wire (2.8 kB, ~668 reasoning tokens). The route
+    # ACCEPTS the field and silently IGNORES it. The cert is therefore correct as
+    # written against the declared contract, but do NOT read it as "this model
+    # has cross-turn reasoning continuity" — it does not, on this route.
     #
     # The two ``known_unsupported`` ceilings are the observe-run ceilings
     # (decision.json): signed-block replay has no source ("no signed blocks on
     # turn 1" → THINKING_REPLAY_ROUNDTRIP) and no Anthropic-style ephemeral
     # cache markers are wired on this route (call 1 created 0
     # cache_creation_input_tokens → PROMPT_CACHING). IMPLICIT_PROMPT_CACHING
-    # passed the observe baseline 15/15, so it is ``required`` here (unlike the
-    # cold-flaky v4-flash / v4-pro siblings).
+    # passed the observe baseline 15/15, so it is ``required`` here — re-verified
+    # 2026-08-04 as 3/3 stable on ``test_implicit_prompt_caching`` (the probe
+    # keys its 8 k-token prefix with a per-call UUID, so the call-1 → call-2 read
+    # is a genuine cold-then-warm hit, not cross-run contamination).
+    #
+    # This diverges from the v4-flash / v4-pro siblings, which declare it
+    # ``known_unsupported`` on the rationale that a cold probe reads 0. That
+    # rationale is now STALE, not a route difference: run live 2026-08-04,
+    # ``test_implicit_prompt_caching_unsupported_ratchet`` FAILS for both
+    # siblings (call 2 reported cache_read_input_tokens=8192 on each), which is
+    # precisely the correction the ratchet exists to force. The sibling certs
+    # need IMPLICIT_PROMPT_CACHING moved to ``required``; that is a pre-existing
+    # main-branch defect, out of scope for this model's integration.
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__deepseek_deepseek-v4-flash-0731",
