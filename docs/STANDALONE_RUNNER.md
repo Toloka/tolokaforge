@@ -155,12 +155,40 @@ programmatic `docker exec` against a running container:
   on stdout. It is hidden from interactive `tolokaforge --help` **by design** —
   a machine-facing wire protocol, documented here for programmatic use, not
   surfaced in the human command list.
-- `tolokaforge --version` — prints the installed `tolokaforge` package version;
+- `tolokaforge --version` — prints the installed subset wheel's version;
   a stable version probe for a running container.
 
 A `tolokaforge config-dump` command does **not** exist and is not part of the
 committed surface; it is reserved and tracked as
 [#626](https://github.com/Toloka/tolokaforge/issues/626).
+
+**Subset-native CLI shim ([ADR-0026](adr/0026-subset-native-cli-shim.md)).**
+Inside the published runner image, `tolokaforge` binds to a subset-native shim
+(`tolokaforge.runner._cli:main`), *not* the base wheel's
+`tolokaforge._entry:main`. The two ADR-0024 subcommands above are preserved
+verbatim; other operator ergonomics differ from a base-wheel install:
+
+- **`tolokaforge --version`** reports the subset wheel's version. In a
+  release build the subset wheel and the base wheel are cut from the same
+  commit and carry the same version literal, so external consumers see no
+  drift; the substring the rc-smoke gate asserts against (the tagged base
+  version) matches.
+- **`tolokaforge run-trial`** is *narrower* than the base wheel's
+  `run-trial`. The subset-native driver orchestrates in-process against the
+  local runner gRPC service on `localhost:50051`; it **cannot** spin up
+  compose stacks, switch backends, or exercise adapter-specific setup —
+  the adapter machinery (`tolokaforge.adapters.*`, `tolokaforge.core.run_trial`,
+  runtime-backend factories) is base-wheel-only per [ADR-0025](adr/0025-runner-wheel-split.md).
+  A `start` envelope whose task shape needs adapter processing surfaces as
+  a well-formed `{"v":1,"type":"error","error_type":"ProvisionError",…}`
+  wire response, naming the base wheel's
+  `tolokaforge.core.run_trial.run_trial(…)` or the runner service's raw
+  `RegisterTrial` gRPC as the right entry.
+- **No other CLI subcommands** are available inside the image. Commands
+  that live under the base wheel's `tolokaforge/dx/cli/*` — `tolokaforge run`,
+  `tolokaforge adapter`, `tolokaforge docker …` — are not part of the
+  runner image and produce a click "No such command" error. Drive those
+  from a host-side base-wheel install.
 
 ## Quickstart
 

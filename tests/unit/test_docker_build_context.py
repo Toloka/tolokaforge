@@ -26,7 +26,12 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture()
 def _mock_wheel(tmp_path: Path):
-    """Mock resolve_wheel to return a fake .whl so tests don't run a real build."""
+    """Mock ``resolve_wheel`` to return a fake ``.whl`` so tests exercising the
+    remaining wheel-consuming stacks (rag-service, full stack) don't run a real
+    build. The runner Dockerfile no longer consumes a host-side wheel — its
+    multi-stage build produces the subset wheel in-container ([ADR-0025](../../docs/adr/0025-runner-wheel-split.md)),
+    so ``tolokaforge.docker.stacks.core`` doesn't import ``resolve_wheel``
+    anymore and is not patched here."""
     whl = tmp_path / "tolokaforge-0.2.0-py3-none-any.whl"
     whl.write_bytes(b"PK\x03\x04test-wheel")
     artifact = WheelArtifact(
@@ -42,10 +47,6 @@ def _mock_wheel(tmp_path: Path):
         ),
         patch(
             "tolokaforge.docker.builder.resolve_wheel",
-            return_value=artifact,
-        ),
-        patch(
-            "tolokaforge.docker.stacks.core.resolve_wheel",
             return_value=artifact,
         ),
     ):
@@ -211,19 +212,47 @@ def test_mock_web_context_scoped_to_service_files() -> None:
         assert not (build_dir / "pyproject.toml").exists()
 
 
-@pytest.mark.usefixtures("_mock_wheel")
-def test_runner_build_context_contains_wheel() -> None:
-    """The runner image context should contain the resolved wheel (not source)."""
+def test_runner_build_context_ships_source_tree_for_multi_stage_hatch_build() -> None:
+    """The runner Dockerfile is multi-stage: its ``wheel-builder`` stage
+    runs ``hatch build --target custom`` in-container to produce the
+    runner-subset wheel, then the ``builder`` stage installs it (ADR-0025 /
+    ADR-0026). The build context therefore carries the source files hatch
+    needs — pyproject.toml, README, LICENSE, .python-version, the custom
+    builder script, and the ``tolokaforge/`` source tree — not a
+    pre-resolved host-side wheel.
+
+    A regression that drops one of these entries produces a hatch
+    ``file not found`` inside the image build, not a helpful host-side
+    diagnostic; this test locks the expected context set explicitly."""
     runner_def = get_image_definition("runner")
     context_files = runner_def["context_files"]
-    # Exactly one entry: the absolute path to the .whl.
-    assert len(context_files) == 1
-    assert context_files[0].endswith(".whl")
+    expected = {
+        "pyproject.toml",
+        "README.md",
+        "LICENSE",
+        ".python-version",
+        "scripts/hatch/",
+        "tolokaforge/",
+    }
+    assert set(context_files) == expected, (
+        "runner image context_files drifted from the ADR-0025 multi-stage "
+        f"hatch-build source set. got: {sorted(context_files)}"
+    )
+    # No pre-built wheel should be listed — the subset wheel is built
+    # in-container by the wheel-builder stage.
+    assert not any(entry.endswith(".whl") for entry in context_files), (
+        "runner image context_files still lists a pre-built .whl — the "
+        "subset wheel is a Docker-only artifact built by the multi-stage "
+        "Dockerfile, never a host-side input."
+    )
 
 
-def test_build_image_respects_context_files(monkeypatch, _mock_wheel) -> None:
-    """build_image() should place the resolved wheel in the Docker context."""
-    captured = {}
+def test_build_image_runner_ships_source_tree_not_a_wheel(monkeypatch) -> None:
+    """The runner ``build_image('runner')`` path passes the source tree
+    to docker as the build context, not a pre-resolved wheel. Locks the
+    ADR-0025 multi-stage build contract: the ``.whl`` is produced *inside*
+    the image, not copied in from the host."""
+    captured: dict[str, object] = {}
 
     def fake_build(dockerfile, context, build_args=None, name=None, client=None):
         captured["dockerfile"] = dockerfile
@@ -231,14 +260,16 @@ def test_build_image_respects_context_files(monkeypatch, _mock_wheel) -> None:
         captured["build_args"] = build_args
         root = Path(context)
 
-        # The wheel should be in the build context root.
-        wheels = list(root.glob("tolokaforge-*.whl"))
-        assert len(wheels) == 1, f"Expected one wheel, found: {wheels}"
-        # Source package should NOT be present (the tolokaforge/ dir may
-        # exist as a parent of the Dockerfile path on the split branch,
-        # but it must not contain the Python source).
-        assert not (root / "pyproject.toml").exists()
-        assert not (root / "tolokaforge" / "__init__.py").exists()
+        # No host-side wheel is copied into the runner image build context;
+        # the subset wheel is produced by the wheel-builder stage.
+        wheels = list(root.glob("tolokaforge*.whl"))
+        assert (
+            wheels == []
+        ), f"runner build context must not contain a pre-built wheel; found: {wheels}"
+        # Instead, the source-tree entries hatch consumes must be present.
+        assert (root / "pyproject.toml").exists()
+        assert (root / "scripts" / "hatch" / "hatch_runner_subset_builder.py").exists()
+        assert (root / "tolokaforge" / "__init__.py").exists()
 
         return Image(
             name=name or "test",
@@ -255,24 +286,19 @@ def test_build_image_respects_context_files(monkeypatch, _mock_wheel) -> None:
     image = build_image("runner", force=True)
     assert image.full_tag == "tolokaforge-runner:deadbeef"
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
-    # WHEEL_FILENAME must reach docker build. The Dockerfile's ARG default
-    # is a placeholder that doesn't match the real wheel on disk, so `COPY
-    # ${WHEEL_FILENAME}` fails whenever the harness omits this build arg.
     # PYTHON_VERSION is sourced from .python-version so a single upgrade
-    # propagates to every runtime image.
+    # propagates to every runtime image. ``WHEEL_FILENAME`` is deliberately
+    # absent — the multi-stage Dockerfile doesn't need it because the
+    # subset wheel is produced in a preceding stage.
     from tolokaforge.docker.builder import PYTHON_VERSION
 
-    assert captured["build_args"] == {
-        "WHEEL_FILENAME": _mock_wheel.path.name,
-        "PYTHON_VERSION": PYTHON_VERSION,
-    }
+    assert captured["build_args"] == {"PYTHON_VERSION": PYTHON_VERSION}
 
 
-def test_build_image_non_force_path_uses_isolated_context(monkeypatch, _mock_wheel) -> None:
-    """The cached (non-force) path must also assemble the isolated context.
-
-    Production builds go through ``ImageRegistry.get_or_build``.
-    """
+def test_build_image_runner_non_force_path_uses_source_tree_context(monkeypatch) -> None:
+    """The cached (non-force) path must also assemble the source-tree
+    context the multi-stage runner build needs; wheel-based context is
+    no longer part of the runner path."""
     captured: dict[str, object] = {}
 
     def fake_get_or_build(self, *, name, dockerfile, context, build_args=None):  # noqa: ARG001
@@ -280,8 +306,10 @@ def test_build_image_non_force_path_uses_isolated_context(monkeypatch, _mock_whe
         captured["context"] = context
         captured["build_args"] = build_args
         root = Path(context)
-        # Wheel should be present in the isolated context.
-        assert list(root.glob("tolokaforge-*.whl"))
+        # Source-tree entries hatch needs are present; no pre-built wheel.
+        assert (root / "pyproject.toml").exists()
+        assert (root / "tolokaforge" / "runner" / "_cli.py").exists()
+        assert list(root.glob("tolokaforge*.whl")) == []
         return Image(
             name=name,
             tag="cafe1234",
@@ -301,10 +329,7 @@ def test_build_image_non_force_path_uses_isolated_context(monkeypatch, _mock_whe
     assert not Path(captured["context"]).exists(), "Temporary build context should be cleaned up"
     from tolokaforge.docker.builder import PYTHON_VERSION
 
-    assert captured["build_args"] == {
-        "WHEEL_FILENAME": _mock_wheel.path.name,
-        "PYTHON_VERSION": PYTHON_VERSION,
-    }
+    assert captured["build_args"] == {"PYTHON_VERSION": PYTHON_VERSION}
 
 
 def test_build_image_passes_python_version_build_arg_for_db_service(monkeypatch) -> None:
@@ -340,12 +365,13 @@ def test_service_name_for_image_resolves_all_known_services_without_resolving_wh
     """Reverse lookup must (a) cover dynamically-resolved services too and
     (b) never invoke the wheel resolver as a side effect.
 
-    Iterating ``IMAGE_DEFINITIONS`` only misses runner / rag-service (they're
-    resolved via ``_runner_definition`` / ``_rag_definition``); calling
-    ``get_image_definition`` for every candidate, conversely, would invoke
-    ``resolve_wheel()`` for runner / rag-service even when looking up an
-    unrelated service like db-service — propagating wheel-build failures from
-    an unrelated lookup. The implementation must do neither.
+    ``rag-service`` is still resolved via ``_rag_definition``; ``runner`` is
+    now fully static (its multi-stage Dockerfile handles wheel production
+    in-container per ADR-0025). Calling ``get_image_definition`` for every
+    candidate would still invoke ``resolve_wheel()`` for rag-service even
+    when looking up an unrelated service like db-service — propagating
+    wheel-build failures from an unrelated lookup. The implementation must
+    do neither.
     """
 
     def fail_resolve_wheel(*args, **kwargs):
