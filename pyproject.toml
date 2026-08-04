@@ -167,6 +167,10 @@ grpc = "tolokaforge.core.service_readiness:grpc_readiness_probe_factory"
 http = "tolokaforge.core.service_readiness:http_readiness_probe_factory"
 tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 
+[project.entry-points."tolokaforge.turn_policies"]
+agent_only = "tolokaforge.core.actors.turn_policy:_agent_only_policy_factory"
+conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",
@@ -234,6 +238,7 @@ only-include = [
     "tolokaforge/runner",
     "tolokaforge/secrets",
     "tolokaforge/tools",
+    "tolokaforge/core/actors",
     "tolokaforge/core/models",
     "tolokaforge/core/llm",
     "tolokaforge/core/grading",
@@ -260,6 +265,7 @@ only-include = [
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
     # otherwise-included subpackage.
+    "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/state_checks.py",

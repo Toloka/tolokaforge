@@ -40,6 +40,7 @@ RUNNER_SUBSET_PACKAGES: tuple[str, ...] = (
     "tolokaforge/runner",
     "tolokaforge/secrets",
     "tolokaforge/tools",
+    "tolokaforge/core/actors",
     "tolokaforge/core/models",
     "tolokaforge/core/llm",
     "tolokaforge/core/grading",
@@ -112,6 +113,7 @@ shim; before the fix, the subset shipped Python only and a runner image
 booted with an empty pricing table."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
+    "tolokaforge/core/actors/turn_policy.py",
     "tolokaforge/core/grading/combine.py",
     "tolokaforge/core/grading/replay.py",
     "tolokaforge/core/grading/state_checks.py",
@@ -121,7 +123,16 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
 )
 """Files that live under a shared-spine subpackage but are orchestrator-only.
 
-Four of them (``core.grading.combine``, ``core.grading.replay``,
+``core.actors.turn_policy`` names the concrete built-in turn policies the
+runner-side ``TrialRunner`` (orchestrator-owned) dispatches on
+``TaskConfig.interaction_mode`` — its imports reach
+``core.plugin_registry`` for :class:`TurnPolicyContext`, which is
+orchestrator-only. The runner container never resolves a policy: the
+orchestrator does that before handing a :class:`TrialRunner` to the
+conductor, and the runner-side wire protocol carries only the resolved
+per-turn artefacts.
+
+Four grading files (``core.grading.combine``, ``core.grading.replay``,
 ``core.grading.state_checks``, ``core.tools.user_tools``) reach
 orchestrator-only siblings (``core.evaluators``, ``core.output.artifacts``,
 ``core.utils.diff``, ``core.env_state``) — including any of these in the
