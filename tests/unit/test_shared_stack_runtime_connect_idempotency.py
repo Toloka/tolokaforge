@@ -88,6 +88,51 @@ class TestRunnerClientConnectIdempotency:
         assert health_check_calls == 2
 
 
+class TestGrpcRunnerClientHealthCheckAcceptsDegraded:
+    """``GrpcRunnerClient.health_check`` accepts both ``healthy`` and
+    ``degraded`` from the runner's ``HealthCheckResponse``.
+
+    The runner's ``HealthCheck`` RPC reports three status values per
+    ``docs/GRPC_PROTOCOL.md`` § HealthCheck: ``healthy``, ``degraded``,
+    ``unhealthy``. ``degraded`` means the runner's own gRPC surface is up
+    and answering but a downstream service (DB, RAG) is unavailable. That
+    is the runner's concern to surface via its own per-service warnings —
+    it is NOT a signal the client should reject the runner itself for the
+    purpose of a connect-time reachability probe. Only ``unhealthy`` or an
+    ``RpcError`` are "the runner is dead" states.
+
+    This test pins that semantics against a regression where an earlier
+    strict ``status == "healthy"`` check made a downstream-less trial pack
+    (a common shape: MB adapter smoke has no ``db-service`` in its per-trial
+    compose) fail the 30-attempt connect loop even though the runner's
+    ``HealthCheck`` RPC was successfully responding with ``degraded``.
+    """
+
+    def _client_with_status(self, status: str, monkeypatch: pytest.MonkeyPatch) -> GrpcRunnerClient:
+        client = GrpcRunnerClient(runner_address="sentinel:50051")
+        stub = MagicMock()
+        response = MagicMock()
+        response.status = status
+        stub.HealthCheck.return_value = response
+        client.stub = stub
+        return client
+
+    def test_healthy_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        client = self._client_with_status("healthy", monkeypatch)
+        assert client.health_check() is True
+
+    def test_degraded_returns_true(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The whole point of this test class — degraded runners are still
+        callable, so health_check must return True."""
+        client = self._client_with_status("degraded", monkeypatch)
+        assert client.health_check() is True
+
+    def test_unhealthy_returns_false(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        """The runner explicitly signalling unhealthy is a real fail."""
+        client = self._client_with_status("unhealthy", monkeypatch)
+        assert client.health_check() is False
+
+
 class TestSharedStackRuntimeBackendConnectDelegates:
     """``SharedStackRuntimeBackend.connect`` is a one-line wrapper that delegates to
     ``RunnerClient.connect``. The Protocol's idempotency promise rides on

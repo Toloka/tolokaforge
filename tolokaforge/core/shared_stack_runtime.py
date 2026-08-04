@@ -793,7 +793,15 @@ class GrpcRunnerClient:
 
         try:
             response = self.stub.HealthCheck(runner_pb2.HealthCheckRequest())
-            return response.status == "healthy"
+            # The protocol (docs/GRPC_PROTOCOL.md § HealthCheck) defines three
+            # status values: ``healthy``, ``degraded``, ``unhealthy``. Both
+            # ``healthy`` and ``degraded`` mean the runner's own gRPC surface
+            # is up and answering — degraded reports a downstream (DB / RAG)
+            # is unreachable, which is the runner's concern to surface via its
+            # own per-service warnings, not a signal the client should reject
+            # the runner itself. Only ``unhealthy`` or an ``RpcError`` are the
+            # runner is dead states.
+            return response.status in ("healthy", "degraded")
         except grpc.RpcError as e:
             logger.error(
                 f"Health check failed: {e}",

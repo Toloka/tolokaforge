@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fix
+
+- **runner-client**: `GrpcRunnerClient.health_check` now accepts both `healthy` and `degraded` runner statuses (per `docs/GRPC_PROTOCOL.md` § HealthCheck) as reachable-for-connect purposes. The prior strict `status == "healthy"` check made every trial pack without a `db-service` fail the 30-attempt connect loop even though the runner's `HealthCheck` RPC was successfully answering. Only `unhealthy` and `RpcError` remain as fail states (#801)
+
 ### Feat
 
 - **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
