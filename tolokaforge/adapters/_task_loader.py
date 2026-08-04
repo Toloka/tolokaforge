@@ -64,6 +64,8 @@ from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
     CombineLayer,
+    InitialStateSource,
+    ReplayWorld,
     Skip,
     ToolInventory,
     inspect_grading_authoring,
@@ -91,14 +93,16 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
     TaskConfig.model_fields
 )
 
-# Bound once so the signature's default is the value, not a call in the annotation.
+# Bound once so each signature's default is the value, not a call in the annotation.
 _UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
+_UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 
 
 def validate_grading_yaml(
     grading_path: Path,
     *,
     inventory: ToolInventory,
+    replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
     combine_layer: CombineLayer = _UNRESOLVED_COMBINE_LAYER,
     fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
 ) -> AuthoringReport:
@@ -128,6 +132,10 @@ def validate_grading_yaml(
         inventory: The task's tool set. A caller that cannot resolve one passes
             :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
             into the returned report's ``unchecked`` and fails nothing.
+        replay_world: What the task gives its golden actions to be replayed against.
+            A caller that cannot resolve it leaves the default,
+            :meth:`ReplayWorld.unresolvable`, which skips the rule reading it into
+            ``unchecked`` wherever that rule would have run.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
             :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
@@ -242,7 +250,9 @@ def validate_grading_yaml(
         if combine_layer.known
         else None
     )
-    report = inspect_grading_authoring(grading_data, inventory, effective_combine=effective_combine)
+    report = inspect_grading_authoring(
+        grading_data, inventory, replay_world=replay_world, effective_combine=effective_combine
+    )
     if effective_combine is None:
         report = report.with_unchecked(Skip("combine.weights", UNRESOLVED_COMBINE_REASON))
     fatal = report.fatal(fail_on)
@@ -500,6 +510,36 @@ def tool_inventory_under_adapter(
     if adapter_type != AdapterType.NATIVE.value:
         return ToolInventory.unresolvable()
     return build_tool_inventory(task, task_dir)
+
+
+def replay_world_under_adapter(task: TaskConfig, adapter_type: str) -> ReplayWorld:
+    """What *task* gives a golden-action replay, under *adapter_type*.
+
+    ``initial_state.json_db`` and ``tools.agent.mcp_server`` are the native reading of
+    the world a replay executes in, so a task an external adapter owns gets
+    :meth:`ReplayWorld.unresolvable` for the reason
+    :func:`tool_inventory_under_adapter` gives: reporting a reading the adapter does not
+    use would reject packs that run fine.
+
+    ``mcp_server`` is read the way :meth:`BaseAdapter.grade` reads it into the grading
+    engine, and a ``json_db`` written as an inline mapping supplies no file — the shape
+    :func:`require_golden_replay_world` refuses to build a world from at grade time.
+    """
+    from tolokaforge.runner.models import AdapterType
+
+    if adapter_type != AdapterType.NATIVE.value:
+        return ReplayWorld.unresolvable()
+    json_db = task.initial_state.json_db
+    if not json_db:
+        initial_state = InitialStateSource.ABSENT
+    elif isinstance(json_db, str):
+        initial_state = InitialStateSource.A_JSON_FILE
+    else:
+        initial_state = InitialStateSource.INLINE
+    return ReplayWorld(
+        initial_state=initial_state,
+        mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
+    )
 
 
 def _builtin_tool_schemas(

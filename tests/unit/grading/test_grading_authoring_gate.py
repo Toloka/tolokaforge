@@ -44,6 +44,8 @@ from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
     CombineLayer,
     Finding,
+    InitialStateSource,
+    ReplayWorld,
     ToolInventory,
     inspect_grading_authoring,
 )
@@ -140,6 +142,17 @@ def _golden_actions(*actions: dict[str, Any], enabled: bool = True) -> dict[str,
     return {"state_checks": {"hash": {"enabled": enabled, "golden_actions": list(actions)}}}
 
 
+# Every world a task can give a golden replay, written out rather than resolved from a
+# pack: the one shape this issue is about — an initial-state file beside no MCP server
+# module — is authorable and ships nowhere, so no pack can supply it. The corpus guard
+# in ``tests/canonical/test_example_pack_grading_corpus.py`` resolves the real ones.
+_A_BUILDABLE_WORLD = ReplayWorld(initial_state=InitialStateSource.A_JSON_FILE, mcp_server=True)
+_NO_SERVER_MODULE = ReplayWorld(initial_state=InitialStateSource.A_JSON_FILE, mcp_server=False)
+_NO_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=True)
+_AN_INLINE_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.INLINE, mcp_server=True)
+_A_TASK_SUPPLYING_NEITHER = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=False)
+
+
 def _quotes(operator: str, name: str) -> dict[str, Any]:
     """A ``present`` over an assistant message whose text reads the bound *name*."""
     return {"present": {"match": {"kind": "assistant_message", "text": {operator: name}}}}
@@ -152,6 +165,9 @@ class _Rule:
     ``combine`` is the effective map the row is checked under. ``None`` leaves the
     weight rules out, which is what every tool-aware row wants: they are about a
     matcher, and a weight finding beside one would report two defects for one typo.
+    ``world`` reads the same way: unresolvable leaves the replay-world rule reporting
+    nothing in either finding channel, so only the row that is about the world says
+    what the task supplies.
     """
 
     label: str
@@ -161,6 +177,7 @@ class _Rule:
     channel: str
     message: str
     combine: GradingCombineConfig | None = None
+    world: ReplayWorld = ReplayWorld.unresolvable()
 
 
 _RULES: tuple[_Rule, ...] = (
@@ -269,6 +286,15 @@ _RULES: tuple[_Rule, ...] = (
         message="names no tool to replay",
     ),
     _Rule(
+        label="golden_actions_the_task_gives_no_world_to_replay_in",
+        task=_HELPDESK,
+        grading=_golden_actions({"name": "write_file"}),
+        checker="_check_golden_replay_world",
+        channel="errors",
+        message="declares no tools.agent.mcp_server",
+        world=_NO_SERVER_MODULE,
+    ),
+    _Rule(
         label="a_section_that_declares_nothing",
         task=_HELPDESK,
         grading={"transcript_rules": {}},
@@ -339,7 +365,10 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
     the schema does not condemn, or wave through a matcher that selects nothing.
     """
     report = inspect_grading_authoring(
-        rule.grading, _inventory(rule.task), effective_combine=rule.combine
+        rule.grading,
+        _inventory(rule.task),
+        effective_combine=rule.combine,
+        replay_world=rule.world,
     )
 
     reported = _texts(report, rule.channel)
@@ -379,7 +408,10 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
         monkeypatch.setattr(config_validation, name, _recording(name, answered))
     for rule in _RULES:
         inspect_grading_authoring(
-            rule.grading, _inventory(rule.task), effective_combine=rule.combine
+            rule.grading,
+            _inventory(rule.task),
+            effective_combine=rule.combine,
+            replay_world=rule.world,
         )
 
     assert answered == declared
@@ -726,12 +758,17 @@ def test_golden_actions_alone_are_a_hash_source() -> None:
 
     The replay is what every shipped golden-action pack grades by, so a rule reading
     only ``expected_state_hash`` as a source would refuse the one hash shape whose
-    verdict is the same on both substrates. The action names a tool the task declares,
-    which is the other thing a replayable source needs.
+    verdict is the same on both substrates. The action names a tool the task declares
+    and the task gives the replay a world to be built in, which are the other two
+    things a replayable source needs.
     """
     grading = _golden_actions({"name": "write_file"})
 
-    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert report == AuthoringReport()
 
 
 _GOLDEN_ACTIONS_NO_REPLAY_CAN_RUN = (
@@ -758,7 +795,9 @@ def test_every_golden_action_shape_no_replay_can_run_is_refused(action: dict[str
     ``tolokaforge validate`` carrying no address and passes the pre-run preflight's
     ``(ValueError, RuntimeError, OSError)`` arm as a harness fault.
     """
-    report = inspect_grading_authoring(_golden_actions(action), _inventory(_HELPDESK))
+    report = inspect_grading_authoring(
+        _golden_actions(action), _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
 
     assert [finding.where for finding in report.errors] == [
         "state_checks.hash.golden_actions[0].name"
@@ -778,7 +817,9 @@ def test_each_unreplayable_golden_action_is_addressed_by_its_own_index() -> None
         {"name": "write_file"}, {"name": "close_widget"}, {"kwargs": {"widget_id": "W1"}}
     )
 
-    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
 
     assert [finding.where for finding in report.errors] == [
         "state_checks.hash.golden_actions[1].name",
@@ -786,7 +827,17 @@ def test_each_unreplayable_golden_action_is_addressed_by_its_own_index() -> None
     ]
 
 
-def test_a_golden_action_under_a_disabled_flag_is_refused_by_no_rule_at_all() -> None:
+_WORLDS_A_DISABLED_FLAG_IS_READ_AGAINST = (
+    pytest.param(_A_BUILDABLE_WORLD, id="a_world_the_replay_could_be_built_in"),
+    pytest.param(_A_TASK_SUPPLYING_NEITHER, id="a_task_supplying_neither_fact"),
+    pytest.param(ReplayWorld.unresolvable(), id="a_world_no_caller_resolved"),
+)
+
+
+@pytest.mark.parametrize("world", _WORLDS_A_DISABLED_FLAG_IS_READ_AGAINST)
+def test_a_golden_action_under_a_disabled_flag_is_refused_by_no_rule_at_all(
+    world: ReplayWorld,
+) -> None:
     """The one hash shape the gate accepts and no substrate grades (#832).
 
     Deliberate, and asserted so it cannot change by accident in either direction. The
@@ -796,10 +847,16 @@ def test_a_golden_action_under_a_disabled_flag_is_refused_by_no_rule_at_all() ->
     ``expected_state_hash``, so the source rule sees nothing to disagree with — the
     whole block grades nothing and draws no finding. #832 owns closing it, at the flag
     rather than at the name.
+
+    Held against every world a task can give a replay, because the replay-world rule
+    reads the flag before it reads anything else: a task supplying neither fact draws no
+    finding for a replay nobody runs, and one no caller resolved draws no skip either.
     """
     grading = _golden_actions({"name": "close_widget"}, enabled=False)
 
-    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK), replay_world=world)
+
+    assert report == AuthoringReport()
 
 
 def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> None:
@@ -808,14 +865,168 @@ def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> No
     One skip for the whole group, not one per rule: the block below is unreplayable
     against any tool set that resolves, and against an inventory that cannot answer it
     is simply not knowable — a gate that raised here would reject every pack whose
-    adapter cannot report a tool set.
+    adapter cannot report a tool set. The world is resolved and buildable, so the only
+    skip in the report is the tool set's.
     """
     grading = _golden_actions({"name": "close_widget"})
 
-    report = inspect_grading_authoring(grading, ToolInventory.unresolvable())
+    report = inspect_grading_authoring(
+        grading, ToolInventory.unresolvable(), replay_world=_A_BUILDABLE_WORLD
+    )
 
     assert report.errors == ()
     assert [skip.where for skip in report.unchecked] == ["grading"]
+
+
+_WORLDS_A_GOLDEN_REPLAY_CANNOT_BE_BUILT_IN = (
+    pytest.param(_A_BUILDABLE_WORLD, (), id="every_fact_the_replay_needs"),
+    pytest.param(
+        _NO_INITIAL_STATE,
+        ("this task declares no initial_state.json_db",),
+        id="no_initial_state_at_all",
+    ),
+    pytest.param(
+        _AN_INLINE_INITIAL_STATE,
+        ("this task declares initial_state.json_db inline",),
+        id="an_initial_state_written_inline",
+    ),
+    pytest.param(
+        _NO_SERVER_MODULE,
+        ("this task declares no tools.agent.mcp_server",),
+        id="no_mcp_server_module",
+    ),
+    pytest.param(
+        _A_TASK_SUPPLYING_NEITHER,
+        (
+            "this task declares no initial_state.json_db",
+            "this task declares no tools.agent.mcp_server",
+        ),
+        id="neither_fact",
+    ),
+)
+
+
+@pytest.mark.parametrize(("world", "expected"), _WORLDS_A_GOLDEN_REPLAY_CANNOT_BE_BUILT_IN)
+def test_every_replay_fact_a_task_withholds_from_its_golden_path_is_its_own_error(
+    world: ReplayWorld, expected: tuple[str, ...]
+) -> None:
+    """A golden path is authorable only against a task that gives it a world.
+
+    Core hashes nothing without one: it raises out of the grading engine and the trial is
+    left unscored, once every token is already spent — where before it produced a
+    ``state_checks`` component its JSONPath assertions alone earned, indistinguishable
+    from one whose hash matched. Each withheld fact is its own finding naming its own
+    ``task.yaml`` key, so an author supplying two does not pay a grading pass per
+    omission; an inline ``json_db`` is withheld rather than supplied, because the replay
+    loads a file under the task directory.
+    """
+    report = inspect_grading_authoring(
+        _golden_actions({"name": "write_file"}), _inventory(_HELPDESK), replay_world=world
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "state_checks.hash.golden_actions"
+    ] * len(expected)
+    for finding, because in zip(report.errors, expected, strict=True):
+        assert finding.message.startswith(because), finding.message
+    assert report.advisories == ()
+    assert report.unchecked == ()
+
+
+def test_a_literal_expected_hash_beside_golden_actions_needs_no_world() -> None:
+    """The shape ``tests/data/grading_parity/all_keys`` ships, and the rule's exclusion.
+
+    Core reads the two hash sources in order: a truthy ``expected_state_hash`` is
+    compared in process and returned before ``golden_actions`` is read at all, so the
+    replay world is consulted by nobody and the golden actions are never replayed.
+    Refusing this pack would send its author to declare an initial-state file and an MCP
+    server module that nothing then reads, and would refuse a fixture both substrates
+    grade today. Whether declaring two sources is itself a defect is a rule of its own.
+    """
+    grading = _golden_actions({"name": "write_file"})
+    grading["state_checks"]["hash"]["expected_state_hash"] = "aaaa"
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_TASK_SUPPLYING_NEITHER
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None:
+    """The unresolvable arm, which no corpus walk can reach.
+
+    Every one of the 93 authored packs in the repository is native, so every world the
+    canonical corpus guard resolves is ``known`` — this case carries the branch alone.
+    A caller holding no ``task.yaml`` — the trace-replay batch and the rubric migration
+    both check a ``trace_checks`` fragment against a bundle's recorded tools — must not
+    have a pack refused for facts it never claimed to read, and must not read as a clean
+    bill of health either.
+    """
+    report = inspect_grading_authoring(
+        _golden_actions({"name": "write_file"}),
+        _inventory(_HELPDESK),
+        replay_world=ReplayWorld.unresolvable(),
+    )
+
+    assert report.errors == ()
+    assert report.advisories == ()
+    assert [(skip.where, skip.reason) for skip in report.unchecked] == [
+        (
+            "state_checks.hash.golden_actions",
+            "no caller resolved what this task gives a golden replay, so whether the "
+            "replay has a world to be built in is not checkable",
+        )
+    ]
+
+
+def test_a_pack_that_replays_nothing_draws_no_skip_for_a_world() -> None:
+    """A skip is emitted where the rule would have run, and nowhere else.
+
+    89 of the repository's 93 authored packs replay no golden path, and the block below is
+    what they look like. A skip reported for every unresolvable world would put an entry
+    beside each of them for a rule that had nothing to check — noise in ``validate``'s
+    output, and a corpus guard whose ``unchecked`` assertion can no longer say which
+    rules were skipped.
+    """
+    grading = {"state_checks": {"jsonpaths": [{"path": "$.widgets[0].status", "equals": "closed"}]}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=ReplayWorld.unresolvable()
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_golden_actions_written_as_a_bare_string_are_refused_for_the_missing_world() -> None:
+    """Truthiness, never shape — and the one place that diverges from the name rule.
+
+    ``_check_golden_action_names`` short-circuits on a ``golden_actions`` that is not a
+    list and reports nothing about it, because it has no element to address. This rule
+    reads the value the way both substrates read the source — for truth — so the same
+    value with no world to replay in is refused for the world it lacks. What that value
+    *is* stays #832's; core would crash on it whatever this rule says.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": "write_file"}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_NO_SERVER_MODULE
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
+    assert "tools.agent.mcp_server" in report.errors[0].message
+
+
+def test_an_unresolvable_replay_world_may_not_carry_task_facts() -> None:
+    """The two states cannot share one value, so the shape that conflates them is refused.
+
+    A world reporting ``known=False`` is skipped wherever it is read, so a fact carried
+    beside it is resolved and then ignored — and the fact that would have refused the
+    pack is silently dropped instead. The same guard the tool inventory and the combine
+    layer carry, for the same reason.
+    """
+    with pytest.raises(ValueError, match="carries task facts"):
+        ReplayWorld(initial_state=InitialStateSource.A_JSON_FILE, mcp_server=True, known=False)
 
 
 # The rest of a loadable config, because ``combine`` is required: without it every
