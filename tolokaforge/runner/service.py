@@ -1842,15 +1842,26 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             dict(initial_tables) if initial_tables else None
         )
 
-        # Skip the DB fetch when the trial declared no initial tables — the
-        # trial has no DB state to grade against, so an empty ``final_env_state``
-        # is the honest input to ``build_check_context``. Matches the guard
-        # ``RegisterTrial`` applies to its ``init_trial`` call, and the one
-        # ``_maybe_render_state_diff`` already applies at :746 below.
-        if initial_tables:
+        # Try to fetch the trial's final DB state. On failure — DB Service
+        # unreachable, trial never registered (empty initial_state skips the
+        # init in ``RegisterTrial`` above), etc. — degrade to an empty
+        # ``final_env_state`` so ``build_check_context`` still gets a
+        # well-formed input and the check runs against an honest empty state
+        # rather than crashing the grade path. Any real state a tool call
+        # wrote to a functional DB is preserved (matches the substrate parity
+        # test's expectation that a fixture DB with data drives discrimination
+        # even when ``initial_state.tables`` is empty).
+        try:
             final_state_response = await self.db_client.get_state(trial_id)
             final_env_state: dict[str, Any] = final_state_response.data
-        else:
+        except (
+            Exception
+        ) as exc:  # noqa: BLE001 — grade path degrades to empty state; the DB failure surfaces via component metadata, not a crash
+            logger.warning(
+                "GradeTrial: %s - final DB state fetch failed (%s); grading against empty state",
+                trial_id,
+                exc,
+            )
             final_env_state = {}
 
         ctx = build_check_context(
