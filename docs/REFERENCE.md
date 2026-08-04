@@ -438,7 +438,9 @@ all three are supplied: `grade_trajectory` otherwise raises
 `GoldenReplayError`), naming every absent one in one message — the two task-level ones by
 the `task.yaml` key that supplies them, `task_dir` as the caller's own omission — and no
 component is scored. `task_initial_state.json_db` has to be a path to a JSON file
-under `task_dir`; an inline mapping is no world to replay in. A truthy
+under `task_dir`; an inline mapping is no world to replay in. A `golden_actions` that is
+truthy without being a list is refused ahead of all three, with `UnreplayableGoldenSource`
+out of the same module: there is nothing to replay whatever world is supplied. A truthy
 `expected_state_hash` is compared in process and returns before `golden_actions` is read,
 so a pack declaring both needs none of the three. `BaseAdapter.grade` resolves all three
 from the task it grades — see

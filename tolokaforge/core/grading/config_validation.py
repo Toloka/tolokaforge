@@ -18,7 +18,9 @@ the evaluator once the tokens are already spent, a binding correlated against a
 field of another type is red on every trajectory whatever the agent did, a golden
 action naming no callable tool leaves the replay with no world to hash and the trial
 with no verdict, a golden path authored against a task that declares no initial-state
-file or no MCP server module has no world to replay in at all, a section declaring
+file or no MCP server module has no world to replay in at all, a golden source that is
+not the list of actions to replay is iterated by one substrate and handed to the other's
+replay loop and crashes both once the trial is paid for, a section declaring
 nothing scores nothing while reading as configured, a probe declared beside a state
 source the fold also scores leaves one component holding two verdicts and each
 substrate discarding a different one, and a component and its weight naming each other
@@ -39,7 +41,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from tolokaforge.core.grading.golden_replay import InitialStateSource
+from tolokaforge.core.grading.golden_replay import (
+    InitialStateSource,
+    unreplayable_golden_source,
+)
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
     GRADE_COMPONENTS,
@@ -408,6 +413,12 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
     ),
 }
 
+_A_HASH_SOURCE_NOTHING_READS = (
+    "{key} is declared while hash.enabled is {enabled!r}: both substrates read the flag "
+    "before any source, so the comparison never runs and the state is graded without it. "
+    "Write enabled: true, or drop the source"
+)
+
 _GOLDEN_ACTION_NAME_ADDRESS = "state_checks.hash.golden_actions[{index}].name"
 
 # What a golden action the replay cannot resolve costs. One tail for both shapes, since
@@ -481,9 +492,9 @@ def inspect_grading_authoring(
 
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
     inventory is unresolvable. The rules outside that set still run: regex compilation,
-    the hash-source declaration and the state-source exclusivity, which read nothing but
-    the block, and the replay-world rule, which reads the world and skips on its own
-    account.
+    the hash-source declaration, the golden source's shape and the state-source
+    exclusivity, which read nothing but the block, and the replay-world rule, which reads
+    the world and skips on its own account.
 
     Args:
         grading: The authored block, as written.
@@ -511,6 +522,7 @@ def inspect_grading_authoring(
         _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
+        _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
     ]
@@ -816,24 +828,37 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     """The hash check and something to compare against are declared together.
 
     Either half alone grades the state without the comparison the author wrote. A
-    source under a disabled flag is never read: both substrates test the flag first,
-    so the pack grades in silence without it. An enabled flag with no source is the
-    same defect from the other side, and it also splits the two substrates — core
-    produces no hash verdict at all while the runner compares the trial against the
-    initial state, so the same trial takes two different ``state_checks`` components.
+    source under a disabled flag is never read, whichever of
+    :data:`~tolokaforge.core.grading.state_composition.HASH_SOURCE_KEYS` carries it:
+    both substrates test the flag first, so the pack grades in silence without it. An
+    enabled flag with no source is the same defect from the other side, and it also
+    splits the two substrates — core produces no hash verdict at all while the runner
+    compares the trial against the initial state, so the same trial takes two different
+    ``state_checks`` components.
+
+    A block declaring two inert sources is one defect taking one edit, so it draws one
+    finding, addressed at the first source the tuple names. That order is **core's** read
+    order and no more: ``_check_state_hash`` compares a truthy ``expected_state_hash`` in
+    process and returns before ``golden_actions``, where no runner path reads the
+    translated ``expected_hash`` at all —
+    :data:`~tolokaforge.core.grading.key_manifest._HASH_SOURCE_SHAPE_REASON` records that
+    asymmetry under #693. What the message claims of both substrates is only what holds
+    of both: the flag is read before any source.
 
     Both halves read the flag for truth rather than for ``True``, because that is
     what decides the grade: core branches on its truthiness and the runner coerces
     it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
     would be stricter than either substrate. A source is read the same way — an
     empty ``golden_actions`` list replays nothing, which is why both substrates
-    treat it as no source at all.
+    treat it as no source at all and why such a block is
+    :func:`_check_sections_declare_something`'s rather than this rule's.
     """
     hash_block = _hash_block(grading)
     if hash_block is None:
         return AuthoringReport()
     enabled = hash_block.get("enabled")
-    if enabled and not any(hash_block.get(key) for key in HASH_SOURCE_KEYS):
+    declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
+    if enabled and declared is None:
         sources = " or ".join(HASH_SOURCE_KEYS)
         return AuthoringReport(
             errors=(
@@ -847,16 +872,13 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
                 ),
             )
         )
-    if not hash_block.get("expected_state_hash") or enabled:
+    if enabled or declared is None:
         return AuthoringReport()
     return AuthoringReport(
         errors=(
             Finding(
-                "state_checks.hash.expected_state_hash",
-                f"an expected state hash is declared while hash.enabled is {enabled!r}: "
-                "both substrates read the flag before the hash, so the comparison never "
-                "runs and the state is graded without it. Write enabled: true, or drop "
-                "the hash",
+                f"state_checks.hash.{declared}",
+                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
             ),
         )
     )
@@ -873,6 +895,42 @@ def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
         return None
     hash_block = state_checks.get("hash")
     return hash_block if isinstance(hash_block, Mapping) else None
+
+
+def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A declared golden replay is the list of actions to replay.
+
+    The one hash rule that reads a source for its *shape* rather than for truth, and it
+    reads only the block: whether a value is a list needs no tool set and no replay world,
+    so a shape defect is refused for a pack whose adapter can report neither rather than
+    skipped with the rules that do need them.
+
+    Read under a truthy ``hash.enabled`` and then **whatever else the block declares**,
+    unlike :func:`_check_golden_replay_world` beside it. A truthy ``expected_state_hash``
+    is the source core reads, so core never reaches the actions — but
+    ``NativeAdapter.to_task_description`` iterates the authored value with no such
+    short-circuit, so a pack declaring both cannot be registered at all. Skipping the
+    literal here would accept it.
+
+    Independent of the replay-world rule for the reason that rule reports every withheld
+    fact at once: a truthy non-list under an incomplete world draws two findings at this
+    one address, because both statements are true and each names a different fix. At grade
+    time core answers only the first, the shape being refused above the world it would
+    otherwise need — an author holding the whole list is what the gate is for, and the
+    first unbuildable precondition is the whole answer once a trial is paid for.
+
+    A falsy value is no replay rather than a malformed one — see
+    :func:`~tolokaforge.core.grading.golden_replay.unreplayable_golden_source` for the
+    reading — so such a block is :func:`_check_sections_declare_something`'s where it
+    declares no other source, and nothing at all where it declares one.
+    """
+    hash_block = _hash_block(grading)
+    if hash_block is None or not hash_block.get("enabled"):
+        return AuthoringReport()
+    reason = unreplayable_golden_source(hash_block.get("golden_actions"))
+    if reason is None:
+        return AuthoringReport()
+    return AuthoringReport(errors=(Finding(_GOLDEN_ACTIONS_ADDRESS, reason),))
 
 
 def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> AuthoringReport:
@@ -919,15 +977,19 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:
     """A pack replaying golden actions is authored against a task that gives them a world.
 
-    The block is read in the order both substrates read it. A falsy ``hash.enabled`` is
+    The block is read in the order core reads it — the flag, then ``expected_state_hash``,
+    then ``golden_actions`` — the runner having no literal-first order to share, since no
+    path there reads the translated ``expected_hash`` (#693). A falsy ``hash.enabled`` is
     a source nobody resolves, for the reason :func:`_check_hash_source_declared` gives at
     length. A truthy ``expected_state_hash`` is the *effective* source whatever else the
     block declares — core compares the trial against the author's literal and returns
     before ``golden_actions`` is read — so such a pack needs no world, and refusing it
     would send its author to declare facts nothing consults. Only then are the golden
     actions read, for truthiness and never for shape: a truthy non-list value is refused
-    for the world it lacks, where :func:`_check_golden_action_names` reports nothing about
-    it at all and #832 owns the shape.
+    here for the world it lacks and by :func:`_check_golden_actions_are_a_list` for being
+    no list of actions, so under an incomplete world it draws both findings at this one
+    address, while :func:`_check_golden_action_names` reports nothing about it at all,
+    having no element to address.
 
     Each fact the task withholds is its own finding, addressed to the ``task.yaml`` key
     that supplies it, because an author fixing a pack one exception at a time pays a
@@ -981,8 +1043,8 @@ def _check_golden_action_names(
     Read only under a truthy ``hash.enabled``, the flag both substrates test before
     they read any source, for the reason :func:`_check_hash_source_declared` gives at
     length: a name under a disabled flag is never resolved, so refusing it would be
-    stricter than the grade. That leaves the one shape neither rule refuses, a
-    ``golden_actions`` list under a falsy flag (#832).
+    stricter than the grade. That block is refused there instead, at the source key the
+    flag stops anything from reading rather than at any name it carries.
 
     Names resolve against the tools the task *declares*, which is stricter than either
     replay substrate — core resolves against the pack's ``TOOLS`` map and the runner

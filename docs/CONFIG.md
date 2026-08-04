@@ -485,9 +485,10 @@ llm_judge:                                 # the judge MODEL is set once per run
 ```
 
 A whole-state hash is read only where the flag turns it on: `state_checks.hash`
-carrying an `expected_state_hash` without `enabled: true` is rejected at load,
-because both substrates test the flag before reading the hash and the pack would
-otherwise grade its state without the comparison the author wrote. Every other
+carrying an `expected_state_hash` or `golden_actions` under an `enabled` that is not
+truthy is rejected at load, because both substrates test the flag before reading any
+source and the pack would otherwise grade its state without the comparison the author
+wrote. The refusal is addressed at the source the pack declared. Every other
 authoring rule this file's grading block is checked against — tool names, argument
 names, `regex` compilation — is in
 [GRADING.md](GRADING.md#what-is-validated-before-a-run).

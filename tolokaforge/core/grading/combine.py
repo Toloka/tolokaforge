@@ -30,6 +30,7 @@ from tolokaforge.core.grading.combine_weights import (
 from tolokaforge.core.grading.golden_replay import (
     GoldenReplayRecord,
     incomplete_replay_reason,
+    refuse_unreplayable_golden_source,
     require_golden_replay_world,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
@@ -380,6 +381,11 @@ class GradingEngine:
         and needs no world.
 
         Raises:
+            UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
+                truthy without being a list at all, so no reader can iterate it. Refused
+                at this read, above the world the actions would otherwise need. An element
+                *inside* a list that is no mapping is a different shape, answered by the
+                replay's own name resolution.
             UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
                 the task declares no world to replay them against, so there is no
                 expected state and the trial is left unscored.
@@ -400,6 +406,7 @@ class GradingEngine:
         golden_actions = hash_config.get("golden_actions")
         if not golden_actions:
             return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
+        refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
         world = require_golden_replay_world(
             task_dir=self.task_dir,
             initial_state_json_db=(

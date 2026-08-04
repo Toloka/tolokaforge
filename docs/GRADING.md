@@ -976,9 +976,12 @@ substrates rather than coerced into one.
 **The flag and a source are declared together, or neither is.** Both halves are
 rejected at load:
 
-- **A source under a falsy `enabled`** is a comparison that never runs. Both
-  substrates test the flag before reading the hash, so the pack grades its state
-  without the literal the author wrote and says nothing.
+- **Either source under a falsy `enabled`** is a comparison that never runs. Both
+  substrates test the flag before reading any source, so the pack grades its state
+  without the hash its author asked for and says nothing — a literal there is compared
+  by nobody and a golden path there replays on neither substrate. The refusal is
+  addressed at the source the pack wrote, and where it wrote both, at
+  `expected_state_hash`: one flag to fix, so one finding.
 - **`enabled` with neither `expected_state_hash` nor `golden_actions`** is hash
   grading with nothing to compare against, and the two substrates answer it
   differently: core produces no hash verdict at all while the runner compares the
@@ -992,6 +995,41 @@ flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, a
 empty `golden_actions` list replays nothing, so it is no more a source than an absent
 one. The rules' class and the rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
+
+**`golden_actions` is the list of actions to replay, or there is no replay.** A **falsy**
+value — `[]`, `{}`, `""`, `0`, `false`, or the key written bare, which is what an author
+reaches by commenting the actions out — is no replay at every read site on either
+substrate: the description a pack builds carries no actions and core reports the source as
+absent. What each substrate then *grades* for a replay of no actions is where they part
+company, and that difference is #693's rather than this rule's: core takes no hash verdict
+at all, while the runner's refusal-task semantics reset the environment, hash the initial
+state as the golden one and hand the fold a binary verdict.
+
+A **truthy** value that is not a list can be replayed by neither substrate, so each of the
+three surfaces that has to act on it refuses it in one sentence naming the key, the type
+received and the fix. `tolokaforge validate` reports an ERROR at
+`state_checks.hash.golden_actions` and exits non-zero.
+`NativeAdapter.to_task_description` raises `UnreplayableGoldenSource` — a
+`GoldenReplayError` subclass — before a trial can be registered; a run's pre-flight
+resolves each pack's description before it reaches the gate, so that raise stops the pass
+where it stands with its own sentence instead of joining the named list of offending tasks,
+and #880 owns folding that class into it. Core's hash path raises the same class above the
+world the actions would otherwise need. `NativeAdapter.compute_golden_hash` reads the key
+too and refuses nothing: it reads the source for truth alone and returns no hash for any
+shape but a list (#836).
+
+The description build is the read with no literal short-circuit, so a pack declaring
+`expected_state_hash` beside a non-list `golden_actions` is refused there too, where core
+would have compared the literal and never read the actions.
+
+A **list element** that is no mapping — an action written `- place_order` where
+`- name: place_order` belongs — declares no tool to call. `tolokaforge validate` refuses it
+at `state_checks.hash.golden_actions[i].name`, the description build raises
+`UnresolvableGoldenAction` naming the offending index, and core raises the same class out
+of name resolution, before the first action runs. A mapping element whose `name` is absent
+or empty is refused at that same address by the gate, and core refuses it at resolution
+too — but the description build lowers it onto the wire as an empty tool name, where it
+fails only once the runner's replay resolves it, which is #886.
 
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
 `expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
@@ -2330,8 +2368,9 @@ Findings come in three classes:
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
+| either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
+| a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
 | a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
@@ -2435,9 +2474,11 @@ shape, and #815 owns unifying the three namespaces.
 
 Like the source rule beside it, this one reads only a hash block whose flag is truthy,
 because a source under a falsy flag is resolved by nobody and refusing it would be
-stricter than the grade. That leaves one shape refused by neither rule and graded by no
-substrate: a `golden_actions` list under `hash.enabled: false`, whatever its names.
-#832 owns closing it, at the flag rather than at the name.
+stricter than the grade. Such a block is refused by that rule instead, at the flag
+rather than at the name: a `golden_actions` list under `hash.enabled: false` replays on
+neither substrate whatever its names are, so what an author fixes is the flag or the
+source, and naming an action nothing was ever going to run would send them to the wrong
+line.
 
 **A golden replay needs a world to be built in, and the task supplies it.** Two facts,
 both written in `task.yaml` and neither of them readable from `grading.yaml`:
@@ -2449,14 +2490,19 @@ the gate refuses the shape and the whole trial is never paid for. Each withheld 
 its own error naming its own key, for the reason each unreplayable action is: an author
 supplying two of them otherwise pays a grading pass per omission.
 
-The rule reads the block in the order both substrates read it — the flag, then
-`expected_state_hash`, then `golden_actions` — so a pack declaring a truthy
-`expected_state_hash` beside its golden actions is outside it entirely: core compares
-the trial against the author's literal and returns before the replay is reached, so that
-pack needs no world and demanding one would send its author to declare facts nothing
-reads. `golden_actions` is read for truthiness and never for shape, so a non-list value
-is refused for the world it lacks while the name rule above reports nothing about it —
-what that value *is* stays #832's.
+The rule reads the block in the order **core** reads it — the flag, then
+`expected_state_hash`, then `golden_actions`. Only the flag is shared with the runner:
+no runner path reads the translated `expected_hash` at all, which is #693 and what
+`state_checks.hash`'s manifest reason records. So a pack declaring a truthy
+`expected_state_hash` beside its golden actions is outside the rule entirely: core
+compares the trial against the author's literal and returns before the replay is
+reached, so that pack needs no world and demanding one would send its author to declare
+facts nothing reads. This rule reads `golden_actions` for truthiness and never for shape;
+the rule beside it reads the shape and nothing else. So a truthy non-list value under an
+incomplete world draws **both** findings at that one address — one naming the fact the
+task withholds, one naming a source that is no list of actions — because both are true
+and each names a different fix, which is the same reason two withheld facts draw two
+findings. The name rule reports nothing about such a value, having no element to address.
 
 The world is the caller's to resolve, the way the tool set is: `tolokaforge validate` and
 the run's pre-flight both hold the `TaskConfig`, and a caller holding none — the
@@ -2671,6 +2717,18 @@ refused at load.
 
 The migration for either is the same: indent the block's own keys one level under the
 key rather than writing its contents beside it.
+
+**One value below the key names carries its own shape rule.**
+`state_checks.hash.golden_actions` is neither a grading key nor a block — it is a value
+inside `hash`, which is an untyped mapping (#730) — so the refusal above says nothing about
+it. It is the list of actions to replay, or there is no replay: a falsy value loads at
+every read site as nothing to replay, and a truthy value that is not a list can be replayed
+by neither substrate and is refused by the golden-replay precondition, at the authoring
+gate and again at each substrate's own read of the block — core reaching that read without
+passing through this loader at all.
+[§ Hash-Based Grading](#hash-based-grading-tau-bench-compatible) carries the shape, the
+element rule beside it, and what a falsy source then *grades* as, which the two substrates
+answer differently (#693).
 
 One shape is still answered differently per surface: an **empty** `grading.yaml`. A file
 with no content is not content of the wrong type, so `validate` accepts it while

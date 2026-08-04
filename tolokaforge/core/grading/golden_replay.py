@@ -60,6 +60,21 @@ _UNBUILDABLE_WORLD = (
     "earned while the hash they are weighed against went uncomputed."
 )
 
+_A_SOURCE_NO_REPLAY_CAN_ITERATE = (
+    "state_checks.hash.golden_actions is the list of actions a golden replay executes, got "
+    "{kind} ({value!r}): neither substrate can replay that, so the trial is paid for and "
+    "takes no state-hash verdict at all. Write each action as a '- name: <tool>' list "
+    "entry, or drop the source"
+)
+
+_UNNAMEABLE_ACTIONS = (
+    "golden actions declaring no tool for the replay to call: {offenders}. An action is a "
+    "mapping carrying the name of the tool to call, so there is nothing here to resolve "
+    "and the trial would be paid for and take no state-hash verdict at all."
+)
+
+_UNNAMEABLE_ACTION = "[{index}] {kind} ({value!r})"
+
 _NO_TASK_DIR = "this grading engine was given no task directory"
 
 # How a task withholding the initial state reads to whoever holds the engine, per shape
@@ -96,6 +111,15 @@ class GoldenReplayError(Exception):
 
 class UnresolvableGoldenAction(GoldenReplayError):
     """A golden action naming a tool the replay cannot call, or naming nothing at all."""
+
+
+class UnreplayableGoldenSource(GoldenReplayError):
+    """The authored ``golden_actions`` is not the list of actions a replay executes.
+
+    Distinct from an action the replay cannot resolve
+    (:class:`UnresolvableGoldenAction`): that one is an action, while this is a source
+    holding no actions at all, so there is no index to address.
+    """
 
 
 class UnbuildableGoldenReplayWorld(GoldenReplayError):
@@ -312,6 +336,79 @@ def incomplete_replay_reason(record: GoldenReplayRecord) -> str | None:
             for failure in record.failures
         ),
     )
+
+
+def unreplayable_golden_source(golden_actions: object) -> str | None:
+    """Why no substrate can replay this authored ``golden_actions``, or ``None``.
+
+    Truth before shape, which is the reading every rule over this source already uses: a
+    falsy value — ``[]``, ``{}``, ``""``, ``0``, ``false``, or the key written bare — is
+    no replay rather than a malformed source, so every read site loads it as no actions
+    to replay and the block is refused only where it declares no other source. What each
+    substrate then *grades* for a replay of no actions is its own answer and still
+    differs (#693); no read of this source decides it.
+
+    A truthy value that is not a list has no reading at all: core hands it to the replay
+    loop and the runner iterates it onto the wire, so each fails on the authored value
+    once the trial is paid for. One sentence for both, and for the authoring gate that
+    reports the shape rather than raising on it, so an author meets the same fix wherever
+    they first hear about it.
+    """
+    if not golden_actions or isinstance(golden_actions, list):
+        return None
+    return _A_SOURCE_NO_REPLAY_CAN_ITERATE.format(
+        kind=type(golden_actions).__name__, value=golden_actions
+    )
+
+
+def refuse_unreplayable_golden_source(golden_actions: object, *, context: str) -> None:
+    """Raise ``UnreplayableGoldenSource`` for a source no replay can iterate.
+
+    ``context`` is the locus its caller can name: the grading file for a reader holding
+    that path, the file's name for one holding nothing but the parsed block.
+
+    Which shape that is belongs to :func:`unreplayable_golden_source`.
+    """
+    reason = unreplayable_golden_source(golden_actions)
+    if reason is not None:
+        raise UnreplayableGoldenSource(f"{context}: {reason}")
+
+
+def require_replayable_golden_actions(
+    golden_actions: object, *, context: str
+) -> list[Mapping[str, Any]]:
+    """Every authored action as the mapping a replay reads it as, or raise.
+
+    The read for a caller with no resolution step between the authored value and a paid
+    trial: an element that is no mapping is refused here, naming its index, where core
+    tolerates it and lets :func:`resolve_golden_action_names` refuse it by the same class
+    one step later. Tolerating it here instead — returning ``None`` for its name, as core
+    does — would lower an action named ``""`` onto the wire, and that constructs cleanly.
+
+    Only the element's *shape* is answered. A mapping declaring no usable name reaches the
+    caller and is lowered the same way, which is #886 rather than this precondition.
+
+    A falsy source is no actions to replay and loads as the empty list, the refusal above
+    having answered every other non-list.
+
+    Raises:
+        UnreplayableGoldenSource: the source is not the list of actions to replay.
+        UnresolvableGoldenAction: an element of it is no mapping at all, every offending
+            index named in one raise.
+    """
+    refuse_unreplayable_golden_source(golden_actions, context=context)
+    if not isinstance(golden_actions, list):
+        return []
+    offenders = [
+        _UNNAMEABLE_ACTION.format(index=index, kind=type(action).__name__, value=action)
+        for index, action in enumerate(golden_actions)
+        if not isinstance(action, Mapping)
+    ]
+    if offenders:
+        raise UnresolvableGoldenAction(
+            f"{context}: {_UNNAMEABLE_ACTIONS.format(offenders='; '.join(offenders))}"
+        )
+    return golden_actions
 
 
 def resolve_golden_action_names(

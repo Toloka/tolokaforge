@@ -4,7 +4,7 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
-from collections.abc import Collection
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, Union
 
@@ -94,15 +94,17 @@ def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
     return name if name in tools else None
 
 
-def _authored_action_name(action: dict[str, Any]) -> str | None:
+def _authored_action_name(action: object) -> str | None:
     """The name an action declares, or ``None`` where it declares no string at all.
 
-    The ``hash`` block is untyped (#730), so a name may arrive as a list or a mapping.
-    Such a name is as unreplayable as a missing one and draws the same
-    ``UnresolvableGoldenAction``; reaching the matcher instead, its membership test
-    would answer an unhashable value with a ``TypeError``.
+    The ``hash`` block is untyped (#730), so a name may arrive as a list or a mapping and
+    the action carrying it may be no mapping at all. Every one of those declares a name as
+    little as an absent key does, and each draws the same ``UnresolvableGoldenAction``
+    naming its index — where reading a name off a bare string raises an ``AttributeError``
+    attributable to nobody, and reaching the matcher with an unhashable name answers its
+    membership test with a ``TypeError``.
     """
-    name = action.get("name")
+    name = action.get("name") if isinstance(action, Mapping) else None
     return name if isinstance(name, str) else None
 
 
@@ -335,7 +337,7 @@ class StateChecker:
 
     def _execute_golden_actions(
         self,
-        golden_actions: list[dict[str, Any]],
+        golden_actions: list[Any],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,
@@ -438,7 +440,7 @@ class StateChecker:
     def check_hash_against_golden_replay(
         self,
         db_state: dict[str, Any],
-        golden_actions: list[dict[str, Any]],
+        golden_actions: list[Any],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,

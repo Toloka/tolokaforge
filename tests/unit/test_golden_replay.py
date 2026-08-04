@@ -51,6 +51,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.utils.golden_source_shapes import elements_that_are_no_action
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenActionFailure,
@@ -208,6 +209,29 @@ def test_an_action_whose_name_is_no_string_is_refused_as_one_naming_nothing(
     tools.
     """
     listed = [copy.deepcopy(golden_actions[0]), {"name": ["confirm_payment"]}]
+
+    with pytest.raises(UnresolvableGoldenAction, match=r"\[1\] None"):
+        _check(_trial_state(pack_tools, _PLACE_ORDER), listed)
+
+
+#: Shared with the runner's read of the same shapes, over this pack's second action.
+_ELEMENTS_THAT_ARE_NO_ACTION = elements_that_are_no_action("confirm_payment")
+
+
+@pytest.mark.parametrize("element", _ELEMENTS_THAT_ARE_NO_ACTION)
+def test_an_action_that_is_no_mapping_at_all_is_refused_by_its_index(
+    pack_tools, golden_actions, element
+) -> None:
+    """The class the replay's own ``Raises:`` block promises, over a list of anything.
+
+    The ``hash`` block is untyped (#730), so nothing stops an element being a bare string
+    where a mapping belongs. Reading a name off one raises an ``AttributeError`` the
+    wrapper flattens into the base ``GoldenReplayError`` — "Error executing golden actions:
+    'str' object has no attribute 'get'", which names neither the offending index nor a
+    fix. Resolution answers it instead: an element declaring no name resolves to nothing,
+    exactly as an action carrying no ``name`` key does, and the two take the same fix.
+    """
+    listed = [copy.deepcopy(golden_actions[0]), element]
 
     with pytest.raises(UnresolvableGoldenAction, match=r"\[1\] None"):
         _check(_trial_state(pack_tools, _PLACE_ORDER), listed)

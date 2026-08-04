@@ -18,10 +18,11 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.utils.golden_source_shapes import sources_no_replay_can_iterate
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
-from tolokaforge.core.grading.golden_replay import GoldenReplayError
+from tolokaforge.core.grading.golden_replay import GoldenReplayError, UnreplayableGoldenSource
 from tolokaforge.core.grading.state_checks import (
     consistent_hash,
     to_hashable,
@@ -77,6 +78,15 @@ _DB_PROBES = [
 #: untouched — so a replay over that pack reaches a verdict without the pack's own
 #: golden path having to be authored into the case.
 _GOLDEN_ACTION_THAT_RUNS_WHOLE = [{"name": "get_customer", "kwargs": {"customer_id": "C-101"}}]
+
+#: A world in which nothing a golden replay needs is absent, so a case removing exactly
+#: one term draws a message naming that term alone, and one removing none is refused for
+#: something other than its world.
+_A_COMPLETE_REPLAY_WORLD = {
+    "task_dir": Path("."),
+    "task_initial_state": InitialStateConfig(json_db="initial_state.json"),
+    "task_mcp_server": "mcp_server.py",
+}
 
 _CUSTOM_CHECKS_SENTINEL = "custom_checks_ran"
 
@@ -586,13 +596,6 @@ class TestAGoldenReplayWithNoWorldRefusesToGrade:
         "golden_actions": [{"name": "close_widget"}],
         "weight": 0.6,
     }
-    #: A world in which nothing is absent, so each case below removes exactly one term
-    #: and the message it draws names that term alone.
-    _COMPLETE_WORLD = {
-        "task_dir": Path("."),
-        "task_initial_state": InitialStateConfig(json_db="initial_state.json"),
-        "task_mcp_server": "mcp_server.py",
-    }
     _TASK_DIR = "no task directory"
     _INITIAL_STATE = "initial_state.json_db"
     _MCP_SERVER = "tools.agent.mcp_server"
@@ -642,7 +645,7 @@ class TestAGoldenReplayWithNoWorldRefusesToGrade:
         with pytest.raises(GoldenReplayError) as excinfo:
             _grade(
                 {"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": self._UNREPLAYABLE_HASH},
-                **{**self._COMPLETE_WORLD, **world},
+                **{**_A_COMPLETE_REPLAY_WORLD, **world},
             )
 
         message = str(excinfo.value)
@@ -740,6 +743,90 @@ class TestAGoldenReplayWithNoWorldRefusesToGrade:
                 engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
 
         assert (pack / _CUSTOM_CHECKS_SENTINEL).exists() is suite_ran
+
+
+class TestAGoldenSourceNoReplayCanIterateRefusesToGrade:
+    """A truthy ``golden_actions`` that is no list is refused at the read, above the world.
+
+    Where it is refused is the whole content of these rows. The read below is the untyped
+    one, and refusing there is what leaves ``check_hash_against_golden_replay`` and the
+    replay it delegates to receiving a list on every call — they iterate their argument and
+    have no answer for a value they cannot. It also puts the shape above the world the
+    actions would otherwise need: an author holding a pack that is wrong twice hears the
+    shape, which is the only one of the two they can fix from ``grading.yaml`` alone.
+
+    Driven over the real ``shop_orders_02`` pack, whose initial state and server module a
+    replay loads before it reads the first action: refusing the shape has to happen ahead
+    of both, so the message an author gets cannot depend on a file being on disk.
+
+    Every case carries the assertions the trial half-satisfies, so an implementation that
+    fell through to them would return ``0.5`` on ``state_checks`` — a pass-shaped number
+    for a source no replay can run.
+    """
+
+    _SHAPES_NO_REPLAY_CAN_ITERATE = sources_no_replay_can_iterate("close_widget")
+
+    _WORLDS_THE_SHAPE_IS_REFUSED_AGAINST = (
+        pytest.param({}, id="a_world_the_replay_could_be_built_in"),
+        pytest.param({"task_mcp_server": None}, id="a_task_withholding_the_server_module"),
+    )
+
+    _SOURCES_THAT_REPLAY_NOTHING = (
+        pytest.param(None, id="the_key_carrying_nothing"),
+        pytest.param([], id="an_empty_list"),
+        pytest.param({}, id="an_empty_mapping"),
+        pytest.param("", id="an_empty_string"),
+        pytest.param(0, id="zero"),
+        pytest.param(False, id="false"),
+    )
+
+    def _grade_over_the_pack(self, pack: Path, golden_actions, world=None):
+        return _grade(
+            {
+                "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                "hash": {"enabled": True, "golden_actions": golden_actions, "weight": 0.6},
+            },
+            **{**_A_COMPLETE_REPLAY_WORLD, "task_dir": pack, **(world or {})},
+        )
+
+    @pytest.mark.parametrize("world", _WORLDS_THE_SHAPE_IS_REFUSED_AGAINST)
+    @pytest.mark.parametrize(("golden_actions", "kind"), _SHAPES_NO_REPLAY_CAN_ITERATE)
+    def test_the_shape_is_named_where_the_replay_loop_crashes_on_it(
+        self, golden_actions, kind, world, test_data_dir
+    ):
+        """The subclass and the address are the assertion.
+
+        Handing the value to the replay loop flattens it into the base ``GoldenReplayError``
+        carrying whatever the loop tripped over — ``'str' object has no attribute 'get'``,
+        ``'int' object is not iterable`` — which names neither the key, nor the received
+        type, nor a fix, for a defect that costs the whole trial. The withheld-world row
+        is the ordering: the shape is answered where the world would otherwise be.
+        """
+        with pytest.raises(UnreplayableGoldenSource) as excinfo:
+            self._grade_over_the_pack(
+                test_data_dir / "tasks" / "shop_orders_02", golden_actions, world
+            )
+
+        message = str(excinfo.value)
+        assert "state_checks.hash.golden_actions" in message, message
+        assert f"got {kind} ({golden_actions!r})" in message, message
+
+    @pytest.mark.parametrize("golden_actions", _SOURCES_THAT_REPLAY_NOTHING)
+    def test_a_falsy_source_keeps_cores_no_verdict_answer(self, golden_actions, test_data_dir):
+        """The boundary the refusal sits below: no source, so nothing to refuse.
+
+        Core reads all six spellings as nothing to replay and reports the absent source
+        rather than raising, which is the answer this stage may not move — the assertions
+        alone score the component at ``0.5`` and the hash contributes nothing. What the
+        *runner* grades for a replay of no actions is its own answer (#693) and no
+        assertion here reaches it.
+        """
+        grade = self._grade_over_the_pack(
+            test_data_dir / "tasks" / "shop_orders_02", golden_actions
+        )
+
+        assert grade.components.state_checks == pytest.approx(0.5)
+        assert "neither expected_state_hash nor golden_actions" in grade.reasons
 
 
 class TestFailedGoldenReplayIsNotAScore:
