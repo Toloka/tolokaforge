@@ -85,6 +85,36 @@ class TestUnreferenced:
             classgate.unreferenced(["OpenAISummaryReplayReasoningCodec"], overlay, PR846_DIFF) == []
         )
 
+    def test_any_of_several_keys_counts_as_a_reference(self):
+        """A class bound under two keys is referenced if the overlay uses EITHER one."""
+        diff = PR846_DIFF + '+    "second_alias": OpenAISummaryReplayReasoningCodec,\n'
+        for key in ("openai_summary_replay", "second_alias"):
+            overlay = f"presets:\n  x:\n    reasoning_codec: {key}\n"
+            assert (
+                classgate.unreferenced(["OpenAISummaryReplayReasoningCodec"], overlay, diff) == []
+            ), key
+
+
+class TestAddedBindings:
+    def test_returns_key_class_pairs(self):
+        assert classgate.added_bindings(PR846_DIFF) == [
+            ("openai_summary_replay", "OpenAISummaryReplayReasoningCodec")
+        ]
+
+    def test_keeps_every_key_for_a_multiply_bound_class(self):
+        diff = PR846_DIFF + '+    "second_alias": OpenAISummaryReplayReasoningCodec,\n'
+        assert classgate.added_bindings(diff) == [
+            ("openai_summary_replay", "OpenAISummaryReplayReasoningCodec"),
+            ("second_alias", "OpenAISummaryReplayReasoningCodec"),
+        ]
+
+    def test_ignores_underscore_prefixed_registry_slot_lines(self):
+        """``_POLICY_REGISTRIES`` slot values are underscore-prefixed, not classes."""
+        diff = (
+            "+++ b/tolokaforge/core/llm/presets.py\n" '+    "reasoning_codec": _REASONING_CODECS,\n'
+        )
+        assert classgate.added_bindings(diff) == []
+
 
 class TestReadTests:
     def test_missing_dir_is_empty_not_an_error(self):

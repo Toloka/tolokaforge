@@ -30,19 +30,24 @@ import subprocess
 REGISTRY_FILE = "tolokaforge/core/llm/presets.py"
 DEFAULT_TESTS_DIR = "tests/unit/llm"
 
-# ``"json_coerce": JsonCoerceResponse,`` inside a _POLICY_REGISTRIES slot.
-_REGISTRY_BINDING = re.compile(r'^\+\s*"[A-Za-z0-9_]+"\s*:\s*([A-Z][A-Za-z0-9_]*)\s*,')
+# One added binding line, e.g. ``+    "json_coerce": JsonCoerceResponse,``. The leading
+# ``[A-Z]`` is what separates a CLASS binding from a registry-slot line (the
+# ``_POLICY_REGISTRIES`` values are underscore-prefixed), so slot lines never register as
+# new classes. Single source of truth for the line shape - every reader below goes through
+# :func:`added_bindings`.
+_REGISTRY_BINDING = re.compile(r'^\+\s*"([A-Za-z0-9_]+)"\s*:\s*([A-Z][A-Za-z0-9_]*)\s*,')
 _DIFF_FILE_HEADER = re.compile(r"^\+\+\+ b/(.+)$")
 
 
-def added_registry_classes(diff_text: str) -> list[str]:
-    """Class names newly bound into a ``_POLICY_REGISTRIES`` slot by this diff.
+def added_bindings(diff_text: str) -> list[tuple[str, str]]:
+    """``(registry_key, ClassName)`` for every binding this diff ADDS to the registry file.
 
-    Scoped to added lines inside the registry file's hunks, so a class merely *defined*
-    elsewhere in the diff (or a registry line that only moved) is not reported. Order is
-    deduplicated-stable so the failure message reads deterministically.
+    Scoped to added lines inside that file's hunks, so a class merely *defined* elsewhere
+    in the diff (or a registry line that only moved) is not reported. Order is source
+    order, so failure messages read deterministically. A class bound under several keys
+    yields one pair per key.
     """
-    found: list[str] = []
+    bindings: list[tuple[str, str]] = []
     in_registry_file = False
     for line in diff_text.splitlines():
         header = _DIFF_FILE_HEADER.match(line)
@@ -52,43 +57,45 @@ def added_registry_classes(diff_text: str) -> list[str]:
         if not in_registry_file:
             continue
         match = _REGISTRY_BINDING.match(line)
-        if match and match.group(1) not in found:
-            found.append(match.group(1))
-    return found
+        if match:
+            pair = (match.group(1), match.group(2))
+            if pair not in bindings:
+                bindings.append(pair)
+    return bindings
+
+
+def added_registry_classes(diff_text: str) -> list[str]:
+    """Distinct class names newly bound into a ``_POLICY_REGISTRIES`` slot by this diff."""
+    seen: list[str] = []
+    for _key, name in added_bindings(diff_text):
+        if name not in seen:
+            seen.append(name)
+    return seen
 
 
 def unreferenced(classes: list[str], overlay_text: str, diff_text: str) -> list[str]:
     """New classes named by neither the overlay nor a preset entry in the diff.
 
     An overlay references a class through its registry KEY, not its name, so match on
-    either: the class name appearing in the diff's preset YAML hunks, or the registry key
-    it was bound to appearing in the overlay. Keeping this permissive is deliberate - the
-    gate is here to catch a class nobody wired up at all, not to police style.
+    either: the class name appearing in the diff's preset YAML hunks, or ANY of the keys
+    it was bound to appearing in the overlay (a class bound under several keys is
+    referenced if the overlay uses any one of them). Keeping this permissive is deliberate
+    - the gate is here to catch a class nobody wired up at all, not to police style.
     """
     keys_by_class = _registry_keys(diff_text)
-    missing = []
-    for name in classes:
-        key = keys_by_class.get(name, "")
-        referenced = name in overlay_text or (key and key in overlay_text)
-        if not referenced:
-            missing.append(name)
-    return missing
+    return [
+        name
+        for name in classes
+        if name not in overlay_text
+        and not any(key in overlay_text for key in keys_by_class.get(name, ()))
+    ]
 
 
-def _registry_keys(diff_text: str) -> dict[str, str]:
-    """``{ClassName: registry_key}`` for bindings added in the registry file."""
-    keys: dict[str, str] = {}
-    in_registry_file = False
-    pattern = re.compile(r'^\+\s*"([A-Za-z0-9_]+)"\s*:\s*([A-Z][A-Za-z0-9_]*)\s*,')
-    for line in diff_text.splitlines():
-        header = _DIFF_FILE_HEADER.match(line)
-        if header:
-            in_registry_file = header.group(1) == REGISTRY_FILE
-            continue
-        if in_registry_file:
-            match = pattern.match(line)
-            if match:
-                keys.setdefault(match.group(2), match.group(1))
+def _registry_keys(diff_text: str) -> dict[str, tuple[str, ...]]:
+    """``{ClassName: (registry_key, ...)}`` for bindings added in the registry file."""
+    keys: dict[str, tuple[str, ...]] = {}
+    for key, name in added_bindings(diff_text):
+        keys[name] = (*keys.get(name, ()), key)
     return keys
 
 
