@@ -409,6 +409,8 @@ engine = GradingEngine(
     grading_config: GradingConfig,
     task_domain: str = "general",
     task_dir: Path | None = None,
+    task_initial_state: InitialStateConfig | None = None,
+    task_mcp_server: str | None = None,
 )
 
 grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
@@ -419,6 +421,19 @@ grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 # taking the run-level judge ModelConfig carried on TrialSpec.judge_model_config
 # (sourced from RunConfig.models["judge"]).
 ```
+
+The last three arguments are the world a `state_checks.hash.golden_actions` replay is
+executed in, and a pack whose effective hash source is `golden_actions` grades only when
+all three are supplied: `grade_trajectory` otherwise raises
+`UnbuildableGoldenReplayWorld` (`tolokaforge.core.grading.golden_replay`, a subclass of
+`GoldenReplayError`), naming every absent one in one message — the two task-level ones by
+the `task.yaml` key that supplies them, `task_dir` as the caller's own omission — and no
+component is scored. `task_initial_state.json_db` has to be a path to a JSON file
+under `task_dir`; an inline mapping is no world to replay in. A truthy
+`expected_state_hash` is compared in process and returns before `golden_actions` is read,
+so a pack declaring both needs none of the three. `BaseAdapter.grade` resolves all three
+from the task it grades — see
+[GRADING.md § Hash-Based Grading](GRADING.md#hash-based-grading-tau-bench-compatible).
 
 ---
 

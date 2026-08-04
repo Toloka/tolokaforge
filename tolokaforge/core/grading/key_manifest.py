@@ -196,8 +196,11 @@ _HASH_SOURCE_SHAPE_REASON = (
     "declared source is refused at the authoring gate, so the third shape is unauthorable — it "
     "survives only in a bundle recorded before that rule, where core produces no verdict at "
     "all while the runner's refusal semantics produce a binary one, and retrace replays it "
-    "unchanged. Moving #693's shape moves refusal-task verdicts, which needs its own corpus "
-    "measurement"
+    "unchanged. Golden actions with no world to replay them in is a fourth shape, unauthorable "
+    "the same way: core raises and leaves the trial unscored where the runner replays against "
+    "the live trial — the tools RegisterTrial registered, over db-service's state — and grades "
+    "it, so that divergence too survives only in a config no gate saw. Moving #693's shape "
+    "moves refusal-task verdicts, which needs its own corpus measurement"
 )
 
 _COMBINE_METHOD_PARITY_REASON = (
