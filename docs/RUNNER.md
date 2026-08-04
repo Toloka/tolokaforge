@@ -157,6 +157,64 @@ and rejecting each `ExecuteTool` would reach the agent as an ordinary tool failu
 so it would retry until its turn budget was gone and report a completed trial
 scoring near zero, with the skew visible only inside the transcript.
 
+### Runner subset — what the runner image ships
+
+The published PyPI wheel carries every `tolokaforge/**` file; the runner Docker
+image installs a Docker-only *subset* build of that same tree so the image
+contains only code the runner actually runs
+([ADR-0025](adr/0025-runner-wheel-split.md) § "The module partition"). The
+canonical enumeration lives in
+[`tolokaforge/core/_runner_subset.py`](../tolokaforge/core/_runner_subset.py) —
+consumed verbatim by the hatch build target and locked against the runner
+container's actual runtime import closure by
+[`tests/canonical/test_runner_subset_partition.py`](../tests/canonical/test_runner_subset_partition.py).
+
+**Whole subpackages in the subset:**
+
+| Path | Rationale |
+|---|---|
+| `tolokaforge/runner/` | The runner service, gRPC glue, DB / RAG clients, tool factory, runner-side grading. |
+| `tolokaforge/secrets/` | Single-abstraction secret manager reconstructed from `TOLOKAFORGE_SECRETS_JSON`. |
+| `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. (One file excluded — see below.) |
+| `tolokaforge/core/models/` | Wire types the gRPC surface serialises. |
+| `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
+| `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Four files excluded — see below.) |
+
+**Loose files in the subset:**
+
+- `tolokaforge/__init__.py` — package init; lazy `__getattr__` symbols that
+  resolve to orchestrator modules (`Orchestrator`, metrics, run queue) are
+  present but raise `AttributeError` on the slim image, and the runner never
+  reads them.
+- `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
+  the subset's own audit artifact and the `core/` package init.
+- `tolokaforge/core/deprecations.py`, `hash.py`, `logging.py`, `loop.py`,
+  `netpolicy_constants.py`, `pricing.py`, `run_display_events.py`, `trial.py`
+  — the shared-spine files at the root of `core/` the runner closure reaches
+  directly.
+
+**Excluded — orchestrator-only files under a subpackage otherwise in the subset:**
+
+| Path | Excluded because |
+|---|---|
+| `tolokaforge/core/grading/combine.py` | Imports `core.evaluators.*` (orchestrator-only). |
+| `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
+| `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
+| `tolokaforge/core/grading/transcript.py` | Consumed only by orchestrator-side code paths. |
+| `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
+| `tolokaforge/tools/user_tools.py` | Imports `core.env_state` (orchestrator-only). |
+
+**Not in the subset:** everything at the `tolokaforge/core/` root not listed above
+(the `Orchestrator` class, dry-run, output writer, config validator, compose
+materialisation, engine run state, backend capabilities, the `RuntimeBackend` /
+`Conductor` / `TrialGrader` Protocol definitions and their factories, the
+`run_trial` library entry, run queue, resume, project loader, plugin registry,
+metrics, budgets, and the remaining utility modules); `tolokaforge/core/evaluators/`;
+`tolokaforge/core/output/`; `tolokaforge/core/search/`; `tolokaforge/core/utils/`;
+`tolokaforge/core/schema/`; `tolokaforge/adapters/`; `tolokaforge/dx/`;
+`tolokaforge/docker/`; `tolokaforge/env/`; `tolokaforge/runtime/`;
+`tolokaforge/_entry.py`.
+
 ## Tool Lifecycle
 
 Some tools own per-trial resources — a compose stack, a long-lived
