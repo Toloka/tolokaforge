@@ -13,6 +13,7 @@ from typing import Any
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
+    replay_world_under_adapter,
     tool_inventory_under_adapter,
     validate_grading_yaml,
 )
@@ -1333,6 +1334,7 @@ class Orchestrator:
             report = validate_grading_yaml(
                 task_dir / task.grading,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
+                replay_world=replay_world_under_adapter(task, adapter_type),
                 combine_layer=self.adapter.grading_combine_layer(),
                 fail_on=fail_on,
             )

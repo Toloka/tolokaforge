@@ -76,13 +76,20 @@ Fifteen claims over the packs an author reads as the reference:
     criterion, so a trial that listed but never warned fails the judge's gate alone
     while one that never listed fails the trace gate alone — an attribution the one
     conjoined criterion could not make.
+15. **Every pack that replays a golden path is authored against a task that gives it a
+    world to replay in.** An initial-state JSON file and an MCP server module are
+    ``task.yaml`` facts, unreadable from ``grading.yaml``, and without them core hashes
+    nothing and refuses to grade the trial at all. Each of the 93 packs is checked
+    against its own resolved world, and again with that world's server module withheld
+    and any ``expected_state_hash`` removed — the removal being what makes the control
+    fire on the one pack that ships both hash sources.
 """
 
 from __future__ import annotations
 
 import json
 from collections.abc import Callable, Mapping, Sequence
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Any
 
@@ -95,11 +102,16 @@ from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_overrides import override_file
-from tolokaforge.adapters._task_loader import build_tool_inventory, load_task_yaml
+from tolokaforge.adapters._task_loader import (
+    build_tool_inventory,
+    load_task_yaml,
+    replay_world_under_adapter,
+)
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
+    ReplayWorld,
     ToolInventory,
     inspect_grading_authoring,
 )
@@ -479,7 +491,10 @@ _A_WEIGHT_NAMING_NO_COMPONENT = "a_component_no_pack_configures"
 
 
 def _gate_reports(
-    task_yaml: Path, grading: Mapping[str, Any], inventory: ToolInventory
+    task_yaml: Path,
+    grading: Mapping[str, Any],
+    inventory: ToolInventory,
+    world: ReplayWorld,
 ) -> tuple[AuthoringReport, AuthoringReport]:
     """A pack's own gate report, and the same pack's under one weight naming nothing.
 
@@ -488,14 +503,20 @@ def _gate_reports(
     rules out of the report entirely — the gate adds no skip, because only a caller
     gating a whole pack owes that — so a clean sweep would still read clean with those
     two rules never run. The probed report is empty in exactly that case.
+
+    The replay world is the pack's own too, resolved the way the gate's callers resolve
+    it: an unresolvable one would report a skip for every pack replaying golden actions
+    and the ``unchecked`` assertion below would stop saying which rules were skipped.
     """
     combine = _effective_combine(task_yaml, grading)
     probed = combine.model_copy(
         update={"weights": {**combine.weights, _A_WEIGHT_NAMING_NO_COMPONENT: 1.0}}
     )
     return (
-        inspect_grading_authoring(grading, inventory, effective_combine=combine),
-        inspect_grading_authoring(grading, inventory, effective_combine=probed),
+        inspect_grading_authoring(
+            grading, inventory, replay_world=world, effective_combine=combine
+        ),
+        inspect_grading_authoring(grading, inventory, replay_world=world, effective_combine=probed),
     )
 
 
@@ -531,7 +552,9 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
         except ValueError:
             without_an_inventory.append(task.task_id)
             continue
-        report, probed = _gate_reports(task_yaml, grading, inventory)
+        report, probed = _gate_reports(
+            task_yaml, grading, inventory, replay_world_under_adapter(task, task.adapter_type)
+        )
         reported = [
             f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
         ]
@@ -583,7 +606,10 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
     The ``unchecked`` assertion is what stops that from reading as a clean bill of
     health. Every pack reports exactly the one tool-set skip; a rule moved behind
     ``inventory.known`` would show up here as a second skip rather than as a silent
-    loss of coverage.
+    loss of coverage. Each pack's real replay world is passed for that assertion's sake:
+    it is the one input besides the block that a caller holding a ``task.yaml`` always
+    has, so leaving it unresolvable would add a second skip to the four packs that
+    replay golden actions and say nothing about any rule.
     """
     findings: dict[str, list[str]] = {}
     unchecked: dict[str, list[str]] = {}
@@ -593,7 +619,11 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
         task, task_dir = load_task_yaml(task_yaml)
         assert task.grading is not None
         grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
-        report = inspect_grading_authoring(grading, ToolInventory.unresolvable())
+        report = inspect_grading_authoring(
+            grading,
+            ToolInventory.unresolvable(),
+            replay_world=replay_world_under_adapter(task, task.adapter_type),
+        )
         pack = str(task_yaml.relative_to(_REPO))
         if report.errors or report.advisories:
             findings[pack] = [
@@ -706,6 +736,106 @@ def test_no_authored_golden_action_names_a_tool_no_actor_can_call() -> None:
     )
     assert unprobed == [], (
         "the gate did not refuse a golden action naming a tool no actor can call for "
+        "these packs, so the rule never ran here and the clean sweep above proves nothing"
+    )
+
+
+# The address the replay-world rule reports the whole block under, distinct from the
+# per-action ``…[i].name`` the name rule uses, so scoping to one is scoping to one rule.
+_GOLDEN_REPLAY_WORLD_ADDRESS = "state_checks.hash.golden_actions"
+
+
+def _replay_world_findings(report: AuthoringReport) -> list[str]:
+    """Only what the replay-world rule reported, out of the whole gate's report.
+
+    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 35
+    packs the gate walk does not, and they name tools no actor is given on purpose.
+    """
+    return [
+        f"{finding.where}: {finding.message}"
+        for finding in report.errors + report.advisories
+        if finding.where == _GOLDEN_REPLAY_WORLD_ADDRESS
+    ]
+
+
+def _a_golden_replay_with_no_world(grading: Mapping[str, Any]) -> dict[str, Any]:
+    """*grading* with a golden path to replay and no literal hash to answer in its place.
+
+    Injected into every pack rather than one, because only 4 of the 93 declare a golden
+    action at all. Any ``expected_state_hash`` is removed first, and that step is what
+    makes the control fire on ``tests/data/grading_parity/all_keys``: it ships both hash
+    sources, core answers from the literal before the replay is reached, and the rule
+    steps around exactly that pack — so a control that left the literal in place would
+    silently not fire on the one pack in the corpus whose world cannot be built.
+    """
+    state_checks = {**(grading.get("state_checks") or {})}
+    hash_block = {
+        key: value
+        for key, value in (state_checks.get("hash") or {}).items()
+        if key != "expected_state_hash"
+    }
+    state_checks["hash"] = {
+        **hash_block,
+        "enabled": True,
+        "golden_actions": [*(hash_block.get("golden_actions") or []), {"name": "write_file"}],
+    }
+    return {**grading, "state_checks": state_checks}
+
+
+def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> None:
+    """Every pack that replays a golden path is authored against a task supplying one.
+
+    Over all 93 authored packs, each against **its own** replay world resolved the way
+    the gate's callers resolve it, because the facts the rule reads live in ``task.yaml``
+    rather than in the block. The tool inventory is deliberately unresolvable: this rule
+    reads no tool, and the packs outside the two task roots name tools no actor is given
+    on purpose.
+
+    Every pack is checked a second time with its MCP server module withheld, a golden
+    action injected and any ``expected_state_hash`` removed, which has to be refused —
+    without that control a rule that stopped firing would read as a corpus with no
+    defects in it, since 89 of the 93 replay nothing.
+
+    The unresolvable-world arm is **not** exercised here and cannot be: every authored
+    pack in the repository is native, so every world resolved below is ``known``. That
+    branch is carried by
+    ``tests/unit/grading/test_grading_authoring_gate.py::test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked``
+    alone.
+    """
+    findings: dict[str, list[str]] = {}
+    unprobed: list[str] = []
+    packs = _authored_packs()
+
+    for task_yaml in packs:
+        task, task_dir = load_task_yaml(task_yaml)
+        assert task.grading is not None
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        world = replay_world_under_adapter(task, task.adapter_type)
+        pack = str(task_yaml.relative_to(_REPO))
+        assert world.known, f"{pack} resolved no replay world, so it proves nothing here"
+        report = inspect_grading_authoring(
+            grading, ToolInventory.unresolvable(), replay_world=world
+        )
+        if reported := _replay_world_findings(report):
+            findings[pack] = reported
+        probed = inspect_grading_authoring(
+            _a_golden_replay_with_no_world(grading),
+            ToolInventory.unresolvable(),
+            replay_world=replace(world, mcp_server=False),
+        )
+        if not _replay_world_findings(probed):
+            unprobed.append(pack)
+
+    assert len(packs) == _AUTHORED_PACK_COUNT, (
+        f"the guard inspected {len(packs)} blocks, not {_AUTHORED_PACK_COUNT}. A corpus "
+        "proof over a subset says nothing about the packs it skipped"
+    )
+    assert findings == {}, (
+        "these packs replay a golden path their task gives no world to be built in, so "
+        "core refuses to grade the trial at all once it is already paid for"
+    )
+    assert unprobed == [], (
+        "the gate did not refuse a golden replay with no MCP server module to call for "
         "these packs, so the rule never ran here and the clean sweep above proves nothing"
     )
 

@@ -1,25 +1,35 @@
-"""The tool inventory a pre-run gate reads: read-only, and honest about what it knows.
+"""What a pre-run gate reads off a task: read-only, and honest about what it knows.
 
 The inventory is the one answer to "what tools does this task give the agent, and
 what does each tool's schema say about its arguments". A gate that has to spawn the
 task's MCP server to answer would mutate the very tree it is validating — the two
 shipped MCP tasks with no committed ``fixtures/tools.json`` make that reachable, not
 theoretical — so the read-only mode answers ``UNKNOWN`` instead.
+
+The replay world is the second answer, and the one thing the gate reads from ``task.yaml``
+rather than from the tools: what a golden-action replay would be executed against. Both
+are resolved *under an adapter*, and neither is the reading a foreign adapter uses, so
+both report themselves unresolvable outside the native one.
 """
 
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 import pytest
 
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
     load_task_yaml,
+    replay_world_under_adapter,
     resolve_agent_tool_schemas,
 )
-from tolokaforge.core.grading.config_validation import ArgumentSchema, ToolInventory
+from tolokaforge.core.grading.config_validation import ArgumentSchema, ReplayWorld, ToolInventory
+from tolokaforge.core.grading.golden_replay import InitialStateSource
+from tolokaforge.core.models import TaskConfig
 from tolokaforge.runner import tool_factory
+from tolokaforge.runner.models import AdapterType
 
 pytestmark = pytest.mark.unit
 
@@ -198,3 +208,69 @@ def test_a_task_that_declares_no_tools_is_known_and_empty() -> None:
     assert inventory.known is True
     assert inventory != ToolInventory.unresolvable()
     assert ToolInventory.unresolvable().known is False
+
+
+def _replayable_task(json_db: Any = "initial_state.json", **tools: Any) -> TaskConfig:
+    """A task written the way one declaring a golden path is, in memory.
+
+    Written out rather than loaded from a pack, because two of the three ``json_db``
+    shapes below ship nowhere: every pack with a reachable golden replay names a file.
+    """
+    return TaskConfig(
+        task_id="replay_probe",
+        description="a task a golden replay could be executed against",
+        initial_state={"json_db": json_db},
+        tools=tools or {"agent": {"enabled": ["place_order"], "mcp_server": "mcp_server.py"}},
+    )
+
+
+@pytest.mark.parametrize(
+    ("json_db", "source"),
+    [
+        pytest.param("initial_state.json", InitialStateSource.JSON_FILE, id="a_path_to_a_file"),
+        pytest.param({"widgets": []}, InitialStateSource.INLINE, id="a_mapping_written_inline"),
+        pytest.param(None, InitialStateSource.ABSENT, id="no_json_db_at_all"),
+    ],
+)
+def test_a_replay_world_is_the_native_reading_of_a_task_and_no_other(
+    json_db: Any, source: InitialStateSource
+) -> None:
+    """Which shape a task wrote its initial state in decides whether a replay has a world.
+
+    A replay loads a JSON file under the task directory, so the inline row is a world it
+    cannot build and the gate refuses the pack for it — collapsing the two into one
+    "declared / not declared" answer would let that pack through to the raise.
+
+    Under a foreign adapter the same task resolves nothing: ``initial_state.json_db`` and
+    ``tools.agent.mcp_server`` are the *native* reading of a replay world, and reporting
+    one the adapter does not use would refuse packs that run fine.
+    """
+    task = _replayable_task(json_db)
+
+    assert replay_world_under_adapter(task, AdapterType.NATIVE.value) == ReplayWorld(
+        initial_state=source, mcp_server=True
+    )
+    assert replay_world_under_adapter(task, AdapterType.TAU.value) == ReplayWorld.unresolvable()
+
+
+@pytest.mark.parametrize(
+    ("agent", "declared"),
+    [
+        pytest.param({"mcp_server": "mcp_server.py"}, True, id="a_module_to_import"),
+        pytest.param({"enabled": ["place_order"]}, False, id="an_agent_block_naming_none"),
+        pytest.param({}, False, id="an_empty_agent_block"),
+    ],
+)
+def test_the_module_half_of_a_replay_world_reads_the_agent_block(
+    agent: dict[str, Any], declared: bool
+) -> None:
+    """``tools.agent.mcp_server`` is read the way ``BaseAdapter.grade`` reads it.
+
+    The empty row is the boundary: ``tools.agent`` is a bare ``dict``, so an author can
+    write it empty, and a reading that indexed it would raise inside the gate instead of
+    reporting the pack.
+    """
+    world = replay_world_under_adapter(_replayable_task(agent=agent), AdapterType.NATIVE.value)
+
+    assert world.mcp_server is declared
+    assert world.initial_state is InitialStateSource.JSON_FILE

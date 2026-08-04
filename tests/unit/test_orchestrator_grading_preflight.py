@@ -83,6 +83,14 @@ UNCHECKABLE_ARGUMENT_PATH = _constraint(_tool_call("http_request", **{"json.q": 
 # written today, which is after the trial has been paid for.
 REMOVED_STATE_CHECK_KEY = {"state_checks": {"env_assertions": [{"path": "/etc/hosts"}]}}
 
+# A state hash whose source is a golden replay, so the pack grades only against a world
+# its ``task.yaml`` supplies. The action names the one tool the task declares, so what a
+# rejection below is about is the world and never the name.
+A_GOLDEN_REPLAY = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "http_request"}]}},
+}
+
 _MCP_TOOLS_FIXTURE = [
     {
         "name": "add_note",
@@ -121,19 +129,47 @@ def _write_mcp_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
     )
 
 
-def _write_task_yaml(
-    task_dir: Path, task_id: str, tools: dict[str, Any], grading: dict[str, Any]
-) -> None:
-    (task_dir / "task.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "task_id": task_id,
-                "description": f"pack {task_id}",
-                "tools": tools,
-                "grading": "grading.yaml",
-            }
-        )
+def _write_replaying_task(root: Path, task_id: str, *, mcp_server: str | None) -> None:
+    """A task whose state hash is a golden replay, and the world it gives the replay.
+
+    ``initial_state.json`` is written for real, so the only fact such a pack can withhold
+    here is *mcp_server* — the one shape the repository's corpus cannot supply, since every
+    pack that replays a golden path declares both facts. The declared tool is a builtin
+    either way, so the pack naming a module commits the ``fixtures/tools.json`` that keeps
+    the description build from spawning it.
+    """
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "initial_state.json").write_text(json.dumps({"widgets": []}))
+    agent: dict[str, Any] = {"enabled": ["http_request"]}
+    if mcp_server is not None:
+        (task_dir / mcp_server).write_text("")
+        (task_dir / "fixtures").mkdir()
+        (task_dir / "fixtures" / "tools.json").write_text(json.dumps(_MCP_TOOLS_FIXTURE))
+        agent["mcp_server"] = mcp_server
+    _write_task_yaml(
+        task_dir, task_id, {"agent": agent}, A_GOLDEN_REPLAY, initial_state="initial_state.json"
     )
+
+
+def _write_task_yaml(
+    task_dir: Path,
+    task_id: str,
+    tools: dict[str, Any],
+    grading: dict[str, Any],
+    *,
+    initial_state: str | None = None,
+) -> None:
+    """*initial_state* left unwritten declares no ``initial_state`` block at all."""
+    task: dict[str, Any] = {
+        "task_id": task_id,
+        "description": f"pack {task_id}",
+        "tools": tools,
+        "grading": "grading.yaml",
+    }
+    if initial_state is not None:
+        task["initial_state"] = {"json_db": initial_state}
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task))
     (task_dir / "grading.yaml").write_text(yaml.safe_dump(grading))
 
 
@@ -198,6 +234,30 @@ def test_a_typod_tool_name_aborts_the_run_before_any_trial(tmp_path: Path) -> No
     message = str(excinfo.value)
     assert "TASK-TYPO" in message, message
     assert "http_reqest" in message, message
+
+
+def test_a_golden_replay_with_no_world_aborts_the_run_before_any_trial(tmp_path: Path) -> None:
+    """The pre-flight is handed the task, not only the block it grades by.
+
+    The two facts a golden replay is executed against are written in ``task.yaml`` and
+    unreadable from ``grading.yaml``, so the run resolves them for the gate. Resolve
+    nothing and the pack below is accepted here, then raises inside the grading engine
+    with the trial already paid for. The sibling declaring the module is the control: a
+    gate that refused every replaying pack would fail this run identically without it.
+    """
+    root = tmp_path / "pack"
+    _write_replaying_task(root, "TASK-NO-SERVER-MODULE", mcp_server=None)
+    _write_replaying_task(root, "TASK-A-COMPLETE-WORLD", mcp_server="mcp_server.py")
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert conductor.call_log.runs == []
+    message = str(excinfo.value)
+    assert "TASK-NO-SERVER-MODULE" in message, message
+    assert "tools.agent.mcp_server" in message, message
+    assert "TASK-A-COMPLETE-WORLD" not in message, message
 
 
 def test_every_offending_task_is_named_in_one_raise(tmp_path: Path) -> None:
