@@ -83,9 +83,9 @@ def test_native_adapter_serializes_llm_judge():
     config (models.judge) and rides ``TrialSpec.judge_model_config``. This pins
     that the grading payload now carries ONLY the rubric, with no ``model_ref``.
     """
-    from tolokaforge.runner.models import GradingConfig, LLMJudgeConfig
+    from tolokaforge.runner.models import LLMJudgeConfig, RunnerGradingConfig
 
-    cfg = GradingConfig(
+    cfg = RunnerGradingConfig(
         combine_method="weighted",
         weights={"llm_judge": 1.0},
         llm_judge=LLMJudgeConfig(
@@ -108,7 +108,7 @@ def test_native_adapter_serializes_llm_judge():
     assert "model_ref" not in payload["llm_judge"]
     assert payload["llm_judge"]["rubric"]["criteria"][0]["id"] == "refund_amount"
 
-    reconstructed = GradingConfig.model_validate(payload)
+    reconstructed = RunnerGradingConfig.model_validate(payload)
     assert reconstructed.llm_judge is not None
     assert reconstructed.llm_judge.rubric.reference == "Correct refund is $328.50."
     crit = reconstructed.llm_judge.rubric.criteria[0]
@@ -176,11 +176,11 @@ class _FakeDBClient:
 async def test_build_judge_state_diff_none_when_no_db_client():
     import types
 
-    from tolokaforge.runner.models import InitialStateConfig
+    from tolokaforge.runner.models import RunnerInitialStateConfig
     from tolokaforge.runner.service import RunnerServiceImpl
 
     fake_self = types.SimpleNamespace(db_client=None)
-    tc = _trial_context(InitialStateConfig(tables={"orders": [{"id": 1}]}))
+    tc = _trial_context(RunnerInitialStateConfig(tables={"orders": [{"id": 1}]}))
     out = await RunnerServiceImpl._build_judge_state_diff(fake_self, "trial", tc)
     assert out is None
 
@@ -188,11 +188,11 @@ async def test_build_judge_state_diff_none_when_no_db_client():
 async def test_build_judge_state_diff_none_when_no_initial_tables():
     import types
 
-    from tolokaforge.runner.models import InitialStateConfig
+    from tolokaforge.runner.models import RunnerInitialStateConfig
     from tolokaforge.runner.service import RunnerServiceImpl
 
     fake_self = types.SimpleNamespace(db_client=_FakeDBClient({"orders": []}))
-    tc = _trial_context(InitialStateConfig(tables={}))
+    tc = _trial_context(RunnerInitialStateConfig(tables={}))
     out = await RunnerServiceImpl._build_judge_state_diff(fake_self, "trial", tc)
     assert out is None
 
@@ -200,10 +200,10 @@ async def test_build_judge_state_diff_none_when_no_initial_tables():
 async def test_build_judge_state_diff_renders_modified_row():
     import types
 
-    from tolokaforge.runner.models import InitialStateConfig, TableSchema
+    from tolokaforge.runner.models import RunnerInitialStateConfig, TableSchema
     from tolokaforge.runner.service import RunnerServiceImpl
 
-    initial = InitialStateConfig(
+    initial = RunnerInitialStateConfig(
         tables={"orders": [{"id": 1, "status": "open"}]},
         schemas=[
             TableSchema(

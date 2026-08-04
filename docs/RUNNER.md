@@ -157,6 +157,112 @@ and rejecting each `ExecuteTool` would reach the agent as an ordinary tool failu
 so it would retry until its turn budget was gone and report a completed trial
 scoring near zero, with the skew visible only inside the transcript.
 
+### Runner subset — what the runner image ships
+
+The published PyPI wheel carries every `tolokaforge/**` file; the runner Docker
+image installs a Docker-only *subset* build of that same tree so the image
+contains only code the runner actually runs
+([ADR-0025](adr/0025-runner-wheel-split.md) § "The module partition"). The
+canonical enumeration lives in
+[`tolokaforge/core/_runner_subset.py`](../tolokaforge/core/_runner_subset.py) —
+consumed verbatim by the hatch build target and locked against the runner
+container's actual runtime import closure by
+[`tests/canonical/test_runner_subset_partition.py`](../tests/canonical/test_runner_subset_partition.py).
+
+**Building the subset wheel.** The `[tool.hatch.build.targets.custom]`
+section of [`pyproject.toml`](../pyproject.toml) declares the subset build
+target; the custom builder at
+[`scripts/hatch/hatch_runner_subset_builder.py`](../scripts/hatch/hatch_runner_subset_builder.py)
+renames the distribution to `tolokaforge-runner-subset`, replaces the base
+wheel's dependency list with the runner-runtime deps, and binds the
+subset-native CLI shim
+([ADR-0027](adr/0027-subset-native-cli-shim.md)) — `tolokaforge =
+tolokaforge.runner._cli:main` — as the subset wheel's sole `[console_scripts]`
+entry. The base wheel's other entry-point tables (runtime backends,
+trial-grader factories, conductors) still point at orchestrator-only modules
+and are deliberately stripped from the subset.
+
+```bash
+uv run hatch build --target custom
+# → dist/tolokaforge_runner_subset-<version>-py3-none-any.whl
+```
+
+The base `tolokaforge` wheel — `hatch build --target wheel` /
+`uv build --wheel` — is unchanged, still published to PyPI, and still installs
+via `pip install tolokaforge` / `pip install tolokaforge[runner]`. The subset
+wheel is a Docker-only artifact and is never uploaded to PyPI.
+
+**Whole subpackages in the subset:**
+
+| Path | Rationale |
+|---|---|
+| `tolokaforge/runner/` | The runner service, gRPC glue, DB / RAG clients, tool factory, runner-side grading. |
+| `tolokaforge/secrets/` | Single-abstraction secret manager reconstructed from `TOLOKAFORGE_SECRETS_JSON`. |
+| `tolokaforge/tools/` | Tool registry + built-in tool drivers the tool factory dispatches by name at `RegisterTrial`. (One file excluded — see below.) |
+| `tolokaforge/core/models/` | Wire types the gRPC surface serialises. |
+| `tolokaforge/core/llm/` | LLM client + policies; the runner runs LLM-as-judge in-container. (One file excluded — see below.) |
+| `tolokaforge/core/grading/` | Grading substrate — check runner, checks helpers, judge, key manifest, state composition, state diff, trace timeline, transcript wire. (Four files excluded — see below.) |
+
+**Loose files in the subset:**
+
+- `tolokaforge/__init__.py` — package init; lazy `__getattr__` symbols that
+  resolve to orchestrator modules (`Orchestrator`, metrics, run queue) are
+  present but raise `AttributeError` on the slim image, and the runner never
+  reads them.
+- `tolokaforge/core/__init__.py`, `tolokaforge/core/_runner_subset.py` —
+  the subset's own audit artifact and the `core/` package init.
+- `tolokaforge/core/deprecations.py`, `hash.py`, `logging.py`, `loop.py`,
+  `netpolicy_constants.py`, `pricing.py`, `run_display_events.py`, `trial.py`
+  — the shared-spine files at the root of `core/` the runner closure reaches
+  directly.
+
+**Data files in the subset:**
+
+- `tolokaforge/core/data/pricing.json`, `tolokaforge/core/data/model_presets.yaml`
+  — non-Python payloads `tolokaforge.core.pricing` and
+  `tolokaforge.core.llm.presets` read at import time via
+  `importlib.resources`. Shipped as `RUNNER_SUBSET_DATA_FILES` inside
+  `_runner_subset.py`; without them the runner image would boot with an
+  empty pricing table (cost telemetry silently zero) and the preset
+  registry would raise on first grading-model resolution.
+- `tolokaforge/_python_version.txt` — the pinned Python minor version;
+  landed via a `force-include` remap of the repo-root `.python-version`
+  dotfile, mirroring the base wheel's identical remap.
+
+**Subset-native CLI shim ([ADR-0027](adr/0027-subset-native-cli-shim.md)):**
+
+- `tolokaforge/runner/_cli.py` — the module bound as the subset wheel's
+  `tolokaforge` console script. Preserves the ADR-0024 committed exec
+  surface (`tolokaforge --version` / `tolokaforge run-trial`) inside the
+  slim image without dragging `tolokaforge/_entry.py` or `dx/cli/*`
+  (base-wheel only) into the subset. The shim's `run-trial` orchestrates
+  in-process against the local runner gRPC service and cannot exercise
+  adapter-specific setup — see
+  [STANDALONE_RUNNER.md § Command surface of the published runner image](STANDALONE_RUNNER.md#command-surface-of-the-published-runner-image)
+  for the narrower semantics.
+
+**Excluded — orchestrator-only files under a subpackage otherwise in the subset:**
+
+| Path | Excluded because |
+|---|---|
+| `tolokaforge/core/grading/combine.py` | Imports `core.evaluators.*` (orchestrator-only). |
+| `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
+| `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
+| `tolokaforge/core/grading/transcript.py` | Consumed only by orchestrator-side code paths. |
+| `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
+| `tolokaforge/tools/user_tools.py` | Imports `core.env_state` (orchestrator-only). |
+
+**Not in the subset:** everything at the `tolokaforge/core/` root not listed above
+(the `Orchestrator` class, dry-run, output writer, config validator, compose
+materialisation, engine run state, backend capabilities, the `RuntimeBackend` /
+`Conductor` / `TrialGrader` Protocol definitions and their factories, the
+`run_trial` library entry, run queue, resume, project loader, plugin registry,
+metrics, budgets, and the remaining utility modules); `tolokaforge/core/evaluators/`;
+`tolokaforge/core/output/`; `tolokaforge/core/search/`; `tolokaforge/core/utils/`;
+`tolokaforge/core/schema/`; `tolokaforge/adapters/`; `tolokaforge/dx/`;
+`tolokaforge/docker/`; `tolokaforge/env/`; `tolokaforge/runtime/`;
+`tolokaforge/_entry.py`.
+
 ## Tool Lifecycle
 
 Some tools own per-trial resources — a compose stack, a long-lived

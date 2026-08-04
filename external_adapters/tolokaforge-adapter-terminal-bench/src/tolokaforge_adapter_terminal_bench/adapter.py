@@ -24,18 +24,12 @@ from tolokaforge.core.models import (
 from tolokaforge.runner.models import (
     AdapterType,
     InvocationStyle,
+    RunnerGradingConfig,
+    RunnerInitialStateConfig,
+    RunnerUserSimulatorConfig,
     TaskDescription,
     ToolSchema,
     ToolSource,
-)
-from tolokaforge.runner.models import (
-    GradingConfig as RunnerGradingConfig,
-)
-from tolokaforge.runner.models import (
-    InitialStateConfig as RunnerInitialStateConfig,
-)
-from tolokaforge.runner.models import (
-    UserSimulatorConfig as RunnerUserSimulatorConfig,
 )
 from tolokaforge_adapter_terminal_bench.compose_env import (
     bundle_task_artifacts,

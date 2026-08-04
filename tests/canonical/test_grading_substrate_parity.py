@@ -195,14 +195,14 @@ _CONTAINER_FIELDS = frozenset(
         "core:GradingConfig.combine",
         "core:GradingConfig.state_checks",
         "core:GradingConfig.transcript_rules",
-        "runner:GradingConfig.state_checks",
-        "runner:GradingConfig.transcript_rules",
+        "runner:RunnerGradingConfig.state_checks",
+        "runner:RunnerGradingConfig.transcript_rules",
     }
 )
 
 _SUBSTRATE_ROOTS: dict[str, type[BaseModel]] = {
     "core": core_models.GradingConfig,
-    "runner": runner_models.GradingConfig,
+    "runner": runner_models.RunnerGradingConfig,
 }
 
 
@@ -736,9 +736,9 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
 
     grading = _parity_adapter(test_data_dir).to_task_description(_ALL_KEYS_TASK).grading
     owners: dict[str, BaseModel | None] = {
-        "GradingConfig": grading,
-        "StateChecksConfig": grading.state_checks,
-        "TranscriptRulesConfig": grading.transcript_rules,
+        "RunnerGradingConfig": grading,
+        "RunnerStateChecksConfig": grading.state_checks,
+        "RunnerTranscriptRulesConfig": grading.transcript_rules,
     }
 
     for item in GRADING_KEYS:
@@ -765,9 +765,9 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
 
 
 def test_every_ledger_key_resolves_in_the_runner_config_dump():
-    runner_dump = runner_models.GradingConfig(
-        state_checks=runner_models.StateChecksConfig(),
-        transcript_rules=runner_models.TranscriptRulesConfig(),
+    runner_dump = runner_models.RunnerGradingConfig(
+        state_checks=runner_models.RunnerStateChecksConfig(),
+        transcript_rules=runner_models.RunnerTranscriptRulesConfig(),
     ).model_dump()
 
     resolvable = [item for item in LEDGER_KEYS if item.runner_field is not None]
