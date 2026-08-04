@@ -44,7 +44,7 @@ We adopt **Option 2**: a three-layer architecture.
 @runtime_checkable
 class TurnPolicy(Protocol):
     def bootstrap(self, task: TaskConfig, initial_user_message: str | None) -> BootstrapDecision: ...
-    def next_actor(self, state: TurnState) -> ActorTurn | None: ...
+    def next_actor(self, state: TurnState) -> ActorTurn | TerminationDecision | None: ...
 ```
 
 Two built-in implementations:
@@ -64,7 +64,22 @@ The `Conductor` gates `UserSimulator(...)` construction at `conductor.py:646-668
 
 ### Stop protocol reuses the existing marker
 
-`_AGENT_DONE_MARKERS = ("###STOP###",)` at `runner.py:46` already routes agent-emitted `###STOP###` to `TerminationReason.AGENT_DONE`. No new marker is introduced — the same convention serves both modes. In `conversational` mode, user-emitted `###STOP###` still terminates with `TerminationReason.USER_STOP`. In `agent_only` mode, `next_actor` never dispatches the user turn, so agent-`###STOP###` is the only marker-based termination path.
+`_AGENT_DONE_MARKERS = ("###STOP###",)` at `runner.py:46` already routes agent-emitted `###STOP###` to `TerminationReason.AGENT_DONE`. No new marker is introduced — the same convention serves both modes. In `conversational` mode, user-emitted `###STOP###` still terminates with `TerminationReason.USER_STOP`.
+
+### Termination signalling from the policy (refined for #876)
+
+`next_actor` returns one of three things:
+
+- **`ActorTurn`** — dispatch this actor's `reply`. The historical two-party path.
+- **`TerminationDecision`** — end the trial with the given reason. `AgentOnlyTurnPolicy` takes this branch: the loop dispatches `next_actor` only when the just-completed agent turn produced no tool calls, and under agent-only that condition is definitional (no user party exists, no more tool actions coming). The trial is done, and the loop must terminate rather than retry the agent against a context ending in `role: assistant` — Anthropic's `opus-4-6` rejects that as an unsupported prefill, and semantically the agent falling silent IS the completion signal.
+- **`None`** — no actor speaks this iteration, loop advances to the next agent turn. Reserved for future policies that may want to skip a turn without terminating; not exercised by either built-in today.
+
+This means `agent_only` has three termination paths, all routed to `TerminationReason.AGENT_DONE`:
+1. Agent emits `###STOP###` — explicit signal.
+2. Agent emits text-only (no tool calls, no `###STOP###`) — implicit completion via `next_actor`'s `TerminationDecision` return.
+3. Loop-level bounds: `max_turns` or `episode_timeout_s`.
+
+Path 2 matches Claude Code / MCP-CLI shape: a text-only assistant turn is the natural last turn of an autonomous tool-driven run. The Anthropic API constraint just makes it structural.
 
 ## Consequences
 
@@ -91,4 +106,4 @@ The `Conductor` gates `UserSimulator(...)` construction at `conductor.py:646-668
 
 - Related ADRs: [0011](0011-seam-and-declaration-conventions.md) (Pattern A), [0014](0014-trial-grader-protocol.md) (TrialGrader Protocol), [0020](0020-judge-protocol.md) (Judge Protocol), [0026](0026-service-readiness-contract.md) (Service Readiness Contract — same idiom, fourth seam).
 - Related code: `tolokaforge/core/actors/actor.py`, `tolokaforge/core/actors/turn_policy.py`, `tolokaforge/core/runner.py:317-318`, `tolokaforge/core/plugin_registry.py`, `tolokaforge/core/models/task_config.py`.
-- External references: #868 (this ticket), Toloka/tolokaforge#872 (implementation).
+- External references: #868 (this ticket), Toloka/tolokaforge#872 (initial implementation), #876 (termination-signalling refinement for the agent-only text-only case).

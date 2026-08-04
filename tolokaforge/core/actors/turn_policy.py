@@ -36,6 +36,8 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from tolokaforge.core.actors.actor import Actor, Message
+from tolokaforge.core.loop import TerminationDecision
+from tolokaforge.core.models.trajectory import TerminationReason, TrialStatus
 
 if TYPE_CHECKING:
     from tolokaforge.core.models.task_config import TaskConfig
@@ -98,17 +100,32 @@ class TurnPolicy(Protocol):
 
     :meth:`bootstrap` decides how message index 0 is delivered — a
     caller-provided literal, a live simulator dispatch, or a synthetic
-    seed. :meth:`next_actor` picks the actor to speak next given the loop
-    state, or returns ``None`` to end the turn cycle (the agent monologue
-    case).
+    seed. :meth:`next_actor` picks who speaks next given the loop state,
+    with three possible outcomes:
+
+    * :class:`ActorTurn` — dispatch this actor's ``reply`` and append
+      the resulting message. The historical two-party path.
+    * :class:`TerminationDecision` — end the trial with the given reason.
+      Used by the agent-monologue shape when the agent falls silent
+      (no tool calls, no explicit ``###STOP###``): the API-level
+      constraint that a conversation must end with a ``user`` message
+      makes a follow-up agent turn illegal on some providers
+      (Anthropic ``opus-4-6`` rejects the prefill), and — as importantly
+      — an agent that emits neither a tool call nor a stop signal has
+      no further action to take. Terminating here matches the natural
+      MCP-CLI shape where a text-only assistant turn is the last turn.
+    * ``None`` — no actor speaks this iteration; the loop advances to
+      the next agent turn. Reserved for future policy variants that
+      may want to skip a turn without terminating; not exercised by
+      either built-in today.
     """
 
     def bootstrap(self, task: TaskConfig, initial_user_message: str | None) -> BootstrapDecision:
         """Return the turn-0 delivery decision for ``task``."""
         ...
 
-    def next_actor(self, state: TurnState) -> ActorTurn | None:
-        """Return the actor to speak next, or ``None`` to end the turn cycle."""
+    def next_actor(self, state: TurnState) -> ActorTurn | TerminationDecision | None:
+        """Return the next-actor decision — dispatch, terminate, or skip."""
         ...
 
 
@@ -137,7 +154,7 @@ class ConversationalTurnPolicy:
             bootstrap_via_simulator=True,
         )
 
-    def next_actor(self, state: TurnState) -> ActorTurn | None:
+    def next_actor(self, state: TurnState) -> ActorTurn | TerminationDecision | None:
         if state.last_agent_had_tool_calls:
             return None
         return ActorTurn(actor_name="user", actor=self._user_simulator)
@@ -166,9 +183,22 @@ class AgentOnlyTurnPolicy:
     simulator to synthesise a seed from, so a task authoring
     ``interaction_mode: agent_only`` without an ``initial_user_message`` is a
     config error the operator should hear about at run-start, not a silent
-    degrade into an empty-user-turn. ``next_actor`` returns ``None``
-    unconditionally: agent-###STOP###, ``max_turns``, and
-    ``episode_timeout_s`` are the only exits.
+    degrade into an empty-user-turn.
+
+    ``next_actor`` returns a :class:`TerminationDecision` with reason
+    :attr:`TerminationReason.AGENT_DONE`. The loop dispatches this method
+    only when the just-completed agent turn produced no tool calls, and
+    under agent-only that condition is definitional: the agent has no
+    more actions to take and there is no user party that could ask for
+    more. Terminating here matches the MCP-CLI shape (a text-only
+    assistant turn is the last turn) AND resolves the Anthropic API-level
+    constraint that a conversation must end with a ``user`` message —
+    letting the loop retry the agent would produce a request ending in
+    ``role: assistant`` which the ``opus-4-6`` model rejects as prefill.
+    Agent-``###STOP###``, ``max_turns``, and ``episode_timeout_s``
+    remain as complementary termination paths that also route to
+    :attr:`TerminationReason.AGENT_DONE` (``###STOP###``) or their own
+    reasons.
 
     The optional ``user_simulator`` keyword keeps the constructor signature
     parallel with :class:`ConversationalTurnPolicy` so the runner can hand
@@ -191,9 +221,17 @@ class AgentOnlyTurnPolicy:
             f"no user simulator to synthesise a seed from."
         )
 
-    def next_actor(self, state: TurnState) -> ActorTurn | None:
+    def next_actor(self, state: TurnState) -> ActorTurn | TerminationDecision | None:
         del state
-        return None
+        return TerminationDecision(
+            reason=TerminationReason.AGENT_DONE,
+            system_message=(
+                "Agent emitted a text-only turn (no tool calls, no ###STOP###) "
+                "under interaction_mode=agent_only. Treating as implicit completion; "
+                "no user party exists to advance the conversation."
+            ),
+            status=TrialStatus.COMPLETED,
+        )
 
 
 def _agent_only_policy_factory(context: TurnPolicyContext) -> AgentOnlyTurnPolicy:

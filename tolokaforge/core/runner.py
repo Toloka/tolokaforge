@@ -645,21 +645,32 @@ class TrialRunner:
         assistant messages so far — the next actor the policy hands back is the
         speaker of turn ``turn_index + 1``.
 
-        A :class:`~tolokaforge.core.actors.turn_policy.ConversationalTurnPolicy`
-        returns the user actor here (byte-for-byte the historical dispatch);
-        :class:`~tolokaforge.core.actors.turn_policy.AgentOnlyTurnPolicy` returns
-        ``None`` and the shim returns an empty :class:`UserTurnResult` — the
-        loop appends nothing and advances to the next agent turn.
+        Three possible policy outcomes:
+
+        * :class:`ActorTurn` — dispatch the actor (the historical path).
+          :class:`~tolokaforge.core.actors.turn_policy.ConversationalTurnPolicy`
+          takes this branch byte-for-byte identically to today.
+        * :class:`TerminationDecision` — surface it as
+          ``UserTurnResult(termination=...)``. The loop honors it and stops.
+          :class:`~tolokaforge.core.actors.turn_policy.AgentOnlyTurnPolicy`
+          takes this branch: agent has no more actions and no user party
+          exists to advance the conversation, so the trial is done.
+        * ``None`` — reserved for future policies that want to skip a
+          turn without terminating; returns an empty
+          :class:`UserTurnResult` and the loop advances to the next agent
+          turn. Not exercised by either built-in.
         """
         state = TurnState(
             messages=messages,
             last_agent_had_tool_calls=False,
             turn_index=sum(1 for m in messages if m.role == MessageRole.ASSISTANT),
         )
-        actor_turn = policy.next_actor(state)
-        if actor_turn is None:
+        decision = policy.next_actor(state)
+        if decision is None:
             return UserTurnResult()
-        return self._dispatch_user_actor(actor_turn.actor, messages)
+        if isinstance(decision, TerminationDecision):
+            return UserTurnResult(termination=decision)
+        return self._dispatch_user_actor(decision.actor, messages)
 
     def _dispatch_user_actor(self, actor: Actor, messages: list[Message]) -> UserTurnResult:
         """Run one user actor turn: reply, ``###STOP###`` detection, user tools.

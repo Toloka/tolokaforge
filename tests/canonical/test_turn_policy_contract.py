@@ -38,8 +38,10 @@ from tolokaforge.core.actors.turn_policy import (
     TurnState,
 )
 from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.loop import TerminationDecision
 from tolokaforge.core.models import MessageRole
 from tolokaforge.core.models.task_config import TaskConfig
+from tolokaforge.core.models.trajectory import TerminationReason, TrialStatus
 from tolokaforge.core.plugin_registry import TurnPolicyContext
 
 pytestmark = pytest.mark.canonical
@@ -209,25 +211,72 @@ class TestAgentOnlyBootstrap:
 
 
 class TestAgentOnlyNextActor:
-    """``next_actor`` returns ``None`` unconditionally — the mode never
-    dispatches a user turn regardless of what the previous agent turn
-    did.
+    """``next_actor`` returns a :class:`TerminationDecision` — the mode
+    never dispatches a user turn, and (per #876) a text-only agent turn
+    signals implicit completion so the loop must terminate rather than
+    silently retry the agent against a context ending in
+    ``role: assistant`` (which Anthropic's ``opus-4-6`` rejects as
+    prefill).
     """
 
-    def test_no_tool_calls_returns_none(self) -> None:
+    def test_no_tool_calls_returns_agent_done_termination(self) -> None:
         state = TurnState(
             messages=[_agent_message()],
             last_agent_had_tool_calls=False,
             turn_index=1,
         )
 
-        assert AgentOnlyTurnPolicy().next_actor(state) is None
+        decision = AgentOnlyTurnPolicy().next_actor(state)
 
-    def test_tool_call_turn_returns_none(self) -> None:
+        assert isinstance(decision, TerminationDecision)
+        assert decision.reason == TerminationReason.AGENT_DONE
+        assert decision.status == TrialStatus.COMPLETED
+        assert "agent_only" in decision.system_message
+
+    def test_tool_call_turn_also_returns_termination(self) -> None:
+        """The loop today only calls ``next_actor`` after a tool-call-free
+        agent turn, but the policy stays consistent regardless of state:
+        agent-only never dispatches a user, so any invocation of
+        ``next_actor`` means the trial is done."""
         state = TurnState(
             messages=[_agent_message()],
             last_agent_had_tool_calls=True,
             turn_index=1,
         )
 
-        assert AgentOnlyTurnPolicy().next_actor(state) is None
+        decision = AgentOnlyTurnPolicy().next_actor(state)
+
+        assert isinstance(decision, TerminationDecision)
+        assert decision.reason == TerminationReason.AGENT_DONE
+
+
+class TestConversationalNeverReturnsTermination:
+    """Regression lock for the conversational path (per #876): the
+    two-party shape must never surface a :class:`TerminationDecision`
+    from ``next_actor`` — the user simulator always dispatches, and the
+    loop keeps its historical byte-for-byte behavior. Guards against a
+    future refactor that would silently converge the two policies."""
+
+    def test_conversational_never_returns_termination_on_no_tool_calls(self) -> None:
+        state = TurnState(
+            messages=[_agent_message()],
+            last_agent_had_tool_calls=False,
+            turn_index=1,
+        )
+
+        decision = ConversationalTurnPolicy(user_simulator=_InMemoryActor()).next_actor(state)
+
+        assert not isinstance(decision, TerminationDecision)
+        # Actually returns an ActorTurn — pinned by the sibling test above.
+
+    def test_conversational_never_returns_termination_on_tool_call_turn(self) -> None:
+        state = TurnState(
+            messages=[_agent_message()],
+            last_agent_had_tool_calls=True,
+            turn_index=1,
+        )
+
+        decision = ConversationalTurnPolicy(user_simulator=_InMemoryActor()).next_actor(state)
+
+        assert not isinstance(decision, TerminationDecision)
+        # Actually returns None — pinned by the sibling test above.
