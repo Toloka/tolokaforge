@@ -693,6 +693,85 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Qwen 3.8 Max — Alibaba's flagship Qwen 3.8 generation, landed via
+    # auto-resolve (Slack-requested integration, PR #845). Routes through the
+    # model-specific ``qwen3_8_max_unsigned_reasoning_replay`` preset (see
+    # model_presets.yaml): the bundled ``qwen`` axes (passthrough schema +
+    # DictMapHints prompt + JsonCoerceResponse recovery) with the reasoning
+    # codec swapped ``openai`` -> ``gemini``.
+    #
+    # The observe (default) baseline surfaced ONE preset-fixable failure —
+    # ``test_unsigned_thinking_replay`` 0/15, where the ``openai`` codec's
+    # ``encode_for_replay`` is a no-op so turn-1 reasoning text never round-
+    # trips into the turn-2 payload. qwen3.8-max emits unsigned reasoning text
+    # (1310 ``summary_text`` blocks, all ``signature: null``) — the same
+    # surface ``GeminiReasoningCodec`` extracts and re-emits as
+    # ``reasoning_details`` on replay, so UNSIGNED_THINKING_REPLAY is
+    # ``required`` here (UNLIKE the qwen3.6-plus / qwen3.7-max siblings on the
+    # ``openai`` codec). Reprobe went 5/5 on the fix-target. Every other
+    # capability passed the observe baseline (DECIMAL_FIELD_TOOL_CALL was
+    # 14/15 = flaky-but-above-floor, so required, not a fix target).
+    #
+    # The two ``known_unsupported`` ceilings are the observe-run ceilings
+    # (decision.json): THINKING_REPLAY_ROUNDTRIP requires SIGNED blocks on
+    # turn 1 and qwen emits none (all ``signature: null`` — no policy can
+    # manufacture a provider signature), and PROMPT_CACHING is the explicit
+    # Anthropic-style ephemeral cache_control contract that qwen/OpenRouter
+    # does not honour (call 1 created 0 cache_creation_input_tokens). Note
+    # IMPLICIT_PROMPT_CACHING is ``required`` here — unlike the qwen3.6-plus
+    # sibling — because the observe baseline passed it 15/15 on this route.
+    MC(
+        model_id="openrouter__qwen_qwen3.8-max",
+        provider="openrouter",
+        name="qwen/qwen3.8-max",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.ENUM_SLASH_TOLERANCE,
+                C.RE2_PATTERN_TOLERANCE,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.THINKING_EMITS_BLOCKS,
+                C.IMPLICIT_PROMPT_CACHING,
+                # 14/15 live (single flaky "no tool call" miss above the 0.9
+                # support floor) — required, not a fix target.
+                C.DECIMAL_FIELD_TOOL_CALL,
+                # Fixed by the ``gemini`` reasoning codec swap: it extracts the
+                # model's unsigned ``reasoning.text`` blocks and its
+                # ``encode_for_replay`` emits them back as ``reasoning_details``
+                # on the outgoing message. Reprobe 5/5.
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Requires SIGNED blocks on turn 1; qwen emits none (all
+                # ``signature: null``). No policy can manufacture a provider
+                # signature. Sibling THINKING_EMITS_BLOCKS still passes (the
+                # blocks exist, just unsigned).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # Anthropic-style ephemeral ``cache_control`` markers are not
+                # wired on the qwen preset (cache_policy: none) and
+                # qwen/OpenRouter does not honour them — call 1 created 0
+                # cache_creation_input_tokens. Implicit caching is a separate,
+                # passing capability (IMPLICIT_PROMPT_CACHING, required above).
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
     # -----------------------------------------------------------------
     # xAI Grok — strict schema sanitiser + array-dict-map response
     # policy + OpenAI-style reasoning summary (no signed blocks).
