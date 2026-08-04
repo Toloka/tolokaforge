@@ -169,6 +169,54 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # deepseek/deepseek-v4-flash-0731 — model-specific overlay landed via
+  # auto-resolve (Slack-requested integration, PR #846). Declared BEFORE the
+  # shared ``openrouter_dict_stringify_recovery`` preset (whose ``*deepseek-v4*``
+  # glob it would otherwise match) so first-match-wins routing picks it up. It is
+  # a SUPERSET of that shared preset: it reproduces the three tool-calling axes
+  # verbatim — ``schema_sanitizer: passthrough`` + ``response_policy: json_coerce``
+  # + ``prompt_policy: dict_map_hints`` (all 28 tool-call / structural probes pass
+  # 15/15 under the shared preset) so nothing tool-calling-side regresses — and
+  # swaps ONLY the reasoning codec.
+  #
+  # The one observe fix-target was ``UNSIGNED_THINKING_REPLAY`` (0/15). The route
+  # surfaces reasoning as an OpenAI ``reasoning_content`` summary and emits no
+  # signatures on the wire (it DOES emit a ``reasoning_details`` envelope of its
+  # own with ``format: "unknown"``, which the OpenAI extract discards — see the
+  # codec docstring and the deepseek_v4 fixture). Under the
+  # ``THINKING_EMITS_BLOCKS`` passes) but ``encode_for_replay`` is a no-op, so the
+  # outgoing assistant dict carries no ``reasoning_details`` and the unsigned
+  # replay contract fails. ``openai_summary_replay``
+  # (``OpenAISummaryReplayReasoningCodec``) inherits the OpenAI extract unchanged
+  # and re-emits that block text as an OpenRouter ``reasoning.text`` entry —
+  # satisfying the contract without synthesising a signature. Signed replay
+  # (``THINKING_REPLAY_ROUNDTRIP``) and explicit ``PROMPT_CACHING`` stay genuine
+  # ceilings (see registry.py). Reprobe went 5/5 on the fix-target.
+  #
+  # SCOPE — what this preset does and does not buy (verified live 2026-08-04).
+  # ``UNSIGNED_THINKING_REPLAY`` is a PAYLOAD-level contract: the test fires
+  # turn 1 live and mocks turn 2, asserting only the outgoing request body. A
+  # controlled A/B (same conversation with vs without the replay payload)
+  # measured turn-2 ``prompt_tokens`` 523 vs 523 — delta 0 — with
+  # ``reasoning_details`` confirmed on the wire. The DeepSeek V4 route accepts
+  # the field and silently IGNORES it, so this preset buys contract conformance
+  # and trajectory observability, NOT restored cross-turn reasoning continuity,
+  # and it costs ~2.8 kB of upload per reasoning turn. Tool-calling behaviour —
+  # the only axis the eval grades — is byte-identical to the shared preset. If
+  # that upload ever matters more than the declared capability, deleting this
+  # preset and letting the model fall through to
+  # ``openrouter_dict_stringify_recovery`` is behaviourally safe; it only
+  # requires flipping the cert's ``UNSIGNED_THINKING_REPLAY`` back to
+  # ``known_unsupported`` (the sibling posture).
+  deepseek_v4_flash_0731_resolve:
+    match:
+      - "deepseek/deepseek-v4-flash-0731"
+      - "deepseek/deepseek-v4-flash-0731*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai_summary_replay
+
   # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
   # stringify nested object / Dict[str, T] arguments — same failure mode
   # ``JsonCoerceResponse`` was built for on Qwen.

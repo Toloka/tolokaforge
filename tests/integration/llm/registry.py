@@ -1530,6 +1530,116 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # DeepSeek V4-Flash-0731 — dated snapshot of the v4-flash line on the
+    # OpenRouter route, landed via auto-resolve (Slack-requested integration,
+    # PR #846). Routes through the model-specific
+    # ``deepseek_v4_flash_0731_resolve`` preset (see model_presets.yaml),
+    # declared BEFORE the shared ``openrouter_dict_stringify_recovery`` preset
+    # (whose ``*deepseek-v4*`` glob it would otherwise match). That overlay is a
+    # SUPERSET of the shared preset — same passthrough schema + json_coerce
+    # response + dict_map_hints prompt (all 28 tool-call / structural probes
+    # 15/15) — swapping ONLY the reasoning codec to
+    # ``openai_summary_replay`` (``OpenAISummaryReplayReasoningCodec``).
+    #
+    # The observe (default) baseline surfaced ONE preset-fixable failure:
+    # ``unsigned_thinking_replay`` 0/15. The route surfaces reasoning as an
+    # OpenAI ``reasoning_content`` summary (so THINKING_EMITS_BLOCKS passes
+    # 15/15 under the ``openai`` codec) but emits no signatures on the wire, and
+    # the plain OpenAI codec's ``encode_for_replay`` is a no-op — so the outgoing
+    # assistant dict carried no ``reasoning_details``. (The route does emit a
+    # ``reasoning_details`` envelope of its own, ``format: "unknown"``, which the
+    # OpenAI extract discards — live capture 2026-08-04, see
+    # ``tests/unit/llm/fixtures/openrouter_deepseek_v4_reasoning_response.json``.)
+    # ``OpenAISummaryReplayReasoningCodec``
+    # re-emits the summary block as an unsigned OpenRouter ``reasoning.text``
+    # detail on replay; reprobe went 5/5 on the fix-target, so
+    # UNSIGNED_THINKING_REPLAY is ``required`` here (UNLIKE the
+    # deepseek-v4-flash / v4-pro siblings, whose generic ``openai`` codec had no
+    # replay path and declared it known_unsupported).
+    #
+    # SCOPE of that ``required`` — verified live 2026-08-04. The capability is a
+    # PAYLOAD-level contract: ``test_unsigned_thinking_replay`` fires turn 1 live
+    # and MOCKS turn 2 (so does its signed sibling), asserting only that the
+    # outgoing request body carries the turn-1 text. A controlled A/B on this
+    # route — same conversation with vs without the replay payload — measured
+    # turn-2 ``prompt_tokens`` 523 vs 523 (delta 0) while ``reasoning_details``
+    # was confirmed on the wire (2.8 kB, ~668 reasoning tokens). The route
+    # ACCEPTS the field and silently IGNORES it. The cert is therefore correct as
+    # written against the declared contract, but do NOT read it as "this model
+    # has cross-turn reasoning continuity" — it does not, on this route.
+    #
+    # The two ``known_unsupported`` ceilings are the observe-run ceilings
+    # (decision.json): signed-block replay has no source ("no signed blocks on
+    # turn 1" → THINKING_REPLAY_ROUNDTRIP) and no Anthropic-style ephemeral
+    # cache markers are wired on this route (call 1 created 0
+    # cache_creation_input_tokens → PROMPT_CACHING). IMPLICIT_PROMPT_CACHING
+    # passed the observe baseline 15/15, so it is ``required`` here — re-verified
+    # 2026-08-04 as 3/3 stable on ``test_implicit_prompt_caching`` (the probe
+    # keys its 8 k-token prefix with a per-call UUID, so the call-1 → call-2 read
+    # is a genuine cold-then-warm hit, not cross-run contamination).
+    #
+    # This diverges from the v4-flash / v4-pro siblings, which declare it
+    # ``known_unsupported`` on the rationale that a cold probe reads 0. That
+    # rationale is now STALE, not a route difference: run live 2026-08-04,
+    # ``test_implicit_prompt_caching_unsupported_ratchet`` FAILS for both
+    # siblings (call 2 reported cache_read_input_tokens=8192 on each), which is
+    # precisely the correction the ratchet exists to force. The sibling certs
+    # need IMPLICIT_PROMPT_CACHING moved to ``required``; that is a pre-existing
+    # main-branch defect, out of scope for this model's integration.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v4-flash-0731",
+        provider="openrouter",
+        name="deepseek/deepseek-v4-flash-0731",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.LEXICAL_TOOL_INVENTION,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.RE2_PATTERN_TOLERANCE,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.IMPLICIT_PROMPT_CACHING,
+                C.THINKING_EMITS_BLOCKS,
+                # Fixed by the ``openai_summary_replay`` codec (re-emits the
+                # turn-1 summary as an unsigned OpenRouter reasoning.text detail
+                # on replay); observe was 0/15, reprobe 5/5. Diverges from the
+                # deepseek-v4-flash / v4-pro siblings, whose generic ``openai``
+                # codec has a no-op replay path.
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Signed-block replay has no source: the route emits no
+                # per-block signatures ("no signed blocks on turn 1"), so the
+                # signed round-trip contract cannot be exercised. The unsigned
+                # replay path IS wired (UNSIGNED_THINKING_REPLAY, required
+                # above).
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # No Anthropic-style ephemeral cache: call 1 created 0
+                # cache_creation_input_tokens (the OpenRouter DeepSeek route
+                # exposes no explicit cache-control markers). The auto-cache
+                # surface (IMPLICIT_PROMPT_CACHING) passed the observe baseline
+                # 15/15 and is required above.
+                C.PROMPT_CACHING,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # DeepSeek V3.2-Exp experimental V3.2 reasoning line on
     # the OpenRouter route. Live-certified 2026-06-03 via
     # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
