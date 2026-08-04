@@ -147,6 +147,7 @@ from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     RAGSearchToolWrapper,
+    ToolCallOutcome,
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
@@ -258,23 +259,29 @@ def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | 
     return next((candidate for candidate in registered if candidate.endswith(f"_{name}")), None)
 
 
-async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> object:
-    """What a registered tool answered a replayed golden action with.
+async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> ToolCallOutcome:
+    """What a registered tool answered a replayed golden action with, and how it read the call.
 
-    Each of the three shapes that invoke hands its answer back, because the answer is what
+    ``execute_call`` first, which every ``ToolWrapper`` carries and which is the one shape
+    able to report a substrate declaring the call a failure beside the text it answered.
+    Every other shape reports no declared failure, having no substrate to hear from, and
+    hands its answer back rather than dropping it, because the answer is what
     :func:`declared_failure` reads a reported failure out of: a shape whose return were
     dropped would record no failure a pack signalling through it declared. A registered
-    object with neither ``execute`` nor a callable shape is replayed as a no-op, and one
-    whose ``__call__`` is ``async`` hands back a coroutine nothing awaits (#856).
+    object with none of those shapes answers nothing at all, and one whose ``__call__`` is
+    ``async`` answers a coroutine nothing awaits (#856).
     """
+    if hasattr(tool, "execute_call"):
+        return await tool.execute_call(arguments)
     if hasattr(tool, "execute"):
-        return await tool.execute(arguments)
+        return ToolCallOutcome(output=await tool.execute(arguments), declared_failure=False)
     if not callable(tool):
         return None
     if inspect.iscoroutinefunction(tool):
-        return await tool(arguments)
+        return ToolCallOutcome(output=await tool(arguments), declared_failure=False)
     loop = asyncio.get_event_loop()
-    return await loop.run_in_executor(None, lambda: tool(arguments))
+    answer = await loop.run_in_executor(None, lambda: tool(arguments))
+    return ToolCallOutcome(output=answer, declared_failure=False)
 
 
 # =============================================================================
@@ -2320,7 +2327,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 )
 
             try:
-                returned = await _invoke_golden_tool(tool, arguments)
+                outcome = await _invoke_golden_tool(tool, arguments)
             except Exception as e:
                 # Golden action failure — log with full traceback for debugging
                 logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
@@ -2328,7 +2335,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
                 continue
 
-            reported = declared_failure(returned)
+            if outcome.declared_failure:
+                logger.error(
+                    f"GradeTrial: Golden action {i} ({tool_name}) was declared a failure by its "
+                    f"substrate: {outcome.output}"
+                )
+                replay_failures.append(
+                    FailedGoldenAction.from_substrate_failure(i, tool_name, outcome.output)
+                )
+                continue
+
+            reported = declared_failure(outcome.output)
             if reported is None:
                 logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
                 continue

@@ -135,7 +135,9 @@ A substrate with no out-of-band failure channel signals a failed call by
 
 Override `execute_call` when your substrate answers a failed call with a flag
 *beside* the output instead of an error — MCP's `isError: true`, which arrives
-next to the error prose the model needs in order to recover:
+next to the error prose the model needs in order to recover. The golden-replay
+loop records a `declared_failure=True` outcome as a *raised* golden-action
+failure, exactly as it records a raise, quoting the output as the message:
 
 ```python
 class MyTool(ToolWrapper):
