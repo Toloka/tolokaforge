@@ -92,3 +92,79 @@ def test_render_summary_shows_verdict_and_failing_probe():
     assert "failures present" in summary
     assert "`vendor/m`" in summary
     assert "`test_b`: 1/2 passed" in summary
+
+
+def _gate_findings(**overrides):
+    """A clean-observe findings skeleton the gate tests mutate per case."""
+    findings = {
+        "capability_ran": True,
+        "wire": {
+            "trials": 40,
+            "infra": {
+                "rate_limit": 0,
+                "status_error": 0,
+                "max_turns": 0,
+                "stuck": 0,
+                "api_error": 0,
+                "api_timeout": 0,
+            },
+        },
+    }
+    findings.update(overrides)
+    return findings
+
+
+def test_gate_clean_when_both_suites_ran_and_infra_zero():
+    clean, reason = observe.evaluate_gate(_gate_findings())
+    assert clean is True
+    assert reason == ""
+
+
+def test_gate_dirty_when_capability_did_not_run():
+    clean, reason = observe.evaluate_gate(_gate_findings(capability_ran=False))
+    assert clean is False
+    assert "capability suite did not run" in reason
+
+
+def test_gate_dirty_when_wire_never_ran():
+    # The wire step is `|| true`-guarded in the workflow: a run that failed at startup
+    # produces 0 trials and used to read as clean (no rejections, all-zero infra).
+    clean, reason = observe.evaluate_gate(_gate_findings(wire={"trials": 0, "infra": {}}))
+    assert clean is False
+    assert "wire probes did not run" in reason
+
+
+@pytest.mark.parametrize("key", sorted(observe.GATE_INFRA_KEYS))
+def test_gate_dirty_on_each_infra_key(key):
+    # api_timeout is the regression case: observe.py counted it, the old inline
+    # workflow gate never read it, so an all-timeout wire run chained into resolve.
+    findings = _gate_findings()
+    findings["wire"]["infra"][key] = 3
+    clean, reason = observe.evaluate_gate(findings)
+    assert clean is False
+    assert f"{key}=3" in reason
+
+
+@pytest.mark.parametrize("key", ["max_turns", "stuck"])
+def test_gate_ignores_model_attributable_terminations(key):
+    # max_turns / stuck can be genuine model behaviour (four-bucket taxonomy) - they are
+    # resolve-agent data, not contamination, and must not block the chain into resolve.
+    findings = _gate_findings()
+    findings["wire"]["infra"][key] = 7
+    clean, _reason = observe.evaluate_gate(findings)
+    assert clean is True
+
+
+def test_gate_cli_prints_dirty_token_for_missing_file(tmp_path, capsys):
+    assert observe.gate(str(tmp_path / "absent.json")) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("dirty: findings unreadable")
+
+
+def test_gate_cli_prints_clean_token(tmp_path, capsys):
+    import json
+
+    path = tmp_path / "findings.json"
+    path.write_text(json.dumps(_gate_findings()))
+    assert observe.gate(str(path)) == 0
+    assert capsys.readouterr().out.strip() == "clean"

@@ -48,3 +48,39 @@ def test_failed_wire_tasks_sorted_from_by_task():
 def test_failed_wire_tasks_tolerates_missing():
     assert reprobe.failed_wire_tasks({}) == []
     assert reprobe.failed_wire_tasks({"wire": {}}) == []
+
+
+_BASELINE = {
+    "capability": {"per_probe": [{"probe": "test_cap[x]", "passed": 1, "runs": 5}]},
+    "variants": {"per_probe": [{"probe": "test_variant_v[y]", "passed": 0, "runs": 5}]},
+    "wire": {"tool_arg_rejections": {"by_task": {"task_w": 4}}},
+}
+
+
+def test_select_targets_default_is_all_failed_plus_wire():
+    probes, wire = reprobe.select_reprobe_targets(_BASELINE, None, wire_only=False, skip_wire=False)
+    assert probes == ["test_cap[x]", "test_variant_v[y]"]
+    assert wire == ["task_w"]
+
+
+def test_select_targets_explicit_targets_and_skip_wire():
+    probes, wire = reprobe.select_reprobe_targets(
+        _BASELINE, "test_cap[x], test_other[z]", wire_only=False, skip_wire=True
+    )
+    assert probes == ["test_cap[x]", "test_other[z]"]
+    assert wire == []
+
+
+def test_select_targets_wire_only_selects_no_probes():
+    # The final wire-verification pass: the fix loop iterates with --skip-wire, so this is
+    # the only place a wire-evidenced fix gets a post-fix measurement.
+    probes, wire = reprobe.select_reprobe_targets(_BASELINE, None, wire_only=True, skip_wire=False)
+    assert probes == []
+    assert wire == ["task_w"]
+
+
+def test_select_targets_conflicting_flags_raise():
+    with pytest.raises(ValueError, match="mutually exclusive"):
+        reprobe.select_reprobe_targets(_BASELINE, None, wire_only=True, skip_wire=True)
+    with pytest.raises(ValueError, match="pass one or the other"):
+        reprobe.select_reprobe_targets(_BASELINE, "test_cap[x]", wire_only=True, skip_wire=False)

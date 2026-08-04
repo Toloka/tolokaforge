@@ -103,11 +103,17 @@ def reprobe_cmd(
     skip_wire: bool = typer.Option(
         False, "--skip-wire", help="capability-only (the agent's inner loop)"
     ),
+    wire_only: bool = typer.Option(
+        False,
+        "--wire-only",
+        help="NO capability probes; re-run only the baseline's rejecting wire tasks "
+        "(the final wire-verification pass after the fix loop converges)",
+    ),
     run_url: str | None = typer.Option(None, "--run-url"),
 ) -> None:
     """Re-run only the failed probes under a policy overlay and emit findings (RESOLVE)."""
-    raise typer.Exit(
-        reprobe.run(
+    try:
+        code = reprobe.run(
             baseline=baseline,
             overlay=overlay,
             provider=provider,
@@ -120,9 +126,23 @@ def reprobe_cmd(
             cap_parallel=cap_parallel,
             targets=targets,
             skip_wire=skip_wire,
+            wire_only=wire_only,
             run_url=run_url,
         )
-    )
+    except ValueError as exc:  # conflicting flags - refuse loudly, never guess
+        raise typer.BadParameter(str(exc)) from exc
+    raise typer.Exit(code)
+
+
+@app.command("observe-gate")
+def observe_gate(
+    findings: str = typer.Argument(..., help="path to the observe findings.json"),
+) -> None:
+    """Print the observe cleanliness token: `clean` (resolve may run) or `dirty: <reason>`.
+
+    Always exits 0 - the workflow branches on stdout, and a missing/unreadable findings file
+    prints a dirty token rather than raising (observe crashed before aggregation)."""
+    raise typer.Exit(observe.gate(findings))
 
 
 @app.command("observe-findings")

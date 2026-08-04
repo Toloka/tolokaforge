@@ -301,6 +301,50 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
     }
 
 
+# The wire termination reasons that make an observe run untrustworthy. max_turns and stuck are
+# deliberately NOT here: both can be genuine model behaviour (see the four-bucket taxonomy in
+# prompts/_shared_context.md), so they are data for the resolve agent, not contamination.
+GATE_INFRA_KEYS = ("rate_limit", "api_error", "api_timeout", "status_error")
+
+
+def evaluate_gate(findings: dict[str, Any]) -> tuple[bool, str]:
+    """Observe cleanliness gate: may a clean observe chain into resolve?
+
+    Pure and unit-tested (the workflow used to inline this as a ``python -c`` one-liner,
+    which silently missed ``api_timeout`` and could not require the wire probes to have
+    run at all). Returns ``(clean, reason)``; ``reason`` is empty when clean.
+    """
+    if not findings.get("capability_ran"):
+        return False, "capability suite did not run (0 probes)"
+    wire = findings.get("wire") or {}
+    if not wire.get("trials"):
+        return False, "wire probes did not run (0 trials)"
+    infra = wire.get("infra") or {}
+    contaminated = {key: infra.get(key, 0) for key in GATE_INFRA_KEYS if infra.get(key, 0)}
+    if contaminated:
+        detail = ", ".join(f"{key}={count}" for key, count in sorted(contaminated.items()))
+        return False, f"wire infra contamination ({detail})"
+    return True, ""
+
+
+def gate(findings_path: str) -> int:
+    """Print the observe gate token and return 0 (the workflow branches on stdout).
+
+    ``clean`` when resolve may run; ``dirty: <reason>`` otherwise, the reason surfacing
+    verbatim in the needs-human notification. A missing/unreadable findings file is dirty
+    (the observe crashed before aggregation), never an exception - the gate must always
+    hand the workflow a token it can route on.
+    """
+    try:
+        findings = json.loads(Path(findings_path).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"dirty: findings unreadable - observe crashed before aggregation ({exc})")
+        return 0
+    clean, reason = evaluate_gate(findings)
+    print("clean" if clean else f"dirty: {reason}")
+    return 0
+
+
 def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     """Render a short human-readable markdown summary of the raw stats."""
     cap = findings.get("capability", {})
