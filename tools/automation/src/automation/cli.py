@@ -11,6 +11,7 @@ import typer
 
 from automation import (
     cert,
+    classgate,
     gateway_catalog,
     greencheck,
     model_resolver,
@@ -46,6 +47,17 @@ def reconcile_cert(
 ) -> None:
     """Reconcile the staged ModelCertificate against the observe baseline (finalize gate)."""
     raise typer.Exit(cert.run(model_id, findings))
+
+
+@app.command("check-new-classes")
+def check_new_classes(
+    overlay: str | None = typer.Option(
+        None, "--overlay", help="path to the resolve overlay.yaml (for the reference check)"
+    ),
+    tests_dir: str = typer.Option(classgate.DEFAULT_TESTS_DIR, "--tests-dir"),
+) -> None:
+    """Require a unit test + an overlay reference for every newly registered policy class."""
+    raise typer.Exit(classgate.run(overlay_path=overlay, tests_dir=tests_dir))
 
 
 @app.command("ensure-pricing")

@@ -702,6 +702,14 @@ jobs:
             echo "::error::cert does not reconcile with the observe baseline - refusing to commit"
             exit 1
           fi
+          # Any NEWLY registered policy class must be referenced by the overlay and covered by
+          # a unit test (docs/ADD_NEW_MODEL.md step 5). The fix-loop's success signal is the live
+          # reprobe, so a missing unit test is otherwise invisible. set -e safe; exit 1 ->
+          # needs-human. Reads the STAGED presets.py diff, so it must run after `git add`.
+          if ! uv run automation check-new-classes --overlay observation/resolve/overlay.yaml; then
+            echo "::error::a new policy class is untested or unreferenced - refusing to commit"
+            exit 1
+          fi
           # Verify EXACTLY the staged tree (what we are about to commit), not the workspace.
           # `stash --keep-index` drops everything not staged so the worktree == the future
           # commit; then gate on: (1) it imports; (2) no-regression - the resolved policy must

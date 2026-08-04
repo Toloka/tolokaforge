@@ -84,10 +84,24 @@ and pushes the whole integration to needs-human.
      An unbounded tree-walk forces `data_scope_review: true`. The docstring MUST state the exact
      firing condition and depth; it is reviewed against the code, so an understated scope is a
      defect, not politeness.
-   - Before creating a class or registry key, grep `response_policy.py` + `schema_sanitizer.py`
-     (this branch AND main) for an existing class/key covering the same quirk - a sibling
-     integration may have just landed one. NEVER rebind an existing registry key to different
+   - Before creating a class or registry key, grep the WHOLE policy surface (this branch AND
+     main) for an existing class/key covering the same quirk - a sibling integration may have
+     just landed one. That means every module behind `_POLICY_REGISTRIES`, not just the two
+     obvious ones: `response_policy.py`, `schema_sanitizer.py`, `reasoning_codec.py`,
+     `content_policy.py`, `prompt_policy.py`, `cache_policy.py`. Also read `model_presets.yaml`
+     for a sibling preset that already solved your fix-target by RE-POINTING an axis at a
+     shipped class - a one-line preset change always beats a new class. A newly registered
+     class must be referenced by your overlay AND covered by a unit test under
+     `tests/unit/llm/` (docs/ADD_NEW_MODEL.md step 5); the deterministic `check-new-classes`
+     gate fails the integration otherwise. NEVER rebind an existing registry key to different
      semantics; if your mechanism differs, use a new, model-line-specific name.
+     (Real miss: deepseek-v4-flash-0731 PR #846 wrote a new reasoning codec for
+     `unsigned_thinking_replay`, having grepped only the two modules named above. The shipped
+     `gemini` codec already covered that route - verified live - and `qwen3.8-max` had solved
+     the IDENTICAL fix-target days earlier with exactly that one-line
+     `reasoning_codec: gemini` swap. The new class also round-tripped LESS faithfully: it
+     rebuilt the envelope from the flat summary, dropping the provider's own `format` and
+     `index` that the shipped codec preserves.)
 4. Write `{{OBS_DIR}}/resolve/decision.json`:
    ```
    {"fix_targets": ["<exact junit probe names from findings.json that the overlay should turn green>"],
@@ -133,10 +147,23 @@ and pushes the whole integration to needs-human.
    `needs_human` is true you may leave `fix_targets` empty and skip writing `overlay.yaml`.
 
    `required` must be EVIDENCE-BACKED, never optimistic. List a capability as `required` ONLY if
-   it passed NATIVELY in `findings.json` OR the reprobe shows it green under your overlay. Do NOT
-   promote a capability to `required` on a mechanism that cannot support it: e.g. a summary-only
-   (OpenAI-style) `reasoning_codec` carries no signed thinking blocks, so `THINKING_EMITS_BLOCKS`
-   and the `*_THINKING_REPLAY` caps stay `known_unsupported` under it; a `passthrough` schema that
+   it passed NATIVELY in `findings.json` OR the reprobe shows it green under your overlay.
+
+   EXCEPTION - PAYLOAD-ONLY probes (`thinking_replay_roundtrip`, `unsigned_thinking_replay`):
+   these fire turn 1 live and then MOCK the provider turn, asserting only OUR OWN outgoing
+   request body. A codec that emits the expected shape satisfies them BY CONSTRUCTION, so a
+   green reprobe proves you wrote the payload you meant to write and says NOTHING about the
+   model. Promote either one to `required` ONLY on a passing NATIVE baseline. Off a failing
+   native baseline they stay `known_unsupported` even when your overlay turns them green - the
+   deterministic `cert_reconcile` gate FAILS the integration otherwise (SELF-REFERENTIAL). You
+   may still ship the policy; only the cert claim is refused. (Real miss: deepseek-v4-flash-0731
+   PR #846 promoted `unsigned_thinking_replay` off an 0/15 native baseline via a new codec; a
+   live A/B afterwards measured turn-2 `prompt_tokens` 523 vs 523 with and without the replay
+   payload - that route accepts the field and silently ignores it.)
+
+   Do NOT otherwise promote a capability to `required` on a mechanism that cannot support it:
+   e.g. a summary-only (OpenAI-style) `reasoning_codec` carries no SIGNED thinking blocks, so
+   `THINKING_REPLAY_ROUNDTRIP` stays `known_unsupported` under it; a `passthrough` schema that
    only cleared a weak-assertion probe (no 500, args parse) is NOT evidence the emitted VALUE is
    correct. When the mechanism does not clearly support it or the evidence is a weak probe, prefer
    `known_unsupported` (an honest floor) over a `required` that inflates the leaderboard score -

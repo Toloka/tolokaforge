@@ -1,7 +1,7 @@
 """Reconcile a candidate ``ModelCertificate`` against the observe ``findings.json``.
 
 The resolve agent's certificate is free-form reasoning; it can diverge from the
-measured observe baseline in three ways this gate catches:
+measured observe baseline in these ways this gate catches:
 
   1. COMPLETENESS - a capability that WAS probed is left undeclared (neither
      ``required`` nor ``known_unsupported``); it would silently auto-skip.
@@ -10,6 +10,18 @@ measured observe baseline in three ways this gate catches:
   3. CORE-UNSUPPORTED - a CORE capability (e.g. ``cost_usd_populated``) is marked
      ``known_unsupported`` - which would launder a missing-pricing gap into a fake
      ceiling.
+  4. SELF-REFERENTIAL - a PAYLOAD-ONLY capability (see
+     ``PAYLOAD_ONLY_CAPABILITIES``) is ``required`` against a FAILING baseline. Its
+     probe asserts our own outgoing request body with the provider turn mocked, so
+     an overlay can make it green BY CONSTRUCTION; a green reprobe is therefore not
+     evidence about the model.
+  5. UNBACKED - a capability is ``required`` with no probe result at all, so nothing
+     measured supports it (warning: a probe can legitimately fail to collect).
+
+Checks 1-3 are SYMMETRIC-BY-DESIGN gaps this module originally shipped with: it
+guarded against under-crediting a model but not against over-crediting one. Check 4
+closes the over-crediting side for the one probe class where "the reprobe went green"
+cannot mean what it appears to mean.
 
 A capability in ``[SOFT_PASS, HARD_PASS)`` marked ``known_unsupported`` is WARNED,
 not failed. Baseline pass_rate is the MIN across a capability's parametrised probes,
@@ -27,6 +39,28 @@ import sys
 
 HARD_PASS = 0.9
 SOFT_PASS = 0.8
+
+# Capabilities whose probe observes OUR OWN outgoing request payload rather than the
+# provider's behaviour: both replay tests fire turn 1 live, then MOCK turn 2 and
+# assert on the captured ``messages`` kwarg. Writing a codec that emits the expected
+# shape satisfies them by construction, so a fix-loop reprobe going green proves the
+# agent wrote the payload it set out to write - nothing about the model.
+#
+# Consequence for the cert: these may be promoted to ``required`` ONLY on a passing
+# NATIVE baseline (the model already round-trips without our overlay). Promotion off
+# a failing baseline is a self-referential claim and hard-fails.
+#
+# (Real miss: deepseek-v4-flash-0731, PR #846. ``unsigned_thinking_replay`` was 0/15
+# native; a new reasoning codec took the reprobe to 5/5 and the cap shipped
+# ``required``. A live A/B afterwards measured turn-2 ``prompt_tokens`` 523 vs 523
+# with and without the replay payload: the route accepts the field and silently
+# ignores it. The cert claimed a model property the evidence could not support.)
+PAYLOAD_ONLY_CAPABILITIES = frozenset(
+    {
+        "thinking_replay_roundtrip",
+        "unsigned_thinking_replay",
+    }
+)
 
 # Mirror of tests/canonical/test_capability_registry.py::_CORE_CAPABILITIES - the
 # capabilities every model MUST support. A core cap can NEVER be ``known_unsupported``
@@ -83,6 +117,7 @@ def reconcile(
     core: frozenset[str] = frozenset(),
     hard: float = HARD_PASS,
     soft: float = SOFT_PASS,
+    payload_only: frozenset[str] = PAYLOAD_ONLY_CAPABILITIES,
 ) -> tuple[list[str], list[str]]:
     """Return ``(violations, warnings)``. Pure - unit-tested without the registry."""
     declared = required | known_unsupported
@@ -94,11 +129,25 @@ def reconcile(
             "can never be `known_unsupported` (e.g. cost_usd_populated as a ceiling hides a "
             "missing-pricing gap)."
         )
+    for cap in sorted(required - set(probed)):
+        warnings.append(
+            f"UNBACKED: `{cap}` is `required` but has no probe result in the baseline - "
+            "nothing measured supports it. Confirm the probe collected, or demote it."
+        )
     for cap, rate in sorted(probed.items()):
         if cap not in declared:
             violations.append(
                 f"UNDECLARED: `{cap}` was probed (baseline {rate:.2f}) but is neither "
                 "`required` nor `known_unsupported` - it will silently auto-skip."
+            )
+        elif cap in required and cap in payload_only and rate < hard:
+            violations.append(
+                f"SELF-REFERENTIAL: `{cap}` is `required` but the NATIVE baseline fails "
+                f"{rate:.2f} (< {hard:.2f}). This probe asserts our own outgoing request "
+                "payload with the provider turn MOCKED, so an overlay satisfies it by "
+                "construction and a green reprobe says nothing about the model. Promote it "
+                "only on a passing native baseline; otherwise keep it `known_unsupported` "
+                "(the policy may still ship - only the cert claim is refused)."
             )
         elif cap in known_unsupported and rate >= hard:
             violations.append(
