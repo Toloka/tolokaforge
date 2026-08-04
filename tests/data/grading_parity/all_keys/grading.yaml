@@ -17,9 +17,10 @@ state_checks:
     expected_state_hash: "0000000000000000000000000000000000000000000000000000000000000000"
     weight: 0.75
     golden_actions:
-      - name: close_widget
+      - name: write_file
         kwargs:
-          widget_id: W1
+          path: reports/W1.md
+          content: Widget W1 closed
   jsonpaths:
     - path: "$.db.widgets[0].status"
       equals: closed

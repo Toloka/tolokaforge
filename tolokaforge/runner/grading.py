@@ -30,6 +30,10 @@ from tolokaforge.core.grading.combine_weights import (
     require_component_weight,
     resolve_uncounted_fold,
 )
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayRecord,
+    incomplete_replay_reason,
+)
 from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
@@ -1192,6 +1196,7 @@ def build_grade_reasons(
     transcript_result: dict[str, Any] | None = None,
     judge_reasons: str | None = None,
     trace_checks_result: dict[str, Any] | None = None,
+    golden_replay: GoldenReplayRecord | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -1201,6 +1206,9 @@ def build_grade_reasons(
         state_diff: State diff if hash comparison failed
         transcript_result: Transcript evaluation result
         trace_checks_result: Trace checks evaluation result
+        golden_replay: The golden replay behind the hash verdict, when one ran. An
+            incomplete replay is named beside the verdict it produced, in the sentence
+            the core engine emits too.
 
     Returns:
         Human-readable reasons string
@@ -1217,6 +1225,10 @@ def build_grade_reasons(
                 reasons.append(f"State: {state_diff['summary']}")
             else:
                 reasons.append("State: hash mismatch")
+
+    replay_reason = incomplete_replay_reason(golden_replay) if golden_replay is not None else None
+    if replay_reason:
+        reasons.append(replay_reason)
 
     # State checks reason — jsonpath file assertions
     jsonpath_score = components.get("jsonpath_score", -1.0)

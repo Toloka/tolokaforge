@@ -39,6 +39,23 @@ def simple_task_description() -> dict[str, Any]:
     return simple_task_description_dict()
 
 
+async def _create_order(arguments: dict[str, Any]) -> str:
+    """The tool the shared task's golden action names, which its wire form cannot carry.
+
+    ``simple_task_description`` declares no tool ``source``, so ``RegisterTrial``
+    reconstructs nothing and hash grading has no ``create_order`` to resolve its golden
+    action against. Any test that grades that task registers this callable first.
+    """
+    return json.dumps(
+        {
+            "status": "created",
+            "order_id": "order_001",
+            "user_id": arguments.get("user_id"),
+            "amount": arguments.get("amount"),
+        }
+    )
+
+
 class TestRunnerPipeline:
     """
     Integration tests for the full Runner pipeline.
@@ -264,21 +281,8 @@ class TestRunnerPipeline:
         assert register_response.success is True
         assert trial_id in runner_service.trials
 
-        # 2. Inject mock tools that interact with DB
-        async def mock_create_order(args):
-            """Mock tool that creates an order in the DB."""
-            # In a real scenario, this would use the DB proxy
-            # For testing, we just return success
-            return json.dumps(
-                {
-                    "status": "created",
-                    "order_id": "order_001",
-                    "user_id": args.get("user_id"),
-                    "amount": args.get("amount"),
-                }
-            )
-
-        runner_service.trials[trial_id].agent_tools["create_order"] = mock_create_order
+        # 2. Register the tool the task's wire form cannot carry
+        runner_service.trials[trial_id].agent_tools["create_order"] = _create_order
 
         # 3. Execute tool
         execution = execute_request(
@@ -644,6 +648,7 @@ class TestGradeTrialTerminationReason:
             mock_grpc_context,
         )
         assert registered.success is True, registered.error
+        runner_service.trials[trial_id].agent_tools["create_order"] = _create_order
         return trial_id
 
     @pytest.mark.parametrize("reason", [r.value for r in TerminationReason])

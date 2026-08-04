@@ -79,7 +79,10 @@ def simple_task_description() -> dict[str, Any]:
 
     Exercises the full pipeline without external dependencies. Tools are absent
     because they need source config for reconstruction; tests that need tools
-    inject callables onto the registered trial context directly.
+    inject callables onto the registered trial context directly. Grading this task
+    is one of those cases: hash grading resolves the ``create_order`` golden action
+    against the trial's registered tools and refuses a name resolving to nothing, so
+    a test that calls ``GradeTrial`` registers a ``create_order`` callable first.
     """
     return {
         "task_id": "test_task_001",

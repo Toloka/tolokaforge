@@ -1,178 +1,346 @@
-"""Unit tests for golden action replay in _execute_hash_grading.
+"""What a golden replay does with an action that never ran.
 
-Verifies that golden actions are replayed with their original arguments
-(no ID substitution), matching mcp_core's apply_golden_set_to_database()
-behaviour.
+Two shapes, and the line between them is what the replay can still produce. A name
+resolving to nothing is refused before anything runs, because no world can be built from
+it. An action that resolved, ran, and *raised* has already left a world behind — a
+partial one — so the hash against it is still computed and the grade names the action
+missing from it.
+
+Both substrates, because both replay golden actions and each resolves a name under its
+own rule: the core engine against the pack's ``TOOLS`` map exactly, the runner against
+the tools it registered for the trial with a single ``…_<name>`` suffix allowed on top.
+
+The core half is driven over the real ``tests/data/tasks/shop_orders_02`` pack — its
+``mcp_server.py``, its ``initial_state.json``, and the two-step golden path its
+``grading.yaml`` declares. The pack's own ``TOOLS`` map is what decides which names
+resolve, so a stand-in map would lock the stand-in's rule rather than the one a replay
+actually applies; and the trial states below are produced by driving the pack's tools,
+which is how an agent produces them.
+
+The measured defect these cases close: with ``confirm_payment`` misspelled, the replay
+skipped it and returned the order still ``pending``, so a trial that placed the order
+and never paid — the wrong behaviour — hashed equal to that partial world and scored
+``1.0`` "State hash matches", while a correct trial scored ``0.0`` against a diff that
+named nothing about the typo. A runner that resolved a name inside its replay loop rather
+than ahead of it scores the trial against the same partial world and annotates the grade
+instead of refusing it; the runner cases below rule that out.
 """
 
+from __future__ import annotations
+
+import copy
+import importlib.util
+import json
+from collections.abc import Callable
+from pathlib import Path
+from typing import Any
+
 import pytest
+import yaml
 
-from tolokaforge.runner.models import GoldenAction, HashGradingResult
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayRecord,
+    UnresolvableGoldenAction,
+    incomplete_replay_reason,
+    resolve_golden_action_names,
+)
+from tolokaforge.core.grading.state_checks import StateChecker
+from tolokaforge.runner.models import GoldenAction, TaskDescription
+from tolokaforge.runner.service import (
+    RunnerServiceImpl,
+    TrialContextRuntime,
+    _tool_registered_for_trial,
+)
 
-pytestmark = pytest.mark.unit
+pytestmark = [pytest.mark.unit, pytest.mark.grading]
+
+_REPO = Path(__file__).resolve().parents[2]
+_TASK_DIR = _REPO / "tests/data/tasks/shop_orders_02"
+_INITIAL_STATE = "initial_state.json"
+_MCP_SERVER = "mcp_server.py"
+
+#: Every name the pack's MCP module exposes, which is the set a golden action name is
+#: resolved against and therefore what an author of an unresolvable one has to be told.
+_PACK_TOOLS = ("confirm_payment", "get_customer", "list_products", "place_order")
+
+_PLACE_ORDER = (
+    "place_order",
+    {
+        "customer_id": "C-101",
+        "items": [
+            {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
+            {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
+        ],
+    },
+)
+_CONFIRM_PAYMENT = ("confirm_payment", {"order_id": "O-001"})
+
+
+@pytest.fixture(scope="module")
+def pack_tools() -> dict[str, Any]:
+    spec = importlib.util.spec_from_file_location("_shop_orders_02", _TASK_DIR / _MCP_SERVER)
+    assert spec and spec.loader
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module.TOOLS
+
+
+@pytest.fixture(scope="module")
+def golden_actions() -> list[dict[str, Any]]:
+    """The pack's authored golden path, read from the pack rather than restated here."""
+    grading = yaml.safe_load((_TASK_DIR / "grading.yaml").read_text())
+    return grading["state_checks"]["hash"]["golden_actions"]
+
+
+def _misspell_payment(authored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    actions = copy.deepcopy(authored)
+    actions[1]["name"] = "confirm_paymnet"
+    return actions
+
+
+def _misspell_payment_kwarg(authored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The pack's second action, defective in the one way that makes ``invoke`` raise.
+
+    A kwarg the tool's signature does not declare fails the ``func(data, **kwargs)`` call
+    itself, outside the registry wrapper's ``except ToolError`` arm. A *declared* failure —
+    ``order_id="O-999"`` — is returned as ``{"error": …}`` instead and raises nothing, so
+    it would exercise none of this (#831).
+    """
+    actions = copy.deepcopy(authored)
+    actions[1]["kwargs"] = {"order_idd": "O-001"}
+    return actions
+
+
+def _trial_state(pack_tools: dict[str, Any], *calls: tuple[str, dict[str, Any]]) -> dict[str, Any]:
+    """The database an agent that made exactly these calls leaves behind."""
+    data = json.loads((_TASK_DIR / _INITIAL_STATE).read_text())
+    for name, kwargs in calls:
+        pack_tools[name].invoke(data=data, **kwargs)
+    return data
+
+
+def _check(
+    db_state: dict[str, Any], actions: list[dict[str, Any]]
+) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
+    return StateChecker().check_hash_against_golden_replay(
+        db_state=db_state,
+        golden_actions=actions,
+        task_dir=_TASK_DIR,
+        initial_state_path=_INITIAL_STATE,
+        mcp_server_path=_MCP_SERVER,
+        task_domain="shop",
+    )
+
+
+def test_a_misspelled_action_raises_where_it_used_to_pass_the_wrong_trial(
+    pack_tools, golden_actions
+) -> None:
+    """The measured wrong verdict, asserted gone, and the sentence that replaces it.
+
+    The trial placed the order and never paid, which is the failure this pack exists to
+    catch, and it hashes equal to the world the misspelled golden path replays. Any
+    implementation that skipped the unresolvable action would return ``1.0`` "State hash
+    matches" here. The message has to carry the name as written and the set it was
+    resolved against, because those two are the whole of what tells an author it is the
+    golden path that is broken and not the agent.
+    """
+    never_paid = _trial_state(pack_tools, _PLACE_ORDER)
+
+    with pytest.raises(UnresolvableGoldenAction) as raised:
+        _check(never_paid, _misspell_payment(golden_actions))
+
+    message = str(raised.value)
+    assert "confirm_paymnet" in message, message
+    for name in _PACK_TOOLS:
+        assert name in message, message
+
+
+def test_an_action_declaring_no_name_is_refused_rather_than_skipped(
+    pack_tools, golden_actions
+) -> None:
+    nameless = [copy.deepcopy(golden_actions[0]), {"kwargs": {"order_id": "O-001"}}]
+
+    with pytest.raises(UnresolvableGoldenAction, match=r"\[1\] None"):
+        _check(_trial_state(pack_tools, _PLACE_ORDER), nameless)
+
+
+def test_an_action_whose_name_is_no_string_is_refused_as_one_naming_nothing(
+    pack_tools, golden_actions
+) -> None:
+    """The ``hash`` block is untyped, so a name may arrive as a list — and must not raise.
+
+    The subclass is the assertion. Reaching the matcher, an unhashable name answers its
+    membership test with a ``TypeError``, which the wrapper flattens into the base
+    ``GoldenReplayError`` — so the pack defect arrives as "Error executing golden actions"
+    rather than as the class whose message names the offending action and the pack's
+    tools.
+    """
+    listed = [copy.deepcopy(golden_actions[0]), {"name": ["confirm_payment"]}]
+
+    with pytest.raises(UnresolvableGoldenAction, match=r"\[1\] None"):
+        _check(_trial_state(pack_tools, _PLACE_ORDER), listed)
+
+
+def test_every_unresolvable_action_is_named_in_one_raise(pack_tools, golden_actions) -> None:
+    """Two defects, one exception — an author fixing a golden path sees the whole list."""
+    both_misspelled = _misspell_payment(golden_actions)
+    both_misspelled[0]["name"] = "place_ordr"
+
+    with pytest.raises(UnresolvableGoldenAction) as raised:
+        _check(_trial_state(pack_tools, _PLACE_ORDER), both_misspelled)
+
+    assert "place_ordr" in str(raised.value)
+    assert "confirm_paymnet" in str(raised.value)
+
+
+def test_the_pack_as_authored_still_grades_a_correct_trial_as_a_pass(
+    pack_tools, golden_actions
+) -> None:
+    """The negative control: resolving before executing moves no correct pack's verdict.
+
+    A replay that ran whole earns no sentence either — the state hashed against is the
+    world the pack describes, so there is nothing to report about it.
+    """
+    paid = _trial_state(pack_tools, _PLACE_ORDER, _CONFIRM_PAYMENT)
+
+    score, reason, diff, replay = _check(paid, copy.deepcopy(golden_actions))
+
+    assert (score, diff) == (1.0, None)
+    assert reason == "State hash matches"
+    assert incomplete_replay_reason(replay) is None
+
+
+def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
+    pack_tools, golden_actions
+) -> None:
+    never_paid = _trial_state(pack_tools, _PLACE_ORDER)
+
+    score, reason, diff, _ = _check(never_paid, copy.deepcopy(golden_actions))
+
+    assert score == 0.0
+    assert "State hash mismatch" in reason
+    assert diff is not None
+
+
+def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_run(
+    pack_tools, golden_actions
+) -> None:
+    """The partial world is still hashed against, and the grade names what is missing.
+
+    The verdict here is the wrong one and asserted anyway: the trial placed the order and
+    never paid, and because the golden path's ``confirm_payment`` raised, the world it
+    replayed stops at the same place, so a trial that failed the task hashes equal to the
+    oracle and scores ``1.0``. Whether such a verdict should exist at all is #816 — this
+    case pins that it does, and that a reader of the grade is told why not to trust it.
+    """
+    never_paid = _trial_state(pack_tools, _PLACE_ORDER)
+
+    score, reason, _, replay = _check(never_paid, _misspell_payment_kwarg(golden_actions))
+
+    assert score == 1.0
+    assert reason == "State hash matches"
+
+    sentence = incomplete_replay_reason(replay)
+    assert sentence is not None
+    assert sentence.startswith("GOLDEN REPLAY ERRORS:"), sentence
+    assert "1 of 2" in sentence, sentence
+    assert "confirm_payment" in sentence, sentence
+    assert "order_idd" in sentence, sentence
+
 
 # ---------------------------------------------------------------------------
-# Test: GoldenAction model round-trips arguments unchanged
+# The runner: its own matcher, and the trial state it may not touch
 # ---------------------------------------------------------------------------
 
-
-@pytest.mark.unit
-class TestGoldenActionArguments:
-    """Golden actions must preserve argument values without mutation."""
-
-    def test_arguments_not_mutated_by_model(self):
-        """GoldenAction model should keep arguments as-is."""
-        action = GoldenAction(
-            tool_name="zendesk_update_item",
-            arguments={"table": "tickets", "id": "6", "item": {"status": "solved"}},
-        )
-        assert action.arguments["id"] == "6"
-        assert action.arguments["table"] == "tickets"
-        assert action.arguments["item"] == {"status": "solved"}
-
-    def test_mixed_domain_ids_not_confused(self):
-        """IDs from different tool domains should not interfere.
-
-        This tests the scenario that caused the logistics domain bug:
-        hris_get_employee returns {"id": "EMP-00000500"} but golden
-        zendesk_update_item expects id="6" — these should never be mixed.
-        """
-        hris_action = GoldenAction(
-            tool_name="hris_hris_get_employee",
-            arguments={"employee_id": "EMP-00000500"},
-        )
-        zendesk_action = GoldenAction(
-            tool_name="zendesk_update_item",
-            arguments={"table": "tickets", "id": "6", "item": {"status": "solved"}},
-        )
-
-        # The arguments are independent — no field should be shared/substituted
-        assert hris_action.arguments["employee_id"] == "EMP-00000500"
-        assert zendesk_action.arguments["id"] == "6"
-
-        # Even though both domains use "id" as a field name in their results,
-        # the golden actions use different argument keys (employee_id vs id)
-        # and the replay should pass arguments through unchanged.
+#: What ``RegisterTrial`` left in ``agent_tools`` — one name a golden action can only
+#: reach through the suffix rule, one it reaches exactly.
+_REGISTERED_TOOLS = ("shop_place_order", "confirm_payment")
 
 
-# ---------------------------------------------------------------------------
-# Test: HashGradingResult includes golden_action_errors
-# ---------------------------------------------------------------------------
+def _resolve_as_the_runner_does(*names: str | None) -> list[str]:
+    return resolve_golden_action_names(
+        list(names), candidates=_REGISTERED_TOOLS, match=_tool_registered_for_trial
+    )
 
 
-@pytest.mark.unit
-class TestHashGradingResult:
-    """HashGradingResult must propagate golden action errors."""
-
-    def test_no_errors_by_default(self):
-        result = HashGradingResult(hash_match=True, hash_score=1.0)
-        assert result.golden_action_errors == []
-
-    def test_errors_preserved(self):
-        errors = ["Golden action 4 (zendesk_update_item) failed: ExecutionError: not found"]
-        result = HashGradingResult(
-            hash_match=False,
-            hash_score=0.0,
-            golden_action_errors=errors,
-        )
-        assert len(result.golden_action_errors) == 1
-        assert "zendesk_update_item" in result.golden_action_errors[0]
-
-    def test_serialization_round_trip(self):
-        """Errors survive JSON serialization (for gRPC transport)."""
-        errors = ["Golden action 2 failed: ValueError: bad id"]
-        result = HashGradingResult(
-            hash_match=False,
-            hash_score=0.0,
-            golden_action_errors=errors,
-        )
-        data = result.model_dump()
-        restored = HashGradingResult.model_validate(data)
-        assert restored.golden_action_errors == errors
+def test_the_runner_resolves_both_an_exact_name_and_an_unprefixed_one() -> None:
+    """Golden actions are authored unprefixed, so both spellings have to reach a tool."""
+    assert _resolve_as_the_runner_does("confirm_payment", "place_order") == [
+        "confirm_payment",
+        "shop_place_order",
+    ]
 
 
-# ---------------------------------------------------------------------------
-# Test: Refusal tasks — empty golden_actions
-# ---------------------------------------------------------------------------
+def test_the_runner_refuses_a_name_naming_the_index_and_the_registered_set() -> None:
+    """An author reading this has to learn which action is wrong and what it could say."""
+    with pytest.raises(UnresolvableGoldenAction) as raised:
+        _resolve_as_the_runner_does("confirm_payment", "place_ordr")
+
+    message = str(raised.value)
+    assert "[1] 'place_ordr'" in message, message
+    for name in _REGISTERED_TOOLS:
+        assert name in message, message
 
 
-@pytest.mark.unit
-class TestRefusalTaskGrading:
-    """Refusal tasks have golden_actions=[] — the expected state is the initial state.
+class _RefusingDBClient:
+    """Every db-service call refused, whichever it is.
 
-    The runner must still run hash-based grading for these tasks, comparing
-    the trial's final DB state against the initial (unchanged) state.
+    Steps 1-4 of the runner's hash path all write to the trial's database — an MCP
+    task syncs through ``mutate``, then the trial is snapshotted and reset to its
+    initial state. Refusing the whole client asserts that resolution finishes before
+    any of them is reached without restating a call order the implementation is free
+    to change.
     """
 
-    def test_empty_golden_actions_list_is_valid(self):
-        """An empty golden_actions list is a valid refusal task — not an error."""
-        from tolokaforge.runner.models import RunnerStateChecksConfig
+    def __getattr__(self, method: str) -> Callable[..., Any]:
+        async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(f"db_client.{method} ran before golden actions resolved")
 
-        config = RunnerStateChecksConfig(
-            hash_enabled=True,
-            golden_actions=[],  # Refusal task
+        return refuse
+
+
+def _runner_over_a_refusing_db() -> tuple[RunnerServiceImpl, TrialContextRuntime]:
+    service = RunnerServiceImpl.__new__(RunnerServiceImpl)
+    service.db_client = _RefusingDBClient()
+    context = TrialContextRuntime(
+        trial_id="golden_replay_ordering:0",
+        task_description=TaskDescription(
+            task_id="golden_replay_ordering",
+            name="Golden-action resolution precedes every db call",
+            category="test",
+            description="A hash-graded trial whose golden action names an unknown tool",
+            adapter_type="native",
+            system_prompt="You are a test assistant.",
+        ),
+    )
+    context.agent_tools = dict.fromkeys(_REGISTERED_TOOLS, object())
+    return service, context
+
+
+async def test_an_unresolvable_name_fails_the_grade_before_the_trial_state_moves() -> None:
+    """The invariant: a pack defect leaves the trial's database exactly as it was.
+
+    The replay loop sits between ``reset_trial`` and ``restore_snapshot``, so a raise
+    from inside it would leave the trial holding the initial state instead of what the
+    agent left behind. Resolving first is what makes the failure free of that cost.
+    """
+    service, context = _runner_over_a_refusing_db()
+
+    with pytest.raises(UnresolvableGoldenAction, match="place_ordr"):
+        await service._execute_hash_grading(
+            context.trial_id, context, [GoldenAction(tool_name="place_ordr")]
         )
-        assert config.hash_enabled is True
-        assert config.golden_actions == []
 
-    def test_hash_grading_result_for_refusal_pass(self):
-        """When the agent doesn't modify state (correct refusal), hashes match."""
-        result = HashGradingResult(
-            hash_match=True,
-            hash_score=1.0,
-            golden_action_errors=[],
+
+async def test_a_resolvable_name_reaches_the_db_client_the_refusal_guards() -> None:
+    """The control: the test above passes because resolution precedes the db calls.
+
+    Without this, a hash path that had stopped touching the database at all — or a
+    resolution pass that raised on every name — would satisfy the invariant vacuously.
+    """
+    service, context = _runner_over_a_refusing_db()
+
+    with pytest.raises(AssertionError, match="ran before golden actions resolved"):
+        await service._execute_hash_grading(
+            context.trial_id, context, [GoldenAction(tool_name="place_order")]
         )
-        assert result.hash_match is True
-        assert result.hash_score == 1.0
-
-    def test_hash_grading_result_for_refusal_fail(self):
-        """When the agent incorrectly modifies state, hashes don't match."""
-        result = HashGradingResult(
-            hash_match=False,
-            hash_score=0.0,
-            golden_action_errors=[],
-        )
-        assert result.hash_match is False
-        assert result.hash_score == 0.0
-
-    def test_combine_grade_components_refusal_pass(self):
-        """Refusal task that correctly leaves state unchanged should pass."""
-        from tolokaforge.runner.grading import combine_grade_components
-
-        components = {
-            "hash_match": True,
-            "hash_score": 1.0,
-            "transcript_pass": None,
-            "transcript_score": -1.0,
-        }
-        grading_config = {
-            "combine_method": "weighted",
-            "weights": {"state_checks": 1.0},
-            "pass_threshold": 1.0,
-        }
-
-        folded = combine_grade_components(components, grading_config)
-        score, binary_pass = folded.score, folded.binary_pass
-        assert score == 1.0
-        assert binary_pass is True
-
-    def test_combine_grade_components_refusal_fail(self):
-        """Refusal task where agent incorrectly modified state should fail."""
-        from tolokaforge.runner.grading import combine_grade_components
-
-        components = {
-            "hash_match": False,
-            "hash_score": 0.0,
-            "transcript_pass": None,
-            "transcript_score": -1.0,
-        }
-        grading_config = {
-            "combine_method": "weighted",
-            "weights": {"state_checks": 1.0},
-            "pass_threshold": 1.0,
-        }
-
-        folded = combine_grade_components(components, grading_config)
-        score, binary_pass = folded.score, folded.binary_pass
-        assert score == 0.0
-        assert binary_pass is False

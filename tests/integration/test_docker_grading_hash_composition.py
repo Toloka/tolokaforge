@@ -8,13 +8,20 @@ detect substrate drift would defeat that test (#687). This suite closes the gap 
 production path — ``RegisterTrial`` over real gRPC, golden replay against the real
 db-service, and the ``state_checks`` component read back off the wire — with no LLM.
 
-The trial's database is the registered ``initial_state`` in every case: nothing runs an
-agent, so the only thing that moves between cases is what the golden replay leaves
-behind. One golden action sets the single order's status — to the value the trial
-already holds (the hashes match) or to a different one (they diverge). Two JSONPath
-assertions on that same field, of which exactly one holds either way, keep the
+Across the four fold cells the trial's database is the registered ``initial_state``:
+nothing runs an agent, so the only thing that moves between cells is what the golden
+replay leaves behind. One golden action sets the single order's status — to the value
+the trial already holds (the hashes match) or to a different one (they diverge). Two
+JSONPath assertions on that same field, of which exactly one holds either way, keep the
 assertion half at a partial ``0.5`` in both cases, so the hash verdict is the only
-variable.
+variable. The unresolvable-name case drives one real ``ExecuteTool`` first, because
+what it asserts is that the trial's own state survived a failed grade, and a database
+still holding ``initial_state`` cannot tell a reset apart from no reset.
+
+Two defective golden paths sit beside those cells, and they answer differently on
+purpose: a name resolving to nothing fails the whole ``GradeTrial``, while an action that
+resolved and raised leaves a partial world the runner still hashes against and names in
+the grade's reasons.
 
 Both weights are strictly inside ``(0, 1)``. At ``0.0`` and ``1.0`` the blend collapses
 onto a single source, and a rule that merely *selects* the dominant source reproduces
@@ -29,6 +36,7 @@ agrees, so every cell discriminates.
 from __future__ import annotations
 
 import base64
+import json
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +60,16 @@ _ORDER_ID = "O-1"
 # database still holds at grade time.
 _TRIAL_STATUS = "new"
 _DIVERGING_STATUS = "fulfilled"
+
+# A third status, and a golden action naming a tool ``RegisterTrial`` never registered.
+# The typo is a suffix of nothing registered, so the runner's ``…_<name>`` rule cannot
+# rescue it either.
+_MOVED_STATUS = "picking"
+_UNREGISTERED_TOOL = "set_order_statuss"
+
+# An order the initial state does not hold, so the golden action resolves, runs, and
+# raises — the tool's own ``ValueError`` reaches the replay loop through the tau wrapper.
+_ABSENT_ORDER = "O-404"
 
 # (case name, the status its golden action replays, the hash verdict that produces).
 _GOLDEN_CASES: tuple[tuple[str, str, float], ...] = (
@@ -91,7 +109,13 @@ def _tool_artifacts() -> dict[str, str]:
     return {_TOOL_ARTIFACT_PATH: base64.b64encode(_TOOL_SOURCE.read_bytes()).decode()}
 
 
-def _task_description(*, golden_status: str, hash_weight: float) -> dict[str, Any]:
+def _task_description(
+    *,
+    golden_status: str,
+    hash_weight: float,
+    golden_tool: str = _TOOL_NAME,
+    golden_order: str = _ORDER_ID,
+) -> dict[str, Any]:
     """A hash-graded trial whose assertion half is partial and whose weight is explicit."""
     return {
         "task_id": _TASK_ID,
@@ -144,8 +168,8 @@ def _task_description(*, golden_status: str, hash_weight: float) -> dict[str, An
                 "hash_weight": hash_weight,
                 "golden_actions": [
                     {
-                        "tool_name": _TOOL_NAME,
-                        "arguments": {"order_id": _ORDER_ID, "status": golden_status},
+                        "tool_name": golden_tool,
+                        "arguments": {"order_id": golden_order, "status": golden_status},
                     }
                 ],
                 "jsonpath_checks": _JSONPATH_CHECKS,
@@ -166,6 +190,13 @@ def _trial_spec_json(trial_id: str, task: dict[str, Any]) -> str:
             runner_url="http://runner.test:50051",
         ),
     ).model_dump_json()
+
+
+def _state(client: GrpcRunnerClient, trial_id: str) -> dict[str, Any]:
+    """The trial's tables as db-service holds them right now."""
+    response = client.get_state(trial_id)
+    assert response["success"] is True, response["error"]
+    return json.loads(response["state_json"])
 
 
 @pytest.fixture(scope="module")
@@ -235,6 +266,102 @@ def test_the_runner_blends_its_golden_replay_verdict_by_the_authors_weight(
         f"the runner reports state_checks {component} but scores the trial "
         f"{grade['score']} — the composite does not reach the final score"
     )
+
+
+def test_an_unresolvable_golden_action_fails_the_grade_and_leaves_the_trial_alone(
+    runner_client: GrpcRunnerClient,
+) -> None:
+    """A pack defect answers ``success=false`` without spending the trial's database.
+
+    The trial is first driven off its registered ``initial_state`` through a real
+    ``ExecuteTool``, because this module grades trials nothing ran an agent against:
+    with the database still holding ``initial_state``, ``reset_trial`` is a no-op and a
+    post-grade state check would pass even if the runner had snapshotted and reset
+    before discovering the unresolvable name. Having moved it, the same check falsifies
+    that ordering — a reset trial reads back ``_TRIAL_STATUS``.
+
+    The error has to name both the action as written and the tools the trial registered:
+    that pair is the whole of what tells an author the golden path is broken rather than
+    the agent. The registered half is asserted as the rendered candidate list, because
+    ``_TOOL_NAME`` is a substring of the offending ``_UNREGISTERED_TOOL`` and a bare
+    name assertion would hold on an error naming only the typo. A runner that skipped the
+    action instead answers ``success=true`` with a ``state_checks`` computed against a
+    golden world the action never touched, annotating the grade where an unbuildable
+    world has to refuse one.
+    """
+    trial_id = f"{_TASK_ID}_unresolvable:0"
+    task = _task_description(
+        golden_status=_TRIAL_STATUS, hash_weight=_HASH_WEIGHTS[0], golden_tool=_UNREGISTERED_TOOL
+    )
+    registered = runner_client.register_trial(
+        trial_id=trial_id, trial_spec_json=_trial_spec_json(trial_id, task)
+    )
+    assert registered["success"] is True, registered["error"]
+
+    try:
+        moved = runner_client.execute_tool(
+            trial_id=trial_id,
+            tool_name=_TOOL_NAME,
+            arguments={"order_id": _ORDER_ID, "status": _MOVED_STATUS},
+            call_id="move-the-trial-off-its-initial-state",
+        )
+        assert moved.success is True, moved.error
+        before = _state(runner_client, trial_id)
+        assert before["orders"][0]["status"] == _MOVED_STATUS, before
+
+        result = runner_client.grade_trial(trial_id=trial_id)
+
+        assert result["success"] is False, result
+        assert _UNREGISTERED_TOOL in result["error"], result["error"]
+        assert f"[{_TOOL_NAME!r}]" in result["error"], result["error"]
+        assert _state(runner_client, trial_id) == before, (
+            f"grading a pack whose golden action names {_UNREGISTERED_TOOL!r} moved the "
+            f"trial's database off {before} — it was snapshotted or reset on the way to "
+            "an error it could have raised first"
+        )
+    finally:
+        runner_client.cleanup_trial(trial_id=trial_id)
+
+
+def test_a_golden_action_that_raised_is_named_on_the_grade_it_produced(
+    runner_client: GrpcRunnerClient,
+) -> None:
+    """An action that resolved and raised still yields a verdict, and the wire says so.
+
+    The action names an order the initial state does not hold, so it resolves, runs, and
+    raises out of the tau wrapper — the one failure shape either substrate can see. The
+    replay therefore leaves the trial's own database, which is what the trial holds too,
+    so the hash *matches*: the grade is a full-marks hash verdict over a golden world
+    that was never built. That wrong verdict is #816's question and it is asserted here
+    as the current answer; what this case pins is that the sentence naming the missing
+    action travels with it over gRPC, under the prefix #599's consumer matches.
+    """
+    trial_id = f"{_TASK_ID}_raising:0"
+    weight = _HASH_WEIGHTS[0]
+    task = _task_description(
+        golden_status=_DIVERGING_STATUS, hash_weight=weight, golden_order=_ABSENT_ORDER
+    )
+    registered = runner_client.register_trial(
+        trial_id=trial_id, trial_spec_json=_trial_spec_json(trial_id, task)
+    )
+    assert registered["success"] is True, registered["error"]
+
+    try:
+        result = runner_client.grade_trial(trial_id=trial_id)
+    finally:
+        runner_client.cleanup_trial(trial_id=trial_id)
+
+    assert result["success"] is True, result["error"]
+    grade = result["grade"]
+    reasons = grade["reasons"]
+
+    assert "GOLDEN REPLAY ERRORS: 1 of 1" in reasons, reasons
+    assert _TOOL_NAME in reasons, reasons
+    assert _ABSENT_ORDER in reasons, reasons
+    assert "State: hash match" in reasons, reasons
+
+    expected = _JSONPATH_SCORE * (1.0 - weight) + 1.0 * weight
+    assert grade["components"]["state_checks"] == pytest.approx(expected), grade
 
 
 def test_the_two_weights_score_the_same_trial_differently(graded_cells) -> None:

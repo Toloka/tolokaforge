@@ -58,6 +58,7 @@ sequenceDiagram
     end
 
     H->>R: GradeTrial - llm_messages_json
+    R->>R: Resolve golden-action names against the registered tools
     R->>DB: Snapshot current state
     R->>DB: Reset to initial state
     R->>R: Execute golden path
@@ -718,25 +719,34 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
         decode_transcript_wire(transcript), trial_context.tool_call_history, termination_reason
     )
 
-    # 1. Get current trial state from DB Service
+    # 1. Resolve every golden-action name against the tools RegisterTrial registered.
+    #    Raises UnresolvableGoldenAction -> success=false, before anything below
+    #    writes to the trial's database.
+    resolved = resolve_golden_action_names(
+        [action.tool_name for action in grading_config.golden_actions],
+        candidates=trial_context.agent_tools.keys(),
+        match=_tool_registered_for_trial,
+    )
+
+    # 2. Get current trial state from DB Service
     trial_state = db_service.get_state(trial_id)
     
-    # 2. Compute stable hash of trial state (excludes unstable fields)
+    # 3. Compute stable hash of trial state (excludes unstable fields)
     trial_hash = db_service.get_stable_hash(trial_id)
     
-    # 3. Execute golden path on fresh state
+    # 4. Execute golden path on fresh state
     db_service.snapshot(trial_id, "pre_golden")
     db_service.reset_to_initial(trial_id)
     
-    for action in grading_config.golden_actions:
-        execute_tool(trial_id, action.tool_name, action.arguments)
+    for tool_name, action in zip(resolved, grading_config.golden_actions):
+        execute_tool(trial_id, tool_name, action.arguments)
     
     golden_hash = db_service.get_stable_hash(trial_id)
     
-    # 4. Restore trial state
+    # 5. Restore trial state
     db_service.restore(trial_id, "pre_golden")
     
-    # 5. Compare hashes
+    # 6. Compare hashes
     if trial_hash == golden_hash:
         state_score = 1.0
         state_diff = None
@@ -744,10 +754,10 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
         state_score = 0.0
         state_diff = compute_diff(golden_state, trial_state)
     
-    # 6. Evaluate transcript rules off the timeline
+    # 7. Evaluate transcript rules off the timeline
     transcript_score = evaluate_transcript_rules(timeline, grading_config.transcript_rules)
     
-    # 7. Fold the components by the method the pack declared. "weighted" returns
+    # 8. Fold the components by the method the pack declared. "weighted" returns
     #    their mean scaled by grading_config.weights, "all" the weakest component,
     #    "any" the strongest; anything else raises and the RPC returns success=false.
     #    Every component folded here carries a share grading_config.weights declares,
@@ -816,6 +826,16 @@ never approximated with a score. The two views of the trial are joined into its
 so an unreadable or self-contradictory payload fails the RPC before golden replay
 touches the trial's state.
 
+Golden replay resolves too, before it writes. Every `golden_actions[].tool_name` is
+matched against the tools `RegisterTrial` registered — exactly, or against a single
+registered `…_<name>` suffix, since golden actions are authored unprefixed — as the
+first thing hash grading does. A name that matches neither is a pack defect, and the
+RPC answers `success = false` naming the action and the set the trial registered rather
+than replaying the rest and reporting a hash against a golden world the action never
+touched. Nothing has been written at that point: the MCP state sync, the `pre_golden`
+snapshot and the reset all follow resolution, so the trial's database still holds
+exactly what the agent left behind and the host can retry or re-grade it.
+
 The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
 `GradingFailedError` on any `success = false`, so the trial is published with no
 score rather than with one the runner never computed. The conductor catches that
@@ -831,6 +851,7 @@ what that costs the run's counts.
 | `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
 | `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions. An authored pack cannot be that shape: `hash.enabled` with no source is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)), so this row is reached by a `TaskDescription` built directly against the runner or recorded before that rule |
 | `Trial '<id>' is not gradeable: MissingComponentWeight: <component> was scored and combine.weights declares no weight for it …` | The fold evaluated a component `grading.weights` declares no share for. Neither `1.0` nor `0.0` is defensible, so the fold refuses rather than picking one. An authored pack cannot be that shape — a configured component with no weight is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)) — so this row is reached by a `TaskDescription` built directly against the runner, or by one recorded before that rule |
+| `Hash grading failed: UnresolvableGoldenAction: golden actions naming no tool the replay can call: …` | A `golden_actions` entry names a tool the trial never registered, or names nothing at all. Every offending action is named in one error with its index and the registered set, and the trial's database is untouched |
 | `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
 | `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
 | `Grading error: …` | Any other exception escaping the grading path |
