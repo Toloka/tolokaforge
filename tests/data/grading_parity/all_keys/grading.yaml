@@ -30,15 +30,6 @@ state_checks:
   id_fields:
     widgets: widget_id
   relaxed_validation: true
-  db_probes:
-    - name: widget_closed
-      dsn: "postgresql://grader:grader_pw@app-db:5432/widgets"
-      query: "SELECT status FROM widgets WHERE widget_id = 'W1'"
-      expect:
-        - path: "$.rows[0].status"
-          equals: closed
-          description: widget row is closed
-      description: the widget row is closed
 
 transcript_rules:
   must_contain:
