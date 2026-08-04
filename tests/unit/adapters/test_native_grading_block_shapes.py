@@ -13,6 +13,15 @@ a truthiness test, so a gate mirroring that would answer ``[{enabled: true}]`` a
 absent block, so the pack builds a description that grades that component as nothing
 and the trial is paid for before anything notices.
 
+**One tier below those keys, one read site.** ``state_checks.hash.golden_actions`` is the
+list of actions a golden replay executes, and :meth:`to_task_description` is the only
+native read of it — it lowers each action onto the wire, where
+:meth:`get_grading_config` hands the untyped block on to the core engine, which refuses
+the same shape at its own read (``tests/unit/grading/test_state_checks_composition.py``).
+So the rows for it are not parametrised over both errands. A *falsy* source is no replay
+rather than a malformed one and loads as no actions to replay; only a truthy value that is
+not a list is refused.
+
 Each row drives a real pack on disk through the real adapter, because the shape a read
 site is handed is what the loader made of the file, not what a monkeypatch says.
 """
@@ -27,6 +36,10 @@ import yaml
 
 from tolokaforge.adapters._task_loader import load_task
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core.grading.golden_replay import (
+    UnreplayableGoldenSource,
+    UnresolvableGoldenAction,
+)
 from tolokaforge.core.run_trial import _build_single_task_adapter
 
 pytestmark = pytest.mark.unit
@@ -172,6 +185,126 @@ def test_an_empty_grading_file_is_answered_by_each_read_site_as_it_was(
     assert _wire_grading(empty) == _wire_grading(undeclared)
     with pytest.raises(AttributeError, match="'NoneType' object has no attribute 'pop'"):
         _read(empty, "get_grading_config")
+
+
+#: Every truthy ``golden_actions`` no replay can iterate, and the type name the refusal
+#: reports back. An author reaches the mapping by dropping the ``-`` in front of a single
+#: action and the string by writing a tool name beside the key.
+_GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = (
+    pytest.param({"name": "place_order"}, "dict", id="one_action_written_as_a_mapping"),
+    pytest.param("place_order", "str", id="a_tool_name_written_beside_the_key"),
+    pytest.param(3, "int", id="a_number"),
+    pytest.param(True, "bool", id="the_flag_written_over_the_source"),
+)
+
+#: Every falsy spelling of the source, ``null`` being what a bare ``golden_actions:``
+#: parses to — the shape an author reaches by commenting their actions out.
+_GOLDEN_SOURCES_THAT_REPLAY_NOTHING = (
+    pytest.param(None, id="the_key_carrying_nothing"),
+    pytest.param([], id="an_empty_list"),
+    pytest.param({}, id="an_empty_mapping"),
+    pytest.param("", id="an_empty_string"),
+    pytest.param(0, id="zero"),
+    pytest.param(False, id="false"),
+)
+
+#: Every element an untyped list can hold that is no action at all.
+_ELEMENTS_THAT_ARE_NO_ACTION = (
+    pytest.param("place_order", id="a_bare_tool_name"),
+    pytest.param(3, id="a_number"),
+    pytest.param(None, id="a_list_entry_carrying_nothing"),
+    pytest.param(["place_order"], id="a_nested_list"),
+)
+
+_SOURCES_BESIDE_THE_GOLDEN_ONE = (
+    pytest.param({}, id="the_replay_as_the_only_source"),
+    pytest.param({"expected_state_hash": "aaaa"}, id="a_literal_declared_beside_it"),
+)
+
+
+def _replaying_pack(tmp_path: Path, golden_actions: Any, **hash_keys: Any) -> NativeAdapter:
+    """A pack whose enabled ``hash`` block declares *golden_actions*, in any shape."""
+    return _pack(
+        tmp_path,
+        grading_yaml=yaml.safe_dump(
+            {
+                "state_checks": {
+                    "hash": {"enabled": True, "golden_actions": golden_actions, **hash_keys}
+                }
+            }
+        ),
+    )
+
+
+@pytest.mark.parametrize("beside", _SOURCES_BESIDE_THE_GOLDEN_ONE)
+@pytest.mark.parametrize(("golden_actions", "kind"), _GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE)
+def test_a_golden_source_no_replay_can_iterate_is_refused_at_the_wire_read(
+    tmp_path: Path, golden_actions: Any, kind: str, beside: dict[str, Any]
+) -> None:
+    """The last surface before a trial is registered, so it is the one that has to say so.
+
+    Iterating the authored value lands a bare ``AttributeError`` / ``TypeError`` on
+    whoever asked for a description — the run's pre-flight resolves it before the per-task
+    catch (#880), so it aborts the whole run naming neither the pack, the key nor a fix.
+    The literal row is the load-bearing one: this read has no literal short-circuit, so a
+    pack declaring both sources is unregisterable where core would never read the actions
+    at all.
+    """
+    adapter = _replaying_pack(tmp_path, golden_actions, **beside)
+
+    with pytest.raises(UnreplayableGoldenSource) as excinfo:
+        _read(adapter, "to_task_description")
+
+    message = str(excinfo.value)
+    assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in message
+    assert "state_checks.hash.golden_actions" in message
+    assert f"got {kind} ({golden_actions!r})" in message
+
+
+@pytest.mark.parametrize("golden_actions", _GOLDEN_SOURCES_THAT_REPLAY_NOTHING)
+def test_a_falsy_golden_source_loads_as_no_actions_to_replay(
+    tmp_path: Path, golden_actions: Any
+) -> None:
+    """A source read for truth, which is how every rule and doc in this family reads it.
+
+    The description carries the flag its author wrote and no actions to replay — the flag
+    is not coerced off, because the author did ask for hash grading. This is a load-tier
+    lock and asserts nothing about the verdict that description later earns: the runner
+    grades an empty replay against the trial's initial state where core takes no verdict at
+    all, which is #693's asymmetry and untouched here.
+
+    The rows that are not the empty list are the ones a truthiness-mirroring read gets
+    wrong: ``golden_actions: null`` is what an author reaches by commenting their actions
+    out, and a read whose default fires only for an absent key iterates it.
+    """
+    state_checks = _wire_grading(_replaying_pack(tmp_path, golden_actions)).state_checks
+
+    assert state_checks.golden_actions == []
+    assert state_checks.hash_enabled is True
+
+
+@pytest.mark.parametrize("element", _ELEMENTS_THAT_ARE_NO_ACTION)
+def test_an_action_that_is_no_mapping_is_refused_before_anything_is_built(
+    tmp_path: Path, element: Any
+) -> None:
+    """The index-naming refusal core reaches through resolution, raised here at the read.
+
+    This substrate has no resolution step in front of a paid trial, so tolerating the
+    element is not open to it: ``GoldenAction.tool_name`` is a bare ``str``, so a name read
+    off a non-mapping as ``""`` **constructs cleanly**, ``RegisterTrial`` accepts the trial,
+    and the resolve fails once the trial is paid for. That no description is returned is
+    therefore asserted rather than implied — a row checking only the raised class would
+    pass an implementation that built the description and raised later.
+    """
+    adapter = _replaying_pack(tmp_path, [{"name": "place_order"}, element])
+
+    description = None
+    with pytest.raises(UnresolvableGoldenAction) as excinfo:
+        description = adapter.to_task_description(_TASK_ID)
+
+    assert description is None
+    assert "[1]" in str(excinfo.value)
+    assert f"{type(element).__name__} ({element!r})" in str(excinfo.value)
 
 
 def test_the_run_trial_path_refuses_a_falsy_grading_shape(tmp_path: Path) -> None:

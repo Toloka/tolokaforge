@@ -213,6 +213,36 @@ def test_an_action_whose_name_is_no_string_is_refused_as_one_naming_nothing(
         _check(_trial_state(pack_tools, _PLACE_ORDER), listed)
 
 
+#: Every element an untyped ``golden_actions`` list can hold that is no action at all. An
+#: author reaches the bare name by writing ``- confirm_payment`` instead of
+#: ``- name: confirm_payment``.
+_ELEMENTS_THAT_ARE_NO_ACTION = (
+    pytest.param("confirm_payment", id="a_bare_tool_name"),
+    pytest.param(3, id="a_number"),
+    pytest.param(None, id="a_list_entry_carrying_nothing"),
+    pytest.param(["confirm_payment"], id="a_nested_list"),
+)
+
+
+@pytest.mark.parametrize("element", _ELEMENTS_THAT_ARE_NO_ACTION)
+def test_an_action_that_is_no_mapping_at_all_is_refused_by_its_index(
+    pack_tools, golden_actions, element
+) -> None:
+    """The class the replay's own ``Raises:`` block promises, over a list of anything.
+
+    The ``hash`` block is untyped (#730), so nothing stops an element being a bare string
+    where a mapping belongs. Reading a name off one raises an ``AttributeError`` the
+    wrapper flattens into the base ``GoldenReplayError`` — "Error executing golden actions:
+    'str' object has no attribute 'get'", which names neither the offending index nor a
+    fix. Resolution answers it instead: an element declaring no name resolves to nothing,
+    exactly as an action carrying no ``name`` key does, and the two take the same fix.
+    """
+    listed = [copy.deepcopy(golden_actions[0]), element]
+
+    with pytest.raises(UnresolvableGoldenAction, match=r"\[1\] None"):
+        _check(_trial_state(pack_tools, _PLACE_ORDER), listed)
+
+
 def test_every_unresolvable_action_is_named_in_one_raise(pack_tools, golden_actions) -> None:
     """Two defects, one exception — an author fixing a golden path sees the whole list."""
     both_misspelled = _misspell_payment(golden_actions)

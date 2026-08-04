@@ -18,6 +18,7 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.config_validation import CombineLayer
+from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -406,6 +407,11 @@ class NativeAdapter(BaseAdapter):
             ValueError: If task_id not found
             RuntimeError: If required files cannot be loaded, or if the grading file
                 or any grading key it declares is neither a mapping nor absent
+            GoldenReplayError: ``state_checks.hash.golden_actions`` is truthy and is not
+                the list of actions to replay, or an action in it declares no tool to
+                call. Refused here rather than lowered onto the wire: this is the last
+                surface before ``RegisterTrial``, and an action carrying no name
+                constructs cleanly and fails once the trial is paid for.
         """
         from datetime import datetime, timezone
 
@@ -588,7 +594,10 @@ class NativeAdapter(BaseAdapter):
                 golden_actions: list[GoldenAction] = []
                 hash_config = state_checks_data.get("hash", {})
                 if hash_config and hash_config.get("enabled", False):
-                    for action in hash_config.get("golden_actions", []):
+                    for action in require_replayable_golden_actions(
+                        hash_config.get("golden_actions"),
+                        context=f"Grading file {grading_path}",
+                    ):
                         golden_actions.append(
                             GoldenAction(
                                 tool_name=action.get("name", ""),

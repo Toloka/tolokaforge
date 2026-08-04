@@ -18,7 +18,9 @@ the evaluator once the tokens are already spent, a binding correlated against a
 field of another type is red on every trajectory whatever the agent did, a golden
 action naming no callable tool leaves the replay with no world to hash and the trial
 with no verdict, a golden path authored against a task that declares no initial-state
-file or no MCP server module has no world to replay in at all, a section declaring
+file or no MCP server module has no world to replay in at all, a golden source that is
+not the list of actions to replay is iterated by one substrate and handed to the other's
+replay loop and crashes both once the trial is paid for, a section declaring
 nothing scores nothing while reading as configured, a probe declared beside a state
 source the fold also scores leaves one component holding two verdicts and each
 substrate discarding a different one, and a component and its weight naming each other
@@ -39,7 +41,10 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from tolokaforge.core.grading.golden_replay import InitialStateSource
+from tolokaforge.core.grading.golden_replay import (
+    InitialStateSource,
+    unreplayable_golden_source,
+)
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
     GRADE_COMPONENTS,
@@ -487,9 +492,9 @@ def inspect_grading_authoring(
 
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
     inventory is unresolvable. The rules outside that set still run: regex compilation,
-    the hash-source declaration and the state-source exclusivity, which read nothing but
-    the block, and the replay-world rule, which reads the world and skips on its own
-    account.
+    the hash-source declaration, the golden source's shape and the state-source
+    exclusivity, which read nothing but the block, and the replay-world rule, which reads
+    the world and skips on its own account.
 
     Args:
         grading: The authored block, as written.
@@ -517,6 +522,7 @@ def inspect_grading_authoring(
         _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
         _check_hash_source_declared(grading),
+        _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
     ]
@@ -891,6 +897,42 @@ def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return hash_block if isinstance(hash_block, Mapping) else None
 
 
+def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A declared golden replay is the list of actions to replay.
+
+    The one hash rule that reads a source for its *shape* rather than for truth, and it
+    reads only the block: whether a value is a list needs no tool set and no replay world,
+    so a shape defect is refused for a pack whose adapter can report neither rather than
+    skipped with the rules that do need them.
+
+    Read under a truthy ``hash.enabled`` and then **whatever else the block declares**,
+    unlike :func:`_check_golden_replay_world` beside it. A truthy ``expected_state_hash``
+    is the source core reads, so core never reaches the actions — but
+    ``NativeAdapter.to_task_description`` iterates the authored value with no such
+    short-circuit, so a pack declaring both cannot be registered at all. Skipping the
+    literal here would accept it.
+
+    Independent of the replay-world rule for the reason that rule reports every withheld
+    fact at once: a truthy non-list under an incomplete world draws two findings at this
+    one address, because both statements are true and each names a different fix. At grade
+    time core answers only the first, the shape being refused above the world it would
+    otherwise need — an author holding the whole list is what the gate is for, and the
+    first unbuildable precondition is the whole answer once a trial is paid for.
+
+    A falsy value is no replay rather than a malformed one — see
+    :func:`~tolokaforge.core.grading.golden_replay.unreplayable_golden_source` for the
+    reading — so such a block is :func:`_check_sections_declare_something`'s where it
+    declares no other source, and nothing at all where it declares one.
+    """
+    hash_block = _hash_block(grading)
+    if hash_block is None or not hash_block.get("enabled"):
+        return AuthoringReport()
+    reason = unreplayable_golden_source(hash_block.get("golden_actions"))
+    if reason is None:
+        return AuthoringReport()
+    return AuthoringReport(errors=(Finding(_GOLDEN_ACTIONS_ADDRESS, reason),))
+
+
 def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> AuthoringReport:
     """``db_probes`` is the whole of what a block declaring it may declare.
 
@@ -944,8 +986,10 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
     before ``golden_actions`` is read — so such a pack needs no world, and refusing it
     would send its author to declare facts nothing consults. Only then are the golden
     actions read, for truthiness and never for shape: a truthy non-list value is refused
-    for the world it lacks, where :func:`_check_golden_action_names` reports nothing about
-    it at all and #832 owns the shape.
+    here for the world it lacks and by :func:`_check_golden_actions_are_a_list` for being
+    no list of actions, so under an incomplete world it draws both findings at this one
+    address, while :func:`_check_golden_action_names` reports nothing about it at all,
+    having no element to address.
 
     Each fact the task withholds is its own finding, addressed to the ``task.yaml`` key
     that supplies it, because an author fixing a pack one exception at a time pays a

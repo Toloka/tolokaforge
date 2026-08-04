@@ -54,6 +54,8 @@ from tolokaforge.core.grading.golden_replay import (
     _ABSENT_INITIAL_STATE,
     _NO_MCP_SERVER,
     InitialStateSource,
+    UnreplayableGoldenSource,
+    refuse_unreplayable_golden_source,
 )
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
@@ -322,6 +324,14 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_golden_action_names",
         channel="errors",
         message="names no tool to replay",
+    ),
+    _Rule(
+        label="a_golden_source_that_is_no_list_of_actions",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True, "golden_actions": "write_file"}}},
+        checker="_check_golden_actions_are_a_list",
+        channel="errors",
+        message="the list of actions a golden replay executes",
     ),
     _Rule(
         label="golden_actions_the_task_gives_no_world_to_replay_in",
@@ -1172,14 +1182,19 @@ def test_a_pack_that_replays_nothing_draws_no_skip_for_a_world() -> None:
     assert report == AuthoringReport()
 
 
-def test_golden_actions_written_as_a_bare_string_are_refused_for_the_missing_world() -> None:
-    """Truthiness, never shape — and the one place that diverges from the name rule.
+def test_golden_actions_written_as_a_bare_string_draw_the_shape_and_the_missing_world() -> None:
+    """Two rules, two true statements, two fixes — reported together at one address.
 
-    ``_check_golden_action_names`` short-circuits on a ``golden_actions`` that is not a
-    list and reports nothing about it, because it has no element to address. This rule
-    reads the value the way both substrates read the source — for truth — so the same
-    value with no world to replay in is refused for the world it lacks. What that value
-    *is* stays #832's; core would crash on it whatever this rule says.
+    The world rule reads the source for truth and never for shape, so a bare string with
+    no world to replay in is refused for the world it lacks; the shape rule refuses the
+    same value for being no list of actions. Neither suppresses the other: an author whose
+    pack is wrong twice fixes both in one pass, which is the principle the world rule
+    already applies to the two facts a task can withhold. ``_check_golden_action_names``
+    stays silent, having no element to address.
+
+    The shape is named first, which is the order core answers in — the refusal sits above
+    the world it would otherwise need — so an author reading the gate's list and an author
+    reading a grade-time raise meet the same sentence first.
     """
     grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": "write_file"}}}
 
@@ -1187,8 +1202,178 @@ def test_golden_actions_written_as_a_bare_string_are_refused_for_the_missing_wor
         grading, _inventory(_HELPDESK), replay_world=_NO_SERVER_MODULE
     )
 
+    assert [finding.where for finding in report.errors] == [
+        "state_checks.hash.golden_actions",
+        "state_checks.hash.golden_actions",
+    ]
+    assert "the list of actions a golden replay executes" in report.errors[0].message
+    assert "tools.agent.mcp_server" in report.errors[1].message
+
+
+#: Every truthy ``golden_actions`` no replay can iterate, and the type name a refusal has
+#: to report back. An author reaches the mapping by dropping the ``-`` in front of a single
+#: action and the string by writing a tool name beside the key.
+_GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = (
+    pytest.param({"name": "write_file"}, "dict", id="one_action_written_as_a_mapping"),
+    pytest.param("write_file", "str", id="a_tool_name_written_beside_the_key"),
+    pytest.param(3, "int", id="a_number"),
+    pytest.param(True, "bool", id="the_flag_written_over_the_source"),
+)
+
+#: Every falsy spelling of the source, which is no replay rather than a malformed one.
+#: ``null`` is what an author reaches by commenting their actions out and leaving the key.
+#: The empty list is :func:`test_an_empty_golden_action_list_is_not_a_hash_source`'s row.
+_GOLDEN_SOURCES_THAT_REPLAY_NOTHING = (
+    pytest.param(None, id="the_key_carrying_nothing"),
+    pytest.param({}, id="an_empty_mapping"),
+    pytest.param("", id="an_empty_string"),
+    pytest.param(0, id="zero"),
+    pytest.param(False, id="false"),
+)
+
+_TOOL_SETS_A_SHAPE_IS_KNOWABLE_WITHOUT = (
+    pytest.param(False, id="a_resolved_tool_set"),
+    pytest.param(True, id="a_tool_set_no_adapter_could_report"),
+)
+
+
+@pytest.mark.parametrize("unresolvable", _TOOL_SETS_A_SHAPE_IS_KNOWABLE_WITHOUT)
+@pytest.mark.parametrize(("golden_actions", "kind"), _GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE)
+def test_a_golden_source_no_replay_can_iterate_is_refused_at_the_source(
+    golden_actions: Any, kind: str, unresolvable: bool
+) -> None:
+    """A source that is no list of actions costs the whole trial on either substrate.
+
+    Core hands the authored value to the replay loop and the runner iterates it onto the
+    wire, so each fails on it once the trial is paid for and neither names the key. The
+    type received is named because it is what tells an author which line to look at: a
+    mapping is one action that lost its ``-``, a string is a tool name written beside the
+    key.
+
+    Held against a tool set no adapter could report as well, where it must stay an error:
+    whether a value is a list needs no tool set, so a shape defect skipped with the
+    tool-aware rules would be lost for every pack whose inventory is unresolvable — and
+    those are the packs no other surface answers either.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": golden_actions}}}
+    inventory = ToolInventory.unresolvable() if unresolvable else _inventory(_HELPDESK)
+
+    report = inspect_grading_authoring(grading, inventory, replay_world=_A_BUILDABLE_WORLD)
+
     assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
-    assert "tools.agent.mcp_server" in report.errors[0].message
+    assert f"got {kind} ({golden_actions!r})" in report.errors[0].message
+    assert report.advisories == ()
+    assert "state_checks.hash.golden_actions" not in [skip.where for skip in report.unchecked]
+
+
+def test_a_golden_source_no_replay_can_iterate_is_refused_beside_a_literal() -> None:
+    """The rule reads the source the runner reads, not the one core reads.
+
+    ``NativeAdapter.to_task_description`` iterates the authored ``golden_actions`` with no
+    literal short-circuit, so a pack declaring both sources cannot be registered at all —
+    where core compares the trial against the author's literal and never reads them. A rule
+    that copied the world rule's exclusion of a literal-declaring pack would accept a pack
+    no trial can be started for.
+    """
+    grading = {
+        "state_checks": {
+            "hash": {
+                "enabled": True,
+                "expected_state_hash": "aaaa",
+                "golden_actions": {"name": "write_file"},
+            }
+        }
+    }
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
+    assert "the list of actions a golden replay executes" in report.errors[0].message
+
+
+def test_a_golden_source_no_replay_can_iterate_under_a_falsy_flag_is_the_flags_finding() -> None:
+    """The two hash rules partition the flag, so the pack draws one finding either way.
+
+    Nothing reads a source under a flag that is not truthy — the runner builds a
+    description carrying no golden actions and core takes no verdict — so its shape is
+    beside the point and the fix is the flag or the source. Reporting the shape here as
+    well would charge one edit twice.
+    """
+    grading = {"state_checks": {"hash": {"enabled": False, "golden_actions": "write_file"}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
+    assert "hash.enabled is False" in report.errors[0].message
+    assert "the list of actions a golden replay executes" not in report.errors[0].message
+
+
+@pytest.mark.parametrize("golden_actions", _GOLDEN_SOURCES_THAT_REPLAY_NOTHING)
+def test_a_falsy_golden_source_beside_a_literal_is_no_finding_at_all(golden_actions: Any) -> None:
+    """The domain's edge: a falsy source is no replay, not a malformed one.
+
+    Every read site loads a falsy value as no actions to replay, which is what the
+    no-source rule and every other rule in this family already read it as — so the shape
+    rule may not widen from *truthy* to *declared*. The literal beside it is what keeps
+    the no-source rule out of the way, leaving an empty report the only answer left.
+    """
+    grading = {
+        "state_checks": {
+            "hash": {
+                "enabled": True,
+                "expected_state_hash": "aaaa",
+                "golden_actions": golden_actions,
+            }
+        }
+    }
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert report == AuthoringReport()
+
+
+@pytest.mark.parametrize("golden_actions", _GOLDEN_SOURCES_THAT_REPLAY_NOTHING)
+def test_a_falsy_golden_source_alone_is_a_block_declaring_no_source(golden_actions: Any) -> None:
+    """The other half of the domain's edge, and the partition it must not disturb.
+
+    With nothing else declared the block asks for a hash it gives nothing to compare
+    against, which is one finding at the flag from the rule that owns that shape. A shape
+    rule reading the source for *presence* would report a second finding here for a value
+    that is simply no source.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": golden_actions}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_the_gate_and_a_substrate_refuse_a_shapeless_source_in_one_sentence() -> None:
+    """One definition, two audiences — the pattern the withheld-world vocabularies use.
+
+    Here the two audiences share the *whole* sentence rather than only the keys it names:
+    the gate reports the shape before a trial is paid for and each substrate raises on it
+    at its own read, and the fix is identical, so a second wording would be a second
+    definition to drift.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": "write_file"}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+    with pytest.raises(UnreplayableGoldenSource) as raised:
+        refuse_unreplayable_golden_source("write_file", context="grading.yaml")
+
+    assert "state_checks.hash.golden_actions" in report.errors[0].message
+    assert report.errors[0].message in str(raised.value)
 
 
 def test_an_unresolvable_replay_world_may_not_carry_task_facts() -> None:

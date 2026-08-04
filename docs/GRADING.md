@@ -996,6 +996,31 @@ empty `golden_actions` list replays nothing, so it is no more a source than an a
 one. The rules' class and the rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
 
+**`golden_actions` is the list of actions to replay, or there is no replay.** A **falsy**
+value — `[]`, `{}`, `""`, `0`, `false`, or the key written bare, which is what an author
+reaches by commenting the actions out — is no replay at every read site on either
+substrate: the description a pack builds carries no actions and core reports the source as
+absent. What each substrate then *grades* for a replay of no actions is where they part
+company, and that difference is #693's rather than this rule's: core takes no hash verdict
+at all, while the runner's refusal-task semantics reset the environment, hash the initial
+state as the golden one and hand the fold a binary verdict.
+
+A **truthy** value that is not a list can be replayed by neither substrate, so every
+surface that reads the authored value refuses it in one sentence naming the key, the type
+received and the fix: the pre-run gate reports an error at
+`state_checks.hash.golden_actions`, `NativeAdapter.to_task_description` raises before a
+trial can be registered, and core's hash path raises `UnreplayableGoldenSource` — a
+`GoldenReplayError` subclass — above the world the actions would otherwise need. The
+runner's read is the one with no literal short-circuit, so a pack declaring
+`expected_state_hash` beside a non-list `golden_actions` is refused there too, where core
+would have compared the literal and never read the actions.
+
+A **list element** that is no mapping — an action written `- place_order` where
+`- name: place_order` belongs — declares no tool to call. The gate refuses it at
+`state_checks.hash.golden_actions[i].name`, the description build raises
+`UnresolvableGoldenAction` naming the offending index, and core raises the same class out
+of name resolution, before the first action runs.
+
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
 `expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
 other shape yields at most one score *core-side*, so a weight there would have
@@ -2335,6 +2360,7 @@ Findings come in three classes:
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
+| a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares | error | `state_checks.hash.golden_actions` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
 | a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
@@ -2461,9 +2487,12 @@ no runner path reads the translated `expected_hash` at all, which is #693 and wh
 `expected_state_hash` beside its golden actions is outside the rule entirely: core
 compares the trial against the author's literal and returns before the replay is
 reached, so that pack needs no world and demanding one would send its author to declare
-facts nothing reads. `golden_actions` is read for truthiness and never for shape, so a
-non-list value is refused for the world it lacks while the name rule above reports
-nothing about it — what that value *is* stays #832's.
+facts nothing reads. This rule reads `golden_actions` for truthiness and never for shape;
+the rule beside it reads the shape and nothing else. So a truthy non-list value under an
+incomplete world draws **both** findings at that one address — one naming the fact the
+task withholds, one naming a source that is no list of actions — because both are true
+and each names a different fix, which is the same reason two withheld facts draw two
+findings. The name rule reports nothing about such a value, having no element to address.
 
 The world is the caller's to resolve, the way the tool set is: `tolokaforge validate` and
 the run's pre-flight both hold the `TaskConfig`, and a caller holding none — the
@@ -2678,6 +2707,18 @@ refused at load.
 
 The migration for either is the same: indent the block's own keys one level under the
 key rather than writing its contents beside it.
+
+**One value below the key names carries its own shape rule.**
+`state_checks.hash.golden_actions` is neither a grading key nor a block — it is a value
+inside `hash`, which is an untyped mapping (#730) — so the refusal above says nothing about
+it. It is the list of actions to replay, or there is no replay: a falsy value loads at
+every read site as nothing to replay, and a truthy value that is not a list can be replayed
+by neither substrate and is refused by the golden-replay precondition, at the authoring
+gate and again at each substrate's own read of the block — core reaching that read without
+passing through this loader at all.
+[§ Hash-Based Grading](#hash-based-grading-tau-bench-compatible) carries the shape, the
+element rule beside it, and what a falsy source then *grades* as, which the two substrates
+answer differently (#693).
 
 One shape is still answered differently per surface: an **empty** `grading.yaml`. A file
 with no content is not content of the wrong type, so `validate` accepts it while
