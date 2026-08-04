@@ -50,6 +50,8 @@ from __future__ import annotations
 import json
 import os
 from collections.abc import Callable
+from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from typing import Any
 
@@ -123,9 +125,11 @@ def validate_grading_yaml(
     actors. Every finding is named in one raise rather than the first one found,
     because an author fixing a pack wants the list.
 
-    A missing grading file is not an error here: ``load_task_yaml`` already
-    validates the ``grading`` path field, and some adapters synthesise grading
-    config without an on-disk file.
+    A grading path that is not on disk returns an empty report: this gate reads a
+    file, and whether a task may name none at all is a task-level question
+    :func:`grading_source_under_adapter` answers off the adapter the task declares —
+    the native adapter grades from the file, while another may synthesise its whole
+    config without one.
 
     Args:
         grading_path: The task's grading file.
@@ -533,6 +537,102 @@ def replay_world_under_adapter(task: TaskConfig, adapter_type: str) -> ReplayWor
     return ReplayWorld(
         initial_state=classify_initial_state(task.initial_state.json_db),
         mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
+    )
+
+
+class GradingSourceKind(str, Enum):
+    """Where a run of one task reads its grading block, or why it reads none."""
+
+    ON_DISK = "on_disk"
+    """The task names a grading file, and the run reads its block from there."""
+
+    WITHHELD = "withheld"
+    """The task names none, and the adapter it declares grades from one."""
+
+    UNINTERROGABLE = "uninterrogable"
+    """The task names none, and the adapter it declares answers for itself."""
+
+
+@dataclass(frozen=True)
+class GradingSource:
+    """The grading file one task's run reads, or the sentence saying why there is none.
+
+    An absence is two states, not one, because they decide opposite things: a task
+    whose declared adapter grades from a file and supplies none cannot be graded at
+    all, while a task whose declared adapter resolves its own is one nothing here
+    can pronounce on.
+    """
+
+    kind: GradingSourceKind
+
+    path: Path | None
+    """The file, resolved against the task dir; ``None`` for both absences."""
+
+    reason: str = ""
+    """What the absence is, in the voice its channel is read in; empty on a resolved file.
+
+    The withheld sentence is printed as a refusal and names the task, since the lines
+    carrying it name a file or aggregate many packs. The uninterrogable one travels the
+    ``unchecked`` channel, which names the task itself, so it reads like its neighbours
+    there and does not.
+    """
+
+    def __post_init__(self) -> None:
+        if (self.path is None) == (self.kind is GradingSourceKind.ON_DISK):
+            raise ValueError(
+                f"a grading source of kind {self.kind.value} carries path={self.path!r}: an "
+                "on-disk source is the file a run reads, and every other kind has none"
+            )
+        if bool(self.reason) == (self.kind is GradingSourceKind.ON_DISK):
+            raise ValueError(
+                f"a grading source of kind {self.kind.value} carries reason={self.reason!r}: "
+                "an absence is reported by the sentence naming it, and a resolved file needs "
+                "no sentence"
+            )
+
+
+def grading_source_under_adapter(
+    task: TaskConfig, task_dir: Path, adapter_type: str
+) -> GradingSource:
+    """Where *task*'s grading block is read from, under *adapter_type*.
+
+    A task naming a grading file is :attr:`GradingSourceKind.ON_DISK` whatever the
+    adapter — the path is joined, never stat'd, so a declared file that is not there
+    is the reading gate's question and not this one's.
+
+    A task naming none is answered off the ``adapter_type`` its ``task.yaml``
+    *declares*, because :meth:`BaseAdapter.get_grading_config` is abstract and the
+    implementations disagree: :class:`NativeAdapter` refuses such a task, while an
+    external adapter may synthesise a whole config without reading the field. The
+    declared field is the discriminator rather than the resolved one because
+    :meth:`NativeAdapter.to_task_description` hardcodes its own type, so everything
+    the native loader reads resolves to ``native``.
+    """
+    from tolokaforge.runner.models import AdapterType
+
+    if task.grading is not None:
+        return GradingSource(kind=GradingSourceKind.ON_DISK, path=task_dir / task.grading)
+    if adapter_type != AdapterType.NATIVE.value:
+        return GradingSource(
+            kind=GradingSourceKind.UNINTERROGABLE,
+            path=None,
+            reason=(
+                "this task declares no grading source — no `grading:` field and no sibling "
+                f"grading.yaml — and adapter {adapter_type!r} decides for itself what a task "
+                "with none grades by, so whether that absence is an authoring defect is not "
+                "checkable here"
+            ),
+        )
+    return GradingSource(
+        kind=GradingSourceKind.WITHHELD,
+        path=None,
+        reason=(
+            f"task {task.task_id!r} declares no grading source: no `grading:` field and no "
+            f"sibling grading.yaml. Adapter {adapter_type!r} grades from that file, so "
+            "validate and the run both refuse this task before any trial is scheduled. "
+            "Declare `grading:` pointing at the block this task grades by, or add a "
+            "grading.yaml beside its task.yaml."
+        ),
     )
 
 

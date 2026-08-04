@@ -238,6 +238,52 @@ class TestValidateCommand:
             assert "not checked" in result.stderr
             assert "could not be resolved" in result.stderr
 
+    @pytest.mark.parametrize(
+        ("adapter_type", "exit_code", "summary"),
+        [("tau", 0, "1 valid, 0 invalid"), ("native", 1, "0 valid, 1 invalid")],
+        ids=["adapter_validate_cannot_ask", "the_adapter_that_grades_from_a_file"],
+    )
+    def test_validate_answers_a_task_that_declares_no_grading_source(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        adapter_type: str,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """#766: a task naming no grading block is answered, not crashed on.
+
+        The two rows are the same pack under the two declared adapters, which is the
+        whole ruling: the native adapter grades from a file, so withholding one is a
+        refusal naming the task and both fixes; every other adapter resolves its own
+        grading config, so validate reports that it could not ask and passes the pack.
+        """
+        directory = tmp_path / f"gradeless_{adapter_type}"
+        directory.mkdir(parents=True)
+        task_file = directory / "task.yaml"
+        task_file.write_text(
+            yaml.dump(
+                {
+                    "task_id": directory.name,
+                    "description": "A task that declares no grading source.",
+                    "adapter_type": adapter_type,
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        assert "unsupported operand type(s)" not in result.stderr
+        if exit_code == 0:
+            assert "? grading not checked" in result.stderr
+            assert adapter_type in result.stderr
+        else:
+            assert directory.name in result.stderr
+            assert "`grading:`" in result.stderr
+            assert "grading.yaml beside its task.yaml" in result.stderr
+
 
 # ===================================================================
 # docker command group

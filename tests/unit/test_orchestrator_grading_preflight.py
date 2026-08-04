@@ -152,6 +152,25 @@ def _write_replaying_task(root: Path, task_id: str, *, mcp_server: str | None) -
     )
 
 
+def _write_gradeless_task(root: Path, task_id: str) -> None:
+    """A task naming no grading source at all: no ``grading:`` key, no sibling file.
+
+    Nothing else about the pack is unusual — its one tool is the builtin every clean
+    pack here declares — so the only thing the gate can refuse it for is the absence.
+    """
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": task_id,
+                "description": f"pack {task_id}",
+                "tools": {"agent": {"enabled": ["http_request"]}},
+            }
+        )
+    )
+
+
 def _write_task_yaml(
     task_dir: Path,
     task_id: str,
@@ -314,6 +333,45 @@ def test_prepare_run_rejects_the_pack_before_enqueueing_anything(tmp_path: Path)
     orchestrator, _conductor = _orchestrator(root, tmp_path / "results")
 
     with pytest.raises(ValueError, match="TASK-TYPO"):
+        orchestrator.prepare_run(output_dir)
+
+    assert not (output_dir / "run_queue.sqlite").exists()
+
+
+def test_a_task_declaring_no_grading_source_aborts_before_the_first_trial(tmp_path: Path) -> None:
+    """#766: a pack the adapter cannot grade at all is refused where every other
+    ungradeable pack is.
+
+    ``get_grading_config`` raises on such a task while artifacts are written — the
+    last phase of a trial whose tokens are already spent — and the gate used to wave
+    it through on the grounds that a task with no grading block has no block to
+    check. The clean sibling is the control: a gate that refused every pack would
+    abort this run identically without it.
+    """
+    root = tmp_path / "pack"
+    _write_gradeless_task(root, "TASK-NO-GRADING-SOURCE")
+    _write_builtin_task(root, "TASK-B-CLEAN", CLEAN)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert conductor.call_log.runs == []
+    message = str(excinfo.value)
+    assert "TASK-NO-GRADING-SOURCE" in message, message
+    assert "`grading:`" in message, message
+    assert "TASK-B-CLEAN" not in message, message
+
+
+def test_prepare_run_rejects_a_task_declaring_no_grading_source(tmp_path: Path) -> None:
+    """The shape the gate's own reason for existing names: every worker of a
+    distributed run would otherwise die identically at grade time."""
+    root = tmp_path / "pack"
+    _write_gradeless_task(root, "TASK-NO-GRADING-SOURCE")
+    output_dir = tmp_path / "results" / "run_prepared"
+    orchestrator, _conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError, match="TASK-NO-GRADING-SOURCE"):
         orchestrator.prepare_run(output_dir)
 
     assert not (output_dir / "run_queue.sqlite").exists()

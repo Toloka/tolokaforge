@@ -2322,6 +2322,8 @@ Findings come in three classes:
 | a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
 | a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
+| a task naming no grading source at all — no `grading:` field and no sibling `grading.yaml` — where its declared `adapter_type` is `native` | error | the task's `grading` field |
+| the same absence where the task declares any other `adapter_type` | unchecked | `grading` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
@@ -2341,7 +2343,17 @@ false-reject mode. It is surfaced beside the task all the same — `validate` pr
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, a property
-whose schema writes no `type`, and a replay world no caller resolved all land here.
+whose schema writes no `type`, a replay world no caller resolved, and a task naming no
+grading source under an adapter that resolves its own all land here.
+
+**A missing grading source is answered by the adapter the task declares.**
+`get_grading_config` is abstract and the implementations disagree: the native adapter
+grades from the file the `grading:` field names, while an external adapter may
+synthesise a whole grading config without reading that field. So a task supplying no
+source is refused where it declares `native` — the run cannot grade it, and the refusal
+names the task and both ways to supply one — and reported unchecked where it declares
+anything else, since nothing here can say what that adapter would do with the absence.
+A task that *names* a grading file is gated on the file's contents whatever it declares.
 
 **A section the author wrote declares something to evaluate.** An empty block asserts
 nothing and scores nothing, and it cannot survive translation either: the wire erases
