@@ -14,7 +14,7 @@ For adapter architecture and interface contracts see
 1. [Overview](#overview)
 2. [Task Directory Layout](#task-directory-layout)
 3. [task.yaml Schema](#taskyaml-schema)
-4. [grading.yaml Schema](#gradingyaml-schema)
+4. [grading.yaml Example](#gradingyaml-example)
 5. [Tool Schemas (fixtures/tools.json)](#tool-schemas-fixturestoolsjson)
 6. [How the Adapter Works](#how-the-adapter-works)
 7. [Docker Execution](#docker-execution)
@@ -41,7 +41,7 @@ tool registry.
 | Adapter key | `native` (built-in, no install needed) |
 | Task detection | Glob pattern matching `**/task.yaml` |
 | Tool loading | MCP server subprocess (`mcp_server.py`) |
-| Grading | JSONPath checks + transcript rules + optional hash |
+| Grading | `grading.yaml`, covering the five dimensions listed in [GRADING.md](GRADING.md) |
 | `harness_adapter` in `run.yaml` | Not needed (auto-selected) |
 
 ---
@@ -137,7 +137,15 @@ a list of records or a dict of records keyed by ID:
 
 ---
 
-## grading.yaml Schema
+## grading.yaml Example
+
+Which grading keys exist and which substrate consumes each is answered by
+[GRADING.md § Substrate Parity](GRADING.md#substrate-parity), derived from the key
+manifest (`tolokaforge/core/grading/key_manifest.py`); for worked syntax of
+individual keys, see [REFERENCE.md § grading.yaml](REFERENCE.md#gradingyaml). How
+the component scores fold into one verdict is defined in
+[GRADING.md § Score Combination](GRADING.md#score-combination). The example below
+is one adapter-loaded configuration and uses a subset of the grading vocabulary:
 
 ```yaml
 combine:
@@ -186,16 +194,6 @@ transcript_rules:
     - info: "paid"
       required: true
 ```
-
-### Grading scoring
-
-| Component | Description |
-|-----------|-------------|
-| `state_checks` | DB state after the episode. Blends hash score and JSONPath score using `hash.weight`. |
-| `hash` | Replays `golden_actions` on a fresh DB copy, hashes the result, compares to agent's final state. All-or-nothing. |
-| `jsonpaths` | Per-assertion checks against the agent's final DB state. Partial credit. |
-| `transcript_rules` | Checks tool call sequence and agent messages in the conversation transcript. |
-| `combine` | Folds the component scores by `method` — `weighted` reports their weighted mean, `all` the weakest component, `any` the strongest. See [GRADING.md § Score Combination](GRADING.md#score-combination) for each method's pass rule. |
 
 ---
 
@@ -318,7 +316,7 @@ called to serialize the task for transfer to the Runner container.
 | `user_tools` | `tools.user.enabled` list |
 | `initial_state.tables` | `initial_state.json` (collection → list of records) |
 | `initialization_actions` | `initial_state.initialization_actions` |
-| `grading` | `grading.yaml` (state checks + transcript rules) |
+| `grading` | `grading.yaml`, translated into the runner's grading config |
 | `system_prompt` | system prompt file content |
 | `tool_artifacts` | All `.py` files (recursive) + top-level `.json`, `.yaml`, `.yml`, `.md`, `.txt` files in the task dir, base64-encoded |
 | `metadata.mcp_server_ref` | Relative path to `mcp_server.py` |
@@ -397,7 +395,7 @@ The `native` adapter was not exercised in the frozen retail evaluation runs
 `get_registry_tools()` returns `[]`.  Tool loading is handled by the
 orchestrator directly via the MCP server path from `task.yaml`.  This is a
 known architectural gap — future work would move MCP server loading fully into
-the adapter (noted in the source at `native.py:185`).
+the adapter (noted in the `NativeAdapter.get_registry_tools` docstring).
 
 #### `compute_golden_hash` delegates to grading engine
 

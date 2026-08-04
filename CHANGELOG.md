@@ -110,6 +110,11 @@ All notable changes to this project are documented in this file.
 - **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
 - **runtime**: `PerTrialRuntimeBackend.provision` gates on host-side readiness before returning — the runner is always probed for gRPC channel-readiness on its published host port, and any service declaring `readiness:` is probed by its kind. A container that is Docker-healthy but host-unreachable (loopback-only or IPv6-only bind) now fails fast with a `ProvisionError` whose `diagnostic` names the resolved endpoint, probe outcome, and the container's actual listen addresses, instead of a downstream 30 s client-connect timeout (#803)
 
+### Docs
+
+- **grading**: `docs/GRADING_VERIFICATION.md` is deleted. It was a point-in-time verification report (dated 2026-03-09) whose sections either duplicated live docs or described code no longer in the tree — two sections quoted an adapter package that was removed, its retry snippet omitted the short-circuits that now precede the code it pastes, and its summary contradicted its own § D on whether the LLM judge exists. The question it answered by hand — which grading keys exist and which substrate consumes each — is answered by `docs/GRADING.md` § Substrate Parity, derived from `tolokaforge/core/grading/key_manifest.py` (#698).
+- **adapters**: `docs/NATIVE_ADAPTER.md` stops claiming to carry the grading schema. Its "grading.yaml Schema" section (11 of the 40 authorable keys) is now "grading.yaml Example": a worked partial example opening with pointers to `GRADING.md` § Substrate Parity and `REFERENCE.md` § grading.yaml, with the file's other component enumerations and its stale `native.py:185` line citation removed. A new canonical lock (`tests/canonical/test_native_adapter_doc_pointers.py`) resolves every link in the file — intra-file anchors against its own headings, the grading pointers against the destination files' headings — and refuses inline line-number citations (#698).
+
 ## v0.13.1 (2026-08-03)
 
 ### Feat
