@@ -98,10 +98,12 @@ def built_base_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
             f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
         )
     wheels = list(dist_dir.glob("*.whl"))
-    # The custom target may co-produce the subset wheel; the base wheel is
-    # the one whose distribution name is ``tolokaforge`` (not
-    # ``tolokaforge_runner_subset``).
-    base_wheels = [w for w in wheels if not w.name.startswith("tolokaforge_runner_subset")]
+    # Positive match on the base distribution name — ``tolokaforge-<version>``.
+    # A negative filter against one known sibling (e.g. ``tolokaforge_runner_
+    # subset``) would silently include a hypothetical third target with a
+    # different name; matching ``tolokaforge-`` (dash after the package name,
+    # not underscore) unambiguously picks the base wheel.
+    base_wheels = [w for w in wheels if w.name.startswith("tolokaforge-")]
     assert (
         len(base_wheels) == 1
     ), f"expected exactly one base tolokaforge wheel in {dist_dir}, got: {[w.name for w in wheels]}"
@@ -198,7 +200,17 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
     # instead of the wheel-installed one. Same trap ``test_runner_subset_
     # install_smoke.py`` documents.
     probe_cwd = tmp_path_factory.mktemp("probe_cwd_outside_repo")
-    probe = textwrap.dedent("""
+    # The probe reads its expected-entries list from the module-level
+    # ``_EXPECTED_CONTEXT_ENTRIES`` constant, interpolated below as a Python
+    # literal. This avoids duplicating the list between the outer test and
+    # the probe body — the exact class of duplication that caused v0.14.1
+    # to ship broken. A single source of truth for what the runner Dockerfile
+    # ``COPY`` lines expect.
+    probe_prelude = (
+        f"_EXPECTED_ENTRIES = {list(_EXPECTED_CONTEXT_ENTRIES)!r}\n"
+        f"_PYPROJECT_MARKER = {'[tool.hatch.build.targets.custom]'!r}\n"
+    )
+    probe_body = textwrap.dedent("""
         import json
         import shutil
         from pathlib import Path
@@ -227,16 +239,16 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         build_dir = assemble_build_context(root, svc.dockerfile, svc.context_files)
         try:
             files_present = {
-                name: (build_dir / name).exists()
-                for name in [
-                    "pyproject.toml",
-                    "README.md",
-                    "LICENSE",
-                    ".python-version",
-                    "scripts/hatch",
-                    "tolokaforge",
-                ]
+                name: (build_dir / name).exists() for name in _EXPECTED_ENTRIES
             }
+            # Content-shape assertion: a broken force-include copy could
+            # land an empty pyproject.toml — the existence check above
+            # would pass, but ``hatchling build --target custom`` inside
+            # the runner-image builder stage would fail with a much
+            # deeper error. Grab the pyproject text for the outer test
+            # to shape-check.
+            pyproject_path = build_dir / "pyproject.toml"
+            pyproject_text = pyproject_path.read_text() if pyproject_path.exists() else ""
         finally:
             shutil.rmtree(build_dir, ignore_errors=True)
 
@@ -245,8 +257,11 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
             "wheel_install": wheel_install,
             "lists_equal": lists_equal,
             "files_present": files_present,
+            "pyproject_has_custom_target": _PYPROJECT_MARKER in pyproject_text,
+            "pyproject_size": len(pyproject_text),
         }))
         """).strip()
+    probe = probe_prelude + probe_body
     probe_result = subprocess.run(
         [str(venv_python), "-c", probe],
         capture_output=True,
@@ -302,4 +317,21 @@ def test_core_stack_runner_context_assembles_from_wheel_install(
         "This is the exact v0.14.0/v0.14.1 failure mode; check that "
         "``core_stack()`` reads its context list from ``get_image_definition()`` "
         "and that the base wheel's ``force-include`` table ships every input."
+    )
+
+    # Content-shape check on the shipped pyproject.toml. Presence alone is
+    # not enough — a force-include glitch that lands an empty or truncated
+    # file would satisfy the existence assertion above but ``hatchling
+    # build --target custom`` inside the runner-image builder stage would
+    # fail on the missing ``[tool.hatch.build.targets.custom]`` section.
+    # This catches that class of regression at the context-assembly layer
+    # instead of one Docker-layer deeper.
+    assert probe_data["pyproject_has_custom_target"], (
+        "shipped ``pyproject.toml`` in the assembled build dir is missing "
+        "``[tool.hatch.build.targets.custom]`` — the section the runner-image "
+        "builder stage reads to produce the subset wheel. The file exists "
+        f"but is {probe_data['pyproject_size']} bytes; either a stale copy "
+        "was force-included or the pyproject's custom target section was "
+        "removed. Check ``[tool.hatch.build.targets.wheel.force-include]`` "
+        "and ``[tool.hatch.build.targets.custom]`` in the repo-root ``pyproject.toml``."
     )
