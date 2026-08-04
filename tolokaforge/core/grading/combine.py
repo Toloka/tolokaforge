@@ -27,9 +27,9 @@ from tolokaforge.core.grading.combine_weights import (
     require_component_weight,
     resolve_uncounted_fold,
 )
+from tolokaforge.core.grading.golden_replay import GoldenReplayError
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
-    GoldenReplayError,
     StateChecker,
     extract_db_state,
 )

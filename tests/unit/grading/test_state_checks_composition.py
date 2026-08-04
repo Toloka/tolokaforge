@@ -20,8 +20,8 @@ from pydantic import ValidationError
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.golden_replay import GoldenReplayError
 from tolokaforge.core.grading.state_checks import (
-    GoldenReplayError,
     consistent_hash,
     to_hashable,
 )

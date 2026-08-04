@@ -1039,6 +1039,15 @@ reason contradicting it. A golden replay that fails to *execute* is a grading er
 rather than a verdict on either substrate: core raises and the trial is left unscored,
 the runner answers `GradeTrial` with `success=false`.
 
+**An action name that resolves to nothing is one of those failures.** Core-side, every
+authored name is resolved against the pack's `TOOLS` map before the first action runs,
+so a partially replayed golden world is never built and nothing is ever hashed against
+one: an unresolvable name raises `UnresolvableGoldenAction` and the trial is left
+unscored. An action with no `name` key, `name: ""`, or `name: null` resolves to nothing
+the same way and draws the same error. One raise names every offending action, its
+index, and the set the pack exposes, so an author correcting a golden path sees the
+whole list rather than paying for a replay per typo.
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing

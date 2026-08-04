@@ -445,6 +445,24 @@ async def test_db_probe_connection_error_fails_loud(monkeypatch):
     assert "ConnectionError" in reasons
 
 
+@pytest.mark.parametrize(("hash_score", "expected"), [(1.0, (1.0, True)), (0.0, (0.0, False))])
+def test_combine_components_uses_a_lone_hash_verdict_as_state_checks(hash_score, expected):
+    """The golden-replay pack with no assertion set: the hash verdict *is* the component.
+
+    A binary verdict at ``pass_threshold: 1.0`` has to reach ``binary_pass`` unblended —
+    there is no second source to average it against and no weight to divide.
+    """
+    components = {"hash_score": hash_score, "jsonpath_score": -1.0, "transcript_score": -1.0}
+    grading_config = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 1.0,
+        "state_checks": {"golden_actions": [{"name": "place_order"}]},
+    }
+    folded = combine_grade_components(components, grading_config)
+    assert (folded.score, folded.binary_pass) == expected
+
+
 def test_combine_components_uses_db_probe_as_state_checks():
     components = {"hash_score": -1.0, "jsonpath_score": -1.0, "db_probe_score": 1.0}
     grading_config = {

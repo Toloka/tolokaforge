@@ -4,11 +4,16 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+from collections.abc import Collection
 from pathlib import Path
 from typing import Any, Union
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayError,
+    resolve_golden_action_names,
+)
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import canonical_number
 from tolokaforge.core.logging import get_logger
@@ -77,12 +82,13 @@ def consistent_hash(value: Hashable) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
-class GoldenReplayError(Exception):
-    """A golden-action replay could not be executed.
+def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
+    """Core resolves a golden-action name against the pack's ``TOOLS`` map, exactly.
 
-    There is no expected state to compare against, so the trial has no
-    state-hash verdict — not a failing one.
+    Not the runner's rule, which also accepts a single ``…_<name>`` suffix over the
+    tools it registered for the trial; #815 owns unifying the two namespaces.
     """
+    return name if name in tools else None
 
 
 def extract_db_state(final_env_state: dict[str, Any]) -> dict[str, Any]:
@@ -332,6 +338,11 @@ class StateChecker:
 
         Returns:
             State after executing golden actions
+
+        Raises:
+            UnresolvableGoldenAction: an action names no tool in the pack's ``TOOLS``
+                map, or names nothing at all. Raised before the first ``invoke``, so a
+                partial golden world is never built and never hashed against.
         """
         # 1. Load fresh initial state
         initial_state_file = task_dir / initial_state_path
@@ -368,17 +379,18 @@ class StateChecker:
                 f"Could not find TOOLS in MCP server for domain {task_domain}: {mcp_server_path}"
             )
 
+        # 4. Resolve every authored name
+        resolved_names = resolve_golden_action_names(
+            [action.get("name") for action in golden_actions],
+            candidates=tools_map.keys(),
+            match=_tool_in_pack,
+        )
+
         self.logger.debug("Executing golden actions", count=len(golden_actions))
 
-        # 4. Execute golden actions
-        for action in golden_actions:
-            action_name = action.get("name")
+        # 5. Execute golden actions
+        for action_name, action in zip(resolved_names, golden_actions, strict=True):
             action_kwargs = action.get("kwargs", {})
-
-            if action_name not in tools_map:
-                self.logger.warning("Golden action tool not found in TOOLS map", action=action_name)
-                continue
-
             tool_class = tools_map[action_name]
             try:
                 # Tau-bench tools have invoke(data=data, **kwargs) signature
@@ -387,8 +399,6 @@ class StateChecker:
                     "Executed golden action", action=action_name, kwargs=action_kwargs
                 )
             except Exception as e:
-                # Log but continue (some actions might fail if preconditions not met)
-                # This matches tau-bench behavior - it continues even if some actions fail
                 self.logger.warning("Golden action failed", action=action_name, error=str(e))
 
         return data
@@ -422,12 +432,18 @@ class StateChecker:
 
         Raises:
             GoldenReplayError: the replay could not be executed, so there is no
-                expected state to compare against and therefore no verdict.
+                expected state to compare against and therefore no verdict. An action
+                whose name resolves to no tool raises the ``UnresolvableGoldenAction``
+                subclass, which names every offending action.
         """
         try:
             expected_state = self._execute_golden_actions(
                 golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
             )
+        except GoldenReplayError:
+            # The wrapper below would flatten a subclass into the base class, losing
+            # which of the replay's preconditions the pack failed.
+            raise
         except Exception as e:
             self.logger.error("Failed to execute golden actions", error=str(e))
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
