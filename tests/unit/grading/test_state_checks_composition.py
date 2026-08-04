@@ -4,13 +4,14 @@ Drives the real :class:`~tolokaforge.core.grading.combine.GradingEngine` and the
 real ``RegisterTrial`` rather than the composer directly (that arithmetic is locked
 in ``test_state_composition.py``), because what these cases pin is the *routing*:
 what state each half is evaluated against, when a source contributes nothing, what
-happens when a hash was configured but no verdict could be produced, and that both
-substrates reach one shared predicate when they decide a config is ungradeable.
+happens when a hash was configured and could not be computed, and that both substrates
+reach one shared predicate when they decide a config is ungradeable.
 """
 
 from __future__ import annotations
 
 import json
+import shutil
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -56,6 +57,31 @@ _HALF_SATISFIED_JSONPATHS = [
 
 _MATCHING_HASH = consistent_hash(to_hashable(_DB_STATE))
 _MISMATCHING_HASH = "0" * 64
+
+#: A ``shop_orders_02`` action that resolves, runs whole, and leaves the initial state
+#: untouched — so a replay over that pack reaches a verdict without the pack's own
+#: golden path having to be authored into the case.
+_GOLDEN_ACTION_THAT_RUNS_WHOLE = [{"name": "get_customer", "kwargs": {"customer_id": "C-101"}}]
+
+_CUSTOM_CHECKS_SENTINEL = "custom_checks_ran"
+
+_RECORDING_CHECKS_PY = f'''\
+"""A custom-checks suite whose only job is to record that it was reached."""
+
+from pathlib import Path
+
+from tolokaforge.core.grading.checks_interface import CheckContext, CheckPassed, check, init
+
+
+@init(interface_version="1.0")
+def setup(ctx: CheckContext):
+    Path(__file__).with_name("{_CUSTOM_CHECKS_SENTINEL}").write_text("ran")
+
+
+@check
+def the_suite_ran():
+    return CheckPassed("ran")
+'''
 
 
 def _trajectory() -> Trajectory:
@@ -368,41 +394,188 @@ class TestInertWeightIsReportedNotDropped:
 
 
 class TestUnevaluatedHashIsReported:
-    """Hash grading that was configured but could not run says so on the grade
-    rather than falling through to jsonpath-only grading in silence."""
+    """A hash block declaring no source at all says so on the grade rather than
+    falling through to jsonpath-only grading in silence.
 
-    _UNREPLAYABLE_HASH = {
-        "enabled": True,
-        "golden_actions": [{"name": "close_widget"}],
-        "weight": 0.6,
-    }
-
-    def test_a_pack_with_no_evaluable_source_is_unscored_and_still_says_why(self):
-        """An unreplayable hash beside an empty assertion list.
-
-        Neither source yields a verdict, so the component is absent from the grade
-        and the reason string beside it is the whole of what the pack can say. Any
-        number here would contradict that sentence. The case below shares this hash
-        config and differs only in having assertions to score, so an implementation
-        that produced no component at all would fail there rather than pass both.
-        """
-        grade = _grade({"jsonpaths": [], "hash": self._UNREPLAYABLE_HASH})
-
-        assert grade.components.state_checks is None
-        assert "golden_actions" in grade.reasons
-        assert "state hash was not checked" in grade.reasons
-
-    def test_golden_actions_without_replay_context_name_the_skipped_check(self):
-        grade = _grade({"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": self._UNREPLAYABLE_HASH})
-        assert "golden_actions" in grade.reasons
-        assert "state hash was not checked" in grade.reasons
-        assert grade.components.state_checks == pytest.approx(0.5)
+    The shape is unauthorable — the pre-run gate refuses it — so what grades this way
+    is a config mutated after validation or a bundle recorded before the rule.
+    """
 
     def test_hash_enabled_with_no_source_names_the_skipped_check(self):
         grade = _grade({"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": {"enabled": True}})
         assert "neither expected_state_hash nor golden_actions" in grade.reasons
         assert "state hash was not checked" in grade.reasons
         assert grade.components.state_checks == pytest.approx(0.5)
+
+
+class TestAGoldenReplayWithNoWorldRefusesToGrade:
+    """Golden actions the engine holds no world for leave the trial ungraded.
+
+    Every case below carries the assertions the trial half-satisfies, so an
+    implementation that fell through to them would return ``0.5`` on ``state_checks``
+    for a pack whose primary state source never ran — the same number a trial that
+    matched the hash on half its assertions earns, which is the defect (#729).
+    """
+
+    _UNREPLAYABLE_HASH = {
+        "enabled": True,
+        "golden_actions": [{"name": "close_widget"}],
+        "weight": 0.6,
+    }
+    #: A world in which nothing is absent, so each case below removes exactly one term
+    #: and the message it draws names that term alone.
+    _COMPLETE_WORLD = {
+        "task_dir": Path("."),
+        "task_initial_state": InitialStateConfig(json_db="initial_state.json"),
+        "task_mcp_server": "mcp_server.py",
+    }
+    _TASK_DIR = "no task directory"
+    _INITIAL_STATE = "initial_state.json_db"
+    _MCP_SERVER = "tools.agent.mcp_server"
+
+    @pytest.mark.parametrize(
+        ("case", "world", "named", "unnamed"),
+        [
+            (
+                "no task directory — the caller's omission, not any author's",
+                {"task_dir": None},
+                [_TASK_DIR],
+                [_INITIAL_STATE, _MCP_SERVER],
+            ),
+            (
+                "no initial_state block at all",
+                {"task_initial_state": None},
+                [_INITIAL_STATE],
+                [_TASK_DIR, _MCP_SERVER],
+            ),
+            (
+                "an initial_state block declaring no json_db",
+                {"task_initial_state": InitialStateConfig()},
+                [_INITIAL_STATE],
+                [_TASK_DIR, _MCP_SERVER],
+            ),
+            (
+                "a json_db written inline, where the replay loads a file",
+                {"task_initial_state": InitialStateConfig(json_db={"widgets": []})},
+                [_INITIAL_STATE, "inline"],
+                [_TASK_DIR, _MCP_SERVER],
+            ),
+            (
+                "no mcp_server — the only term production can actually lack",
+                {"task_mcp_server": None},
+                [_MCP_SERVER],
+                [_TASK_DIR, _INITIAL_STATE],
+            ),
+            (
+                "nothing at all, named in one raise rather than one per grading pass",
+                {"task_dir": None, "task_initial_state": None, "task_mcp_server": None},
+                [_TASK_DIR, _INITIAL_STATE, _MCP_SERVER],
+                [],
+            ),
+        ],
+    )
+    def test_every_absent_term_is_named_and_no_present_one_is(self, case, world, named, unnamed):
+        with pytest.raises(GoldenReplayError) as excinfo:
+            _grade(
+                {"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": self._UNREPLAYABLE_HASH},
+                **{**self._COMPLETE_WORLD, **world},
+            )
+
+        message = str(excinfo.value)
+        assert "GOLDEN REPLAY ERRORS" not in message
+        for term in named:
+            assert term in message, message
+        for term in unnamed:
+            assert term not in message, message
+
+    def test_a_complete_world_over_the_real_pack_reaches_a_verdict(self, test_data_dir):
+        """The negative control: the hash lands in the component rather than raising.
+
+        ``0.2`` is the blend of a mismatching hash at ``0.6`` with the half-satisfied
+        assertions — the ``0.5`` every case above would have produced is what the
+        assertions alone are worth, so this number is what proves the predicate did not
+        fire and the replay actually happened.
+        """
+        grade = _grade(
+            {
+                "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                "hash": {
+                    "enabled": True,
+                    "golden_actions": _GOLDEN_ACTION_THAT_RUNS_WHOLE,
+                    "weight": 0.6,
+                },
+            },
+            task_dir=test_data_dir / "tasks" / "shop_orders_02",
+            task_initial_state=InitialStateConfig(json_db="initial_state.json"),
+            task_mcp_server="mcp_server.py",
+        )
+
+        assert grade.components.state_checks == pytest.approx(0.2)
+
+    def test_a_declared_expected_state_hash_needs_no_world(self):
+        """The ``grading_parity/all_keys`` shape, graded with an empty world.
+
+        Core returns the in-process comparison against the author's literal before it
+        reads ``golden_actions`` at all, so this pack needs nothing to replay against
+        and ``0.8`` is the blend of that matching hash with the assertions. A predicate
+        hoisted above that early return would refuse a pack core grades correctly.
+        """
+        grade = _grade(
+            {
+                "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                "hash": {
+                    "enabled": True,
+                    "expected_state_hash": _MATCHING_HASH,
+                    "golden_actions": self._UNREPLAYABLE_HASH["golden_actions"],
+                    "weight": 0.6,
+                },
+            }
+        )
+
+        assert grade.components.state_checks == pytest.approx(0.8)
+        assert "hash matches" in grade.reasons
+
+    @pytest.mark.parametrize(
+        ("case", "task_mcp_server", "suite_ran"),
+        [
+            ("a world that builds, so the suite is reached", "mcp_server.py", True),
+            ("a world that does not, so nothing is", None, False),
+        ],
+    )
+    def test_the_refusal_precedes_every_evaluator(
+        self, case, task_mcp_server, suite_ran, tmp_path, test_data_dir
+    ):
+        """No pack Python runs for a grade that will not exist.
+
+        ``custom_checks`` is the last component ``grade_trajectory`` reaches, and its
+        suite is the only component that can run arbitrary pack code, so a sentinel it
+        writes is what distinguishes "refused before anything ran" from "refused after".
+        The complete-world row is what makes the sentinel's absence mean something.
+        """
+        pack = tmp_path / "pack"
+        shutil.copytree(test_data_dir / "tasks" / "shop_orders_02", pack)
+        (pack / "checks.py").write_text(_RECORDING_CHECKS_PY)
+        engine = GradingEngine(
+            grading_config=GradingConfig(
+                state_checks={
+                    "jsonpaths": [],
+                    "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTION_THAT_RUNS_WHOLE},
+                },
+                custom_checks={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
+                combine={"weights": {"state_checks": 0.5, "custom_checks": 0.5}},
+            ),
+            task_dir=pack,
+            task_initial_state=InitialStateConfig(json_db="initial_state.json"),
+            task_mcp_server=task_mcp_server,
+        )
+
+        if suite_ran:
+            engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+        else:
+            with pytest.raises(GoldenReplayError):
+                engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+
+        assert (pack / _CUSTOM_CHECKS_SENTINEL).exists() is suite_ran
 
 
 class TestFailedGoldenReplayIsNotAScore:
@@ -461,9 +634,9 @@ class TestAnIncompleteReplayIsNamedOnTheGrade:
     #: A kwarg ``confirm_payment`` does not declare, which is the one defect shape that
     #: makes the tool call itself raise rather than return ``{"error": …}`` (#831).
     _RAISES = [{"name": "confirm_payment", "kwargs": {"order_idd": "O-001"}}]
-    #: A read-only action, so it runs whole and leaves the initial state alone — the same
-    #: verdict as above, arrived at honestly.
-    _RUNS_WHOLE = [{"name": "get_customer", "kwargs": {"customer_id": "C-101"}}]
+    #: The read-only action, which runs whole and leaves the initial state alone — the
+    #: same verdict as above, arrived at honestly.
+    _RUNS_WHOLE = _GOLDEN_ACTION_THAT_RUNS_WHOLE
 
     def _grade_over_the_pack(self, pack: Path, golden_actions: list[dict]):
         return _grade(

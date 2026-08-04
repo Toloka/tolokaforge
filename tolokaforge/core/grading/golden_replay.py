@@ -1,9 +1,10 @@
 """Whether the golden world a pack describes can be built at all.
 
-Substrate-neutral by construction: stdlib-only pure functions over authored action
-names, so the core grading engine and the runner refuse the same authored defect
-instead of each deciding for itself what a name resolving to nothing means. Kept
-beside :mod:`state_checks`, which hashes the world once there is one.
+Substrate-neutral by construction: stdlib-only pure functions over what a pack and its
+task declare — the authored action names, and the task-level facts the actions are
+replayed against — so the core grading engine and the runner refuse the same authored
+defect instead of each deciding for itself what an unbuildable world means. Kept beside
+:mod:`state_checks`, which hashes the world once there is one.
 
 The matcher is deliberately *not* here. Core resolves a name against the pack's
 ``TOOLS`` map exactly; the runner also accepts a single ``…_<name>`` suffix over the
@@ -15,6 +16,8 @@ from __future__ import annotations
 
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
 
 _UNRESOLVABLE_ACTIONS = (
     "golden actions naming no tool the replay can call: {offenders}. Skipping them would "
@@ -23,6 +26,21 @@ _UNRESOLVABLE_ACTIONS = (
 )
 
 _OFFENDING_ACTION = "[{index}] {name!r}"
+
+_UNBUILDABLE_WORLD = (
+    "state_checks.hash.golden_actions has to be replayed to know the expected state, and "
+    "there is no world to replay them against: {absent}. So there is no expected state, no "
+    "hash verdict and no grade — rather than a state_checks score the pack's other sources "
+    "earned while the hash they are weighed against went uncomputed."
+)
+
+_NO_TASK_DIR = "this grading engine was given no task directory"
+_NO_INITIAL_STATE = "task.yaml declares no initial_state.json_db"
+_INLINE_INITIAL_STATE = (
+    "task.yaml declares initial_state.json_db inline, where the replay loads a JSON file "
+    "under the task directory"
+)
+_NO_MCP_SERVER = "task.yaml declares no tools.agent.mcp_server"
 
 _INCOMPLETE_REPLAY = (
     "GOLDEN REPLAY ERRORS: {failed} of {authored} golden actions did not run, so the state "
@@ -42,6 +60,65 @@ class GoldenReplayError(Exception):
 
 class UnresolvableGoldenAction(GoldenReplayError):
     """A golden action naming a tool the replay cannot call, or naming nothing at all."""
+
+
+class UnbuildableGoldenReplayWorld(GoldenReplayError):
+    """The task facts a golden replay is executed against are not all declared.
+
+    Distinct from a replay that ran and skipped actions (:class:`GoldenReplayRecord`):
+    that one built a partial world and still hashed against it, while this one has no
+    world at all, so no action is ever attempted.
+    """
+
+
+@dataclass(frozen=True)
+class GoldenReplayWorld:
+    """The task facts a golden-action replay is executed against.
+
+    The two paths are relative to ``task_dir``, which is how an author writes them in
+    ``task.yaml`` and how the replay resolves them.
+    """
+
+    task_dir: Path
+    initial_state_path: str
+    mcp_server_path: str
+
+
+def require_golden_replay_world(
+    *,
+    task_dir: Path | None,
+    initial_state_json_db: str | dict[str, Any] | None,
+    mcp_server: str | None,
+) -> GoldenReplayWorld:
+    """The world the authored golden actions are replayed against, or raise.
+
+    Every absent fact is named in one raise rather than only the first one found, for
+    the reason :func:`resolve_golden_action_names` names every offending action: an
+    author correcting a pack one exception at a time pays for a whole grading pass per
+    omission. Each is named by the ``task.yaml`` key that supplies it, except the task
+    directory, which is the caller's to pass and no author's to write.
+
+    An ``initial_state.json_db`` written as an inline mapping is absent rather than
+    present — the replay loads a file under ``task_dir``, so a mapping there is a world
+    it cannot build.
+    """
+    absent: list[str] = []
+    if task_dir is None:
+        absent.append(_NO_TASK_DIR)
+    if not initial_state_json_db:
+        absent.append(_NO_INITIAL_STATE)
+    elif not isinstance(initial_state_json_db, str):
+        absent.append(_INLINE_INITIAL_STATE)
+    if not mcp_server:
+        absent.append(_NO_MCP_SERVER)
+
+    if absent:
+        raise UnbuildableGoldenReplayWorld(_UNBUILDABLE_WORLD.format(absent="; ".join(absent)))
+    return GoldenReplayWorld(
+        task_dir=task_dir,
+        initial_state_path=initial_state_json_db,
+        mcp_server_path=mcp_server,
+    )
 
 
 @dataclass(frozen=True)

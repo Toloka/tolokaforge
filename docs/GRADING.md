@@ -993,8 +993,9 @@ author a question rather than guessing an answer.**
 
 1. **Golden actions with no replay context.** Whether the engine has the
    `task_dir` / `initial_state` / `mcp_server` a replay needs is unknowable from
-   `grading.yaml`, so a pack that would produce no hash verdict for that reason is
-   still asked for a weight. It lands only on configs already silently broken (#729).
+   `grading.yaml`, so a pack that cannot replay them is still asked for a weight. Those
+   configs refuse to grade rather than grading around the hash, so the weight is asked
+   for beside a `task.yaml` fix the author owes anyway (#729).
 2. **`db_probes` declared alongside.** `db_probes` is the sole state source for the
    tasks that declare it, so runner-side its score fills the component outright and
    the fold is never reached — the weight the gate demanded is then reported as
@@ -1029,15 +1030,24 @@ therefore the same component — see
 [Substrate Parity](#substrate-parity) for the manifest rows and the test that proves
 it.
 
-**Core-side**, hash grading that was configured but could not run — `hash.enabled`
-with neither source declared, or `golden_actions` with no task directory,
-`initial_state` or `mcp_server` to replay them against — yields **no** hash verdict
-and names the skipped check in `grade.reasons`, rather than a `0.0` that reads as a
-state the agent got wrong (#729). Beside an empty `jsonpaths` list there is then no
-verdict at all, so the whole component is unevaluated and no score sits next to the
-reason contradicting it. A golden replay that fails to *execute* is a grading error
-rather than a verdict on either substrate: core raises and the trial is left unscored,
-the runner answers `GradeTrial` with `success=false`.
+**Core-side**, a hash block declaring no source at all — `hash.enabled` with neither
+`expected_state_hash` nor `golden_actions` — yields **no** hash verdict and names the
+skipped check in `grade.reasons`, rather than a `0.0` that reads as a state the agent got
+wrong. Beside an empty `jsonpaths` list there is then no verdict at all, so the whole
+component is unevaluated and no score sits next to the reason contradicting it.
+
+**A golden replay that cannot be executed is a grading error rather than a verdict**, on
+either substrate: core raises and the trial is left unscored, the runner answers
+`GradeTrial` with `success=false`. Having no world to replay *in* is one of those
+failures. Core raises `UnbuildableGoldenReplayWorld`
+(`tolokaforge.core.grading.golden_replay`), naming in one message every task-level fact
+the replay needs and does not have — `initial_state.json_db` as a path to a JSON file
+rather than an inline mapping, `tools.agent.mcp_server`, and the task directory the
+caller passes. So a pack never collects the `state_checks` score its JSONPath assertions
+earned while the hash they are weighed against went uncomputed (#729). Which source is
+*effective* decides whether a world is needed at all: a truthy `expected_state_hash` is
+compared in process and returns before `golden_actions` is read, so a pack declaring both
+never replays and needs none.
 
 **An action name that resolves to nothing is one of those failures, on both
 substrates.** Every authored name is resolved before the first action runs, so a

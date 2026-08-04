@@ -28,9 +28,9 @@ from tolokaforge.core.grading.combine_weights import (
     resolve_uncounted_fold,
 )
 from tolokaforge.core.grading.golden_replay import (
-    GoldenReplayError,
     GoldenReplayRecord,
     incomplete_replay_reason,
+    require_golden_replay_world,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
@@ -61,11 +61,6 @@ logger = logging.getLogger(__name__)
 _HASH_NOT_CHECKED_NO_SOURCE = (
     "state_checks.hash is enabled but declares neither expected_state_hash nor "
     "golden_actions, so the state hash was not checked"
-)
-_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT = (
-    "state_checks.hash.golden_actions needs the task's directory, initial_state and "
-    "mcp_server to replay, and this grading engine has none, so the state hash was "
-    "not checked"
 )
 
 
@@ -112,6 +107,11 @@ class GradingEngine:
 
         Returns:
             Grade with score and components
+
+        Raises:
+            GoldenReplayError: a state hash the config asked for could not be computed,
+                so no component is scored and the trial is left ungraded rather than
+                graded on the sources that happened to work.
         """
         components = GradeComponents()
         reasons_parts = []
@@ -349,10 +349,20 @@ class GradingEngine:
     ) -> tuple[float | None, list[str], dict[str, Any] | None, GoldenReplayRecord | None]:
         """Return the state-hash verdict, its reasons, the state diff, and the replay.
 
-        ``None`` is *no verdict*: hash grading is off, or it is on and could not
-        run — which is reported rather than scored as a failed hash check. The replay
-        record is ``None`` for every source but ``golden_actions``, the only one that
-        replays anything.
+        ``None`` is *no verdict*: hash grading is off, or it is on and the block
+        declares no source to check against — which is reported rather than scored as a
+        failed hash check. The replay record is ``None`` for every source but
+        ``golden_actions``, the only one that replays anything.
+
+        The two sources are read in order, and the order bounds what the replay world
+        has to hold: a truthy ``expected_state_hash`` is compared in process and returns
+        before ``golden_actions`` is read at all, so a pack declaring both never replays
+        and needs no world.
+
+        Raises:
+            UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
+                the task declares no world to replay them against, so there is no
+                expected state and the trial is left unscored.
         """
         checks = self.config.state_checks
         hash_config = checks.hash or {}
@@ -370,20 +380,20 @@ class GradingEngine:
         golden_actions = hash_config.get("golden_actions")
         if not golden_actions:
             return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
-        if not (self.task_dir and self.task_initial_state and self.task_mcp_server):
-            return None, [_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT], None, None
-        if not self.task_initial_state.json_db:
-            raise GoldenReplayError(
-                "state_checks.hash.golden_actions must replay against the task's "
-                "initial_state.json_db, and this task declares none"
-            )
+        world = require_golden_replay_world(
+            task_dir=self.task_dir,
+            initial_state_json_db=(
+                self.task_initial_state.json_db if self.task_initial_state else None
+            ),
+            mcp_server=self.task_mcp_server,
+        )
 
         score, reason, diff_result, replay = self.state_checker.check_hash_against_golden_replay(
             db_state=db_state,
             golden_actions=golden_actions,
-            task_dir=self.task_dir,
-            initial_state_path=self.task_initial_state.json_db,
-            mcp_server_path=self.task_mcp_server,
+            task_dir=world.task_dir,
+            initial_state_path=world.initial_state_path,
+            mcp_server_path=world.mcp_server_path,
             task_domain=self.task_domain,
             numeric_string_fields=checks.numeric_string_fields,
         )
