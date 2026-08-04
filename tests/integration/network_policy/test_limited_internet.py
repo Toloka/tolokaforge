@@ -16,7 +16,6 @@ import pytest
 
 from tests.integration.network_policy import _harness
 from tests.utils.docker_helpers import is_docker_daemon_available
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.trial import NetworkPolicy
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
@@ -49,7 +48,7 @@ def test_limited_internet_allows_only_allowlisted_egress(tmp_path) -> None:
         NetworkPolicy.LIMITED_INTERNET,
         allowlist=[_harness.ALLOWLISTED_HOST],
     )
-    backend = PerTrialRuntimeBackend()
+    backend = _harness.make_backend()
     handle = backend.provision(_harness.make_spec(manifest, "netpolicy-limited-internet:0"))
 
     try:

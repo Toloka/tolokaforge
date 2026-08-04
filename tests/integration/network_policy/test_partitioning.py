@@ -24,7 +24,6 @@ import pytest
 
 from tests.integration.network_policy import _harness
 from tests.utils.docker_helpers import is_docker_daemon_available
-from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend
 from tolokaforge.core.trial import NetworkPolicy
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
@@ -65,7 +64,7 @@ def _assert_reached(
 )
 def test_restricted_sibling_cannot_reach_runner_under_no_internet(tmp_path) -> None:
     manifest = _harness.write_partitioning_manifest(tmp_path / "stack", NetworkPolicy.NO_INTERNET)
-    backend = PerTrialRuntimeBackend()
+    backend = _harness.make_backend()
     handle = backend.provision(_harness.make_spec(manifest, "netpolicy-partitioning-no-internet:0"))
 
     try:
@@ -111,7 +110,7 @@ def test_restricted_sibling_cannot_reach_runner_under_limited_internet(tmp_path)
         NetworkPolicy.LIMITED_INTERNET,
         allowlist=[_harness.ALLOWLISTED_HOST],
     )
-    backend = PerTrialRuntimeBackend()
+    backend = _harness.make_backend()
     handle = backend.provision(
         _harness.make_spec(manifest, "netpolicy-partitioning-limited-internet:0")
     )

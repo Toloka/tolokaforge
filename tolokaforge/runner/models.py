@@ -842,6 +842,31 @@ class ResetSpec(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+ReadinessKind = Literal["grpc", "http", "tcp"]
+"""Per-service readiness-probe vocabulary — the endpoint kind the
+provisioner probes for client-side reachability.
+
+* ``grpc`` — probe the gRPC channel on the runner port / first published
+  port until it reaches READY.
+* ``http`` — probe ``GET /health`` on the first published port; 2xx is ready.
+* ``tcp`` — probe a TCP connect to the first published port.
+"""
+
+
+class ReadinessSpec(BaseModel):
+    """Per-service readiness declaration — gates provisioning on client-side
+    reachability of the service's published endpoint.
+
+    Port and path are resolved by convention (see :data:`ReadinessKind`);
+    ``kind`` is the only knob in v1.
+    """
+
+    kind: ReadinessKind
+    """Endpoint kind to probe — see :data:`ReadinessKind`."""
+
+    model_config = {"extra": "forbid"}
+
+
 class ServiceSpec(BaseModel):
     """Per-service manifest entry — the harness's declaration of how a
     compose service is treated between trials.
@@ -863,6 +888,13 @@ class ServiceSpec(BaseModel):
     """Per-service network-access label — see :data:`ServiceNetworkAccess`.
     Orthogonal to :attr:`isolation` and :attr:`reset`; every combination
     is legal."""
+
+    readiness: ReadinessSpec | None = None
+    """Provision-time readiness contract — see :class:`ReadinessSpec`.
+    ``None`` means the service is not gated by an explicit contract (the
+    docker healthcheck is the only readiness signal). Orthogonal to
+    :attr:`isolation`, :attr:`reset`, and :attr:`network_access`; every
+    combination is legal."""
 
     model_config = {"extra": "forbid"}
 
@@ -1118,6 +1150,19 @@ def _check_runner_not_restricted(
             "internal network attach to reach db-service / rag and its edge "
             "attach to reach control-plane. Restrict an untrusted sibling "
             "instead."
+        )
+
+
+def _check_runner_readiness_not_declared(
+    manifest_services: dict[str, ServiceSpec], runner_service: str
+) -> None:
+    spec = manifest_services.get(runner_service)
+    if spec is not None and spec.readiness is not None:
+        raise ValueError(
+            f"EnvironmentManifest.runner_service = {runner_service!r} cannot declare a "
+            f"readiness contract; the runner is always gated by the built-in gRPC "
+            f"readiness probe on its host port. Drop the readiness field from the runner "
+            f"service, or declare it on a non-runner sibling instead."
         )
 
 
@@ -1487,6 +1532,7 @@ class EnvironmentManifest(BaseModel):
         _check_initial_state_keys(services, self.initial_state)
         _check_services_keys(services, self.services)
         _check_runner_not_restricted(self.services, self.runner_service)
+        _check_runner_readiness_not_declared(self.services, self.runner_service)
         _check_restricted_services_have_own_networks(services, self.services)
         _check_endpoint_services_declared(services, self.db_service, self.rag_service)
         self._compose_content = content

@@ -1738,6 +1738,41 @@ See [`docs/MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md#partitioning-an-u
 for the walkthrough and [`docs/SECURITY.md`](SECURITY.md#task-declared-stack-case-b--case-c)
 for the threat-model treatment.
 
+### Readiness — declaring a client-reachability contract
+
+A container reporting `Healthy` via its docker `healthcheck:` means the
+process is up *inside* the container; it does not guarantee a client on
+the host can reach the service through its published port.
+`services.<name>.readiness` declares a **host-side reachability contract**
+by endpoint kind.
+
+```yaml
+default_environment:
+  services:
+    db-service:
+      isolation: shared
+      readiness:
+        kind: grpc        # grpc | http | tcp
+```
+
+- **`kind`** — the only field in v1. Vocabulary and their port/path
+  conventions:
+  - **`grpc`** — reachability is a gRPC channel reaching READY on the
+    service's first published port.
+  - **`http`** — `GET /health` on the service's first published port; a
+    2xx response is reachable.
+  - **`tcp`** — a TCP connect to the service's first published port.
+- **Omission** means the service declares **no explicit readiness
+  contract** — the docker healthcheck remains its only readiness signal.
+- The **runner service cannot declare a `readiness` contract** — it is
+  always gated by the built-in gRPC probe on its host port
+  (`stack.runner_port`); a `readiness` entry on the runner service is
+  rejected at load. Declare it on a non-runner sibling instead.
+- `readiness` is orthogonal to `isolation`, `reset`, and `network_access`;
+  every combination is legal. It deep-merges by name like every other
+  `services.<name>` field — a task-side entry overrides the project-side
+  `kind`, and omitting it inherits the project-side contract.
+
 ## Services and backends — scaffolding
 
 > Per-service isolation, seed-backed reset recipes, and the
@@ -1750,9 +1785,10 @@ for the threat-model treatment.
 
 `default_environment.services.<name>` is the manifest home for
 everything the harness needs to know about a sidecar service.
-Today it holds `isolation` and, for `isolation: "reset"`, a
-`reset.seed` pointer at an entry in `project.assets.seeds`. The
-intended evolution is a **recipe per lifecycle event**:
+Today it holds `isolation` (and, for `isolation: "reset"`, a
+`reset.seed` pointer at an entry in `project.assets.seeds`),
+`network_access`, and `readiness`. The intended evolution is a
+**recipe per lifecycle event**:
 
 ```yaml
 # Illustrative future shape — NOT part of the current schema

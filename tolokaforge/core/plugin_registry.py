@@ -1,20 +1,24 @@
-"""Fail-loud entry-point registries for the three orchestrator seams.
+"""Fail-loud entry-point registries for the four swappable seams.
 
 External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.runtime.RuntimeBackend`,
-:class:`~tolokaforge.core.trial_grader.TrialGrader`, and
-:class:`~tolokaforge.core.conductor.Conductor` Protocols through
-``importlib.metadata`` entry-point groups — no in-tree edit, no
-monkey-patch. Each entry point resolves to a *factory callable*
-(``Callable[[<Context>], <Impl>]``), mirroring the existing
-:data:`~tolokaforge.core.conductor.ConductorFactory` idiom; the divergent
-impl constructors are adapted to a per-group frozen-dataclass context.
+:class:`~tolokaforge.core.trial_grader.TrialGrader`,
+:class:`~tolokaforge.core.conductor.Conductor`, and
+:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe` Protocols
+through ``importlib.metadata`` entry-point groups — no in-tree edit, no
+monkey-patch. Each entry point resolves to a *factory callable*, mirroring the
+existing :data:`~tolokaforge.core.conductor.ConductorFactory` idiom. The three
+orchestrator seams adapt divergent impl constructors to a per-group
+frozen-dataclass context (``Callable[[<Context>], <Impl>]``); the readiness
+probes need no build dependencies, so their factory is arg-less
+(``Callable[[], ServiceReadinessProbe]``).
 
-The three groups:
+The four groups:
 
 * ``tolokaforge.runtime_backends`` → :data:`RuntimeBackendFactory`
 * ``tolokaforge.trial_graders`` → :data:`TrialGraderFactory`
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
+* ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -37,6 +41,7 @@ from typing import TYPE_CHECKING, cast
 from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
+from tolokaforge.core.service_readiness import ServiceReadinessProbe
 from tolokaforge.core.trial_grader import TrialGrader
 
 if TYPE_CHECKING:
@@ -50,6 +55,7 @@ if TYPE_CHECKING:
 __all__ = [
     "ConductorFactory",
     "DuplicateRegistrationError",
+    "ReadinessProbeFactory",
     "RegistryError",
     "RuntimeBackendBuildContext",
     "RuntimeBackendFactory",
@@ -57,9 +63,11 @@ __all__ = [
     "TrialGraderFactory",
     "UnknownImplementationError",
     "available_conductors",
+    "available_readiness_probes",
     "available_runtime_backends",
     "available_trial_graders",
     "load_conductor",
+    "load_readiness_probe",
     "load_runtime_backend",
     "load_trial_grader",
 ]
@@ -67,6 +75,7 @@ __all__ = [
 RUNTIME_BACKENDS_GROUP = "tolokaforge.runtime_backends"
 TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
+SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
 
 
 # ---------------------------------------------------------------------------
@@ -147,6 +156,7 @@ class TrialGraderContext:
 
 RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], RuntimeBackend]
 TrialGraderFactory = Callable[[TrialGraderContext], TrialGrader]
+ReadinessProbeFactory = Callable[[], ServiceReadinessProbe]
 
 
 # ---------------------------------------------------------------------------
@@ -230,6 +240,11 @@ def load_conductor(name: str) -> ConductorFactory:
     return cast(ConductorFactory, _load(CONDUCTORS_GROUP, name))
 
 
+def load_readiness_probe(kind: str) -> ReadinessProbeFactory:
+    """Resolve a registered readiness-probe kind to its factory callable."""
+    return cast(ReadinessProbeFactory, _load(SERVICE_READINESS_PROBES_GROUP, kind))
+
+
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
     return sorted(_discover(RUNTIME_BACKENDS_GROUP))
@@ -243,3 +258,8 @@ def available_trial_graders() -> list[str]:
 def available_conductors() -> list[str]:
     """Sorted names registered in the ``tolokaforge.conductors`` group."""
     return sorted(_discover(CONDUCTORS_GROUP))
+
+
+def available_readiness_probes() -> list[str]:
+    """Sorted kinds registered in the ``tolokaforge.service_readiness_probes`` group."""
+    return sorted(_discover(SERVICE_READINESS_PROBES_GROUP))

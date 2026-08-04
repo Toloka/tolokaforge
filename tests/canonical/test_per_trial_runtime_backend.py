@@ -12,6 +12,7 @@ handle failures per the ADR-0010 contract.
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -22,13 +23,43 @@ from tolokaforge.core import per_trial_runtime as per_trial_runtime_module
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
 from tolokaforge.core.runtime import EnvHandle, ProvisionError, RuntimeBackend
+from tolokaforge.core.service_readiness import (
+    DiagnosticPayload,
+    InMemoryServiceReadinessProbe,
+    ReadinessResult,
+    ResolvedEndpoint,
+    ServiceReadinessProbe,
+)
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
-from tolokaforge.runner.models import ResetSpec, ServiceSpec
+from tolokaforge.runner.models import ReadinessSpec, ResetSpec, ServiceSpec
 
 pytestmark = pytest.mark.canonical
 
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "environment_manifest"
+
+
+def _ready_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
+    """Readiness-probe loader seam yielding an always-ready in-memory probe, so
+    provision's host-side readiness gate passes without a live listener."""
+    del kind
+    return lambda: InMemoryServiceReadinessProbe(ok=True)
+
+
+class _RecordingLoader:
+    """Readiness-probe loader seam that records the ``kind`` requested per
+    service and hands back an always-ready probe whose own call log captures
+    the endpoint it was probed against."""
+
+    def __init__(self) -> None:
+        self.kinds: list[str] = []
+        self.probes: list[InMemoryServiceReadinessProbe] = []
+
+    def __call__(self, kind: str) -> Callable[[], ServiceReadinessProbe]:
+        self.kinds.append(kind)
+        probe = InMemoryServiceReadinessProbe(ok=True)
+        self.probes.append(probe)
+        return lambda: probe
 
 
 # ---------------------------------------------------------------------------
@@ -101,12 +132,15 @@ class _FakeCompose:
 
 class _FakeContainer:
     def __init__(self, ports: dict[int, int]) -> None:
-        self.Publishers = [_FakePublisher(TargetPort=p) for p in ports]
+        self.Publishers = [
+            _FakePublisher(TargetPort=cp, PublishedPort=hp) for cp, hp in ports.items()
+        ]
 
 
 class _FakePublisher:
-    def __init__(self, TargetPort: int) -> None:  # noqa: N803 — mirrors Testcontainers API
+    def __init__(self, TargetPort: int, PublishedPort: int) -> None:  # noqa: N803
         self.TargetPort = TargetPort
+        self.PublishedPort = PublishedPort
 
 
 class _FakeRunnerClient:
@@ -220,7 +254,7 @@ def patched_backend(monkeypatch: pytest.MonkeyPatch) -> PerTrialRuntimeBackend:
     to record-only fakes. Every test in this file uses this fixture."""
     monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
     monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-    return PerTrialRuntimeBackend()
+    return PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
 
 
 def _make_trial_spec(
@@ -363,7 +397,7 @@ class TestProvision:
 
         monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
         monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _CountingClient)
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         backend.provision(spec)
         backend.register_trial(trial_id=spec.trial_id, trial_spec_json="{}")
@@ -397,6 +431,105 @@ class TestProvision:
         assert exc.value.stage == "provision"
         assert exc.value.trial_id == spec.trial_id
 
+    def test_readiness_gate_failure_raises_provision_error_with_diagnostic(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A not-ready gated endpoint fails provisioning at the readiness gate
+        with ``stage='provision'`` and a populated :class:`DiagnosticPayload`
+        naming the probed service, kind, resolved endpoint, and probe outcome.
+        No docker: the failing probe is injected through the loader seam, so
+        the docker-introspection fields degrade to empty structures."""
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+
+        def _failing_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
+            del kind
+            return lambda: InMemoryServiceReadinessProbe(ok=False, fail_detail="channel not ready")
+
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_failing_loader)
+        spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
+        with pytest.raises(ProvisionError) as exc:
+            backend.provision(spec)
+        err = exc.value
+        assert err.stage == "provision"
+        assert err.trial_id == spec.trial_id
+        assert "channel not ready" in err.reason
+        assert isinstance(err.diagnostic, DiagnosticPayload)
+        assert err.diagnostic.service == "default"
+        assert err.diagnostic.kind == "grpc"
+        assert err.diagnostic.endpoint == ResolvedEndpoint(host="127.0.0.1", port=50100)
+        assert err.diagnostic.result == ReadinessResult(
+            ok=False, latency_s=0.0, detail="channel not ready"
+        )
+        # No orphan client is cached: the gate runs before the client is built.
+        assert spec.trial_id not in backend._clients
+
+    def test_runner_is_probed_with_grpc_at_resolved_host_port(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The runner substrate is always probed with the ``grpc`` kind at its
+        resolved host endpoint, regardless of any per-service readiness spec."""
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        loader = _RecordingLoader()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=loader)
+        spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
+        backend.provision(spec)
+        assert loader.kinds == ["grpc"]
+        assert loader.probes[0].call_log.calls[0].endpoint == ResolvedEndpoint(
+            host="127.0.0.1", port=50100
+        )
+
+    def test_declared_readiness_service_probed_by_its_kind(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A service that declares a ``readiness`` spec is probed by that spec's
+        kind at its first published host port, alongside the runner's grpc probe."""
+
+        class _WithDbCompose(_FakeCompose):
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                super().__init__(*args, **kwargs)
+                self.exposed_services = {"default": {50051: 50100}, "db": {5432: 55432}}
+
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _WithDbCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        loader = _RecordingLoader()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=loader)
+        manifest = EnvironmentManifest(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            services={
+                "db": ServiceSpec(isolation="ephemeral", readiness=ReadinessSpec(kind="tcp"))
+            },
+        )
+        backend.provision(_make_trial_spec(manifest=manifest))
+        assert loader.kinds == ["grpc", "tcp"]
+        assert loader.probes[1].call_log.calls[0].endpoint == ResolvedEndpoint(
+            host="127.0.0.1", port=55432
+        )
+
+    def test_declared_readiness_service_without_published_port_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A declared-readiness service that exposes no resolvable published
+        port cannot have its contract honoured — provisioning fails fast rather
+        than silently skipping the probe."""
+        monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FakeCompose)
+        monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
+        # _FakeCompose exposes "default" + "db-service" but not "db"; the manifest
+        # declares readiness on "db", which resolves to no host port.
+        manifest = EnvironmentManifest(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            services={
+                "db": ServiceSpec(isolation="ephemeral", readiness=ReadinessSpec(kind="tcp"))
+            },
+        )
+        with pytest.raises(ProvisionError) as exc:
+            backend.provision(_make_trial_spec(manifest=manifest))
+        assert exc.value.stage == "provision"
+        assert "no resolvable published port" in exc.value.reason
+        assert exc.value.diagnostic is None
+
     def test_compose_start_failure_raises_provision_error(
         self,
         monkeypatch: pytest.MonkeyPatch,
@@ -407,7 +540,7 @@ class TestProvision:
 
         monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _FailingCompose)
         monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         with pytest.raises(ProvisionError) as exc:
             backend.provision(spec)
@@ -554,7 +687,7 @@ class TestEndpoints:
 
         monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _NoDbCompose)
         monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_one_service.yaml")
         handle = backend.provision(spec)
         endpoints = backend.endpoints(handle)
@@ -575,7 +708,7 @@ class TestEndpoints:
 
         monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _WithRagCompose)
         monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
         handle = backend.provision(spec)
         endpoints = backend.endpoints(handle)
@@ -600,7 +733,7 @@ class TestEndpoints:
 
         monkeypatch.setattr(per_trial_runtime_module, "DockerCompose", _OverrideCompose)
         monkeypatch.setattr(per_trial_runtime_module, "GrpcRunnerClient", _FakeRunnerClient)
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         manifest = EnvironmentManifest(
             compose_file=_FIXTURES / "safe_two_service.yaml",
             runner_port=9000,

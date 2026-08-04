@@ -185,17 +185,29 @@ Every step above is a single method call in `tolokaforge/core/per_trial_runtime.
 
 ## Deep-dive — `provision()`
 
-Nine steps, in order. Failure at any step raises `ProvisionError(stage="provision")` and cleans up whatever ran successfully before the raise.
+Ten steps, in order. Failure at any step raises `ProvisionError(stage="provision")` and cleans up whatever ran successfully before the raise.
 
 1. **Guard on manifest presence.** `spec.task.environment_manifest is None` → raise. Tasks without a manifest belong on `SharedStackRuntimeBackend`, not this backend.
 2. **Make a per-trial temp directory.** Path like `/tmp/tolokaforge-<sanitised-trial-id>-<random>/`. The basename is what Docker Compose reads for its auto-generated project name — encoding the trial id here is what gives each concurrent trial its own project.
 3. **Copy the compose context.** Everything in the compose file's parent directory (compose YAML, adjacent bind-mount source files, initial-state fixtures) copies into the temp dir. Bind mounts declared as relative paths resolve inside the copied context; safety validators (ADR-0009) already reject `..` and absolute paths, so the copy is closed and complete.
 4. **Construct `DockerCompose`** with `context=<temp_dir>`, `compose_file_name=<manifest.compose_file.name>`, `pull=False`, `build=False`, `wait=True`.
 5. **`compose.start()`.** Runs `docker compose up -d --wait`. Blocks until every service's compose `healthcheck:` reports healthy. On failure, raise `ProvisionError` and rmtree the temp dir.
-6. **Construct the runner client** — `GrpcRunnerClient(runner_address="<host>:<port>")`. Host + port come from `compose.get_service_host_and_port(manifest.runner_service, manifest.runner_port)`. **The client is not connected here** — `connect()` is deferred to first RPC use (see next section).
-7. **Snapshot endpoints on the handle.** `_resolve_endpoints(...)` looks up `runner_service` at `manifest.runner_port` (required) and, best-effort, the db and rag services. Missing `db-service` leaves `EnvEndpoints.db_url = None`; the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its container env and `db_json.py` tools fall back to the same env var, so a missing `db_url` is not a provisioning failure. Runner-missing still raises `ProvisionError`.
-8. **Cache the client** — `self._clients[spec.trial_id] = client`. This is the map every per-trial RPC method reads from.
-9. **Return `_LocalEnvHandle`** carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
+6. **Resolve the runner endpoint.** Host + port come from `compose.get_service_host_and_port(manifest.runner_service, manifest.runner_port)`; runner-missing raises `ProvisionError`.
+7. **Run the host-side readiness gate.** Probe the runner endpoint for gRPC channel-readiness, plus every service that declares a `readiness:` spec by that spec's kind on its first published port. A not-ready endpoint raises `ProvisionError(stage="provision")` carrying a `DiagnosticPayload` — see [Readiness gate](#readiness-gate).
+8. **Construct the runner client** — `GrpcRunnerClient(runner_address="<host>:<port>")`. **The client is not connected here** — `connect()` is deferred to first RPC use (see [Lazy runner-client connect](#lazy-runner-client-connect)).
+9. **Snapshot endpoints on the handle** and **cache the client** (`self._clients[spec.trial_id] = client`, the map every per-trial RPC method reads). Endpoint resolution looks up `runner_service` (required) and, best-effort, the db and rag services. Missing `db-service` leaves `EnvEndpoints.db_url = None`; the runner-side `DBServiceClient` binds to `DB_SERVICE_URL` from its container env and `db_json.py` tools fall back to the same env var, so a missing `db_url` is not a provisioning failure.
+10. **Return `_LocalEnvHandle`** carrying the trial_id (public), the compose stack, the runner service name + port, the temp dir, and the endpoints snapshot. All except `trial_id` are backend-private; callers treat the handle as an opaque token.
+
+### Readiness gate
+
+`docker compose up --wait` (step 5) blocks only until each service's *in-container* `healthcheck:` reports healthy — and a container's healthcheck typically probes its own loopback. A service can therefore be Docker-`Healthy` yet unreachable from the orchestrator process on its published host port: it bound `127.0.0.1` only, or bound an IPv6 address the IPv4 published-port DNAT never reaches. The compose `--wait` gate cannot see that gap.
+
+The host-side readiness gate (step 7) closes it. Before the handle is returned, the backend probes each gated endpoint *from the orchestrator process* within the `connect_timeout` budget:
+
+- **The runner substrate is always probed with the `grpc` kind** on its resolved host port — its default client-invocability contract (see [RUNNER.md](RUNNER.md)).
+- **Each service that declares a `readiness:` spec** is additionally probed by that spec's `kind` (`grpc` / `http` / `tcp`) on its first published host port. A declared-readiness service that exposes no resolvable published port fails the gate — the contract cannot be honoured. (Under `no_internet` only the runner joins the egress-capable edge network and gets a host-published port; non-runner services are internal-only, so declaring readiness on them requires `full_internet` or `limited_internet`.)
+
+A not-ready probe raises `ProvisionError(stage="provision")` carrying a `DiagnosticPayload` — the probed `service`/`kind`/`endpoint`, the `ReadinessResult`, and a best-effort docker-side view of where the service *actually* listens (published-port map, container listen addresses from `/proc/net/tcp[6]`, per-network IPs). That converts a downstream 30 s client-connect hang into a fast provisioning failure that names the mechanism. The probe seam is swappable per kind — see [Plug-in extension points](#plug-in-extension-points).
 
 ### Slow-dependency start order
 
@@ -283,7 +295,7 @@ connect" (caller's problem).
 - `_client_for(trial_id)` — invoked by every per-trial RPC method — checks the set; if the trial isn't in it, calls `.connect()` once and adds it. Subsequent calls to the same trial's RPCs skip the connect.
 - `teardown(handle)` and `close()` only invoke `.close()` on clients that were actually connected — closing a never-used client would have nothing to close on the gRPC side.
 
-This means the compose `--wait` gate (which already blocks until every container reports healthy) is the only latency `provision()` adds beyond the compose CLI itself. First RPC call pays the connect cost; subsequent calls hit a warm client.
+The deferred client connect is distinct from the [readiness gate](#readiness-gate): the gate opens a throwaway probe channel to prove the runner's host port is reachable and closes it immediately, adding milliseconds — it does not stand in for, or warm, the per-trial client. So `provision()` adds two bounded costs beyond the compose CLI: the compose `--wait` gate (blocks until every container reports healthy) and the readiness probe (fast reachability check). The first RPC call still pays the client connect cost; subsequent calls hit a warm client.
 
 ## Reporting component status
 
@@ -388,7 +400,8 @@ See [`RESET_RECIPES.md`](RESET_RECIPES.md) for the four seed kinds (`sql_dump`, 
 | `provision` — no manifest | `ProvisionError(stage="provision")` | Nothing to clean |
 | `provision` — compose start fails | `ProvisionError(stage="provision")` wrapping the compose error | Per-service logs captured before teardown (see below); per-trial temp dir removed |
 | `provision` — reset recipe fails | `ProvisionError(stage="reset_recipe")` | Per-service logs captured before teardown (see below); compose stack torn down + temp dir removed |
-| `provision` — runner-client construction (host/port unresolvable) | `ProvisionError(stage="provision")` | Compose stack torn down + temp dir removed |
+| `provision` — runner host/port unresolvable | `ProvisionError(stage="provision")` | Compose stack torn down + temp dir removed |
+| `provision` — readiness gate: a gated endpoint not host-reachable | `ProvisionError(stage="provision")` carrying a `DiagnosticPayload` (probed service/kind/endpoint, `ReadinessResult`, docker-side listen view) | Per-service logs captured before teardown; compose stack torn down + temp dir removed |
 | `provision` — endpoint resolution (missing `db-service`) | Not a failure — `EnvEndpoints.db_url` stays `None`; the runner reads `DB_SERVICE_URL` from its container env | — |
 | `await_ready` | Never raises today (`--wait` gates during provision); reserved for future backends | — |
 | `endpoints` — foreign handle | `TypeError` | — |
@@ -547,15 +560,16 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-The three orchestrator seams — `RuntimeBackend`, `TrialGrader`, and `Conductor` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** `Callable[[<Context>], <Impl>]` — not the raw class — so divergent constructors are adapted behind a per-group context object. tolokaforge's own six built-ins register through the same mechanism.
+Four swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, and `ServiceReadinessProbe` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** — not the raw class — so divergent constructors are adapted behind a factory. The three orchestrator seams pass a per-group frozen-dataclass context (`Callable[[<Context>], <Impl>]`); a readiness probe needs no build dependencies, so its factory is arg-less (`Callable[[], ServiceReadinessProbe]`). tolokaforge's own nine built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
 | `tolokaforge.runtime_backends` | `Callable[[RuntimeBackendBuildContext], RuntimeBackend]` | `runner_address`, `env_manifest`, `run_id`, `seeds`, `log_capture`, `events` |
 | `tolokaforge.trial_graders` | `Callable[[TrialGraderContext], TrialGrader]` | `runtime_backend`, `logger` |
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
+| `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
 
-A factory is free to ignore context fields it does not need. The runtime-backend and trial-grader context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
+A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
 **Runtime backend** — `mypkg/runtime.py`:
 
@@ -600,6 +614,26 @@ def my_conductor_factory(ctx: ConductorContext) -> "MyConductor":
 [project.entry-points."tolokaforge.conductors"]
 my_conductor = "mypkg.conductor:my_conductor_factory"
 ```
+
+**Service-readiness probe** — `mypkg/readiness.py`. A probe answers, from the calling process, whether a resolved `host:port` is reachable and protocol-ready within a timeout budget, returning a `ReadinessResult`. Register it under a **kind name** (`grpc` / `http` / `tcp`, or a custom kind); the substrate picks it up by kind with no substrate edit. The factory is arg-less — probes carry no build context:
+
+```python
+from tolokaforge.core.service_readiness import ReadinessResult, ResolvedEndpoint
+
+class MyReadinessProbe:
+    def probe(self, endpoint: ResolvedEndpoint, *, timeout: float) -> ReadinessResult:
+        ...  # cheap reachability check; ok=True on success, detail set on failure
+
+def my_probe_factory() -> MyReadinessProbe:
+    return MyReadinessProbe()
+```
+
+```toml
+[project.entry-points."tolokaforge.service_readiness_probes"]
+mykind = "mypkg.readiness:my_probe_factory"
+```
+
+tolokaforge ships `grpc`, `http`, and `tcp` built-ins under this group.
 
 **Fail-loud resolution.** Names resolve lazily and are cached per group. Discovery enumerates names and distributions **without importing any target**, which gives the policy two distinct shapes:
 

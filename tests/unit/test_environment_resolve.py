@@ -16,6 +16,7 @@ import pytest
 from tolokaforge.core.models import (
     EnvironmentManifest,
     EnvironmentPatch,
+    ReadinessSpec,
     ResetSpec,
     ServiceSpec,
     StackPatch,
@@ -442,6 +443,36 @@ class TestServicesMergeAndDefaults:
         assert manifest.services["default"].isolation == "reset"
         assert manifest.services["default"].reset is not None
         assert manifest.services["default"].reset.seed == "baseline"
+
+    def test_task_inherits_project_readiness_when_omitted(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=ENV_FIXTURE.parent / "safe_two_service.yaml",
+                runner_service="default",
+            ),
+            services={"db": ServiceSpec(isolation="shared", readiness=ReadinessSpec(kind="grpc"))},
+        )
+        task = EnvironmentPatch(services={"db": ServiceSpec(isolation="shared")})
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.services["db"].readiness is not None
+        assert manifest.services["db"].readiness.kind == "grpc"
+
+    def test_task_readiness_overrides_project(self) -> None:
+        project = EnvironmentPatch(
+            stack=StackPatch(
+                compose_file=ENV_FIXTURE.parent / "safe_two_service.yaml",
+                runner_service="default",
+            ),
+            services={"db": ServiceSpec(isolation="shared", readiness=ReadinessSpec(kind="grpc"))},
+        )
+        task = EnvironmentPatch(
+            services={"db": ServiceSpec(isolation="shared", readiness=ReadinessSpec(kind="http"))},
+        )
+        manifest = resolve(project, task)
+        assert manifest is not None
+        assert manifest.services["db"].readiness is not None
+        assert manifest.services["db"].readiness.kind == "http"
 
     def test_missing_compose_service_defaults_to_ephemeral(self) -> None:
         # safe_two_service.yaml declares `db` and `default`. Only `default`

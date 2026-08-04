@@ -14,6 +14,7 @@ leave no routers running because none were constructed on that path.
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,6 +25,7 @@ from tolokaforge.core import per_trial_runtime as per_trial_runtime_module
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
 from tolokaforge.core.runtime import ProvisionError
+from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe, ServiceReadinessProbe
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 from tolokaforge.docker.logging import LogRouterError
 from tolokaforge.runner.models import ResetSpec, ServiceSpec
@@ -32,6 +34,13 @@ pytestmark = pytest.mark.canonical
 
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "environment_manifest"
+
+
+def _ready_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
+    """Readiness-probe loader seam yielding an always-ready in-memory probe, so
+    provision's host-side readiness gate passes without a live listener."""
+    del kind
+    return lambda: InMemoryServiceReadinessProbe(ok=True)
 
 
 # ---------------------------------------------------------------------------
@@ -150,12 +159,15 @@ class _FakeCompose:
 
 class _FakeContainer:
     def __init__(self, ports: dict[int, int]) -> None:
-        self.Publishers = [_FakePublisher(TargetPort=p) for p in ports]
+        self.Publishers = [
+            _FakePublisher(TargetPort=cp, PublishedPort=hp) for cp, hp in ports.items()
+        ]
 
 
 class _FakePublisher:
-    def __init__(self, TargetPort: int) -> None:  # noqa: N803 — mirrors Testcontainers API
+    def __init__(self, TargetPort: int, PublishedPort: int) -> None:  # noqa: N803
         self.TargetPort = TargetPort
+        self.PublishedPort = PublishedPort
 
 
 class _FakeRunnerClient:
@@ -289,7 +301,7 @@ def test_provision_attaches_one_router_per_container(monkeypatch: pytest.MonkeyP
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     spec = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
 
@@ -326,7 +338,7 @@ def test_teardown_stops_routers_before_shutdown_compose(monkeypatch: pytest.Monk
 
     monkeypatch.setattr(per_trial_runtime_module, "shutdown_compose", recording_shutdown)
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
     backend.teardown(handle)
@@ -353,7 +365,7 @@ def test_reset_recipe_failure_leaves_no_routers_running(monkeypatch: pytest.Monk
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     # Named seed absent from registry → reset-recipe stage failure.
     spec = _make_trial_spec(
         compose_file=_FIXTURES / "safe_two_service.yaml",
@@ -388,7 +400,7 @@ def test_concurrent_trials_get_independent_routers(monkeypatch: pytest.MonkeyPat
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     spec_a = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
     spec_b = _make_trial_spec(trial_id="task-1:1", compose_file=_FIXTURES / "safe_two_service.yaml")
     handle_a = backend.provision(spec_a)
@@ -429,7 +441,7 @@ def test_provision_logs_and_continues_on_router_failure(
     )
     created = _install_recording_router(monkeypatch, fail_for_service="default")
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     spec = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
 
     with caplog.at_level("ERROR"):
@@ -459,7 +471,7 @@ def test_container_without_id_is_skipped(monkeypatch: pytest.MonkeyPatch) -> Non
     )
     created = _install_recording_router(monkeypatch)
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     spec = _make_trial_spec(trial_id="task-1:0", compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
 
@@ -487,7 +499,7 @@ def test_teardown_swallows_router_stop_errors(monkeypatch: pytest.MonkeyPatch) -
         lambda _compose: shutdown_calls.append(True),
     )
 
-    backend = PerTrialRuntimeBackend()
+    backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
     spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
     handle = backend.provision(spec)
 

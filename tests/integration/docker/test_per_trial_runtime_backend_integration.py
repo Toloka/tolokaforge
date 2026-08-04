@@ -14,6 +14,7 @@ against a real workload (see #143). Unit-level RPC coverage lives in
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from pathlib import Path
 
 import pytest
@@ -22,9 +23,19 @@ from tests.canonical._factories import make_task_description
 from tests.utils.docker_helpers import is_docker_daemon_available
 from tolokaforge.core.models import ModelConfig
 from tolokaforge.core.per_trial_runtime import PerTrialRuntimeBackend, _LocalEnvHandle
+from tolokaforge.core.service_readiness import InMemoryServiceReadinessProbe, ServiceReadinessProbe
 from tolokaforge.core.trial import EnvEndpoints, EnvironmentManifest, TrialSpec
 
 pytestmark = [pytest.mark.integration, pytest.mark.docker]
+
+
+def _ready_loader(kind: str) -> Callable[[], ServiceReadinessProbe]:
+    """Readiness-gate seam yielding an always-ready probe: the fixture runner
+    is an ``nginx`` HTTP stand-in, not a gRPC server, so the production grpc
+    probe would correctly reject it. These tests exercise the compose lifecycle,
+    not runner readiness."""
+    del kind
+    return lambda: InMemoryServiceReadinessProbe(ok=True)
 
 
 _FIXTURE = (
@@ -66,7 +77,7 @@ class TestPerTrialRuntimeBackendLifecycle:
     """
 
     def test_provision_endpoints_teardown_cycle(self) -> None:
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(trial_id="lifecycle:0")
         handle = backend.provision(spec)
         try:
@@ -91,7 +102,7 @@ class TestPerTrialRuntimeBackendLifecycle:
         """Two concurrent trials get different compose projects and
         resolve to different host-side ports for the same container
         port. Proves per-trial isolation."""
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec_a = _make_trial_spec(trial_id="lifecycle:a")
         spec_b = _make_trial_spec(trial_id="lifecycle:b")
         handle_a = backend.provision(spec_a)
@@ -115,7 +126,7 @@ class TestPerTrialRuntimeBackendLifecycle:
         """After teardown, the compose stack's containers and network
         are gone. Verified by observing that a subsequent provision
         with the same trial_id succeeds without collision."""
-        backend = PerTrialRuntimeBackend()
+        backend = PerTrialRuntimeBackend(readiness_probe_loader=_ready_loader)
         spec = _make_trial_spec(trial_id="lifecycle:cleanup")
         handle_first = backend.provision(spec)
         backend.teardown(handle_first)
