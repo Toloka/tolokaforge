@@ -1,4 +1,5 @@
-"""How a hash verdict and a JSONPath score fold into one ``state_checks`` score.
+"""How a hash verdict and a JSONPath score fold into one ``state_checks`` score, and
+which source combinations have no fold at all.
 
 Substrate-neutral by construction: pure functions over floats and plain
 collections, so both the core grading engine and the runner service compose the
@@ -17,6 +18,14 @@ MISSING_HASH_WEIGHT_MESSAGE = (
     "state_checks.jsonpaths are both configured — there is no defensible default. "
     "Choose one: weight: 1.0 lets the hash decide, weight: 0.0 lets the jsonpaths "
     "decide, weight: 0.5 gives them equal shares."
+)
+
+CONFLICTING_STATE_SOURCES_MESSAGE = (
+    "state_checks.db_probes is the sole state source for a task that declares it, and a "
+    "non-empty state_checks.jsonpaths or a state_checks.hash block that is enabled with a "
+    "source scores the same component — one of the two verdicts would be discarded and "
+    "nothing says which. Choose one: keep db_probes and drop the other source, or drop "
+    "db_probes and let the hash and jsonpaths grade the state."
 )
 
 INERT_HASH_WEIGHT_REASON = (
@@ -75,6 +84,39 @@ def resolve_hash_weight(
     if undecidable:
         raise ValueError(MISSING_HASH_WEIGHT_MESSAGE)
     return weight
+
+
+def refuse_probes_beside_another_state_source(
+    *,
+    db_probes: Sequence[Any],
+    jsonpaths: Sequence[Any],
+    hash_config: Mapping[str, Any] | None,
+    context: str,
+) -> None:
+    """Raise ``ValueError`` for ``db_probes`` declared beside a source that also scores.
+
+    Only the runner evaluates a probe, so the two substrates would not even discard the
+    same verdict: the runner keeps the probe's and hides the rest, core folds the hash
+    with the assertions and never sees the probe. One trial, two ``state_checks``
+    components, and no declared share to fold them by — so the pair is refused instead.
+
+    "A source that also scores" is a non-empty ``jsonpaths``, or a ``hash`` block that is
+    enabled *and* declares one of :data:`HASH_SOURCE_KEYS`. A disabled hash produces no
+    verdict, and an enabled one with nothing to compare against is the authoring gate's
+    shape at the hash key, where the fix applies — neither discards anything here.
+
+    Reads the **author-facing** key names, so a substrate that flattens the ``hash``
+    block translates into them rather than restating the rule.
+    """
+    if not db_probes:
+        return
+    hash_config = hash_config or {}
+    hash_is_a_source = bool(hash_config.get("enabled", False)) and any(
+        hash_config.get(key) for key in HASH_SOURCE_KEYS
+    )
+    if not (jsonpaths or hash_is_a_source):
+        return
+    raise ValueError(f"{context}: {CONFLICTING_STATE_SOURCES_MESSAGE}")
 
 
 def compose_state_checks_score(

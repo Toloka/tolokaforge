@@ -2981,10 +2981,12 @@ actionable reason — never a silent pass. The runner image ships `asyncpg`, the
 async driver `db_probes` connect with; the runner container joins the task's
 docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
 
-`db_probes` is the sole state source for the tasks that use it — it is not
-combined with hash or `jsonpaths` checks in the same task. Runner-side it fills the
-`state_checks` component and combines with `transcript_rules` / `llm_judge`
-through the normal weighted combine below.
+`db_probes` is the sole state source for a task that declares it: a probe declared
+beside a non-empty `jsonpaths`, or beside a `hash` block that is enabled with a source,
+is **refused** — those sources score the same component, so one verdict would fill it
+and discard the other. Runner-side the probe score *is* the `state_checks` component,
+and it combines with `transcript_rules` / `llm_judge` through the normal weighted
+combine below.
 
 **It is runner-only, so core declines to score a probe-only pack.** The DSN resolves
 inside the task's docker network, which the runner container joins and the host-side

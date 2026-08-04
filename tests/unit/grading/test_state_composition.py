@@ -11,10 +11,12 @@ from itertools import product
 import pytest
 
 from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
     compose_state_checks_score,
     inert_hash_weight_reason,
+    refuse_probes_beside_another_state_source,
     resolve_hash_weight,
     validate_hash_weight,
 )
@@ -25,6 +27,13 @@ WEIGHT_DOMAIN = (0.0, 0.5, 0.6, 1.0, None)
 
 _ASSERTIONS = [{"path": "$.db.widgets[0].status", "equals": "closed"}]
 _GOLDEN_ACTIONS = [{"name": "close_widget"}]
+_PROBES = [
+    {
+        "name": "widget_closed",
+        "dsn": "postgresql://grader@app-db:5432/app",
+        "query": "SELECT status FROM widgets WHERE id = 'W1'",
+    }
+]
 
 # Every combination of the facts the predicate reads, swept over both ways of
 # declaring a hash source. Exactly one shape is undecidable, so dropping any one
@@ -35,6 +44,18 @@ _DECLARATION_SPACE = tuple(
         ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
         (_ASSERTIONS, []),  # state_checks.jsonpaths
         (0.5, None),  # hash.weight
+    ),
+)
+
+# The same facts a block declares, swept for the exclusivity rule instead. No weight
+# axis: a weight divides two shares of one component, and these shapes have no fold to
+# divide.
+_EXCLUSIVITY_SPACE = tuple(
+    product(
+        (_PROBES, []),  # state_checks.db_probes
+        (True, False),  # hash.enabled
+        ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
+        (_ASSERTIONS, []),  # state_checks.jsonpaths
     ),
 )
 
@@ -180,6 +201,64 @@ class TestResolveHashWeight:
 
     def test_an_absent_hash_block_declares_no_weight(self):
         assert resolve_hash_weight(None, jsonpaths=_ASSERTIONS, context="grading.yaml") is None
+
+
+class TestRefuseProbesBesideAnotherStateSource:
+    """Which shapes carry two state verdicts with nothing to choose between them.
+
+    Swept exhaustively and asserted as a set for the reason :class:`TestResolveHashWeight`
+    gives: the predicate's whole content is *which* shapes it refuses, and a sampled set
+    cannot show that dropping a condition widened the rejection. The accepted rows are the
+    narrow reading — probes beside a disabled hash, and probes beside an enabled hash with
+    nothing to compare against, produce one verdict between them and stay loadable.
+    """
+
+    _CONTEXT = "grading.yaml state_checks"
+
+    def test_exactly_the_shapes_carrying_two_verdicts_are_refused(self):
+        rejected = set()
+        for db_probes, enabled, source, jsonpaths in _EXCLUSIVITY_SPACE:
+            shape = (bool(db_probes), enabled, tuple(source), bool(jsonpaths))
+            try:
+                refuse_probes_beside_another_state_source(
+                    db_probes=db_probes,
+                    jsonpaths=jsonpaths,
+                    hash_config={"enabled": enabled, **source},
+                    context=self._CONTEXT,
+                )
+            except ValueError as exc:
+                assert str(exc) == f"{self._CONTEXT}: {CONFLICTING_STATE_SOURCES_MESSAGE}", shape
+                rejected.add(shape)
+
+        assert rejected == {
+            (True, True, ("expected_state_hash",), True),
+            (True, True, ("expected_state_hash",), False),
+            (True, True, ("golden_actions",), True),
+            (True, True, ("golden_actions",), False),
+            (True, True, (), True),
+            (True, False, ("expected_state_hash",), True),
+            (True, False, ("golden_actions",), True),
+            (True, False, (), True),
+        }, (
+            "the rejected set is the whole predicate: probes declared, and beside them "
+            "either assertions to score — whatever the hash block says — or a hash that "
+            "is enabled with something to compare against. Any other membership means a "
+            "condition was dropped or added."
+        )
+
+    def test_an_absent_hash_block_is_not_a_second_source(self):
+        assert (
+            refuse_probes_beside_another_state_source(
+                db_probes=_PROBES, jsonpaths=[], hash_config=None, context=self._CONTEXT
+            )
+            is None
+        )
+
+    @pytest.mark.parametrize(
+        "key", ("state_checks.db_probes", "state_checks.jsonpaths", "state_checks.hash")
+    )
+    def test_the_message_names_every_source_in_the_conflict(self, key):
+        assert key in CONFLICTING_STATE_SOURCES_MESSAGE
 
 
 class TestInertHashWeightReason:

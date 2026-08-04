@@ -892,8 +892,8 @@ scores it `0.0`, and the recorded reason says why either way.
 
 The ledger covers scored checks, so one skip is reported beside it rather than
 through it: a `state_checks.hash_weight` the fold never consulted — because only one
-state source produced a score, or because `db_probes` filled the component outright —
-appends its own line to `Grade.reasons`, from the same constant the core engine uses.
+state source produced a score — appends its own line to `Grade.reasons`, from the same
+constant the core engine uses.
 `hash_weight` is a `CONFIG_INPUT`, not a scored check, so the ledger would never have
 seen it.
 

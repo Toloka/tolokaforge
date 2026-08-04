@@ -27,6 +27,7 @@ from tolokaforge.core.grading.state_checks import (
     to_hashable,
 )
 from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
@@ -347,6 +348,44 @@ class TestLoadTimePredicateDiscriminates:
         with pytest.raises(ValidationError) as excinfo:
             StateChecksConfig(**state_checks)
         assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
+
+
+class TestProbesCannotShareTheComponent:
+    """``db_probes`` beside a source this fold also scores refuses to grade the trial.
+
+    Core has no probe evaluator, so left alone it would fold the hash with the
+    assertions and report a ``state_checks`` the runner would have taken from the probe
+    instead — one trial, two components, and no declared share between them.
+
+    Each case declares the probes, loads, and only then adds the second source, because
+    the claim is about grade time: the block is re-resolved there rather than trusted
+    from load, ``hash`` being an untyped dict nothing stops a caller mutating.
+    """
+
+    _PROBES = [
+        {
+            "name": "widget_closed",
+            "dsn": "postgresql://grader:grader_pw@app-db:5432/app",
+            "query": "SELECT status FROM widgets WHERE id = 'W1'",
+            "expect": [{"path": "$.rows[0].status", "equals": "closed"}],
+        }
+    ]
+
+    def test_assertions_added_after_load_refuse_to_fold(self):
+        engine = _engine({"db_probes": self._PROBES})
+        engine.config.state_checks.jsonpaths = _HALF_SATISFIED_JSONPATHS
+
+        with pytest.raises(ValueError) as excinfo:
+            engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(excinfo.value)
+
+    def test_a_hash_source_added_after_load_refuses_to_fold(self):
+        engine = _engine({"db_probes": self._PROBES, "hash": {"enabled": True}})
+        engine.config.state_checks.hash["expected_state_hash"] = _MATCHING_HASH
+
+        with pytest.raises(ValueError) as excinfo:
+            engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+        assert CONFLICTING_STATE_SOURCES_MESSAGE in str(excinfo.value)
 
 
 class TestInertWeightIsReportedNotDropped:

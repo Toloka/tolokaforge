@@ -41,6 +41,7 @@ from tolokaforge.core.grading.grade_components import (
 )
 from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
     compose_state_checks_score,
     inert_hash_weight_reason,
 )
@@ -1001,20 +1002,31 @@ def resolve_state_checks_component(
     db_probe_score: float,
     hash_weight: float | None,
 ) -> StateChecksOutcome:
-    """Fold the runner's three state sources into one ``state_checks`` score.
+    """Fold the runner's state sources into one ``state_checks`` score.
 
     Translates the runner's ``-1.0``-means-not-evaluated sentinel into the ``None``
-    the shared composer reads. ``db_probes`` is the sole state source for the tasks
-    that declare it (mixing it with hash/jsonpath in one task is out of scope), so
-    its score fills the slot outright and hides whatever the other two produced —
-    which is why the probe branch reports the weight as unconsulted too.
+    the shared composer reads. ``db_probes`` is the block's only state source: a probe
+    score beside a hash verdict or a JSONPath score is two verdicts for one component
+    with no declared share between them, so the pair is refused rather than one of them
+    discarded. A probe deciding alone reports a declared weight as unconsulted, the way
+    any single-source fold does.
 
-    Raises ``ValueError`` when a hash verdict and a JSONPath score are both real and
-    no ``hash_weight`` says how to fold them.
+    Reads the scores rather than a config, because that is what this fold holds; the
+    same rule over the keys an author writes is
+    ``refuse_probes_beside_another_state_source``.
+
+    Raises:
+        ValueError: a probe score arrived beside another source, carrying
+            ``CONFLICTING_STATE_SOURCES_MESSAGE`` — raised before the weight is read, so
+            a block being refused outright is never answered with a demand for a
+            ``hash.weight``; or a hash verdict and a JSONPath score are both real and no
+            ``hash_weight`` says how to fold them.
     """
+    hash_source = None if hash_score < 0 else hash_score
+    jsonpath_source = None if jsonpath_score < 0 else jsonpath_score
     probes_decide = db_probe_score >= 0
-    hash_source = None if probes_decide or hash_score < 0 else hash_score
-    jsonpath_source = None if probes_decide or jsonpath_score < 0 else jsonpath_score
+    if probes_decide and (hash_source is not None or jsonpath_source is not None):
+        raise ValueError(CONFLICTING_STATE_SOURCES_MESSAGE)
     return StateChecksOutcome(
         component=(
             db_probe_score
