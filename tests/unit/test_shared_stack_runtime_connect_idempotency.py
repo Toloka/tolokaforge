@@ -19,6 +19,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from tolokaforge.core.health import HealthLevel
 from tolokaforge.core.shared_stack_runtime import GrpcRunnerClient, SharedStackRuntimeBackend
 
 pytestmark = pytest.mark.unit
@@ -86,6 +87,74 @@ class TestRunnerClientConnectIdempotency:
         client.connect(timeout=1.0, retry_interval=0.01)
 
         assert health_check_calls == 2
+
+
+class TestGrpcRunnerClientHealthReport:
+    """``GrpcRunnerClient.health_report`` is the primary API — returns a
+    semantic :class:`~tolokaforge.core.health.HealthReport` derived from
+    the runner's ``HealthCheckResponse``. Callers ask domain questions
+    via the report's predicates instead of comparing the raw protocol
+    status string.
+
+    ``health_check`` is now a backwards-compat facade over
+    ``health_report().is_reachable()``. The prior strict
+    ``status == "healthy"`` check made every downstream-less trial pack
+    (MB adapter smoke shape: no ``db-service`` in the per-trial compose)
+    fail the 30-attempt connect loop even though the runner's
+    ``HealthCheck`` RPC was successfully responding with ``degraded``.
+    This test class pins the new semantics — both the primary API and
+    the facade — against that regression.
+    """
+
+    def _client_with_status(self, status: str) -> GrpcRunnerClient:
+        client = GrpcRunnerClient(runner_address="sentinel:50051")
+        stub = MagicMock()
+        response = MagicMock()
+        response.status = status
+        response.version = "1.0.0"
+        stub.HealthCheck.return_value = response
+        client.stub = stub
+        return client
+
+    # --- Primary API: health_report() returns a HealthReport ---
+
+    def test_health_report_maps_healthy_to_healthy_level(self) -> None:
+        report = self._client_with_status("healthy").health_report()
+        assert report.level == HealthLevel.HEALTHY
+        assert report.is_reachable() is True
+        assert report.is_fully_operational() is True
+
+    def test_health_report_maps_degraded_to_degraded_level(self) -> None:
+        """Whole point: degraded is reachable-but-not-fully-operational.
+        The two predicates on the wrapper distinguish these cases; the
+        client no longer collapses them via a string compare."""
+        report = self._client_with_status("degraded").health_report()
+        assert report.level == HealthLevel.DEGRADED
+        assert report.is_reachable() is True
+        assert report.is_fully_operational() is False
+
+    def test_health_report_maps_unhealthy_to_unhealthy_level(self) -> None:
+        report = self._client_with_status("unhealthy").health_report()
+        assert report.level == HealthLevel.UNHEALTHY
+        assert report.is_reachable() is False
+        assert report.is_fully_operational() is False
+
+    def test_health_report_carries_version(self) -> None:
+        """Context field is preserved on the wrapper for logging /
+        display — not part of the domain decision."""
+        report = self._client_with_status("healthy").health_report()
+        assert report.version == "1.0.0"
+
+    # --- Backwards-compat facade: health_check() delegates ---
+
+    def test_health_check_facade_returns_true_for_healthy(self) -> None:
+        assert self._client_with_status("healthy").health_check() is True
+
+    def test_health_check_facade_returns_true_for_degraded(self) -> None:
+        assert self._client_with_status("degraded").health_check() is True
+
+    def test_health_check_facade_returns_false_for_unhealthy(self) -> None:
+        assert self._client_with_status("unhealthy").health_check() is False
 
 
 class TestSharedStackRuntimeBackendConnectDelegates:

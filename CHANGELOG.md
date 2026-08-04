@@ -4,6 +4,14 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Fix
+
+- **runner-client**: `GrpcRunnerClient.health_check` now accepts both `healthy` and `degraded` runner statuses (per `docs/GRPC_PROTOCOL.md` § HealthCheck) as reachable-for-connect purposes. The prior strict `status == "healthy"` check made every trial pack without a `db-service` fail the 30-attempt connect loop even though the runner's `HealthCheck` RPC was successfully answering. Only `unhealthy` and `RpcError` remain as fail states (#801)
+
+### Feat
+
+- **core**: new `tolokaforge.core.health` module — reusable pattern for ordered health hierarchies. `HealthLevel` (an `IntEnum` with `UNHEALTHY < DEGRADED < HEALTHY`) + `HealthReport` (a frozen dataclass wrapping the level with `is_reachable()` / `is_fully_operational()` semantic predicates) + `HealthReport.from_status()` (single-source-of-truth mapping from protocol status strings, with unknowns mapping fail-loud to `UNHEALTHY`). `GrpcRunnerClient.health_report()` is the new primary API; `health_check()` becomes a backwards-compat facade over `health_report().is_reachable()`. The pattern replaces stringly-typed status comparisons with domain predicates on the wrapper — the mapping from protocol state to "can I use this service?" lives once, not scattered across call sites
+
 ### Feat
 
 - **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
