@@ -660,9 +660,9 @@ class TestSiblingGradingAutoPickup:
     ) -> None:
         """The sentence is what an author reads instead of a leaked ``TypeError``.
 
-        It has to carry the task, because the caller printing it names a file (the
-        CLI) or aggregates many packs into one raise (the pre-run gate), and neither
-        line repeats the fix.
+        It has to carry the task and both fixes, because no caller supplies them both:
+        the CLI's line names the file rather than the task, and neither it nor the
+        pre-run gate's aggregate repeats a fix.
         """
         task_path = self._write_minimal_task(tmp_path / "flat_task")
         task, task_dir = load_task_yaml(task_path)

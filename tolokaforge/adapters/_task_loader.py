@@ -571,10 +571,11 @@ class GradingSource:
     reason: str = ""
     """What the absence is, in the voice its channel is read in; empty on a resolved file.
 
-    The withheld sentence is printed as a refusal and names the task, since the lines
-    carrying it name a file or aggregate many packs. The uninterrogable one travels the
-    ``unchecked`` channel, which names the task itself, so it reads like its neighbours
-    there and does not.
+    The withheld sentence is printed as a refusal and carries the task and both fixes,
+    because no caller supplies them both: the CLI's line names the file rather than the
+    task, and neither caller repeats a fix. The uninterrogable one travels the
+    ``unchecked`` channel, whose own line names the task, so it reads like its neighbours
+    there and names none.
     """
 
     def __post_init__(self) -> None:
@@ -600,13 +601,18 @@ def grading_source_under_adapter(
     adapter — the path is joined, never stat'd, so a declared file that is not there
     is the reading gate's question and not this one's.
 
-    A task naming none is answered off the ``adapter_type`` its ``task.yaml``
-    *declares*, because :meth:`BaseAdapter.get_grading_config` is abstract and the
-    implementations disagree: :class:`NativeAdapter` refuses such a task, while an
-    external adapter may synthesise a whole config without reading the field. The
-    declared field is the discriminator rather than the resolved one because
-    :meth:`NativeAdapter.to_task_description` hardcodes its own type, so everything
-    the native loader reads resolves to ``native``.
+    A task naming none is answered off *adapter_type*, because
+    :meth:`BaseAdapter.get_grading_config` is abstract and the implementations
+    disagree: :class:`NativeAdapter` refuses such a task, while an external adapter
+    may synthesise a whole config without reading the field.
+
+    Which adapter that is, is the caller's to resolve, and the two gates resolve it
+    differently on purpose. ``validate`` builds no description and reads the type the
+    ``task.yaml`` declares. The pre-run gate reads the type the description it is
+    about to run carries, which is the adapter that will actually be asked for a
+    grading config — so a pack declaring an external adapter but loaded natively is
+    refused there and passed by ``validate``, since the native adapter is the one that
+    would have to grade it.
     """
     from tolokaforge.runner.models import AdapterType
 
@@ -628,8 +634,8 @@ def grading_source_under_adapter(
         path=None,
         reason=(
             f"task {task.task_id!r} declares no grading source: no `grading:` field and no "
-            f"sibling grading.yaml. Adapter {adapter_type!r} grades from that file, so "
-            "validate and the run both refuse this task before any trial is scheduled. "
+            f"sibling grading.yaml. Adapter {adapter_type!r} grades from that file, so this "
+            "task cannot be graded and is refused before any trial is scheduled. "
             "Declare `grading:` pointing at the block this task grades by, or add a "
             "grading.yaml beside its task.yaml."
         ),

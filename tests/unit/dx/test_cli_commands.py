@@ -251,7 +251,7 @@ class TestValidateCommand:
         exit_code: int,
         summary: str,
     ) -> None:
-        """#766: a task naming no grading block is answered, not crashed on.
+        """A task naming no grading block is answered, not crashed on.
 
         The two rows are the same pack under the two declared adapters, which is the
         whole ruling: the native adapter grades from a file, so withholding one is a
@@ -278,7 +278,7 @@ class TestValidateCommand:
         assert "unsupported operand type(s)" not in result.stderr
         if exit_code == 0:
             assert "? grading not checked" in result.stderr
-            assert adapter_type in result.stderr
+            assert f"'{adapter_type}'" in result.stderr
         else:
             assert directory.name in result.stderr
             assert "`grading:`" in result.stderr
