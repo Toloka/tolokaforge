@@ -264,9 +264,9 @@ def test_build_image_runner_ships_source_tree_not_a_wheel(monkeypatch) -> None:
         # No host-side wheel is copied into the runner image build context;
         # the subset wheel is produced by the wheel-builder stage.
         wheels = list(root.glob("tolokaforge*.whl"))
-        assert wheels == [], (
-            f"runner build context must not contain a pre-built wheel; found: {wheels}"
-        )
+        assert (
+            wheels == []
+        ), f"runner build context must not contain a pre-built wheel; found: {wheels}"
         # Instead, the source-tree entries hatch consumes must be present.
         assert (root / "pyproject.toml").exists()
         assert (root / "scripts" / "hatch" / "hatch_runner_subset_builder.py").exists()
