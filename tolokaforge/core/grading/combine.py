@@ -27,7 +27,11 @@ from tolokaforge.core.grading.combine_weights import (
     require_component_weight,
     resolve_uncounted_fold,
 )
-from tolokaforge.core.grading.golden_replay import GoldenReplayError
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayError,
+    GoldenReplayRecord,
+    incomplete_replay_reason,
+)
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
@@ -305,7 +309,7 @@ class GradingEngine:
         nothing to the fold.
         """
         checks = self.config.state_checks
-        hash_score, hash_reasons, diff_result = self._check_state_hash(final_env_state)
+        hash_score, hash_reasons, diff_result, replay = self._check_state_hash(final_env_state)
         # Not called for an empty list: ``check_jsonpaths`` answers "what fraction of
         # these assertions passed?", and its honest answer over zero assertions is
         # ``1.0``. Keeping the vacuous value out of this scope is what stops it
@@ -333,22 +337,27 @@ class GradingEngine:
             hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=hash_weight
         )
         reasons = jsonpath_reasons + hash_reasons
+        replay_reason = incomplete_replay_reason(replay) if replay else None
+        if replay_reason:
+            reasons.append(replay_reason)
         if inert_reason:
             reasons.append(inert_reason)
         return score, "; ".join(reasons), diff_result
 
     def _check_state_hash(
         self, final_env_state: dict[str, Any]
-    ) -> tuple[float | None, list[str], dict[str, Any] | None]:
-        """Return the state-hash verdict, its reasons, and the state diff.
+    ) -> tuple[float | None, list[str], dict[str, Any] | None, GoldenReplayRecord | None]:
+        """Return the state-hash verdict, its reasons, the state diff, and the replay.
 
         ``None`` is *no verdict*: hash grading is off, or it is on and could not
-        run — which is reported rather than scored as a failed hash check.
+        run — which is reported rather than scored as a failed hash check. The replay
+        record is ``None`` for every source but ``golden_actions``, the only one that
+        replays anything.
         """
         checks = self.config.state_checks
         hash_config = checks.hash or {}
         if not hash_config.get("enabled", False):
-            return None, [], None
+            return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
         expected_hash = hash_config.get("expected_state_hash")
@@ -356,20 +365,20 @@ class GradingEngine:
             score, reason = self.state_checker.check_hash(
                 db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
             )
-            return score, [reason], None
+            return score, [reason], None, None
 
         golden_actions = hash_config.get("golden_actions")
         if not golden_actions:
-            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None
+            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
         if not (self.task_dir and self.task_initial_state and self.task_mcp_server):
-            return None, [_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT], None
+            return None, [_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT], None, None
         if not self.task_initial_state.json_db:
             raise GoldenReplayError(
                 "state_checks.hash.golden_actions must replay against the task's "
                 "initial_state.json_db, and this task declares none"
             )
 
-        score, reason, diff_result = self.state_checker.check_hash_against_golden_replay(
+        score, reason, diff_result, replay = self.state_checker.check_hash_against_golden_replay(
             db_state=db_state,
             golden_actions=golden_actions,
             task_dir=self.task_dir,
@@ -378,7 +387,7 @@ class GradingEngine:
             task_domain=self.task_domain,
             numeric_string_fields=checks.numeric_string_fields,
         )
-        return score, [reason], diff_result
+        return score, [reason], diff_result, replay
 
     def _run_custom_checks(
         self,

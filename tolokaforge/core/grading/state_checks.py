@@ -11,7 +11,9 @@ from typing import Any, Union
 from jsonpath_ng.ext import parse
 
 from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
     GoldenReplayError,
+    GoldenReplayRecord,
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.predicates import contains
@@ -325,7 +327,7 @@ class StateChecker:
         initial_state_path: str,
         mcp_server_path: str,
         task_domain: str,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], GoldenReplayRecord]:
         """
         Execute golden actions on fresh initial state and return resulting state.
 
@@ -337,7 +339,9 @@ class StateChecker:
             task_domain: Domain name (e.g., "airline", "retail")
 
         Returns:
-            State after executing golden actions
+            The state after executing golden actions, and the record of which of them
+            ran — an action that raised leaves the state short of the authored world
+            and the record is the only thing that says so.
 
         Raises:
             UnresolvableGoldenAction: an action names no tool in the pack's ``TOOLS``
@@ -389,7 +393,10 @@ class StateChecker:
         self.logger.debug("Executing golden actions", count=len(golden_actions))
 
         # 5. Execute golden actions
-        for action_name, action in zip(resolved_names, golden_actions, strict=True):
+        failures: list[FailedGoldenAction] = []
+        for index, (action_name, action) in enumerate(
+            zip(resolved_names, golden_actions, strict=True)
+        ):
             action_kwargs = action.get("kwargs", {})
             tool_class = tools_map[action_name]
             try:
@@ -400,8 +407,9 @@ class StateChecker:
                 )
             except Exception as e:
                 self.logger.warning("Golden action failed", action=action_name, error=str(e))
+                failures.append(FailedGoldenAction.from_exception(index, action_name, e))
 
-        return data
+        return data, GoldenReplayRecord(authored=len(golden_actions), failures=tuple(failures))
 
     def check_hash_against_golden_replay(
         self,
@@ -413,7 +421,7 @@ class StateChecker:
         task_domain: str,
         *,
         numeric_string_fields: list[str] | None = None,
-    ) -> tuple[float, str, dict[str, Any] | None]:
+    ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
 
@@ -428,7 +436,9 @@ class StateChecker:
                 string values fold when hashing (per-field opt-in).
 
         Returns:
-            (score 0 or 1, reason, diff_result dict or None)
+            (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
+            stands whether or not every action ran; the record carries what did not, for
+            the caller to report beside the score.
 
         Raises:
             GoldenReplayError: the replay could not be executed, so there is no
@@ -437,7 +447,7 @@ class StateChecker:
                 subclass, which names every offending action.
         """
         try:
-            expected_state = self._execute_golden_actions(
+            expected_state, replay = self._execute_golden_actions(
                 golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
             )
         except GoldenReplayError:
@@ -480,4 +490,4 @@ class StateChecker:
                 "State hash matches", expected_hash=expected_hash[:16], actual_hash=actual_hash[:16]
             )
 
-        return hash_score, hash_reason, diff_result
+        return hash_score, hash_reason, diff_result, replay

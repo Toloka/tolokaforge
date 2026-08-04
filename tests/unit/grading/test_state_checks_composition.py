@@ -76,8 +76,10 @@ def _engine(state_checks: dict, **engine_kwargs) -> GradingEngine:
     return GradingEngine(grading_config=config, **engine_kwargs)
 
 
-def _grade(state_checks: dict, **engine_kwargs):
-    return _engine(state_checks, **engine_kwargs).grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
+def _grade(state_checks: dict, *, final_env_state: dict | None = None, **engine_kwargs):
+    return _engine(state_checks, **engine_kwargs).grade_trajectory(
+        _trajectory(), final_env_state if final_env_state is not None else _FINAL_ENV_STATE
+    )
 
 
 class TestJsonpathStateRoot:
@@ -443,6 +445,51 @@ class TestFailedGoldenReplayIsNotAScore:
                 task_initial_state=InitialStateConfig(),
                 task_mcp_server="mcp_server.py",
             )
+
+
+class TestAnIncompleteReplayIsNamedOnTheGrade:
+    """A replay whose action raised still produces a verdict, and says so beside it.
+
+    Driven over the real ``shop_orders_02`` pack because what the sentence counts is how
+    many of the pack's own actions ran. The one authored action here resolves and then
+    raises on a kwarg its tool does not declare, so the replay leaves the initial state
+    untouched — which is what the trial holds too, making the verdict a ``1.0`` for a
+    trial that did nothing. The score is asserted because it is the point: the sentence
+    is what stands between a reader and trusting it (#816).
+    """
+
+    #: A kwarg ``confirm_payment`` does not declare, which is the one defect shape that
+    #: makes the tool call itself raise rather than return ``{"error": …}`` (#831).
+    _RAISES = [{"name": "confirm_payment", "kwargs": {"order_idd": "O-001"}}]
+    #: A read-only action, so it runs whole and leaves the initial state alone — the same
+    #: verdict as above, arrived at honestly.
+    _RUNS_WHOLE = [{"name": "get_customer", "kwargs": {"customer_id": "C-101"}}]
+
+    def _grade_over_the_pack(self, pack: Path, golden_actions: list[dict]):
+        return _grade(
+            {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": golden_actions}},
+            final_env_state={"db": json.loads((pack / "initial_state.json").read_text())},
+            task_dir=pack,
+            task_initial_state=InitialStateConfig(json_db="initial_state.json"),
+            task_mcp_server="mcp_server.py",
+        )
+
+    def test_the_verdict_stands_and_the_reason_names_what_did_not_run(self, test_data_dir):
+        grade = self._grade_over_the_pack(test_data_dir / "tasks" / "shop_orders_02", self._RAISES)
+
+        assert grade.components.state_checks == pytest.approx(1.0)
+        assert "GOLDEN REPLAY ERRORS:" in grade.reasons
+        assert "1 of 1" in grade.reasons
+        assert "confirm_payment" in grade.reasons
+
+    def test_a_replay_that_ran_whole_says_nothing(self, test_data_dir):
+        """The negative control, same pack and same verdict: the sentence is earned."""
+        grade = self._grade_over_the_pack(
+            test_data_dir / "tasks" / "shop_orders_02", self._RUNS_WHOLE
+        )
+
+        assert grade.components.state_checks == pytest.approx(1.0)
+        assert "GOLDEN REPLAY ERRORS" not in grade.reasons
 
 
 _RUNNER_WIDGETS = {"widgets": [{"id": "W1", "status": "closed"}, {"id": "W2", "status": "open"}]}

@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.core.grading.golden_replay import FailedGoldenAction, GoldenReplayRecord
 from tolokaforge.core.grading.state_composition import INERT_HASH_WEIGHT_REASON
 from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
@@ -486,6 +487,40 @@ def test_build_reasons_includes_db_probe_when_score_set():
     }
     text = build_grade_reasons(components)
     assert "DB probes: FAIL: probe 'ca_exists'" in text
+
+
+def test_build_reasons_names_an_incomplete_golden_replay_beside_the_verdict():
+    """The runner emits the shared sentence, under the prefix a downstream tool matches.
+
+    ``GOLDEN REPLAY ERRORS:`` is a contract, not phrasing: #599 names a consumer that
+    buckets trials by matching it. The verdict stays beside it — a replay that skipped an
+    action still produced a hash, and the sentence is what says not to trust it.
+    """
+    text = build_grade_reasons(
+        {"hash_score": 1.0, "hash_match": True},
+        golden_replay=GoldenReplayRecord(
+            authored=2,
+            failures=(
+                FailedGoldenAction(
+                    index=1, name="confirm_payment", error="TypeError: unexpected kwarg"
+                ),
+            ),
+        ),
+    )
+
+    assert "State: hash match" in text
+    assert "GOLDEN REPLAY ERRORS: 1 of 2" in text
+    assert "confirm_payment" in text
+
+
+def test_build_reasons_leaves_a_replay_that_ran_whole_unremarked():
+    text = build_grade_reasons(
+        {"hash_score": 1.0, "hash_match": True},
+        golden_replay=GoldenReplayRecord(authored=2),
+    )
+
+    assert "State: hash match" in text
+    assert "GOLDEN REPLAY ERRORS" not in text
 
 
 def test_build_reasons_includes_jsonpath_when_score_set():

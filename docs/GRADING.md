@@ -1056,6 +1056,23 @@ because golden actions are authored unprefixed, and answers `GradeTrial` with
 `pre_golden` snapshot and the reset — so a pack defect costs the trial's database
 nothing and the trial still holds what the agent left behind.
 
+**An action that resolved, ran, and raised is different: the verdict stands, and the
+grade names what did not run.** The replay continues past it — tau-bench continues past a
+precondition failure and golden-action hash grading is the tau-style path — so the
+partial world it left is hashed against and yields a binary verdict as usual.
+`grade.reasons` then carries one sentence, identical on both substrates, under the
+`GOLDEN REPLAY ERRORS:` prefix: how many of how many actions did not run, each by index
+and name, with the exception it raised. Whether a verdict computed against a partial
+world should be admissible at all is open (#816) — the sentence annotates such a verdict,
+it does not sanction it, and the reproduced case is a trial that failed its task scoring
+`1.0` because the golden path stopped at the same place the agent did.
+
+**The sentence covers actions that raised, and only those.** A golden action that ran and
+reported failure by *returning* `{"error": …}` — what every tool built through
+`create_server` does with its own declared failures — returns normally, so neither
+substrate can tell it from a success and no sentence is emitted (#831). Such an action
+produces the same partial world with nothing anywhere saying so.
+
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing

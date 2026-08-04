@@ -54,7 +54,11 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
-from tolokaforge.core.grading.golden_replay import resolve_golden_action_names
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenReplayRecord,
+    resolve_golden_action_names,
+)
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
@@ -1586,6 +1590,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             transcript_result_dict,
             judge_reasons=judge_reasons or None,
             trace_checks_result=trace_checks_result.model_dump(mode="json"),
+            golden_replay=hash_result.golden_replay if hash_result else None,
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"
@@ -1604,11 +1609,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # own sentence is what stops a 0.0 arriving beside components that all read as passing.
         if verdict.reason:
             reasons += f" | {verdict.reason}"
-
-        # Append golden action errors if any (critical for debugging golden replay failures)
-        if hash_result and hash_result.golden_action_errors:
-            errors_str = "; ".join(hash_result.golden_action_errors)
-            reasons += f" | GOLDEN REPLAY ERRORS: {errors_str}"
 
         logger.info(
             f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
@@ -2177,7 +2177,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             golden_actions: List of golden path actions to execute
 
         Returns:
-            HashGradingResult with hash_match, hash_score, and optional state_diff
+            HashGradingResult with hash_match, hash_score, an optional state_diff, and
+            the record of how much of the golden path ran
 
         Raises:
             UnresolvableGoldenAction: an action names no tool registered for the trial,
@@ -2247,7 +2248,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # the JSON DB Service that mirrors it) uses deterministic ID generation
         # (len(existing) + 1), so hardcoded IDs in golden actions always match
         # the IDs produced on replay from the same initial state.
-        golden_action_errors: list[str] = []
+        replay_failures: list[FailedGoldenAction] = []
 
         for i, (registered_name, action) in enumerate(
             zip(resolved_tool_names, golden_actions, strict=True)
@@ -2275,10 +2276,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
             except Exception as e:
                 # Golden action failure — log with full traceback for debugging
-                err_msg = f"Golden action {i} ({tool_name}) failed: {type(e).__name__}: {e}"
-                logger.error(f"GradeTrial: {err_msg}")
+                logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
                 logger.error(traceback.format_exc())
-                golden_action_errors.append(err_msg)
+                replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
 
         # For MCP_SERVER tasks: sync subprocess state to db-service so the
         # hash reflects what the golden actions actually produced.
@@ -2335,7 +2335,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             hash_match=hash_match,
             hash_score=hash_score,
             state_diff=state_diff,
-            golden_action_errors=golden_action_errors,
+            golden_replay=GoldenReplayRecord(
+                authored=len(golden_actions), failures=tuple(replay_failures)
+            ),
         )
 
     # =========================================================================

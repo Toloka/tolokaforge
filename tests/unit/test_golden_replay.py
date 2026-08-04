@@ -1,4 +1,10 @@
-"""What a golden replay does with an action name that resolves to nothing.
+"""What a golden replay does with an action that never ran.
+
+Two shapes, and the line between them is what the replay can still produce. A name
+resolving to nothing is refused before anything runs, because no world can be built from
+it. An action that resolved, ran, and *raised* has already left a world behind — a
+partial one — so the hash against it is still computed and the grade names the action
+missing from it.
 
 Both substrates, because both replay golden actions and each resolves a name under its
 own rule: the core engine against the pack's ``TOOLS`` map exactly, the runner against
@@ -15,10 +21,9 @@ The measured defect these cases close: with ``confirm_payment`` misspelled, the 
 skipped it and returned the order still ``pending``, so a trial that placed the order
 and never paid — the wrong behaviour — hashed equal to that partial world and scored
 ``1.0`` "State hash matches", while a correct trial scored ``0.0`` against a diff that
-named nothing about the typo. A runner that resolved a name inside its replay loop
-rather than ahead of it scores the trial against the same partial world and names the
-defect only in a ``GOLDEN REPLAY ERRORS:`` tail on the reasons; the runner cases below
-rule that out.
+named nothing about the typo. A runner that resolved a name inside its replay loop rather
+than ahead of it scores the trial against the same partial world and annotates the grade
+instead of refusing it; the runner cases below rule that out.
 """
 
 from __future__ import annotations
@@ -34,7 +39,9 @@ import pytest
 import yaml
 
 from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayRecord,
     UnresolvableGoldenAction,
+    incomplete_replay_reason,
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.state_checks import StateChecker
@@ -91,6 +98,19 @@ def _misspell_payment(authored: list[dict[str, Any]]) -> list[dict[str, Any]]:
     return actions
 
 
+def _misspell_payment_kwarg(authored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The pack's second action, defective in the one way that makes ``invoke`` raise.
+
+    A kwarg the tool's signature does not declare fails the ``func(data, **kwargs)`` call
+    itself, outside the registry wrapper's ``except ToolError`` arm. A *declared* failure —
+    ``order_id="O-999"`` — is returned as ``{"error": …}`` instead and raises nothing, so
+    it would exercise none of this (#831).
+    """
+    actions = copy.deepcopy(authored)
+    actions[1]["kwargs"] = {"order_idd": "O-001"}
+    return actions
+
+
 def _trial_state(pack_tools: dict[str, Any], *calls: tuple[str, dict[str, Any]]) -> dict[str, Any]:
     """The database an agent that made exactly these calls leaves behind."""
     data = json.loads((_TASK_DIR / _INITIAL_STATE).read_text())
@@ -101,7 +121,7 @@ def _trial_state(pack_tools: dict[str, Any], *calls: tuple[str, dict[str, Any]])
 
 def _check(
     db_state: dict[str, Any], actions: list[dict[str, Any]]
-) -> tuple[float, str, dict[str, Any] | None]:
+) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
     return StateChecker().check_hash_against_golden_replay(
         db_state=db_state,
         golden_actions=actions,
@@ -159,13 +179,18 @@ def test_every_unresolvable_action_is_named_in_one_raise(pack_tools, golden_acti
 def test_the_pack_as_authored_still_grades_a_correct_trial_as_a_pass(
     pack_tools, golden_actions
 ) -> None:
-    """The negative control: resolving before executing moves no correct pack's verdict."""
+    """The negative control: resolving before executing moves no correct pack's verdict.
+
+    A replay that ran whole earns no sentence either — the state hashed against is the
+    world the pack describes, so there is nothing to report about it.
+    """
     paid = _trial_state(pack_tools, _PLACE_ORDER, _CONFIRM_PAYMENT)
 
-    score, reason, diff = _check(paid, copy.deepcopy(golden_actions))
+    score, reason, diff, replay = _check(paid, copy.deepcopy(golden_actions))
 
     assert (score, diff) == (1.0, None)
     assert reason == "State hash matches"
+    assert incomplete_replay_reason(replay) is None
 
 
 def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
@@ -173,11 +198,37 @@ def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
 ) -> None:
     never_paid = _trial_state(pack_tools, _PLACE_ORDER)
 
-    score, reason, diff = _check(never_paid, copy.deepcopy(golden_actions))
+    score, reason, diff, _ = _check(never_paid, copy.deepcopy(golden_actions))
 
     assert score == 0.0
     assert "State hash mismatch" in reason
     assert diff is not None
+
+
+def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_run(
+    pack_tools, golden_actions
+) -> None:
+    """The partial world is still hashed against, and the grade names what is missing.
+
+    The verdict here is the wrong one and asserted anyway: the trial placed the order and
+    never paid, and because the golden path's ``confirm_payment`` raised, the world it
+    replayed stops at the same place, so a trial that failed the task hashes equal to the
+    oracle and scores ``1.0``. Whether such a verdict should exist at all is #816 — this
+    case pins that it does, and that a reader of the grade is told why not to trust it.
+    """
+    never_paid = _trial_state(pack_tools, _PLACE_ORDER)
+
+    score, reason, _, replay = _check(never_paid, _misspell_payment_kwarg(golden_actions))
+
+    assert score == 1.0
+    assert reason == "State hash matches"
+
+    sentence = incomplete_replay_reason(replay)
+    assert sentence is not None
+    assert sentence.startswith("GOLDEN REPLAY ERRORS:"), sentence
+    assert "1 of 2" in sentence, sentence
+    assert "confirm_payment" in sentence, sentence
+    assert "order_idd" in sentence, sentence
 
 
 # ---------------------------------------------------------------------------
