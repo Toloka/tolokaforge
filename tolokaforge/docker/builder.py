@@ -91,14 +91,20 @@ _PYTHON_BUILD_ARGS: dict[str, str] = {"PYTHON_VERSION": PYTHON_VERSION}
 # entry holds the static facts (name, dockerfile, context) and, when the
 # Dockerfile needs no host-side resolution, the static context_files too.
 #
-# Services whose build context depends on the wheel resolver (currently
-# ``runner`` and ``rag-service``) declare only their static fields here, and
-# pair with a factory (``_runner_definition`` / ``_rag_definition``) that
-# augments the static base with ``context_files`` and ``build_args`` at call
-# time. ``get_image_definition`` routes to that factory; everything that only
-# needs the static facts (reverse lookups, service enumeration, group
+# The rag-service image still depends on the host-side wheel resolver
+# (it installs a pre-built ``tolokaforge`` wheel into its rag service);
+# it declares only its static fields here and pairs with ``_rag_definition``
+# to augment the base with ``context_files`` and ``build_args`` at call
+# time. ``get_image_definition`` routes to that factory; everything that
+# only needs the static facts (reverse lookups, service enumeration, group
 # membership) reads IMAGE_DEFINITIONS directly and never triggers wheel
 # resolution as a side effect.
+#
+# The runner image is different: its Dockerfile is multi-stage
+# (ADR-0025 § subset build target), producing the runner-subset wheel
+# in-container via ``hatch build --target custom``. The context is a
+# static source-tree slice, no host-side wheel resolution, no factory —
+# hence a fully-static IMAGE_DEFINITIONS entry.
 
 IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "db-service": {
@@ -114,7 +120,20 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "name": "tolokaforge-runner",
         "dockerfile": "tolokaforge/docker/dockerfiles/runner.Dockerfile",
         "context": ".",
-        # context_files + build_args added by _runner_definition() at call time
+        # The runner Dockerfile is multi-stage: a wheel-builder stage runs
+        # ``hatch build --target custom`` against the source tree in-container
+        # to produce the subset wheel, and a builder stage installs it into
+        # /opt/venv. The build context ships the sources hatch needs; the
+        # subset wheel is a Docker-only artifact (ADR-0025).
+        "context_files": [
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            ".python-version",
+            "scripts/hatch/",
+            "tolokaforge/",
+        ],
+        "build_args": dict(_PYTHON_BUILD_ARGS),
     },
     "rag-service": {
         "name": "tolokaforge-rag-service",
@@ -145,20 +164,6 @@ EXTENDED_IMAGES: list[str] = ["rag-service", "mock-web"]
 _ALL_KNOWN_SERVICES = frozenset(IMAGE_DEFINITIONS)
 
 
-def _runner_definition() -> dict[str, Any]:
-    """Augment the runner base entry with the resolved wheel.
-
-    The Dockerfile installs the wheel produced by ``resolve_wheel()``; the
-    only file in the build context (besides the Dockerfile) is that wheel.
-    """
-    artifact = resolve_wheel()
-    return {
-        **IMAGE_DEFINITIONS["runner"],
-        "context_files": [str(artifact.path)],  # absolute path to the .whl
-        "build_args": {**_PYTHON_BUILD_ARGS, "WHEEL_FILENAME": artifact.path.name},
-    }
-
-
 def _rag_definition() -> dict[str, Any]:
     """Augment the rag-service base entry with the resolved wheel + service files.
 
@@ -177,7 +182,6 @@ def _rag_definition() -> dict[str, Any]:
     }
 
 
-_DYNAMIC_DEFINITIONS["runner"] = _runner_definition
 _DYNAMIC_DEFINITIONS["rag-service"] = _rag_definition
 
 

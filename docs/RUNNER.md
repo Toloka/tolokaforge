@@ -174,8 +174,13 @@ section of [`pyproject.toml`](../pyproject.toml) declares the subset build
 target; the custom builder at
 [`scripts/hatch/hatch_runner_subset_builder.py`](../scripts/hatch/hatch_runner_subset_builder.py)
 renames the distribution to `tolokaforge-runner-subset`, replaces the base
-wheel's dependency list with the runner-runtime deps, and strips console-script
-/ entry-point tables.
+wheel's dependency list with the runner-runtime deps, and binds the
+subset-native CLI shim
+([ADR-0026](adr/0026-subset-native-cli-shim.md)) — `tolokaforge =
+tolokaforge.runner._cli:main` — as the subset wheel's sole `[console_scripts]`
+entry. The base wheel's other entry-point tables (runtime backends,
+trial-grader factories, conductors) still point at orchestrator-only modules
+and are deliberately stripped from the subset.
 
 ```bash
 uv run hatch build --target custom
@@ -210,6 +215,31 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
   `netpolicy_constants.py`, `pricing.py`, `run_display_events.py`, `trial.py`
   — the shared-spine files at the root of `core/` the runner closure reaches
   directly.
+
+**Data files in the subset:**
+
+- `tolokaforge/core/data/pricing.json`, `tolokaforge/core/data/model_presets.yaml`
+  — non-Python payloads `tolokaforge.core.pricing` and
+  `tolokaforge.core.llm.presets` read at import time via
+  `importlib.resources`. Shipped as `RUNNER_SUBSET_DATA_FILES` inside
+  `_runner_subset.py`; without them the runner image would boot with an
+  empty pricing table (cost telemetry silently zero) and the preset
+  registry would raise on first grading-model resolution.
+- `tolokaforge/_python_version.txt` — the pinned Python minor version;
+  landed via a `force-include` remap of the repo-root `.python-version`
+  dotfile, mirroring the base wheel's identical remap.
+
+**Subset-native CLI shim ([ADR-0026](adr/0026-subset-native-cli-shim.md)):**
+
+- `tolokaforge/runner/_cli.py` — the module bound as the subset wheel's
+  `tolokaforge` console script. Preserves the ADR-0024 committed exec
+  surface (`tolokaforge --version` / `tolokaforge run-trial`) inside the
+  slim image without dragging `tolokaforge/_entry.py` or `dx/cli/*`
+  (base-wheel only) into the subset. The shim's `run-trial` orchestrates
+  in-process against the local runner gRPC service and cannot exercise
+  adapter-specific setup — see
+  [STANDALONE_RUNNER.md § Command surface of the published runner image](STANDALONE_RUNNER.md#command-surface-of-the-published-runner-image)
+  for the narrower semantics.
 
 **Excluded — orchestrator-only files under a subpackage otherwise in the subset:**
 
