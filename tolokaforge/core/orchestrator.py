@@ -796,6 +796,19 @@ class Orchestrator:
         adapter emits one pack per problem, each with its own
         problem-specific compose). Return ``None`` — per-trial doesn't
         consume a run-level shared manifest.
+
+        Two call sites read this return value:
+
+        - :meth:`run` (the main run entry point): uses the manifest to
+          decide shared-stack materialisation and endpoint logging. Under
+          per-trial the ``None`` return routes through the task-scoped
+          resolution path.
+        - :meth:`run_worker` (distributed worker mode): raises when the
+          return is non-``None`` because a worker joining an env-manifest
+          run would connect to the parent's testcontainers-allocated
+          address, which isn't propagated. Under per-trial the guard is
+          skipped — workers materialise their own per-trial stacks and
+          never depend on a parent-allocated address.
         """
         from tolokaforge.core.project_loader import resolve
 
@@ -1535,7 +1548,11 @@ class Orchestrator:
                     self.logger.info("Creating service stack (db-service + runner)")
                     stack_factory = core_stack
                 service_stack = stack_factory(**core_stack_kwargs)
-                per_trial_mode = self.config.orchestrator.runtime == "per_trial"
+                # Route through the effective-choice helper so both the
+                # operator override and the task-driven per-trial signal
+                # produce the same task-declared-stack decision (see
+                # sibling guard at the endpoint-logging site below).
+                per_trial_mode = self._resolve_effective_runtime_choice() == "per_trial"
                 # In per_trial mode OR shared+env_manifest mode the built-in engine
                 # containers go unused — the task-declared compose stack owns the
                 # runner + db-service. The engine images still need to be BUILT so
@@ -1632,7 +1649,14 @@ class Orchestrator:
         from tolokaforge.core.shared_stack_runtime import _build_env_endpoints
 
         env_endpoints = _build_env_endpoints(runner_address)
-        if self.config.orchestrator.runtime == "per_trial" or run_env_manifest is not None:
+        # Route through ``_resolve_effective_runtime_choice`` so the guard
+        # covers both the operator override AND the task-driven per-trial
+        # signal. The direct ``config.orchestrator.runtime`` string check
+        # would miss the task-driven case now that
+        # ``_extract_run_env_manifest`` returns ``None`` for it — the
+        # ``else`` branch below would then log phantom default endpoints
+        # that never reach a trial spec, defeating this guard's intent.
+        if self._resolve_effective_runtime_choice() == "per_trial" or run_env_manifest is not None:
             # Per-trial backend resolves fresh endpoints per trial via
             # ``endpoints(handle)``. Shared+env_manifest resolves them once
             # at connect time from the materialised stack. In both cases the
