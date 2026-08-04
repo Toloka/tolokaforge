@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.14.1 (2026-08-04)
+
+### Fix
+
+- **docker**: resolve the runner build context on a wheel install (#858)
+
 ## v0.14.0 (2026-08-04)
 
 ### Feat
