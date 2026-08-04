@@ -72,6 +72,21 @@ jobs:
       # => availability is "unknown" and every request integrates over OpenRouter as before.
       LLM_PROXY_BASE_URL: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL }}
       LLM_PROXY_API_KEY: ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_API_KEY }}
+      # Headers are deliberately NOT passed here yet. This job reaches the gateway
+      # through ``automation.gateway_catalog``, which reads the two names above from
+      # ``os.environ`` directly and by design (see its comment: routing through
+      # ``DotEnvProvider`` would let a developer's local ``.env`` answer a real poll).
+      # So it would ignore LLM_PROXY_HEADERS, and passing it would be dead config.
+      #
+      # The fix is not to teach that module about one more variable: the gateway
+      # contract already has a model (``ProxyConfig``), and this module reimplements
+      # two thirds of it, which is why it drifts. It should consume a ``ProxyConfig``
+      # built from an env-only ``SecretManager``. Tracked separately, because it needs
+      # an injectable manager on ``resolve_proxy_config``.
+      #
+      # Consequence until then: on a gateway that admits callers by a shared-secret
+      # header, this poll cannot read the catalog, so every model reports as absent
+      # from the gateway for a transport reason rather than a catalogue one.
     steps:
       - uses: actions/checkout@v4
         with:

@@ -275,6 +275,66 @@ class TestRequestHeaders:
         assert proxy.headers == {"X-Team-Id": "research"}
 
 
+class TestHeaderSecretRefs:
+    """The wire-level half of ``${secret:NAME}``; the syntax itself is pinned in
+    tests/unit/secrets/test_expand.py."""
+
+    def test_a_reference_is_resolved_into_the_header(self, install_secrets: Any) -> None:
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_HEADERS": '{"X-Team-Id": "research", "X-Order-Id": "${secret:ORDER_ID}"}',
+                "ORDER_ID": "9000123",
+            }
+        )
+        proxy = resolve_proxy_config()
+        assert proxy is not None
+        assert proxy.headers == {"X-Team-Id": "research", "X-Order-Id": "9000123"}
+
+    def test_no_reference_reaches_the_wire(self, install_secrets: Any) -> None:
+        """A literal ``${secret:...}`` sent as a header value is the failure this
+        guards: no gateway errors on it usefully."""
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_HEADERS": '{"X-Order-Id": "${secret:ORDER_ID}"}',
+                "ORDER_ID": "9000123",
+            }
+        )
+        proxy = resolve_proxy_config()
+        assert proxy is not None
+        assert "${secret:" not in "".join(proxy.request_headers().values())
+
+    def test_an_unresolved_reference_surfaces_as_a_gateway_config_error(
+        self, install_secrets: Any
+    ) -> None:
+        """Callers catch one exception type for "the gateway is misconfigured", so the
+        secrets-layer error is translated rather than leaking through."""
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_HEADERS": '{"X-Order-Id": "${secret:ORDER_ID}"}',
+            }
+        )
+        with pytest.raises(ProxyConfigError) as excinfo:
+            resolve_proxy_config()
+        message = str(excinfo.value)
+        assert "X-Order-Id" in message
+        assert "ORDER_ID" in message
+
+    def test_a_non_string_value_takes_no_reference(self, install_secrets: Any) -> None:
+        """JSON scalars keep their existing stringify path."""
+        install_secrets(
+            {
+                "LLM_PROXY_BASE_URL": "https://gateway.example.com",
+                "LLM_PROXY_HEADERS": '{"X-Cost-Center": 42, "X-On": true}',
+            }
+        )
+        proxy = resolve_proxy_config()
+        assert proxy is not None
+        assert proxy.headers == {"X-Cost-Center": "42", "X-On": "True"}
+
+
 class TestClientAppliesProxy:
     """``LLMClient`` treats the gateway as a transport swap and nothing more."""
 

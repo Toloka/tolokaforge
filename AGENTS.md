@@ -55,6 +55,7 @@ Tolokaforge is an LLM tool-use benchmarking harness.
 **Allowed:**
 - `from tolokaforge.secrets import get_default`, then `get_default().get_secret("OPENAI_API_KEY")` (and the `get_secret_or_raise` / `validate_required` variants)
 - Adding a new `SecretProvider` subclass when integrating a new secret backend (Vault, AWS Secrets Manager, etc.) — never a one-off call site
+- `expand_secret_refs` when a **non-secret** config string must carry a secret value: it resolves `${secret:NAME}` inside that string. This is the only sanctioned expansion mechanism: do not hand-roll a second reference dialect at a new call site, and do not move expansion into `get_secret` (that path also feeds the log-redaction set and the container serializer, which resolve every enumerable key, so it would apply this syntax to credentials that legitimately contain `$`). See [`docs/LLM_LAYER.md`](docs/LLM_LAYER.md) § "Values may reference secrets".
 - `SecretManager.export_to_environ(keys)` *only* when a subprocess (e.g. litellm SDK) demands `os.environ`; called inside the smallest possible scope, never sprinkled
 
 `tolokaforge run` calls `init_default()` once at startup. Inside the runner container, `init_default_from(...)` is reconstructed from `TOLOKAFORGE_SECRETS_JSON`. There is no other initialization path. The CI test [`tests/unit/secrets/test_no_raw_secret_access.py`](tests/unit/secrets/test_no_raw_secret_access.py) static-greps for these patterns; adding a new violation will fail CI.

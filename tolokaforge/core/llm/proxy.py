@@ -107,7 +107,12 @@ from __future__ import annotations
 import json
 import uuid
 from dataclasses import dataclass, field
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+from tolokaforge.secrets.expand import UnresolvedReferenceError, expand_secret_refs
+
+if TYPE_CHECKING:
+    from tolokaforge.secrets import SecretManager
 
 ENV_BASE_URL = "LLM_PROXY_BASE_URL"
 ENV_API_KEY = "LLM_PROXY_API_KEY"
@@ -201,8 +206,12 @@ class ProxyConfig:
         return headers
 
 
-def _parse_headers(raw: str | None) -> dict[str, str]:
-    """Parse ``LLM_PROXY_HEADERS`` (a JSON object of string values)."""
+def _parse_headers(raw: str | None, secrets: SecretManager) -> dict[str, str]:
+    """Parse ``LLM_PROXY_HEADERS`` (a JSON object of string values).
+
+    A value may reference a secret as ``${secret:NAME}``, resolved by
+    :func:`tolokaforge.secrets.expand_secret_refs`.
+    """
     if raw is None or not raw.strip():
         return {}
     try:
@@ -218,14 +227,26 @@ def _parse_headers(raw: str | None) -> dict[str, str]:
             f"got {type(parsed).__name__}"
         )
     headers: dict[str, str] = {}
-    for name, value in parsed.items():
-        if not isinstance(name, str) or not name.strip():
+    for raw_name, value in parsed.items():
+        if not isinstance(raw_name, str) or not raw_name.strip():
             raise ProxyConfigError(f"{ENV_HEADERS} contains a non-string or empty header name")
+        name = raw_name.strip()
         if not isinstance(value, str | int | float | bool):
             raise ProxyConfigError(
                 f"{ENV_HEADERS} value for {name!r} must be a scalar, got {type(value).__name__}"
             )
-        headers[name.strip()] = str(value)
+        if not isinstance(value, str):
+            # A JSON number/bool cannot carry a reference; keep the stringify path.
+            headers[name] = str(value)
+            continue
+        try:
+            headers[name] = expand_secret_refs(
+                value, secrets, where=f"{ENV_HEADERS} value for {name!r}"
+            )
+        except UnresolvedReferenceError as exc:
+            # Re-raised as the gateway's own error type so callers keep catching one
+            # exception for "the gateway is misconfigured".
+            raise ProxyConfigError(str(exc)) from exc
     return headers
 
 
@@ -293,7 +314,7 @@ def resolve_proxy_config() -> ProxyConfig | None:
     return ProxyConfig(
         base_url=base_url.rstrip("/"),
         api_key=(secrets.get_secret(ENV_API_KEY) or "").strip() or None,
-        headers=_parse_headers(secrets.get_secret(ENV_HEADERS)),
+        headers=_parse_headers(secrets.get_secret(ENV_HEADERS), secrets),
         request_id_header=(secrets.get_secret(ENV_REQUEST_ID_HEADER) or "").strip() or None,
         providers=_parse_providers(secrets.get_secret(ENV_PROVIDERS)),
     )
