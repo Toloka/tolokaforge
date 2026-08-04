@@ -12,7 +12,11 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.grading.golden_replay import FailedGoldenAction, GoldenReplayRecord
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenActionFailure,
+    GoldenReplayRecord,
+)
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     INERT_HASH_WEIGHT_REASON,
@@ -532,7 +536,10 @@ def test_build_reasons_names_an_incomplete_golden_replay_beside_the_verdict():
             authored=2,
             failures=(
                 FailedGoldenAction(
-                    index=1, name="confirm_payment", error="TypeError: unexpected kwarg"
+                    index=1,
+                    name="confirm_payment",
+                    kind=GoldenActionFailure.RAISED,
+                    error="TypeError: unexpected kwarg",
                 ),
             ),
         ),

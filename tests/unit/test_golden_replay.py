@@ -1,10 +1,10 @@
-"""What a golden replay does with an action that never ran.
+"""What a golden replay does with an authored action that did not take effect.
 
-Two shapes, and the line between them is what the replay can still produce. A name
+Three shapes, and the line between them is what the replay can still produce. A name
 resolving to nothing is refused before anything runs, because no world can be built from
-it. An action that resolved, ran, and *raised* has already left a world behind — a
-partial one — so the hash against it is still computed and the grade names the action
-missing from it.
+it. An action that resolved and *raised*, and one that resolved, ran and *reported* its
+failure in what it returned, have each left a world behind — a partial one — so the hash
+against it is still computed and the grade names the action missing from it.
 
 Both substrates, because both replay golden actions and each resolves a name under its
 own rule: the core engine against the pack's ``TOOLS`` map exactly, the runner against
@@ -15,14 +15,19 @@ The core half is driven over the real ``tests/data/tasks/shop_orders_02`` pack �
 ``grading.yaml`` declares. The pack's own ``TOOLS`` map is what decides which names
 resolve, so a stand-in map would lock the stand-in's rule rather than the one a replay
 actually applies; and the trial states below are produced by driving the pack's tools,
-which is how an agent produces them.
+which is how an agent produces them. ``food_delivery_2`` joins it for the payload shape
+that pack cannot produce: its tools return the JSON *of* their answer, so the replay is
+handed a ``str`` where ``shop_orders_02`` hands it a mapping.
 
-The measured defect these cases close: with ``confirm_payment`` misspelled, the replay
-skipped it and returned the order still ``pending``, so a trial that placed the order
-and never paid — the wrong behaviour — hashed equal to that partial world and scored
-``1.0`` "State hash matches", while a correct trial scored ``0.0`` against a diff that
-named nothing about the typo. A runner that resolved a name inside its replay loop rather
-than ahead of it scores the trial against the same partial world and annotates the grade
+The measured defects these cases close, both on a trial that placed the order and never
+paid — the wrong behaviour the pack exists to catch. With ``confirm_payment`` misspelled,
+the replay skipped it and returned the order still ``pending``, so the wrong trial hashed
+equal to that partial world and scored ``1.0`` "State hash matches", while a correct trial
+scored ``0.0`` against a diff that named nothing about the typo. With its kwargs written
+``{"order_id": "O-999"}``, the tool declined the call and said so in its return value, the
+replay recorded nothing at all, and the same wrong trial scored ``1.0`` beside a
+completely clean grade. A runner that resolved a name inside its replay loop rather than
+ahead of it scores the trial against the same partial world and annotates the grade
 instead of refusing it; the runner cases below rule that out.
 """
 
@@ -39,8 +44,11 @@ import pytest
 import yaml
 
 from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenActionFailure,
     GoldenReplayRecord,
     UnresolvableGoldenAction,
+    declared_failure,
     incomplete_replay_reason,
     resolve_golden_action_names,
 )
@@ -102,12 +110,26 @@ def _misspell_payment_kwarg(authored: list[dict[str, Any]]) -> list[dict[str, An
     """The pack's second action, defective in the one way that makes ``invoke`` raise.
 
     A kwarg the tool's signature does not declare fails the ``func(data, **kwargs)`` call
-    itself, outside the registry wrapper's ``except ToolError`` arm. A *declared* failure —
-    ``order_id="O-999"`` — is returned as ``{"error": …}`` instead and raises nothing, so
-    it would exercise none of this (#831).
+    itself, outside the registry wrapper's ``except ToolError`` arm. A *declared* failure
+    goes through that arm instead and raises nothing, which is
+    :func:`_report_payment_failure` below.
     """
     actions = copy.deepcopy(authored)
     actions[1]["kwargs"] = {"order_idd": "O-001"}
+    return actions
+
+
+def _report_payment_failure(authored: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The pack's second action, defective in the way the tool itself declares.
+
+    ``O-999`` is no order in the pack's initial state, so ``confirm_payment`` raises
+    ``ToolError`` from its body and the registry converts that into a returned
+    ``{"error": …}`` payload — which is how *every* declared failure in a ``create_server``
+    pack reaches the replay, the raise being the registry's to catch rather than the
+    replay's.
+    """
+    actions = copy.deepcopy(authored)
+    actions[1]["kwargs"] = {"order_id": "O-999"}
     return actions
 
 
@@ -222,7 +244,7 @@ def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
     assert diff is not None
 
 
-def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_run(
+def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_take_effect(
     pack_tools, golden_actions
 ) -> None:
     """The partial world is still hashed against, and the grade names what is missing.
@@ -244,8 +266,162 @@ def test_an_action_that_raised_still_scores_the_trial_and_says_what_did_not_run(
     assert sentence is not None
     assert sentence.startswith("GOLDEN REPLAY ERRORS:"), sentence
     assert "1 of 2" in sentence, sentence
-    assert "confirm_payment" in sentence, sentence
+    assert "confirm_payment raised TypeError" in sentence, sentence
     assert "order_idd" in sentence, sentence
+
+
+def test_an_action_that_reported_its_failure_is_recorded_like_one_that_raised(
+    pack_tools, golden_actions
+) -> None:
+    """The same wrong ``1.0``, now annotated — the action ran and declined the request.
+
+    Nothing raises here: the pack's own tool answered ``{"error": …}`` and the replay
+    walked on, leaving the order ``pending``, which is exactly where the trial left it. So
+    the trial that failed the task hashed equal to the oracle and collected a *clean*
+    grade. The score is asserted because it is the point — #816 owns whether such a verdict
+    should exist, and this pins that until then a reader is at least told about it — and the
+    verb is asserted because it is what sends the author to the right defect: ``raised``
+    means the golden path calls the tool wrong, ``reported`` means it calls it right about a
+    state that refuses it.
+    """
+    never_paid = _trial_state(pack_tools, _PLACE_ORDER)
+
+    score, reason, _, replay = _check(never_paid, _report_payment_failure(golden_actions))
+
+    assert score == 1.0
+    assert reason == "State hash matches"
+
+    sentence = incomplete_replay_reason(replay)
+    assert sentence is not None
+    assert sentence.startswith("GOLDEN REPLAY ERRORS:"), sentence
+    assert "1 of 2" in sentence, sentence
+    assert "[1] confirm_payment reported Order 'O-999' not found" in sentence, sentence
+
+
+def test_an_action_whose_tool_returns_a_list_reports_no_failure(pack_tools, golden_actions) -> None:
+    """The pack's real non-mapping return, which carries no ``"error"`` to read at all.
+
+    ``list_products`` answers with a ``list``, so a predicate reading a top-level key has
+    nothing to read — and appending it to the authored path must therefore leave both the
+    record and the verdict exactly as the authored path leaves them.
+    """
+    paid = _trial_state(pack_tools, _PLACE_ORDER, _CONFIRM_PAYMENT)
+    listing_too = copy.deepcopy(golden_actions) + [{"name": "list_products"}]
+
+    score, reason, _, replay = _check(paid, listing_too)
+
+    assert (score, reason) == (1.0, "State hash matches")
+    assert replay == GoldenReplayRecord(authored=3)
+
+
+@pytest.mark.parametrize(
+    ("payload", "message"),
+    [
+        pytest.param({"error": "Order 'O-999' not found"}, "Order 'O-999' not found", id="mapping"),
+        pytest.param('{"error": "user not found"}', "user not found", id="json-string"),
+        pytest.param(
+            {"error": "invalid order", "details": ["items is empty", "total is 0"]},
+            "invalid order (items is empty; total is 0)",
+            id="details-appended",
+        ),
+        pytest.param({"error": {"code": 5}}, "{'code': 5}", id="non-string-error-coerced"),
+        pytest.param({"error": None}, None, id="null-error-is-no-error"),
+        pytest.param({"error": ""}, None, id="empty-error-is-no-error"),
+        pytest.param({"id": "O-001", "status": "paid"}, None, id="success-mapping"),
+        pytest.param('{"user_id": "user_5247"}', None, id="success-json-string"),
+        pytest.param({"result": {"error": "nope"}}, None, id="nested-error-is-not-top-level"),
+        pytest.param(
+            "Error executing tool confirm_payment: 1 validation error",
+            None,
+            id="prose-is-not-a-payload",
+        ),
+        pytest.param('{"id": "P-001"}\n{"id": "P-002"}', None, id="concatenated-json-objects"),
+        pytest.param([{"id": "P-001"}], None, id="list"),
+        pytest.param(None, None, id="nothing-returned"),
+    ],
+)
+def test_declared_failure_reads_a_truthy_top_level_error_and_nothing_else(
+    payload: object, message: str | None
+) -> None:
+    """The one predicate both substrates read a returned payload with.
+
+    Two rows are load-bearing beyond the obvious. The prose row is what FastMCP answers a
+    *raising* MCP tool with, and it must stay undetected — matching prose for "error" is
+    the shape that false-positives on legitimate tool output (#855), and the raised kind on
+    ``MCP_SERVER`` packs is #853's to close. The concatenated-JSON row is what flattening a
+    ``list`` return's per-element text blocks produces, which is no JSON document and no
+    failure either.
+    """
+    assert declared_failure(payload) == message
+
+
+# ---------------------------------------------------------------------------
+# A pack whose tools return the JSON of their answer rather than the answer
+# ---------------------------------------------------------------------------
+
+#: ``food_delivery_2`` is tau-style: every tool ``json.dumps`` what it returns, so its
+#: whole population reaches the predicate as ``str``. Its own constants rather than the
+#: module's, which are ``shop_orders_02``'s.
+_TAU_TASK_DIR = _REPO / "tests/data/projects/food_delivery_2/tasks/order_modify_with_checks"
+#: Both paths leave the task directory, which is how the pack writes them and how the
+#: replay resolves them.
+_TAU_INITIAL_STATE = "../../data/combined_initial_state.json"
+_TAU_MCP_SERVER = "../../mcp_server.py"
+
+
+@pytest.fixture(scope="module")
+def tau_golden_actions() -> list[dict[str, Any]]:
+    """The tau pack's authored golden path, read from the pack rather than restated here."""
+    grading = yaml.safe_load((_TAU_TASK_DIR / "grading.yaml").read_text())
+    return grading["state_checks"]["hash"]["golden_actions"]
+
+
+def _replay_the_tau_pack(actions: list[dict[str, Any]]) -> GoldenReplayRecord:
+    _, _, _, replay = StateChecker().check_hash_against_golden_replay(
+        db_state=json.loads((_TAU_TASK_DIR / _TAU_INITIAL_STATE).read_text()),
+        golden_actions=actions,
+        task_dir=_TAU_TASK_DIR,
+        initial_state_path=_TAU_INITIAL_STATE,
+        mcp_server_path=_TAU_MCP_SERVER,
+        task_domain="food_delivery",
+    )
+    return replay
+
+
+def test_a_tau_pack_records_the_failure_its_tool_returned_as_a_json_string(
+    tau_golden_actions,
+) -> None:
+    """The decoded message, not the JSON, so the sentence reads as the tool wrote it."""
+    no_such_user = copy.deepcopy(tau_golden_actions)
+    no_such_user[0]["kwargs"] = {"user_id": "NO_SUCH_USER"}
+
+    replay = _replay_the_tau_pack(no_such_user)
+
+    assert replay.failures == (
+        FailedGoldenAction(
+            index=0,
+            name="get_user_details",
+            kind=GoldenActionFailure.REPORTED,
+            error="user not found",
+        ),
+    )
+    sentence = incomplete_replay_reason(replay)
+    assert sentence is not None
+    assert "1 of 3" in sentence, sentence
+    assert "[0] get_user_details reported user not found" in sentence, sentence
+
+
+def test_the_tau_pack_as_authored_records_no_failure(tau_golden_actions) -> None:
+    """The negative control for the whole ``str`` population.
+
+    Reading a ``str`` admits every tau success payload into the predicate's input, so
+    without this a branch that flagged all of them would pass the case above and move the
+    grade of every tau pack in the tree.
+    """
+    replay = _replay_the_tau_pack(copy.deepcopy(tau_golden_actions))
+
+    assert replay == GoldenReplayRecord(authored=3)
+    assert incomplete_replay_reason(replay) is None
 
 
 # ---------------------------------------------------------------------------

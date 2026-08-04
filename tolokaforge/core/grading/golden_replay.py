@@ -1,19 +1,25 @@
 """Whether the golden world a pack describes can be built at all.
 
 Substrate-neutral by construction: stdlib-only pure functions over what a pack and its
-task declare — the authored action names, and the task-level facts the actions are
-replayed against — so the core grading engine and the runner refuse the same authored
-defect instead of each deciding for itself what an unbuildable world means. Kept beside
-:mod:`state_checks`, which hashes the world once there is one.
+task declare — the authored action names, the task-level facts the actions are replayed
+against, and what an action's tool answered — so the core grading engine and the runner
+refuse the same authored defect instead of each deciding for itself what an unbuildable
+world means. Kept beside :mod:`state_checks`, which hashes the world once there is one.
 
 The matcher is deliberately *not* here. Core resolves a name against the pack's
 ``TOOLS`` map exactly; the runner also accepts a single ``…_<name>`` suffix over the
 tools it registered for the trial. A matcher living here would smuggle one substrate's
 namespace into the other, and #815 owns unifying them.
+
+:func:`declared_failure` is not that shape and belongs here: a name's namespace differs
+*per substrate*, while the convention a tool signals failure in differs *per pack* and
+reaches both substrates identically — a mapping for a pack whose tools return one, a JSON
+string for a tau-style pack whose tools ``json.dumps`` their answer.
 """
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Collection, Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from enum import Enum
@@ -73,11 +79,11 @@ _ABSENT_INITIAL_STATE: Mapping[InitialStateSource, str | None] = {
 _NO_MCP_SERVER = "task.yaml declares no tools.agent.mcp_server"
 
 _INCOMPLETE_REPLAY = (
-    "GOLDEN REPLAY ERRORS: {failed} of {authored} golden actions did not run, so the state "
-    "the trial was hashed against is a partial golden world: {failures}"
+    "GOLDEN REPLAY ERRORS: {failed} of {authored} golden actions did not take effect, so the "
+    "state the trial was hashed against is a partial golden world: {failures}"
 )
 
-_FAILED_ACTION = "[{index}] {name} raised {error}"
+_FAILED_ACTION = "[{index}] {name} {kind} {error}"
 
 
 class GoldenReplayError(Exception):
@@ -95,9 +101,9 @@ class UnresolvableGoldenAction(GoldenReplayError):
 class UnbuildableGoldenReplayWorld(GoldenReplayError):
     """The task facts a golden replay is executed against are not all declared.
 
-    Distinct from a replay that ran and skipped actions (:class:`GoldenReplayRecord`):
-    that one built a partial world and still hashed against it, while this one has no
-    world at all, so no action is ever attempted.
+    Distinct from a replay whose actions did not all take effect
+    (:class:`GoldenReplayRecord`): that one built a partial world and still hashed against
+    it, while this one has no world at all, so no action is ever attempted.
     """
 
 
@@ -171,27 +177,93 @@ def _absent_replay_facts(
         yield _NO_MCP_SERVER
 
 
+class GoldenActionFailure(str, Enum):
+    """How a golden action said it did not take effect, and the verb the sentence reads.
+
+    The two are one fact — an authored action whose effect is missing from the world the
+    trial is hashed against — differing only in how the tool's author chose to signal it,
+    which is why both join one record. Naming the mechanism anyway is what tells the author
+    where to look: a raise is a call the pack got wrong, a report is a call the pack got
+    right about a state that refused it.
+    """
+
+    RAISED = "raised"
+    """The call itself failed, so the tool's body never decided anything."""
+
+    REPORTED = "reported"
+    """The tool ran, declined the request, and said so in what it returned."""
+
+
+def declared_failure(payload: object) -> str | None:
+    """The failure a tool reported by its return value, or ``None``.
+
+    A ``Mapping`` whose top-level ``"error"`` is truthy, or a ``str`` that JSON-decodes to
+    one. Everything else is a success as far as this reads it: a non-``Mapping``, a ``str``
+    that is no JSON, a JSON ``str`` decoding to something other than a ``Mapping``, and a
+    ``Mapping`` carrying no ``"error"`` or a falsy one. Both payload shapes are reached in
+    this repository — a pack whose tools return mappings hands over the mapping, a
+    tau-style pack hands over the ``json.dumps`` of one — on either substrate.
+
+    **Truthiness, not key presence.** ``_tool_error_to_dict`` always writes a non-empty
+    message, so nothing declared is lost, while ``{"error": null}`` — a plausible "no
+    error" idiom — stays the success it reads as.
+
+    The message is ``str()`` of the value, because a truthy non-string one
+    (``{"error": {"code": 5}}``) is reachable from a pack out of this tree. A ``"details"``
+    list beside it — the second key ``_tool_error_to_dict`` writes — is appended, so a
+    field-level validation failure names its fields rather than only its summary.
+    """
+    decoded = _decoded_json(payload) if isinstance(payload, str) else payload
+    if not isinstance(decoded, Mapping):
+        return None
+    error = decoded.get("error")
+    if not error:
+        return None
+    details = decoded.get("details")
+    if not isinstance(details, list) or not details:
+        return str(error)
+    return f"{error} ({'; '.join(str(detail) for detail in details)})"
+
+
+def _decoded_json(payload: str) -> object:
+    """What the string carries, or the string itself when it carries no JSON."""
+    try:
+        return json.loads(payload)
+    except ValueError:
+        return payload
+
+
 @dataclass(frozen=True)
 class FailedGoldenAction:
-    """A golden action that resolved to a tool, ran, and raised."""
+    """A golden action that resolved to a tool, ran, and did not take effect."""
 
     index: int
     name: str
+    kind: GoldenActionFailure
     error: str
 
     @classmethod
     def from_exception(cls, index: int, name: str, error: BaseException) -> FailedGoldenAction:
-        return cls(index=index, name=name, error=f"{type(error).__name__}: {error}")
+        return cls(
+            index=index,
+            name=name,
+            kind=GoldenActionFailure.RAISED,
+            error=f"{type(error).__name__}: {error}",
+        )
+
+    @classmethod
+    def from_reported_failure(cls, index: int, name: str, message: str) -> FailedGoldenAction:
+        return cls(index=index, name=name, kind=GoldenActionFailure.REPORTED, error=message)
 
 
 @dataclass(frozen=True)
 class GoldenReplayRecord:
-    """How much of the authored golden path ran, and what stopped the rest.
+    """How much of the authored golden path took effect, and what stopped the rest.
 
-    Only an action that *raised* is a failure here. One reporting its failure by
-    returning ``{"error": …}`` — what every tool built through ``create_server`` does —
-    returns normally and is indistinguishable from success to either substrate, so it
-    leaves no failure and no reason (#831).
+    Both kinds of failure share the one tuple, so the count covers an action that raised
+    and one that ran and reported its failure by what it returned — what every tool built
+    through ``create_server`` does with a ``ToolError``, since the registry converts the
+    raise into a return payload.
     """
 
     authored: int
@@ -199,7 +271,7 @@ class GoldenReplayRecord:
 
 
 def incomplete_replay_reason(record: GoldenReplayRecord) -> str | None:
-    """The sentence both substrates put on a grade whose replay skipped actions.
+    """The sentence both substrates put on a grade whose replay did not take full effect.
 
     ``None`` for a replay that ran whole: the expected state is then the world the pack
     describes and there is nothing to say about it. Otherwise the verdict beside this
@@ -215,7 +287,12 @@ def incomplete_replay_reason(record: GoldenReplayRecord) -> str | None:
         failed=len(record.failures),
         authored=record.authored,
         failures="; ".join(
-            _FAILED_ACTION.format(index=failure.index, name=failure.name, error=failure.error)
+            _FAILED_ACTION.format(
+                index=failure.index,
+                name=failure.name,
+                kind=failure.kind.value,
+                error=failure.error,
+            )
             for failure in record.failures
         ),
     )

@@ -14,6 +14,7 @@ from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenReplayError,
     GoldenReplayRecord,
+    declared_failure,
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.predicates import contains
@@ -413,13 +414,23 @@ class StateChecker:
             tool_class = tools_map[action_name]
             try:
                 # Tau-bench tools have invoke(data=data, **kwargs) signature
-                tool_class.invoke(data=data, **action_kwargs)
-                self.logger.debug(
-                    "Executed golden action", action=action_name, kwargs=action_kwargs
-                )
+                returned = tool_class.invoke(data=data, **action_kwargs)
             except Exception as e:
                 self.logger.warning("Golden action failed", action=action_name, error=str(e))
                 failures.append(FailedGoldenAction.from_exception(index, action_name, e))
+                continue
+
+            reported = declared_failure(returned)
+            if reported is None:
+                self.logger.debug(
+                    "Executed golden action", action=action_name, kwargs=action_kwargs
+                )
+                continue
+
+            self.logger.warning(
+                "Golden action reported a failure", action=action_name, error=reported
+            )
+            failures.append(FailedGoldenAction.from_reported_failure(index, action_name, reported))
 
         return data, GoldenReplayRecord(authored=len(golden_actions), failures=tuple(failures))
 
