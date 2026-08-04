@@ -21,7 +21,6 @@ from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
-from tolokaforge.docker.wheel_resolver import resolve_wheel
 
 
 def core_stack(
@@ -179,13 +178,12 @@ def core_stack(
     if secrets_payload:
         runner_env["TOLOKAFORGE_SECRETS_JSON"] = json.dumps(secrets_payload)
 
-    # Resolve the tolokaforge wheel for the runner image.
-    # The wheel is a local file — Docker never needs to reach the network.
-    artifact = resolve_wheel()
-
-    runner_build_args: dict[str, str] = {
-        "WHEEL_FILENAME": artifact.path.name,
-    }
+    # The runner Dockerfile is a multi-stage build: its wheel-builder stage
+    # runs ``hatch build --target custom`` against the source tree to produce
+    # the runner-subset wheel; the runtime stage installs it. The build
+    # context ships the sources hatch needs — the subset wheel is a
+    # Docker-only artifact (ADR-0025), never a host-side input.
+    runner_build_args: dict[str, str] = {}
     if enable_playwright:
         runner_build_args["INSTALL_PLAYWRIGHT"] = "true"
     if enable_docker_cli:
@@ -197,7 +195,16 @@ def core_stack(
         dockerfile="tolokaforge/docker/dockerfiles/runner.Dockerfile",
         context=".",
         context_files=[
-            str(artifact.path),  # absolute path to the .whl
+            # Sources ``hatch build --target custom`` consumes in the
+            # wheel-builder stage. Every path is repo-relative; the temp
+            # build context assembler copies them flat into the isolated
+            # build directory (see ``builder.assemble_build_context``).
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            ".python-version",
+            "scripts/hatch/",
+            "tolokaforge/",
         ],
         ports=[PortConfig(container_port=50051, host_port=runner_port)],
         environment=runner_env,

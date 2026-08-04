@@ -5,24 +5,61 @@
 # - Tool execution (MCP server styles, terminal-bench)
 # - Trial grading via golden path comparison
 #
-# tolokaforge is installed from a pre-built wheel placed into the build
-# context by the host-side wheel resolver (tolokaforge.docker.wheel_resolver).
-# The container never clones a repo or reaches PyPI — the wheel is local.
+# tolokaforge is installed from the runner-subset wheel, a Docker-only build
+# artifact never published to PyPI. The subset packages the runner's runtime
+# import closure — orchestrator, adapters, dx, docker helpers, and env
+# services stay in the base wheel. ADR-0025 owns the split; ADR-0024 owns
+# the container command surface, preserved here verbatim.
 #
-# Multi-stage: the builder installs the wheel + its [runner] extra into an
-# isolated venv (with the build-only apt toolchain); the runtime stage copies
-# only that venv, so git/curl/perl and the pip/setuptools/wheel toolchain never
-# reach the shipped image.
+# Three stages:
+#
+#   1. wheel-builder — installs hatch, copies the source tree hatch needs,
+#      and runs ``hatch build --target custom`` to produce the subset wheel
+#      under ``/src/dist/``. The custom builder lives at
+#      ``scripts/hatch/hatch_runner_subset_builder.py`` and consumes the
+#      partition enumerated in ``tolokaforge/core/_runner_subset.py``.
+#   2. builder — copies the subset wheel from wheel-builder and installs it
+#      into an isolated ``/opt/venv`` (with any build-only apt toolchain).
+#      The subset wheel's METADATA declares the runner's runtime deps (the
+#      union of the base wheel's ``[project.dependencies]`` reachable from
+#      the runner subset and the domain-tool ``[runner]`` extra) so no
+#      extras selector is needed at install time.
+#   3. runtime — copies only the venv, so git/curl/perl and the
+#      pip/setuptools/wheel toolchain never reach the shipped image.
 
 ARG PYTHON_VERSION=3.12
 
 # ---------------------------------------------------------------------------
-# builder — install the wheel + [runner] extra into /opt/venv
+# wheel-builder — build the runner-subset wheel from the source tree
+# ---------------------------------------------------------------------------
+FROM python:${PYTHON_VERSION}-slim AS wheel-builder
+
+WORKDIR /src
+
+# ``hatchling build --target custom`` runs the custom builder script directly
+# in the current interpreter — no build-isolation venv, no ``hatch`` env
+# machinery — so the layer is self-contained and reproducible. Version-bound
+# so the produced wheel metadata format is deterministic across builds.
+RUN pip install --no-cache-dir "hatchling>=1.24,<2.0"
+
+# Source files needed by ``hatchling build --target custom``. Copy pyproject
+# and metadata files first (rarely change) so the layer that ADDs the
+# tolokaforge source cache-invalidates independently.
+COPY pyproject.toml README.md LICENSE .python-version /src/
+COPY scripts/hatch/ /src/scripts/hatch/
+COPY tolokaforge/ /src/tolokaforge/
+
+# Build the subset wheel. Output lands in ``/src/dist/`` as
+# ``tolokaforge_runner_subset-<version>-py3-none-any.whl``.
+RUN python -m hatchling build --target custom
+
+# ---------------------------------------------------------------------------
+# builder — install the subset wheel into /opt/venv
 # ---------------------------------------------------------------------------
 FROM python:${PYTHON_VERSION}-slim AS builder
 
 # Build-only system deps. Wheels that carry native build steps need a compiler
-# toolchain; git/curl are here for any source build the resolver's deps trigger.
+# toolchain; git/curl are here for any source build a subset dep triggers.
 # None of this reaches the runtime stage.
 RUN apt-get update && apt-get install -y --no-install-recommends \
     curl \
@@ -30,19 +67,16 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
-# WHEEL_FILENAME is passed as a build arg by the wheel resolver so we don't rely
-# on shell glob expansion inside Docker. No default — a missing --build-arg
-# fails loudly at this layer rather than silently COPYing the wrong filename.
-ARG WHEEL_FILENAME
-COPY ${WHEEL_FILENAME} /tmp/
+COPY --from=wheel-builder /src/dist/tolokaforge_runner_subset-*.whl /tmp/
 
-# Install into an isolated venv. The [runner] extra is the single source of
-# truth for the runner image's domain-tool runtime deps (declared in
-# pyproject.toml). --no-compile keeps *.pyc bytecode out of site-packages;
-# PYTHONDONTWRITEBYTECODE in the runtime stage keeps it that way.
+# Install into an isolated venv. The subset wheel's METADATA carries every
+# runtime dep (the base wheel deps the runner reaches + the former
+# ``[runner]`` extra), so no extras selector is needed. --no-compile keeps
+# *.pyc bytecode out of site-packages; PYTHONDONTWRITEBYTECODE in the
+# runtime stage keeps it that way.
 RUN python -m venv /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir --no-compile "/tmp/${WHEEL_FILENAME}[runner]" \
-    && rm -f "/tmp/${WHEEL_FILENAME}"
+    && /opt/venv/bin/pip install --no-cache-dir --no-compile /tmp/tolokaforge_runner_subset-*.whl \
+    && rm -f /tmp/tolokaforge_runner_subset-*.whl
 
 # ---------------------------------------------------------------------------
 # runtime — copy only the venv; no build toolchain
@@ -111,7 +145,7 @@ RUN rm -rf /opt/venv/lib/python*/site-packages/pip \
 # Domain code is delivered at runtime via TaskDescription.tool_artifacts —
 # adapters bundle the env/domain tree there, the runner extracts it under a
 # per-trial tempdir and prepends it to sys.path. The image stays domain-agnostic;
-# the [runner] extra carries the drivers that extracted tool code needs.
+# the subset wheel carries the drivers that extracted tool code needs.
 
 # Create work directory for tool execution
 RUN mkdir -p /work && chmod 755 /work
