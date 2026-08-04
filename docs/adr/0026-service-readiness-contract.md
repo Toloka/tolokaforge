@@ -1,4 +1,4 @@
-# 0025. Service-readiness contract as a fourth entry-point-registry seam
+# 0026. Service-readiness contract as a fourth entry-point-registry seam
 
 - **Status:** Accepted
 - **Date:** 2026-08-03
