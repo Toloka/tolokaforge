@@ -234,10 +234,15 @@ class TestAgentOnlyNextActor:
         assert "agent_only" in decision.system_message
 
     def test_tool_call_turn_also_returns_termination(self) -> None:
-        """The loop today only calls ``next_actor`` after a tool-call-free
-        agent turn, but the policy stays consistent regardless of state:
-        agent-only never dispatches a user, so any invocation of
-        ``next_actor`` means the trial is done."""
+        """Invariant lock: policy is stateless on ``last_agent_had_tool_calls``.
+
+        The runner today gates ``next_actor`` at ``loop.py:337-341`` to fire
+        only after a tool-call-free agent turn, so this test exercises a
+        state combination the standard wiring never produces. Preserved
+        for two reasons: (1) direct callers (future policy compositions,
+        tests) can still hit ``next_actor`` on any state and must see a
+        consistent decision; (2) forward-compatibility if the loop's
+        dispatch gate is ever generalised."""
         state = TurnState(
             messages=[_agent_message()],
             last_agent_had_tool_calls=True,

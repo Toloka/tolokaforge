@@ -137,6 +137,58 @@ def test_agent_only_mode_accepts_none_user_simulator() -> None:
     assert trajectory.termination_reason is TerminationReason.AGENT_DONE
 
 
+def test_agent_only_mode_text_only_completion_terminates_as_agent_done() -> None:
+    """Regression lock for #876 at the runner-wiring level.
+
+    The real-MB smoke that surfaced #876 died on this exact shape: the
+    agent finished the migration and emitted a text-only completion
+    summary (no ``###STOP###``, no tool calls). Under the pre-fix
+    implementation the runner shim returned an empty ``UserTurnResult``
+    and the loop retried the agent — sending a request ending in
+    ``role: assistant`` which Anthropic's ``opus-4-6`` rejects as
+    unsupported prefill, so the trial went to ``status=error`` and
+    ``/grade`` was skipped entirely.
+
+    Post-fix, ``AgentOnlyTurnPolicy.next_actor`` returns a
+    :class:`TerminationDecision` with ``reason=AGENT_DONE``. The runner
+    shim propagates it via ``UserTurnResult(termination=...)`` and the
+    loop honors it. The trial completes with ``AGENT_DONE`` and the
+    downstream grading path fires as it would for an explicit
+    ``###STOP###``. This test locks that end-to-end wiring, not just
+    the policy's return value (which is unit-tested separately in
+    ``test_turn_policy_contract.py``).
+    """
+    simulator = _spy_simulator()  # never invoked
+    agent = _ScriptedAgent(
+        _agent(
+            "The migration is complete. All tests pass. "
+            "Migrated 20 subcommands to Go."
+            # Deliberately no ``###STOP###`` — matches the real-MB failure shape.
+        )
+    )
+
+    trajectory = TrialRunner(
+        task_id="agent-only-text-only-completion",
+        trial_index=0,
+        agent_client=agent,
+        user_simulator=simulator,
+        tool_executor=ToolExecutor(ToolRegistry()),
+        tool_schemas=[],
+        max_turns=10,
+        episode_timeout_s=1200,
+        interaction_mode="agent_only",
+    ).run("You are a migration agent.", "Migrate the crate to Rust.")
+
+    assert simulator.reply.call_count == 0, (
+        "AgentOnlyTurnPolicy must not dispatch the simulator even on the "
+        "text-only-completion branch."
+    )
+    assert trajectory.termination_reason is TerminationReason.AGENT_DONE, (
+        f"text-only agent completion under agent_only must route to AGENT_DONE; "
+        f"got {trajectory.termination_reason!r} (pre-#876 shape would have been ERROR)."
+    )
+
+
 def test_agent_only_mode_without_initial_message_fails_loud() -> None:
     """The ``AgentOnlyTurnPolicy.bootstrap`` contract raises when neither
     an ``initial_user_message`` nor a live simulator can seed turn 0 —

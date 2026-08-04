@@ -155,6 +155,12 @@ class ConversationalTurnPolicy:
         )
 
     def next_actor(self, state: TurnState) -> ActorTurn | TerminationDecision | None:
+        # Defensive: today's runner gate at ``loop.py:337-341`` calls
+        # ``next_actor`` only after a tool-call-free agent turn, so this
+        # branch is unreachable via the standard wiring. Preserved for
+        # direct callers (tests, future policy compositions) and as a
+        # forward-compatibility hedge in case the loop's dispatch gate
+        # is generalised later.
         if state.last_agent_had_tool_calls:
             return None
         return ActorTurn(actor_name="user", actor=self._user_simulator)
@@ -228,7 +234,7 @@ class AgentOnlyTurnPolicy:
             system_message=(
                 "Agent emitted a text-only turn (no tool calls, no ###STOP###) "
                 "under interaction_mode=agent_only. Treating as implicit completion; "
-                "no user party exists to advance the conversation."
+                "the agent_only policy dispatches no user actor."
             ),
             status=TrialStatus.COMPLETED,
         )
