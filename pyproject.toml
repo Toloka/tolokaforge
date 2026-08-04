@@ -167,6 +167,9 @@ grpc = "tolokaforge.core.service_readiness:grpc_readiness_probe_factory"
 http = "tolokaforge.core.service_readiness:http_readiness_probe_factory"
 tcp = "tolokaforge.core.service_readiness:tcp_readiness_probe_factory"
 
+[project.entry-points."tolokaforge.turn_policies"]
+conversational = "tolokaforge.core.actors.turn_policy:_conversational_policy_factory"
+
 [tool.hatch.build]
 exclude = [
     "tasks/**",

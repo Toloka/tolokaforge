@@ -1,24 +1,26 @@
-"""Fail-loud entry-point registries for the four swappable seams.
+"""Fail-loud entry-point registries for the five swappable seams.
 
 External code discovers and loads alternative implementations of the
 :class:`~tolokaforge.core.runtime.RuntimeBackend`,
 :class:`~tolokaforge.core.trial_grader.TrialGrader`,
-:class:`~tolokaforge.core.conductor.Conductor`, and
-:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe` Protocols
+:class:`~tolokaforge.core.conductor.Conductor`,
+:class:`~tolokaforge.core.service_readiness.ServiceReadinessProbe`, and
+:class:`~tolokaforge.core.actors.turn_policy.TurnPolicy` Protocols
 through ``importlib.metadata`` entry-point groups — no in-tree edit, no
 monkey-patch. Each entry point resolves to a *factory callable*, mirroring the
-existing :data:`~tolokaforge.core.conductor.ConductorFactory` idiom. The three
-orchestrator seams adapt divergent impl constructors to a per-group
-frozen-dataclass context (``Callable[[<Context>], <Impl>]``); the readiness
-probes need no build dependencies, so their factory is arg-less
+existing :data:`~tolokaforge.core.conductor.ConductorFactory` idiom. Four of
+the seams adapt divergent impl constructors to a per-group frozen-dataclass
+context (``Callable[[<Context>], <Impl>]``); the readiness probes need no
+build dependencies, so their factory is arg-less
 (``Callable[[], ServiceReadinessProbe]``).
 
-The four groups:
+The five groups:
 
 * ``tolokaforge.runtime_backends`` → :data:`RuntimeBackendFactory`
 * ``tolokaforge.trial_graders`` → :data:`TrialGraderFactory`
 * ``tolokaforge.conductors`` → :data:`~tolokaforge.core.conductor.ConductorFactory`
 * ``tolokaforge.service_readiness_probes`` → :data:`ReadinessProbeFactory`
+* ``tolokaforge.turn_policies`` → :data:`TurnPolicyFactory`
 
 Discovery is lazy and cached per group; it enumerates ``ep.name`` /
 ``ep.dist`` **without** calling ``ep.load()``. This splits the fail-loud
@@ -38,6 +40,7 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
+from tolokaforge.core.actors.turn_policy import TurnPolicy
 from tolokaforge.core.conductor import ConductorFactory
 from tolokaforge.core.run_display_events import RunDisplayEvents, _NullRunDisplayEvents
 from tolokaforge.core.runtime import RuntimeBackend
@@ -47,6 +50,7 @@ from tolokaforge.core.trial_grader import TrialGrader
 if TYPE_CHECKING:
     from importlib.metadata import EntryPoint
 
+    from tolokaforge.core.actors.actor import Actor
     from tolokaforge.core.compose_materialisation import LogCaptureConfig
     from tolokaforge.core.logging import StructuredLogger
     from tolokaforge.core.models import SeedRef
@@ -61,21 +65,26 @@ __all__ = [
     "RuntimeBackendFactory",
     "TrialGraderContext",
     "TrialGraderFactory",
+    "TurnPolicyContext",
+    "TurnPolicyFactory",
     "UnknownImplementationError",
     "available_conductors",
     "available_readiness_probes",
     "available_runtime_backends",
     "available_trial_graders",
+    "available_turn_policies",
     "load_conductor",
     "load_readiness_probe",
     "load_runtime_backend",
     "load_trial_grader",
+    "load_turn_policy",
 ]
 
 RUNTIME_BACKENDS_GROUP = "tolokaforge.runtime_backends"
 TRIAL_GRADERS_GROUP = "tolokaforge.trial_graders"
 CONDUCTORS_GROUP = "tolokaforge.conductors"
 SERVICE_READINESS_PROBES_GROUP = "tolokaforge.service_readiness_probes"
+TURN_POLICIES_GROUP = "tolokaforge.turn_policies"
 
 
 # ---------------------------------------------------------------------------
@@ -159,9 +168,22 @@ class TrialGraderContext:
     logger: StructuredLogger
 
 
+@dataclass(frozen=True)
+class TurnPolicyContext:
+    """Dependencies a turn-policy factory receives from the runner.
+
+    ``user_simulator`` is ``None`` for policies that dispatch no user actor
+    (the agent-monologue case); the conversational factory refuses that
+    combination loudly rather than papering over it with a scripted stub.
+    """
+
+    user_simulator: Actor | None = None
+
+
 RuntimeBackendFactory = Callable[[RuntimeBackendBuildContext], RuntimeBackend]
 TrialGraderFactory = Callable[[TrialGraderContext], TrialGrader]
 ReadinessProbeFactory = Callable[[], ServiceReadinessProbe]
+TurnPolicyFactory = Callable[[TurnPolicyContext], TurnPolicy]
 
 
 # ---------------------------------------------------------------------------
@@ -250,6 +272,11 @@ def load_readiness_probe(kind: str) -> ReadinessProbeFactory:
     return cast(ReadinessProbeFactory, _load(SERVICE_READINESS_PROBES_GROUP, kind))
 
 
+def load_turn_policy(name: str) -> TurnPolicyFactory:
+    """Resolve a registered turn-policy name to its factory callable."""
+    return cast(TurnPolicyFactory, _load(TURN_POLICIES_GROUP, name))
+
+
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
     return sorted(_discover(RUNTIME_BACKENDS_GROUP))
@@ -268,3 +295,8 @@ def available_conductors() -> list[str]:
 def available_readiness_probes() -> list[str]:
     """Sorted kinds registered in the ``tolokaforge.service_readiness_probes`` group."""
     return sorted(_discover(SERVICE_READINESS_PROBES_GROUP))
+
+
+def available_turn_policies() -> list[str]:
+    """Sorted names registered in the ``tolokaforge.turn_policies`` group."""
+    return sorted(_discover(TURN_POLICIES_GROUP))

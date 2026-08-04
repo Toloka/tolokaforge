@@ -560,7 +560,7 @@ The isolation axis (shared vs per-trial) and the substrate axis (docker compose 
 
 ## Plug-in extension points
 
-Four swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, and `ServiceReadinessProbe` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** — not the raw class — so divergent constructors are adapted behind a factory. The three orchestrator seams pass a per-group frozen-dataclass context (`Callable[[<Context>], <Impl>]`); a readiness probe needs no build dependencies, so its factory is arg-less (`Callable[[], ServiceReadinessProbe]`). tolokaforge's own nine built-ins register through the same mechanism.
+Five swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, `ServiceReadinessProbe`, and `TurnPolicy` — are each exposed as an `importlib.metadata` entry-point group. A downstream package registers an implementation under a name in its own `pyproject.toml`; the orchestrator discovers it after `pip install`, with no edit to tolokaforge. Each entry point resolves to a **factory callable** — not the raw class — so divergent constructors are adapted behind a factory. Four of the seams pass a per-group frozen-dataclass context (`Callable[[<Context>], <Impl>]`); a readiness probe needs no build dependencies, so its factory is arg-less (`Callable[[], ServiceReadinessProbe]`). tolokaforge's own built-ins register through the same mechanism.
 
 | Group | Factory type | Context |
 | --- | --- | --- |
@@ -568,6 +568,7 @@ Four swappable seams — `RuntimeBackend`, `TrialGrader`, `Conductor`, and `Serv
 | `tolokaforge.trial_graders` | `Callable[[TrialGraderContext], TrialGrader]` | `runtime_backend`, `logger` |
 | `tolokaforge.conductors` | `Callable[[ConductorContext], Conductor]` | per-run deps (adapter, writer, config, agent client, runtime backend, grader, …) |
 | `tolokaforge.service_readiness_probes` | `Callable[[], ServiceReadinessProbe]` | *no context* |
+| `tolokaforge.turn_policies` | `Callable[[TurnPolicyContext], TurnPolicy]` | `user_simulator` (the resolved user :class:`Actor`; ``None`` for policies that dispatch no user) |
 
 A factory is free to ignore context fields it does not need. The runtime-backend, trial-grader, and readiness-probe context/factory types are imported from `tolokaforge.core.plugin_registry`; the conductor context is imported from `tolokaforge.core.conductor` (as shown in the conductor example below) since it reuses the pre-existing `ConductorContext` seam. Keep the factory module free of any `tolokaforge.core.orchestrator` import so `.load()` stays independent of the orchestration engine.
 
@@ -634,6 +635,22 @@ mykind = "mypkg.readiness:my_probe_factory"
 ```
 
 tolokaforge ships `grpc`, `http`, and `tcp` built-ins under this group.
+
+**Turn policy** — `mypkg/turn_policy.py`. A turn policy choreographs the loop's turn cycle: `bootstrap` decides how message index 0 is delivered, and `next_actor` picks the actor to speak next (or returns `None` to end the turn cycle for an agent-monologue task). The policy is looked up by `TaskConfig.interaction_mode`, so a policy name in this group is a valid `interaction_mode` value:
+
+```python
+from tolokaforge.core.plugin_registry import TurnPolicyContext
+
+def my_policy_factory(ctx: TurnPolicyContext) -> "MyTurnPolicy":
+    return MyTurnPolicy(user_simulator=ctx.user_simulator)
+```
+
+```toml
+[project.entry-points."tolokaforge.turn_policies"]
+my_shape = "mypkg.turn_policy:my_policy_factory"
+```
+
+tolokaforge ships `conversational` (two-party user-plus-agent) as a built-in under this group.
 
 **Fail-loud resolution.** Names resolve lazily and are cached per group. Discovery enumerates names and distributions **without importing any target**, which gives the policy two distinct shapes:
 
