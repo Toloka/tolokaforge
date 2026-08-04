@@ -382,10 +382,10 @@ class GradingEngine:
 
         Raises:
             UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
-                truthy without being a list at all. Refused at this read, which is what
-                leaves the replay's own ``list[dict[str, Any]]`` receiving a list on every
-                call; an element inside one that is no mapping declares no name and is
-                answered by the replay's name resolution.
+                truthy without being a list at all, so no reader can iterate it. Refused
+                at this read, above the world the actions would otherwise need. An element
+                *inside* a list that is no mapping is a different shape, answered by the
+                replay's own name resolution.
             UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
                 the task declares no world to replay them against, so there is no
                 expected state and the trial is left unscored.

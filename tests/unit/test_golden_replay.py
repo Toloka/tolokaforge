@@ -51,6 +51,7 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.utils.golden_source_shapes import elements_that_are_no_action
 from tolokaforge.core.grading.golden_replay import (
     FailedGoldenAction,
     GoldenActionFailure,
@@ -213,15 +214,8 @@ def test_an_action_whose_name_is_no_string_is_refused_as_one_naming_nothing(
         _check(_trial_state(pack_tools, _PLACE_ORDER), listed)
 
 
-#: Every element an untyped ``golden_actions`` list can hold that is no action at all. An
-#: author reaches the bare name by writing ``- confirm_payment`` instead of
-#: ``- name: confirm_payment``.
-_ELEMENTS_THAT_ARE_NO_ACTION = (
-    pytest.param("confirm_payment", id="a_bare_tool_name"),
-    pytest.param(3, id="a_number"),
-    pytest.param(None, id="a_list_entry_carrying_nothing"),
-    pytest.param(["confirm_payment"], id="a_nested_list"),
-)
+#: Shared with the runner's read of the same shapes, over this pack's second action.
+_ELEMENTS_THAT_ARE_NO_ACTION = elements_that_are_no_action("confirm_payment")
 
 
 @pytest.mark.parametrize("element", _ELEMENTS_THAT_ARE_NO_ACTION)

@@ -13,14 +13,16 @@ a truthiness test, so a gate mirroring that would answer ``[{enabled: true}]`` a
 absent block, so the pack builds a description that grades that component as nothing
 and the trial is paid for before anything notices.
 
-**One tier below those keys, one read site.** ``state_checks.hash.golden_actions`` is the
-list of actions a golden replay executes, and :meth:`to_task_description` is the only
-native read of it — it lowers each action onto the wire, where
-:meth:`get_grading_config` hands the untyped block on to the core engine, which refuses
-the same shape at its own read (``tests/unit/grading/test_state_checks_composition.py``).
-So the rows for it are not parametrised over both errands. A *falsy* source is no replay
-rather than a malformed one and loads as no actions to replay; only a truthy value that is
-not a list is refused.
+**One tier below those keys, and one errand refuses it.** ``state_checks.hash.golden_actions``
+is the list of actions a golden replay executes, and :meth:`to_task_description` is the read
+that lowers each action onto the wire — so it is the one that refuses a shape it cannot
+lower. :meth:`get_grading_config` hands the untyped block on to the core engine, which
+refuses the same shape at its own read
+(``tests/unit/grading/test_state_checks_composition.py``), and :meth:`compute_golden_hash`
+reads the source for truth alone and returns no hash for any other shape (#836). So the rows
+below are not parametrised over the errands. A *falsy* source is no replay rather than a
+malformed one and loads as no actions to replay; only a truthy value that is not a list is
+refused.
 
 Each row drives a real pack on disk through the real adapter, because the shape a read
 site is handed is what the loader made of the file, not what a monkeypatch says.
@@ -34,6 +36,10 @@ from typing import Any
 import pytest
 import yaml
 
+from tests.utils.golden_source_shapes import (
+    elements_that_are_no_action,
+    sources_no_replay_can_iterate,
+)
 from tolokaforge.adapters._task_loader import load_task
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.golden_replay import (
@@ -187,18 +193,15 @@ def test_an_empty_grading_file_is_answered_by_each_read_site_as_it_was(
         _read(empty, "get_grading_config")
 
 
-#: Every truthy ``golden_actions`` no replay can iterate, and the type name the refusal
-#: reports back. An author reaches the mapping by dropping the ``-`` in front of a single
-#: action and the string by writing a tool name beside the key.
-_GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = (
-    pytest.param({"name": "place_order"}, "dict", id="one_action_written_as_a_mapping"),
-    pytest.param("place_order", "str", id="a_tool_name_written_beside_the_key"),
-    pytest.param(3, "int", id="a_number"),
-    pytest.param(True, "bool", id="the_flag_written_over_the_source"),
-)
+#: Both shape tables are shared with the gate's rows and core's, over a tool name this
+#: pack's grading file can carry.
+_GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = sources_no_replay_can_iterate("place_order")
+_ELEMENTS_THAT_ARE_NO_ACTION = elements_that_are_no_action("place_order")
 
 #: Every falsy spelling of the source, ``null`` being what a bare ``golden_actions:``
-#: parses to — the shape an author reaches by commenting their actions out.
+#: parses to — the shape an author reaches by commenting their actions out. Six here where
+#: the gate reads five: the empty list is locked for the gate by a test of its own, while
+#: this read has to answer all six identically.
 _GOLDEN_SOURCES_THAT_REPLAY_NOTHING = (
     pytest.param(None, id="the_key_carrying_nothing"),
     pytest.param([], id="an_empty_list"),
@@ -206,14 +209,6 @@ _GOLDEN_SOURCES_THAT_REPLAY_NOTHING = (
     pytest.param("", id="an_empty_string"),
     pytest.param(0, id="zero"),
     pytest.param(False, id="false"),
-)
-
-#: Every element an untyped list can hold that is no action at all.
-_ELEMENTS_THAT_ARE_NO_ACTION = (
-    pytest.param("place_order", id="a_bare_tool_name"),
-    pytest.param(3, id="a_number"),
-    pytest.param(None, id="a_list_entry_carrying_nothing"),
-    pytest.param(["place_order"], id="a_nested_list"),
 )
 
 _SOURCES_BESIDE_THE_GOLDEN_ONE = (
@@ -292,17 +287,15 @@ def test_an_action_that_is_no_mapping_is_refused_before_anything_is_built(
     This substrate has no resolution step in front of a paid trial, so tolerating the
     element is not open to it: ``GoldenAction.tool_name`` is a bare ``str``, so a name read
     off a non-mapping as ``""`` **constructs cleanly**, ``RegisterTrial`` accepts the trial,
-    and the resolve fails once the trial is paid for. That no description is returned is
-    therefore asserted rather than implied — a row checking only the raised class would
-    pass an implementation that built the description and raised later.
+    and the resolve fails once the trial is paid for. What rules that out is the refusal
+    escaping ``to_task_description`` itself — no description is returned, so no caller
+    reaches ``RegisterTrial`` — and where ``pytest.raises`` sits below is what locks it.
     """
     adapter = _replaying_pack(tmp_path, [{"name": "place_order"}, element])
 
-    description = None
     with pytest.raises(UnresolvableGoldenAction) as excinfo:
-        description = adapter.to_task_description(_TASK_ID)
+        adapter.to_task_description(_TASK_ID)
 
-    assert description is None
     assert "[1]" in str(excinfo.value)
     assert f"{type(element).__name__} ({element!r})" in str(excinfo.value)
 

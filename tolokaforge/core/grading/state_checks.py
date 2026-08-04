@@ -337,7 +337,7 @@ class StateChecker:
 
     def _execute_golden_actions(
         self,
-        golden_actions: list[dict[str, Any]],
+        golden_actions: list[Any],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,
@@ -440,7 +440,7 @@ class StateChecker:
     def check_hash_against_golden_replay(
         self,
         db_state: dict[str, Any],
-        golden_actions: list[dict[str, Any]],
+        golden_actions: list[Any],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,

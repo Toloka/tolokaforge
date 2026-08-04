@@ -382,17 +382,19 @@ def require_replayable_golden_actions(
     The read for a caller with no resolution step between the authored value and a paid
     trial: an element that is no mapping is refused here, naming its index, where core
     tolerates it and lets :func:`resolve_golden_action_names` refuse it by the same class
-    one step later. Reading a name off such an element instead would lower an action
-    named ``""`` onto the wire, which constructs cleanly and fails once the trial is paid
-    for.
+    one step later. Tolerating it here instead — returning ``None`` for its name, as core
+    does — would lower an action named ``""`` onto the wire, and that constructs cleanly.
+
+    Only the element's *shape* is answered. A mapping declaring no usable name reaches the
+    caller and is lowered the same way, which is #886 rather than this precondition.
 
     A falsy source is no actions to replay and loads as the empty list, the refusal above
     having answered every other non-list.
 
     Raises:
         UnreplayableGoldenSource: the source is not the list of actions to replay.
-        UnresolvableGoldenAction: an action in it declares no tool to call, every
-            offending index named in one raise.
+        UnresolvableGoldenAction: an element of it is no mapping at all, every offending
+            index named in one raise.
     """
     refuse_unreplayable_golden_source(golden_actions, context=context)
     if not isinstance(golden_actions, list):

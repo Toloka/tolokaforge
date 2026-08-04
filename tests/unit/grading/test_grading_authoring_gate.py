@@ -28,6 +28,7 @@ import pytest
 import yaml
 from pydantic import ValidationError
 
+from tests.utils.golden_source_shapes import sources_no_replay_can_iterate
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
     load_task_yaml,
@@ -1210,15 +1211,8 @@ def test_golden_actions_written_as_a_bare_string_draw_the_shape_and_the_missing_
     assert "tools.agent.mcp_server" in report.errors[1].message
 
 
-#: Every truthy ``golden_actions`` no replay can iterate, and the type name a refusal has
-#: to report back. An author reaches the mapping by dropping the ``-`` in front of a single
-#: action and the string by writing a tool name beside the key.
-_GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = (
-    pytest.param({"name": "write_file"}, "dict", id="one_action_written_as_a_mapping"),
-    pytest.param("write_file", "str", id="a_tool_name_written_beside_the_key"),
-    pytest.param(3, "int", id="a_number"),
-    pytest.param(True, "bool", id="the_flag_written_over_the_source"),
-)
+#: Shared with the two substrate read sites, over a tool ``_HELPDESK`` declares.
+_GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = sources_no_replay_can_iterate("write_file")
 
 #: Every falsy spelling of the source, which is no replay rather than a malformed one.
 #: ``null`` is what an author reaches by commenting their actions out and leaving the key.

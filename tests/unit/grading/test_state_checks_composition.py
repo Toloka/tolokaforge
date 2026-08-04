@@ -18,6 +18,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
+from tests.utils.golden_source_shapes import sources_no_replay_can_iterate
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
@@ -748,12 +749,11 @@ class TestAGoldenSourceNoReplayCanIterateRefusesToGrade:
     """A truthy ``golden_actions`` that is no list is refused at the read, above the world.
 
     Where it is refused is the whole content of these rows. The read below is the untyped
-    one — ``check_hash_against_golden_replay`` and the replay it delegates to are both
-    annotated ``list[dict[str, Any]]``, and a refusal living inside them would leave two
-    annotations excluding the very shape they document refusing. Refusing here leaves both
-    receiving a list on every call, and it puts the shape above the world the actions would
-    otherwise need: an author holding a pack that is wrong twice hears the shape, which is
-    the only one of the two they can fix from ``grading.yaml`` alone.
+    one, and refusing there is what leaves ``check_hash_against_golden_replay`` and the
+    replay it delegates to receiving a list on every call — they iterate their argument and
+    have no answer for a value they cannot. It also puts the shape above the world the
+    actions would otherwise need: an author holding a pack that is wrong twice hears the
+    shape, which is the only one of the two they can fix from ``grading.yaml`` alone.
 
     Driven over the real ``shop_orders_02`` pack, whose initial state and server module a
     replay loads before it reads the first action: refusing the shape has to happen ahead
@@ -764,12 +764,7 @@ class TestAGoldenSourceNoReplayCanIterateRefusesToGrade:
     for a source no replay can run.
     """
 
-    _SHAPES_NO_REPLAY_CAN_ITERATE = (
-        pytest.param({"name": "close_widget"}, "dict", id="one_action_written_as_a_mapping"),
-        pytest.param("close_widget", "str", id="a_tool_name_written_beside_the_key"),
-        pytest.param(3, "int", id="a_number"),
-        pytest.param(True, "bool", id="the_flag_written_over_the_source"),
-    )
+    _SHAPES_NO_REPLAY_CAN_ITERATE = sources_no_replay_can_iterate("close_widget")
 
     _WORLDS_THE_SHAPE_IS_REFUSED_AGAINST = (
         pytest.param({}, id="a_world_the_replay_could_be_built_in"),

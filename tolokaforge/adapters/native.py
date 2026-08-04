@@ -408,10 +408,11 @@ class NativeAdapter(BaseAdapter):
             RuntimeError: If required files cannot be loaded, or if the grading file
                 or any grading key it declares is neither a mapping nor absent
             GoldenReplayError: ``state_checks.hash.golden_actions`` is truthy and is not
-                the list of actions to replay, or an action in it declares no tool to
-                call. Refused here rather than lowered onto the wire: this is the last
-                surface before ``RegisterTrial``, and an action carrying no name
-                constructs cleanly and fails once the trial is paid for.
+                the list of actions to replay, or an element of it is no mapping at all.
+                Refused here rather than lowered onto the wire, this being the last
+                surface before ``RegisterTrial``. A mapping element whose ``name`` is
+                absent or empty is **not** refused: it reaches the wire as
+                ``tool_name=""`` and fails at resolve time, which is #886.
         """
         from datetime import datetime, timezone
 
@@ -594,14 +595,14 @@ class NativeAdapter(BaseAdapter):
                 golden_actions: list[GoldenAction] = []
                 hash_config = state_checks_data.get("hash", {})
                 if hash_config and hash_config.get("enabled", False):
-                    for action in require_replayable_golden_actions(
+                    for golden_action in require_replayable_golden_actions(
                         hash_config.get("golden_actions"),
                         context=f"Grading file {grading_path}",
                     ):
                         golden_actions.append(
                             GoldenAction(
-                                tool_name=action.get("name", ""),
-                                arguments=action.get("kwargs", {}),
+                                tool_name=golden_action.get("name", ""),
+                                arguments=golden_action.get("kwargs", {}),
                             )
                         )
 

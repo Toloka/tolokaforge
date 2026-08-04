@@ -1005,21 +1005,31 @@ company, and that difference is #693's rather than this rule's: core takes no ha
 at all, while the runner's refusal-task semantics reset the environment, hash the initial
 state as the golden one and hand the fold a binary verdict.
 
-A **truthy** value that is not a list can be replayed by neither substrate, so every
-surface that reads the authored value refuses it in one sentence naming the key, the type
-received and the fix: the pre-run gate reports an error at
-`state_checks.hash.golden_actions`, `NativeAdapter.to_task_description` raises before a
-trial can be registered, and core's hash path raises `UnreplayableGoldenSource` — a
-`GoldenReplayError` subclass — above the world the actions would otherwise need. The
-runner's read is the one with no literal short-circuit, so a pack declaring
+A **truthy** value that is not a list can be replayed by neither substrate, so each of the
+three surfaces that has to act on it refuses it in one sentence naming the key, the type
+received and the fix. `tolokaforge validate` reports an ERROR at
+`state_checks.hash.golden_actions` and exits non-zero.
+`NativeAdapter.to_task_description` raises `UnreplayableGoldenSource` — a
+`GoldenReplayError` subclass — before a trial can be registered; a run's pre-flight
+resolves each pack's description before it reaches the gate, so that raise stops the pass
+where it stands with its own sentence instead of joining the named list of offending tasks,
+and #880 owns folding that class into it. Core's hash path raises the same class above the
+world the actions would otherwise need. `NativeAdapter.compute_golden_hash` reads the key
+too and refuses nothing: it reads the source for truth alone and returns no hash for any
+shape but a list (#836).
+
+The description build is the read with no literal short-circuit, so a pack declaring
 `expected_state_hash` beside a non-list `golden_actions` is refused there too, where core
 would have compared the literal and never read the actions.
 
 A **list element** that is no mapping — an action written `- place_order` where
-`- name: place_order` belongs — declares no tool to call. The gate refuses it at
-`state_checks.hash.golden_actions[i].name`, the description build raises
+`- name: place_order` belongs — declares no tool to call. `tolokaforge validate` refuses it
+at `state_checks.hash.golden_actions[i].name`, the description build raises
 `UnresolvableGoldenAction` naming the offending index, and core raises the same class out
-of name resolution, before the first action runs.
+of name resolution, before the first action runs. A mapping element whose `name` is absent
+or empty is refused at that same address by the gate, and core refuses it at resolution
+too — but the description build lowers it onto the wire as an empty tool name, where it
+fails only once the runner's replay resolves it, which is #886.
 
 "Needs a weight" is exactly: `hash.enabled` is on, **and** `hash` declares
 `expected_state_hash` or `golden_actions`, **and** `jsonpaths` is non-empty. Every
@@ -2360,7 +2370,7 @@ Findings come in three classes:
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
-| a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares | error | `state_checks.hash.golden_actions` |
+| a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
 | a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
