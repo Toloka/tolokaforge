@@ -187,6 +187,23 @@ packages = ["tolokaforge"]
 # absent from ``site-packages``.
 [tool.hatch.build.targets.wheel.force-include]
 ".python-version" = "tolokaforge/_python_version.txt"
+# Runner-image build inputs. The runner Dockerfile builds the subset wheel
+# in-container with ``hatchling build --target custom`` (ADR-0025), so its
+# build context needs this pyproject, the metadata files pyproject
+# references, and the custom builder script. On a wheel install the repo
+# root is ``site-packages`` and none of these are there, which broke every
+# Docker-runtime run on 0.14.0. Ship packaged copies so
+# ``builder._runner_definition()`` can assemble the same context from an
+# installed package. Same source-of-truth shape as the ``.python-version``
+# copy above: repo-root file authoritative, packaged copy is its artifact.
+# ``.python-version`` is NOT repeated here: the entry above already ships it
+# as ``tolokaforge/_python_version.txt`` (one force-include key per source),
+# and ``_runner_definition()`` re-lands that copy in the context under its
+# original dotfile name via a (source, destination) context entry.
+"pyproject.toml" = "tolokaforge/_subset_build/pyproject.toml"
+"README.md" = "tolokaforge/_subset_build/README.md"
+"LICENSE" = "tolokaforge/_subset_build/LICENSE"
+"scripts/hatch" = "tolokaforge/_subset_build/scripts/hatch"
 
 [tool.hatch.build.targets.sdist]
 

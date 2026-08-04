@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import shutil
 import tempfile
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Sequence
 from contextlib import contextmanager
 from importlib import resources
 from pathlib import Path
@@ -83,6 +83,24 @@ PYTHON_VERSION = _pinned_python_version()
 _PYTHON_BUILD_ARGS: dict[str, str] = {"PYTHON_VERSION": PYTHON_VERSION}
 
 
+#: Build-context entries the runner Dockerfile's ``hatchling build`` stage
+#: needs, as repo-relative source-checkout paths. ``_runner_definition()``
+#: maps each to a packaged copy when the repo root is not available.
+_RUNNER_SOURCE_CONTEXT_FILES: list[str] = [
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    ".python-version",
+    "scripts/hatch/",
+    "tolokaforge/",
+]
+
+#: Where the base wheel's ``force-include`` table lands the repo-root files
+#: above, relative to the installed ``tolokaforge`` package. Keys are the
+#: build-context names the Dockerfile ``COPY`` lines expect.
+_PACKAGED_SUBSET_BUILD_DIR = "_subset_build"
+
+
 # =============================================================================
 # Image Definitions — Single Source of Truth
 # =============================================================================
@@ -102,9 +120,11 @@ _PYTHON_BUILD_ARGS: dict[str, str] = {"PYTHON_VERSION": PYTHON_VERSION}
 #
 # The runner image is different: its Dockerfile is multi-stage
 # (ADR-0025 § subset build target), producing the runner-subset wheel
-# in-container via ``hatch build --target custom``. The context is a
-# static source-tree slice, no host-side wheel resolution, no factory —
-# hence a fully-static IMAGE_DEFINITIONS entry.
+# in-container via ``hatch build --target custom``. Its context is a source-
+# tree slice rather than a resolved wheel, so it needs no host-side wheel
+# resolution — but it DOES pair with ``_runner_definition()``, which picks
+# between the repo-root paths (source checkout) and the packaged copies
+# (wheel install, where the repo root is ``site-packages``).
 
 IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "db-service": {
@@ -125,14 +145,12 @@ IMAGE_DEFINITIONS: dict[str, dict[str, Any]] = {
         # to produce the subset wheel, and a builder stage installs it into
         # /opt/venv. The build context ships the sources hatch needs; the
         # subset wheel is a Docker-only artifact (ADR-0025).
-        "context_files": [
-            "pyproject.toml",
-            "README.md",
-            "LICENSE",
-            ".python-version",
-            "scripts/hatch/",
-            "tolokaforge/",
-        ],
+        #
+        # These entries are the *source-checkout* paths. On a wheel install
+        # the repo-root files are absent from ``site-packages``, so
+        # ``_runner_definition()`` swaps in the packaged copies — see that
+        # factory and ``docs/adr/0025-runner-wheel-split.md``.
+        "context_files": _RUNNER_SOURCE_CONTEXT_FILES,
         "build_args": dict(_PYTHON_BUILD_ARGS),
     },
     "rag-service": {
@@ -183,6 +201,79 @@ def _rag_definition() -> dict[str, Any]:
 
 
 _DYNAMIC_DEFINITIONS["rag-service"] = _rag_definition
+
+
+def installed_package_dir() -> Path:
+    """Directory of the installed ``tolokaforge`` package (its source root)."""
+    return Path(__file__).resolve().parents[1]
+
+
+def packaged_subset_build_dir() -> Path:
+    """Directory holding the packaged copies of the runner's build inputs.
+
+    The base wheel's ``force-include`` table copies the repo-root files the
+    runner Dockerfile needs into ``tolokaforge/_subset_build/``. Same shape
+    as the ``.python-version`` -> ``tolokaforge/_python_version.txt`` copy
+    that :func:`_pinned_python_version` reads: the repo-root file stays the
+    single source of truth at write time, the packaged copy is a build
+    artifact of it.
+    """
+    return installed_package_dir() / _PACKAGED_SUBSET_BUILD_DIR
+
+
+def _runner_definition() -> dict[str, Any]:
+    """Resolve the runner build context for source-checkout OR wheel install.
+
+    The Dockerfile's ``hatchling build --target custom`` stage needs the
+    pyproject (which carries the ``[tool.hatch.build.targets.custom]``
+    table), the metadata files that pyproject references, the custom builder
+    script, and the ``tolokaforge`` sources. In a source checkout those sit
+    at the repo root. Installed as a wheel they do NOT: ``repo_root()`` is
+    ``site-packages``, so the repo-relative entries resolve to paths that do
+    not exist and the build dies before any trial runs.
+
+    Absolute context entries are copied flat into the build dir, so the
+    packaged copies land under exactly the names the ``COPY`` lines expect.
+    """
+    if (repo_root() / "pyproject.toml").is_file():
+        # Source checkout / editable install — repo-relative entries work.
+        return dict(IMAGE_DEFINITIONS["runner"])
+
+    packaged = packaged_subset_build_dir()
+    pkg_dir = installed_package_dir()
+    # Flat-copied absolutes land under their own basename, which is already
+    # the name each COPY line expects. ``.python-version`` is the exception:
+    # it ships as ``_python_version.txt`` (one force-include key per source),
+    # so it needs an explicit destination.
+    entries: list[Any] = [
+        packaged / "pyproject.toml",
+        packaged / "README.md",
+        packaged / "LICENSE",
+        packaged / "scripts",  # dir -> build_dir/scripts (holds hatch/)
+        pkg_dir,  # dir -> build_dir/tolokaforge
+        (pkg_dir / "_python_version.txt", ".python-version"),
+    ]
+    missing = [
+        str(e[0] if isinstance(e, tuple) else e)
+        for e in entries
+        if not (e[0] if isinstance(e, tuple) else e).exists()
+    ]
+    if missing:
+        raise FileNotFoundError(
+            "Runner build context is incomplete for a wheel install. The base "
+            "wheel must force-include the runner's subset-build inputs into "
+            f"'tolokaforge/{_PACKAGED_SUBSET_BUILD_DIR}/' — missing: "
+            f"{missing}. Rebuild the wheel from a pyproject that carries the "
+            "[tool.hatch.build.targets.wheel.force-include] entries, or run "
+            "from a source checkout."
+        )
+    return {
+        **IMAGE_DEFINITIONS["runner"],
+        "context_files": [(str(e[0]), e[1]) if isinstance(e, tuple) else str(e) for e in entries],
+    }
+
+
+_DYNAMIC_DEFINITIONS["runner"] = _runner_definition
 
 
 def get_image_definition(service_name: str) -> dict[str, Any]:
@@ -374,7 +465,7 @@ def expected_image_ref(service_name: str) -> str:
 def assemble_build_context(
     repo_root: Path,
     dockerfile: str,
-    context_files: list[str],
+    context_files: Sequence[str | tuple[str, str]],
 ) -> Path:
     """Create a temporary build directory with only the declared files.
 
@@ -385,7 +476,10 @@ def assemble_build_context(
     Args:
         repo_root: Repository root directory.
         dockerfile: Path to Dockerfile (relative to repo_root).
-        context_files: List of file/directory paths to include (relative to repo_root).
+        context_files: File/directory paths to include. Each entry is
+            either a path (relative to repo_root, or absolute -> copied
+            flat under its basename) or a ``(source, destination)`` pair
+            when the context name must differ from the source basename.
 
     Returns:
         Path to temporary build directory. The caller owns the directory and
@@ -405,7 +499,25 @@ def assemble_build_context(
     # Copy declared context files.
     # Paths may be relative (resolved against repo_root) or absolute
     # (e.g. a wheel from the wheel-cache — copied flat into build_dir).
+    # An entry may also be a ``(source, destination)`` pair when the name the
+    # Dockerfile expects differs from the source basename — used by
+    # ``_runner_definition()`` to land the packaged ``_python_version.txt``
+    # back under its repo-root dotfile name.
     for entry in context_files:
+        if isinstance(entry, tuple):
+            src_spec, dest_rel = entry
+            src = Path(src_spec)
+            if not src.is_absolute():
+                src = repo_root / src
+            if not src.is_file():
+                shutil.rmtree(build_dir, ignore_errors=True)
+                raise FileNotFoundError(
+                    f"Declared context path not found: {src_spec} -> {dest_rel}"
+                )
+            dst = build_dir / dest_rel
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+            continue
         entry_path = Path(entry)
         if entry_path.is_absolute():
             # Absolute path: copy the file flat into the build dir root.
