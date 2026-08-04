@@ -13,6 +13,7 @@ from unittest.mock import patch
 import pytest
 
 from tolokaforge.docker.builder import (
+    assemble_build_context,
     build_image,
     get_image_definition,
     service_name_for_image,
@@ -263,9 +264,9 @@ def test_build_image_runner_ships_source_tree_not_a_wheel(monkeypatch) -> None:
         # No host-side wheel is copied into the runner image build context;
         # the subset wheel is produced by the wheel-builder stage.
         wheels = list(root.glob("tolokaforge*.whl"))
-        assert (
-            wheels == []
-        ), f"runner build context must not contain a pre-built wheel; found: {wheels}"
+        assert wheels == [], (
+            f"runner build context must not contain a pre-built wheel; found: {wheels}"
+        )
         # Instead, the source-tree entries hatch consumes must be present.
         assert (root / "pyproject.toml").exists()
         assert (root / "scripts" / "hatch" / "hatch_runner_subset_builder.py").exists()
@@ -517,3 +518,79 @@ def test_build_and_prepare_builds_images_and_networks_without_starting_container
     # container-lifecycle side of the stack stayed untouched.
     stack.stop_all()  # would raise if containers had been created via the patched Container.create.
     stack.destroy(remove_networks=False)
+
+
+def test_runner_build_context_resolves_from_installed_wheel(tmp_path: Path, monkeypatch) -> None:
+    """On a wheel install the runner context must resolve to the PACKAGED
+    copies, not the repo-root paths.
+
+    ``repo_root()`` is ``Path(__file__).parents[2]``, which is
+    ``site-packages`` once tolokaforge is installed as a wheel — so
+    ``pyproject.toml`` / ``README.md`` / ``LICENSE`` / ``scripts/hatch`` are
+    simply not there. 0.14.0 shipped the repo-relative set unconditionally,
+    so every Docker-runtime run died in ``build_images()`` with
+    ``FileNotFoundError: Declared context path not found: pyproject.toml``
+    before a single trial executed — invisible to CI, which
+    only ever builds from a source checkout.
+
+    This locks the wheel-install branch: entries are absolute paths into the
+    packaged ``_subset_build`` dir, and they land in the assembled context
+    under exactly the names the Dockerfile ``COPY`` lines expect."""
+    site_packages = tmp_path / "site-packages"
+    pkg = site_packages / "tolokaforge"
+    packaged = pkg / "_subset_build"
+    (packaged / "scripts" / "hatch").mkdir(parents=True)
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        (packaged / name).write_text(f"# {name}\n")
+    (packaged / "scripts" / "hatch" / "hatch_runner_subset_builder.py").write_text("")
+    (pkg / "_python_version.txt").write_text("3.12\n")
+    # The base wheel ships the Dockerfiles inside the package, so
+    # ``assemble_build_context`` still finds the runner Dockerfile under
+    # ``repo_root``/``site-packages``.
+    dockerfiles = pkg / "docker" / "dockerfiles"
+    dockerfiles.mkdir(parents=True)
+    (dockerfiles / "runner.Dockerfile").write_text("FROM scratch\n")
+    # A wheel install has no repo-root pyproject.toml — that is the trigger.
+    monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
+    monkeypatch.setattr("tolokaforge.docker.builder.installed_package_dir", lambda: pkg)
+
+    runner_def = get_image_definition("runner")
+    entries = runner_def["context_files"]
+
+    for entry in entries:
+        src = Path(entry[0] if isinstance(entry, tuple) else entry)
+        assert src.is_absolute(), f"wheel-install entry must be absolute: {entry}"
+        assert src.exists(), f"wheel-install entry does not exist: {entry}"
+
+    build_dir = assemble_build_context(site_packages, runner_def["dockerfile"], entries)
+    try:
+        for expected in (
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            ".python-version",
+            "scripts/hatch",
+            "tolokaforge",
+        ):
+            assert (build_dir / expected).exists(), (
+                f"assembled runner context is missing '{expected}', which the "
+                "runner Dockerfile COPYs for its hatchling build stage"
+            )
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
+
+
+def test_runner_build_context_fails_loud_when_wheel_lacks_packaged_inputs(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """A wheel built from a pyproject without the force-include entries must
+    fail with an actionable message naming the missing paths, not with a bare
+    ``FileNotFoundError`` from deep inside the context copy."""
+    site_packages = tmp_path / "site-packages"
+    pkg = site_packages / "tolokaforge"
+    pkg.mkdir(parents=True)
+    monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
+    monkeypatch.setattr("tolokaforge.docker.builder.installed_package_dir", lambda: pkg)
+
+    with pytest.raises(FileNotFoundError, match="force-include"):
+        get_image_definition("runner")
