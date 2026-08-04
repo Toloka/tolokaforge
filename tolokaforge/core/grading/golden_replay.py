@@ -258,6 +258,19 @@ class FailedGoldenAction:
     def from_reported_failure(cls, index: int, name: str, message: str) -> FailedGoldenAction:
         return cls(index=index, name=name, kind=GoldenActionFailure.REPORTED, error=message)
 
+    @classmethod
+    def from_substrate_failure(cls, index: int, name: str, message: str) -> FailedGoldenAction:
+        """A call a substrate declared failed beside the prose it flattened the raise into.
+
+        The raised kind, and the same one :meth:`from_exception` records: the flag is the
+        substrate's rather than the tool's, so the tool's body never decided anything — a
+        substrate that answers a call whose exception escaped with a failure flag beside
+        text says exactly what an exception reaching the replay loop says. ``message`` is
+        the substrate's own words, kept whole, so an author reads the layer that failed
+        rather than a summary of it.
+        """
+        return cls(index=index, name=name, kind=GoldenActionFailure.RAISED, error=message)
+
 
 @dataclass(frozen=True)
 class GoldenReplayRecord:

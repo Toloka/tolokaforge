@@ -1100,13 +1100,22 @@ FastMCP renders a returned mapping as one `json.dumps` text block that decodes c
 Truthiness rather than key presence, so `{"error": null}` stays the success it reads as; top
 level only, so a nested domain `"error"` field in a returned state slice is not one.
 
-**A raised failure is read core-side and on the runner's tau and MCP-async paths**, whose
-wrappers re-raise, so the replay loop's `except Exception` sees the exception. For an
-`MCP_SERVER` pack the runner records nothing: the protocol answers a raising tool with
-`isError: true` beside error prose, `MCPServerToolWrapper.execute` returns that prose as a
-normal result, and `declared_failure` correctly reads no payload in it — recovering the flag
-is #853. So a golden action raising inside an MCP subprocess is annotated core-side and
-silent runner-side.
+**A raised failure is read on both substrates too, under the same kind.** Core-side and on
+the runner's tau and MCP-async paths the wrapper re-raises, so the replay loop's
+`except Exception` sees the exception. An `MCP_SERVER` pack states it out of band instead:
+the protocol answers a call whose exception escaped the tool with `isError: true` beside the
+prose FastMCP flattened that exception into, `MCPServerToolWrapper.execute_call` reports the
+flag beside the text, and the loop records the action as raised — the flag is the substrate's
+own statement, so the tool's body never decided anything, which is what the raised kind
+means. The flag is read before the returned-payload predicate, so a flagged call is recorded
+once whatever its text also looks like; the two populations are disjoint on that substrate
+anyway, `DomainToolRegistry` catching a `ToolError` and returning it, so only an undeclared
+exception ever reaches the flag. What differs across substrates is the message, deliberately:
+each quotes the layer that actually failed, so core's reads `TypeError: …` on one line while
+the runner's carries the MCP server's multi-line validation prose, `Error executing tool …`
+prefix and newlines included — `grade.reasons` carries those newlines rather than a tidied
+one-liner, because an author searching a log for the string finds what the server wrote. The
+kind, the verb and the sentence's shape are shared.
 
 A tool reporting failure as a bare prose string — `"Error: invalid characters in
 expression"` — is detected on neither substrate by design: telling one from legitimate

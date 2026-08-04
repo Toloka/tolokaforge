@@ -34,7 +34,9 @@ The runner half is driven through its own ``_execute_hash_grading`` over a db-cl
 answers the hash path, because what reaches it is not the mapping core reads but the text
 its wrapper flattened one out of: measured over the real MCP subprocess, the same declined
 call arrives as ``'{\\n  "error": "Order \\'O-999\\' not found"\\n}'``, and every payload it
-reads — success and failure alike — is a ``str``.
+reads — success and failure alike — is a ``str``. A raise reaches it as a ``str`` there too,
+that substrate flattening the exception into prose and stating the failure out of band in
+the flag beside it, which the wrapper reports and the loop records as the raised kind.
 """
 
 from __future__ import annotations
@@ -66,6 +68,7 @@ from tolokaforge.runner.service import (
     TrialContextRuntime,
     _tool_registered_for_trial,
 )
+from tolokaforge.runner.tool_factory import ToolCallOutcome
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
 
@@ -362,11 +365,12 @@ def test_declared_failure_reads_a_truthy_top_level_error_and_nothing_else(
     """The one predicate both substrates read a returned payload with.
 
     Two rows are load-bearing beyond the obvious. The prose row is what FastMCP answers a
-    *raising* MCP tool with, and it must stay undetected — matching prose for "error" is
-    the shape that false-positives on legitimate tool output (#855), and the raised kind on
-    ``MCP_SERVER`` packs is #853's to close. The concatenated-JSON row is what flattening a
-    ``list`` return's per-element text blocks produces, which is no JSON document and no
-    failure either.
+    *raising* MCP tool with, and it must stay undetected here: matching prose for "error" is
+    the shape that false-positives on legitimate tool output (#855), and that call's failure
+    reaches the replay loop as the flag its substrate stated beside the text rather than as
+    anything this predicate could read out of the text. The concatenated-JSON row is what
+    flattening a ``list`` return's per-element text blocks produces, which is no JSON
+    document and no failure either.
     """
     assert declared_failure(payload) == message
 
@@ -573,6 +577,36 @@ class _AnsweringTool:
         return self._answer
 
 
+class _FlaggingTool:
+    """A tool whose substrate declares a failed call in a flag beside the text it answered.
+
+    ``MCPServerToolWrapper``'s shape: the flag reaches the replay loop through
+    ``execute_call``, while ``execute`` hands the same text over for the agent path. That
+    the protocol really states it, and states it for exactly the calls whose exception
+    escaped the tool, is locked against the pack's own subprocess in
+    ``tests/canonical/test_shop_orders_02_behavior_canon.py``; what these cases read is what
+    the loop does once it holds one. Joining the two halves inside a runner container is
+    #860.
+    """
+
+    def __init__(self, answer: str, *, declared_failure: bool) -> None:
+        self._outcome = ToolCallOutcome(output=answer, declared_failure=declared_failure)
+
+    async def execute(self, _arguments: dict[str, Any]) -> str:
+        return self._outcome.output
+
+    async def execute_call(self, _arguments: dict[str, Any]) -> ToolCallOutcome:
+        return self._outcome
+
+
+def _flagging_tool(answer: str) -> _FlaggingTool:
+    return _FlaggingTool(answer, declared_failure=True)
+
+
+def _unflagged_tool(answer: str) -> _FlaggingTool:
+    return _FlaggingTool(answer, declared_failure=False)
+
+
 def _answering_async_callable(answer: str) -> Callable[[dict[str, Any]], Awaitable[str]]:
     async def call(_arguments: dict[str, Any]) -> str:
         return answer
@@ -587,16 +621,85 @@ def _answering_sync_callable(answer: str) -> Callable[[dict[str, Any]], str]:
     return call
 
 
-#: Three of the four shapes the replay loop reaches a registered tool through, each of which
+class _ShapelessTool:
+    """A registered object the replay loop reaches through no shape at all.
+
+    Neither ``execute_call`` nor ``execute``, and not callable, so no answer exists to read
+    the golden action's effect out of.
+    """
+
+    def __init__(self, _answer: str) -> None:
+        """The answer goes nowhere: no shape on this object can be asked for one."""
+
+
+class _AsyncCallTool:
+    """A callable object whose ``__call__`` is ``async``, so the loop's executor awaits nothing.
+
+    :func:`inspect.iscoroutinefunction` reads the object rather than its ``__call__``, so this
+    shape takes the sync-executor arm and the call answers a coroutine.
+    """
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    async def __call__(self, _arguments: dict[str, Any]) -> str:
+        return self._answer
+
+
+class _OutcomelessTool:
+    """A tool whose ``execute_call`` answers the text alone rather than an outcome.
+
+    The shape a wrapper over a substrate with its own failure flag is written into: the
+    method exists, so the loop takes that arm, and what comes back carries no flag to read.
+    """
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    async def execute_call(self, _arguments: dict[str, Any]) -> str:
+        return self._answer
+
+
+def _answering_mapping_callable(answer: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """A sync callable answering the mapping ``answer`` carries rather than its text.
+
+    The shape core is handed by a pack's ``invoke`` and the runner never is, every payload it
+    reads being a ``str``: reachable here only from a duck-typed callable in ``agent_tools``.
+    """
+
+    def call(_arguments: dict[str, Any]) -> dict[str, Any]:
+        return json.loads(answer)
+
+    return call
+
+
+#: The three fallback shapes the replay loop reaches a registered tool through, each of which
 #: has to hand its answer back: a shape whose return were dropped would record nothing any
 #: pack signalling through it declared, and the record would read as a whole golden path.
-#: ``RegisterTrial`` leaves ``ToolWrapper`` instances behind, which is the ``execute`` one.
-#: The fourth — an object neither ``execute``-shaped nor callable — is replayed as a
-#: no-op (#856).
+#: ``RegisterTrial`` leaves ``ToolWrapper`` instances behind, which the loop reaches through
+#: ``execute_call`` instead — ``_FlaggingTool`` is that shape.
 _TOOL_SHAPES = (
     pytest.param(_AnsweringTool, id="execute"),
     pytest.param(_answering_async_callable, id="async-callable"),
     pytest.param(_answering_sync_callable, id="sync-callable"),
+)
+
+
+#: What an ``MCP_SERVER`` pack answers a call its tool declined, measured over the pack's
+#: subprocess: FastMCP renders the returned ``{"error": …}`` mapping as one text block of
+#: ``json.dumps(payload, indent=2)``, which the wrapper hands over as a ``str``.
+_DECLINED_PAYLOAD = '{\n  "error": "Order \'O-999\' not found"\n}'
+
+#: What the same substrate answers ``confirm_payment({'order_idd': 'O-001'})``, a kwarg the
+#: tool's signature does not declare so the call itself fails: the exception never reaches
+#: the caller, FastMCP flattening it into multi-line prose and stating the failure out of
+#: band in ``isError``. Pinned whole, prefix and newlines included, because that is what the
+#: record carries and what an author looking for this string in a log will find.
+_FLAGGED_PROSE = (
+    "Error executing tool confirm_payment: 1 validation error for confirm_paymentArguments\n"
+    "order_id\n"
+    "  Field required [type=missing, input_value={'order_idd': 'O-001'}, input_type=dict]\n"
+    "    For further information visit https://errors.pydantic.dev/2.13/v/missing"
 )
 
 
@@ -606,12 +709,12 @@ async def _replay_as_the_runner_does(
     service = RunnerServiceImpl.__new__(RunnerServiceImpl)
     service.db_client = _AnsweringDBClient()
     context = TrialContextRuntime(
-        trial_id="golden_replay_reported:0",
+        trial_id="golden_replay_failed:0",
         task_description=TaskDescription(
-            task_id="golden_replay_reported",
-            name="A golden action reporting its failure in what it returned",
+            task_id="golden_replay_failed",
+            name="A golden action that did not take effect",
             category="test",
-            description="A hash-graded trial whose golden action is declined by its tool",
+            description="A hash-graded trial whose golden action its tool or substrate failed",
             adapter_type="native",
             system_prompt="You are a test assistant.",
         ),
@@ -643,9 +746,7 @@ async def test_the_runner_records_the_failure_its_tool_reported_in_what_it_retur
     runner never sees. Read through ``build_grade_reasons`` as well as off the record,
     because the sentence is what a reader of ``grade.reasons`` is told.
     """
-    reported = await _replay_as_the_runner_does(
-        '{\n  "error": "Order \'O-999\' not found"\n}', build_tool
-    )
+    reported = await _replay_as_the_runner_does(_DECLINED_PAYLOAD, build_tool)
 
     assert reported.golden_replay.failures == (
         FailedGoldenAction(
@@ -661,14 +762,136 @@ async def test_the_runner_records_the_failure_its_tool_reported_in_what_it_retur
     assert "[0] confirm_payment reported Order 'O-999' not found" in reasons, reasons
 
 
-async def test_the_runner_records_nothing_for_a_tool_that_answered_a_success_payload() -> None:
-    """The control: the case above is not a loop that records every action it replays.
+@pytest.mark.parametrize(
+    ("build_tool", "answer", "expected"),
+    [
+        pytest.param(
+            _flagging_tool,
+            _FLAGGED_PROSE,
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.RAISED,
+                error=_FLAGGED_PROSE,
+            ),
+            id="flagged-prose",
+        ),
+        pytest.param(
+            _flagging_tool,
+            _DECLINED_PAYLOAD,
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.RAISED,
+                error=_DECLINED_PAYLOAD,
+            ),
+            id="flagged-payload",
+        ),
+        pytest.param(
+            _unflagged_tool,
+            _DECLINED_PAYLOAD,
+            FailedGoldenAction(
+                index=0,
+                name="confirm_payment",
+                kind=GoldenActionFailure.REPORTED,
+                error="Order 'O-999' not found",
+            ),
+            id="unflagged-payload",
+        ),
+    ],
+)
+async def test_the_runner_records_one_failure_under_the_verb_of_whoever_declared_it(
+    build_tool: Callable[[str], Any], answer: str, expected: FailedGoldenAction
+) -> None:
+    """A substrate's own failure flag is the raised kind, and it is read before the payload.
+
+    The flagged rows are the defect this closes: a golden action whose *call* an
+    ``MCP_SERVER`` pack failed left the record empty, so the trial was hashed against a world
+    that action is missing from with nothing said about it. Raised, because the flag is the
+    substrate's and not the tool's — its body never decided anything, exactly as when an
+    exception reaches the loop — and the message stays the substrate's own words, the
+    ``Error executing tool …`` prefix and the newlines included, so an author reads the layer
+    that failed rather than a tidied summary. Core quotes ``TypeError: …`` for the same
+    authored defect: the kind, the verb and the sentence's shape are shared, the message is
+    whichever layer failed.
+
+    The last two rows carry the same answer and differ only in the flag, which is what pins
+    the reading order: a flagged call whose text the payload predicate would *also* read as a
+    failure records once, under the flag, and an unflagged one still records what its tool
+    reported.
+    """
+    result = await _replay_as_the_runner_does(answer, build_tool)
+
+    assert result.golden_replay.failures == (expected,)
+    reasons = _reasons_for(result)
+    assert "GOLDEN REPLAY ERRORS:" in reasons, reasons
+    assert "1 of 1" in reasons, reasons
+    assert f"[0] confirm_payment {expected.kind.value} {expected.error}" in reasons, reasons
+
+
+@pytest.mark.parametrize(
+    "build_tool",
+    [pytest.param(_AnsweringTool, id="execute"), pytest.param(_unflagged_tool, id="execute-call")],
+)
+async def test_the_runner_records_nothing_for_a_tool_that_answered_a_success_payload(
+    build_tool: Callable[[str], Any],
+) -> None:
+    """The control: the cases above are not a loop that records every action it replays.
 
     Every payload the runner reads is a ``str``, success and failure alike, so without this
-    a predicate applied to the wrong half of that population would pass the case above and
-    annotate every hash-graded trial in the tree.
+    a predicate applied to the wrong half of that population would pass the cases above and
+    annotate every hash-graded trial in the tree. Through both shapes the loop builds an
+    outcome from, so a loop reading the failure off the shape rather than off the outcome —
+    every ``execute_call`` answer a declared failure — fails it too.
     """
-    succeeded = await _replay_as_the_runner_does('{\n  "id": "O-001",\n  "status": "paid"\n}')
+    succeeded = await _replay_as_the_runner_does(
+        '{\n  "id": "O-001",\n  "status": "paid"\n}', build_tool
+    )
 
     assert succeeded.golden_replay == GoldenReplayRecord(authored=1)
     assert _reasons_for(succeeded) == "State: hash match"
+
+
+@pytest.mark.parametrize(
+    ("build_tool", "unreadable"),
+    [
+        pytest.param(_ShapelessTool, "_ShapelessTool", id="no-shape"),
+        pytest.param(_AsyncCallTool, "coroutine", id="unawaited-coroutine"),
+        pytest.param(_answering_mapping_callable, "dict", id="mapping-answer"),
+        pytest.param(_OutcomelessTool, "str", id="execute-call-answering-text"),
+    ],
+)
+async def test_the_runner_records_a_golden_action_whose_answer_it_cannot_read(
+    build_tool: Callable[[str], Any], unreadable: str
+) -> None:
+    """An answer no effect can be read out of is the raised kind, named by the shape at fault.
+
+    The alternative is the record reading as a whole golden path while one of its actions
+    took no effect anybody can show — the trial hashed against a world missing that action
+    with nothing said about it, which is the defect this whole module is about. So the loop
+    refuses the answer instead, and the refusal is what the author is handed: the type of the
+    registered object that answered through no shape, or the type of the answer itself where
+    the replay reads a ``str`` or a ``ToolCallOutcome``.
+
+    Every row records rather than escaping, which is the second half of the lock: the refusal
+    has to happen where the loop's own ``try`` still covers it, so a golden action nobody can
+    read annotates one grade instead of ending the whole hash grading.
+
+    The mapping row is also the no-coercion lock. Its answer is a declared failure — the
+    payload the pack's declining call really produces, in the mapping shape core is handed —
+    so ``str(answer)`` would render it as a Python repr no JSON decodes, ``declared_failure``
+    would read no failure in it, and the action a pack declared failed would be recorded as a
+    success. Refusing is the only reading that keeps it visible.
+    """
+    result = await _replay_as_the_runner_does(_DECLINED_PAYLOAD, build_tool)
+
+    assert len(result.golden_replay.failures) == 1, result.golden_replay
+    (failure,) = result.golden_replay.failures
+    assert failure.index == 0
+    assert failure.name == "confirm_payment"
+    assert failure.kind == GoldenActionFailure.RAISED
+    assert f"'{unreadable}'" in failure.error, failure.error
+
+    reasons = _reasons_for(result)
+    assert "GOLDEN REPLAY ERRORS:" in reasons, reasons
+    assert "[0] confirm_payment raised TypeError:" in reasons, reasons

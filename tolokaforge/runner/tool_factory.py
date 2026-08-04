@@ -10,7 +10,9 @@ It creates callable wrappers for four invocation styles:
 4. rag_search - RAG service search tools (HTTP API)
 
 Each wrapper produces a callable with the same interface:
-    async def execute(tool_name: str, arguments: Dict) -> str
+    async def execute(arguments: dict[str, Any]) -> str
+and reports what its substrate said about the call beside that text through:
+    async def execute_call(arguments: dict[str, Any]) -> ToolCallOutcome
 
 Usage:
     factory = ToolFactory(db_client, trial_id)
@@ -139,11 +141,21 @@ class ToolLifecycleContext:
     work_dir: str | None = None
 
 
+@dataclass(frozen=True)
+class ToolCallOutcome:
+    """What a tool call answered, and whether the substrate declared it a failure."""
+
+    output: str
+    declared_failure: bool
+
+
 class ToolWrapper(ABC):
     """
     Base class for tool wrappers.
 
     All wrappers must implement the execute() method with the same interface.
+    Beside it, execute_call() is concrete: a wrapper over a substrate that declares
+    a failed call out of band overrides that method rather than adding a third one.
     """
 
     # Whether the runner manages this tool's per-trial lifecycle via start()/stop()
@@ -170,6 +182,17 @@ class ToolWrapper(ABC):
             Tool output as a string (JSON serialized if structured)
         """
         pass
+
+    async def execute_call(self, arguments: dict[str, Any]) -> ToolCallOutcome:
+        """Execute the tool and report what its substrate said about the call.
+
+        A substrate with no out-of-band failure channel signals a failed call by
+        raising, and the golden-replay loop records that raise, so the default
+        reports ``declared_failure=False`` and lets any exception travel
+        untouched. A wrapper over a substrate that answers a failed call with a
+        flag beside the output — MCP's ``isError`` — overrides this method.
+        """
+        return ToolCallOutcome(output=await self.execute(arguments), declared_failure=False)
 
     async def __call__(self, arguments: dict[str, Any]) -> str:
         """Allow calling the wrapper directly."""
@@ -594,14 +617,19 @@ class MCPServerToolWrapper(ToolWrapper):
         return self._servers[self.server_script]
 
     async def execute(self, arguments: dict[str, Any]) -> str:
-        """
-        Execute MCP server tool via JSON-RPC.
+        """Return the tool call's output text; ``execute_call`` carries the flag too."""
+        return (await self.execute_call(arguments)).output
 
-        The tool call is sent to the MCP server subprocess.
+    async def execute_call(self, arguments: dict[str, Any]) -> ToolCallOutcome:
+        """Send the call to the server subprocess over JSON-RPC.
+
+        MCP answers a call the tool never completed with ``isError: true`` beside
+        the error prose, so this is where the protocol's own failure verdict is
+        read — the prose alone cannot be told apart from a normal result.
         """
         start_time = time.perf_counter()
         logger.debug(
-            f"MCPServerToolWrapper.execute() ENTRY: tool={self.name}, arguments={arguments}"
+            f"MCPServerToolWrapper.execute_call() ENTRY: tool={self.name}, arguments={arguments}"
         )
         state_changed = False
         try:
@@ -633,15 +661,20 @@ class MCPServerToolWrapper(ToolWrapper):
 
             latency_ms = (time.perf_counter() - start_time) * 1000
             logger.debug(
-                f"MCPServerToolWrapper.execute() EXIT: tool={self.name}, "
+                f"MCPServerToolWrapper.execute_call() EXIT: tool={self.name}, "
                 f"success=True, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
             )
-            return output
+            # MCP specifies CallToolResult.isError as optional, absent meaning
+            # the call did not fail — so the default is the protocol's, not a
+            # fallback covering a response shape we failed to handle.
+            return ToolCallOutcome(
+                output=output, declared_failure=bool(result.get("isError", False))
+            )
 
         except Exception as e:
             latency_ms = (time.perf_counter() - start_time) * 1000
             logger.debug(
-                f"MCPServerToolWrapper.execute() EXIT: tool={self.name}, "
+                f"MCPServerToolWrapper.execute_call() EXIT: tool={self.name}, "
                 f"success=False, state_changed={state_changed}, latency_ms={latency_ms:.2f}"
             )
             logger.error(f"MCP server tool {self.name} execution failed: {e}")
