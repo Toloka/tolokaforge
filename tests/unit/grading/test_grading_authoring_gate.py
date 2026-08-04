@@ -60,7 +60,10 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
-from tolokaforge.core.grading.state_composition import CONFLICTING_STATE_SOURCES_MESSAGE
+from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
+    HASH_SOURCE_KEYS,
+)
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     GradingCombineConfig,
@@ -908,28 +911,90 @@ _WORLDS_A_DISABLED_FLAG_IS_READ_AGAINST = (
 
 
 @pytest.mark.parametrize("world", _WORLDS_A_DISABLED_FLAG_IS_READ_AGAINST)
-def test_a_golden_action_under_a_disabled_flag_is_refused_by_no_rule_at_all(
+def test_a_golden_action_under_a_disabled_flag_is_refused_at_the_source(
     world: ReplayWorld,
 ) -> None:
-    """The one hash shape the gate accepts and no substrate grades (#832).
+    """A replay nobody runs is refused at the source key, not at the action.
 
-    Deliberate, and asserted so it cannot change by accident in either direction. The
-    name rule may not fire, because neither substrate resolves a source under a falsy
-    flag and refusing it would be stricter than the grade. The block still declares a
-    source, so the section rule sees something declared, and the flag agrees with no
-    ``expected_state_hash``, so the source rule sees nothing to disagree with — the
-    whole block grades nothing and draws no finding. #832 owns closing it, at the flag
-    rather than at the name.
+    Both substrates test the flag before they read any source, so the block grades the
+    state with no hash at all — core takes no verdict and the runner builds a
+    description carrying no golden actions — and the whole golden path is dead weight.
+    The name rule stays out of it for the reason it stays out of every falsy-flag block:
+    refusing a name nobody resolves would be stricter than the grade. So the one finding
+    is the flag's, addressed at the source the pack wrote, and the action names a tool
+    the task gives no actor precisely to prove the name rule does not join in.
 
     Held against every world a task can give a replay, because the replay-world rule
     reads the flag before it reads anything else: a task supplying neither fact draws no
-    finding for a replay nobody runs, and one no caller resolved draws no skip either.
+    second finding for a replay nobody runs, and one no caller resolved draws no skip.
     """
     grading = _golden_actions({"name": "close_widget"}, enabled=False)
 
     report = inspect_grading_authoring(grading, _inventory(_HELPDESK), replay_world=world)
 
-    assert report == AuthoringReport()
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
+    assert report.advisories == ()
+    assert report.unchecked == ()
+
+
+#: One authorable value per hash source, so the totality lock below can write whichever
+#: key the table names. A source added to ``HASH_SOURCE_KEYS`` with no value here fails
+#: that lock with a ``KeyError`` naming it.
+_A_TRUTHY_HASH_SOURCE: dict[str, Any] = {
+    "expected_state_hash": "aaaa",
+    "golden_actions": [{"name": "write_file"}],
+}
+
+
+@pytest.mark.parametrize("key", HASH_SOURCE_KEYS)
+def test_every_hash_source_under_a_disabled_flag_is_refused_at_its_own_key(key: str) -> None:
+    """The rule reads the source table rather than one member of it by name.
+
+    Each source alone under a falsy flag is the same defect — a comparison nothing runs,
+    on either substrate — so each draws one finding at the key its author wrote. Read off
+    ``HASH_SOURCE_KEYS`` rather than listed here, because the defect this closes *is* a
+    rule naming one source by hand: a third source joining the tuple fails here until
+    the rule reads it too.
+    """
+    grading = {"state_checks": {"hash": {"enabled": False, key: _A_TRUTHY_HASH_SOURCE[key]}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert [finding.where for finding in report.errors] == [f"state_checks.hash.{key}"]
+    assert key in report.errors[0].message
+
+
+_HASH_FLAGS_NEITHER_SUBSTRATE_GRADES_ON = (
+    pytest.param({"enabled": False}, id="written_false"),
+    pytest.param({"enabled": 0}, id="written_zero"),
+    pytest.param({"enabled": None}, id="written_null"),
+    pytest.param({}, id="no_enabled_key_at_all"),
+)
+
+
+@pytest.mark.parametrize("flag", _HASH_FLAGS_NEITHER_SUBSTRATE_GRADES_ON)
+def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
+    flag: dict[str, Any],
+) -> None:
+    """The mirror of the truthy spellings, over the source that used to escape.
+
+    However the flag is written, neither substrate reads a source behind one that is not
+    truthy, so every spelling is the same defect and draws the same finding — a block
+    omitting ``enabled`` altogether included, which is what an author reaches by deleting
+    the flag rather than the source. The message quotes the value the rule read, because
+    ``enabled: 0`` and ``enabled: null`` are fixed by writing ``true`` where a reader
+    told "the flag is off" would go looking for a ``false`` that is not there.
+    """
+    grading = {"state_checks": {"hash": {**flag, "golden_actions": [{"name": "write_file"}]}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
+    assert f"hash.enabled is {flag.get('enabled')!r}" in report.errors[0].message
 
 
 def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> None:
@@ -1202,9 +1267,30 @@ _SOURCELESS_STATE_CHECKS = (
         id="the_flag_on_with_an_empty_replay",
     ),
     pytest.param(
+        {"hash": {"enabled": False, "golden_actions": []}},
+        "state_checks",
+        id="the_flag_off_over_an_empty_replay",
+    ),
+    pytest.param(
         {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
         "state_checks.hash.expected_state_hash",
-        id="a_source_the_flag_never_reads",
+        id="a_literal_the_flag_never_reads",
+    ),
+    pytest.param(
+        {"hash": {"enabled": False, "golden_actions": [{"name": "write_file"}]}},
+        "state_checks.hash.golden_actions",
+        id="a_replay_the_flag_never_runs",
+    ),
+    pytest.param(
+        {
+            "hash": {
+                "enabled": False,
+                "expected_state_hash": "aaaa",
+                "golden_actions": [{"name": "write_file"}],
+            }
+        },
+        "state_checks.hash.expected_state_hash",
+        id="both_sources_the_flag_never_reads",
     ),
 )
 
@@ -1221,6 +1307,10 @@ def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
     rule's. Asserting the *whole* list rather than membership is what holds the
     partition — a rule widened to cover a shape the other already owns shows up here
     as two findings for one defect, and one narrowed shows up as none.
+
+    A block declaring *both* sources under a falsy flag is one defect fixed by one edit,
+    so it draws one finding rather than one per source, addressed at the literal — the
+    source core reads first.
     """
     report = inspect_grading_authoring({"state_checks": state_checks}, _inventory(_HELPDESK))
 

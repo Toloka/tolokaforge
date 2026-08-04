@@ -408,6 +408,12 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
     ),
 }
 
+_A_HASH_SOURCE_NOTHING_READS = (
+    "{key} is declared while hash.enabled is {enabled!r}: both substrates read the flag "
+    "before any source, so the comparison never runs and the state is graded without it. "
+    "Write enabled: true, or drop the source"
+)
+
 _GOLDEN_ACTION_NAME_ADDRESS = "state_checks.hash.golden_actions[{index}].name"
 
 # What a golden action the replay cannot resolve costs. One tail for both shapes, since
@@ -816,24 +822,37 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     """The hash check and something to compare against are declared together.
 
     Either half alone grades the state without the comparison the author wrote. A
-    source under a disabled flag is never read: both substrates test the flag first,
-    so the pack grades in silence without it. An enabled flag with no source is the
-    same defect from the other side, and it also splits the two substrates — core
-    produces no hash verdict at all while the runner compares the trial against the
-    initial state, so the same trial takes two different ``state_checks`` components.
+    source under a disabled flag is never read, whichever of
+    :data:`~tolokaforge.core.grading.state_composition.HASH_SOURCE_KEYS` carries it:
+    both substrates test the flag first, so the pack grades in silence without it. An
+    enabled flag with no source is the same defect from the other side, and it also
+    splits the two substrates — core produces no hash verdict at all while the runner
+    compares the trial against the initial state, so the same trial takes two different
+    ``state_checks`` components.
+
+    A block declaring two inert sources is one defect taking one edit, so it draws one
+    finding, addressed at the first source the tuple names. That order is **core's** read
+    order and no more: ``_check_state_hash`` compares a truthy ``expected_state_hash`` in
+    process and returns before ``golden_actions``, where no runner path reads the
+    translated ``expected_hash`` at all —
+    :data:`~tolokaforge.core.grading.key_manifest._HASH_SOURCE_SHAPE_REASON` records that
+    asymmetry under #693. What the message claims of both substrates is only what holds
+    of both: the flag is read before any source.
 
     Both halves read the flag for truth rather than for ``True``, because that is
     what decides the grade: core branches on its truthiness and the runner coerces
     it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
     would be stricter than either substrate. A source is read the same way — an
     empty ``golden_actions`` list replays nothing, which is why both substrates
-    treat it as no source at all.
+    treat it as no source at all and why such a block is
+    :func:`_check_sections_declare_something`'s rather than this rule's.
     """
     hash_block = _hash_block(grading)
     if hash_block is None:
         return AuthoringReport()
     enabled = hash_block.get("enabled")
-    if enabled and not any(hash_block.get(key) for key in HASH_SOURCE_KEYS):
+    declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
+    if enabled and declared is None:
         sources = " or ".join(HASH_SOURCE_KEYS)
         return AuthoringReport(
             errors=(
@@ -847,16 +866,13 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
                 ),
             )
         )
-    if not hash_block.get("expected_state_hash") or enabled:
+    if enabled or declared is None:
         return AuthoringReport()
     return AuthoringReport(
         errors=(
             Finding(
-                "state_checks.hash.expected_state_hash",
-                f"an expected state hash is declared while hash.enabled is {enabled!r}: "
-                "both substrates read the flag before the hash, so the comparison never "
-                "runs and the state is graded without it. Write enabled: true, or drop "
-                "the hash",
+                f"state_checks.hash.{declared}",
+                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
             ),
         )
     )
@@ -919,7 +935,9 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:
     """A pack replaying golden actions is authored against a task that gives them a world.
 
-    The block is read in the order both substrates read it. A falsy ``hash.enabled`` is
+    The block is read in the order core reads it — the flag, then ``expected_state_hash``,
+    then ``golden_actions`` — the runner having no literal-first order to share, since no
+    path there reads the translated ``expected_hash`` (#693). A falsy ``hash.enabled`` is
     a source nobody resolves, for the reason :func:`_check_hash_source_declared` gives at
     length. A truthy ``expected_state_hash`` is the *effective* source whatever else the
     block declares — core compares the trial against the author's literal and returns
@@ -981,8 +999,8 @@ def _check_golden_action_names(
     Read only under a truthy ``hash.enabled``, the flag both substrates test before
     they read any source, for the reason :func:`_check_hash_source_declared` gives at
     length: a name under a disabled flag is never resolved, so refusing it would be
-    stricter than the grade. That leaves the one shape neither rule refuses, a
-    ``golden_actions`` list under a falsy flag (#832).
+    stricter than the grade. That block is refused there instead, at the source key the
+    flag stops anything from reading rather than at any name it carries.
 
     Names resolve against the tools the task *declares*, which is stricter than either
     replay substrate — core resolves against the pack's ``TOOLS`` map and the runner
