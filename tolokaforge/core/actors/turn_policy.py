@@ -21,9 +21,13 @@ seam:
 The built-in :class:`ConversationalTurnPolicy` reproduces the two-party
 turn loop the runner has always driven: user simulator provides the seed
 message when the caller does not, and the user is dispatched after each
-agent turn that emits no tool calls. Registered via the
-``tolokaforge.turn_policies`` entry-point group and looked up by
-``TaskConfig.interaction_mode``.
+agent turn that emits no tool calls. The sibling
+:class:`AgentOnlyTurnPolicy` covers the agent-monologue shape used by
+migration-bench-style tasks: the caller must supply ``initial_user_message``
+(fail-loud otherwise), and no user turn is ever dispatched — the agent
+runs to ``###STOP###``, ``max_turns``, or ``episode_timeout_s``. Both are
+registered via the ``tolokaforge.turn_policies`` entry-point group and
+looked up by ``TaskConfig.interaction_mode``.
 """
 
 from __future__ import annotations
@@ -39,6 +43,7 @@ if TYPE_CHECKING:
 
 __all__ = [
     "ActorTurn",
+    "AgentOnlyTurnPolicy",
     "BootstrapDecision",
     "ConversationalTurnPolicy",
     "TurnPolicy",
@@ -151,3 +156,52 @@ def _conversational_policy_factory(context: TurnPolicyContext) -> Conversational
             "route agent-monologue tasks through the agent_only policy instead."
         )
     return ConversationalTurnPolicy(user_simulator=context.user_simulator)
+
+
+class AgentOnlyTurnPolicy:
+    """Agent-monologue turn loop: the caller seeds turn 0, no user turn ever fires.
+
+    ``bootstrap`` returns the caller-supplied ``initial_user_message`` verbatim
+    and raises :class:`ValueError` when it is missing — this shape has no user
+    simulator to synthesise a seed from, so a task authoring
+    ``interaction_mode: agent_only`` without an ``initial_user_message`` is a
+    config error the operator should hear about at run-start, not a silent
+    degrade into an empty-user-turn. ``next_actor`` returns ``None``
+    unconditionally: agent-###STOP###, ``max_turns``, and
+    ``episode_timeout_s`` are the only exits.
+
+    The optional ``user_simulator`` keyword keeps the constructor signature
+    parallel with :class:`ConversationalTurnPolicy` so the runner can hand
+    the same context object to either factory; the policy never dispatches
+    it.
+    """
+
+    def __init__(self, *, user_simulator: Actor | None = None) -> None:
+        del user_simulator
+
+    def bootstrap(self, task: TaskConfig, initial_user_message: str | None) -> BootstrapDecision:
+        if initial_user_message is not None and initial_user_message.strip():
+            return BootstrapDecision(
+                first_user_message=initial_user_message,
+                bootstrap_via_simulator=False,
+            )
+        raise ValueError(
+            f"AgentOnlyTurnPolicy requires initial_user_message for task "
+            f"{task.task_id!r} (interaction_mode='agent_only'); this shape has "
+            f"no user simulator to synthesise a seed from."
+        )
+
+    def next_actor(self, state: TurnState) -> ActorTurn | None:
+        del state
+        return None
+
+
+def _agent_only_policy_factory(context: TurnPolicyContext) -> AgentOnlyTurnPolicy:
+    """Build an :class:`AgentOnlyTurnPolicy` from a resolved context.
+
+    Ignores ``context.user_simulator`` — the agent-monologue shape never
+    dispatches a user actor, and a caller wiring one in is not an error
+    (the runner reuses the same context object across both factories).
+    """
+    del context
+    return AgentOnlyTurnPolicy()

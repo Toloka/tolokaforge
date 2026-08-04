@@ -1,8 +1,8 @@
-"""Pin the :class:`TurnPolicy` Protocol contract + :class:`ConversationalTurnPolicy` semantics.
+"""Pin the :class:`TurnPolicy` Protocol contract + built-in policy semantics.
 
-Locks three surfaces that later stages depend on:
+Locks the surfaces later stages depend on:
 
-* the Protocol is ``@runtime_checkable`` and the built-in policy passes
+* the Protocol is ``@runtime_checkable`` and both built-in policies pass
   ``isinstance``;
 * :meth:`ConversationalTurnPolicy.bootstrap` short-circuits to a caller-provided
   ``initial_user_message`` and routes to the simulator otherwise —
@@ -10,7 +10,14 @@ Locks three surfaces that later stages depend on:
   ``runner.py:508`` before the runner starts dispatching through the seam;
 * :meth:`ConversationalTurnPolicy.next_actor` dispatches the user actor only
   when the previous agent turn produced no tool calls — reproducing today's
-  ``_advance_user_turn`` gate at ``loop.py:337-341``.
+  ``_advance_user_turn`` gate at ``loop.py:337-341``;
+* :meth:`AgentOnlyTurnPolicy.bootstrap` accepts a caller-provided seed and
+  fails loud otherwise — the agent-monologue shape has no user simulator to
+  synthesise turn 0 from, so a missing seed is a config error we surface at
+  run-start rather than degrade into an empty user turn;
+* :meth:`AgentOnlyTurnPolicy.next_actor` returns ``None`` unconditionally —
+  the loop never dispatches a user actor in this mode, independent of loop
+  state.
 """
 
 from __future__ import annotations
@@ -24,6 +31,7 @@ from tolokaforge.core.actors.actor import (
 )
 from tolokaforge.core.actors.turn_policy import (
     ActorTurn,
+    AgentOnlyTurnPolicy,
     BootstrapDecision,
     ConversationalTurnPolicy,
     TurnPolicy,
@@ -32,6 +40,7 @@ from tolokaforge.core.actors.turn_policy import (
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import MessageRole
 from tolokaforge.core.models.task_config import TaskConfig
+from tolokaforge.core.plugin_registry import TurnPolicyContext
 
 pytestmark = pytest.mark.canonical
 
@@ -150,3 +159,75 @@ class TestNextActor:
         )
 
         assert policy.next_actor(state) is None
+
+
+class TestAgentOnlyProtocolRuntimeCheck:
+    """The Protocol is ``@runtime_checkable``; ``AgentOnlyTurnPolicy``
+    satisfies it via ``isinstance``, and the factory accepts a context
+    with no user simulator — the whole point of the agent-monologue shape."""
+
+    def test_agent_only_policy_passes_isinstance(self) -> None:
+        assert isinstance(AgentOnlyTurnPolicy(), TurnPolicy)
+
+    def test_factory_ignores_absent_user_simulator(self) -> None:
+        from tolokaforge.core.actors.turn_policy import _agent_only_policy_factory
+
+        policy = _agent_only_policy_factory(TurnPolicyContext(user_simulator=None))
+
+        assert isinstance(policy, AgentOnlyTurnPolicy)
+
+
+class TestAgentOnlyBootstrap:
+    """``bootstrap`` accepts a caller-provided seed and fails loud otherwise.
+
+    Agent-only mode has no user simulator to synthesise turn 0 from, so an
+    empty / missing / whitespace-only ``initial_user_message`` is a config
+    error surfaced at run-start rather than a silent empty-user-turn
+    degrade.
+    """
+
+    def test_returns_provided_message_and_skips_simulator(self) -> None:
+        decision = AgentOnlyTurnPolicy().bootstrap(_task(), "Migrate this crate to Rust.")
+
+        assert decision == BootstrapDecision(
+            first_user_message="Migrate this crate to Rust.",
+            bootstrap_via_simulator=False,
+        )
+
+    def test_none_message_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="agent_only") as excinfo:
+            AgentOnlyTurnPolicy().bootstrap(_task(), None)
+        assert "policy-fixture" in str(excinfo.value)
+
+    def test_empty_message_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="agent_only"):
+            AgentOnlyTurnPolicy().bootstrap(_task(), "")
+
+    def test_whitespace_only_message_raises_value_error(self) -> None:
+        with pytest.raises(ValueError, match="agent_only"):
+            AgentOnlyTurnPolicy().bootstrap(_task(), "   \n\t ")
+
+
+class TestAgentOnlyNextActor:
+    """``next_actor`` returns ``None`` unconditionally — the mode never
+    dispatches a user turn regardless of what the previous agent turn
+    did.
+    """
+
+    def test_no_tool_calls_returns_none(self) -> None:
+        state = TurnState(
+            messages=[_agent_message()],
+            last_agent_had_tool_calls=False,
+            turn_index=1,
+        )
+
+        assert AgentOnlyTurnPolicy().next_actor(state) is None
+
+    def test_tool_call_turn_returns_none(self) -> None:
+        state = TurnState(
+            messages=[_agent_message()],
+            last_agent_had_tool_calls=True,
+            turn_index=1,
+        )
+
+        assert AgentOnlyTurnPolicy().next_actor(state) is None

@@ -17,7 +17,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.actors.turn_policy import ConversationalTurnPolicy
+from tolokaforge.core.actors.turn_policy import AgentOnlyTurnPolicy, ConversationalTurnPolicy
 from tolokaforge.core.conductor import (
     ConductorContext,
     InMemoryConductor,
@@ -126,8 +126,11 @@ def test_readiness_probe_kinds_resolve_to_their_class(kind: str, expected_cls: t
 
 def test_turn_policy_names_resolve_to_their_class() -> None:
     context = TurnPolicyContext(user_simulator=MagicMock())
-    policy = load_turn_policy("conversational")(context)
-    assert isinstance(policy, ConversationalTurnPolicy)
+    conversational = load_turn_policy("conversational")(context)
+    assert isinstance(conversational, ConversationalTurnPolicy)
+
+    agent_only = load_turn_policy("agent_only")(TurnPolicyContext(user_simulator=None))
+    assert isinstance(agent_only, AgentOnlyTurnPolicy)
 
 
 def test_available_listings_match_the_builtin_set() -> None:
@@ -135,7 +138,7 @@ def test_available_listings_match_the_builtin_set() -> None:
     assert available_trial_graders() == ["runner_rpc"]
     assert available_conductors() == ["in_memory", "in_process"]
     assert available_readiness_probes() == ["grpc", "http", "tcp"]
-    assert available_turn_policies() == ["conversational"]
+    assert available_turn_policies() == ["agent_only", "conversational"]
 
 
 def test_raw_entry_point_probe_lists_runtime_backends() -> None:
@@ -152,4 +155,4 @@ def test_raw_entry_point_probe_lists_readiness_probes() -> None:
 
 def test_raw_entry_point_probe_lists_turn_policies() -> None:
     names = sorted(ep.name for ep in importlib.metadata.entry_points(group=TURN_POLICIES_GROUP))
-    assert names == ["conversational"]
+    assert names == ["agent_only", "conversational"]
