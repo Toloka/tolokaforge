@@ -31,6 +31,7 @@ from tolokaforge.core.deprecations import (
     coerce_security_context_aliases,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
+from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
 from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
@@ -3079,6 +3080,11 @@ class HashGradingResult(BaseModel):
     hash_match: bool
     hash_score: float
     state_diff: StateDiff | None = None
-    golden_action_errors: list[str] = Field(default_factory=list)
+    golden_replay: GoldenReplayRecord
+    """How much of the golden path ran, in the shape both substrates report from.
+
+    An unresolvable name never reaches the replay — it fails the whole grade — so every
+    failure here describes an action that ran against a world it did not fit.
+    """
 
     model_config = {"extra": "forbid"}

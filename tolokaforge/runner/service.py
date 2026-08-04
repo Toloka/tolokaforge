@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -53,6 +53,11 @@ from tolokaforge.core.grading.checks_interface import (
 )
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
+)
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenReplayRecord,
+    resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
@@ -238,6 +243,18 @@ def _executor_error_to_wire(error: str) -> "pb2.CustomCheckResult":
         message=error,
         details_json="",
     )
+
+
+def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
+    """The runner resolves a golden-action name against the tools it registered.
+
+    Golden actions are authored unprefixed, so a registered name ending in
+    ``_<name>`` resolves too. Not core's rule, which matches the pack's ``TOOLS``
+    map exactly; #815 owns unifying the two namespaces.
+    """
+    if name in registered:
+        return name
+    return next((candidate for candidate in registered if candidate.endswith(f"_{name}")), None)
 
 
 # =============================================================================
@@ -1573,6 +1590,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             transcript_result_dict,
             judge_reasons=judge_reasons or None,
             trace_checks_result=trace_checks_result.model_dump(mode="json"),
+            golden_replay=hash_result.golden_replay if hash_result is not None else None,
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"
@@ -1591,11 +1609,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # own sentence is what stops a 0.0 arriving beside components that all read as passing.
         if verdict.reason:
             reasons += f" | {verdict.reason}"
-
-        # Append golden action errors if any (critical for debugging golden replay failures)
-        if hash_result and hash_result.golden_action_errors:
-            errors_str = "; ".join(hash_result.golden_action_errors)
-            reasons += f" | GOLDEN REPLAY ERRORS: {errors_str}"
 
         logger.info(
             f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
@@ -2147,6 +2160,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Execute hash-based grading algorithm.
 
         Steps:
+        0. Resolve every golden-action name
         1. Get current trial stable hash
         2. Snapshot current state
         3. Reset to initial state
@@ -2163,8 +2177,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             golden_actions: List of golden path actions to execute
 
         Returns:
-            HashGradingResult with hash_match, hash_score, and optional state_diff
+            HashGradingResult with hash_match, hash_score, an optional state_diff, and
+            the record of how much of the golden path ran
+
+        Raises:
+            UnresolvableGoldenAction: an action names no tool registered for the trial,
+                or names nothing at all. Raised before step 1, so the trial's database
+                is untouched — steps 1-4 mutate it, and a trial whose grading failed on
+                a pack defect must not be left holding the initial state.
         """
+        # 0. Resolve every authored name
+        resolved_tool_names = resolve_golden_action_names(
+            [action.tool_name for action in golden_actions],
+            candidates=trial_context.agent_tools.keys(),
+            match=_tool_registered_for_trial,
+        )
+
         # Detect MCP server wrappers — their state lives in a subprocess, not
         # in the db-service, so we must sync before hashing and reset the MCP
         # subprocess state when the db-service is reset.
@@ -2220,28 +2248,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # the JSON DB Service that mirrors it) uses deterministic ID generation
         # (len(existing) + 1), so hardcoded IDs in golden actions always match
         # the IDs produced on replay from the same initial state.
-        golden_action_errors: list[str] = []
+        replay_failures: list[FailedGoldenAction] = []
 
-        for i, action in enumerate(golden_actions):
+        for i, (registered_name, action) in enumerate(
+            zip(resolved_tool_names, golden_actions, strict=True)
+        ):
             tool_name = action.tool_name
             arguments = dict(action.arguments)  # copy
 
-            tool = trial_context.agent_tools.get(tool_name)
-            if tool is None:
-                # Try with domain prefix (golden actions use unprefixed names)
-                for registered_name in trial_context.agent_tools:
-                    if registered_name.endswith(f"_{tool_name}"):
-                        tool = trial_context.agent_tools[registered_name]
-                        logger.debug(
-                            f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
-                        )
-                        break
-            if tool is None:
-                # Golden action references tool that doesn't exist
-                err_msg = f"Golden action {i} ({tool_name}): tool not found"
-                logger.error(f"GradeTrial: {err_msg}")
-                golden_action_errors.append(err_msg)
-                continue  # Continue - partial golden state still useful
+            tool = trial_context.agent_tools[registered_name]
+            if registered_name != tool_name:
+                logger.debug(
+                    f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
+                )
 
             try:
                 # Execute tool
@@ -2257,10 +2276,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
             except Exception as e:
                 # Golden action failure — log with full traceback for debugging
-                err_msg = f"Golden action {i} ({tool_name}) failed: {type(e).__name__}: {e}"
-                logger.error(f"GradeTrial: {err_msg}")
+                logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
                 logger.error(traceback.format_exc())
-                golden_action_errors.append(err_msg)
+                replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
 
         # For MCP_SERVER tasks: sync subprocess state to db-service so the
         # hash reflects what the golden actions actually produced.
@@ -2317,7 +2335,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             hash_match=hash_match,
             hash_score=hash_score,
             state_diff=state_diff,
-            golden_action_errors=golden_action_errors,
+            golden_replay=GoldenReplayRecord(
+                authored=len(golden_actions), failures=tuple(replay_failures)
+            ),
         )
 
     # =========================================================================

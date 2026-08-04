@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from tolokaforge.core.grading.golden_replay import FailedGoldenAction, GoldenReplayRecord
 from tolokaforge.core.grading.state_composition import INERT_HASH_WEIGHT_REASON
 from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
@@ -445,6 +446,24 @@ async def test_db_probe_connection_error_fails_loud(monkeypatch):
     assert "ConnectionError" in reasons
 
 
+@pytest.mark.parametrize(("hash_score", "expected"), [(1.0, (1.0, True)), (0.0, (0.0, False))])
+def test_combine_components_uses_a_lone_hash_verdict_as_state_checks(hash_score, expected):
+    """The golden-replay pack with no assertion set: the hash verdict *is* the component.
+
+    A binary verdict at ``pass_threshold: 1.0`` has to reach ``binary_pass`` unblended —
+    there is no second source to average it against and no weight to divide.
+    """
+    components = {"hash_score": hash_score, "jsonpath_score": -1.0, "transcript_score": -1.0}
+    grading_config = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 1.0,
+        "state_checks": {"golden_actions": [{"name": "place_order"}]},
+    }
+    folded = combine_grade_components(components, grading_config)
+    assert (folded.score, folded.binary_pass) == expected
+
+
 def test_combine_components_uses_db_probe_as_state_checks():
     components = {"hash_score": -1.0, "jsonpath_score": -1.0, "db_probe_score": 1.0}
     grading_config = {
@@ -468,6 +487,40 @@ def test_build_reasons_includes_db_probe_when_score_set():
     }
     text = build_grade_reasons(components)
     assert "DB probes: FAIL: probe 'ca_exists'" in text
+
+
+def test_build_reasons_names_an_incomplete_golden_replay_beside_the_verdict():
+    """The runner emits the shared sentence, under the prefix a downstream tool matches.
+
+    ``GOLDEN REPLAY ERRORS:`` is a contract, not phrasing: #599 names a consumer that
+    buckets trials by matching it. The verdict stays beside it — a replay that skipped an
+    action still produced a hash, and the sentence is what says not to trust it.
+    """
+    text = build_grade_reasons(
+        {"hash_score": 1.0, "hash_match": True},
+        golden_replay=GoldenReplayRecord(
+            authored=2,
+            failures=(
+                FailedGoldenAction(
+                    index=1, name="confirm_payment", error="TypeError: unexpected kwarg"
+                ),
+            ),
+        ),
+    )
+
+    assert "State: hash match" in text
+    assert "GOLDEN REPLAY ERRORS: 1 of 2" in text
+    assert "confirm_payment" in text
+
+
+def test_build_reasons_leaves_a_replay_that_ran_whole_unremarked():
+    text = build_grade_reasons(
+        {"hash_score": 1.0, "hash_match": True},
+        golden_replay=GoldenReplayRecord(authored=2),
+    )
+
+    assert "State: hash match" in text
+    assert "GOLDEN REPLAY ERRORS" not in text
 
 
 def test_build_reasons_includes_jsonpath_when_score_set():

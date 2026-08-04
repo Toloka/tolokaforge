@@ -616,6 +616,100 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
     )
 
 
+# The address the golden-action name rule reports under, and a name no pack declares,
+# injected into every pack's hash block as the positive control.
+_GOLDEN_ACTION_ADDRESS = "state_checks.hash.golden_actions["
+_A_TOOL_NO_ACTOR_CAN_CALL = "a_tool_no_actor_can_call"
+
+
+def _golden_action_findings(report: AuthoringReport) -> list[str]:
+    """Only what the golden-action name rule reported, out of the whole gate's report.
+
+    Scoped to one rule because this walk is 35 packs wider than
+    :func:`_gated_packs`, and the extra packs are wire-parity fixtures that name tools
+    no actor is given on purpose — over the whole report the guard below would be red on
+    20 of them for reasons that are not this rule's. Widening the gate walk itself is a
+    corpus measurement of its own.
+    """
+    return [
+        f"{finding.where}: {finding.message}"
+        for finding in report.errors + report.advisories
+        if finding.where.startswith(_GOLDEN_ACTION_ADDRESS)
+    ]
+
+
+def _naming_a_tool_no_actor_can_call(grading: Mapping[str, Any]) -> dict[str, Any]:
+    """*grading* with one more golden action, naming a tool no pack in the corpus declares.
+
+    Injected into every pack rather than one, because only 4 of the 93 declare a golden
+    action at all: a rule that stopped firing would otherwise leave this guard reading
+    green over the 89 that never provoke it. The flag is written on for the same reason
+    the rule reads it — a source under a falsy flag is resolved by nobody.
+    """
+    state_checks = {**(grading.get("state_checks") or {})}
+    hash_block = {**(state_checks.get("hash") or {})}
+    state_checks["hash"] = {
+        **hash_block,
+        "enabled": True,
+        "golden_actions": [
+            *(hash_block.get("golden_actions") or []),
+            {"name": _A_TOOL_NO_ACTOR_CAN_CALL},
+        ],
+    }
+    return {**grading, "state_checks": state_checks}
+
+
+def test_no_authored_golden_action_names_a_tool_no_actor_can_call() -> None:
+    """Every golden action in the repo resolves against the tools its task declares.
+
+    Over all 93 authored packs, which is where the golden-action packs live: three of
+    the four sit under ``tests/data/projects`` and ``tests/data/grading_parity``, outside
+    :func:`_gated_packs` entirely, so a guard over that walk would reach one of them.
+
+    Each inventory is the pack's own, built the way the gate's callers build it. An
+    unresolvable one would skip the rule on every pack and prove nothing, which is why
+    the packs whose inventory will not build are collected and pinned rather than
+    passed over — and why every pack is checked a second time with an action naming a
+    tool no actor can call, which has to be refused. Without that control a rule that
+    stopped firing would read as a corpus with no defects in it.
+    """
+    findings: dict[str, list[str]] = {}
+    unprobed: list[str] = []
+    without_an_inventory: list[str] = []
+    packs = _authored_packs()
+
+    for task_yaml in packs:
+        task, task_dir = load_task_yaml(task_yaml)
+        assert task.grading is not None
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        try:
+            inventory = build_tool_inventory(task, task_dir)
+        except ValueError:
+            without_an_inventory.append(task.task_id)
+            continue
+        pack = str(task_yaml.relative_to(_REPO))
+        if reported := _golden_action_findings(inspect_grading_authoring(grading, inventory)):
+            findings[pack] = reported
+        probed = inspect_grading_authoring(_naming_a_tool_no_actor_can_call(grading), inventory)
+        if not _golden_action_findings(probed):
+            unprobed.append(pack)
+
+    assert len(packs) == _AUTHORED_PACK_COUNT, (
+        f"the guard inspected {len(packs)} blocks, not {_AUTHORED_PACK_COUNT}. A corpus "
+        "proof over a subset says nothing about the packs it skipped"
+    )
+    assert without_an_inventory == [_PACK_WITH_NO_INVENTORY]
+    assert findings == {}, (
+        "these packs replay a golden action no actor of the task can call, so both "
+        "substrates refuse the replay and the trial is paid for and left with no "
+        "state-hash verdict"
+    )
+    assert unprobed == [], (
+        "the gate did not refuse a golden action naming a tool no actor can call for "
+        "these packs, so the rule never ran here and the clean sweep above proves nothing"
+    )
+
+
 def test_the_two_project_less_task_files_are_the_terminal_bench_pair() -> None:
     """A native pack losing its project layer would otherwise drop out unnoticed."""
     orphans = tuple(

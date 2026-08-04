@@ -13,10 +13,11 @@ the agent or to nobody: a misspelled tool name in a ``present`` matcher scores t
 component 0.0 with the message a genuine agent failure carries, the same typo in
 an ``absent`` matcher passes every trial, an uncompilable ``regex`` raises inside
 the evaluator once the tokens are already spent, a binding correlated against a
-field of another type is red on every trajectory whatever the agent did, a section
-declaring nothing scores nothing while reading as configured, and a component and its
-weight naming each other only one way leaves the two substrates folding different maps
-for the same trial.
+field of another type is red on every trajectory whatever the agent did, a golden
+action naming no callable tool leaves the replay with no world to hash and the trial
+with no verdict, a section declaring nothing scores nothing while reading as
+configured, and a component and its weight naming each other only one way leaves the
+two substrates folding different maps for the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -354,6 +355,27 @@ _TOOL_EXPECTATION_HAZARDS: Mapping[str, str] = {
     ),
 }
 
+_GOLDEN_ACTION_NAME_ADDRESS = "state_checks.hash.golden_actions[{index}].name"
+
+# What a golden action the replay cannot resolve costs. One tail for both shapes, since
+# a name outside the declared set and no name at all are equally unreplayable and take
+# the same fix; each shape supplies its own reason for that tail.
+_UNREPLAYABLE_GOLDEN_ACTION_HAZARD = (
+    "the replay refuses to build the golden world and the trial takes no state-hash "
+    "verdict at all, once it is already paid for. Name a tool this task declares, or "
+    "drop the action"
+)
+
+_UNDECLARED_GOLDEN_ACTION = (
+    "golden action {name!r} is not declared by this task, which gives its actors "
+    "{declared}: no actor can call it, so {hazard}"
+)
+
+_NAMELESS_GOLDEN_ACTION = (
+    "this golden action names no tool to replay, and the task gives its actors "
+    "{declared}: there is nothing for either substrate to resolve, so {hazard}"
+)
+
 
 def inspect_grading_authoring(
     grading: Mapping[str, Any],
@@ -398,6 +420,7 @@ def inspect_grading_authoring(
         reports += [
             _check_tool_names(sites, inventory),
             _check_tool_expectation_names(rules.tool_expectations if rules else None, inventory),
+            _check_golden_action_names(grading, inventory),
             _check_argument_paths(sites, inventory),
             _check_bound_extractions(binders, inventory),
         ]
@@ -737,6 +760,75 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
                 "the hash",
             ),
         )
+    )
+
+
+def _check_golden_action_names(
+    grading: Mapping[str, Any], inventory: ToolInventory
+) -> AuthoringReport:
+    """A golden action may only name a tool some actor of the task can call.
+
+    A name that resolves to nothing is refused by both substrates before the first
+    action runs, so the whole trial is paid for and left with no state-hash verdict —
+    core raises out of the grading engine, the runner answers ``GradeTrial`` with
+    ``success=false``. The gate is where that costs nothing.
+
+    Read only under a truthy ``hash.enabled``, the flag both substrates test before
+    they read any source, for the reason :func:`_check_hash_source_declared` gives at
+    length: a name under a disabled flag is never resolved, so refusing it would be
+    stricter than the grade. That leaves the one shape neither rule refuses, a
+    ``golden_actions`` list under a falsy flag (#832).
+
+    Names resolve against the tools the task *declares*, which is stricter than either
+    replay substrate — core resolves against the pack's ``TOOLS`` map and the runner
+    against the tools it registered for the trial, and neither is readable here without
+    importing the pack's server module. #815 owns unifying the three.
+
+    A name that is not a string at all — the block being untyped — is refused as one
+    resolving to nothing rather than tested for membership, which an unhashable value
+    answers with a ``TypeError``.
+    """
+    errors = tuple(
+        Finding(
+            _GOLDEN_ACTION_NAME_ADDRESS.format(index=index),
+            _unreplayable_golden_action_message(name, inventory),
+        )
+        for index, name in enumerate(_authored_golden_action_names(grading))
+        if not name or not isinstance(name, str) or name not in inventory.declared
+    )
+    return AuthoringReport(errors=errors)
+
+
+def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
+    """Each golden action's name as written, in the order the replay would run them.
+
+    Nothing at all where the flag is falsy, so the caller reads only the source a
+    substrate would read. An action that is not a mapping, and one carrying no ``name``,
+    both yield ``None``: the ``hash`` block is untyped (#730), so there is no load error
+    to defer to, and the index of the offending action is what an author acts on.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return
+    hash_block = state_checks.get("hash")
+    if not isinstance(hash_block, Mapping) or not hash_block.get("enabled"):
+        return
+    actions = hash_block.get("golden_actions")
+    if not isinstance(actions, list):
+        return
+    for action in actions:
+        yield action.get("name") if isinstance(action, Mapping) else None
+
+
+def _unreplayable_golden_action_message(name: Any, inventory: ToolInventory) -> str:
+    """Which of the two unreplayable shapes one action is, and its fix."""
+    declared = sorted(inventory.declared)
+    if not name:
+        return _NAMELESS_GOLDEN_ACTION.format(
+            declared=declared, hazard=_UNREPLAYABLE_GOLDEN_ACTION_HAZARD
+        )
+    return _UNDECLARED_GOLDEN_ACTION.format(
+        name=name, declared=declared, hazard=_UNREPLAYABLE_GOLDEN_ACTION_HAZARD
     )
 
 
