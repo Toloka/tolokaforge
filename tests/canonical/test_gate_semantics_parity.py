@@ -16,13 +16,13 @@ component is zeroed by the runner, the trace component by the fold itself.
 
 from __future__ import annotations
 
-import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
 import pytest
 
+from tests.utils.doc_anchors import anchor, section
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tolokaforge.core.grading.rubric import (
@@ -240,29 +240,6 @@ def test_the_judge_gate_and_the_trace_gate_answer_a_cell_alike(cell: _Cell):
 _GRADING_DOC = Path(__file__).resolve().parents[2] / "docs" / "GRADING.md"
 _SEVERITY_HEADING = "### `severity` — a check that must hold"
 _REQUIRED_GATE_HEADING = "### Required-gate semantics"
-_HEADING = re.compile(r"^#{1,3} ")
-
-
-def _anchor(heading: str) -> str:
-    """The anchor a heading answers to.
-
-    Each space becomes its own hyphen and everything that is neither alphanumeric nor
-    ``-``/``_`` is dropped, so a heading whose em dash is surrounded by spaces keeps
-    the double hyphen those two spaces produce.
-    """
-    text = heading.lstrip("#").strip().lower()
-    return "".join(
-        char if char.isalnum() or char in "-_" else "-" if char == " " else "" for char in text
-    )
-
-
-def _section(lines: Sequence[str], heading: str) -> str:
-    """``heading``'s own text, up to the next heading at the same level or above."""
-    starts = [index for index, line in enumerate(lines) if line.rstrip() == heading]
-    assert len(starts) == 1, f"{heading!r} appears {len(starts)} times in {_GRADING_DOC.name}"
-    body = lines[starts[0] + 1 :]
-    ends = [index for index, line in enumerate(body) if _HEADING.match(line)]
-    return "\n".join(body[: ends[0]] if ends else body)
 
 
 def _unpaired(heading: str) -> str:
@@ -278,10 +255,10 @@ def test_the_two_gate_vocabularies_are_a_documented_pair():
     resolved against the headings actually in the file.
     """
     lines = _GRADING_DOC.read_text(encoding="utf-8").splitlines()
-    severity = _section(lines, _SEVERITY_HEADING)
-    required_gate = _section(lines, _REQUIRED_GATE_HEADING)
-    severity_link = f"(#{_anchor(_SEVERITY_HEADING)})"
-    required_gate_link = f"(#{_anchor(_REQUIRED_GATE_HEADING)})"
+    severity = section(lines, _SEVERITY_HEADING, _GRADING_DOC.name)
+    required_gate = section(lines, _REQUIRED_GATE_HEADING, _GRADING_DOC.name)
+    severity_link = f"(#{anchor(_SEVERITY_HEADING)})"
+    required_gate_link = f"(#{anchor(_REQUIRED_GATE_HEADING)})"
 
     assert required_gate_link in severity, _unpaired(_SEVERITY_HEADING)
     assert severity_link in required_gate, _unpaired(_REQUIRED_GATE_HEADING)
