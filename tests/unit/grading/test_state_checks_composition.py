@@ -782,7 +782,7 @@ class TestAnIncompleteReplayIsNamedOnTheGrade:
     """
 
     #: A kwarg ``confirm_payment`` does not declare, which is the one defect shape that
-    #: makes the tool call itself raise rather than return ``{"error": …}`` (#831).
+    #: makes the tool call itself raise rather than return ``{"error": …}``.
     _RAISES = [{"name": "confirm_payment", "kwargs": {"order_idd": "O-001"}}]
     #: The read-only action, which runs whole and leaves the initial state alone — the
     #: same verdict as above, arrived at honestly.
@@ -797,7 +797,7 @@ class TestAnIncompleteReplayIsNamedOnTheGrade:
             task_mcp_server="mcp_server.py",
         )
 
-    def test_the_verdict_stands_and_the_reason_names_what_did_not_run(self, test_data_dir):
+    def test_the_verdict_stands_and_the_reason_names_what_did_not_take_effect(self, test_data_dir):
         grade = self._grade_over_the_pack(test_data_dir / "tasks" / "shop_orders_02", self._RAISES)
 
         assert grade.components.state_checks == pytest.approx(1.0)

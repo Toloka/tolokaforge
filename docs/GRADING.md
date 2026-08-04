@@ -1071,22 +1071,47 @@ because golden actions are authored unprefixed, and answers `GradeTrial` with
 `pre_golden` snapshot and the reset — so a pack defect costs the trial's database
 nothing and the trial still holds what the agent left behind.
 
-**An action that resolved, ran, and raised is different: the verdict stands, and the
-grade names what did not run.** The replay continues past it — tau-bench continues past a
-precondition failure and golden-action hash grading is the tau-style path — so the
-partial world it left is hashed against and yields a binary verdict as usual.
-`grade.reasons` then carries one sentence, identical on both substrates, under the
-`GOLDEN REPLAY ERRORS:` prefix: how many of how many actions did not run, each by index
-and name, with the exception it raised. Whether a verdict computed against a partial
-world should be admissible at all is open (#816) — the sentence annotates such a verdict,
-it does not sanction it, and the reproduced case is a trial that failed its task scoring
-`1.0` because the golden path stopped at the same place the agent did.
+**An action that resolved and ran but did not take effect is different: the verdict
+stands, and the grade names it.** Two shapes reach that state. The action *raised*, or it
+ran and *reported* failure in what it returned — which is how every tool built through
+`create_server` signals its own declared failures, since `DomainToolRegistry` converts a
+`ToolError` raise into a returned `{"error": …}` payload. Either way the replay continues
+past it — tau-bench continues past a precondition failure and golden-action hash grading
+is the tau-style path — so the partial world it left is hashed against and yields a binary
+verdict as usual. `grade.reasons` then carries one sentence, built once for whichever
+substrate graded the trial, under the `GOLDEN REPLAY ERRORS:` prefix: how many of how many
+actions did not take effect, then each by index and name with the verb it failed under and
+the message — `[1] confirm_payment raised TypeError: …` beside `[1] confirm_payment
+reported Order 'O-999' not found`. The verb is what sends an author to the right defect:
+`raised` means the golden path calls the tool wrong, `reported` means it calls it right
+about a state that refuses it. Whether a verdict computed against a partial world should be
+admissible at all is open (#816) — the sentence annotates such a verdict, it does not
+sanction it, and the reproduced case is a trial that failed its task scoring `1.0` because
+the golden path stopped at the same place the agent did.
 
-**The sentence covers actions that raised, and only those.** A golden action that ran and
-reported failure by *returning* `{"error": …}` — what every tool built through
-`create_server` does with its own declared failures — returns normally, so neither
-substrate can tell it from a success and no sentence is emitted (#831). Such an action
-produces the same partial world with nothing anywhere saying so.
+**A reported failure is read on both substrates, by one predicate.** Each reads what the
+action's tool answered and takes a truthy top-level `"error"` as a declared failure, through
+the same `declared_failure`: core reads what `invoke` returned, the runner the text its tool
+wrapper returned. Both shapes the predicate accepts are reached — core is handed a mapping
+by a pack whose tools return one and the JSON string of one by a tau-style pack whose tools
+`json.dumps` their answer, while every payload the runner reads is a string,
+`ToolWrapper.execute` being typed `-> str`. An `MCP_SERVER` pack is covered too, because
+FastMCP renders a returned mapping as one `json.dumps` text block that decodes cleanly.
+Truthiness rather than key presence, so `{"error": null}` stays the success it reads as; top
+level only, so a nested domain `"error"` field in a returned state slice is not one.
+
+**A raised failure is read core-side and on the runner's tau and MCP-async paths**, whose
+wrappers re-raise, so the replay loop's `except Exception` sees the exception. For an
+`MCP_SERVER` pack the runner records nothing: the protocol answers a raising tool with
+`isError: true` beside error prose, `MCPServerToolWrapper.execute` returns that prose as a
+normal result, and `declared_failure` correctly reads no payload in it — recovering the flag
+is #853. So a golden action raising inside an MCP subprocess is annotated core-side and
+silent runner-side.
+
+A tool reporting failure as a bare prose string — `"Error: invalid characters in
+expression"` — is detected on neither substrate by design: telling one from legitimate
+output needs substring matching over prose, which false-positives on any tool whose own
+output mentions the word (#855).
 
 ### Best Practices
 
