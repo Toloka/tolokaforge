@@ -151,7 +151,9 @@ class MyTool(ToolWrapper):
 
 Keep one request path, as above: `execute` delegates to `execute_call` and drops
 the flag. A wrapper that sends the request twice can answer the agent and the
-grade differently.
+grade differently. That direction holds only for a wrapper that overrides
+`execute_call`; one that inherits it implements `execute` directly, since the
+inherited `execute_call` is what calls `execute`.
 
 ## Constructor Contract
 

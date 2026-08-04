@@ -264,21 +264,29 @@ async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> ToolCallO
 
     ``execute_call`` first, which every ``ToolWrapper`` carries and which is the one shape
     able to report a substrate declaring the call a failure beside the text it answered; the
-    outcome that shape hands over ready-made is its implementor's contract to keep and is
-    not re-read here. Every other shape reports no declared failure, having no substrate to
-    hear from, and hands its answer back rather than dropping it, because the answer is what
-    :func:`declared_failure` reads a reported failure out of: a shape whose return were
-    dropped would record no failure a pack signalling through it declared.
+    outcome it hands over is read for its type, its content — the output text, the flag's
+    value — being its implementor's contract to keep. Every other shape reports no declared
+    failure, having no substrate to hear from, and hands its answer back rather than dropping
+    it, because the answer is what :func:`declared_failure` reads a reported failure out of:
+    a shape whose return were dropped would record no failure a pack signalling through it
+    declared.
 
     An answer this cannot read is refused, never recorded as a success — a registered object
-    reachable through none of those shapes, and anything the arms above build an outcome from
-    that is not the ``str`` every payload the runner reads is. The refusal names the offending
-    shape and reaches the replay loop's ``except`` arm, which records the action as raised;
-    a golden action read as having taken effect when nothing about it could be read is the
-    world the trial is then hashed against being wrong with nothing said about it.
+    reachable through none of those shapes, an ``execute_call`` answering anything but a
+    :class:`ToolCallOutcome`, and anything the arms above build an outcome from that is not
+    the ``str`` every payload the runner reads is. The refusal names the offending shape and
+    reaches the replay loop's ``except`` arm, which records the action as raised; a golden
+    action read as having taken effect when nothing about it could be read is the world the
+    trial is then hashed against being wrong with nothing said about it.
     """
     if hasattr(tool, "execute_call"):
-        return await tool.execute_call(arguments)
+        outcome = await tool.execute_call(arguments)
+        if not isinstance(outcome, ToolCallOutcome):
+            raise TypeError(
+                f"A replayed golden action's execute_call answered {type(outcome).__name__!r} "
+                "where the replay reads a ToolCallOutcome, so what the call did cannot be read."
+            )
+        return outcome
     if hasattr(tool, "execute"):
         return _readable_outcome(await tool.execute(arguments))
     if not callable(tool):
@@ -301,6 +309,11 @@ def _readable_outcome(answer: object) -> ToolCallOutcome:
     accepting or refusing it. A coroutine, which is what an ``async`` ``__call__`` hands the
     sync-executor arm since :func:`inspect.iscoroutinefunction` reads the object rather than
     its ``__call__``, is closed before the refusal so it draws no "never awaited" warning.
+
+    The refusal covers a *success* mapping too, so a pack out of this tree signalling through
+    a mapping-answering duck-typed callable gains a raised annotation on every golden action
+    it replays, its verdict unchanged. A wrapper answering a :class:`ToolCallOutcome` through
+    ``execute_call`` is read as it means and gains none.
     """
     if isinstance(answer, str):
         return ToolCallOutcome(output=answer, declared_failure=False)

@@ -10,7 +10,9 @@ It creates callable wrappers for four invocation styles:
 4. rag_search - RAG service search tools (HTTP API)
 
 Each wrapper produces a callable with the same interface:
-    async def execute(tool_name: str, arguments: Dict) -> str
+    async def execute(arguments: dict[str, Any]) -> str
+and reports what its substrate said about the call beside that text through:
+    async def execute_call(arguments: dict[str, Any]) -> ToolCallOutcome
 
 Usage:
     factory = ToolFactory(db_client, trial_id)
@@ -152,6 +154,8 @@ class ToolWrapper(ABC):
     Base class for tool wrappers.
 
     All wrappers must implement the execute() method with the same interface.
+    Beside it, execute_call() is concrete: a wrapper over a substrate that declares
+    a failed call out of band overrides that method rather than adding a third one.
     """
 
     # Whether the runner manages this tool's per-trial lifecycle via start()/stop()

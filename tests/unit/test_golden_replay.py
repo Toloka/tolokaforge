@@ -646,6 +646,20 @@ class _AsyncCallTool:
         return self._answer
 
 
+class _OutcomelessTool:
+    """A tool whose ``execute_call`` answers the text alone rather than an outcome.
+
+    The shape a wrapper over a substrate with its own failure flag is written into: the
+    method exists, so the loop takes that arm, and what comes back carries no flag to read.
+    """
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    async def execute_call(self, _arguments: dict[str, Any]) -> str:
+        return self._answer
+
+
 def _answering_mapping_callable(answer: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
     """A sync callable answering the mapping ``answer`` carries rather than its text.
 
@@ -844,6 +858,7 @@ async def test_the_runner_records_nothing_for_a_tool_that_answered_a_success_pay
         pytest.param(_ShapelessTool, "_ShapelessTool", id="no-shape"),
         pytest.param(_AsyncCallTool, "coroutine", id="unawaited-coroutine"),
         pytest.param(_answering_mapping_callable, "dict", id="mapping-answer"),
+        pytest.param(_OutcomelessTool, "str", id="execute-call-answering-text"),
     ],
 )
 async def test_the_runner_records_a_golden_action_whose_answer_it_cannot_read(
@@ -856,7 +871,11 @@ async def test_the_runner_records_a_golden_action_whose_answer_it_cannot_read(
     with nothing said about it, which is the defect this whole module is about. So the loop
     refuses the answer instead, and the refusal is what the author is handed: the type of the
     registered object that answered through no shape, or the type of the answer itself where
-    the replay reads a ``str``.
+    the replay reads a ``str`` or a ``ToolCallOutcome``.
+
+    Every row records rather than escaping, which is the second half of the lock: the refusal
+    has to happen where the loop's own ``try`` still covers it, so a golden action nobody can
+    read annotates one grade instead of ending the whole hash grading.
 
     The mapping row is also the no-coercion lock. Its answer is a declared failure — the
     payload the pack's declining call really produces, in the mapping shape core is handed —
