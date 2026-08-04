@@ -1,25 +1,39 @@
-"""Locks PR #858: base wheel install → runner build context resolves correctly.
+"""End-to-end regression guard for the wheel-install runner build path.
 
-The bug that reached v0.14.0 lived exactly here. CI only ever built from a
-source checkout, where all six runner context paths exist. When tolokaforge
-is installed as a wheel into ``site-packages``, the repo-root files
-(``pyproject.toml``, ``README.md``, ``LICENSE``, ``.python-version``,
-``scripts/hatch/``) are absent — the arena-eval production path — and
-``build_images()`` died with ``FileNotFoundError: pyproject.toml`` before
-a single trial ran.
+**Background — why this test exists.** The v0.14.0 release shipped an engine
+that died in ``build_images()`` before a single trial ran (installed as a
+wheel; ``repo_root()`` was ``site-packages``; repo-root files absent). PR
+#858 patched the resolver at ``tolokaforge.docker.builder`` — and v0.14.1
+shipped **still broken** because the production path takes
+``core_stack().services["runner"].context_files``, which held a **duplicate
+hardcoded copy of the repo-relative list**. PR #864 wired ``core_stack()``
+to consume from ``get_image_definition("runner")`` instead so the two lists
+cannot drift.
 
-The unit tests in ``tests/unit/test_docker_build_context.py`` mock the
-wheel-install layout via ``monkeypatch.setattr("...builder.repo_root", ...)``.
-That is enough to lock the resolution logic but not the pyproject-side
-``[tool.hatch.build.targets.wheel.force-include]`` table: a future refactor
-that drops a force-include entry would leave the unit tests green while
-re-introducing the v0.14.0 failure mode.
+The earlier version of this file called ``get_image_definition("runner")``
+directly inside the wheel-install venv. That is the RESOLVER surface, not
+production. It would have (and did) pass on v0.14.1's broken code. This
+rewrite drives the *production* path — the same one
+``Orchestrator._start_all_services`` → ``EngineStack.build_images()`` →
+``assemble_build_context()`` takes at runtime.
 
-This file closes that blind spot end-to-end. It builds the actual base
-wheel with ``python -m hatchling build -t wheel``, inspects the wheel to
-confirm every force-include entry landed, installs the wheel into a
-scratch venv, and invokes ``_runner_definition()`` from within that venv.
-Every entry the wheel-install branch returns must resolve to a real file.
+**What this locks:**
+
+- **The base wheel's ``[tool.hatch.build.targets.wheel.force-include]``
+  table** must ship every input the runner Dockerfile needs
+  (``test_base_wheel_ships_runner_context_via_force_include``). A future
+  edit that drops any force-include entry fails here.
+- **The wheel-install branch, wired end-to-end through ``core_stack()``**,
+  must produce a runner build context that assembles into a directory
+  containing every file the Dockerfile ``COPY`` lines expect
+  (``test_core_stack_runner_context_assembles_from_wheel_install``). A
+  future edit that duplicates the context list back into ``core_stack()``,
+  or a resolver regression, fails here.
+
+Both tests use the actual base wheel produced by
+``python -m hatchling build -t wheel`` and install it into a scratch venv;
+the second additionally runs the entry point outside the repo tree so a
+CWD-prepend into ``sys.path`` can't hide a partial wheel-install failure.
 """
 
 from __future__ import annotations
@@ -49,14 +63,27 @@ _EXPECTED_FORCE_INCLUDES: tuple[str, ...] = (
     "tolokaforge/_python_version.txt",
 )
 
+# Every file the runner Dockerfile ``COPY`` lines reference by name — the
+# assembled build context under a wheel install must land each one so
+# ``hatchling build --target custom`` inside the runner-image builder
+# stage finds its inputs.
+_EXPECTED_CONTEXT_ENTRIES: tuple[str, ...] = (
+    "pyproject.toml",
+    "README.md",
+    "LICENSE",
+    ".python-version",
+    "scripts/hatch",
+    "tolokaforge",
+)
+
 
 @pytest.fixture(scope="module")
 def built_base_wheel(tmp_path_factory: pytest.TempPathFactory) -> Path:
     """Build the base tolokaforge wheel once per module via ``hatchling build -t wheel``.
 
     Uses ``python -m hatchling`` rather than ``hatch build`` to avoid the
-    ``hatch`` CLI dep — PR #840's fix drove the subset-wheel tests via the
-    same invocation for the same reason (compat with the ``uv`` version pin).
+    ``hatch`` CLI dep — matches ``test_runner_subset_install_smoke.py``'s
+    invocation for the same reason (compat with the ``uv`` version pin).
     """
     dist_dir = tmp_path_factory.mktemp("dist")
     result = subprocess.run(
@@ -87,7 +114,10 @@ def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Pat
 
     Locks the ``[tool.hatch.build.targets.wheel.force-include]`` table in
     ``pyproject.toml`` — a future refactor that drops any of these
-    entries would re-introduce the v0.14.0 failure mode.
+    entries would re-introduce the v0.14.0 failure mode from a direction
+    the end-to-end test below cannot cover (because the assembly step
+    would legitimately fail on the missing input, leaving the reader to
+    diagnose whether the pyproject table drifted or the resolver did).
     """
     with zipfile.ZipFile(built_base_wheel) as zf:
         names = set(zf.namelist())
@@ -100,18 +130,28 @@ def test_base_wheel_ships_runner_context_via_force_include(built_base_wheel: Pat
     )
 
 
-def test_runner_definition_resolves_from_wheel_install(
+def test_core_stack_runner_context_assembles_from_wheel_install(
     built_base_wheel: Path, tmp_path_factory: pytest.TempPathFactory
 ) -> None:
-    """Install the base wheel into a scratch venv, invoke ``_runner_definition()``
-    inside that venv, and verify every wheel-install branch entry resolves.
+    """Install the base wheel into a scratch venv and drive the PRODUCTION
+    path — ``core_stack().services['runner'].context_files`` +
+    ``assemble_build_context()`` — end-to-end. Fail if the assembled
+    directory is missing any file the runner Dockerfile ``COPY`` expects.
 
-    The unit-test coverage in ``test_docker_build_context.py`` monkeypatches
-    ``repo_root`` and ``installed_package_dir`` to fake a wheel-install
-    layout. That locks the resolution logic. It does NOT lock the
-    pyproject-side ``force-include`` table nor the ``dup2``-free interaction
-    between site-packages layout and the resolver — both are what v0.14.0
-    tripped over. This test exercises the real path from a fresh install.
+    **Why this exact call shape.** ``Orchestrator._start_all_services`` →
+    ``EngineStack.build_images()`` → ``_build_one_image()`` calls
+    ``assemble_build_context(repo_root(), svc.dockerfile, svc.context_files)``
+    where ``svc`` comes from ``core_stack().services["runner"]``. The
+    earlier version of this file exercised ``get_image_definition("runner")``
+    inside the wheel-install venv — the resolver's surface, not
+    production's — and (silently) passed on v0.14.1's broken code because
+    ``core_stack()`` held its own hardcoded duplicate of the list. PR #864
+    wired ``core_stack()`` to read from ``get_image_definition()``; this
+    test locks that wiring end-to-end.
+
+    The probe additionally asserts the resolver and the service stack
+    return the same list — a necessary-but-not-sufficient invariant that
+    would already be violated if the duplicate returned.
     """
     venv_dir = tmp_path_factory.mktemp("scratch_venv")
     subprocess.run(
@@ -160,30 +200,52 @@ def test_runner_definition_resolves_from_wheel_install(
     probe_cwd = tmp_path_factory.mktemp("probe_cwd_outside_repo")
     probe = textwrap.dedent("""
         import json
+        import shutil
+        from pathlib import Path
+
         from tolokaforge.docker.builder import (
+            assemble_build_context,
             get_image_definition,
-            installed_package_dir,
             repo_root,
         )
+        from tolokaforge.docker.stacks.core import core_stack
 
-        definition = get_image_definition("runner")
-        serialized = []
-        for entry in definition["context_files"]:
-            if isinstance(entry, tuple):
-                serialized.append(
-                    {"kind": "tuple", "source": str(entry[0]), "destination": entry[1]}
-                )
-            else:
-                serialized.append({"kind": "plain", "path": str(entry)})
-        print(
-            json.dumps(
-                {
-                    "repo_root": str(repo_root()),
-                    "installed_package_dir": str(installed_package_dir()),
-                    "context_files": serialized,
-                }
-            )
-        )
+        # Confirm the venv actually looks like a wheel install — this is
+        # the trigger condition for the wheel-install branch of
+        # ``_runner_definition``. If a false-positive source checkout
+        # were detected, the resolver would return repo-relative paths
+        # and the assembly below would fail with a misleading error.
+        root = repo_root()
+        wheel_install = not (root / "pyproject.toml").is_file()
+
+        svc = core_stack().services["runner"]
+        gi = get_image_definition("runner")
+        lists_equal = svc.context_files == gi["context_files"]
+
+        # Assemble the build context via the PRODUCTION path — the exact
+        # call ``EngineStack.build_images`` makes on a live run.
+        build_dir = assemble_build_context(root, svc.dockerfile, svc.context_files)
+        try:
+            files_present = {
+                name: (build_dir / name).exists()
+                for name in [
+                    "pyproject.toml",
+                    "README.md",
+                    "LICENSE",
+                    ".python-version",
+                    "scripts/hatch",
+                    "tolokaforge",
+                ]
+            }
+        finally:
+            shutil.rmtree(build_dir, ignore_errors=True)
+
+        print(json.dumps({
+            "repo_root": str(root),
+            "wheel_install": wheel_install,
+            "lists_equal": lists_equal,
+            "files_present": files_present,
+        }))
         """).strip()
     probe_result = subprocess.run(
         [str(venv_python), "-c", probe],
@@ -193,60 +255,51 @@ def test_runner_definition_resolves_from_wheel_install(
     )
     if probe_result.returncode != 0:
         pytest.fail(
-            f"probe inside scratch venv failed (exit {probe_result.returncode}):\n"
+            "probe inside scratch venv failed — this is the v0.14.0/v0.14.1 "
+            f"failure mode (exit {probe_result.returncode}):\n"
             f"stdout:\n{probe_result.stdout}\nstderr:\n{probe_result.stderr}"
         )
     probe_data = json.loads(probe_result.stdout)
 
-    # ``repo_root()`` inside a wheel-install venv resolves to the venv's
-    # site-packages, not the actual repo root — that is the whole trigger
-    # for the wheel-install branch of ``_runner_definition``.
+    # ``repo_root()`` inside the wheel-install venv must NOT be the actual
+    # repo — the whole point of the trigger. If test isolation broke, we
+    # would silently take the source-checkout branch and the assertion
+    # below would misleadingly pass.
     resolved_repo_root = Path(probe_data["repo_root"])
     assert not resolved_repo_root.samefile(REPO_ROOT), (
         f"scratch venv unexpectedly resolved repo_root to the actual repo "
         f"({resolved_repo_root}). Test isolation broken — the venv should not "
         "reach the source-checkout branch."
     )
-
-    # Every context entry must be absolute and point at a real file that
-    # exists on disk. This is the assertion that would have failed on
-    # v0.14.0 before #858's fix.
-    context_files = probe_data["context_files"]
-    assert context_files, "wheel-install runner definition returned no context files"
-    for entry in context_files:
-        src_str = entry["source"] if entry["kind"] == "tuple" else entry["path"]
-        src = Path(src_str)
-        assert src.is_absolute(), (
-            f"wheel-install entry must be an absolute path (source-checkout "
-            f"paths do not exist in site-packages): {entry}"
-        )
-        assert src.exists(), (
-            f"wheel-install context entry does not exist on disk: {entry}. "
-            "This is exactly the v0.14.0 failure mode — the base wheel's "
-            "force-include table is missing an entry ``_runner_definition`` "
-            "reaches for. Check ``pyproject.toml``'s "
-            "``[tool.hatch.build.targets.wheel.force-include]`` block."
-        )
-
-    # The ``.python-version`` rename must be a tuple-form entry. The base
-    # wheel force-includes ``.python-version`` as ``_python_version.txt``
-    # (per the ``.python-version -> tolokaforge/_python_version.txt`` entry
-    # in pyproject); the wheel-install branch must re-land it under its
-    # dotfile name in the build context so the runner Dockerfile's
-    # ``COPY .python-version`` finds it. A regression that dropped the
-    # tuple form would land the file under ``_python_version.txt`` in the
-    # build context and the Docker build would fail.
-    tuple_entries = [e for e in context_files if e["kind"] == "tuple"]
-    python_version_tuple = [e for e in tuple_entries if e["destination"] == ".python-version"]
-    assert python_version_tuple, (
-        "wheel-install context is missing the ``(source, .python-version)`` tuple entry. "
-        "The base wheel's force-include ships ``.python-version`` under a renamed "
-        "packaged path; ``_runner_definition`` must re-land it under the dotfile "
-        "name for the Dockerfile's ``COPY .python-version`` line."
+    assert probe_data["wheel_install"], (
+        f"probe found a pyproject.toml under {resolved_repo_root} — the "
+        "wheel-install branch of ``_runner_definition`` was NOT triggered, "
+        "so this test would only exercise the source-checkout path. "
+        "Check that the base wheel does not ship a top-level pyproject.toml."
     )
-    tuple_source = Path(python_version_tuple[0]["source"])
-    assert tuple_source.name == "_python_version.txt", (
-        f"``.python-version`` tuple sources the wrong file: {tuple_source}. "
-        "The packaged copy lives at ``tolokaforge/_python_version.txt`` per "
-        "the pyproject's ``force-include`` table."
+
+    # The service-stack and resolver must return the same list. PR #864's
+    # unit test asserts this in isolation with a monkeypatched wheel-install
+    # layout; here we assert it end-to-end against an actual installed wheel.
+    # A regression that re-duplicates the list into ``core_stack()`` would
+    # break this even if the assembly below still happened to work.
+    assert probe_data["lists_equal"], (
+        "``core_stack().services['runner'].context_files`` diverged from "
+        "``get_image_definition('runner')['context_files']`` on a wheel install. "
+        "One of them was hand-edited without updating the other — this is the "
+        "duplication that caused v0.14.1 to ship broken (see PR #864)."
+    )
+
+    # The assembled build directory must contain every file the runner
+    # Dockerfile ``COPY`` lines expect. This is the assertion that would
+    # have failed on v0.14.1 before PR #864 — the exact production error.
+    files_present = probe_data["files_present"]
+    missing = [name for name in _EXPECTED_CONTEXT_ENTRIES if not files_present.get(name)]
+    assert not missing, (
+        "``assemble_build_context()`` via the production path "
+        "(``core_stack().services['runner'].context_files``) did not land the "
+        f"following entries the runner Dockerfile ``COPY`` lines expect: {missing}. "
+        "This is the exact v0.14.0/v0.14.1 failure mode; check that "
+        "``core_stack()`` reads its context list from ``get_image_definition()`` "
+        "and that the base wheel's ``force-include`` table ships every input."
     )
