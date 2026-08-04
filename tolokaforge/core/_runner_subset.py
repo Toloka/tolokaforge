@@ -80,7 +80,36 @@ RUNNER_SUBSET_LOOSE_FILES: tuple[str, ...] = (
 """Individual files shipped in the subset that live outside a whole-package
 entry — the top-level ``tolokaforge/__init__.py`` and the shared-spine
 files at the root of ``tolokaforge/core/``.
+
+The subset-native CLI shim (:mod:`tolokaforge.runner._cli` — the ADR-0026
+entry the subset wheel binds under ``[project.scripts]``) is *not* listed
+here because it lives under :data:`RUNNER_SUBSET_PACKAGES` and is shipped
+via that whole-package entry. Listed here anyway would double-include the
+file at wheel-build time.
 """
+
+RUNNER_SUBSET_DATA_FILES: tuple[str, ...] = (
+    # Pricing table shipped with the subset. ``tolokaforge.core.pricing``
+    # reads this file via ``importlib.resources`` / a repo-relative path
+    # at import time; a subset image without it would silently misreport
+    # cost telemetry. GitHub #830.
+    "tolokaforge/core/data/pricing.json",
+    # Model preset registry — same story as pricing.json: read by
+    # ``tolokaforge.core.llm.presets`` at first use, and grading /
+    # judge model resolution needs it to be non-empty inside the runner
+    # image. GitHub #830.
+    "tolokaforge/core/data/model_presets.yaml",
+    # Python version pin — the ``tolokaforge.docker.builder`` helper is
+    # base-wheel only, but ``tolokaforge/_python_version.txt`` is included
+    # here to keep the ``importlib.resources.files("tolokaforge")`` lookup
+    # honest across both wheel variants when a caller reaches for it.
+    "tolokaforge/_python_version.txt",
+)
+"""Non-Python files shipped in the subset that runtime code reads via
+``importlib.resources`` or a repo-relative path. GitHub #830 folded these
+in when the runner-subset wheel was rebuilt around the subset-native CLI
+shim; before the fix, the subset shipped Python only and a runner image
+booted with an empty pricing table."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/combine.py",
@@ -110,12 +139,14 @@ def is_in_runner_subset(rel_path: str) -> bool:
     part of the runner subset.
 
     A path is in the subset when it is (a) listed explicitly in
-    :data:`RUNNER_SUBSET_LOOSE_FILES`, or (b) rooted under a directory in
-    :data:`RUNNER_SUBSET_PACKAGES` and not listed in
-    :data:`RUNNER_SUBSET_EXCLUDED_FILES`.
+    :data:`RUNNER_SUBSET_LOOSE_FILES` or :data:`RUNNER_SUBSET_DATA_FILES`, or
+    (b) rooted under a directory in :data:`RUNNER_SUBSET_PACKAGES` and not
+    listed in :data:`RUNNER_SUBSET_EXCLUDED_FILES`.
     """
     if rel_path in RUNNER_SUBSET_EXCLUDED_FILES:
         return False
     if rel_path in RUNNER_SUBSET_LOOSE_FILES:
+        return True
+    if rel_path in RUNNER_SUBSET_DATA_FILES:
         return True
     return any(rel_path.startswith(pkg + "/") for pkg in RUNNER_SUBSET_PACKAGES)

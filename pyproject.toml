@@ -214,6 +214,13 @@ only-include = [
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/trial.py",
+    # RUNNER_SUBSET_DATA_FILES — non-Python assets runtime code reads at
+    # import time. Ship them into the subset wheel so the runner image's
+    # pricing / preset tables are non-empty (GitHub #830). The
+    # ``.python-version`` dotfile lands via the ``force-include`` table
+    # below (source path differs from destination path).
+    "tolokaforge/core/data/pricing.json",
+    "tolokaforge/core/data/model_presets.yaml",
 ]
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an
@@ -225,6 +232,14 @@ exclude = [
     "tolokaforge/core/llm/fallback_client.py",
     "tolokaforge/tools/user_tools.py",
 ]
+
+# Force-include the repo-root ``.python-version`` dotfile into the subset
+# wheel as ``tolokaforge/_python_version.txt`` — mirrors the base wheel's
+# ``[tool.hatch.build.targets.wheel.force-include]`` block so the pinned
+# Python version is discoverable via ``importlib.resources`` from either
+# wheel variant.
+[tool.hatch.build.targets.custom.force-include]
+".python-version" = "tolokaforge/_python_version.txt"
 
 [tool.black]
 line-length = 100

@@ -21,10 +21,15 @@ Every override in this module exists so the subset wheel:
   the base wheel's ``[project.optional-dependencies].runner`` group
   (which the runner image used to install behind
   ``pip install tolokaforge[runner]``);
-- carries no console-script or entry-point tables — those routes
-  (``Orchestrator``, backend factories, trial-grader factories) point at
-  modules the subset does not include, so exposing them here would
-  create dangling references. The base wheel keeps them intact.
+- declares one console-script entry — ``tolokaforge = tolokaforge.runner._cli:main`` —
+  binding the subset-native CLI shim (ADR-0026) that preserves the ADR-0024
+  ``docker exec`` surface (``tolokaforge --version`` / ``tolokaforge run-trial``)
+  inside the slim image. The base wheel's ``tolokaforge = tolokaforge._entry:main``
+  is deliberately not carried through: ``tolokaforge._entry`` / ``dx/cli/*`` are
+  base-wheel only, so a subset wheel that exposed them would create a dangling
+  reference. Other entry-point tables (runtime backends, trial-grader
+  factories, conductors) still point at orchestrator-only modules and stay
+  base-wheel only.
 
 The subset wheel is a Docker-only build artifact. It is not — and
 per ``docs/adr/0025-runner-wheel-split.md`` never will be — published to
@@ -47,6 +52,13 @@ if TYPE_CHECKING:
 # ``tolokaforge.core.models``, ...); only the pip-level distribution
 # identifier differs.
 SUBSET_DISTRIBUTION_NAME = "tolokaforge-runner-subset"
+
+# The subset-native CLI shim's ``[project.scripts]`` binding — literally the
+# entry-point table pip writes into ``site-packages/…-dist-info/entry_points.txt``
+# for the subset wheel. Kept as a module constant so ``pip show``,
+# ``importlib.metadata.entry_points``, and the canonical drift-lock test all
+# read the same string. See ADR-0026 for the shim.
+SUBSET_ENTRY_POINTS: str = "[console_scripts]\ntolokaforge = tolokaforge.runner._cli:main\n"
 
 
 # Runtime dependencies the runner container needs.
@@ -115,7 +127,12 @@ class RunnerSubsetBuilder(WheelBuilder):
         return self.project_id
 
     def construct_entry_points_file(self) -> str:  # type: ignore[override]
-        return ""
+        """Emit the subset wheel's ``entry_points.txt``.
+
+        The single ``[console_scripts]`` entry binds the subset-native CLI
+        shim so pip registers a ``tolokaforge`` console script inside the
+        runner image. See ADR-0026 for the full rationale."""
+        return SUBSET_ENTRY_POINTS
 
     def write_project_metadata(
         self,
