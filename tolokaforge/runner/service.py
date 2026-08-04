@@ -261,9 +261,11 @@ def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | 
 async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> object:
     """What a registered tool answered a replayed golden action with.
 
-    Every shape ``agent_tools`` can hold hands its answer back, because the answer is what
+    Each of the three shapes that invoke hands its answer back, because the answer is what
     :func:`declared_failure` reads a reported failure out of: a shape whose return were
-    dropped would record no failure a pack signalling through it declared.
+    dropped would record no failure a pack signalling through it declared. A registered
+    object with neither ``execute`` nor a callable shape is replayed as a no-op, and one
+    whose ``__call__`` is ``async`` hands back a coroutine nothing awaits (#856).
     """
     if hasattr(tool, "execute"):
         return await tool.execute(arguments)

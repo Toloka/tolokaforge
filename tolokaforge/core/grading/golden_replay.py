@@ -204,9 +204,12 @@ def declared_failure(payload: object) -> str | None:
     this repository — a pack whose tools return mappings hands over the mapping, a
     tau-style pack hands over the ``json.dumps`` of one — on either substrate.
 
-    **Truthiness, not key presence.** ``_tool_error_to_dict`` always writes a non-empty
-    message, so nothing declared is lost, while ``{"error": null}`` — a plausible "no
-    error" idiom — stays the success it reads as.
+    **Truthiness, not key presence.** ``{"error": null}`` — a plausible "no error" idiom
+    — stays the success it reads as. The message a failure carries is its tool author's,
+    so an empty one is read as no failure too: ``_tool_error_to_dict`` writes ``str(exc)``
+    verbatim, and ``ToolError("")`` therefore arrives here as ``{"error": ""}``. That is a
+    deliberate reading rather than an impossibility — a failure signalled with nothing said
+    about it is indistinguishable here from one never signalled.
 
     The message is ``str()`` of the value, because a truthy non-string one
     (``{"error": {"code": 5}}``) is reachable from a pack out of this tree. A ``"details"``

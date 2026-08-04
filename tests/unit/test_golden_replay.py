@@ -331,6 +331,14 @@ def test_an_action_whose_tool_returns_a_list_reports_no_failure(pack_tools, gold
             "invalid order (items is empty; total is 0)",
             id="details-appended",
         ),
+        pytest.param(
+            {"error": "invalid order", "details": "items is empty"},
+            "invalid order",
+            id="non-list-details-ignored",
+        ),
+        pytest.param(
+            {"error": "invalid order", "details": []}, "invalid order", id="empty-details"
+        ),
         pytest.param({"error": {"code": 5}}, "{'code': 5}", id="non-string-error-coerced"),
         pytest.param({"error": None}, None, id="null-error-is-no-error"),
         pytest.param({"error": ""}, None, id="empty-error-is-no-error"),
@@ -343,6 +351,7 @@ def test_an_action_whose_tool_returns_a_list_reports_no_failure(pack_tools, gold
             id="prose-is-not-a-payload",
         ),
         pytest.param('{"id": "P-001"}\n{"id": "P-002"}', None, id="concatenated-json-objects"),
+        pytest.param('[{"error": "x"}]', None, id="json-string-decoding-to-a-list"),
         pytest.param([{"id": "P-001"}], None, id="list"),
         pytest.param(None, None, id="nothing-returned"),
     ],
@@ -578,10 +587,12 @@ def _answering_sync_callable(answer: str) -> Callable[[dict[str, Any]], str]:
     return call
 
 
-#: Every shape the replay loop reaches a registered tool through, each of which has to hand
-#: its answer back: a shape whose return were dropped would record nothing any pack
-#: signalling through it declared, and the record would read as a whole golden path.
+#: Three of the four shapes the replay loop reaches a registered tool through, each of which
+#: has to hand its answer back: a shape whose return were dropped would record nothing any
+#: pack signalling through it declared, and the record would read as a whole golden path.
 #: ``RegisterTrial`` leaves ``ToolWrapper`` instances behind, which is the ``execute`` one.
+#: The fourth — an object neither ``execute``-shaped nor callable — is replayed as a
+#: no-op (#856).
 _TOOL_SHAPES = (
     pytest.param(_AnsweringTool, id="execute"),
     pytest.param(_answering_async_callable, id="async-callable"),
