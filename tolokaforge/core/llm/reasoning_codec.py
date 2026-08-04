@@ -281,6 +281,51 @@ class OpenAIReasoningCodec:
         return {}
 
 
+class OpenAISummaryReplayReasoningCodec(OpenAIReasoningCodec):
+    """OpenAI-style summary extract + OpenRouter *unsigned text* replay.
+
+    Motivation — DeepSeek V4 (``deepseek/deepseek-v4*``) over OpenRouter.
+    The route surfaces its reasoning ONLY as an OpenAI-canonical
+    ``reasoning_content`` summary string (``provider_raw`` carries
+    ``reasoning_tokens``, and the model emits **no** structured
+    ``reasoning_details`` and **no** per-block ``signature`` on the wire —
+    verified by the observe run: ``test_thinking_replay_roundtrip`` fails
+    "no signed blocks on turn 1", so signed replay stays a genuine ceiling).
+
+    The parent :class:`OpenAIReasoningCodec` already lifts that summary into
+    a single ``summary_text`` :class:`ReasoningBlock` on ``extract`` (this
+    class inherits ``extract`` verbatim — same on-disk footprint, same
+    ``THINKING_EMITS_BLOCKS`` summary surface). The ONLY delta is
+    ``encode_for_replay``: the parent's no-op drops the turn-1 reasoning
+    *text* on the way to turn 2, so the model loses reasoning continuity and
+    ``UNSIGNED_THINKING_REPLAY`` fails (the outgoing assistant dict carries
+    no ``reasoning_details``). This subclass instead re-emits the block text
+    as an OpenRouter ``reasoning_details`` entry of ``type="reasoning.text"``
+    — the unsigned Gemini-family shape the replay contract expects.
+
+    Firing condition + scope: emits exactly one ``reasoning.text`` entry per
+    non-empty reasoning block, no ``signature`` field (the model produces
+    none), and ``{}`` when there are no blocks. It NEVER synthesises a
+    signature, so it does not (and must not) make ``THINKING_REPLAY_ROUNDTRIP``
+    pass — that signed contract remains ``known_unsupported``. Reasoning-codec
+    only: touches no tool-call, cache, or schema behaviour.
+    """
+
+    _OPENROUTER_TEXT_TYPE = "reasoning.text"
+
+    def encode_for_replay(self, reasoning: StructuredReasoning) -> dict[str, Any]:
+        if not reasoning.blocks:
+            return {}
+        details = [
+            {"type": self._OPENROUTER_TEXT_TYPE, "text": block.text, "format": "openai-summary-v1"}
+            for block in reasoning.blocks
+            if block.text
+        ]
+        if not details:
+            return {}
+        return {"reasoning_details": details}
+
+
 class GeminiReasoningCodec:
     """Extracts / replays reasoning for Google Gemini family over OpenRouter.
 

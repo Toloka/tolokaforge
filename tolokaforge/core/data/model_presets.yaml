@@ -138,6 +138,37 @@ presets:
     prompt_policy: dict_map_hints
     reasoning_codec: openai
 
+  # deepseek/deepseek-v4-flash-0731 — model-specific overlay landed via
+  # auto-resolve (Slack-requested integration, PR #846). Declared BEFORE the
+  # shared ``openrouter_dict_stringify_recovery`` preset (whose ``*deepseek-v4*``
+  # glob it would otherwise match) so first-match-wins routing picks it up. It is
+  # a SUPERSET of that shared preset: it reproduces the three tool-calling axes
+  # verbatim — ``schema_sanitizer: passthrough`` + ``response_policy: json_coerce``
+  # + ``prompt_policy: dict_map_hints`` (all 28 tool-call / structural probes pass
+  # 15/15 under the shared preset) so nothing tool-calling-side regresses — and
+  # swaps ONLY the reasoning codec.
+  #
+  # The one observe fix-target was ``UNSIGNED_THINKING_REPLAY`` (0/15). The route
+  # surfaces reasoning as an OpenAI ``reasoning_content`` summary but emits no
+  # structured ``reasoning_details`` and no signatures on the wire. Under the
+  # ``openai`` codec the summary lifts into a reasoning block (so
+  # ``THINKING_EMITS_BLOCKS`` passes) but ``encode_for_replay`` is a no-op, so the
+  # turn-1 reasoning text never reaches turn 2 and the unsigned replay contract
+  # fails. ``openai_summary_replay`` (``OpenAISummaryReplayReasoningCodec``)
+  # inherits the OpenAI extract unchanged and re-emits that block text as an
+  # OpenRouter ``reasoning.text`` entry — closing the replay gap without
+  # synthesising a signature. Signed replay (``THINKING_REPLAY_ROUNDTRIP``) and
+  # explicit ``PROMPT_CACHING`` stay genuine ceilings (see registry.py). Reprobe
+  # went 5/5 on the fix-target.
+  deepseek_v4_flash_0731_resolve:
+    match:
+      - "deepseek/deepseek-v4-flash-0731"
+      - "deepseek/deepseek-v4-flash-0731*"
+    schema_sanitizer: passthrough
+    response_policy: json_coerce
+    prompt_policy: dict_map_hints
+    reasoning_codec: openai_summary_replay
+
   # Open-weights / OpenAI-API-compatible routes whose tool-call adapters
   # stringify nested object / Dict[str, T] arguments — same failure mode
   # ``JsonCoerceResponse`` was built for on Qwen.
