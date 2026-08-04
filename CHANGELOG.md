@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.14.2 (2026-08-04)
+
+### Fix
+
+- **docker**: take the runner build context from the builder in core_stack (v0.14.1 still broken) (#864)
+
 ## v0.14.1 (2026-08-04)
 
 ### Fix
