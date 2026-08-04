@@ -129,6 +129,12 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     return False
 
 
+# Tools whose compose variant runs inside a sibling compose service via
+# ``docker exec`` from the runner container. Extend this set when a new
+# tool ships a compose variant that needs the same runner-side docker CLI
+# + socket bind-mount treatment (see ``_run_needs_docker_cli`` and the
+# ``mount_docker_socket`` seam threaded through
+# :class:`tolokaforge.core.plugin_registry.RuntimeBackendBuildContext`).
 _COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_replace_editor"})
 
 
