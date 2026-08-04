@@ -129,15 +129,49 @@ def _tasks_need_playwright(tasks: list[Any]) -> bool:
     return False
 
 
-def _run_needs_docker_cli(adapter_type: str | None) -> bool:
-    """Return True iff the run's adapter shells out to docker inside the runner.
+_COMPOSE_VARIANT_TOOL_NAMES: frozenset[str] = frozenset({"bash_session", "str_replace_editor"})
 
-    Terminal-bench tasks exec the docker CLI + compose plugin in the runner
-    (against the host daemon via the mounted socket), so their runner image must
-    carry the CLI. Detected from the configured adapter type so the slim default
-    image ships without it for every other run. Pure function for unit testing.
+
+def _tasks_use_compose_variant_tools(tasks: list[Any]) -> bool:
+    """Return True iff any task routes a shipped tool into a sibling service
+    via the compose variant (``tools.agent.<tool>.service: <name>``).
+
+    ``bash_session`` and ``str_replace_editor`` each ship a compose variant
+    that executes inside a sibling compose service by ``docker exec``-ing
+    from the runner container into it. The runner image needs the docker
+    CLI when any enabled tool is in that shape — e.g. the Migration Bench
+    adapter's task packs (``services.mb-server`` running the workload,
+    tools routed there via ``bash_session.service: mb-server``).
     """
-    return adapter_type == AdapterType.TERMINAL_BENCH
+    for task in tasks:
+        if task.tools is None:
+            continue
+        agent_config = task.tools.agent
+        enabled = agent_config.get("enabled", [])
+        for tool_name in _COMPOSE_VARIANT_TOOL_NAMES.intersection(enabled):
+            tool_cfg = agent_config.get(tool_name)
+            if isinstance(tool_cfg, dict) and tool_cfg.get("service"):
+                return True
+    return False
+
+
+def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
+    """Return True iff the run needs the docker CLI baked into the runner image.
+
+    Two triggers today:
+
+    - Terminal-bench tasks exec the docker CLI + compose plugin in the runner
+      (against the host daemon via the mounted socket).
+    - Any task that routes a shipped tool through the compose variant (see
+      :func:`_tasks_use_compose_variant_tools`) — the runner ``docker exec``\\ s
+      into the sibling service.
+
+    Detected before build so the slim default image ships without the CLI for
+    every other run. Pure function for unit testing.
+    """
+    if adapter_type == AdapterType.TERMINAL_BENCH:
+        return True
+    return _tasks_use_compose_variant_tools(tasks)
 
 
 def _tasks_need_full_stack(tasks: list[Any]) -> bool:
@@ -1443,9 +1477,10 @@ class Orchestrator:
                     if self.config.evaluation.harness_adapter
                     else None
                 )
-                if _run_needs_docker_cli(adapter_type):
+                if _run_needs_docker_cli(adapter_type, self.tasks):
                     self.logger.info(
-                        "Terminal-bench adapter detected — enabling docker CLI in runner image"
+                        "Docker CLI required in runner image "
+                        "(terminal-bench adapter or compose-variant tools detected)"
                     )
                     core_stack_kwargs["enable_docker_cli"] = True
                 # Pick full_stack (db-service + runner + rag-service +
