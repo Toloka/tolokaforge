@@ -2624,6 +2624,28 @@ what it does. The runner-side half of the same skew — a key one substrate decl
 the other does not, rejected at `RegisterTrial` — is
 [`RUNNER.md`](RUNNER.md#engine--image-version-lock).
 
+### What shape a grading key must be
+
+The tier above the key names: every key a `grading.yaml` may carry — `combine`,
+`state_checks`, `transcript_rules`, `trace_checks`, `llm_judge` and `custom_checks` —
+is a **mapping, or nothing at all**. A bare key with nothing under it is the *absent*
+block: every field falls through to its default, which is what the loader's own merge
+makes of it.
+
+`tolokaforge validate` refuses any other shape, naming the grading file, the key, what
+it received and how to write it. Every offending key is named in one raise, so a file
+that lost its indentation in more than one place is fixed in a single pass.
+
+The refusal never consults truthiness, and that is the point. Writing a check directly
+under `state_checks:` instead of under one of the block's own keys makes the block a
+list, and `state_checks: []` is the same authoring mistake as
+`state_checks: [{path: "$.db.orders[0].status"}]`. Only the second crashes whoever
+indexes it; the first reads as a block that scores nothing, which is the quieter and
+more expensive failure.
+
+The migration for either is the same: indent the block's own keys one level under the
+key rather than writing its contents beside it.
+
 ---
 
 ## LLM Judge (Rubric Grading)
