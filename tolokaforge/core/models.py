@@ -21,7 +21,10 @@ from tolokaforge.core.deprecations import (
     coerce_task_packs_alias,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.grading.state_composition import (
+    refuse_probes_beside_another_state_source,
+    resolve_hash_weight,
+)
 from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, ProviderRawCall, Usage
@@ -2095,6 +2098,22 @@ class StateChecksConfig(BaseModel):
                     f"got {field!r}"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _refuse_probes_beside_another_state_source(self) -> Self:
+        """Reject at load a probe declared beside a source this component also scores.
+
+        Defined above the weight rule, which Pydantic therefore runs second: a block
+        declaring probes, assertions and a hash source with no weight satisfies both
+        conditions, and a weight is not the fix for a block refused outright.
+        """
+        refuse_probes_beside_another_state_source(
+            db_probes=self.db_probes,
+            jsonpaths=self.jsonpaths,
+            hash_config=self.hash,
+            context="grading.yaml state_checks",
+        )
+        return self
 
     @model_validator(mode="after")
     def _validate_hash_weight_declaration(self) -> Self:

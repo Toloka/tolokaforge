@@ -2342,6 +2342,19 @@ Each rule reads its keys for **truth**, not presence, because that is what both
 substrates do: an empty `golden_actions` replays nothing, an empty `required_actions`
 requires nothing.
 
+**Two state sources, one of them a probe, is refused as well** — the mirror of the
+no-source rule above, and the two divide the block between them. `db_probes` beside a
+non-empty `jsonpaths`, or beside a `hash` block that is enabled and names
+`expected_state_hash` or `golden_actions`, hands one component two candidate scores with
+no share to fold them by, and the substrates would not even discard the same one: only
+the runner evaluates a probe, while core folds the hash with the assertions. Neither
+config model loads the block, so core raises where the grading config is built and the
+runner at `RegisterTrial`, naming both sources and the two fixes — keep the probes and
+drop the other source, or drop the probes and let the hash and `jsonpaths` grade the
+state. Probes beside a *disabled* hash still load: that hash produces no verdict, so
+nothing is discarded, and an enabled hash with nothing to compare against is refused at
+the flag by its own rule.
+
 **Every golden action names a tool the task gives its actors.** A name that resolves to
 nothing costs the whole trial: both substrates resolve the authored names before the
 first action runs and refuse the replay outright, so the tokens are spent and no
@@ -2984,7 +2997,9 @@ docker network, so it reaches the substrate (e.g. `app-db:5432`) at grade time.
 `db_probes` is the sole state source for a task that declares it: a probe declared
 beside a non-empty `jsonpaths`, or beside a `hash` block that is enabled with a source,
 is **refused** — those sources score the same component, so one verdict would fill it
-and discard the other. Runner-side the probe score *is* the `state_checks` component,
+and discard the other. The refusal is at load and on both substrates, from one message:
+core raises where the grading config is built and the runner at `RegisterTrial`, so no
+trial is paid for first. Runner-side the probe score *is* the `state_checks` component,
 and it combines with `transcript_rules` / `llm_judge` through the normal weighted
 combine below.
 
