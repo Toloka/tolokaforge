@@ -43,6 +43,7 @@ from tolokaforge.core.compose_materialisation import (
     shutdown_compose,
     write_capture_manifest,
 )
+from tolokaforge.core.health import HealthLevel, HealthReport
 from tolokaforge.core.models import SeedRef
 from tolokaforge.core.run_display_events import (
     _NULL_EVENTS,
@@ -774,40 +775,55 @@ class GrpcRunnerClient:
             logger.error(f"gRPC error in cleanup_trial: {e}")
             return {"success": False, "error": f"gRPC error: {str(e)}"}
 
-    def health_check(self) -> bool:
-        """Check if Runner service is healthy
+    def health_report(self) -> HealthReport:
+        """Query the runner's HealthCheck RPC and return a semantic
+        :class:`~tolokaforge.core.health.HealthReport`.
 
-        Returns:
-            True if service is healthy
+        Primary API. Callers should ask domain questions via
+        :meth:`~tolokaforge.core.health.HealthReport.is_reachable` /
+        :meth:`~tolokaforge.core.health.HealthReport.is_fully_operational`
+        rather than inspecting the raw protocol status string. The mapping
+        from protocol strings (``healthy`` / ``degraded`` / ``unhealthy``,
+        per ``docs/GRPC_PROTOCOL.md`` § HealthCheck) to
+        :class:`~tolokaforge.core.health.HealthLevel` lives once in
+        :meth:`HealthReport.from_status`; unknown status strings map to
+        ``UNHEALTHY`` (fail-loud on protocol drift).
 
-        A failed probe logs at ``ERROR`` — the record's real level, so
-        ``-v`` inspection, external log processors, and post-mortem
-        artifacts see it correctly. The log record is tagged with
-        ``extra={"component_id": ...}``; ``_LogSink`` recognises that tag
-        and routes the record into the component's tail widget instead of
-        ``print_above``-ing over the Rich panel. Visualisation stays
-        compact; signal is preserved.
+        A failed probe (``RpcError``) returns a ``HealthReport`` at
+        ``UNHEALTHY`` carrying the exception message in ``detail`` and
+        logs at ``ERROR`` — the record's real level, so ``-v`` inspection,
+        external log processors, and post-mortem artifacts see it. The
+        log record is tagged with ``extra={"component_id": ...}``;
+        ``_LogSink`` recognises that tag and routes the record into the
+        component's tail widget instead of ``print_above``-ing over the
+        Rich panel. Visualisation stays compact; signal is preserved.
         """
         if not self.stub:
             self.connect()
 
         try:
             response = self.stub.HealthCheck(runner_pb2.HealthCheckRequest())
-            # The protocol (docs/GRPC_PROTOCOL.md § HealthCheck) defines three
-            # status values: ``healthy``, ``degraded``, ``unhealthy``. Both
-            # ``healthy`` and ``degraded`` mean the runner's own gRPC surface
-            # is up and answering — degraded reports a downstream (DB / RAG)
-            # is unreachable, which is the runner's concern to surface via its
-            # own per-service warnings, not a signal the client should reject
-            # the runner itself. Only ``unhealthy`` or an ``RpcError`` are the
-            # runner is dead states.
-            return response.status in ("healthy", "degraded")
+            return HealthReport.from_status(
+                status=response.status,
+                version=response.version,
+            )
         except grpc.RpcError as e:
             logger.error(
                 f"Health check failed: {e}",
                 extra={"component_id": build_component_id("engine", "grpc.client", "runner")},
             )
-            return False
+            return HealthReport(level=HealthLevel.UNHEALTHY, detail=str(e))
+
+    def health_check(self) -> bool:
+        """Backwards-compat facade — True iff the runner is reachable for RPCs.
+
+        Delegates to :meth:`health_report` and applies
+        :meth:`~tolokaforge.core.health.HealthReport.is_reachable`. New
+        callers should prefer :meth:`health_report` directly and use
+        the semantic predicates, so the domain decision lives on the
+        response wrapper rather than at each call site.
+        """
+        return self.health_report().is_reachable()
 
     def health_check_detailed(self) -> dict:
         """Get detailed health check information

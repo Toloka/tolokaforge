@@ -10,6 +10,10 @@ All notable changes to this project are documented in this file.
 
 ### Feat
 
+- **core**: new `tolokaforge.core.health` module — reusable pattern for ordered health hierarchies. `HealthLevel` (an `IntEnum` with `UNHEALTHY < DEGRADED < HEALTHY`) + `HealthReport` (a frozen dataclass wrapping the level with `is_reachable()` / `is_fully_operational()` semantic predicates) + `HealthReport.from_status()` (single-source-of-truth mapping from protocol status strings, with unknowns mapping fail-loud to `UNHEALTHY`). `GrpcRunnerClient.health_report()` is the new primary API; `health_check()` becomes a backwards-compat facade over `health_report().is_reachable()`. The pattern replaces stringly-typed status comparisons with domain predicates on the wrapper — the mapping from protocol state to "can I use this service?" lives once, not scattered across call sites
+
+### Feat
+
 - **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
 - **runtime**: `PerTrialRuntimeBackend.provision` gates on host-side readiness before returning — the runner is always probed for gRPC channel-readiness on its published host port, and any service declaring `readiness:` is probed by its kind. A container that is Docker-healthy but host-unreachable (loopback-only or IPv6-only bind) now fails fast with a `ProvisionError` whose `diagnostic` names the resolved endpoint, probe outcome, and the container's actual listen addresses, instead of a downstream 30 s client-connect timeout (#803)
 
