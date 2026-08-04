@@ -621,12 +621,49 @@ def _answering_sync_callable(answer: str) -> Callable[[dict[str, Any]], str]:
     return call
 
 
+class _ShapelessTool:
+    """A registered object the replay loop reaches through no shape at all.
+
+    Neither ``execute_call`` nor ``execute``, and not callable, so no answer exists to read
+    the golden action's effect out of.
+    """
+
+    def __init__(self, _answer: str) -> None:
+        """The answer goes nowhere: no shape on this object can be asked for one."""
+
+
+class _AsyncCallTool:
+    """A callable object whose ``__call__`` is ``async``, so the loop's executor awaits nothing.
+
+    :func:`inspect.iscoroutinefunction` reads the object rather than its ``__call__``, so this
+    shape takes the sync-executor arm and the call answers a coroutine.
+    """
+
+    def __init__(self, answer: str) -> None:
+        self._answer = answer
+
+    async def __call__(self, _arguments: dict[str, Any]) -> str:
+        return self._answer
+
+
+def _answering_mapping_callable(answer: str) -> Callable[[dict[str, Any]], dict[str, Any]]:
+    """A sync callable answering the mapping ``answer`` carries rather than its text.
+
+    The shape core is handed by a pack's ``invoke`` and the runner never is, every payload it
+    reads being a ``str``: reachable here only from a duck-typed callable in ``agent_tools``.
+    """
+
+    def call(_arguments: dict[str, Any]) -> dict[str, Any]:
+        return json.loads(answer)
+
+    return call
+
+
 #: The three fallback shapes the replay loop reaches a registered tool through, each of which
 #: has to hand its answer back: a shape whose return were dropped would record nothing any
 #: pack signalling through it declared, and the record would read as a whole golden path.
 #: ``RegisterTrial`` leaves ``ToolWrapper`` instances behind, which the loop reaches through
-#: ``execute_call`` instead — ``_FlaggingTool`` is that shape. An object with neither an
-#: ``execute`` nor a callable shape answers nothing the loop can read (#856).
+#: ``execute_call`` instead — ``_FlaggingTool`` is that shape.
 _TOOL_SHAPES = (
     pytest.param(_AnsweringTool, id="execute"),
     pytest.param(_answering_async_callable, id="async-callable"),
@@ -799,3 +836,43 @@ async def test_the_runner_records_nothing_for_a_tool_that_answered_a_success_pay
 
     assert succeeded.golden_replay == GoldenReplayRecord(authored=1)
     assert _reasons_for(succeeded) == "State: hash match"
+
+
+@pytest.mark.parametrize(
+    ("build_tool", "unreadable"),
+    [
+        pytest.param(_ShapelessTool, "_ShapelessTool", id="no-shape"),
+        pytest.param(_AsyncCallTool, "coroutine", id="unawaited-coroutine"),
+        pytest.param(_answering_mapping_callable, "dict", id="mapping-answer"),
+    ],
+)
+async def test_the_runner_records_a_golden_action_whose_answer_it_cannot_read(
+    build_tool: Callable[[str], Any], unreadable: str
+) -> None:
+    """An answer no effect can be read out of is the raised kind, named by the shape at fault.
+
+    The alternative is the record reading as a whole golden path while one of its actions
+    took no effect anybody can show — the trial hashed against a world missing that action
+    with nothing said about it, which is the defect this whole module is about. So the loop
+    refuses the answer instead, and the refusal is what the author is handed: the type of the
+    registered object that answered through no shape, or the type of the answer itself where
+    the replay reads a ``str``.
+
+    The mapping row is also the no-coercion lock. Its answer is a declared failure — the
+    payload the pack's declining call really produces, in the mapping shape core is handed —
+    so ``str(answer)`` would render it as a Python repr no JSON decodes, ``declared_failure``
+    would read no failure in it, and the action a pack declared failed would be recorded as a
+    success. Refusing is the only reading that keeps it visible.
+    """
+    result = await _replay_as_the_runner_does(_DECLINED_PAYLOAD, build_tool)
+
+    assert len(result.golden_replay.failures) == 1, result.golden_replay
+    (failure,) = result.golden_replay.failures
+    assert failure.index == 0
+    assert failure.name == "confirm_payment"
+    assert failure.kind == GoldenActionFailure.RAISED
+    assert f"'{unreadable}'" in failure.error, failure.error
+
+    reasons = _reasons_for(result)
+    assert "GOLDEN REPLAY ERRORS:" in reasons, reasons
+    assert "[0] confirm_payment raised TypeError:" in reasons, reasons
