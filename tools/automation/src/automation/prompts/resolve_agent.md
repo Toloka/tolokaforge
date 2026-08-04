@@ -16,6 +16,10 @@ and pushes the whole integration to needs-human.
   probes + wire tool-arg rejections).
 - `{{OBS_DIR}}/resolve/last_reprobe.json` - the PREVIOUS iteration's reprobe result (absent on
   iteration 1). On a later iteration, read it to see which fix-targets are STILL red and adjust.
+- `{{OBS_DIR}}/resolve/overlay_iter<N>.yaml` + `decision_iter<N>.json` - YOUR OWN earlier
+  attempts, archived per iteration (absent on iteration 1). Read the most recent one before
+  composing: "a materially DIFFERENT axis" below is judged against what these files actually
+  tried, not against memory - each iteration starts with a fresh context.
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`.
   Iteration `{{ITER}}` of `{{MAX_ITER}}`.
 - Engine: presets in `tolokaforge/core/data/model_presets.yaml`; adapter classes registered in

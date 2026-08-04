@@ -404,7 +404,10 @@ jobs:
           retention-days: 30
 
       - name: Post observation summary on the PR
-        if: always()
+        # Gated on parse success (not bare always()): before parse there is no candidate and no
+        # observation/ dir, so on the fork-reject / checkout-failed paths this used to post a
+        # junk "ran for ``" comment. A parse-fail posts its own comment above.
+        if: always() && steps.parse.outcome == 'success'
         # CANDIDATE_NAME is PR-title-derived (attacker-controllable); reference only via env.
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
@@ -419,26 +422,23 @@ jobs:
       # -------------------------------------------------------------- GATE
       - name: Cleanliness gate (clean observe chains to resolve)
         id: gate
-        if: always()
-        # A clean observe (capability suite actually ran AND no infra contamination) proceeds to
+        # A clean observe (per `automation observe-gate`: capability suite ran, wire probes ran,
+        # and no rate-limit / API-error / API-timeout / status-error contamination) proceeds to
         # the in-job resolve steps below. Infra-dirty / did-not-run goes to a human (re-run),
         # never resolve. Sets a step output the resolve steps gate on (no cross-workflow label).
+        # Gated on parse success: before parse there is no candidate to gate (a parse-fail
+        # already labelled + notified); the catch-all below owns the label on pre-parse crashes.
+        if: always() && steps.parse.outcome == 'success'
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          if [ ! -f observation/findings.json ]; then
-            gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
-              --add-label 'automation:integrate-needs-human' || true
-            echo "clean=no" >> "$GITHUB_OUTPUT"
-            uv run automation slack reply \
-              --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --icon needs_human --text 'Needs human: observe did not run to completion (no findings.json - infra failure or crash before aggregation)' \
-              --pr-url "$PR_URL" --run-url "$RUN_URL" || true
-            touch "$RUNNER_TEMP/slack_terminal_sent" || true
-            echo "no findings.json -> needs human"; exit 0
-          fi
-          CLEAN="$(uv run python -c 'import json; f=json.load(open("observation/findings.json")); i=f.get("wire",{}).get("infra",{}); print("dirty" if (not f.get("capability_ran")) or any(i.get(k,0) for k in ("rate_limit","api_error","status_error")) else "clean")')"
-          if [ "$CLEAN" = "clean" ]; then
+          # One tested command owns the verdict (the old inline python -c silently ignored
+          # api_timeout and could not tell "wire never ran" from "wire clean"). Missing or
+          # unreadable findings.json prints its own dirty token, so all not-clean paths share
+          # this branch and the needs-human message carries the exact reason.
+          GATE="$(uv run automation observe-gate observation/findings.json || echo 'dirty: observe-gate crashed')"
+          echo "observe gate: $GATE"
+          if [ "$GATE" = "clean" ]; then
             gh pr edit "$PR" -R "$REPO" --remove-label 'automation:integrate-running' \
               --add-label 'automation:resolve-running' || true
             echo "clean=yes" >> "$GITHUB_OUTPUT"
@@ -452,10 +452,10 @@ jobs:
             echo "clean=no" >> "$GITHUB_OUTPUT"
             uv run automation slack reply \
               --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
-              --icon needs_human --text 'Needs human: observe infra-dirty (rate-limit / API error / capability suite did not run)' \
+              --icon needs_human --text "Needs human: observe not clean (${GATE}) - re-run needed" \
               --pr-url "$PR_URL" --run-url "$RUN_URL" || true
             touch "$RUNNER_TEMP/slack_terminal_sent" || true
-            echo "observe infra-dirty or did-not-run -> needs human"
+            echo "observe not clean (${GATE}) -> needs human"
           fi
 
       # -------------------------------------------------------------- RESOLVE (clean only)
@@ -609,6 +609,13 @@ jobs:
               if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
               continue
             fi
+            # Archive this iteration's attempt BEFORE the next iteration's rm deletes it: the
+            # prompt tells the agent to try "a materially DIFFERENT axis than last time", and
+            # each iteration is a fresh context - without these files it cannot know what it
+            # already tried (last_reprobe.json records results, not the overlay that produced
+            # them). Also what the needs-human artifacts point a human at.
+            cp observation/resolve/overlay.yaml "observation/resolve/overlay_iter${i}.yaml" || true
+            cp observation/resolve/decision.json "observation/resolve/decision_iter${i}.json" || true
             # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
             # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
             TARGETS="$(uv run python -c "import json,sys; print(','.join(json.load(open(sys.argv[1])).get('fix_targets',[])))" observation/resolve/decision.json 2>/dev/null || echo '')"
@@ -637,6 +644,35 @@ jobs:
             if [ "$VERDICT" = "CONVERGED" ] || [ "$VERDICT" = "NO_TARGETS" ]; then CONVERGED=yes; break; fi
           done
           echo "converged=$CONVERGED" >> "$GITHUB_OUTPUT"
+
+      - name: Final wire verification (evidence-only, RESOLVE_WIRE_K reps)
+        # The fix loop reprobes CAPABILITY probes only (--skip-wire), so a fix whose live
+        # evidence was the WIRE (a tool-arg rejection with no failing capability probe - the
+        # NO_TARGETS convergence) would otherwise ship with no post-fix measurement at all.
+        # Re-run exactly the baseline's rejecting wire tasks under the converged overlay; the
+        # finalize step below posts the fresh stats on the PR. EVIDENCE for the human gate,
+        # never a convergence gate: a still-rejecting wire task can be a genuine model miss
+        # (a ceiling, not a blocker), so this step never fails the run.
+        if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
+        env:
+          GH_TOKEN: ""
+          TF_PROVIDER: ${{ steps.parse.outputs.provider }}
+          TF_NAME: ${{ steps.parse.outputs.name }}
+        run: |
+          set -uo pipefail
+          REJECTIONS="$(uv run python -c 'import json; print(json.load(open("observation/findings.json"))["wire"]["tool_arg_rejections"]["total"])' 2>/dev/null || echo 0)"
+          if [ "${REJECTIONS:-0}" = "0" ]; then
+            echo "baseline wire had no tool-arg rejections -> nothing to verify"; exit 0
+          fi
+          if [ ! -f observation/resolve/overlay.yaml ]; then
+            echo "no overlay (all-ceiling convergence without a policy) -> nothing to verify the wire under"; exit 0
+          fi
+          uv run automation reprobe \
+            --baseline observation/findings.json --overlay observation/resolve/overlay.yaml \
+            --provider "$TF_PROVIDER" --name "$TF_NAME" \
+            --out observation/resolve/wire_verify --wire-only \
+            --wire-k "${RESOLVE_WIRE_K}" --workers "${WORKERS}" \
+            || echo "::warning::final wire verification failed to run - the PR carries no post-fix wire evidence"
 
       - name: Finalize - compose the integration (agent writes preset + cert)
         # AGENT step, scoped: empty GH_TOKEN so the --dangerously-skip-permissions agent cannot
@@ -737,6 +773,15 @@ jobs:
             RECORD_URL="$(gh pr comment "$PR" -R "$REPO" --body-file observation/resolve/pr_comment.md || true)"
           fi
           [ -f observation/resolve/pr_body.md ] && gh pr edit "$PR" -R "$REPO" --body-file observation/resolve/pr_body.md || true
+          # Post-fix wire evidence (written by the wire-verification step; absent when the
+          # baseline wire was clean or convergence shipped no overlay). Prefixed so the
+          # comment cannot be misread as a fresh observe. Evidence-only, informs the human
+          # gate; a genuine wire miss is a ceiling, not a merge blocker.
+          if [ -f observation/resolve/wire_verify/summary.md ]; then
+            { printf '%s\n\n' '### Final wire verification - the baseline-rejecting wire tasks, re-run under the resolved policy (evidence-only)'; \
+              cat observation/resolve/wire_verify/summary.md; } \
+              | gh pr comment "$PR" -R "$REPO" --body-file - || true
+          fi
           # Data-scope review gate: an array-under-free-form-object recovery is DATA-BOUND - its
           # scope depends on domain data the observe may not fully surface, so even a converged,
           # gate-passing fix needs a broader HUMAN check before merge. Route it to needs-human
@@ -839,6 +884,19 @@ jobs:
             --pr-comment "$CURL" --pr-url "$PR_URL" --run-url "$RUN_URL" || true
           touch "$RUNNER_TEMP/slack_terminal_sent" || true
 
+      - name: Upload resolve bundle (per-iteration overlays/decisions + reprobe + wire evidence)
+        # The observation bundle uploads BEFORE the gate, so nothing the resolve steps produce
+        # would reach the run artifacts without this - yet the needs-human comments point the
+        # human exactly there ("latest overlay + reprobe are in the run artifacts"). A distinct
+        # name because v4 artifacts are immutable (the observe upload cannot be appended to).
+        uses: actions/upload-artifact@v4
+        if: always() && steps.gate.outputs.clean == 'yes'
+        with:
+          name: integration-resolve-pr${{ github.event.pull_request.number || inputs.pr }}
+          path: observation/resolve/
+          retention-days: 30
+          if-no-files-found: ignore
+
       - name: Slack notify - unexpected failure (catch-all)
         # Last line of defence: an unexpected step failure (checkout done, but e.g. uv sync,
         # docker build, or a gate/step crash) that left the PR mid-state with no explicit handler
@@ -848,6 +906,14 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
+          # A failure with no handled needs-human path (checkout / uv sync / docker build died
+          # before the gate could run) would leave the PR wearing `integrate-running` forever -
+          # a dead run displayed as live. Flip the label first; idempotent on the handled paths
+          # (they already set needs-human), and independent of the Slack dedup below.
+          gh pr edit "$PR" -R "$REPO" \
+            --remove-label 'automation:integrate-running' \
+            --remove-label 'automation:resolve-running' \
+            --add-label 'automation:integrate-needs-human' || true
           if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
             echo "terminal Slack already sent -> no catch-all ping"; exit 0
           fi
