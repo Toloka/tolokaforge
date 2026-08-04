@@ -2,22 +2,21 @@
 
 All notable changes to this project are documented in this file.
 
-## Unreleased
+## v0.14.0 (2026-08-04)
+
+### Feat
+
+- **runtime**: runner wheel split — slim image via subset build target (M15) (#847)
+- **secrets**: resolve ${secret:NAME} references in config values (#798)
+- **runtime**: Service Readiness Contract — first-class host-invokability boundary (#803) (#817)
 
 ### Fix
 
-- **runtime**: materialisation now bind-mounts the host docker socket (`/var/run/docker.sock`) into the runner service whenever a task routes a shipped tool through the compose variant (`tools.agent.<tool>.service`), on the same trigger that bakes the docker CLI into the runner image. The compose-variant `bash_session` / `str_replace_editor` wrappers `docker exec` from the runner into a sibling service; the CLI was present but the socket was not, so every exec failed to reach the daemon and the tool lifecycle surfaced `bash session failed to become ready` at trial-register time. Both per-trial and shared task-declared-stack backends inject the mount; the injection is idempotent, so a pack that already declares the socket volume is left unchanged
-- **runner**: the persistent `bash_session` shell no longer recurses to a `RecursionError` when its backing process cannot stay alive. `_PtyBashSession.run` treated an empty read (the shell pipe closing — the process exited) as a timeout, routing a dead session into `_terminate_runaway`; for the compose engine (`docker exec` into a service container) that path reopens the exec and re-runs the sentinel, which reads EOF again and recurses without bound (one forked `docker exec` per level) whenever the target container is not running — surfacing at trial start as `Tool lifecycle start failed: maximum recursion depth exceeded`. EOF is now handled distinctly from a timeout: the session is closed and the failure surfaces cleanly (e.g. `open` raises `bash session failed to become ready`)
-- **runner-client**: `GrpcRunnerClient.health_check` now accepts both `healthy` and `degraded` runner statuses (per `docs/GRPC_PROTOCOL.md` § HealthCheck) as reachable-for-connect purposes. The prior strict `status == "healthy"` check made every trial pack without a `db-service` fail the 30-attempt connect loop even though the runner's `HealthCheck` RPC was successfully answering. Only `unhealthy` and `RpcError` remain as fail states (#801)
-
-### Feat
-
-- **core**: new `tolokaforge.core.health` module — reusable pattern for ordered health hierarchies. `HealthLevel` (an `IntEnum` with `UNHEALTHY < DEGRADED < HEALTHY`) + `HealthReport` (a frozen dataclass wrapping the level with `is_reachable()` / `is_fully_operational()` semantic predicates) + `HealthReport.from_status()` (single-source-of-truth mapping from protocol status strings, with unknowns mapping fail-loud to `UNHEALTHY`). `GrpcRunnerClient.health_report()` is the new primary API; `health_check()` becomes a backwards-compat facade over `health_report().is_reachable()`. The pattern replaces stringly-typed status comparisons with domain predicates on the wrapper — the mapping from protocol state to "can I use this service?" lives once, not scattered across call sites
-
-### Feat
-
-- **runtime**: task packs may declare `services.<name>.readiness: {kind: grpc|http|tcp}`, an optional per-service client-reachability contract (default: none — the docker healthcheck stays the only readiness signal). Every existing pack validates unchanged (#803)
-- **runtime**: `PerTrialRuntimeBackend.provision` gates on host-side readiness before returning — the runner is always probed for gRPC channel-readiness on its published host port, and any service declaring `readiness:` is probed by its kind. A container that is Docker-healthy but host-unreachable (loopback-only or IPv6-only bind) now fails fast with a `ProvisionError` whose `diagnostic` names the resolved endpoint, probe outcome, and the container's actual listen addresses, instead of a downstream 30 s client-connect timeout (#803)
+- **orchestrator**: allow per-trial runs with heterogeneous compose files (#849)
+- **runner+orchestrator**: substrate-native support for adapters using compose-variant tools + no DB service (#843)
+- **runner-client**: accept degraded runner status + introduce HealthLevel/HealthReport pattern (#801) (#841)
+- **grading**: decode wire tool calls in run_custom_checks instead of … (#804)
+- **test**: add mkfir and write config before run orchestrator (#802)
 
 ## v0.13.1 (2026-08-03)
 
