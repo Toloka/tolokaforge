@@ -1045,7 +1045,10 @@ partially replayed golden world is never built and nothing is ever hashed agains
 An action with no `name` key, `name: ""`, or `name: null` resolves to nothing the same
 way and draws the same error, and one raise names every offending action, its index,
 and the set it was resolved against — an author correcting a golden path sees the whole
-list rather than paying for a replay per typo.
+list rather than paying for a replay per typo. Both shapes are refused earlier still,
+wherever the authoring gate can resolve the task's tool set — see
+[What is validated before a run](#what-is-validated-before-a-run) for the namespace it
+resolves them against, which is not quite either substrate's.
 
 What each substrate resolves *against* still differs, and #815 owns unifying the two.
 Core matches the pack's `TOOLS` map exactly and raises `UnresolvableGoldenAction`,
@@ -2267,6 +2270,8 @@ Findings come in three classes:
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | `state_checks.hash.expected_state_hash` declared under a falsy `hash.enabled` | error | `state_checks` |
 | a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
+| a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
+| a golden action declaring no name — the key absent, `""`, or `null` — under the same flag | error | as above |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
 | a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
@@ -2312,6 +2317,30 @@ vacuous pass for it while reading as configured:
 Each rule reads its keys for **truth**, not presence, because that is what both
 substrates do: an empty `golden_actions` replays nothing, an empty `required_actions`
 requires nothing.
+
+**Every golden action names a tool the task gives its actors.** A name that resolves to
+nothing costs the whole trial: both substrates resolve the authored names before the
+first action runs and refuse the replay outright, so the tokens are spent and no
+state-hash verdict comes back at all (see
+[Hash-Based Grading](#hash-based-grading-tau-bench-compatible)). An action with no
+`name` key, `name: ""`, or
+`name: null` resolves to nothing the same way and draws the same error, and each
+offending action is addressed by its own index — a name may repeat, and a nameless
+action carries nothing else to tell it apart by.
+
+The gate resolves those names against **the tools the task declares** —
+`tools.agent.enabled ∪ tools.user.enabled` — which is stricter than either substrate
+resolves at replay time: core matches the pack's `TOOLS` map and the runner the tools it
+registered for the trial, and neither is readable before a run without importing the
+pack's server module. A native pack whose golden action names a `TOOLS` entry it gives
+no actor therefore replays but is refused here; no pack in the repository has that
+shape, and #815 owns unifying the three namespaces.
+
+Like the source rule beside it, this one reads only a hash block whose flag is truthy,
+because a source under a falsy flag is resolved by nobody and refusing it would be
+stricter than the grade. That leaves one shape refused by neither rule and graded by no
+substrate: a `golden_actions` list under `hash.enabled: false`, whatever its names.
+#832 owns closing it, at the flag rather than at the name.
 
 An explicit opt-out is *not* "declares nothing": `custom_checks: {enabled: false}`
 states a decision, survives the wire intact, and is read the same way by both

@@ -135,6 +135,11 @@ def _bound_block(
     }
 
 
+def _golden_actions(*actions: dict[str, Any], enabled: bool = True) -> dict[str, Any]:
+    """A hash block replaying *actions*, in the shape an author writes it."""
+    return {"state_checks": {"hash": {"enabled": enabled, "golden_actions": list(actions)}}}
+
+
 def _quotes(operator: str, name: str) -> dict[str, Any]:
     """A ``present`` over an assistant message whose text reads the bound *name*."""
     return {"present": {"match": {"kind": "assistant_message", "text": {operator: name}}}}
@@ -246,6 +251,22 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_hash_source_declared",
         channel="errors",
         message="Declare expected_state_hash or golden_actions",
+    ),
+    _Rule(
+        label="golden_action_naming_an_undeclared_tool",
+        task=_HELPDESK,
+        grading=_golden_actions({"name": "close_widget"}),
+        checker="_check_golden_action_names",
+        channel="errors",
+        message="golden action 'close_widget' is not declared by this task",
+    ),
+    _Rule(
+        label="golden_action_naming_nothing_at_all",
+        task=_HELPDESK,
+        grading=_golden_actions({"kwargs": {"widget_id": "W1"}}),
+        checker="_check_golden_action_names",
+        channel="errors",
+        message="names no tool to replay",
     ),
     _Rule(
         label="a_section_that_declares_nothing",
@@ -705,13 +726,90 @@ def test_golden_actions_alone_are_a_hash_source() -> None:
 
     The replay is what every shipped golden-action pack grades by, so a rule reading
     only ``expected_state_hash`` as a source would refuse the one hash shape whose
-    verdict is the same on both substrates.
+    verdict is the same on both substrates. The action names a tool the task declares,
+    which is the other thing a replayable source needs.
     """
-    grading = {
-        "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "place_order"}]}}
-    }
+    grading = _golden_actions({"name": "write_file"})
 
     assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+
+
+_GOLDEN_ACTIONS_NO_REPLAY_CAN_RUN = (
+    pytest.param({"name": "close_widget"}, id="a_tool_no_actor_is_given"),
+    pytest.param({"kwargs": {"widget_id": "W1"}}, id="no_name_key"),
+    pytest.param({"name": ""}, id="name_written_empty"),
+    pytest.param({"name": None}, id="name_written_null"),
+)
+
+
+@pytest.mark.parametrize("action", _GOLDEN_ACTIONS_NO_REPLAY_CAN_RUN)
+def test_every_golden_action_shape_no_replay_can_run_is_refused(action: dict[str, Any]) -> None:
+    """The four shapes that leave a trial paid for and unscored draw one finding each.
+
+    All four resolve to nothing wherever a replay reads them, and both substrates refuse
+    the replay outright rather than skipping the action — so the pack costs a full trial
+    and takes no state-hash verdict. ``name: null`` never reaches a replay at all: it fails
+    ``GoldenAction`` construction inside the adapter with a Pydantic message about a
+    string, so the gate naming the action is the only reading an author can act on.
+    """
+    report = inspect_grading_authoring(_golden_actions(action), _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == [
+        "state_checks.hash.golden_actions[0].name"
+    ]
+    assert report.advisories == ()
+    assert "['http_request', 'write_file']" in report.errors[0].message
+
+
+def test_each_unreplayable_golden_action_is_addressed_by_its_own_index() -> None:
+    """An author correcting a golden path is shown every offending action, not the first.
+
+    The index is the only thing that tells two actions apart — a name may repeat, and a
+    nameless one carries nothing at all — so a rule reporting the block rather than the
+    action leaves the author to find them by bisection.
+    """
+    grading = _golden_actions(
+        {"name": "write_file"}, {"name": "close_widget"}, {"kwargs": {"widget_id": "W1"}}
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+
+    assert [finding.where for finding in report.errors] == [
+        "state_checks.hash.golden_actions[1].name",
+        "state_checks.hash.golden_actions[2].name",
+    ]
+
+
+def test_a_golden_action_under_a_disabled_flag_is_refused_by_no_rule_at_all() -> None:
+    """The one hash shape the gate accepts and no substrate grades (#832).
+
+    Deliberate, and asserted so it cannot change by accident in either direction. The
+    name rule may not fire, because neither substrate resolves a source under a falsy
+    flag and refusing it would be stricter than the grade. The block still declares a
+    source, so the section rule sees something declared, and the flag agrees with no
+    ``expected_state_hash``, so the source rule sees nothing to disagree with — the
+    whole block grades nothing and draws no finding. #832 owns closing it, at the flag
+    rather than at the name.
+    """
+    grading = _golden_actions({"name": "close_widget"}, enabled=False)
+
+    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+
+
+def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> None:
+    """The name rule needs the task's tools, so it is skipped with the rest of that group.
+
+    One skip for the whole group, not one per rule: the block below is unreplayable
+    against any tool set that resolves, and against an inventory that cannot answer it
+    is simply not knowable — a gate that raised here would reject every pack whose
+    adapter cannot report a tool set.
+    """
+    grading = _golden_actions({"name": "close_widget"})
+
+    report = inspect_grading_authoring(grading, ToolInventory.unresolvable())
+
+    assert report.errors == ()
+    assert [skip.where for skip in report.unchecked] == ["grading"]
 
 
 # The rest of a loadable config, because ``combine`` is required: without it every
