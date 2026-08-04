@@ -3080,5 +3080,10 @@ class HashGradingResult(BaseModel):
     hash_score: float
     state_diff: StateDiff | None = None
     golden_action_errors: list[str] = Field(default_factory=list)
+    """Golden actions that resolved to a registered tool and raised while replaying.
+
+    An unresolvable name never reaches the replay — it fails the whole grade — so
+    every entry here describes an action that ran against a world it did not fit.
+    """
 
     model_config = {"extra": "forbid"}

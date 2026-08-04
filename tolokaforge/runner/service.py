@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,6 +54,7 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
+from tolokaforge.core.grading.golden_replay import resolve_golden_action_names
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
@@ -238,6 +239,18 @@ def _executor_error_to_wire(error: str) -> "pb2.CustomCheckResult":
         message=error,
         details_json="",
     )
+
+
+def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
+    """The runner resolves a golden-action name against the tools it registered.
+
+    Golden actions are authored unprefixed, so a registered name ending in
+    ``_<name>`` resolves too. Not core's rule, which matches the pack's ``TOOLS``
+    map exactly; #815 owns unifying the two namespaces.
+    """
+    if name in registered:
+        return name
+    return next((candidate for candidate in registered if candidate.endswith(f"_{name}")), None)
 
 
 # =============================================================================
@@ -2147,6 +2160,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Execute hash-based grading algorithm.
 
         Steps:
+        0. Resolve every golden-action name
         1. Get current trial stable hash
         2. Snapshot current state
         3. Reset to initial state
@@ -2164,7 +2178,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         Returns:
             HashGradingResult with hash_match, hash_score, and optional state_diff
+
+        Raises:
+            UnresolvableGoldenAction: an action names no tool registered for the trial,
+                or names nothing at all. Raised before step 1, so the trial's database
+                is untouched — steps 1-4 mutate it, and a trial whose grading failed on
+                a pack defect must not be left holding the initial state.
         """
+        # 0. Resolve every authored name
+        resolved_tool_names = resolve_golden_action_names(
+            [action.tool_name for action in golden_actions],
+            candidates=trial_context.agent_tools.keys(),
+            match=_tool_registered_for_trial,
+        )
+
         # Detect MCP server wrappers — their state lives in a subprocess, not
         # in the db-service, so we must sync before hashing and reset the MCP
         # subprocess state when the db-service is reset.
@@ -2222,26 +2249,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # the IDs produced on replay from the same initial state.
         golden_action_errors: list[str] = []
 
-        for i, action in enumerate(golden_actions):
+        for i, (registered_name, action) in enumerate(
+            zip(resolved_tool_names, golden_actions, strict=True)
+        ):
             tool_name = action.tool_name
             arguments = dict(action.arguments)  # copy
 
-            tool = trial_context.agent_tools.get(tool_name)
-            if tool is None:
-                # Try with domain prefix (golden actions use unprefixed names)
-                for registered_name in trial_context.agent_tools:
-                    if registered_name.endswith(f"_{tool_name}"):
-                        tool = trial_context.agent_tools[registered_name]
-                        logger.debug(
-                            f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
-                        )
-                        break
-            if tool is None:
-                # Golden action references tool that doesn't exist
-                err_msg = f"Golden action {i} ({tool_name}): tool not found"
-                logger.error(f"GradeTrial: {err_msg}")
-                golden_action_errors.append(err_msg)
-                continue  # Continue - partial golden state still useful
+            tool = trial_context.agent_tools[registered_name]
+            if registered_name != tool_name:
+                logger.debug(
+                    f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
+                )
 
             try:
                 # Execute tool

@@ -1,17 +1,24 @@
 """What a golden replay does with an action name that resolves to nothing.
 
-Driven over the real ``tests/data/tasks/shop_orders_02`` pack — its ``mcp_server.py``,
-its ``initial_state.json``, and the two-step golden path its ``grading.yaml`` declares.
-The pack's own ``TOOLS`` map is what decides which names resolve, so a stand-in map
-would lock the stand-in's rule rather than the one a replay actually applies; and the
-trial states below are produced by driving the pack's tools, which is how an agent
-produces them.
+Both substrates, because both replay golden actions and each resolves a name under its
+own rule: the core engine against the pack's ``TOOLS`` map exactly, the runner against
+the tools it registered for the trial with a single ``…_<name>`` suffix allowed on top.
+
+The core half is driven over the real ``tests/data/tasks/shop_orders_02`` pack — its
+``mcp_server.py``, its ``initial_state.json``, and the two-step golden path its
+``grading.yaml`` declares. The pack's own ``TOOLS`` map is what decides which names
+resolve, so a stand-in map would lock the stand-in's rule rather than the one a replay
+actually applies; and the trial states below are produced by driving the pack's tools,
+which is how an agent produces them.
 
 The measured defect these cases close: with ``confirm_payment`` misspelled, the replay
 skipped it and returned the order still ``pending``, so a trial that placed the order
 and never paid — the wrong behaviour — hashed equal to that partial world and scored
 ``1.0`` "State hash matches", while a correct trial scored ``0.0`` against a diff that
-named nothing about the typo.
+named nothing about the typo. A runner that resolved a name inside its replay loop
+rather than ahead of it scores the trial against the same partial world and names the
+defect only in a ``GOLDEN REPLAY ERRORS:`` tail on the reasons; the runner cases below
+rule that out.
 """
 
 from __future__ import annotations
@@ -19,14 +26,24 @@ from __future__ import annotations
 import copy
 import importlib.util
 import json
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
 import pytest
 import yaml
 
-from tolokaforge.core.grading.golden_replay import UnresolvableGoldenAction
+from tolokaforge.core.grading.golden_replay import (
+    UnresolvableGoldenAction,
+    resolve_golden_action_names,
+)
 from tolokaforge.core.grading.state_checks import StateChecker
+from tolokaforge.runner.models import GoldenAction, TaskDescription
+from tolokaforge.runner.service import (
+    RunnerServiceImpl,
+    TrialContextRuntime,
+    _tool_registered_for_trial,
+)
 
 pytestmark = [pytest.mark.unit, pytest.mark.grading]
 
@@ -161,3 +178,101 @@ def test_the_pack_as_authored_still_fails_a_trial_that_never_paid(
     assert score == 0.0
     assert "State hash mismatch" in reason
     assert diff is not None
+
+
+# ---------------------------------------------------------------------------
+# The runner: its own matcher, and the trial state it may not touch
+# ---------------------------------------------------------------------------
+
+#: What ``RegisterTrial`` left in ``agent_tools`` — one name a golden action can only
+#: reach through the suffix rule, one it reaches exactly.
+_REGISTERED_TOOLS = ("shop_place_order", "confirm_payment")
+
+
+def _resolve_as_the_runner_does(*names: str | None) -> list[str]:
+    return resolve_golden_action_names(
+        list(names), candidates=_REGISTERED_TOOLS, match=_tool_registered_for_trial
+    )
+
+
+def test_the_runner_resolves_both_an_exact_name_and_an_unprefixed_one() -> None:
+    """Golden actions are authored unprefixed, so both spellings have to reach a tool."""
+    assert _resolve_as_the_runner_does("confirm_payment", "place_order") == [
+        "confirm_payment",
+        "shop_place_order",
+    ]
+
+
+def test_the_runner_refuses_a_name_naming_the_index_and_the_registered_set() -> None:
+    """An author reading this has to learn which action is wrong and what it could say."""
+    with pytest.raises(UnresolvableGoldenAction) as raised:
+        _resolve_as_the_runner_does("confirm_payment", "place_ordr")
+
+    message = str(raised.value)
+    assert "[1] 'place_ordr'" in message, message
+    for name in _REGISTERED_TOOLS:
+        assert name in message, message
+
+
+class _RefusingDBClient:
+    """Every db-service call refused, whichever it is.
+
+    Steps 1-4 of the runner's hash path all write to the trial's database — an MCP
+    task syncs through ``mutate``, then the trial is snapshotted and reset to its
+    initial state. Refusing the whole client asserts that resolution finishes before
+    any of them is reached without restating a call order the implementation is free
+    to change.
+    """
+
+    def __getattr__(self, method: str) -> Callable[..., Any]:
+        async def refuse(*_args: Any, **_kwargs: Any) -> Any:
+            raise AssertionError(f"db_client.{method} ran before golden actions resolved")
+
+        return refuse
+
+
+def _runner_over_a_refusing_db() -> tuple[RunnerServiceImpl, TrialContextRuntime]:
+    service = RunnerServiceImpl.__new__(RunnerServiceImpl)
+    service.db_client = _RefusingDBClient()
+    context = TrialContextRuntime(
+        trial_id="golden_replay_ordering:0",
+        task_description=TaskDescription(
+            task_id="golden_replay_ordering",
+            name="Golden-action resolution precedes every db call",
+            category="test",
+            description="A hash-graded trial whose golden action names an unknown tool",
+            adapter_type="native",
+            system_prompt="You are a test assistant.",
+        ),
+    )
+    context.agent_tools = dict.fromkeys(_REGISTERED_TOOLS, object())
+    return service, context
+
+
+async def test_an_unresolvable_name_fails_the_grade_before_the_trial_state_moves() -> None:
+    """The invariant: a pack defect leaves the trial's database exactly as it was.
+
+    The replay loop sits between ``reset_trial`` and ``restore_snapshot``, so a raise
+    from inside it would leave the trial holding the initial state instead of what the
+    agent left behind. Resolving first is what makes the failure free of that cost.
+    """
+    service, context = _runner_over_a_refusing_db()
+
+    with pytest.raises(UnresolvableGoldenAction, match="place_ordr"):
+        await service._execute_hash_grading(
+            context.trial_id, context, [GoldenAction(tool_name="place_ordr")]
+        )
+
+
+async def test_a_resolvable_name_reaches_the_db_client_the_refusal_guards() -> None:
+    """The control: the test above passes because resolution precedes the db calls.
+
+    Without this, a hash path that had stopped touching the database at all — or a
+    resolution pass that raised on every name — would satisfy the invariant vacuously.
+    """
+    service, context = _runner_over_a_refusing_db()
+
+    with pytest.raises(AssertionError, match="ran before golden actions resolved"):
+        await service._execute_hash_grading(
+            context.trial_id, context, [GoldenAction(tool_name="place_order")]
+        )

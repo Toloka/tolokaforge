@@ -1039,14 +1039,22 @@ reason contradicting it. A golden replay that fails to *execute* is a grading er
 rather than a verdict on either substrate: core raises and the trial is left unscored,
 the runner answers `GradeTrial` with `success=false`.
 
-**An action name that resolves to nothing is one of those failures.** Core-side, every
-authored name is resolved against the pack's `TOOLS` map before the first action runs,
-so a partially replayed golden world is never built and nothing is ever hashed against
-one: an unresolvable name raises `UnresolvableGoldenAction` and the trial is left
-unscored. An action with no `name` key, `name: ""`, or `name: null` resolves to nothing
-the same way and draws the same error. One raise names every offending action, its
-index, and the set the pack exposes, so an author correcting a golden path sees the
-whole list rather than paying for a replay per typo.
+**An action name that resolves to nothing is one of those failures, on both
+substrates.** Every authored name is resolved before the first action runs, so a
+partially replayed golden world is never built and nothing is ever hashed against one.
+An action with no `name` key, `name: ""`, or `name: null` resolves to nothing the same
+way and draws the same error, and one raise names every offending action, its index,
+and the set it was resolved against — an author correcting a golden path sees the whole
+list rather than paying for a replay per typo.
+
+What each substrate resolves *against* still differs, and #815 owns unifying the two.
+Core matches the pack's `TOOLS` map exactly and raises `UnresolvableGoldenAction`,
+leaving the trial unscored. The runner matches the tools `RegisterTrial` registered for
+the trial, accepting a single registered `…_<name>` suffix on top of an exact match
+because golden actions are authored unprefixed, and answers `GradeTrial` with
+`success=false`. It resolves before it writes anything — before the MCP state sync, the
+`pre_golden` snapshot and the reset — so a pack defect costs the trial's database
+nothing and the trial still holds what the agent left behind.
 
 ### Best Practices
 
