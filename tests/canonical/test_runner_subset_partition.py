@@ -494,13 +494,20 @@ def _find_subset_wheel() -> Path | None:
 @pytest.fixture(scope="module")
 def subset_wheel_path() -> Path:
     """Path to the subset wheel — build one on demand if the ``dist/`` copy
-    is stale or absent."""
+    is stale or absent.
+
+    Invokes the hatchling PEP 517 build backend directly via
+    ``python -m hatchling build -t custom``. Equivalent to
+    ``hatch build --target custom`` but drives hatchling straight from the
+    active interpreter, so it has no dependency on the ``hatch`` CLI being
+    installed or on hatch's ``default`` environment being resolvable — both
+    of which fail cleanly in a uv-managed venv where only ``hatchling``
+    (the build backend, listed in ``[dependency-groups] dev``) is present."""
     existing = _find_subset_wheel()
     if existing is not None:
         return existing
-    # Build the subset wheel — mirrors ``uv run hatch build --target custom``.
     build_result = subprocess.run(
-        ["uv", "run", "hatch", "build", "--target", "custom"],
+        [sys.executable, "-m", "hatchling", "build", "-t", "custom"],
         cwd=REPO_ROOT,
         capture_output=True,
         text=True,
