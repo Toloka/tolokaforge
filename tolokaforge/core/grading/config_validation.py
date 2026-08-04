@@ -883,6 +883,14 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
     block at load — so an advisory here would tell the author their pack is fine while
     ``tolokaforge validate`` and the run's pre-flight reject it.
 
+    Which means this finding reaches only a caller reading a block *fragment* without
+    constructing it — :mod:`tolokaforge.core.grading.trace_replay` and
+    :mod:`tolokaforge.core.grading.rubric_migration`, over a recorded bundle.
+    :func:`~tolokaforge.adapters._task_loader.validate_grading_yaml` constructs
+    ``StateChecksConfig`` on every declared block, so it hears the model's load error
+    first and this rule never runs for it. The duplication is deliberate: it is what
+    lets a corpus tool report the shape rather than abort on it.
+
     The mirror of the no-source rule rather than an extension of it: that one owns a block
     declaring no source at all, this one a block declaring two, one of which is a probe —
     see :func:`_state_checks_has_a_source` for the whole partition. Reads the block alone,

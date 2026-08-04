@@ -12,17 +12,21 @@ migration:
   message naming the field and showing the new shape.
 * ``state_checks``: ``env_assertions`` and ``db_hash_check`` are removed —
   neither ever produced grading signal on either substrate — and are rejected
-  naming the check that replaces each.
+  naming the check that replaces each, while an inert declaration of either is
+  dropped so a recorded bundle still loads; every other key the block does not
+  declare is rejected naming the closest declared field and the accepted set.
 * The ``llm_judge.customization`` block (and its project-defaults twin
   ``grading_defaults.llm_judge.customization``) rejects malformed values and
   unknown keys, the message naming the offending field.
 * ``combine``: the aggregation ``method`` is a closed set, and the two retired
   names that were declared but never dispatched are rejected naming the rule each
   one meant; a block that is not a mapping is rejected naming the file, the key and
-  the shape received.
+  the shape received; a key the block does not declare is rejected naming the closest
+  declared field and the accepted set.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
   its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
-  substrates' models naming both keys and both values.
+  substrates' models naming both keys and both values; a key the block does not
+  declare is rejected on both models too.
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
   that could only ever select nothing is rejected before a trial is paid for; a
   block that is not a mapping is rejected naming the file, the key and the shape.
@@ -48,6 +52,7 @@ from pathlib import Path
 import pytest
 import yaml
 from click.testing import CliRunner
+from pydantic import ValidationError
 
 from tests.utils.trace_checks_configs import every_kind_block
 from tolokaforge.adapters._task_loader import validate_grading_yaml
@@ -56,8 +61,9 @@ from tolokaforge.core.grading.combine_method import (
     RETIRED_COMBINE_METHOD_ALIASES,
 )
 from tolokaforge.core.grading.config_validation import ToolInventory
-from tolokaforge.core.models import GradingDefaults, StateChecksConfig
+from tolokaforge.core.models import GradingCombineConfig, GradingDefaults, StateChecksConfig
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
+from tolokaforge.core.project_loader import resolve_effective_grading_combine
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.models import RunnerTranscriptRulesConfig as RunnerTranscriptRules
 
@@ -232,8 +238,8 @@ def test_validate_rejects_db_hash_check(tmp_path: Path):
 def test_removed_state_check_keys_are_rejected_at_grading_load(tmp_path: Path):
     """The rejection lives on the model, so the run path fails too — not just validate.
 
-    ``StateChecksConfig`` is ``extra="ignore"``, so without this the populated key
-    would be dropped in silence on the very path that grades a trial.
+    The message naming the replacement is why these two keys are answered here rather
+    than by the model's ``extra="forbid"``, which knows of no replacement to name.
     """
     with pytest.raises(ValueError, match="env_assertions has been removed"):
         StateChecksConfig(env_assertions=[{"env_type": "user", "func_name": "assert_x"}])
@@ -242,15 +248,25 @@ def test_removed_state_check_keys_are_rejected_at_grading_load(tmp_path: Path):
 
 
 def test_inert_removed_keys_still_load(tmp_path: Path):
-    """An empty declaration requests nothing, so it is ignored rather than rejected.
+    """An empty declaration requests nothing, so it is dropped rather than rejected.
 
     Recorded trial bundles serialize the full grading config, including these keys at
-    their old defaults; re-reading such a bundle must not raise.
+    their old defaults; re-reading such a bundle must not raise. Dropped rather than
+    returned untouched, because the model's ``extra="forbid"`` reads whatever the
+    before-validator hands back — and asserted at the gate too, which refuses a key the
+    block does not declare before the model is ever constructed.
     """
     config = StateChecksConfig(env_assertions=[], db_hash_check=False, jsonpaths=[])
 
     assert not hasattr(config, "env_assertions")
     assert not hasattr(config, "db_hash_check")
+
+    validate_grading_yaml(
+        _write_grading(
+            tmp_path, {"env_assertions": [], "db_hash_check": False, "jsonpaths": _ASSERTIONS}
+        ),
+        inventory=_UNRESOLVED,
+    )
 
 
 def test_validate_accepts_customization_block(tmp_path: Path):
@@ -521,20 +537,95 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
-def test_validate_skips_a_state_checks_block_that_declares_no_hash(tmp_path: Path):
-    """Without a ``hash`` block, ``StateChecksConfig`` is never constructed here — the
-    reason every fixture above declares one rather than relying on jsonpaths alone."""
-    validate_grading_yaml(
-        _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}}),
-        inventory=_UNRESOLVED,
+# ---------------------------------------------------------------------------
+# state_checks' own field names — every declared block, not only a hash-declaring one
+#
+# The gate constructs the model on any declared block, so every rule it carries is an
+# authoring answer rather than one a pack first hears at grade time with the trial
+# already paid for.
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("state_checks", "match"),
+    [
+        (
+            {"jsonpaths": _ASSERTIONS, "jsonpaths_typo": _ASSERTIONS},
+            "unknown key 'jsonpaths_typo'",
+        ),
+        ({"jsonpaths": _ASSERTIONS, "id_fields": {"widgets": ""}}, "must be a non-empty key field"),
+        ({"jsonpaths": _ASSERTIONS, True: 1}, "grading keys must be strings"),
+    ],
+    ids=["a_misspelled_key", "a_rule_the_model_always_carried", "a_key_yaml_read_as_a_boolean"],
+)
+def test_validate_gates_a_state_checks_block_that_declares_no_hash(
+    tmp_path: Path, state_checks: dict, match: str
+):
+    """Every arm here loaded clean while only a hash-declaring block reached the model.
+
+    The second is the one an out-of-tree pack is likelier to meet: not a typo but a rule
+    ``StateChecksConfig`` always carried, which such a pack was always violating and now
+    hears about at ``validate`` instead of at grade time. The third is not a misspelling
+    at all — YAML reads a bare ``on:`` / ``no:`` as a boolean and a bare ``3:`` as an int
+    — and the did-you-mean suggester raises ``TypeError: 'bool' object is not iterable``
+    on one, so the refusal partitions such a key out and says to quote it instead.
+    """
+    with pytest.raises(ValueError, match=match):
+        validate_grading_yaml(_write_grading(tmp_path, state_checks), inventory=_UNRESOLVED)
+
+
+def test_validate_names_a_misspelled_state_checks_key_and_the_accepted_set(tmp_path: Path):
+    """A dropped key was silent whenever a real source survived beside it.
+
+    A typo *alone* in this block already drew the asserts-nothing refusal, which names
+    neither the key nor the fix; a typo beside a declared ``jsonpaths`` drew nothing at
+    all, and the assertions the author wrote under it were never compared. Measured on
+    a block with no surviving source beside a weighted sibling: ``1.0`` and passing,
+    where the assertion the author wrote scored ``0.5`` and failing.
+    """
+    grading = _write_grading(
+        tmp_path, {"jsonpaths": _ASSERTIONS, "jsonpath": [{"path": "$.db.widgets[0].owner"}]}
     )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "unknown key 'jsonpath'" in message, message
+    assert "did you mean 'jsonpaths'?" in message, message
+    assert "the task's own state_checks block" in message, message
+    for field in StateChecksConfig.model_fields:
+        assert field in message, message
+
+
+def test_a_populated_retired_key_draws_its_migration_and_not_the_unknown_key_refusal(
+    tmp_path: Path,
+):
+    """The two answers are disjoint, and only one of them names a replacement.
+
+    A retired key is not a key the author misspelled — it is one that was removed, and
+    the message that names what to write instead is the whole point of keeping it. A
+    refusal calling it unknown would answer one mistake with two contradicting
+    sentences, one of them useless.
+    """
+    grading = _write_grading(
+        tmp_path, {"env_assertions": [{"env_type": "user", "func_name": "assert_x"}]}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert "state_checks.env_assertions has been removed" in message, message
+    assert "unknown key" not in message, message
 
 
 # ---------------------------------------------------------------------------
 # combine.method — the aggregation an author names, rejected at validate time
 #
-# This gate closes the bad-*value* half of the combine typo space. A misspelled
-# *key* (``combine: {methd: any}``) is a different defect, tracked in #745.
+# This gate closes the bad-*value* half of the combine typo space; the misspelled
+# *key* half (``combine: {methd: any}``) is the section after it.
 # ---------------------------------------------------------------------------
 
 
@@ -663,6 +754,75 @@ def test_validate_cli_reports_a_retired_combine_method_as_invalid(tmp_path: Path
     assert "0 valid, 1 invalid" in out
     assert "Use 'all'" in out
     assert "never worked" in out
+
+
+# ---------------------------------------------------------------------------
+# combine's own field names — a key the block does not declare, refused at load
+#
+# Every field in the block has a default a dropped key silently substituted, so the
+# refusal is on the model (total over every construction path) and its author-facing
+# message is at the gate, the only tier that knows the file.
+# ---------------------------------------------------------------------------
+
+
+_COMBINE_FIELDS = ("method", "weights", "pass_threshold")
+
+
+def test_the_combine_block_refuses_a_key_it_does_not_declare():
+    """On the model, so ``project.yaml`` load and direct Python are refused too.
+
+    Which key the refusal names, and nothing about the grade: what a dropped key did to
+    one is asserted at the merge that folded it, in the test below.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        GradingCombineConfig(pass_treshold=0.95)
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [("pass_treshold",)]
+
+
+def test_a_misspelled_threshold_no_longer_resolves_to_the_default():
+    """The value consequence, at the merge a run is graded by rather than at the model.
+
+    The silent substitution is the regression: this resolution answered ``0.8`` for a
+    pack asking for ``0.95``, and every consumer downstream read the wrong threshold as
+    the author's own.
+    """
+    assert resolve_effective_grading_combine(None, {"pass_threshold": 0.95}).pass_threshold == 0.95
+
+    with pytest.raises(ValidationError):
+        resolve_effective_grading_combine(None, {"pass_treshold": 0.95})
+
+
+def test_validate_names_the_key_its_closest_field_and_the_accepted_set(tmp_path: Path):
+    """What the model's own ``extra_forbidden`` cannot say: the file, and the fix."""
+    grading = _write_combine(tmp_path, {"pass_treshold": 0.95, "weights": _WEIGHTS})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "'pass_treshold'" in message, message
+    assert "did you mean 'pass_threshold'?" in message, message
+    for field in _COMBINE_FIELDS:
+        assert field in message, message
+    assert "the task's own combine block" in message, message
+
+
+def test_validate_cli_reports_a_misspelled_combine_key_as_invalid(tmp_path: Path):
+    """The author-facing surface, where the whole message has to arrive."""
+    task_file = _write_task(
+        tmp_path / "misspelled_combine_key",
+        yaml.safe_dump({"combine": {"pass_treshold": 0.95, "weights": _WEIGHTS}}),
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = " ".join(result.stderr.split())
+    assert "0 valid, 1 invalid" in out
+    assert "unknown key 'pass_treshold'" in out
+    assert "did you mean 'pass_threshold'?" in out
+    assert "combine accepts: method, weights, pass_threshold." in out
 
 
 # ---------------------------------------------------------------------------
@@ -807,8 +967,12 @@ def test_validate_rejects_a_transcript_rules_block_that_is_not_a_mapping(
     [
         ({"min_assistant_turns": 0}, "greater than or equal to 1"),
         ({"tool_expectations": {"required_toolz": ["db_update"]}}, "required_toolz"),
+        (
+            {"must_contain": ["shipped"], "must_contian": ["refunded"]},
+            "unknown key 'must_contian'",
+        ),
     ],
-    ids=["floor_below_the_domain", "misspelled_tool_expectations_key"],
+    ids=["floor_below_the_domain", "misspelled_tool_expectations_key", "misspelled_rule_key"],
 )
 def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     tmp_path: Path, transcript_rules: dict, match: str
@@ -816,14 +980,53 @@ def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     """The gate constructs the whole block, so its siblings are validated too.
 
     A gate that read the two window fields off the raw dict and compared them
-    directly — never constructing the model — would leave both of these loading: a
-    floor of 0 asserting nothing, and a misspelled ``tool_expectations`` key grading
-    as an empty list.
+    directly — never constructing the model — would leave all three of these loading: a
+    floor of 0 asserting nothing, a misspelled ``tool_expectations`` key grading as an
+    empty list, and a misspelled rule key at the top of the block doing the same one
+    level up.
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(
             _write_transcript_rules(tmp_path, transcript_rules), inventory=_UNRESOLVED
         )
+
+
+@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
+def test_both_substrates_refuse_a_rule_key_the_block_does_not_declare(model: type):
+    """One answer, both models: the engine and the runner agree on what loads.
+
+    Every rule here defaults to asserting nothing, so the dropped key graded the trial
+    by the rules that survived — measured, ``must_contian: ['refund issued']`` scored
+    ``1.0`` and passing on a transcript the authored ``must_contain`` scored ``0.75``
+    and failing. The runner model has refused this since it was written; the engine's
+    is what a ``grading.yaml`` is read by.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        model(must_contian=["refund issued"])
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [("must_contian",)]
+
+
+def test_validate_names_a_misspelled_transcript_rule_key_and_the_accepted_set(tmp_path: Path):
+    """What the model's own ``extra_forbidden`` cannot say: the file, and the fix.
+
+    Written beside a rule that survives, which is the shape nothing caught: a typo alone
+    in this block already drew the asserts-nothing refusal, and that message names
+    neither the key nor what to write instead.
+    """
+    grading = _write_transcript_rules(
+        tmp_path, {"must_contain": ["shipped"], "must_contian": ["refunded"]}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "did you mean 'must_contain'?" in message, message
+    assert "the task's own transcript_rules block" in message, message
+    for field in CoreTranscriptRules.model_fields:
+        assert field in message, message
 
 
 def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: Path):

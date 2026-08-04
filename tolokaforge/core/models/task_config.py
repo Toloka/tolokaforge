@@ -38,6 +38,7 @@ __all__ = [
     "InitialStateConfig",
     "LLMJudgeDefaults",
     "ProjectConfig",
+    "RETIRED_STATE_CHECK_KEYS",
     "RequiredAction",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
@@ -317,10 +318,27 @@ class RequiredAction(BaseModel):
     compare_args: list[str] | None = None  # args to compare, None = all
 
 
-class StateChecksConfig(BaseModel):
-    """State checks configuration"""
+RETIRED_STATE_CHECK_KEYS: frozenset[str] = frozenset({"env_assertions", "db_hash_check"})
+"""The ``state_checks`` keys that are neither declared fields nor unknown keys.
 
-    model_config = {"extra": "ignore"}
+Read by :class:`StateChecksConfig`'s own before-validator and by the authoring gate's
+unknown-key refusal, so the two cannot disagree about which keys a recorded bundle is
+allowed to carry.
+"""
+
+
+class StateChecksConfig(BaseModel):
+    """State checks configuration.
+
+    ``extra="forbid"`` because a dropped key leaves this component with no source and
+    the fold renormalises around it: a ``jsonpaths`` typo beside a weighted sibling
+    graded a trial ``1.0`` and passing where the assertion the author wrote scored
+    ``0.5`` and failing. The two keys in :data:`RETIRED_STATE_CHECK_KEYS` are the one
+    exception — :meth:`_reject_removed_state_check_keys` drops them, so the extra check
+    never sees them.
+    """
+
+    model_config = {"extra": "forbid"}
 
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
     hash: dict[str, Any] | None = None
@@ -348,13 +366,14 @@ class StateChecksConfig(BaseModel):
         """Fail loud with a migration message on the removed state-check keys.
 
         ``env_assertions`` and ``db_hash_check`` never produced grading signal on
-        either substrate. Because this model is ``extra="ignore"``, a populated
-        removed key would otherwise be dropped in silence — the exact failure this
-        rejection exists to convert into an error naming the replacement.
+        either substrate, so a populated one is an error naming its replacement rather
+        than a key this model quietly drops.
 
         An inert declaration (``env_assertions: []`` / ``db_hash_check: false``)
-        requests nothing and is ignored, so recorded trial bundles serialized
-        against the old schema still load.
+        requests nothing and is dropped here, so recorded trial bundles serialized
+        against the old schema still load past this model's ``extra="forbid"`` —
+        returning them untouched would not, since the extra check reads whatever this
+        validator hands back. Every other undeclared key is that check's business.
         """
         if not isinstance(data, dict):
             return data
@@ -397,7 +416,7 @@ class StateChecksConfig(BaseModel):
                 "      enabled: true\n"
                 "      golden_actions: [...]        # or expected_state_hash"
             )
-        return data
+        return {key: value for key, value in data.items() if key not in RETIRED_STATE_CHECK_KEYS}
 
     @field_validator("id_fields")
     @classmethod
@@ -449,9 +468,15 @@ class CommunicateInfo(BaseModel):
 
 
 class TranscriptRulesConfig(BaseModel):
-    """Transcript rules configuration"""
+    """Transcript rules configuration.
 
-    model_config = {"extra": "ignore"}
+    ``extra="forbid"`` for the reason the nested ``tool_expectations`` already carries:
+    every rule here defaults to asserting nothing, so a dropped key graded the trial by
+    the rules that survived. A ``must_contian`` typo scored ``1.0`` and passing on a
+    transcript the authored ``must_contain`` scored ``0.75`` and failing.
+    """
+
+    model_config = {"extra": "forbid"}
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
@@ -481,9 +506,14 @@ class GradingCombineConfig(BaseModel):
     ``weights`` defaults to an empty dict so a project-level defaults
     block may declare only a partial view (e.g. ``pass_threshold`` alone).
     Consumers that require weights validate presence at use-site.
+
+    ``extra="forbid"`` because every field here has a default a dropped key would
+    silently substitute: a ``pass_treshold`` typo graded the pack at ``0.8``
+    whatever the author wrote. The refusal holds on every construction path,
+    ``project.yaml``'s ``task_defaults.grading_defaults.combine`` included.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     method: CombineMethod = "weighted"
     weights: dict[str, float] = Field(default_factory=dict)

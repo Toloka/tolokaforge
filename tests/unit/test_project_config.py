@@ -113,6 +113,22 @@ class TestTaskDefaultsFields:
         assert gd.combine.pass_threshold == 0.9
         assert gd.combine.weights == {}
 
+    def test_grading_defaults_refuse_a_combine_key_they_do_not_declare(self) -> None:
+        """The rejection reaches ``project.yaml``, four levels down from its own root.
+
+        A project-level ``methd`` used to drop out of the whole layer in silence, so
+        every task inheriting these defaults folded as ``weighted``.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            ProjectConfig(
+                name="typo-eval",
+                task_defaults={"grading_defaults": {"combine": {"methd": "all"}}},
+            )
+
+        assert [error["loc"] for error in excinfo.value.errors()] == [
+            ("task_defaults", "grading_defaults", "combine", "methd")
+        ]
+
     def test_policies_and_adapter_settings_are_dicts(self) -> None:
         td = TaskDefaults(
             policies={"max_tool_calls_per_turn": 10},

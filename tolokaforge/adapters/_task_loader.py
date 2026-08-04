@@ -56,6 +56,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
+from pydantic import BaseModel
 
 from tolokaforge.core.deprecations import (
     canonicalize_actor_config,
@@ -72,12 +73,17 @@ from tolokaforge.core.grading.config_validation import (
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import classify_initial_state
+from tolokaforge.core.grading.unknown_keys import refuse_unknown_grading_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
+    RETIRED_STATE_CHECK_KEYS,
     GradingCombineConfig,
     GradingFindingSeverity,
+    StateChecksConfig,
     TaskConfig,
     TaskDefaults,
+    TraceChecksConfig,
+    TranscriptRulesConfig,
 )
 from tolokaforge.core.project_loader import (
     construct_config,
@@ -100,6 +106,96 @@ _UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 
 
+@dataclass(frozen=True)
+class _TypedGradingBlock:
+    """One typed block a ``grading.yaml`` may declare, and how this gate reads it.
+
+    Constructing the whole block is the point: every rule its model carries — a value
+    outside a closed set, a rule that would assert nothing, a matcher that could only
+    ever select nothing — describes a pack a run would refuse to grade, and its author
+    must hear that before paying for a trial rather than after.
+    """
+
+    model: type[BaseModel]
+
+    not_a_mapping: str | None
+    """What to say when the block is declared but is not a mapping.
+
+    ``None`` for ``state_checks``, the one block with no such sentence written: every
+    gate rule reading it skips a section that is not a mapping, so such a block passes
+    ``validate`` with no finding at all and is refused only at grade time, by
+    ``GradingConfig``'s own field type. #755 owns closing that.
+    """
+
+    retired_keys: frozenset[str] = frozenset()
+    """Keys the model answers in its own words — see ``answered_elsewhere``."""
+
+    gate_names_unknown_keys: bool = True
+    """Whether this gate writes the refusal for a key the block does not declare.
+
+    ``trace_checks`` is the one entry that does not: its model is the runner's own, so
+    an unknown key there draws the bare ``extra_forbidden`` naming no file and no
+    accepted set, the same as it does on the wire.
+    """
+
+
+_TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
+    # The aggregation an author names decides how every component score folds, and a
+    # value outside the declared set has no fold. Constructing the block rather than
+    # the one field also puts a malformed ``weights`` / ``pass_threshold`` under the
+    # same gate.
+    "combine": _TypedGradingBlock(
+        model=GradingCombineConfig,
+        not_a_mapping=(
+            "'combine' must be a mapping of method / weights / pass_threshold, got "
+            "{kind} ({value!r}). A key indented one level too far under 'combine:' "
+            "makes the block a list; a method written next to the key makes it a "
+            "string. Write the method as 'combine:' then 'method:' indented beneath it."
+        ),
+    ),
+    # Every rule this block carries — a removed key's migration, a probe declared
+    # beside a source this component also scores, a hash whose composition weight is
+    # undecidable in one shape — describes a pack a run would refuse to grade.
+    "state_checks": _TypedGradingBlock(
+        model=StateChecksConfig,
+        not_a_mapping=None,
+        retired_keys=RETIRED_STATE_CHECK_KEYS,
+    ),
+    # A turn window whose floor sits above its ceiling admits no assistant-turn count,
+    # so the component is 0.0 however the agent behaves. Constructing the block rather
+    # than the two fields also puts the ``min_assistant_turns`` domain and a misspelled
+    # key inside the ``extra="forbid"`` ``tool_expectations`` under the same gate.
+    "transcript_rules": _TypedGradingBlock(
+        model=TranscriptRulesConfig,
+        not_a_mapping=(
+            "'transcript_rules' must be a mapping of rule keys, got {kind} "
+            "({value!r}). A key indented one level too far under 'transcript_rules:' "
+            "makes the block a list. Write 'transcript_rules:' then each rule key "
+            "indented one level beneath it."
+        ),
+    ),
+    # Every rejection the matcher vocabulary makes — an unmatchable field for the kind,
+    # a predicate asserting nothing, two constraint kinds under one require — is a check
+    # that would otherwise select nothing and read as an agent failure at grade time.
+    "trace_checks": _TypedGradingBlock(
+        model=TraceChecksConfig,
+        not_a_mapping=(
+            "'trace_checks' must be a mapping carrying a 'constraints' list, an "
+            "'alternatives' list, or both, got {kind} ({value!r}). A constraint written "
+            "directly under 'trace_checks:' makes the block a list. Write "
+            "'trace_checks:' then 'constraints:' or 'alternatives:' indented beneath it."
+        ),
+        gate_names_unknown_keys=False,
+    ),
+}
+"""Every block ``validate_grading_yaml`` constructs, in the order it reads them.
+
+``llm_judge`` is not here: it is the one typed block constructed on a *precondition*
+rather than on being declared at all, since only the ``rubric`` / ``model_ref`` shapes
+its own migration names are validated against the canonical judge config.
+"""
+
+
 def validate_grading_yaml(
     grading_path: Path,
     *,
@@ -111,11 +207,18 @@ def validate_grading_yaml(
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
-    validate time with a clear migration message, not only at run time. ``combine``
-    and ``transcript_rules`` are validated whenever either is declared; ``llm_judge``
-    (the free-text ``rubric: str`` / ``output_schema`` / ``model_ref`` shapes, raised
-    by :class:`LLMJudgeConfig`) and ``state_checks`` (``env_assertions`` /
-    ``db_hash_check``, raised by :class:`StateChecksConfig`) carry removals.
+    validate time with a clear migration message, not only at run time. Every block in
+    :data:`_TYPED_GRADING_BLOCKS` is constructed whenever it is declared, so every rule
+    those models carry answers at authoring time; ``llm_judge`` is constructed only on a
+    block declaring a ``rubric`` or the relocated ``model_ref``, which are the shapes its
+    own migration names — an ``output_schema`` alone reaches no judge config here. For
+    the three blocks the engine's own models define — ``combine``, ``state_checks`` and
+    ``transcript_rules`` — a key the block does not declare is refused here naming the
+    file, the closest declared field and the accepted set, which the models' own
+    ``extra="forbid"`` refuses on every other path in one line without an address;
+    ``trace_checks`` and ``llm_judge`` draw that bare refusal here too. ``state_checks``'s two retired keys are not the addressed
+    refusal's business: populated, each draws the migration message naming its
+    replacement; inert, each is dropped so a recorded bundle still loads.
 
     Validate is the earliest gate a task pack meets: the engine's own
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
@@ -167,20 +270,9 @@ def validate_grading_yaml(
             f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
         )
 
-    # The whole combine block, on any declared one: the aggregation an author names
-    # decides how every component score folds, and a value outside the declared set
-    # has no fold. Constructing the block rather than the one field also puts a
-    # malformed ``weights`` / ``pass_threshold`` under the same gate.
-    combine = grading_data.get("combine")
-    if isinstance(combine, dict):
-        GradingCombineConfig(**combine)
-    elif combine is not None:
-        raise RuntimeError(
-            f"Grading file {grading_path}: 'combine' must be a mapping of method / "
-            f"weights / pass_threshold, got {type(combine).__name__} ({combine!r}). "
-            "A key indented one level too far under 'combine:' makes the block a list; "
-            "a method written next to the key makes it a string. Write the method as "
-            "'combine:' then 'method:' indented beneath it."
+    for block_name, typed in _TYPED_GRADING_BLOCKS.items():
+        _construct_declared_block(
+            grading_data.get(block_name), typed, block_name=block_name, grading_path=grading_path
         )
 
     # The rubric migration lives on the canonical LLMJudgeConfig, so validate the
@@ -195,65 +287,13 @@ def validate_grading_yaml(
 
         LLMJudgeConfig(**llm_judge)
 
-    # Same shape for state_checks: construct the block on a removed key, and on any
-    # declared ``hash`` block — whose composition weight is undecidable in one shape
-    # and is the reason a pack must hear about it before the run rather than after.
-    state_checks = grading_data.get("state_checks")
-    if isinstance(state_checks, dict) and (
-        "env_assertions" in state_checks
-        or "db_hash_check" in state_checks
-        or isinstance(state_checks.get("hash"), dict)
-    ):
-        from tolokaforge.core.models import StateChecksConfig
-
-        StateChecksConfig(**state_checks)
-
-    # The whole transcript_rules block, on any declared one: a turn window whose floor
-    # sits above its ceiling admits no assistant-turn count, so the component is 0.0
-    # however the agent behaves. Constructing the block rather than the two fields also
-    # puts the ``min_assistant_turns`` domain and a misspelled key inside the
-    # ``extra="forbid"`` ``tool_expectations`` under the same gate.
-    transcript_rules = grading_data.get("transcript_rules")
-    if isinstance(transcript_rules, dict):
-        from tolokaforge.core.models import TranscriptRulesConfig
-
-        TranscriptRulesConfig(**transcript_rules)
-    elif transcript_rules is not None:
-        raise RuntimeError(
-            f"Grading file {grading_path}: 'transcript_rules' must be a mapping of rule "
-            f"keys, got {type(transcript_rules).__name__} ({transcript_rules!r}). "
-            "A key indented one level too far under 'transcript_rules:' makes the block a "
-            "list. Write 'transcript_rules:' then each rule key indented one level beneath "
-            "it."
-        )
-
-    # The whole trace_checks block, on any declared one: every rejection the matcher
-    # vocabulary makes — an unmatchable field for the kind, a predicate asserting
-    # nothing, two constraint kinds under one require — is a check that would
-    # otherwise select nothing and read as an agent failure at grade time.
-    trace_checks = grading_data.get("trace_checks")
-    if isinstance(trace_checks, dict):
-        from tolokaforge.core.models import TraceChecksConfig
-
-        TraceChecksConfig(**trace_checks)
-    elif trace_checks is not None:
-        raise RuntimeError(
-            f"Grading file {grading_path}: 'trace_checks' must be a mapping carrying a "
-            f"'constraints' list, an 'alternatives' list, or both, got "
-            f"{type(trace_checks).__name__} ({trace_checks!r}). A constraint written "
-            "directly under 'trace_checks:' makes the block a list. Write 'trace_checks:' "
-            "then 'constraints:' or 'alternatives:' indented beneath it."
-        )
-
-    # After the ``combine`` block's own validation above, so a malformed one has
-    # already raised and the value here is a mapping or nothing.
-    effective_combine = (
-        resolve_effective_grading_combine(
+    # After the loop, so a malformed ``combine`` has already raised and the task-side
+    # value the merge reads is a mapping or nothing.
+    effective_combine = None
+    if combine_layer.known:
+        effective_combine = resolve_effective_grading_combine(
             combine_layer.project_combine, grading_data.get("combine")
         )
-        if combine_layer.known
-        else None
-    )
     report = inspect_grading_authoring(
         grading_data, inventory, replay_world=replay_world, effective_combine=effective_combine
     )
@@ -264,6 +304,38 @@ def validate_grading_yaml(
         written = "\n".join(f"  - {finding.where}: {finding.message}" for finding in fatal)
         raise ValueError(f"Grading file {grading_path} cannot be graded as written:\n{written}")
     return report
+
+
+def _construct_declared_block(
+    block: Any,
+    typed: _TypedGradingBlock,
+    *,
+    block_name: str,
+    grading_path: Path,
+) -> None:
+    """Construct *block* against the model that owns it, or refuse its shape.
+
+    Raises:
+        ValueError: If the block declares a key the model does not, where this gate
+            writes that refusal.
+        pydantic.ValidationError: If the block fails any rule its model carries.
+        RuntimeError: If the block is declared as something other than a mapping and
+            a sentence for that shape is written.
+    """
+    if isinstance(block, dict):
+        if typed.gate_names_unknown_keys:
+            refuse_unknown_grading_keys(
+                typed.model,
+                block,
+                block_name=block_name,
+                grading_path=grading_path,
+                answered_elsewhere=typed.retired_keys,
+            )
+        typed.model(**block)
+        return
+    if block is not None and typed.not_a_mapping is not None:
+        shape = typed.not_a_mapping.format(kind=type(block).__name__, value=block)
+        raise RuntimeError(f"Grading file {grading_path}: {shape}")
 
 
 def load_task_yaml(

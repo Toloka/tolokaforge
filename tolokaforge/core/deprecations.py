@@ -23,12 +23,15 @@ across two live homes, not schema-shape renames; they stay on
 
 from __future__ import annotations
 
+import difflib
 import warnings
 from collections.abc import Iterator
 from contextlib import contextmanager
 from contextvars import ContextVar
 from pathlib import Path
 from typing import Any
+
+from pydantic import BaseModel
 
 _NETWORK_POLICY_KEY = "network_policy"
 _SECURITY_CONTEXT_RENAMES = {"user": "run_as_user", "group": "run_as_group"}
@@ -113,6 +116,31 @@ def warn_deprecated(
     if follow_up_issue:
         message = f"{message} (tracked in #{follow_up_issue})"
     warnings.warn(message, DeprecationWarning, stacklevel=stacklevel)
+
+
+def suggest_closest_field(model: type[BaseModel], key: str) -> str:
+    """The did-you-mean clause for *key* against the fields *model* declares.
+
+    Read by both surfaces that answer an author's misspelled config key — this
+    module's warn-and-drop through :func:`tolokaforge.core.project_loader.construct_config`
+    and the grading gate's refusal in
+    :func:`tolokaforge.core.grading.unknown_keys.refuse_unknown_grading_keys` — so
+    the same typo does not send two authors reading two different sentences. They
+    differ in severity and in what they append, not in the suggestion.
+
+    Returned with a leading and a trailing space so a caller composes it into its
+    own sentence: the clause carries the suggestion, not the severity.
+    """
+    suggestion = difflib.get_close_matches(key, list(model.model_fields), n=1)
+    if not suggestion:
+        return (
+            f" — no close match on {model.__name__}. Remove the key or "
+            f"check the schema for the correct name. "
+        )
+    return (
+        f" — did you mean '{suggestion[0]}'? "
+        f"Rename `{key}` to `{suggestion[0]}` (or remove it if unused). "
+    )
 
 
 def coerce_task_packs_alias(values: Any) -> Any:
