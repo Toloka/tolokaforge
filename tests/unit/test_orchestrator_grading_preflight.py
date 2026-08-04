@@ -83,6 +83,15 @@ UNCHECKABLE_ARGUMENT_PATH = _constraint(_tool_call("http_request", **{"json.q": 
 # written today, which is after the trial has been paid for.
 REMOVED_STATE_CHECK_KEY = {"state_checks": {"env_assertions": [{"path": "/etc/hosts"}]}}
 
+# A ``state_checks`` block whose own keys were written beside the key rather than under
+# it, so the block is the empty list — the falsy shape a truthiness test lets through.
+# Weighted the way its author meant the component to count, so the pack's only defect is
+# the shape.
+DE_INDENTED_STATE_CHECKS: dict[str, Any] = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": [],
+}
+
 # A state hash whose source is a golden replay, so the pack grades only against a world
 # its ``task.yaml`` supplies. The action names the one tool the task declares, so what a
 # rejection below is about is the world and never the name.
@@ -499,6 +508,91 @@ def test_a_grading_file_that_is_not_yaml_stops_the_pass_where_it_stands(
 
     assert "TASK-UNPARSEABLE" in str(excinfo.value)
     assert "TASK-TYPO" not in str(excinfo.value)
+    assert conductor.call_log.runs == []
+
+
+def _record_descriptions_resolved(orchestrator: Orchestrator) -> list[str]:
+    """Record which tasks the pass resolves a description for, in order.
+
+    The real resolve still runs behind the recorder, so the list says which packs the
+    pass read at all — which is what "the tasks behind it are never read" is measured
+    against, the pass having no other observable per-task step before the first trial.
+    """
+    resolved: list[str] = []
+    resolve = orchestrator.adapter.to_task_description
+
+    def recording_resolve(task_id: str) -> TaskDescription:
+        resolved.append(task_id)
+        return resolve(task_id)
+
+    orchestrator.adapter.to_task_description = recording_resolve
+    return resolved
+
+
+def _pass_over_two_packs_in_order(
+    tmp_path: Path, offender: dict[str, Any]
+) -> tuple[Orchestrator, InMemoryConductor, list[str]]:
+    """A pass over an offending pack and a clean one behind it, in that order.
+
+    Discovery order is the filesystem's, so the tasks are sorted before the run: which
+    pack the pass reaches second is the whole claim, and it cannot rest on a glob.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-A-OFFENDER", offender)
+    _write_builtin_task(root, "TASK-B-CLEAN", CLEAN)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.load_tasks()
+    orchestrator.tasks.sort(key=lambda task: task.task_id)
+    return orchestrator, conductor, _record_descriptions_resolved(orchestrator)
+
+
+def test_a_grading_document_that_is_not_a_mapping_stops_the_pass_before_any_trial(
+    tmp_path: Path,
+) -> None:
+    """The shape that reaches a paid trial is the falsy one, and this is where it stops.
+
+    A whole ``grading.yaml`` of ``[]`` is a grading block with nothing in it, so it
+    builds a description that grades nothing rather than crashing anything — the pass
+    has no complaint, the trial runs, and the pack dies while its artifacts are written
+    with every token already spent. The refusal reaching the description build is what
+    keeps the conductor's log empty here.
+    """
+    orchestrator, conductor, resolved = _pass_over_two_packs_in_order(tmp_path, CLEAN)
+    (tmp_path / "pack" / "tasks" / "TASK-A-OFFENDER" / "grading.yaml").write_text("[]\n")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        orchestrator.run()
+
+    assert "TASK-A-OFFENDER" in str(excinfo.value)
+    assert "is not a YAML mapping (got list)" in str(excinfo.value)
+    assert resolved == ["TASK-A-OFFENDER"]
+    assert conductor.call_log.runs == []
+
+
+def test_a_malformed_grading_key_aborts_the_pass_rather_than_joining_its_list(
+    tmp_path: Path,
+) -> None:
+    """A shape is answered where the file is read, which is ahead of this pass's list.
+
+    Standing boundary, and the same one
+    :func:`test_a_grading_file_that_is_not_yaml_stops_the_pass_where_it_stands` records
+    for a different defect: the native adapter answers a malformed shape while it builds
+    the description, and the pass resolves that before its grading predicate runs. So
+    such a pack aborts on the spot with the shape's own sentence instead of being batched
+    with the run's other offenders, and the packs behind it are never read. #880 owns
+    moving it into the list.
+    """
+    orchestrator, conductor, resolved = _pass_over_two_packs_in_order(
+        tmp_path, DE_INDENTED_STATE_CHECKS
+    )
+
+    with pytest.raises(RuntimeError) as excinfo:
+        orchestrator.run()
+
+    assert "TASK-A-OFFENDER" in str(excinfo.value)
+    assert "'state_checks' must be a mapping" in str(excinfo.value)
+    assert "cannot be graded as written" not in str(excinfo.value)
+    assert resolved == ["TASK-A-OFFENDER"]
     assert conductor.call_log.runs == []
 
 

@@ -228,9 +228,10 @@ def validate_grading_yaml(
     """Validate a task's ``grading.yaml``, failing loud on schema breaks.
 
     Run by ``tolokaforge validate`` so a malformed grading block is rejected at
-    validate time with a clear migration message, not only at run time. Every key's
-    shape is answered first, by :func:`refuse_malformed_grading_shapes`, so no rule
-    below reads a value that is neither a mapping nor absent. Every block in
+    validate time with a clear migration message, not only at run time. The file's own
+    shape and every key's are answered first, by
+    :func:`refuse_malformed_grading_shapes`, so no rule below reads a value that is
+    neither a mapping nor absent. Every block in
     :data:`_TYPED_GRADING_BLOCKS` is then constructed whenever it is declared, so every
     rule those models carry answers at authoring time; ``llm_judge`` is constructed only on a
     block declaring a ``rubric`` or the relocated ``model_ref``, which are the shapes its
@@ -291,11 +292,6 @@ def validate_grading_yaml(
     refuse_malformed_grading_shapes(raw_grading_data, grading_path=grading_path)
     grading_data = raw_grading_data or {}
 
-    if not isinstance(grading_data, dict):
-        raise RuntimeError(
-            f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
-        )
-
     for block_name, typed in _TYPED_GRADING_BLOCKS.items():
         _construct_declared_block(
             grading_data.get(block_name), typed, block_name=block_name, grading_path=grading_path
@@ -333,7 +329,13 @@ def validate_grading_yaml(
 
 
 def refuse_malformed_grading_shapes(grading_data: Any, *, grading_path: Path) -> None:
-    """Refuse every grading key in *grading_data* that is neither a mapping nor absent.
+    """Refuse *grading_data*, and every key in it, that is neither a mapping nor absent.
+
+    Called by every surface that reads a ``grading.yaml`` — ``tolokaforge validate``,
+    :meth:`NativeAdapter.get_grading_config` and
+    :meth:`NativeAdapter.to_task_description` — on the raw parse, so one sentence
+    answers a malformed shape wherever the file is read and no reader decides a shape
+    for itself.
 
     A key carrying nothing — a bare ``state_checks:`` — is the *absent* block and is
     accepted, because that is what every reader already makes of it. Any other
@@ -342,15 +344,20 @@ def refuse_malformed_grading_shapes(grading_data: Any, *, grading_path: Path) ->
     neither is what its author wrote. Every offending key is named in one raise, so an
     author fixing a de-indented file gets the whole list.
 
-    A document that is not itself a mapping declares no keys, so it passes here; its
-    shape is the caller's to refuse.
+    An empty document parses to ``None`` and is accepted here: a file with no content
+    is not content of the wrong type, and each reader answers it in its own words.
 
     Raises:
-        RuntimeError: If any declared grading key is neither a mapping nor ``None``,
-            naming the file, each offending key and the shape it received.
+        RuntimeError: If the document, or any grading key it declares, is neither a
+            mapping nor ``None``, naming the file and the shape it received — and for
+            a key, that key.
     """
-    if not isinstance(grading_data, dict):
+    if grading_data is None:
         return
+    if not isinstance(grading_data, dict):
+        raise RuntimeError(
+            f"Grading file {grading_path} is not a YAML mapping (got {type(grading_data).__name__})"
+        )
 
     malformed: list[str] = []
     for key, sentence in _GRADING_BLOCK_SHAPES.items():

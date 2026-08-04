@@ -12,6 +12,7 @@ from tolokaforge.adapters._task_loader import (
     _detect_task_root,
     agent_tool_configs,
     load_task_yaml,
+    refuse_malformed_grading_shapes,
     resolve_agent_tool_schemas,
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
@@ -302,7 +303,14 @@ class NativeAdapter(BaseAdapter):
         return system_prompt_path.read_text()
 
     def get_grading_config(self, task_id: str) -> GradingConfig:
-        """Load grading configuration from task's grading file"""
+        """Load grading configuration from task's grading file.
+
+        Raises:
+            ValueError: If the task names no grading file, or names one that is not
+                on disk.
+            RuntimeError: If the file, or any grading key it declares, is neither a
+                mapping nor absent.
+        """
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
 
@@ -316,6 +324,7 @@ class NativeAdapter(BaseAdapter):
         if grading_path.exists():
             with open(grading_path) as f:
                 grading_data = yaml.safe_load(f)
+            refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
             task_combine = grading_data.pop("combine", None)
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
@@ -395,7 +404,8 @@ class NativeAdapter(BaseAdapter):
 
         Raises:
             ValueError: If task_id not found
-            RuntimeError: If required files cannot be loaded
+            RuntimeError: If required files cannot be loaded, or if the grading file
+                or any grading key it declares is neither a mapping nor absent
         """
         from datetime import datetime, timezone
 
@@ -564,6 +574,7 @@ class NativeAdapter(BaseAdapter):
             if grading_path.exists():
                 with open(grading_path) as f:
                     grading_data = yaml.safe_load(f)
+                refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
 
         # Build grading config
         state_checks = None

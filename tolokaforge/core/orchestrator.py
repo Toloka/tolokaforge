@@ -1370,7 +1370,8 @@ class Orchestrator:
         The aggregate is over what the grading predicate rejects. Resolving each
         task's description happens outside the per-task catch, so whatever *that*
         raises — an adapter the host has not installed, a grading file that is
-        not YAML, which the native adapter parses while it builds the
+        not YAML, or a grading key whose shape is neither a mapping nor absent,
+        the last two being what the native adapter answers while it builds the
         description — aborts on the first task carrying it, and the tasks after
         it are never read. The list is of packs that load and cannot be graded;
         a pack that does not load stops the pass where it stands.
@@ -1401,10 +1402,15 @@ class Orchestrator:
         the adapter directly, so the adapter-registration guard is part of this
         gate and a task naming an uninstalled backend is rejected here too.
 
-        An authoring defect becomes a named line rather than propagating, because
-        the run's operator wants the list. Anything outside that set is the
-        harness's own bug and propagates, rather than sending an author to read a
-        file that is fine.
+        An authoring defect the grading predicate answers becomes a named line
+        rather than propagating, because the run's operator wants the list. The
+        boundary is which surface answers it, not how bad it is: a defect the
+        *loader* answers — a malformed grading shape, on either the file or one of
+        its keys — is raised while the description above is resolved, ahead of the
+        ``try`` below, so it aborts the pass with its own sentence instead of
+        joining the list. #880 owns moving that class into it. Anything outside
+        both sets is the harness's own bug and propagates, rather than sending an
+        author to read a file that is fine.
 
         The task's grading source is resolved before its block is read, so a task
         that names none is refused here too: the adapter that grades from a file

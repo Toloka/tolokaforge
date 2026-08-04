@@ -2632,19 +2632,33 @@ is a **mapping, or nothing at all**. A bare key with nothing under it is the *ab
 block: every field falls through to its default, which is what the loader's own merge
 makes of it.
 
-`tolokaforge validate` refuses any other shape, naming the grading file, the key, what
-it received and how to write it. Every offending key is named in one raise, so a file
-that lost its indentation in more than one place is fixed in a single pass.
+Any other shape is refused in one sentence naming the grading file, the key, what it
+received and how to write it. **The refusal is total over every grading key, and it is
+the same sentence on every surface that reads the file**: `tolokaforge validate`,
+`NativeAdapter.get_grading_config` and `NativeAdapter.to_task_description`. So a
+de-indented block is answered identically whether an author validates the pack, a run's
+pre-flight reads it, or the description build lowers it onto the wire — including on
+`tolokaforge run-trial`, which runs no pre-flight of its own and is protected by the
+read site. Every offending key is named in one raise, so a file that lost its
+indentation in more than one place is fixed in a single pass. A whole `grading.yaml`
+that is not a mapping at all draws the same refusal, naming the file and its shape.
 
 The refusal never consults truthiness, and that is the point. Writing a check directly
 under `state_checks:` instead of under one of the block's own keys makes the block a
 list, and `state_checks: []` is the same authoring mistake as
 `state_checks: [{path: "$.db.orders[0].status"}]`. Only the second crashes whoever
-indexes it; the first reads as a block that scores nothing, which is the quieter and
-more expensive failure.
+indexes it; the first reads as a block that scores nothing — the pack builds a
+description, a trial is scheduled and paid for, and the mistake surfaces while artifacts
+are written. That is the quieter and far more expensive failure, which is why both are
+refused at load.
 
 The migration for either is the same: indent the block's own keys one level under the
 key rather than writing its contents beside it.
+
+One shape is still answered differently per surface: an **empty** `grading.yaml`. A file
+with no content is not content of the wrong type, so `validate` accepts it while
+`get_grading_config` raises an `AttributeError` naming neither the file nor a fix
+(#879 owns that tier).
 
 ---
 
