@@ -113,6 +113,11 @@ class GradingEngine:
             GoldenReplayError: a state hash the config asked for could not be computed,
                 so no component is scored and the trial is left ungraded rather than
                 graded on the sources that happened to work.
+            ValueError: ``state_checks`` declares ``db_probes`` beside a source this fold
+                also scores, so one ``state_checks`` component holds two verdicts with no
+                declared share between them. Re-resolved here rather than trusted from
+                load, because the ``hash`` block is an untyped dict a caller can mutate
+                after validation.
         """
         components = GradeComponents()
         reasons_parts = []

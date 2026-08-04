@@ -299,7 +299,10 @@ _RULES: tuple[_Rule, ...] = (
         grading=_probes_beside(jsonpaths=[_A_JSONPATH_ASSERTION]),
         checker="_check_probes_are_the_only_state_source",
         channel="errors",
-        message="keep db_probes and drop the other source",
+        # The report-only tail rather than the shared sentence other tests already lock:
+        # this row is the only assertion that the finding says which substrate would have
+        # discarded which verdict.
+        message="only the runner evaluates a probe",
     ),
     _Rule(
         label="golden_action_naming_an_undeclared_tool",

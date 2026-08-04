@@ -30,6 +30,9 @@ state_checks:
   id_fields:
     widgets: widget_id
   relaxed_validation: true
+  # No db_probes here: a probe is exclusive with the hash and jsonpaths sources above,
+  # so this pack cannot declare all three. That key is carried by
+  # tests/data/tasks/db_probe_grading, and manifest totality is a union over the two.
 
 transcript_rules:
   must_contain:

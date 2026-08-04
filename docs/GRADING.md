@@ -3005,10 +3005,17 @@ core cannot read at all — so a pack you grade outside the runner keeps its ver
 taking the first fix, and a pack whose real oracle is the database takes the second.
 The refusal is at load and on both substrates, from one message:
 core raises where the grading config is built and the runner at `RegisterTrial`, so no
-trial is paid for first. `tolokaforge validate` and the run's pre-flight report it
-earlier still, at `state_checks.db_probes` — batched with the pack's other findings
-where the block writes no `hash` mapping, and as the load error above where it does
-(see [What is validated before a run](#what-is-validated-before-a-run)). Runner-side the
+trial is paid for first. `tolokaforge validate` reports it earlier still, at
+`state_checks.db_probes` — batched with the pack's other findings where the block writes
+no `hash` mapping, and as the load error above where it does
+(see [What is validated before a run](#what-is-validated-before-a-run)). A run's
+pre-flight resolves each pack's description before it reaches the gate, so there both
+shapes are the load error and the pass stops at the first pack carrying one. The fold is
+the last line of defence behind all of them: `resolve_state_checks_component` raises on a
+probe score arriving beside a hash or JSONPath verdict, so a config that reached grading
+without passing a gate — one built directly against the runner, or recorded before the
+rule — fails loud rather than discarding a verdict
+(see [`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#gradetrial-error-semantics)). Runner-side the
 probe score *is* the `state_checks` component, and it combines with `transcript_rules` /
 `llm_judge` through the normal weighted combine below.
 
