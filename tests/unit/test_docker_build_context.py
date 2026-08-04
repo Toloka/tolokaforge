@@ -264,9 +264,9 @@ def test_build_image_runner_ships_source_tree_not_a_wheel(monkeypatch) -> None:
         # No host-side wheel is copied into the runner image build context;
         # the subset wheel is produced by the wheel-builder stage.
         wheels = list(root.glob("tolokaforge*.whl"))
-        assert wheels == [], (
-            f"runner build context must not contain a pre-built wheel; found: {wheels}"
-        )
+        assert (
+            wheels == []
+        ), f"runner build context must not contain a pre-built wheel; found: {wheels}"
         # Instead, the source-tree entries hatch consumes must be present.
         assert (root / "pyproject.toml").exists()
         assert (root / "scripts" / "hatch" / "hatch_runner_subset_builder.py").exists()
@@ -594,3 +594,62 @@ def test_runner_build_context_fails_loud_when_wheel_lacks_packaged_inputs(
 
     with pytest.raises(FileNotFoundError, match="force-include"):
         get_image_definition("runner")
+
+
+def test_core_stack_runner_context_assembles_on_a_wheel_install(
+    tmp_path: Path, monkeypatch
+) -> None:
+    """``core_stack()`` must produce a runner context that ASSEMBLES when the
+    engine is installed as a wheel.
+
+    ``core_stack()`` is the path a real run takes (orchestrator ->
+    ``service_stack.start_all`` -> ``build_images`` ->
+    ``assemble_build_context(repo_root(), svc.dockerfile, svc.context_files)``).
+    It used to spell the repo-relative list out a second time, so when the
+    builder learned to resolve packaged copies for a wheel install the service
+    stack kept handing over repo-root paths — and v0.14.0 AND v0.14.1 both
+    shipped an engine that died in ``build_images()`` with
+    ``Declared context path not found: pyproject.toml``.
+
+    This test must run INSIDE the wheel-install simulation. A plain equality
+    assert in a source checkout cannot fail: there the builder returns the same
+    six strings in the same order as the literal the bug reintroduces, so both
+    sides match either way. Assembling under the patch is what actually gates
+    it — reverting ``core.py`` to its duplicated list makes this raise."""
+    from tolokaforge.docker.stacks.core import core_stack
+
+    site_packages = tmp_path / "site-packages"
+    pkg = site_packages / "tolokaforge"
+    packaged = pkg / "_subset_build"
+    (packaged / "scripts" / "hatch").mkdir(parents=True)
+    for name in ("pyproject.toml", "README.md", "LICENSE"):
+        (packaged / name).write_text(f"# {name}\n")
+    (packaged / "scripts" / "hatch" / "hatch_runner_subset_builder.py").write_text("")
+    (pkg / "_python_version.txt").write_text("3.12\n")
+    dockerfiles = pkg / "docker" / "dockerfiles"
+    dockerfiles.mkdir(parents=True)
+    (dockerfiles / "runner.Dockerfile").write_text("FROM scratch\n")
+    monkeypatch.setattr("tolokaforge.docker.builder.repo_root", lambda: site_packages)
+    monkeypatch.setattr("tolokaforge.docker.builder.installed_package_dir", lambda: pkg)
+
+    svc = core_stack().services["runner"]
+    build_dir = assemble_build_context(site_packages, svc.dockerfile, svc.context_files)
+    try:
+        for expected in (
+            "pyproject.toml",
+            "README.md",
+            "LICENSE",
+            ".python-version",
+            "scripts/hatch",
+            "tolokaforge",
+        ):
+            assert (build_dir / expected).exists(), (
+                f"core_stack()'s runner context is missing '{expected}' on a wheel "
+                "install — the service stack is not using the builder's resolved list"
+            )
+    finally:
+        shutil.rmtree(build_dir, ignore_errors=True)
+
+    # Belt and braces: the two lists must also stay identical, so a future edit
+    # to one cannot silently diverge. (Necessary, not sufficient — see above.)
+    assert svc.context_files == get_image_definition("runner")["context_files"]

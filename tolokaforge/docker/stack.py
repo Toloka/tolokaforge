@@ -144,10 +144,12 @@ class ServiceDefinition(BaseModel):
         default="latest",
         description="Tag for prebuilt image",
     )
-    context_files: list[str] = Field(
+    context_files: list[str | tuple[str, str]] = Field(
         default_factory=list,
         description="Explicit list of files/dirs to include in build context. "
-        "When set, an isolated temp build directory is created instead of using context.",
+        "When set, an isolated temp build directory is created instead of using context. "
+        "An entry may be a ``(source, destination)`` pair when the name the Dockerfile "
+        "expects differs from the source basename — see builder.assemble_build_context.",
     )
     privileged: bool = Field(
         default=False,
