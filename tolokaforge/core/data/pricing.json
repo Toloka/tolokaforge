@@ -390,11 +390,6 @@
       "output": 0.2,
       "cache_read": 0.02
     },
-    "deepseek/deepseek-v4-flash-0731": {
-      "input": 0.09,
-      "output": 0.18,
-      "cache_read": 0.018
-    },
     "deepseek/deepseek-v4-pro": {
       "input": 0.435,
       "output": 0.87,
