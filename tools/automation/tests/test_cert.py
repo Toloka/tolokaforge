@@ -200,23 +200,45 @@ def test_unbacked_required_capability_warns():
     assert any("UNBACKED" in w and "never_probed_cap" in w for w in warnings)
 
 
+def test_payload_only_cap_required_with_no_probe_result_is_a_violation():
+    """An all-unparseable-junit run must not smuggle a payload-only cap to `required`
+    through the soft UNBACKED path: with no measurement there is by definition no
+    passing native baseline, which is the only admissible promotion evidence."""
+    violations, warnings = cert.reconcile(
+        required={"unsigned_thinking_replay"},
+        known_unsupported=set(),
+        probed={},
+    )
+    assert any("SELF-REFERENTIAL" in v and "unsigned_thinking_replay" in v for v in violations)
+    assert not any("unsigned_thinking_replay" in w for w in warnings)
+
+
 def test_payload_only_set_matches_the_probes_that_mock_the_provider():
     """Drift guard, keyed on a STRUCTURAL fact rather than prose.
 
     A probe can only assert our own outgoing payload by stubbing the transport, and the
-    single seam for that is ``tolokaforge.core.llm.client.completion`` - the one and only
-    patch target anywhere in the live capability suite. So "patches that symbol" is
-    exactly "does not observe the provider". If a third replay-style probe lands it
-    belongs in the set; if one of these starts making a real second call, it must come
-    out.
+    single seam for that is ``client.completion`` - so "stubs that seam" is exactly
+    "does not observe the provider". The match covers the seam's patch SPELLINGS, not
+    one literal: the dotted string (``patch("tolokaforge.core.llm.client.completion")``
+    / ``monkeypatch.setattr("tolokaforge...")``) plus the object forms
+    (``patch.object(client, "completion")`` / ``monkeypatch.setattr(client,
+    "completion", ...)``) - a replay-style probe written in any of them must land in
+    the set, and keying on one literal would let the guard pass vacuously for the
+    others. If one of these probes starts making a real second call, it must come out.
     """
     import pathlib
+    import re
 
+    provider_mock = re.compile(
+        r"tolokaforge\.core\.llm\.client\.completion"
+        r"""|patch\.object\(\s*(?:\w+\.)*client\s*,\s*['"]completion['"]"""
+        r"""|setattr\(\s*(?:\w+\.)*client\s*,\s*['"]completion['"]"""
+    )
     root = pathlib.Path(cert.__file__).resolve().parents[4] / "tests" / "integration" / "llm"
     mocked = {
         path.stem[len("test_") :]
         for path in root.glob("test_*.py")
-        if "tolokaforge.core.llm.client.completion" in path.read_text()
+        if provider_mock.search(path.read_text())
     }
     assert mocked == cert.PAYLOAD_ONLY_CAPABILITIES, cert.PAYLOAD_ONLY_CAPABILITIES ^ mocked
 

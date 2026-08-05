@@ -16,7 +16,10 @@ measured observe baseline in these ways this gate catches:
      an overlay can make it green BY CONSTRUCTION; a green reprobe is therefore not
      evidence about the model.
   5. UNBACKED - a capability is ``required`` with no probe result at all, so nothing
-     measured supports it (warning: a probe can legitimately fail to collect).
+     measured supports it (warning: a probe can legitimately fail to collect). For a
+     PAYLOAD-ONLY capability this is a hard SELF-REFERENTIAL violation instead: the
+     only admissible promotion evidence is a measured passing native baseline, so
+     "nothing measured" cannot stay a warning there.
 
 Checks 1-3 are SYMMETRIC-BY-DESIGN gaps this module originally shipped with: it
 guarded against under-crediting a model but not against over-crediting one. Check 4
@@ -130,10 +133,21 @@ def reconcile(
             "missing-pricing gap)."
         )
     for cap in sorted(required - set(probed)):
-        warnings.append(
-            f"UNBACKED: `{cap}` is `required` but has no probe result in the baseline - "
-            "nothing measured supports it. Confirm the probe collected, or demote it."
-        )
+        if cap in payload_only:
+            # For a payload-only cap the ONLY admissible evidence is a measured passing
+            # native baseline (its probe mocks the provider turn, so a post-overlay green
+            # proves nothing). "No probe result at all" therefore cannot stay a warning:
+            # it would let an all-unparseable-junit run promote the cap unbacked.
+            violations.append(
+                f"SELF-REFERENTIAL: `{cap}` is `required` with NO probe result in the "
+                "baseline. A payload-only capability may be promoted only on a MEASURED "
+                "passing native baseline - re-run observe or demote it."
+            )
+        else:
+            warnings.append(
+                f"UNBACKED: `{cap}` is `required` but has no probe result in the baseline - "
+                "nothing measured supports it. Confirm the probe collected, or demote it."
+            )
     for cap, rate in sorted(probed.items()):
         if cap not in declared:
             violations.append(
