@@ -42,7 +42,6 @@ from tolokaforge.core.llm.reasoning_codec import (
     GeminiReasoningCodec,
     NoReasoningCodec,
     OpenAIReasoningCodec,
-    OpenAISummaryReplayReasoningCodec,
     ReasoningCodec,
 )
 from tolokaforge.core.llm.response_policy import (
@@ -112,7 +111,6 @@ _REASONING_CODECS: dict[str, type[ReasoningCodec]] = {
     "none": NoReasoningCodec,
     "anthropic": AnthropicReasoningCodec,
     "openai": OpenAIReasoningCodec,
-    "openai_summary_replay": OpenAISummaryReplayReasoningCodec,
     "gemini": GeminiReasoningCodec,
 }
 

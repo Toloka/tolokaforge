@@ -1531,61 +1531,36 @@ _ALL: list[MC] = [
     ),
     # -----------------------------------------------------------------
     # DeepSeek V4-Flash-0731 — dated snapshot of the v4-flash line on the
-    # OpenRouter route, landed via auto-resolve (Slack-requested integration,
-    # PR #846). Routes through the model-specific
-    # ``deepseek_v4_flash_0731_resolve`` preset (see model_presets.yaml),
-    # declared BEFORE the shared ``openrouter_dict_stringify_recovery`` preset
-    # (whose ``*deepseek-v4*`` glob it would otherwise match). That overlay is a
-    # SUPERSET of the shared preset — same passthrough schema + json_coerce
-    # response + dict_map_hints prompt (all 28 tool-call / structural probes
-    # 15/15) — swapping ONLY the reasoning codec to
-    # ``openai_summary_replay`` (``OpenAISummaryReplayReasoningCodec``).
+    # OpenRouter route, landed via auto-resolve (PR #893). Runs on the SHARED
+    # ``openrouter_dict_stringify_recovery`` preset (matched by its
+    # ``*deepseek-v4*`` glob) — no model-specific overlay, because the observe
+    # run was an ALL-CEILING convergence: every one of the 3 failing probes is a
+    # genuine route limit, not a policy gap, so there was nothing for a preset to
+    # fix. Observe evidence (31 capability probes x 15 reps + 6 shape variants x
+    # 15 reps + 200 wire trials / 950 tool calls, engine
+    # 9bfe374c): 28/31 capability probes 15/15, all 6 variants 15/15, ZERO
+    # tool-arg rejections on the wire.
     #
-    # The observe (default) baseline surfaced ONE preset-fixable failure:
-    # ``unsigned_thinking_replay`` 0/15. The route surfaces reasoning as an
-    # OpenAI ``reasoning_content`` summary (so THINKING_EMITS_BLOCKS passes
-    # 15/15 under the ``openai`` codec) but emits no signatures on the wire, and
-    # the plain OpenAI codec's ``encode_for_replay`` is a no-op — so the outgoing
-    # assistant dict carried no ``reasoning_details``. (The route does emit a
-    # ``reasoning_details`` envelope of its own, ``format: "unknown"``, which the
-    # OpenAI extract discards — live capture 2026-08-04, see
-    # ``tests/unit/llm/fixtures/openrouter_deepseek_v4_reasoning_response.json``.)
-    # ``OpenAISummaryReplayReasoningCodec``
-    # re-emits the summary block as an unsigned OpenRouter ``reasoning.text``
-    # detail on replay; reprobe went 5/5 on the fix-target, so
-    # UNSIGNED_THINKING_REPLAY is ``required`` here (UNLIKE the
-    # deepseek-v4-flash / v4-pro siblings, whose generic ``openai`` codec had no
-    # replay path and declared it known_unsupported).
+    # Stronger than the v4-flash / v4-pro siblings on IMPLICIT_PROMPT_CACHING,
+    # which passed 15/15 here and is therefore ``required``. Both siblings
+    # declare it ``known_unsupported`` on the rationale that a clean cold 2-call
+    # probe reads 0; that rationale does not hold on this snapshot — the probe
+    # keys its 8 k-token prefix with a per-call UUID, so a 15/15 sweep is a
+    # genuine cold-then-warm hit rather than cross-run contamination. (The
+    # siblings' posture is guarded by
+    # ``test_implicit_prompt_caching_unsupported_ratchet``; re-testing them is
+    # out of scope for this model's integration.)
     #
-    # SCOPE of that ``required`` — verified live 2026-08-04. The capability is a
-    # PAYLOAD-level contract: ``test_unsigned_thinking_replay`` fires turn 1 live
-    # and MOCKS turn 2 (so does its signed sibling), asserting only that the
-    # outgoing request body carries the turn-1 text. A controlled A/B on this
-    # route — same conversation with vs without the replay payload — measured
-    # turn-2 ``prompt_tokens`` 523 vs 523 (delta 0) while ``reasoning_details``
-    # was confirmed on the wire (2.8 kB, ~668 reasoning tokens). The route
-    # ACCEPTS the field and silently IGNORES it. The cert is therefore correct as
-    # written against the declared contract, but do NOT read it as "this model
-    # has cross-turn reasoning continuity" — it does not, on this route.
-    #
-    # The two ``known_unsupported`` ceilings are the observe-run ceilings
-    # (decision.json): signed-block replay has no source ("no signed blocks on
-    # turn 1" → THINKING_REPLAY_ROUNDTRIP) and no Anthropic-style ephemeral
-    # cache markers are wired on this route (call 1 created 0
-    # cache_creation_input_tokens → PROMPT_CACHING). IMPLICIT_PROMPT_CACHING
-    # passed the observe baseline 15/15, so it is ``required`` here — re-verified
-    # 2026-08-04 as 3/3 stable on ``test_implicit_prompt_caching`` (the probe
-    # keys its 8 k-token prefix with a per-call UUID, so the call-1 → call-2 read
-    # is a genuine cold-then-warm hit, not cross-run contamination).
-    #
-    # This diverges from the v4-flash / v4-pro siblings, which declare it
-    # ``known_unsupported`` on the rationale that a cold probe reads 0. That
-    # rationale is now STALE, not a route difference: run live 2026-08-04,
-    # ``test_implicit_prompt_caching_unsupported_ratchet`` FAILS for both
-    # siblings (call 2 reported cache_read_input_tokens=8192 on each), which is
-    # precisely the correction the ratchet exists to force. The sibling certs
-    # need IMPLICIT_PROMPT_CACHING moved to ``required``; that is a pre-existing
-    # main-branch defect, out of scope for this model's integration.
+    # UNSIGNED_THINKING_REPLAY is a ceiling here, matching the siblings. The
+    # route surfaces reasoning as a flat OpenAI ``reasoning_content`` summary
+    # (so THINKING_EMITS_BLOCKS passes 15/15 under the shared preset's ``openai``
+    # codec), but that codec's ``encode_for_replay`` is a no-op, so the outgoing
+    # assistant dict carries no ``reasoning_details``. A replay-capable codec
+    # could turn the probe green by construction — but the probe is a
+    # PAYLOAD-level contract (turn 1 live, turn 2 mocked: it asserts only that
+    # the outgoing request body carries the turn-1 text), and its baseline here
+    # is 0/15 NATIVE. Per the PR #846 precedent it therefore stays
+    # ``known_unsupported`` rather than being manufactured into a ``required``.
     # -----------------------------------------------------------------
     MC(
         model_id="openrouter__deepseek_deepseek-v4-flash-0731",
@@ -1612,30 +1587,31 @@ _ALL: list[MC] = [
                 C.RE2_PATTERN_TOLERANCE,
                 C.USAGE_METRICS_POPULATED,
                 C.COST_USD_POPULATED,
+                # Auto-cache is observable per-call on this snapshot: 15/15 on
+                # ``test_implicit_prompt_caching``. Diverges from the v4-flash /
+                # v4-pro siblings (see the block comment above).
                 C.IMPLICIT_PROMPT_CACHING,
                 C.THINKING_EMITS_BLOCKS,
-                # Fixed by the ``openai_summary_replay`` codec (re-emits the
-                # turn-1 summary as an unsigned OpenRouter reasoning.text detail
-                # on replay); observe was 0/15, reprobe 5/5. Diverges from the
-                # deepseek-v4-flash / v4-pro siblings, whose generic ``openai``
-                # codec has a no-op replay path.
-                C.UNSIGNED_THINKING_REPLAY,
             }
         ),
         known_unsupported=frozenset(
             {
-                # Signed-block replay has no source: the route emits no
-                # per-block signatures ("no signed blocks on turn 1"), so the
-                # signed round-trip contract cannot be exercised. The unsigned
-                # replay path IS wired (UNSIGNED_THINKING_REPLAY, required
-                # above).
-                C.THINKING_REPLAY_ROUNDTRIP,
                 # No Anthropic-style ephemeral cache: call 1 created 0
                 # cache_creation_input_tokens (the OpenRouter DeepSeek route
                 # exposes no explicit cache-control markers). The auto-cache
-                # surface (IMPLICIT_PROMPT_CACHING) passed the observe baseline
-                # 15/15 and is required above.
+                # surface (IMPLICIT_PROMPT_CACHING) is required above.
                 C.PROMPT_CACHING,
+                # Signed-block replay has no source: all 333 reasoning blocks
+                # observed on this route carry ``signature: null`` ("no signed
+                # blocks on turn 1"), and no policy can manufacture a provider
+                # signature.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # The shared preset's ``openai`` codec has a no-op
+                # ``encode_for_replay``, so the assistant dict carries no
+                # ``reasoning_details``. Same posture as both siblings; see the
+                # block comment above for why the 0/15 native baseline is not
+                # papered over with a replay codec.
+                C.UNSIGNED_THINKING_REPLAY,
             }
         ),
     ),

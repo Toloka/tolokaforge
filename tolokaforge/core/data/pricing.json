@@ -2,7 +2,7 @@
   "_meta": {
     "description": "Model pricing in USD per 1M tokens. Source: OpenRouter API.",
     "source_url": "https://openrouter.ai/api/v1/models",
-    "updated_at": "2026-08-04T07:51:03.462318+00:00",
+    "updated_at": "2026-08-05T11:38:42.454727+00:00",
     "notes": "Run `uv run pricing-updater update` to refresh from OpenRouter API."
   },
   "models": {
