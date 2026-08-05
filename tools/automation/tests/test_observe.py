@@ -124,6 +124,34 @@ def test_render_summary_wire_only_reprobe_verdict_is_the_wire_result():
     assert "infra failure" not in summary
 
 
+def test_render_summary_wire_only_reprobe_with_no_trials_says_the_run_failed():
+    # Unreachable from the workflow (the rejections>0 guard implies wire tasks exist), but
+    # a wire run that crashes at startup - or a manual CLI invocation - lands here and must
+    # not read as a wire-clean pass.
+    findings = {
+        "stage": "reprobe",
+        "candidate": {"name": "vendor/m"},
+        "preset": "overlay",
+        "capability_ran": False,
+        "all_passed": False,
+        "capability": {"report_present": False},
+        "variants": {"report_present": False},
+        "wire": {
+            "trials": 0,
+            "tool_call_count": 0,
+            "tool_arg_rejections": {
+                "rejecting_trials": 0,
+                "trial_rate": 0,
+                "by_task_trial_rate": {},
+            },
+            "rejected_examples": [],
+            "infra": {},
+        },
+    }
+    summary = observe.render_summary(findings)
+    assert "wire-only pass produced no trials" in summary
+
+
 def test_build_findings_carries_reprobe_stage_into_wire_only_summary(tmp_path):
     # End to end through the real artifact shape: a wire_verify-style out dir (reprobe
     # manifest, no capability junit, one wire trajectory) must yield stage=reprobe, no

@@ -1,14 +1,19 @@
 # Resolve finalize: land the proven policy as the integration
 
-The fix loop CONVERGED: `{{OBS_DIR}}/resolve/overlay.yaml` is proven (the last reprobe went
-green on every fix-target). Land it as the model's integration ON THIS BRANCH. Do NOT commit,
+The fix loop CONVERGED: either `{{OBS_DIR}}/resolve/overlay.yaml` is proven (the last reprobe
+went green on every fix-target), or the decision is all-ceiling (`NO_TARGETS`: empty
+fix_targets, no overlay, nothing to prove - the integration is cert + pricing only). Land it
+as the model's integration ON THIS BRANCH. Do NOT commit,
 push, or comment - the WORKFLOW does that after you. Write files only, then stop. This is a
 normal synchronous Claude Code run; nothing to await.
 
 ## Inputs
-- `{{OBS_DIR}}/resolve/overlay.yaml` - the proven preset (one model-specific entry).
+- `{{OBS_DIR}}/resolve/overlay.yaml` - the proven preset (one model-specific entry; ABSENT on
+  an all-ceiling convergence).
 - `{{OBS_DIR}}/resolve/decision.json` - `fix_targets`, `ceilings` (known_unsupported), `required`.
-- `{{OBS_DIR}}/resolve/last_reprobe.json` - the final reprobe evidence (per-probe passed/runs).
+- `{{OBS_DIR}}/resolve/last_reprobe.json` - the final reprobe evidence (per-probe passed/runs;
+  absent when no reprobe ran, e.g. an all-ceiling convergence - findings.json is then the
+  only evidence).
 - `{{OBS_DIR}}/findings.json` - the observe baseline (before -> after comparison).
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`, PR #`{{PR}}`.
 

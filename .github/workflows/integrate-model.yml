@@ -624,6 +624,7 @@ jobs:
             if [ -z "$TARGETS" ]; then
               echo "iteration $i: decision named no fix-targets (all-ceiling) -> NO_TARGETS"
               VERDICT=NO_TARGETS
+              SUMMARY_LINE="all-ceiling decision (empty fix-targets), verdict = NO_TARGETS"
             elif [ ! -f observation/resolve/overlay.yaml ]; then
               # Fix-targets named but no policy written: a mid-attempt stall, not a verdict.
               echo "::warning::iteration $i named fix-targets but produced no overlay (stalled mid-attempt)"
@@ -644,9 +645,10 @@ jobs:
               # Are all fix-targets green under the overlay? (helper script, not inline
               # python, so YAML indentation cannot break it.)
               VERDICT="$(uv run automation greencheck observation/resolve/decision.json observation/resolve/reprobe_$i/findings.json 2>/dev/null || echo PARSE_FAIL)"
+              SUMMARY_LINE="fix produced, reprobe verdict = $VERDICT"
             fi
             echo "iteration $i verdict: $VERDICT"
-            printf -- '- Iter %s: fix produced, reprobe verdict = %s\n' "$i" "$VERDICT" >> observation/resolve/loop_summary.md
+            printf -- '- Iter %s: %s\n' "$i" "$SUMMARY_LINE" >> observation/resolve/loop_summary.md
             echo "::endgroup::"
             # Converge when every fix-target is green, OR the agent proved there is nothing
             # to fix (all failures are genuine ceilings -> finalize writes them as unsupported).

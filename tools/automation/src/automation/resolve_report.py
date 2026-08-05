@@ -52,9 +52,10 @@ def diagnose(total: int, no_overlay: int, red: int, max_iter: int) -> str:
         )
     if no_overlay == total:
         return (
-            f"The agent produced NO overlay in any of the {total} iteration(s): it stalled or "
-            "exhausted its per-iteration turn budget every time. That is almost always an "
-            "upstream THROTTLE or error on the agent's model calls, which now route through the "
+            f"The agent produced no usable attempt in any of the {total} iteration(s) (no "
+            "decision, or fix-targets without an overlay): it stalled or exhausted its "
+            "per-iteration turn budget every time. That is almost always an "
+            "upstream THROTTLE or error on the agent's model calls, which route through the "
             "LiteLLM -> OpenRouter gateway (HTTP 429 / gateway down / bad model slug) - not a model "
             "or observe problem, since observe was clean and there was never a candidate fix to "
             "verify. Check the gateway startup + OpenRouter status in the run log; re-running when "

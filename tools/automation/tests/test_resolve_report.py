@@ -24,6 +24,9 @@ ALL_RED = """\
 - Iter 2: fix produced, reprobe verdict = RED:dict_map
 """
 
+# The overlay-less all-ceiling convergence line: neither a stall nor a red.
+NO_TARGETS_LINE = "- Iter 1: all-ceiling decision (empty fix-targets), verdict = NO_TARGETS\n"
+
 
 class TestCounts:
     def test_all_stalled(self):
@@ -38,11 +41,14 @@ class TestCounts:
     def test_empty(self):
         assert rr.counts("") == (0, 0, 0)
 
+    def test_no_targets_line_is_neither_stall_nor_red(self):
+        assert rr.counts(NO_TARGETS_LINE) == (1, 0, 0)
+
 
 class TestDiagnose:
-    def test_all_stalled_points_at_anthropic_throttle(self):
+    def test_all_stalled_points_at_gateway_throttle(self):
         msg = rr.diagnose(3, 3, 0, 8)
-        assert "NO overlay" in msg and "THROTTLE" in msg.upper()
+        assert "no usable attempt" in msg and "THROTTLE" in msg.upper()
 
     def test_mixed_mentions_both(self):
         msg = rr.diagnose(3, 1, 2, 8)
