@@ -389,11 +389,16 @@ jobs:
           PY
 
       - name: Aggregate deterministic findings (report-only)
+        id: findings
         run: |
           uv run automation observe-findings observation \
             --out observation/findings.json \
             --summary-out observation/summary.md \
             --run-url "$RUN_URL"
+          # Hash the evidence BEFORE any agent runs. Step outputs live outside the
+          # workspace, so the finalize gate can require the findings it judges to be
+          # byte-identical to what observe actually measured.
+          echo "sha=$(sha256sum observation/findings.json | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
 
       - name: Upload observation bundle (artifact for debugging / re-runs)
         uses: actions/upload-artifact@v4
@@ -585,6 +590,13 @@ jobs:
               claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
               --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
               --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+            # The compose agent just ran with unrestricted Bash in this workspace; the loop's
+            # own verdict tooling (reprobe / greencheck under tools/automation) must be
+            # pristine when it judges the attempt - an edit there would otherwise run HERE
+            # and then be stash-popped back at finalize without ever appearing in the PR.
+            # Restores index AND worktree from HEAD; committed (PR-visible) changes remain
+            # the human review's job.
+            git restore --source=HEAD --staged --worktree tools/automation
             # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
             # data-bound quirk whose scope needs real-domain evidence the observe never surfaced),
             # it sets `needs_human: true` in decision.json. Break immediately - no wasted
@@ -679,15 +691,31 @@ jobs:
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
           AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
+          FINDINGS_SHA: ${{ steps.findings.outputs.sha }}
         run: |
           set -euo pipefail
+          # Agent-tamper hardening. Both agents above ran with unrestricted Bash in this
+          # workspace BEFORE these gates, and an unstaged edit under tools/automation would
+          # run here and then be stash-popped back without ever appearing in the PR. Re-pin
+          # the gate code to HEAD (index + worktree), and require the observe evidence the
+          # gates judge against to be byte-identical to what the aggregation step hashed
+          # before any agent ran. Committed (PR-visible) tampering remains the review's job.
+          git restore --source=HEAD --staged --worktree tools/automation
+          ACTUAL_SHA="$(sha256sum observation/findings.json | cut -d' ' -f1)"
+          if [ "$ACTUAL_SHA" != "$FINDINGS_SHA" ]; then
+            echo "::error::observation/findings.json differs from the observe-time evidence (hash mismatch) - refusing to finalize"
+            exit 1
+          fi
           # Deterministic commit + report (the agent only wrote files). Stage the WHOLE engine
           # LLM package, not a fixed file list: a code-CREATE can write a new adapter class in ANY
           # module (reasoning_codec / schema_sanitizer / prompt_policy / content_policy /
           # cache_policy), and a narrow list silently drops the new file while committing its
-          # wiring -> a build-breaking dangling import. Plus the cert + preset.
+          # wiring -> a build-breaking dangling import. Plus the cert + preset - and the unit
+          # tests under tests/unit/llm/ that the class gate requires: the gate reads the INDEX,
+          # so a test it credits but this list dropped would pass the gate and then vanish
+          # from the commit.
           git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
-            tolokaforge/core/data/pricing.json tests/integration/llm/ 2>/dev/null || true
+            tolokaforge/core/data/pricing.json tests/integration/llm/ tests/unit/llm/ 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi
