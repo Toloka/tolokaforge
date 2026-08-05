@@ -16,7 +16,9 @@ normal synchronous Claude Code run; nothing to await.
 1. Fold the overlay preset into `tolokaforge/core/data/model_presets.yaml`: add ONE new entry
    under `presets:` with the overlay's `match` + axes. Leave every other preset untouched (do
    NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
-   the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
+   the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it. If `overlay.yaml` is ABSENT
+   (an all-ceiling convergence: every failure was a genuine limit, no policy needed), skip this
+   step - the integration is then cert + pricing only, and the model runs on the default preset.
 2. Add the candidate cert to `tests/integration/llm/registry.py`: an `MC(...)` entry in `_ALL`
    with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="OPENROUTER_API_KEY"`,
    `required=frozenset({...})` from decision.json `required`, and

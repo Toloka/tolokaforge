@@ -56,6 +56,35 @@ class TestDiagnose:
         assert "did not run" in rr.diagnose(0, 0, 0, 8)
 
 
+class TestLatestDecision:
+    def test_live_decision_wins(self, tmp_path):
+        import json
+
+        (tmp_path / "decision.json").write_text(json.dumps({"notes": "live"}))
+        (tmp_path / "decision_iter3.json").write_text(json.dumps({"notes": "archived"}))
+        assert rr.latest_decision(tmp_path) == {"notes": "live"}
+
+    def test_falls_back_to_highest_archived_iteration(self, tmp_path):
+        # decision.json is rm'd at the top of every iteration, so a stalled FINAL
+        # iteration leaves only the archives; numeric order, not lexicographic
+        # (iter10 > iter2).
+        import json
+
+        (tmp_path / "decision_iter2.json").write_text(json.dumps({"notes": "iter2"}))
+        (tmp_path / "decision_iter10.json").write_text(json.dumps({"notes": "iter10"}))
+        assert rr.latest_decision(tmp_path) == {"notes": "iter10"}
+
+    def test_unreadable_archive_falls_through_to_older(self, tmp_path):
+        import json
+
+        (tmp_path / "decision_iter1.json").write_text(json.dumps({"notes": "iter1"}))
+        (tmp_path / "decision_iter2.json").write_text("{not json")
+        assert rr.latest_decision(tmp_path) == {"notes": "iter1"}
+
+    def test_nothing_anywhere_is_none(self, tmp_path):
+        assert rr.latest_decision(tmp_path) is None
+
+
 class TestBuildReport:
     def test_includes_header_summary_diagnosis(self):
         out = rr.build_report(STALLED_ALL, None, 8)

@@ -278,7 +278,10 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         " failure_attribution.json and metrics.tool_success_rate do NOT reflect"
         " tool-argument rejections; wire.tool_arg_rejections is the faithful signal.",
     ]
-    if not capability_ran:
+    # For the observe stage, 0 capability probes is an infra failure worth flagging; on a
+    # reprobe artifact a missing capability section can be the deliberate wire-only pass,
+    # so the note would mislabel it.
+    if not capability_ran and manifest.get("stage", "observe") == "observe":
         notes.insert(
             0,
             "capability suite did NOT execute (0 probes ran - report absent or every"
@@ -287,7 +290,11 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         )
     return {
         "schema_version": SCHEMA_VERSION,
-        "stage": "observe",
+        # The reprobe stage writes its own manifest (stage=reprobe) before calling this;
+        # carrying it through keeps the artifact self-describing and lets the summary
+        # renderer tell a deliberate wire-only pass from an observe whose capability
+        # suite failed to run.
+        "stage": manifest.get("stage", "observe"),
         "candidate": manifest.get("candidate", {}),
         "preset": manifest.get("preset", "default"),
         # The single yes/no the deterministic layer commits to. Everything else is
@@ -353,15 +360,27 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     rej = wire.get("tool_arg_rejections", {})
     candidate = (findings.get("candidate") or {}).get("name", "?")
     preset = findings.get("preset", "default")
+    stage = findings.get("stage", "observe")
 
-    if not findings.get("capability_ran", True):
+    # A reprobe artifact with no capability section is the deliberate wire-only pass, not a
+    # capability suite that failed to run - its verdict is the wire result.
+    wire_only = stage == "reprobe" and not cap.get("report_present")
+    if wire_only:
+        if wire.get("trials"):
+            verdict = (
+                f"wire-only pass: {rej.get('rejecting_trials', 0)}/{wire.get('trials', 0)} "
+                "trials with a tool-arg rejection"
+            )
+        else:
+            verdict = "wire-only pass produced no trials (the wire run failed to start)"
+    elif not findings.get("capability_ran", True):
         verdict = "capability suite did NOT run (0 probes) - infra failure, not a pass"
     elif findings.get("all_passed"):
         verdict = "all probes passed"
     else:
         verdict = "failures present"
     lines = [
-        f"### Auto-integration observe: `{candidate}` on the `{preset}` preset",
+        f"### Auto-integration {stage}: `{candidate}` on the `{preset}` preset",
         "",
         f"**{verdict}** (raw stats only; the agent analyzes the errors).",
         "",

@@ -94,6 +94,36 @@ def test_render_summary_shows_verdict_and_failing_probe():
     assert "`test_b`: 1/2 passed" in summary
 
 
+def test_render_summary_wire_only_reprobe_verdict_is_the_wire_result():
+    # The final wire-verification artifact has NO capability section by design; its
+    # summary must lead with the wire result, not "capability suite did NOT run -
+    # infra failure" (which is the right verdict only for an observe artifact).
+    findings = {
+        "stage": "reprobe",
+        "candidate": {"name": "vendor/m"},
+        "preset": "overlay",
+        "capability_ran": False,
+        "all_passed": False,
+        "capability": {"report_present": False},
+        "variants": {"report_present": False},
+        "wire": {
+            "trials": 40,
+            "tool_call_count": 120,
+            "tool_arg_rejections": {
+                "rejecting_trials": 3,
+                "trial_rate": 0.075,
+                "by_task_trial_rate": {},
+            },
+            "rejected_examples": [],
+            "infra": {},
+        },
+    }
+    summary = observe.render_summary(findings)
+    assert "### Auto-integration reprobe:" in summary
+    assert "wire-only pass: 3/40 trials with a tool-arg rejection" in summary
+    assert "infra failure" not in summary
+
+
 def _gate_findings(**overrides):
     """A clean-observe findings skeleton the gate tests mutate per case."""
     findings = {

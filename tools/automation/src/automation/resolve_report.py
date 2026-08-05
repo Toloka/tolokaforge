@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 import typer
 
@@ -105,6 +106,29 @@ def _load_decision(path: pathlib.Path) -> dict | None:
         return None
 
 
+def latest_decision(resolve_dir: pathlib.Path) -> dict | None:
+    """The agent's most recent decision, surviving a stalled final iteration.
+
+    ``decision.json`` is rm'd at the top of every loop iteration, so when the LAST
+    iteration stalls (no overlay, no decision) the live file is gone and the report
+    would say nothing about what the agent last tried. The workflow archives each
+    produced attempt as ``decision_iter<N>.json``; fall back to the highest N.
+    """
+    live = _load_decision(resolve_dir / "decision.json")
+    if live is not None:
+        return live
+
+    def iter_no(path: pathlib.Path) -> int:
+        match = re.search(r"decision_iter(\d+)", path.stem)
+        return int(match.group(1)) if match else -1
+
+    for path in sorted(resolve_dir.glob("decision_iter*.json"), key=iter_no, reverse=True):
+        archived = _load_decision(path)
+        if archived is not None:
+            return archived
+    return None
+
+
 def run(resolve_dir: str, max_iter: int) -> int:
     d = pathlib.Path(resolve_dir)
     summary = ""
@@ -114,7 +138,7 @@ def run(resolve_dir: str, max_iter: int) -> int:
             summary = sp.read_text()
         except OSError:
             summary = ""
-    decision = _load_decision(d / "decision.json")
+    decision = latest_decision(d)
     print(build_report(summary, decision, max_iter))
     return 0
 
