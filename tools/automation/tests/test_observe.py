@@ -124,6 +124,43 @@ def test_render_summary_wire_only_reprobe_verdict_is_the_wire_result():
     assert "infra failure" not in summary
 
 
+def test_build_findings_carries_reprobe_stage_into_wire_only_summary(tmp_path):
+    # End to end through the real artifact shape: a wire_verify-style out dir (reprobe
+    # manifest, no capability junit, one wire trajectory) must yield stage=reprobe, no
+    # infra-failure note, and a wire-only summary verdict. Pins the manifest -> findings
+    # -> summary path so re-hardcoding stage in build_findings cannot pass the suite.
+    import json
+
+    import yaml
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stage": "reprobe",
+                "candidate": {"name": "vendor/m"},
+                "preset": "overlay",
+            }
+        )
+    )
+    trial = tmp_path / "wire_probes_1" / "trials" / "task_w" / "1"
+    trial.mkdir(parents=True)
+    (trial / "trajectory.yaml").write_text(
+        yaml.safe_dump({"task_id": "task_w", "status": "completed", "messages": []})
+    )
+
+    findings = observe.build_findings(tmp_path)
+    assert findings["stage"] == "reprobe"
+    assert findings["capability_ran"] is False
+    assert not any("did NOT execute" in note for note in findings["notes"])
+    assert findings["wire"]["trials"] == 1
+
+    summary = observe.render_summary(findings)
+    assert "### Auto-integration reprobe:" in summary
+    assert "wire-only pass: 0/1 trials with a tool-arg rejection" in summary
+    assert "infra failure" not in summary
+
+
 def _gate_findings(**overrides):
     """A clean-observe findings skeleton the gate tests mutate per case."""
     findings = {
@@ -158,7 +195,7 @@ def test_gate_dirty_when_capability_did_not_run():
 
 def test_gate_dirty_when_wire_never_ran():
     # The wire step is `|| true`-guarded in the workflow: a run that failed at startup
-    # produces 0 trials and used to read as clean (no rejections, all-zero infra).
+    # produces 0 trials and would otherwise read as clean (no rejections, all-zero infra).
     clean, reason = observe.evaluate_gate(_gate_findings(wire={"trials": 0, "infra": {}}))
     assert clean is False
     assert "wire probes did not run" in reason
@@ -166,8 +203,8 @@ def test_gate_dirty_when_wire_never_ran():
 
 @pytest.mark.parametrize("key", sorted(observe.GATE_INFRA_KEYS))
 def test_gate_dirty_on_each_infra_key(key):
-    # api_timeout is the regression case: observe.py counted it, the old inline
-    # workflow gate never read it, so an all-timeout wire run chained into resolve.
+    # Every key is pinned individually so a gate that drops one (an all-timeout wire
+    # run chaining into resolve) cannot pass the suite.
     findings = _gate_findings()
     findings["wire"]["infra"][key] = 3
     clean, reason = observe.evaluate_gate(findings)
@@ -189,6 +226,13 @@ def test_gate_cli_prints_dirty_token_for_missing_file(tmp_path, capsys):
     assert observe.gate(str(tmp_path / "absent.json")) == 0
     out = capsys.readouterr().out
     assert out.startswith("dirty: findings unreadable")
+
+
+def test_gate_cli_prints_dirty_token_for_malformed_json(tmp_path, capsys):
+    path = tmp_path / "findings.json"
+    path.write_text("{truncated")
+    assert observe.gate(str(path)) == 0
+    assert capsys.readouterr().out.startswith("dirty: findings unreadable")
 
 
 def test_gate_cli_prints_clean_token(tmp_path, capsys):

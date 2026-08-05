@@ -405,8 +405,8 @@ jobs:
 
       - name: Post observation summary on the PR
         # Gated on parse success (not bare always()): before parse there is no candidate and no
-        # observation/ dir, so on the fork-reject / checkout-failed paths this used to post a
-        # junk "ran for ``" comment. A parse-fail posts its own comment above.
+        # observation/ dir, so on the fork-reject / checkout-failed paths this would post a junk
+        # "ran for ``" comment. A parse-fail posts its own comment above.
         if: always() && steps.parse.outcome == 'success'
         # CANDIDATE_NAME is PR-title-derived (attacker-controllable); reference only via env.
         env:
@@ -432,10 +432,10 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          # One tested command owns the verdict (the old inline python -c silently ignored
-          # api_timeout and could not tell "wire never ran" from "wire clean"). Missing or
-          # unreadable findings.json prints its own dirty token, so all not-clean paths share
-          # this branch and the needs-human message carries the exact reason.
+          # One tested command owns the verdict (an inline check here cannot be unit-tested
+          # and drifts from the infra-key set). Missing or unreadable findings.json prints its
+          # own dirty token, so all not-clean paths share this branch and the needs-human
+          # message carries the exact reason.
           GATE="$(uv run automation observe-gate observation/findings.json || echo 'dirty: observe-gate crashed')"
           echo "observe gate: $GATE"
           if [ "$GATE" = "clean" ]; then
@@ -585,10 +585,17 @@ jobs:
               claude -p "$(cat /tmp/compose_$i.md)" --model "$AGENT_MODEL" \
               --allowedTools "Bash,Read,Edit,Write" --dangerously-skip-permissions \
               --max-turns "${RESOLVE_MAX_TURNS}" --verbose || true
+            # Archive whatever this iteration produced, IMMEDIATELY: a later guard may
+            # `continue` past a partial attempt (overlay written, decision missing after a
+            # turn-limit stall) and the next iteration's rm would erase it - yet the next
+            # agent (a fresh context) must see every axis already tried, and the needs-human
+            # artifacts must carry it. A file not produced is simply not archived.
+            cp observation/resolve/overlay.yaml "observation/resolve/overlay_iter${i}.yaml" 2>/dev/null || true
+            cp observation/resolve/decision.json "observation/resolve/decision_iter${i}.json" 2>/dev/null || true
             # Agent-requested escalation: if it lacks the data to produce a CORRECT policy (a
             # data-bound quirk whose scope needs real-domain evidence the observe never surfaced),
             # it sets `needs_human: true` in decision.json. Break immediately - no wasted
-            # iterations, no fabricated fix. Checked before the overlay guard: escalation needs
+            # iterations, no fabricated fix. Checked before the stall guards: escalation needs
             # only decision.json (the agent need not write an overlay it does not believe in).
             NEEDS_HUMAN="$(uv run python -c "import json,sys; print('yes' if json.load(open(sys.argv[1])).get('needs_human') else 'no')" observation/resolve/decision.json 2>/dev/null || echo no)"
             if [ "$NEEDS_HUMAN" = "yes" ]; then
@@ -598,30 +605,32 @@ jobs:
               echo "needs_human_reason=$REASON" >> "$GITHUB_OUTPUT"
               echo "::endgroup::"; break
             fi
-            if [ ! -f observation/resolve/overlay.yaml ] || [ ! -f observation/resolve/decision.json ]; then
-              echo "::warning::iteration $i produced no overlay/decision (agent stalled or hit max-turns)"
-              printf -- '- Iter %s: no overlay produced (agent stalled / hit its turn limit / an upstream error via the OpenRouter gateway)\n' "$i" >> observation/resolve/loop_summary.md
+            if [ ! -f observation/resolve/decision.json ]; then
+              echo "::warning::iteration $i produced no decision (agent stalled or hit max-turns)"
+              printf -- '- Iter %s: no decision produced (agent stalled / hit its turn limit / an upstream error via the OpenRouter gateway)\n' "$i" >> observation/resolve/loop_summary.md
               echo "::endgroup::"
-              # Back off before the next attempt: a no-overlay iteration usually means the agent
+              # Back off before the next attempt: a no-decision iteration usually means the agent
               # exhausted its turns, often because its calls through the LiteLLM -> OpenRouter gateway
               # hit a transient error / rate limit. A short, growing sleep (capped 90s) lets that
               # window pass; it fires ONLY on this failure path, so a converging run is never slowed.
               if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
               continue
             fi
-            # Archive this iteration's attempt BEFORE the next iteration's rm deletes it: the
-            # prompt tells the agent to try "a materially DIFFERENT axis than last time", and
-            # each iteration is a fresh context - without these files it cannot know what it
-            # already tried (last_reprobe.json records results, not the overlay that produced
-            # them). Also what the needs-human artifacts point a human at.
-            cp observation/resolve/overlay.yaml "observation/resolve/overlay_iter${i}.yaml" || true
-            cp observation/resolve/decision.json "observation/resolve/decision_iter${i}.json" || true
             # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
-            # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe.
+            # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe -
+            # and need no overlay either (an honest all-ceiling has no policy to write; the
+            # integration is then cert + pricing only, on the default preset).
             TARGETS="$(uv run python -c "import json,sys; print(','.join(json.load(open(sys.argv[1])).get('fix_targets',[])))" observation/resolve/decision.json 2>/dev/null || echo '')"
             if [ -z "$TARGETS" ]; then
               echo "iteration $i: decision named no fix-targets (all-ceiling) -> NO_TARGETS"
               VERDICT=NO_TARGETS
+            elif [ ! -f observation/resolve/overlay.yaml ]; then
+              # Fix-targets named but no policy written: a mid-attempt stall, not a verdict.
+              echo "::warning::iteration $i named fix-targets but produced no overlay (stalled mid-attempt)"
+              printf -- '- Iter %s: decision named fix-targets but no overlay was produced (stalled mid-attempt / turn limit)\n' "$i" >> observation/resolve/loop_summary.md
+              echo "::endgroup::"
+              if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
+              continue
             else
               # Workflow runs the reprobe (agent never does). Only the fix-targets, K reps
               # each, as a flat (probe x rep) pool at RESOLVE_CAP_PARALLEL width. Fast.
@@ -906,17 +915,20 @@ jobs:
         env:
           CANDIDATE_NAME: ${{ steps.parse.outputs.name }}
         run: |
-          # A failure with no handled needs-human path (checkout / uv sync / docker build died
-          # before the gate could run) would leave the PR wearing `integrate-running` forever -
-          # a dead run displayed as live. Flip the label first; idempotent on the handled paths
-          # (they already set needs-human), and independent of the Slack dedup below.
+          # The marker doubles as the label sentinel: every handled path sets its terminal
+          # label BEFORE touching the marker, so marker-present means the labels are already
+          # correct and this step must not touch them - a post-finalize failure (e.g. the
+          # artifact upload) would otherwise stamp needs-human onto an integrate-done PR.
+          if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
+            echo "terminal state already handled -> no catch-all label/ping"; exit 0
+          fi
+          # Unhandled failure (checkout / uv sync / docker build died before any handler):
+          # without this the PR wears `automation:integrate-running` forever - a dead run
+          # displayed as live.
           gh pr edit "$PR" -R "$REPO" \
             --remove-label 'automation:integrate-running' \
             --remove-label 'automation:resolve-running' \
             --add-label 'automation:integrate-needs-human' || true
-          if [ -f "$RUNNER_TEMP/slack_terminal_sent" ]; then
-            echo "terminal Slack already sent -> no catch-all ping"; exit 0
-          fi
           uv run automation slack reply \
             --channel "$SLACK_CHANNEL" --pr "$PR" --model "$CANDIDATE_NAME" --mention \
             --icon pipeline_error --text 'Pipeline error: unexpected failure, PR left mid-state' \

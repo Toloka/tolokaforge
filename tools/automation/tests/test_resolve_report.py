@@ -8,9 +8,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 STALLED_ALL = """\
-- Iter 1: no overlay produced (agent stalled or hit its turn limit / throttled)
-- Iter 2: no overlay produced (agent stalled or hit its turn limit / throttled)
-- Iter 3: no overlay produced (agent stalled or hit its turn limit / throttled)
+- Iter 1: no decision produced (agent stalled or hit its turn limit / throttled)
+- Iter 2: no overlay was produced (stalled mid-attempt / turn limit)
+- Iter 3: no decision produced (agent stalled or hit its turn limit / throttled)
 """
 
 MIXED = """\
@@ -90,7 +90,7 @@ class TestBuildReport:
         out = rr.build_report(STALLED_ALL, None, 8)
         assert "did not converge (ran 3/8 iterations)" in out
         assert "Per-iteration outcome:" in out
-        assert "Iter 1: no overlay" in out
+        assert "Iter 1: no decision" in out
         assert "Diagnosis." in out
 
     def test_includes_agent_decision_when_present(self):

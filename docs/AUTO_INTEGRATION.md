@@ -78,7 +78,10 @@ a correct policy from the observe data (a data-bound quirk whose correct scope n
 evidence the observe never surfaced), it sets `needs_human: true` in `decision.json` and the loop
 breaks IMMEDIATELY to `automation:integrate-needs-human` with the agent's reason - no wasted
 iterations, no fabricated fix. (Distinct from `data_scope_review`, which commits a fix the agent
-DID produce and routes it for a post-hoc human scope-check.)
+DID produce and routes it for a post-hoc human scope-check.) On the all-ceiling path the overlay
+itself is OPTIONAL: an honest all-ceiling decision (`fix_targets` empty, `needs_human` false)
+converges as `NO_TARGETS` without one, and the integration lands as cert + pricing on the
+default preset.
 
 Each iteration's `overlay.yaml` + `decision.json` are archived as
 `overlay_iter<N>.yaml` / `decision_iter<N>.json` before the next iteration deletes them: the
@@ -90,11 +93,12 @@ bundle uploads separately, before the gate, as `integration-observation-pr<N>`).
 
 - Converged -> first, when the observe wire had tool-arg rejections and an overlay exists, the
   workflow re-runs exactly those wire tasks under the proven overlay
-  (`automation reprobe --wire-only`, `RESOLVE_WIRE_K` reps) and posts the fresh wire stats as a
-  PR comment. EVIDENCE for the human gate, never a convergence gate: the fix loop reprobes
-  capability probes only (`--skip-wire`), so this pass is the only post-fix measurement a
-  wire-evidenced fix gets - and a still-rejecting wire task can be a genuine model miss (a
-  ceiling, not a blocker). Then a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
+  (`automation reprobe --wire-only`, `RESOLVE_WIRE_K` reps); the finalize step posts the fresh
+  wire stats on the PR after its commit lands (a failed finalize leaves them in the
+  `integration-resolve-pr<N>` artifact instead). EVIDENCE for the human gate, never a
+  convergence gate: the fix loop reprobes capability probes only (`--skip-wire`), so this pass
+  is the only post-fix measurement a wire-evidenced fix gets - and a still-rejecting wire task
+  can be a genuine model miss (a ceiling, not a blocker). Then a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
   `model_presets.yaml` and writes the cert into `registry.py`. Before committing, the workflow
   VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`): it must
   import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the

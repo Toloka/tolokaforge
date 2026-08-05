@@ -61,7 +61,11 @@ and pushes the whole integration to needs-human.
    entry whose `match` globs match THIS model only, composing the needed reusable axes
    (schema_sanitizer / prompt_policy / response_policy / reasoning_codec / content_policy /
    cache_policy / params). Reuse shipped classes; that single model-specific entry IS the
-   composite when several axes are needed. Validate it:
+   composite when several axes are needed. EXCEPTION - all-ceiling: when EVERY failure is a
+   genuine ceiling (`fix_targets` empty, `needs_human` false), there is no policy to write -
+   skip `overlay.yaml` entirely; the loop converges on your `decision.json` alone (NO_TARGETS)
+   and the integration lands as cert + pricing on the default preset. Never write a no-op
+   overlay just to have one. Otherwise, validate it:
    `uv run python -c "from tolokaforge.core.llm.presets import validate_overlay_file as v; v('{{OBS_DIR}}/resolve/overlay.yaml')"`
 3. If NO shipped class covers a fix-target, write a NEW small reusable adapter class in the
    right module (e.g. a response policy in `response_policy.py`), register it in the matching

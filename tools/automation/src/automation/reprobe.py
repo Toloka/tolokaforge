@@ -53,6 +53,21 @@ def failed_wire_tasks(findings: dict[str, Any]) -> list[str]:
     return sorted((by_task or {}).keys())
 
 
+def validate_selection_flags(targets: str | None, wire_only: bool, skip_wire: bool) -> None:
+    """Reject conflicting selection flags; raises ``ValueError`` naming the conflict.
+
+    One rule, two callers: the CLI pre-checks so a flag conflict is a usage error (exit 2,
+    no traceback), and :func:`select_reprobe_targets` enforces it for library callers.
+    """
+    if wire_only and skip_wire:
+        raise ValueError("--wire-only and --skip-wire are mutually exclusive")
+    if wire_only and targets:
+        raise ValueError(
+            "--wire-only re-runs the baseline's rejecting wire tasks; --targets selects "
+            "capability probes - pass one or the other"
+        )
+
+
 def select_reprobe_targets(
     baseline: dict[str, Any],
     targets: str | None,
@@ -66,13 +81,7 @@ def select_reprobe_targets(
     this pass a fix whose only live evidence was the wire would ship unmeasured).
     Conflicting flags raise instead of guessing.
     """
-    if wire_only and skip_wire:
-        raise ValueError("--wire-only and --skip-wire are mutually exclusive")
-    if wire_only and targets:
-        raise ValueError(
-            "--wire-only re-runs the baseline's rejecting wire tasks; --targets selects "
-            "capability probes - pass one or the other"
-        )
+    validate_selection_flags(targets, wire_only, skip_wire)
     if wire_only:
         return [], failed_wire_tasks(baseline)
     if targets:

@@ -112,8 +112,15 @@ def reprobe_cmd(
     run_url: str | None = typer.Option(None, "--run-url"),
 ) -> None:
     """Re-run only the failed probes under a policy overlay and emit findings (RESOLVE)."""
+    # Pre-check ONLY the flag combination: a conflict is a usage error (exit 2, no
+    # traceback), while anything run() itself raises - e.g. an unreadable baseline
+    # file - is a real failure that must traceback loudly, not read as a CLI mistake.
     try:
-        code = reprobe.run(
+        reprobe.validate_selection_flags(targets, wire_only, skip_wire)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    raise typer.Exit(
+        reprobe.run(
             baseline=baseline,
             overlay=overlay,
             provider=provider,
@@ -129,9 +136,7 @@ def reprobe_cmd(
             wire_only=wire_only,
             run_url=run_url,
         )
-    except ValueError as exc:  # conflicting flags - refuse loudly, never guess
-        raise typer.BadParameter(str(exc)) from exc
-    raise typer.Exit(code)
+    )
 
 
 @app.command("observe-gate")

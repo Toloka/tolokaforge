@@ -24,14 +24,19 @@ import typer
 
 
 def counts(summary_text: str) -> tuple[int, int, int]:
-    """(total, no_overlay, red) iteration counts from the appended summary lines."""
+    """(total, no_overlay, red) iteration counts from the appended summary lines.
+
+    A stalled iteration is logged as "no decision produced" (nothing at all) or "no
+    overlay was produced" (a decision that named fix-targets but no policy); both are
+    the same stalled class for the diagnosis.
+    """
     total = no_overlay = red = 0
     for line in summary_text.splitlines():
         if "Iter " not in line:
             continue
         total += 1
         low = line.lower()
-        if "no overlay" in low:
+        if "no overlay" in low or "no decision" in low:
             no_overlay += 1
         elif "red" in low:
             red += 1

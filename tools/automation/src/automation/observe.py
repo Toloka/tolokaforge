@@ -317,9 +317,10 @@ GATE_INFRA_KEYS = ("rate_limit", "api_error", "api_timeout", "status_error")
 def evaluate_gate(findings: dict[str, Any]) -> tuple[bool, str]:
     """Observe cleanliness gate: may a clean observe chain into resolve?
 
-    Pure and unit-tested (the workflow used to inline this as a ``python -c`` one-liner,
-    which silently missed ``api_timeout`` and could not require the wire probes to have
-    run at all). Returns ``(clean, reason)``; ``reason`` is empty when clean.
+    Lives here rather than inline in the workflow because an inline check cannot be
+    unit-tested and silently drifts from :data:`GATE_INFRA_KEYS`. Both suites must have
+    RUN (the wire step is ``|| true``-guarded in the workflow, so a startup crash shows
+    up only as 0 trials). Returns ``(clean, reason)``; ``reason`` is empty when clean.
     """
     if not findings.get("capability_ran"):
         return False, "capability suite did not run (0 probes)"
