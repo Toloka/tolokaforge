@@ -856,6 +856,51 @@ _A_WEIGHTLESS_COMPONENT = (
 )
 
 
+def _recorded_judge_verdicts(grade: Mapping[str, Any]) -> list[CriterionResult]:
+    """The judge's per-criterion rows as one bundle's ``grade.yaml`` recorded them.
+
+    One expression for both readers — the per-bundle refusal that proves a grade readable
+    and the counterfactual that recomposes from it — so what the net admits is exactly what
+    the recomposition later reads.
+    """
+    return [CriterionResult(**row) for row in grade.get("criterion_results") or ()]
+
+
+def _refuse_a_recorded_grade_the_counterfactual_cannot_read(
+    bundle: Path, grade: Mapping[str, Any] | None
+) -> None:
+    """Refuse a malformed ``grade.yaml`` here, where it costs one trial and no other.
+
+    The counterfactual recomposes a contributing trial's verdict out of the grade and checks
+    it against what the bundle recorded, reading the judge's rows and two numbers with no net
+    of its own — and it runs once per *pooled entry*, long after this bundle stopped being the
+    thing the batch is doing. A shape it cannot read reaching it aborts the whole
+    reconciliation under a raw traceback, taking every other entry's report with it.
+    """
+    if grade is None:
+        return
+    components = grade.get("components") or {}
+    if not isinstance(components, Mapping):
+        raise MissingTraceReplayInputError(
+            f"{bundle / 'grade.yaml'} holds {type(components).__name__} where the component "
+            "scores belong, so nothing says what this trial scored"
+        )
+    for where, value in (("score", grade.get("score")), *sorted(components.items())):
+        if value is None or isinstance(value, (int, float)):
+            continue
+        raise MissingTraceReplayInputError(
+            f"{bundle / 'grade.yaml'} records {where} as {value!r}, which is not a number, so "
+            "the recomposition has nothing to check itself against"
+        )
+    try:
+        _recorded_judge_verdicts(grade)
+    except (TypeError, ValidationError) as exc:
+        raise MissingTraceReplayInputError(
+            f"{bundle / 'grade.yaml'} records a criterion_results entry that does not read as "
+            f"a judge verdict, so nothing says what the judge concluded on this trial: {exc}"
+        ) from exc
+
+
 def _runner_components(recorded: Mapping[str, Any]) -> dict[str, float]:
     """A recorded grade's components under the field names the runner's fold reads.
 
@@ -1046,7 +1091,7 @@ def _counterfactual_for_trial(
     trace_field = runner_score_field("trace_checks")
     trace_section = COMPONENT_BY_NAME["trace_checks"].config_section
     rubric = _recorded_rubric(recorded.grading_config)
-    results = [CriterionResult(**row) for row in recorded.grade.get("criterion_results") or ()]
+    results = _recorded_judge_verdicts(recorded.grade)
     weights_before = dict((recorded.grading_config.get("combine") or {}).get("weights") or {})
 
     before_score, before_gate = _judge_component_of(rubric, results)
@@ -1300,17 +1345,27 @@ def _resolve_pack(task_id: str, roots: Sequence[Path]) -> _ResolvedPack | None:
 
 def _refuse_a_block_the_corpus_cannot_be_graded_against(
     pack: _ResolvedPack, bundles: Sequence[Path]
-) -> None:
+) -> list[UnreadableTrial]:
     """Stop before any trial is re-checked when the pack's block does not fit the corpus.
 
     The same gate a pack meets before a run, applied against the tool set each bundle
     *recorded* rather than the tools the pack declares today. Without it a constraint naming
     a tool the corpus never had would fail on every trial and be reported as a disagreement
     with the judge, which is a statement about the pack's drift dressed as evidence.
+
+    A bundle whose recorded tool set cannot be read answers this gate for nobody, so it is
+    returned as unreadable and left out of the corpus the gate is applied against: one
+    trial's damaged artifact is not grounds for refusing every other trial a report.
     """
     grading = {"trace_checks": dict(pack.trace_checks)}
+    unreadable: list[UnreadableTrial] = []
     for bundle in bundles:
-        report = inspect_grading_authoring(grading, tool_inventory_from_bundle(bundle))
+        try:
+            inventory = tool_inventory_from_bundle(bundle)
+        except MissingTraceReplayInputError as exc:
+            unreadable.append(UnreadableTrial(trial=str(bundle), reason=str(exc)))
+            continue
+        report = inspect_grading_authoring(grading, inventory)
         if not report.errors:
             continue
         written = "\n".join(f"  - {item.where}: {item.message}" for item in report.errors)
@@ -1318,6 +1373,7 @@ def _refuse_a_block_the_corpus_cannot_be_graded_against(
             f"the trace_checks block in {pack.grading_path} cannot be graded against the "
             f"tools {bundle} recorded:\n{written}"
         )
+    return unreadable
 
 
 def _recorded_rubric(grading_config: Mapping[str, Any]) -> Rubric:
@@ -1569,19 +1625,19 @@ def _pooled_evidence(
     pools: dict[_PoolKey, _Pool] = {}
     unreadable: list[UnreadableTrial] = []
     for task_id, pack in sorted(packs.items()):
-        _refuse_a_block_the_corpus_cannot_be_graded_against(pack, by_task[task_id])
+        without_a_tool_set = _refuse_a_block_the_corpus_cannot_be_graded_against(
+            pack, by_task[task_id]
+        )
+        unreadable.extend(without_a_tool_set)
+        named = {row.trial for row in without_a_tool_set}
         override = _override_from(pack)
         keyed = tuple((entry, _pool_key(pack, entry)) for entry in pack.entries)
-        unreadable.extend(
-            failure
-            for bundle in by_task[task_id]
-            if (
-                failure := _file_one_bundle(
-                    bundle, pack=pack, keyed=keyed, override=override, pools=pools
-                )
+        for bundle in (item for item in by_task[task_id] if str(item) not in named):
+            failure = _file_one_bundle(
+                bundle, pack=pack, keyed=keyed, override=override, pools=pools
             )
-            is not None
-        )
+            if failure is not None:
+                unreadable.append(failure)
     return pools, unreadable
 
 
@@ -1608,11 +1664,14 @@ def _file_one_bundle(
     The recorded rubric is read here, inside the net, because it is read from the bundle's own
     ``task.yaml``: a rubric that will not parse is one unreadable bundle, and letting it out would
     abort the whole reconciliation under the message of whatever file was being resolved at the
-    time.
+    time. The recorded *grade* is proved readable here for the same reason and before the filing
+    loop rather than inside it, so a bundle refused is a bundle that filed nothing.
     """
     try:
         task = recorded_task(bundle)
         criteria = _recorded_criteria(task)
+        grade = recorded_grade(bundle)
+        _refuse_a_recorded_grade_the_counterfactual_cannot_read(bundle, grade)
         inputs = read_trace_replay_inputs(bundle, override=override)
         result = replay_trace_checks(inputs)
     except (MissingTraceReplayInputError, TimelineInconsistencyError) as exc:
@@ -1638,7 +1697,7 @@ def _file_one_bundle(
                 trial=str(bundle),
                 recorded_criteria=criteria,
                 task=task,
-                grade=recorded_grade(bundle),
+                grade=grade,
                 verdicts=verdicts,
                 trace=result,
             )

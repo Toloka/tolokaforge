@@ -375,6 +375,36 @@ def test_an_unreadable_trajectory_fails_its_own_bundle_and_the_batch_continues(
     assert replayed.status is TraceReplayOutcomeStatus.REPLAYED
 
 
+@pytest.mark.parametrize(
+    "artifact", ["task.yaml", "trajectory.yaml", "metrics.yaml", "tools_schemas.yaml", "grade.yaml"]
+)
+def test_a_bundle_file_that_is_not_utf_8_fails_its_own_bundle_only(
+    tmp_path: Path, artifact: str
+) -> None:
+    """Bytes no decoder accepts are one bundle's damage, whichever artifact carries them.
+
+    The per-bundle net catches this module's own refusal and nothing else, so a
+    ``UnicodeDecodeError`` raised straight out of ``read_text`` walks past it and takes every
+    trial after this one with it. Swept over each artifact rather than asserted on one,
+    because the reads sit in five places and a net over four of them is a batch that still
+    aborts.
+    """
+    broken = _write_bundle(
+        tmp_path / "trials" / "refund_task" / "0", grade=_recorded_grade(binary_pass=True)
+    )
+    healthy = _write_bundle(tmp_path / "trials" / "refund_task" / "1")
+    (broken / artifact).write_bytes(b"\xff\xfe\x00not utf-8")
+
+    failed, replayed = run_trace_replay_batch(
+        tmp_path, replay_id="r1", override=override_file(tmp_path, _TRACE_CHECKS)
+    )
+
+    assert failed.status is TraceReplayOutcomeStatus.FAILED
+    assert str(broken / artifact) in (failed.reason or "")
+    assert replayed.bundle == healthy
+    assert replayed.status is TraceReplayOutcomeStatus.REPLAYED
+
+
 def test_a_bundle_predating_call_ids_says_so_rather_than_leaking_a_traceback(
     tmp_path: Path,
 ) -> None:

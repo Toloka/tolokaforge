@@ -119,6 +119,9 @@ Each discovered bundle gets one of four dispositions, all of them reported:
 A skip is declared, never silent. A failure never aborts the batch — the readable
 trials are still measured and still reported — but it does make the command exit
 non-zero, so a scripted caller never reads a partially-failed replay as a clean one.
+That holds down to the bytes: every file a bundle carries is read through one reader,
+so a file the filesystem refuses or one holding anything but UTF-8 is `failed` naming
+that file, not a decoding traceback out of the batch.
 
 **A bundle predating call-id threading cannot be re-checked at all**, and says so: the
 call id is the only key joining a tool call to the result it produced, so a bundle

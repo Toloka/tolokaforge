@@ -1113,7 +1113,11 @@ def _patch_grade(bundle: Path, **fields: Any) -> None:
         ({"judge_status": "errored"}, TrialExclusion.JUDGE_DID_NOT_COMPLETE, "'errored'"),
         ({"criterion_results": []}, TrialExclusion.NO_CRITERION_RESULTS, "no criterion_results"),
         (
-            {"criterion_results": [{"id": "note_saved", "met": True, "score": 1.0, "j": ""}]},
+            {
+                "criterion_results": [
+                    {"id": "note_saved", "met": True, "score": 1.0, "justification": ""}
+                ]
+            },
             TrialExclusion.NO_VERDICT_FOR_CRITERION,
             _CRITERION,
         ),
@@ -1408,6 +1412,80 @@ def test_a_bundle_that_cannot_be_read_is_named_and_blocks_the_migration(tmp_path
     assert "trajectory.yaml" in unreadable.reason
     assert report.entries[0].observations == 4
     assert any(str(broken) in reason for reason in report.blocking)
+
+
+@pytest.mark.parametrize(
+    ("patch", "names"),
+    [
+        pytest.param(
+            {
+                "criterion_results": [
+                    {"id": _CRITERION, "met": True, "score": 1.0, "justification": ""},
+                    _CRITERION,
+                ]
+            },
+            "must be a mapping",
+            id="a_row_that_is_not_a_mapping",
+        ),
+        pytest.param(
+            {"criterion_results": [{"id": _CRITERION}]},
+            "Field required",
+            id="a_row_missing_the_fields_a_verdict_has",
+        ),
+        pytest.param({"score": "not-a-number"}, "'not-a-number'", id="a_score_that_is_not_one"),
+        pytest.param(
+            {"components": {"llm_judge": "high"}}, "'high'", id="a_component_that_is_not_a_number"
+        ),
+        pytest.param({"components": ["llm_judge"]}, "where the component", id="components_a_list"),
+    ],
+)
+def test_a_grade_the_counterfactual_cannot_read_costs_its_own_trial_only(
+    tmp_path: Path, patch: dict[str, Any], names: str
+) -> None:
+    """The counterfactual recomposes from ``grade.yaml`` with no net of its own.
+
+    It runs once per pooled entry, long after the bundle was read, so a shape it cannot read
+    reaching it aborts the whole reconciliation under a raw traceback and every other entry
+    loses its report. Refused per bundle instead, each of these costs its own trial and the
+    other four are still measured — the containment ``retrace`` already gives the same class.
+    """
+    corpus = _corpus(tmp_path)
+    patched = sorted(corpus.iterdir())[0]
+    _patch_grade(patched, **patch)
+
+    report = _reconcile(corpus, _packs(tmp_path))
+
+    (unreadable,) = report.unreadable_trials
+    assert unreadable.trial == str(patched)
+    assert "grade.yaml" in unreadable.reason
+    assert names in unreadable.reason
+    assert report.entries[0].observations == 4
+    assert any(str(patched) in reason for reason in report.blocking)
+
+
+@pytest.mark.parametrize(
+    "artifact", ["task.yaml", "grade.yaml", "trajectory.yaml", "metrics.yaml", "tools_schemas.yaml"]
+)
+def test_a_bundle_file_that_is_not_utf_8_costs_its_own_trial_only(
+    tmp_path: Path, artifact: str
+) -> None:
+    """Bytes no decoder accepts are one bundle's damage, whichever artifact carries them.
+
+    The per-bundle net catches this module's own error and nothing else, so a
+    ``UnicodeDecodeError`` out of a raw ``read_text`` escapes it and takes the batch down.
+    Every file a bundle carries is read through one reader for that reason.
+    """
+    corpus = _corpus(tmp_path)
+    patched = sorted(corpus.iterdir())[0]
+    (patched / artifact).write_bytes(b"\xff\xfe\x00not utf-8")
+
+    report = _reconcile(corpus, _packs(tmp_path))
+
+    (unreadable,) = report.unreadable_trials
+    assert unreadable.trial == str(patched)
+    assert artifact in unreadable.reason
+    assert report.entries[0].observations == 4
+    assert any(str(patched) in reason for reason in report.blocking)
 
 
 def test_a_block_the_corpus_cannot_be_graded_against_stops_the_run(tmp_path: Path) -> None:

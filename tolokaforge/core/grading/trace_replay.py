@@ -316,7 +316,7 @@ def tool_inventory_from_bundle(bundle: Path) -> ToolInventory:
     if not path.exists():
         return ToolInventory.unresolvable()
     try:
-        recorded = yaml.safe_load(path.read_text(encoding="utf-8"))
+        recorded = yaml.safe_load(_bundle_text(path))
     except yaml.YAMLError as exc:
         raise MissingTraceReplayInputError(f"unreadable YAML at {path}: {exc}") from exc
     if not isinstance(recorded, list):
@@ -440,9 +440,24 @@ class TrialTraceReplayOutcome:
     recorded_binary_pass: bool | None = None
 
 
+def _bundle_text(path: Path) -> str:
+    """The text of one file inside a bundle, or why this bundle cannot supply it.
+
+    Every read of a bundle's bytes goes through here. Both replay commands net this
+    module's own error per bundle and let everything else out, so a file the
+    filesystem refuses or a byte that is not UTF-8 would otherwise abort the whole
+    batch over one trial's artifact — the failure mode a per-bundle net exists to
+    prevent.
+    """
+    try:
+        return path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        raise MissingTraceReplayInputError(f"unreadable file at {path}: {exc}") from exc
+
+
 def _load_yaml(path: Path) -> Any:
     try:
-        return yaml.safe_load(path.read_text(encoding="utf-8"))
+        return yaml.safe_load(_bundle_text(path))
     except yaml.YAMLError as exc:
         raise MissingTraceReplayInputError(f"unreadable YAML at {path}: {exc}") from exc
 
@@ -832,22 +847,22 @@ def _check_override_against_bundles(
     reports: dict[Path, AuthoringReport] = {}
     unreadable: dict[Path, str] = {}
     for bundle in bundles:
-        recorded = _recorded_tool_schemas(bundle)
-        if recorded in checked:
-            reports[bundle] = checked[recorded]
-            continue
         try:
-            inventory = tool_inventory_from_bundle(bundle)
+            recorded = _recorded_tool_schemas(bundle)
+            if recorded not in checked:
+                checked[recorded] = inspect_grading_authoring(
+                    grading, tool_inventory_from_bundle(bundle)
+                )
         except MissingTraceReplayInputError as exc:
             unreadable[bundle] = str(exc)
             continue
-        reports[bundle] = checked[recorded] = inspect_grading_authoring(grading, inventory)
+        reports[bundle] = checked[recorded]
     return reports, unreadable
 
 
 def _recorded_tool_schemas(bundle: Path) -> str | None:
     path = bundle / _TOOLS_SCHEMAS_FILENAME
-    return path.read_text(encoding="utf-8") if path.exists() else None
+    return _bundle_text(path) if path.exists() else None
 
 
 def _refuse_mis_authored_override(

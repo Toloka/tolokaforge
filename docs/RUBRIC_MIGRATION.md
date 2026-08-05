@@ -181,7 +181,11 @@ corpus that quietly got smaller.
 
 A bundle that cannot be **read** is different again: it is reported apart from the exclusions
 and it blocks, because a verdict over a corpus that partly failed to load is a verdict over an
-unknown denominator.
+unknown denominator. It never aborts the run, whatever is wrong with it — bytes no decoder
+accepts in any of its artifacts, a `task.yaml` whose recorded rubric does not read as one, a
+`grade.yaml` whose `criterion_results` hold a row that is not a judge verdict or whose `score`
+or component values are not numbers. Each is one named entry under `unreadable_trials`, and
+every other trial in the corpus is still measured.
 
 ## Pooling across tasks
 
