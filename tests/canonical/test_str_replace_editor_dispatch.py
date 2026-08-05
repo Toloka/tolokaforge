@@ -124,6 +124,7 @@ def test_compose_editor_exec_argv_includes_user_flag_when_set():
             editor_user._exec("script", "arg1", allow_failure=True)
         except Exception:
             pass
+        assert mock_run.call_args is not None, "subprocess.run was never called"
         argv = mock_run.call_args.args[0]
         assert "--user" in argv, argv
         assert argv[argv.index("--user") + 1] == "model"
@@ -137,5 +138,6 @@ def test_compose_editor_exec_argv_includes_user_flag_when_set():
             editor_default._exec("script", "arg1", allow_failure=True)
         except Exception:
             pass
+        assert mock_run.call_args is not None, "subprocess.run was never called"
         argv = mock_run.call_args.args[0]
         assert "--user" not in argv, argv

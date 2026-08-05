@@ -119,18 +119,18 @@ def test_compose_backend_popen_argv_includes_user_flag_when_set():
     """The ``--user`` flag lands in the exec argv exactly when
     ``session.user`` is set. Locks the argv shape so a future refactor
     of ``_popen`` doesn't silently drop the flag."""
-    import os
-    import subprocess as sp
     from unittest.mock import patch
 
+    # ``slave_fd=0`` is nonsensical as a real PTY fd (it's stdin) but
+    # ``subprocess.Popen`` is mocked, so nothing actually reads/writes
+    # to it — only the argv the mock was called with matters here.
     session = DockerComposeBashSession("some-container", user="model")
-
     with patch("subprocess.Popen") as mock_popen:
-        # Use a slave_fd of 0 (stdin) — irrelevant to the argv assertion.
         try:
             session._popen(cwd=None, slave_fd=0)
         except Exception:
             pass
+        assert mock_popen.call_args is not None, "subprocess.Popen was never called"
         argv = mock_popen.call_args.args[0]
         assert "--user" in argv, argv
         assert argv[argv.index("--user") + 1] == "model"
@@ -142,6 +142,6 @@ def test_compose_backend_popen_argv_includes_user_flag_when_set():
             session_default._popen(cwd=None, slave_fd=0)
         except Exception:
             pass
+        assert mock_popen.call_args is not None, "subprocess.Popen was never called"
         argv = mock_popen.call_args.args[0]
         assert "--user" not in argv, argv
-    del os, sp  # linter: unused after fixture

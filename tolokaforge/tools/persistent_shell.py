@@ -352,10 +352,13 @@ class DockerComposeBashSession(_PtyBashSession):
         return self._user
 
     def _popen(self, cwd: str | None, slave_fd: int) -> subprocess.Popen[bytes]:
-        argv = ["docker", "exec", "-i"]
+        # ``--user`` before ``-i``: matches ``docker exec --help`` order and
+        # the editor's ``_exec`` (str_replace_editor.py) argv shape so a
+        # future grep over the codebase sees one neighbour pattern.
+        argv = ["docker", "exec"]
         if self._user is not None:
             argv.extend(["--user", self._user])
-        argv.extend([self._container_name, "bash", "--norc", "--noprofile"])
+        argv.extend(["-i", self._container_name, "bash", "--norc", "--noprofile"])
         return subprocess.Popen(
             argv,
             stdin=slave_fd,
