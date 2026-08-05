@@ -17,8 +17,8 @@ command against the migrated repository, replies with `configured` +
 `run_error` + `output_tail`, and takes no per-invocation arguments (the
 build command is baked into the task).
 
-The concrete first consumer lives in an adapter (the Migration Bench
-adapter's `mb-grade` service exposes `/build_check`). But the tool
+The concrete first consumer lives in an out-of-tree code-migration
+adapter whose grader service exposes `/build_check`. But the tool
 itself — an HTTP request to `http://{service}:{port}{path}` returning
 the response body verbatim — has no adapter-specific logic. Any future
 benchmark whose grader container exposes a similar endpoint should be
@@ -33,9 +33,9 @@ the unified registry (ADR-0011 Pattern-A shape) and splats
 
 ## Decision Drivers
 
-- **Adapter neutrality.** The tool must not name Migration Bench or any
-  specific adapter. Every field of behaviour comes from `tool_config`;
-  the tool's contract is "POST/GET this URL, return the body."
+- **Adapter neutrality.** The tool must not name a specific adapter or
+  benchmark. Every field of behaviour comes from `tool_config`; the
+  tool's contract is "POST/GET this URL, return the body."
 - **Config-driven endpoint.** Task pack declares
   `tool_config: {service, port, path, method, timeout_s}`. Same registry
   seam as `http_request` — the tool is instantiated once per trial with
@@ -65,7 +65,7 @@ the unified registry (ADR-0011 Pattern-A shape) and splats
 2. **Extend `http_request` with a "no-arg preset" mode.** Reuse the
    existing HTTP tool by declaring a canned URL in `tool_config` and
    locking the schema to zero arguments.
-3. **Keep the tool in the Migration Bench adapter behind a public seam
+3. **Keep the tool in the first-consumer adapter behind a public seam
    the adapter exports.** Ship a re-usable base class from
    `tolokaforge-adapter-common` (which does not exist today).
 4. **Two tools: a core-level `peer_http_request` (agent-supplied path)
@@ -84,10 +84,10 @@ and `timeout_s` (default 300 s). Its schema declares zero parameters.
 Its `execute` ignores inbound kwargs and dispatches a single HTTP
 request via `httpx`.
 
-The Migration Bench adapter's grader service exposes the endpoint the
-tool talks to; that is documented as the *first* consumer, not the
-*only* consumer. New adapters that want the same shape enable the tool
-by name in the task pack with their own `service` / `port` / `path`.
+The out-of-tree code-migration adapter that motivated this ADR is the
+*first* consumer, not the *only* consumer. New adapters that want the
+same shape enable the tool by name in the task pack with their own
+`service` / `port` / `path`.
 
 ## Consequences
 
@@ -131,7 +131,7 @@ depends on. Cleaner as a distinct tool.
 
 **Option 3 — keep it in the adapter.** Forces every future
 code-migration adapter to re-implement the same HTTP wrapper, or to
-depend on the Migration Bench adapter (an unrelated repo) for the base
+depend on the first-consumer adapter (an unrelated repo) for the base
 class. Also lands adapter-specific code in core anyway the first time
 we want to test the wrapper against the runner subset.
 

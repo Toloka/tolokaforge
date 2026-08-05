@@ -21,9 +21,9 @@ pytestmark = pytest.mark.unit
 
 class TestBuildCheckToolConstructor:
     def test_constructor_defaults(self) -> None:
-        tool = BuildCheckTool(service="mb-grade")
+        tool = BuildCheckTool(service="grader")
         assert tool.name == "build_check"
-        assert tool.endpoint_url == "http://mb-grade:8001/build_check"
+        assert tool.endpoint_url == "http://grader:8001/build_check"
         assert tool.policy.category == ToolCategory.COMPUTE
         assert tool.policy.visibility == ["agent"]
 
@@ -45,6 +45,10 @@ class TestBuildCheckToolConstructor:
         with pytest.raises(ValueError, match="service"):
             BuildCheckTool(service="")
 
+    def test_non_string_service_raises(self) -> None:
+        with pytest.raises(ValueError, match="service"):
+            BuildCheckTool(service=None)  # type: ignore[arg-type]
+
     def test_invalid_method_raises(self) -> None:
         with pytest.raises(ValueError, match="method"):
             BuildCheckTool(service="peer", method="DELETE")
@@ -52,6 +56,17 @@ class TestBuildCheckToolConstructor:
     def test_non_positive_timeout_raises(self) -> None:
         with pytest.raises(ValueError, match="timeout_s"):
             BuildCheckTool(service="peer", timeout_s=0)
+
+    def test_non_int_port_raises(self) -> None:
+        """A YAML typo like ``port: "eighty"`` must fail loud at trial
+        registration with a diagnostic message, not surface as an
+        opaque ``ValueError`` from ``int(port)`` deep inside execute."""
+        with pytest.raises(ValueError, match="port"):
+            BuildCheckTool(service="peer", port="8001")  # type: ignore[arg-type]
+
+    def test_non_string_path_raises(self) -> None:
+        with pytest.raises(ValueError, match="path"):
+            BuildCheckTool(service="peer", path=None)  # type: ignore[arg-type]
 
 
 class TestBuildCheckToolSchema:
@@ -73,14 +88,30 @@ class TestBuildCheckToolExecute:
         response.text = '{"configured": true, "run_error": ""}'
         mock_post.return_value = response
 
-        tool = BuildCheckTool(service="mb-grade")
+        tool = BuildCheckTool(service="grader")
         result = tool.execute()
 
         assert result.success is True
         assert result.output == '{"configured": true, "run_error": ""}'
         assert result.metadata["status_code"] == 200
         mock_post.assert_called_once()
-        assert mock_post.call_args.args[0] == "http://mb-grade:8001/build_check"
+        assert mock_post.call_args.args[0] == "http://grader:8001/build_check"
+
+    @patch("tolokaforge.tools.builtin.build_check.httpx.post")
+    def test_execute_post_wire_contract(self, mock_post: MagicMock) -> None:
+        """POST carries ``Content-Type: application/json`` + empty JSON
+        body. Locks the wire contract so a refactor to ``data=`` /
+        ``json=`` / different content-type would fail loudly."""
+        response = MagicMock()
+        response.status_code = 200
+        response.text = "ok"
+        mock_post.return_value = response
+
+        BuildCheckTool(service="peer").execute()
+
+        kwargs = mock_post.call_args.kwargs
+        assert kwargs["headers"] == {"Content-Type": "application/json"}
+        assert kwargs["content"] == b"{}"
 
     @patch("tolokaforge.tools.builtin.build_check.httpx.get")
     def test_execute_get_method(self, mock_get: MagicMock) -> None:
@@ -108,6 +139,24 @@ class TestBuildCheckToolExecute:
         result = tool.execute(extra="value", another=42)
 
         assert result.success is True
+
+    @patch("tolokaforge.tools.builtin.build_check.httpx.post")
+    def test_execute_redirect_status_is_error(self, mock_post: MagicMock) -> None:
+        """3xx (redirects, not-modified) is not success. httpx does not
+        follow redirects here, so a 301 from a misconfigured peer is a
+        defect that should surface as an error — not a masquerading
+        success with a redirect body."""
+        response = MagicMock()
+        response.status_code = 301
+        response.text = "Moved Permanently"
+        mock_post.return_value = response
+
+        result = BuildCheckTool(service="peer").execute()
+
+        assert result.success is False
+        assert result.output == "Moved Permanently"
+        assert "HTTP 301" in result.error
+        assert result.metadata["status_code"] == 301
 
     @patch("tolokaforge.tools.builtin.build_check.httpx.post")
     def test_execute_http_error_hands_body_back(self, mock_post: MagicMock) -> None:

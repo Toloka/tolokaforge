@@ -20,6 +20,9 @@ Because the target is a peer service on the trial's compose network, the
 request happens from the runner container (which resolves ``<service>``
 via docker's built-in DNS) and stays entirely within the compose network
 — no external network access required.
+
+The tool returns the peer's response body verbatim; the peer is trusted
+to bound its own response size. There is no tool-side cap.
 """
 
 from typing import Any
@@ -50,18 +53,22 @@ class BuildCheckTool(Tool):
         method: str = "POST",
         timeout_s: float = 300.0,
     ) -> None:
-        if not service or not isinstance(service, str):
+        if not isinstance(service, str) or not service:
             raise ValueError(
                 f"build_check: ``service`` is required and must be a non-empty string; "
                 f"got {service!r}"
             )
+        if not isinstance(port, int) or isinstance(port, bool):
+            raise ValueError(f"build_check: ``port`` must be an int; got {type(port).__name__}")
+        if not isinstance(path, str):
+            raise ValueError(f"build_check: ``path`` must be a string; got {type(path).__name__}")
         if method not in ("GET", "POST"):
             raise ValueError(f"build_check: ``method`` must be GET or POST; got {method!r}")
-        if timeout_s <= 0:
+        if not isinstance(timeout_s, (int, float)) or timeout_s <= 0:
             raise ValueError(f"build_check: ``timeout_s`` must be positive; got {timeout_s!r}")
 
         self._service = service
-        self._port = int(port)
+        self._port = port
         self._path = path if path.startswith("/") else f"/{path}"
         self._method = method
         self._timeout_s = float(timeout_s)
@@ -145,11 +152,12 @@ class BuildCheckTool(Tool):
 
         # Return the response body verbatim. The peer service owns the
         # payload shape (adapter-specific); the tool doesn't re-interpret
-        # it. Non-2xx responses still hand the body back — the agent may
-        # find diagnostic detail in the error body that a raw ``error``
-        # string would elide.
+        # it. Any non-2xx (including 3xx — httpx does not follow redirects
+        # here, so a redirect from a misconfigured peer is a defect, not a
+        # success) still hands the body back so the agent can read
+        # diagnostic detail an ``error`` string would elide.
         body_text = response.text
-        if response.status_code >= 400:
+        if response.status_code < 200 or response.status_code >= 300:
             return ToolResult(
                 success=False,
                 output=body_text,

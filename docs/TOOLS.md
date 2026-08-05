@@ -213,7 +213,7 @@ tools:
   agent:
     enabled: ["build_check", "bash_session", "str_replace_editor"]
     build_check:
-      service: mb-grade
+      service: grader        # compose service name in the task's compose file
       port: 8001
       path: /build_check
 ```
