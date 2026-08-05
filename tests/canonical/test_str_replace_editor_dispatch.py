@@ -91,3 +91,51 @@ def test_working_root_defaults_to_work_for_both_backends():
     compose = _wrapper({"service": "app", "compose_project_prefix": "foo_"})
     assert isinstance(compose._backend, DockerComposeEditor)
     assert compose._backend.base_path == "/work"
+
+
+def test_compose_backend_default_user_is_none():
+    """No ``user`` in ``tool_config`` → no ``--user`` flag; the editor
+    inherits the container's default user. Preserves prior behaviour."""
+    wrapper = _wrapper({"service": "app", "compose_project_prefix": "foo_"})
+    assert isinstance(wrapper._backend, DockerComposeEditor)
+    assert wrapper._backend.user is None
+
+
+def test_compose_backend_threads_user_from_tool_config():
+    """``tool_config.user`` threads through to the ``docker exec --user
+    <user>`` flag — symmetric with ``bash_session``."""
+    wrapper = _wrapper({"service": "app", "compose_project_prefix": "foo_", "user": "model"})
+    assert isinstance(wrapper._backend, DockerComposeEditor)
+    assert wrapper._backend.user == "model"
+
+
+def test_compose_editor_exec_argv_includes_user_flag_when_set():
+    """Every editor subprocess invokes ``docker exec [--user U]``. Lock
+    the argv shape both ways: user set → ``--user`` present; user unset
+    → ``--user`` absent."""
+    from unittest.mock import patch
+
+    editor_user = DockerComposeEditor("some-container", "/work", user="model")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = b""
+        mock_run.return_value.stderr = b""
+        try:
+            editor_user._exec("script", "arg1", allow_failure=True)
+        except Exception:
+            pass
+        argv = mock_run.call_args.args[0]
+        assert "--user" in argv, argv
+        assert argv[argv.index("--user") + 1] == "model"
+
+    editor_default = DockerComposeEditor("some-container", "/work")
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value.returncode = 0
+        mock_run.return_value.stdout = b""
+        mock_run.return_value.stderr = b""
+        try:
+            editor_default._exec("script", "arg1", allow_failure=True)
+        except Exception:
+            pass
+        argv = mock_run.call_args.args[0]
+        assert "--user" not in argv, argv

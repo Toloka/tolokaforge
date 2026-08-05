@@ -69,3 +69,79 @@ def test_compose_backend_wires_resolved_name_into_session():
     session = wrapper._new_session()
     assert isinstance(session, DockerComposeBashSession)
     assert session.container_name == "tolokaforge_abc123_app"
+
+
+def test_compose_backend_default_user_is_none():
+    """No ``user`` in ``tool_config`` → the compose backend inherits the
+    container's default user (no ``--user`` flag on the exec argv).
+    Preserves prior behaviour for every current pack."""
+    wrapper = _wrapper({"service": "app", "compose_project_prefix": "tolokaforge_"})
+    wrapper._trial_id = "abc123"
+    session = wrapper._new_session()
+    assert isinstance(session, DockerComposeBashSession)
+    assert session.user is None
+
+
+def test_compose_backend_threads_user_from_tool_config():
+    """``tool_config.user`` threads through to the ``docker exec --user
+    <user>`` flag. Task packs whose grader container runs as root use
+    this to drop privileges on the agent-facing exec session."""
+    wrapper = _wrapper(
+        {
+            "service": "app",
+            "compose_project_prefix": "tolokaforge_",
+            "user": "model",
+        }
+    )
+    wrapper._trial_id = "abc123"
+    session = wrapper._new_session()
+    assert isinstance(session, DockerComposeBashSession)
+    assert session.user == "model"
+
+
+def test_compose_backend_accepts_uid_gid_user():
+    """Numeric ``uid:gid`` is a valid ``docker exec --user`` value —
+    useful when the container doesn't have a named user for the
+    intended UID."""
+    wrapper = _wrapper(
+        {
+            "service": "app",
+            "compose_project_prefix": "tolokaforge_",
+            "user": "1000:1000",
+        }
+    )
+    wrapper._trial_id = "abc123"
+    session = wrapper._new_session()
+    assert session.user == "1000:1000"
+
+
+def test_compose_backend_popen_argv_includes_user_flag_when_set():
+    """The ``--user`` flag lands in the exec argv exactly when
+    ``session.user`` is set. Locks the argv shape so a future refactor
+    of ``_popen`` doesn't silently drop the flag."""
+    import os
+    import subprocess as sp
+    from unittest.mock import patch
+
+    session = DockerComposeBashSession("some-container", user="model")
+
+    with patch("subprocess.Popen") as mock_popen:
+        # Use a slave_fd of 0 (stdin) — irrelevant to the argv assertion.
+        try:
+            session._popen(cwd=None, slave_fd=0)
+        except Exception:
+            pass
+        argv = mock_popen.call_args.args[0]
+        assert "--user" in argv, argv
+        assert argv[argv.index("--user") + 1] == "model"
+
+    # Symmetric: absence of ``user`` means no ``--user`` in argv.
+    session_default = DockerComposeBashSession("some-container")
+    with patch("subprocess.Popen") as mock_popen:
+        try:
+            session_default._popen(cwd=None, slave_fd=0)
+        except Exception:
+            pass
+        argv = mock_popen.call_args.args[0]
+        assert "--user" not in argv, argv
+    del os, sp  # linter: unused after fixture

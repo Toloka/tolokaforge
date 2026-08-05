@@ -288,11 +288,29 @@ class DockerComposeEditor:
     (the local engine's single-process temp+rename has no such window).
     """
 
-    def __init__(self, container_name: str, base_path: str, timeout_s: float | None = None) -> None:
+    def __init__(
+        self,
+        container_name: str,
+        base_path: str,
+        timeout_s: float | None = None,
+        user: str | None = None,
+    ) -> None:
+        """Bind an editor to *base_path* inside a running compose service.
+
+        ``user`` optionally sets ``docker exec --user <user>`` so every
+        editor operation runs as a specific user (name or ``uid:gid``)
+        rather than the container's default. Task-side callers use this
+        to drop privileges: an image whose ENTRYPOINT runs as root can
+        still hand the agent an unprivileged editor, so root-owned
+        files (e.g. a hidden test oracle staged by the container's own
+        grader) stay unreachable. Default ``None`` inherits the
+        container's default user and preserves prior behaviour.
+        """
         self._container_name = container_name
         self._base = base_path
         self._timeout_s = timeout_s if timeout_s is not None else _DEFAULT_EXEC_TIMEOUT_S
         self._base_real: str | None = None
+        self._user = user
 
     @property
     def container_name(self) -> str:
@@ -301,6 +319,10 @@ class DockerComposeEditor:
     @property
     def base_path(self) -> str:
         return self._base
+
+    @property
+    def user(self) -> str | None:
+        return self._user
 
     def view(self, path: str, view_range: list[int] | None = None) -> str:
         resolved = self._resolve(path)
@@ -403,6 +425,8 @@ class DockerComposeEditor:
         allow_failure: bool = False,
     ) -> subprocess.CompletedProcess[bytes]:
         cmd = ["docker", "exec"]
+        if self._user is not None:
+            cmd += ["--user", self._user]
         if stdin is not None:
             cmd.append("-i")
         cmd += [self._container_name, "sh", "-c", script, "_", *args]

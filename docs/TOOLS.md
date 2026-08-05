@@ -245,8 +245,12 @@ variant; a missing or non-directory root fails loud on first use.
 To select the compose variant, add a per-tool kwargs block under
 `tools.agent.<name>` naming the target `service` and the `compose_project_prefix`
 used to bring the stack up. `bash_session` additionally accepts `timeout_s`;
-`str_replace_editor` additionally accepts `working_root` (see above). The editor
-has no configurable per-command timeout:
+`str_replace_editor` additionally accepts `working_root` (see above). Both
+compose variants accept an optional `user` field (a `--user` value passed to
+`docker exec` — a name or `uid:gid`) so an agent-facing session can drop
+privileges when the target container's ENTRYPOINT itself runs as root. Default
+`None` inherits the container's default user. The editor has no configurable
+per-command timeout:
 
 ```yaml
 tools:
@@ -256,10 +260,12 @@ tools:
       service: main
       compose_project_prefix: env_
       timeout_s: 120
+      user: model             # optional; docker exec --user; default inherits
     str_replace_editor:
       service: main
       compose_project_prefix: env_
       working_root: /srv/agent  # optional; defaults to /work
+      user: model             # optional; docker exec --user; default inherits
 ```
 
 > **Compose-variant network isolation.** Under `network_policy: no_internet` /
