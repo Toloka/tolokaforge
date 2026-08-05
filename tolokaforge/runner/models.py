@@ -1083,6 +1083,20 @@ class TraceConstraintExpr(BaseModel):
             kind for kind in TRACE_CONSTRAINT_KINDS if getattr(self, kind.value) is not None
         )
 
+    def kinds_in_tree(self) -> frozenset[TraceConstraintKind]:
+        """This expression's own kind, and recursively those of the ones it holds.
+
+        Nesting is read off the payload's shape rather than from a second list of
+        which kinds compose, so a future composite kind is walked into by existing
+        code instead of being silently treated as a leaf.
+        """
+        kind = self.declared_kind()
+        payload = getattr(self, kind.value)
+        nested = payload if isinstance(payload, list) else [payload]
+        return frozenset({kind}).union(
+            *(item.kinds_in_tree() for item in nested if isinstance(item, TraceConstraintExpr))
+        )
+
     @model_validator(mode="after")
     def _require_exactly_one_kind(self) -> TraceConstraintExpr:
         declared = sorted(kind.value for kind in self.declared_kinds())
@@ -1411,14 +1425,25 @@ class TraceConstraint(BaseModel):
 
     @model_validator(mode="after")
     def _reject_an_unmatched_anchor_policy_where_nothing_is_anchored(self) -> TraceConstraint:
-        kind = self.require.declared_kind()
-        if self.on_missing is not None and kind in _KINDS_WITHOUT_AN_ANCHOR:
-            raise ValueError(
-                f"{self.id}: on_missing has nothing to decide on a {kind.value!r} constraint, "
-                "whose verdict is the match itself. Setting it would answer the very "
-                "question the constraint asks"
-            )
-        return self
+        """The policy is read at every depth, so the rule is read at every depth.
+
+        A composite threads ``on_missing`` down to each expression it holds
+        unchanged, so nesting one of these kinds under an ``all_of`` gives the
+        policy no anchor it did not have at the top — it still answers the question
+        the nested kind asks, and the vacuous pass the top-level rule refuses is
+        written one line lower.
+        """
+        anchorless = sorted(
+            kind.value for kind in self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
+        )
+        if self.on_missing is None or not anchorless:
+            return self
+        raise ValueError(
+            f"{self.id}: on_missing has nothing to decide over {anchorless}, whose verdict "
+            "is the match itself — a composite passes the policy down to every expression "
+            "it holds, so nesting one of them does not anchor it. Setting it would answer "
+            "the very question the constraint asks"
+        )
 
 
 class TracePath(BaseModel):

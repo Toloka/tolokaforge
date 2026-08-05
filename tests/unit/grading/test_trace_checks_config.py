@@ -389,6 +389,51 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         message="nothing to decide",
         validator="_reject_an_unmatched_anchor_policy_where_nothing_is_anchored",
     ),
+    # Each composite passes ``on_missing`` down unchanged, so the four spellings
+    # below reach the same anchorless kind the three rows above reject at the top —
+    # ``all_of`` and ``any_of`` returning the pass the policy invented, ``negate``
+    # returning its complement. All four are the check that cannot decide the thing
+    # it asserts, written one level lower.
+    _Rejection(
+        label="on_missing_nested_in_all_of",
+        block=_block(
+            _constraint({"all_of": [{"present": {"match": _TOOL_CALL}}]}, on_missing="pass")
+        ),
+        message="nothing to decide",
+        validator="_reject_an_unmatched_anchor_policy_where_nothing_is_anchored",
+    ),
+    _Rejection(
+        label="on_missing_nested_in_any_of",
+        block=_block(
+            _constraint({"any_of": [{"absent": {"match": _TOOL_CALL}}]}, on_missing="pass")
+        ),
+        message="nothing to decide",
+        validator="_reject_an_unmatched_anchor_policy_where_nothing_is_anchored",
+    ),
+    _Rejection(
+        label="on_missing_nested_in_negate",
+        block=_block(
+            _constraint({"negate": {"count": {"match": _TOOL_CALL, "max": 2}}}, on_missing="fail")
+        ),
+        message="nothing to decide",
+        validator="_reject_an_unmatched_anchor_policy_where_nothing_is_anchored",
+    ),
+    _Rejection(
+        label="on_missing_nested_under_three_composites",
+        block=_block(
+            _constraint(
+                {
+                    "all_of": [
+                        _AN_ORDERING,
+                        {"any_of": [{"negate": {"present": {"match": _TOOL_CALL}}}]},
+                    ]
+                },
+                on_missing="pass",
+            )
+        ),
+        message="nothing to decide",
+        validator="_reject_an_unmatched_anchor_policy_where_nothing_is_anchored",
+    ),
     _Rejection(
         label="count_with_no_bound",
         block=_block(_constraint({"count": {"match": _TOOL_CALL}})),
@@ -980,21 +1025,44 @@ def test_one_id_may_be_reused_by_nothing_anywhere_in_the_block():
 
 _KINDS_THAT_ANCHOR_NOTHING = frozenset({"present", "absent", "count"})
 
+# A composite belongs to neither set: it anchors whatever it holds, so whether the
+# policy has something to decide beside one is a question about the tree beneath it.
+_COMPOSITE_KINDS = frozenset({"all_of", "any_of", "negate"})
 
-@pytest.mark.parametrize("kind", sorted(set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING))
+_ANCHORING_LEAF_KINDS = sorted(
+    set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING - _COMPOSITE_KINDS
+)
+
+
+@pytest.mark.parametrize("kind", _ANCHORING_LEAF_KINDS)
 def test_on_missing_is_accepted_on_every_kind_that_anchors_something(kind: str):
-    """The complement of the three ``on_missing`` rejection rows above.
+    """The complement of the ``on_missing`` rejection rows above.
 
     Those rows stay green if the rejection widens to the whole vocabulary, which
     would leave ``on_missing`` unwritable and its default the only reachable
-    policy. These seven are the kinds that select an anchor distinct from the thing
+    policy. These four are the kinds that select an anchor distinct from the thing
     asserted, so the opt-in has something to decide.
     """
-    assert len(set(EVERY_CONSTRAINT_KIND) - _KINDS_THAT_ANCHOR_NOTHING) == 7
+    assert len(_ANCHORING_LEAF_KINDS) == 4
 
     config = TraceChecksConfig(
         **_block(_constraint(EVERY_CONSTRAINT_KIND[kind], on_missing="pass"))
     )
+
+    assert config.constraints[0].on_missing is OnMissing.PASS
+
+
+def test_a_composite_over_anchored_kinds_still_admits_an_anchor_policy():
+    """The composite arm of the same complement: the rule reads kinds, not nesting.
+
+    ``examples/native/multi_service_cache_debug`` writes exactly this — an
+    ``on_missing: pass`` over an ``all_of`` of orderings, so a read that never
+    happened is charged to the presence check rather than to all three. A rule
+    refusing every composite outright would leave that pack unloadable.
+    """
+    nested_orderings = {"all_of": [_AN_ORDERING, {"any_of": [_AN_ORDERING]}]}
+
+    config = TraceChecksConfig(**_block(_constraint(nested_orderings, on_missing="pass")))
 
     assert config.constraints[0].on_missing is OnMissing.PASS
 

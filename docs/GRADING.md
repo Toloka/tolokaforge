@@ -1537,9 +1537,12 @@ Undecidability is scoped **to the matcher**, never to the event kind:
 | `any_of` | `list` of expressions | disjunction | delegated |
 | `negate` | one expression | negation | delegated |
 
-`on_missing` is rejected on `present`, `absent` and `count`: their verdict *is*
-the match, so a policy for "the matcher found nothing" would answer the question
-the constraint asks.
+`on_missing` is rejected over any `require` tree holding `present`, `absent` or
+`count`: their verdict *is* the match, so a policy for "the matcher found nothing"
+would answer the question the constraint asks. The three composites delegate the
+policy to every expression they hold rather than consuming it, so the rejection
+reads the whole tree — `on_missing` beside an `all_of` is admitted exactly when
+every kind under it anchors something.
 
 There is no `after`, because it reduces exactly:
 
@@ -1643,10 +1646,15 @@ selects nothing is far more often an author's typo or an agent that never got
 started than a condition genuinely satisfied. `on_missing: pass` is the explicit
 opt-in for "this constraint only applies when the anchor occurred".
 
-`on_missing` is rejected at load on `present`, `absent` and `count`, whose
-verdicts *are* the match. On `present` the pair would be an always-pass check —
-unmatched passes by the policy, matched passes by the constraint — so the load
-error is what stops a declaration that cannot fail from being written.
+`on_missing` is rejected at load wherever `present`, `absent` or `count` appears in
+the `require` tree, whose verdicts *are* the match. On `present` the pair would be an
+always-pass check — unmatched passes by the policy, matched passes by the constraint
+— so the load error is what stops a declaration that cannot fail from being written.
+Nesting the kind under a composite does not change that: `all_of` / `any_of` /
+`negate` pass the policy down unchanged, so the rejection is read off every kind in
+the tree and not off the top one. `present` also decides its own empty match as a
+failure rather than deferring it to the policy, so the vacuous pass is out of reach
+from the evaluator's side too.
 
 ### Correlating arguments across matchers
 
@@ -2110,8 +2118,8 @@ Four authoring choices in it are worth copying:
   names no status value and so generalises to whatever the cache is holding. It
   carries `on_unbound: pass` for the same charge-once reason the ordering checks carry
   `on_missing: pass`, and its `require` is an `any_of` whose first branch is "no note
-  was written at all" — `on_missing` is [rejected on `present`](#on_missing--what-an-unmatched-anchor-decides),
-  so the branch is how the same intent is written there. The two capture patterns
+  was written at all" — `on_missing` is [rejected over a tree holding a `present`](#on_missing--what-an-unmatched-anchor-decides)
+  at any depth, so the branch is how the same intent is written there. The two capture patterns
   differ because the payloads do: `http_request` renders a JSON response as the parsed
   object's Python `repr`, so the served read shows single-quoted keys while the cache
   inspector's nested JSON string keeps the double quotes it was serialised with. Bind

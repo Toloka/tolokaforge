@@ -118,8 +118,9 @@ EVERY_CONSTRAINT_KIND: dict[str, dict[str, Any]] = {
 }
 
 
-# ``on_missing`` is rejected on the three kinds whose verdict is the match
-# itself, so the block carries it on one kind that does anchor.
+# ``on_missing`` is rejected over a require tree holding any of the three kinds
+# whose verdict is the match itself, so the block carries it on one kind that
+# anchors and nests nothing.
 _ON_MISSING_KIND = "before"
 
 # ``present`` is the kind carrying ``EVERY_OPERATOR_MATCHER``, so it is the one

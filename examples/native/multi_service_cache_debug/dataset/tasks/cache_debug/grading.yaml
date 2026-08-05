@@ -182,7 +182,9 @@ trace_checks:
             any_of:
               # No note at all is charged once, to `the_note_was_written`. This is
               # what `on_missing: pass` says for the ordering checks, written as a
-              # branch because `on_missing` is rejected on `present`.
+              # branch because `on_missing` is rejected over any require tree
+              # holding a `present` — nesting it under this `any_of` would not
+              # admit it.
               - absent:
                   match:
                     kind: tool_call

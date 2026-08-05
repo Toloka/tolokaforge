@@ -571,6 +571,50 @@ def test_probes_beside_another_state_source_are_refused_before_the_gate_is_reach
     assert "does not compile" not in message, message
 
 
+@pytest.mark.parametrize(
+    "require",
+    [
+        pytest.param({"present": {"match": _tool_call("http_request")}}, id="top_level"),
+        pytest.param(
+            {"all_of": [{"present": {"match": _tool_call("http_request")}}]}, id="nested_in_all_of"
+        ),
+        pytest.param(
+            {"any_of": [{"present": {"match": _tool_call("http_request")}}]}, id="nested_in_any_of"
+        ),
+    ],
+)
+def test_an_anchorless_on_missing_is_refused_before_the_gate_at_any_depth(
+    tmp_path: Path, require: dict[str, Any]
+) -> None:
+    """The gate needs no ``on_missing`` rule of its own, at the top or nested.
+
+    ``validate`` constructs the whole ``TraceChecksConfig``, so the constraint's own
+    rule is what answers here — a second copy in this module would be a rule that can
+    disagree with the one the runner enforces. The uncompilable pattern beside it goes
+    unreported for the reason the rule above names, which pins which surface answered.
+    """
+    grading = {
+        "trace_checks": {
+            "constraints": [
+                {
+                    "id": "probe",
+                    "description": "a probe constraint",
+                    "on_missing": "pass",
+                    "require": require,
+                }
+            ]
+        },
+        **_A_PATTERN_THAT_DOES_NOT_COMPILE,
+    }
+
+    with pytest.raises(ValidationError) as excinfo:
+        validate_grading_yaml(_write_grading(tmp_path, grading), inventory=_inventory(_HELPDESK))
+
+    message = str(excinfo.value)
+    assert "on_missing has nothing to decide over ['present']" in message, message
+    assert "does not compile" not in message, message
+
+
 # ---------------------------------------------------------------------------
 # unchecked: reported, never fatal
 # ---------------------------------------------------------------------------

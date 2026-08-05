@@ -588,24 +588,7 @@ def _declared_kinds(config: TraceChecksConfig) -> set[TraceConstraintKind]:
         *config.constraints,
         *(item for path in config.alternatives or () for item in path.constraints),
     ]
-    return {kind for item in declared for kind in _expression_kinds(item.require)}
-
-
-def _expression_kinds(expr: TraceConstraintExpr) -> set[TraceConstraintKind]:
-    """``expr``'s own kind, and recursively those of the expressions it holds.
-
-    Nesting is read off the payload's shape rather than from a second list of
-    which kinds compose, so a future composite kind is walked into by existing
-    code instead of being silently treated as a leaf.
-    """
-    kind = expr.declared_kind()
-    payload = getattr(expr, kind.value)
-    nested = payload if isinstance(payload, list) else [payload]
-    kinds = {kind}
-    for item in nested:
-        if isinstance(item, TraceConstraintExpr):
-            kinds |= _expression_kinds(item)
-    return kinds
+    return {kind for item in declared for kind in item.require.kinds_in_tree()}
 
 
 def _weighted_fraction(results: Sequence[TraceConstraintResult]) -> float:
@@ -656,7 +639,7 @@ def _evaluate_constraint(
         # unreached. Filing the scored one as a skip would report a kind as
         # unevaluated in the same grade that fails the trial on it.
         ledger.visited.add(kind)
-        ledger.unevaluated |= _expression_kinds(constraint.require)
+        ledger.unevaluated |= constraint.require.kinds_in_tree()
         if not candidates.unnamed:
             return _unbound_result(constraint, kind, candidates)
     readings = definite + possible
@@ -1140,8 +1123,15 @@ def _evaluate(expr: TraceConstraintExpr, resolver: _Resolver, on_missing: OnMiss
 
 
 def _present(payload: PresentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:
+    """No match is this constraint's own ``False``, never a question ``on_missing`` answers.
+
+    The matcher is still resolved as an anchor so the grade names which side
+    selected nothing, but the verdict is decided here: the load tier refuses
+    ``on_missing`` anywhere above a ``present``, and this is the same answer read
+    off the kind rather than off a policy that never legally arrives.
+    """
     counts = _reachable_counts(resolver.resolve("match", payload.match, anchor=True))
-    return _decide((None if count == 0 else True for count in counts), on_missing)
+    return _decide((count > 0 for count in counts), on_missing)
 
 
 def _absent(payload: AbsentConstraint, resolver: _Resolver, on_missing: OnMissing) -> _Truth:

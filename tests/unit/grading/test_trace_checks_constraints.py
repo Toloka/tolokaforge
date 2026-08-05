@@ -40,6 +40,7 @@ from tolokaforge.core.grading.trace_checks import (
 from tolokaforge.core.grading.trace_timeline import TraceEventKind, TrialTimeline
 from tolokaforge.core.models import (
     AdjacencyView,
+    OnMissing,
     ToolCall,
     ToolExecutionStatus,
     TraceChecksConfig,
@@ -311,6 +312,42 @@ def test_an_unmatched_side_fails_by_name_unless_the_author_opted_out():
     assert failing.passed is False
     assert "right" in failing.message
     assert permitted.passed is True
+
+
+@pytest.mark.parametrize(
+    ("require", "passes"),
+    [
+        pytest.param({"all_of": [_NEVER_HAPPENED]}, False, id="all_of"),
+        pytest.param({"any_of": [_NEVER_HAPPENED]}, False, id="any_of"),
+        pytest.param({"negate": _NEVER_HAPPENED}, True, id="negate"),
+    ],
+)
+def test_a_present_that_matched_nothing_is_false_whatever_policy_reaches_it(
+    require: dict[str, Any], passes: bool
+):
+    """``present`` decides its own zero, so no policy can make the check unfailable.
+
+    The load tier refuses ``on_missing`` over any tree holding a ``present``, so
+    the only way ``pass`` reaches one is a constraint assembled past the validator
+    — which is why the policy is set by assignment here rather than authored. Each
+    composite threads it down unchanged and every one of them still reads "the call
+    never happened": the two that report that verdict fail, and the one that
+    complements it holds.
+    """
+    timeline = _one_turn_timeline(_LOOKUP)
+    with pytest.raises(ValidationError):
+        evaluate_constraint(timeline, require, on_missing="pass")
+
+    config = TraceChecksConfig(
+        constraints=[
+            {"id": "constraint", "description": "the condition under test", "require": require}
+        ]
+    )
+    config.constraints[0].on_missing = OnMissing.PASS
+    verdict = evaluate_trace_checks(timeline, config).constraints[0]
+
+    assert verdict.passed is passes
+    assert verdict.undecided is False
 
 
 def test_an_inverted_window_is_unmatched_rather_than_vacuously_satisfied():
