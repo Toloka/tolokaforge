@@ -67,6 +67,7 @@ LAZY_LOADABLE_SUBSET_MODULES: frozenset[str] = frozenset(
         "tolokaforge/tools/builtin/__init__.py",
         "tolokaforge/tools/builtin/bash.py",
         "tolokaforge/tools/builtin/browser.py",
+        "tolokaforge/tools/builtin/build_check.py",
         "tolokaforge/tools/builtin/calculator.py",
         "tolokaforge/tools/builtin/db_json.py",
         "tolokaforge/tools/builtin/files.py",

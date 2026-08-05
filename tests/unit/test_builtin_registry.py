@@ -26,6 +26,7 @@ def test_list_builtins_covers_every_consumer_today():
         "calculator",
         "browser",
         "http_request",
+        "build_check",
         "mobile",
         "db_query",
         "db_update",
@@ -87,12 +88,21 @@ def test_search_kb_routes_to_rag_dispatch():
 
 def test_get_class_imports_real_classes():
     from tolokaforge.tools.builtin.bash import BashTool
+    from tolokaforge.tools.builtin.build_check import BuildCheckTool
     from tolokaforge.tools.builtin.calculator import CalculatorTool
     from tolokaforge.tools.builtin.mobile import MobileTool
 
     assert registry.get_class("bash") is BashTool
     assert registry.get_class("calculator") is CalculatorTool
+    assert registry.get_class("build_check") is BuildCheckTool
     assert registry.get_class("mobile") is MobileTool
+
+
+def test_build_check_routes_to_generic_dispatch():
+    """``build_check`` is a peer-service HTTP probe with no filesystem /
+    RAG / shell / editor semantics — it belongs on GENERIC dispatch
+    exactly like ``http_request`` and ``calculator``."""
+    assert registry.get_dispatch("build_check") is registry.Dispatch.GENERIC
 
 
 def test_get_class_is_cached():

@@ -369,6 +369,7 @@ grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 |------|-------------|----------------|
 | `browser` | Playwright web automation | `action` string + `x`, `y`, `text` (actions: click_at, type_text_at, scroll_document, select, navigate, etc.) |
 | `http_request` | HTTP requests to mock services | `method`, `url`, `headers`, `body` |
+| `build_check` | Zero-arg peer-service HTTP probe (compile check) | endpoint declared via `tool_config`: `service`, `port`, `path`, `method`, `timeout_s` |
 
 ### RAG
 

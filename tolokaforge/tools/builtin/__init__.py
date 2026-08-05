@@ -2,6 +2,7 @@
 
 from tolokaforge.tools.builtin.bash import BashTool
 from tolokaforge.tools.builtin.browser import BrowserTool
+from tolokaforge.tools.builtin.build_check import BuildCheckTool
 from tolokaforge.tools.builtin.calculator import CalculatorTool
 from tolokaforge.tools.builtin.db_json import (
     DBQueryTool,
@@ -28,6 +29,7 @@ __all__ = [
     "AppendFileTool",
     "BashTool",
     "BrowserTool",
+    "BuildCheckTool",
     "CalculatorTool",
     "CopyFileTool",
     "DBQueryTool",
