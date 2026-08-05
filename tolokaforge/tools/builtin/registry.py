@@ -64,6 +64,10 @@ _REGISTRY: dict[str, tuple[BuiltinToolEntry, Dispatch]] = {
         BuiltinToolEntry("tolokaforge.tools.builtin.http_request", "HTTPRequestTool"),
         Dispatch.GENERIC,
     ),
+    "build_check": (
+        BuiltinToolEntry("tolokaforge.tools.builtin.build_check", "BuildCheckTool"),
+        Dispatch.GENERIC,
+    ),
     "mobile": (
         BuiltinToolEntry("tolokaforge.tools.builtin.mobile", "MobileTool"),
         Dispatch.GENERIC,

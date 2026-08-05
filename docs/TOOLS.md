@@ -20,6 +20,8 @@ Tolokaforge exposes built-in tools via function calling. Enable them per task in
   tasks — declare `initial_state.rag.corpus_dir` and the runner indexes that
   corpus into the rag-service per trial (see `docs/TASKS.md`).
 - `http_request`: Restricted HTTP client for mock web services.
+- `build_check`: Zero-argument peer-service HTTP probe (compile / interface
+  check). See [`build_check`](#build_check) below.
 - `calculator`: Safe arithmetic calculator.
 
 ## Browser and Mobile Action Reference
@@ -171,6 +173,50 @@ the root — the tool never silently creates it.
   validation. Write atomicity is weaker than the local variant: a completed
   temp-file+`mv` is atomic, but an exec interrupted mid-write can leave the temp
   file behind. The editor has no configurable per-command timeout.
+
+### `build_check`
+
+Zero-argument HTTP probe against a compose peer service on the trial's
+private network. Named + shaped for the compile / interface-collection
+checks that code-migration and code-generation benchmarks perform
+against a hidden test harness before invoking the full graded suite —
+see [ADR 0029](adr/0029-build-check-builtin-tool.md).
+
+**Input schema.** None. The tool advertises zero parameters and ignores
+any inbound kwargs. The endpoint is fully declared at task-authoring
+time via `tool_config`; the agent cannot redirect the probe.
+
+**`tool_config` fields**
+
+- `service` (string, required) — compose service name to probe.
+- `port` (int, default `8001`) — port on that service.
+- `path` (string, default `"/build_check"`) — endpoint path.
+- `method` (`"GET"` | `"POST"`, default `"POST"`) — HTTP verb. POST
+  sends an empty JSON body (`{}`).
+- `timeout_s` (float, default `300.0`) — request timeout.
+
+**Response contract.** The tool returns the peer service's response
+body verbatim as tool output — the peer owns the payload shape. On a
+non-2xx status the body is still returned but the result is marked as
+an error so the loop records `EXECUTION_STATUS_ERROR`; on timeout or
+connect failure the tool returns a structured error message.
+
+**Network scope.** The request goes to a docker-DNS-resolved compose
+peer on the trial's private network. No external egress; honours
+`NetworkPolicy.NO_INTERNET` by construction.
+
+**Enabling.** List `build_check` in `enabled` and declare the endpoint
+under `tools.agent.build_check`:
+
+```yaml
+tools:
+  agent:
+    enabled: ["build_check", "bash_session", "str_replace_editor"]
+    build_check:
+      service: mb-grade
+      port: 8001
+      path: /build_check
+```
 
 ## Enabling Tools
 

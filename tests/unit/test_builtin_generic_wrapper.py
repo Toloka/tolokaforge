@@ -40,6 +40,7 @@ class TestBuiltinGenericToolWrapper:
             "calculator",
             "browser",
             "http_request",
+            "build_check",
             "mobile",
             "db_query",
             "db_update",
@@ -52,6 +53,42 @@ class TestBuiltinGenericToolWrapper:
 
         wrapper = BuiltinGenericToolWrapper(_make_schema("calculator"))
         assert wrapper._tool.__class__.__name__ == "CalculatorTool"
+
+    def test_build_check_wrapper_splats_tool_config_into_init(self):
+        """``build_check`` is the first builtin whose ``__init__`` has a
+        required kwarg (``service``). Locks the wrapper's tool_config →
+        ``__init__`` splat: the endpoint URL threads through from the
+        task-authored config to the live tool instance."""
+        from tolokaforge.runner.models import ToolSchema
+        from tolokaforge.runner.tool_factory import BuiltinGenericToolWrapper
+
+        schema = ToolSchema(
+            name="build_check",
+            description="x",
+            parameters={"type": "object"},
+            tool_config={"service": "mb-grade", "port": 9001, "path": "/probe"},
+        )
+        wrapper = BuiltinGenericToolWrapper(schema)
+        assert wrapper._tool.__class__.__name__ == "BuildCheckTool"
+        assert wrapper._tool.endpoint_url == "http://mb-grade:9001/probe"
+
+    def test_build_check_wrapper_rejects_unknown_tool_config_key(self):
+        """A typo in ``tool_config`` fails loud at trial registration
+        rather than getting silently dropped."""
+        from tolokaforge.runner.models import ToolSchema
+        from tolokaforge.runner.tool_factory import (
+            BuiltinGenericToolWrapper,
+            ToolConfigurationError,
+        )
+
+        schema = ToolSchema(
+            name="build_check",
+            description="x",
+            parameters={"type": "object"},
+            tool_config={"service": "peer", "prot": 8001},  # ``prot`` is a typo
+        )
+        with pytest.raises(ToolConfigurationError, match="prot"):
+            BuiltinGenericToolWrapper(schema)
 
     @pytest.mark.asyncio
     async def test_execute_raises_on_tool_failure(self):
