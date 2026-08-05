@@ -327,17 +327,40 @@ class DockerComposeBashSession(_PtyBashSession):
     preserves it).
     """
 
-    def __init__(self, container_name: str) -> None:
+    def __init__(self, container_name: str, user: str | None = None) -> None:
+        """Hold a ``docker exec -i`` bash session into *container_name*.
+
+        ``user`` optionally sets ``docker exec --user <user>`` so the
+        session runs as a specific user (name or ``uid:gid``) rather
+        than the container's default. Task-side callers use this to
+        drop privileges: an image whose ENTRYPOINT runs as root can
+        still hand the agent an unprivileged shell, so root-owned files
+        (e.g. a hidden test oracle staged by the container's own
+        grader) stay unreachable to the agent. Default ``None`` inherits
+        the container's default user and preserves prior behaviour.
+        """
         super().__init__()
         self._container_name = container_name
+        self._user = user
 
     @property
     def container_name(self) -> str:
         return self._container_name
 
+    @property
+    def user(self) -> str | None:
+        return self._user
+
     def _popen(self, cwd: str | None, slave_fd: int) -> subprocess.Popen[bytes]:
+        # ``--user`` before ``-i``: matches ``docker exec --help`` order and
+        # the editor's ``_exec`` (str_replace_editor.py) argv shape so a
+        # future grep over the codebase sees one neighbour pattern.
+        argv = ["docker", "exec"]
+        if self._user is not None:
+            argv.extend(["--user", self._user])
+        argv.extend(["-i", self._container_name, "bash", "--norc", "--noprofile"])
         return subprocess.Popen(
-            ["docker", "exec", "-i", self._container_name, "bash", "--norc", "--noprofile"],
+            argv,
             stdin=slave_fd,
             stdout=slave_fd,
             stderr=slave_fd,

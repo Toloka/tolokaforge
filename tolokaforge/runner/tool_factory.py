@@ -1174,6 +1174,13 @@ class PersistentShellToolWrapper(ToolWrapper):
         # local subprocess backend. The wire schema is identical either way.
         self._service: str | None = tool_config.get("service")
         self._project_prefix: str | None = tool_config.get("compose_project_prefix")
+        # Optional ``docker exec --user <user>`` for the compose backend. Task
+        # packs whose grader container runs as root (so the in-container
+        # grader can read a hidden test oracle) use this to drop privileges
+        # on agent-facing exec sessions. Local backend ignores it. Default
+        # ``None`` inherits the container's default user — preserves prior
+        # behaviour for every current pack.
+        self._user: str | None = tool_config.get("user")
         if self._service is not None and not self._project_prefix:
             raise ToolConfigurationError(
                 self.name,
@@ -1222,7 +1229,7 @@ class PersistentShellToolWrapper(ToolWrapper):
         container = self._resolve_container_name(
             self._trial_id, self._service, self._project_prefix
         )
-        return DockerComposeBashSession(container)
+        return DockerComposeBashSession(container, user=self._user)
 
     @staticmethod
     def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
@@ -1283,6 +1290,11 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
                 "prefix used to bring the stack up)",
             )
         self._working_root: str = tool_config.get("working_root", self._DEFAULT_WORKING_ROOT)
+        # Optional ``docker exec --user <user>`` for the compose backend —
+        # symmetric with ``PersistentShellToolWrapper._user``. Local backend
+        # ignores it. Default ``None`` inherits the container's default
+        # user and preserves prior behaviour.
+        self._user: str | None = tool_config.get("user")
         self._trial_id = trial_id
         self._backend = self._new_backend()
 
@@ -1293,7 +1305,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
         container = self._resolve_container_name(
             self._trial_id, self._service, self._project_prefix
         )
-        return DockerComposeEditor(container, base_path=self._working_root)
+        return DockerComposeEditor(container, base_path=self._working_root, user=self._user)
 
     @staticmethod
     def _resolve_container_name(trial_id: str, service: str, project_prefix: str) -> str:
