@@ -117,10 +117,15 @@ bundle uploads separately, before the gate, as `integration-observation-pr<N>`).
   `model_presets.yaml` (by key in a value position, or by name), and mentioned by a unit test under
   `tests/unit/llm/` as staged in the INDEX - the finalize commit stages that directory, so the
   test the gate credits is the test that ships. Before any of these gates run, the workflow
-  re-pins `tools/automation/` to HEAD and requires `observation/findings.json` to hash-match the
-  value captured at aggregation time - the resolve/finalize agents run earlier, with Bash, in the
-  same workspace, and must not be able to weaken the gates or the evidence without it showing in
-  the PR diff.
+  refuses a moved HEAD and re-pins `tools/automation/` to the CHECKOUT-TIME commit (a step
+  output captured before any agent ran - symbolic HEAD could be moved by a local agent commit),
+  and requires `observation/findings.json` to hash-match the value captured at aggregation time,
+  both at the wire-verification step and at finalize; the wire-verification summary is published
+  only byte-identical to the hash that step sealed. The resolve/finalize agents run earlier, with
+  Bash, in the same workspace, and must not be able to weaken the gates or the evidence without
+  it showing in the PR diff. On the same fail-closed principle, a malformed `decision.json`
+  (`automation decision-targets` prints `PARSE_FAIL`) is a stall to retry, never the all-ceiling
+  `NO_TARGETS` convergence.
   Only then does it commit to the PR branch, comment the record, and label
   `automation:integrate-done`. A broken / over-reaching / divergent fix (or a cert that does not
   reconcile) fails verification here and goes to `automation:integrate-needs-human`. Never

@@ -124,6 +124,37 @@ def test_render_summary_wire_only_reprobe_verdict_is_the_wire_result():
     assert "infra failure" not in summary
 
 
+def test_render_summary_infra_line_shows_every_gate_key():
+    # The PR-visible summary must show the same counters the gate dirties on: an
+    # all-timeout observe used to render an all-zero infra line while the gate marked
+    # the PR needs-human for api_timeout, leaving Slack as the only place with the reason.
+    findings = {
+        "candidate": {"name": "vendor/m"},
+        "preset": "default",
+        "capability_ran": True,
+        "all_passed": False,
+        "capability": {"report_present": False},
+        "variants": {"report_present": False},
+        "wire": {
+            "trials": 40,
+            "tool_call_count": 0,
+            "tool_arg_rejections": {
+                "rejecting_trials": 0,
+                "trial_rate": 0,
+                "by_task_trial_rate": {},
+            },
+            "rejected_examples": [],
+            "infra": {"api_timeout": 40, "api_error": 2, "status_error": 1},
+        },
+    }
+    summary = observe.render_summary(findings)
+    assert "api_timeout=40" in summary
+    assert "api_error=2" in summary
+    assert "status_error=1" in summary
+    assert "rate_limit=0" in summary
+    assert "max_turns=0" in summary and "stuck=0" in summary
+
+
 def test_render_summary_wire_only_reprobe_with_no_trials_says_the_run_failed():
     # Unreachable from the workflow (the rejections>0 guard implies wire tasks exist), but
     # a wire run that crashes at startup - or a manual CLI invocation - lands here and must

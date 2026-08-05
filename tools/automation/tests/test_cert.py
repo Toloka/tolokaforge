@@ -218,19 +218,21 @@ def test_payload_only_set_matches_the_probes_that_mock_the_provider():
 
     A probe can only assert our own outgoing payload by stubbing the transport, and the
     single seam for that is ``client.completion`` - so "stubs that seam" is exactly
-    "does not observe the provider". The match covers the seam's patch SPELLINGS, not
-    one literal: the dotted string (``patch("tolokaforge.core.llm.client.completion")``
-    / ``monkeypatch.setattr("tolokaforge...")``) plus the object forms
+    "does not observe the provider". The match covers the seam's known patch SPELLINGS:
+    any quoted dotted path ending in ``.completion`` (the canonical
+    ``patch("tolokaforge.core.llm.client.completion")`` and the use-site form
+    ``patch("tests....test_x.completion")`` alike) plus the object forms
     (``patch.object(client, "completion")`` / ``monkeypatch.setattr(client,
-    "completion", ...)``) - a replay-style probe written in any of them must land in
-    the set, and keying on one literal would let the guard pass vacuously for the
-    others. If one of these probes starts making a real second call, it must come out.
+    "completion", ...)``) - keying on one literal would let the guard pass vacuously
+    for the others. A genuinely novel indirection (aliasing the function under another
+    name before stubbing it) is still invisible here and stays a review concern. If one
+    of these probes starts making a real second call, it must come out of the set.
     """
     import pathlib
     import re
 
     provider_mock = re.compile(
-        r"tolokaforge\.core\.llm\.client\.completion"
+        r"""['"][A-Za-z0-9_.]+\.completion['"]"""
         r"""|patch\.object\(\s*(?:\w+\.)*client\s*,\s*['"]completion['"]"""
         r"""|setattr\(\s*(?:\w+\.)*client\s*,\s*['"]completion['"]"""
     )

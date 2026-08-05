@@ -79,6 +79,16 @@ def greencheck_cmd(
     raise typer.Exit(greencheck.run(decision, reprobe_findings))
 
 
+@app.command("decision-targets")
+def decision_targets_cmd(
+    decision: str = typer.Argument(..., help="path to the compose step's decision.json"),
+) -> None:
+    """Print the decision's target token: PARSE_FAIL (malformed -> stall, never a verdict),
+    NO_TARGETS (a well-formed empty fix_targets = the all-ceiling convergence), or
+    TARGETS:<comma-joined>. Always exits 0; the workflow branches on stdout."""
+    raise typer.Exit(greencheck.run_decision_targets(decision))
+
+
 @app.command("run-probes")
 def run_probes(
     k_expr: str = typer.Option(..., "--k-expr", help="the pytest -k selection for the candidate"),

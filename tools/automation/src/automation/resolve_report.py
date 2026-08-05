@@ -23,6 +23,19 @@ import re
 import typer
 
 
+def has_converged(summary_text: str) -> bool:
+    """True when the loop reached a terminal CONVERGED / NO_TARGETS verdict.
+
+    The needs-human step also fires when the loop CONVERGED but finalize then failed
+    its gates (reconcile-cert, class gate, staged verification, push) - a report headed
+    "why the loop did not converge" would point the human at the wrong layer there.
+    """
+    return any(
+        "verdict = CONVERGED" in line or "verdict = NO_TARGETS" in line
+        for line in summary_text.splitlines()
+    )
+
+
 def counts(summary_text: str) -> tuple[int, int, int]:
     """(total, no_overlay, red) iteration counts from the appended summary lines.
 
@@ -86,14 +99,25 @@ def build_report(summary_text: str, decision: dict | None, max_iter: int) -> str
     """Markdown block: header + per-iteration list + diagnosis + the agent's last decision."""
     total, no_overlay, red = counts(summary_text)
     body = summary_text.strip() or "- (no per-iteration outcome was recorded)"
+    if has_converged(summary_text):
+        header = f"### The resolve loop CONVERGED, but finalize failed its gates (ran {total}/{max_iter} iterations)"
+        diagnosis = (
+            "The fix loop reached a terminal verdict (see the last iteration below); the "
+            "failure is in the FINALIZE layer - the compose/verify gates (cert reconcile, "
+            "class gate, evidence hash, staged verification) or the commit/push. Inspect "
+            "the finalize step log; the loop itself does not need a re-run."
+        )
+    else:
+        header = f"### Why the resolve loop did not converge (ran {total}/{max_iter} iterations)"
+        diagnosis = diagnose(total, no_overlay, red, max_iter)
     out = [
-        f"### Why the resolve loop did not converge (ran {total}/{max_iter} iterations)",
+        header,
         "",
         "**Per-iteration outcome:**",
         "",
         body,
         "",
-        f"**Diagnosis.** {diagnose(total, no_overlay, red, max_iter)}",
+        f"**Diagnosis.** {diagnosis}",
     ]
     if decision:
         targets = decision.get("fix_targets") or []

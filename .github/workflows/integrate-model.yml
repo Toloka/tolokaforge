@@ -166,6 +166,15 @@ jobs:
           # The finalize step re-supplies an explicit token only for its own git push.
           persist-credentials: false
 
+      - name: Pin the checked-out head commit
+        # Captured BEFORE any agent step runs, as a step output (outside the workspace).
+        # The tamper restores and the finalize gate must reference an immovable commit id:
+        # symbolic HEAD can be moved by a local `git commit` from an agent, which would
+        # turn "re-pin to HEAD" into "re-pin to the tampered commit". Not GITHUB_SHA - on
+        # the workflow_dispatch path that is the base-ref sha, not the checked-out head.
+        id: head
+        run: echo "sha=$(git rev-parse HEAD)" >> "$GITHUB_OUTPUT"
+
       - uses: astral-sh/setup-uv@v7
         with:
           version: "0.9.5"
@@ -552,6 +561,7 @@ jobs:
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
         run: |
           set -uo pipefail
           mkdir -p observation/resolve
@@ -594,9 +604,9 @@ jobs:
             # own verdict tooling (reprobe / greencheck under tools/automation) must be
             # pristine when it judges the attempt - an edit there would otherwise run HERE
             # and then be stash-popped back at finalize without ever appearing in the PR.
-            # Restores index AND worktree from HEAD; committed (PR-visible) changes remain
-            # the human review's job.
-            git restore --source=HEAD --staged --worktree tools/automation
+            # Restores index AND worktree from the CHECKOUT-TIME commit (HEAD_SHA, pinned
+            # before any agent ran - symbolic HEAD could be moved by a local agent commit).
+            git restore --source="$HEAD_SHA" --staged --worktree tools/automation
             # Archive whatever this iteration produced, IMMEDIATELY: a later guard may
             # `continue` past a partial attempt (overlay written, decision missing after a
             # turn-limit stall) and the next iteration's rm would erase it - yet the next
@@ -628,12 +638,25 @@ jobs:
               if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
               continue
             fi
-            # Reprobe ONLY the agent's fix-targets (single-line python-c, no indentation
-            # to break). All-ceiling decisions name none -> nothing to prove, skip reprobe -
+            # ONE tested command parses the decision (automation decision-targets): a
+            # malformed decision.json - the agent died mid-write, or deviated from the
+            # schema - is a STALL to retry, never an all-ceiling verdict. An inline
+            # `|| echo ''` extraction converted exactly that parse failure into
+            # NO_TARGETS and CONVERGED a run in which nobody ever judged the ceilings.
+            # (The NEEDS_HUMAN read above tolerates the same corruption by design: an
+            # unparsable file cannot carry a trustworthy escalation, and it lands here.)
+            DECISION="$(uv run automation decision-targets observation/resolve/decision.json || echo PARSE_FAIL)"
+            if [ "$DECISION" = "PARSE_FAIL" ]; then
+              echo "::warning::iteration $i wrote a malformed decision.json (stalled mid-write / schema deviation)"
+              printf -- '- Iter %s: no decision could be parsed (malformed decision.json - stalled mid-write / schema deviation)\n' "$i" >> observation/resolve/loop_summary.md
+              echo "::endgroup::"
+              if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
+              continue
+            fi
+            # All-ceiling decisions name no fix-targets -> nothing to prove, skip reprobe -
             # and need no overlay either (an honest all-ceiling has no policy to write; the
             # integration is then cert + pricing only, on the default preset).
-            TARGETS="$(uv run python -c "import json,sys; print(','.join(json.load(open(sys.argv[1])).get('fix_targets',[])))" observation/resolve/decision.json 2>/dev/null || echo '')"
-            if [ -z "$TARGETS" ]; then
+            if [ "$DECISION" = "NO_TARGETS" ]; then
               echo "iteration $i: decision named no fix-targets (all-ceiling) -> NO_TARGETS"
               VERDICT=NO_TARGETS
               SUMMARY_LINE="all-ceiling decision (empty fix-targets), verdict = NO_TARGETS"
@@ -645,6 +668,7 @@ jobs:
               if [ "$i" -lt "$MAX_ITER" ]; then sleep $(( i * 15 > 90 ? 90 : i * 15 )); fi
               continue
             else
+              TARGETS="${DECISION#TARGETS:}"
               # Workflow runs the reprobe (agent never does). Only the fix-targets, K reps
               # each, as a flat (probe x rep) pool at RESOLVE_CAP_PARALLEL width. Fast.
               uv run automation reprobe \
@@ -677,12 +701,23 @@ jobs:
         # never a convergence gate: a still-rejecting wire task can be a genuine model miss
         # (a ceiling, not a blocker), so this step never fails the run.
         if: steps.gate.outputs.clean == 'yes' && steps.loop.outputs.converged == 'yes'
+        id: wireverify
         env:
           GH_TOKEN: ""
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
+          FINDINGS_SHA: ${{ steps.findings.outputs.sha }}
         run: |
           set -uo pipefail
+          # The loop agents ran before this step, and the baseline it re-runs is only
+          # evidence if it is the one observe measured - check the aggregation-time hash
+          # HERE too (finalize checks it again for its own gates). A mismatch is a loud
+          # stop, not a skip: it routes the run to needs-human via the finalize skip.
+          ACTUAL_SHA="$(sha256sum observation/findings.json | cut -d' ' -f1)"
+          if [ "$ACTUAL_SHA" != "$FINDINGS_SHA" ]; then
+            echo "::error::observation/findings.json differs from the observe-time evidence - refusing to run the wire verification"
+            exit 1
+          fi
           REJECTIONS="$(uv run python -c 'import json; print(json.load(open("observation/findings.json"))["wire"]["tool_arg_rejections"]["total"])' 2>/dev/null || echo 0)"
           if [ "${REJECTIONS:-0}" = "0" ]; then
             echo "baseline wire had no tool-arg rejections -> nothing to verify"; exit 0
@@ -696,6 +731,12 @@ jobs:
             --out observation/resolve/wire_verify --wire-only \
             --wire-k "${RESOLVE_WIRE_K}" --workers "${WORKERS}" \
             || echo "::warning::final wire verification failed to run - the PR carries no post-fix wire evidence"
+          # Seal the evidence: the finalize compose agent runs between this step and the
+          # posting, so finalize publishes the summary ONLY byte-identical to this hash
+          # (a step output, outside the workspace).
+          if [ -f observation/resolve/wire_verify/summary.md ]; then
+            echo "summary_sha=$(sha256sum observation/resolve/wire_verify/summary.md | cut -d' ' -f1)" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Finalize - compose the integration (agent writes preset + cert)
         # AGENT step, scoped: empty GH_TOKEN so the --dangerously-skip-permissions agent cannot
@@ -739,15 +780,23 @@ jobs:
           AUTO_MERGE_ENABLED: ${{ vars.ARENA_AUTOMATION_AUTO_MERGE_ENABLED }}
           HEAD_REF: ${{ github.event.pull_request.head.ref || inputs.head_ref }}
           FINDINGS_SHA: ${{ steps.findings.outputs.sha }}
+          HEAD_SHA: ${{ steps.head.outputs.sha }}
+          WIRE_SUMMARY_SHA: ${{ steps.wireverify.outputs.summary_sha }}
         run: |
           set -euo pipefail
           # Agent-tamper hardening. Both agents above ran with unrestricted Bash in this
           # workspace BEFORE these gates, and an unstaged edit under tools/automation would
-          # run here and then be stash-popped back without ever appearing in the PR. Re-pin
-          # the gate code to HEAD (index + worktree), and require the observe evidence the
-          # gates judge against to be byte-identical to what the aggregation step hashed
-          # before any agent ran. Committed (PR-visible) tampering remains the review's job.
-          git restore --source=HEAD --staged --worktree tools/automation
+          # run here and then be stash-popped back without ever appearing in the PR. Refuse
+          # a moved HEAD (a local agent commit would otherwise become both the restore
+          # source and a published ancestor), re-pin the gate code to the CHECKOUT-TIME
+          # commit (index + worktree), and require the observe evidence the gates judge
+          # against to be byte-identical to what the aggregation step hashed before any
+          # agent ran. Committed-on-the-branch (PR-visible) changes remain the review's job.
+          if [ "$(git rev-parse HEAD)" != "$HEAD_SHA" ]; then
+            echo "::error::HEAD moved since checkout (a local commit during the agent steps) - refusing to finalize"
+            exit 1
+          fi
+          git restore --source="$HEAD_SHA" --staged --worktree tools/automation
           ACTUAL_SHA="$(sha256sum observation/findings.json | cut -d' ' -f1)"
           if [ "$ACTUAL_SHA" != "$FINDINGS_SHA" ]; then
             echo "::error::observation/findings.json differs from the observe-time evidence (hash mismatch) - refusing to finalize"
@@ -821,12 +870,22 @@ jobs:
           fi
           [ -f observation/resolve/pr_body.md ] && gh pr edit "$PR" -R "$REPO" --body-file observation/resolve/pr_body.md || true
           # Post-fix wire evidence (written by the wire-verification step; absent when the
-          # baseline wire was clean or convergence shipped no overlay). Prefixed so the
-          # comment cannot be misread as a fresh observe. Evidence-only, informs the human
-          # gate; a genuine wire miss is a ceiling, not a merge blocker.
-          if [ -f observation/resolve/wire_verify/summary.md ]; then
+          # baseline wire was clean or convergence shipped no overlay). Published ONLY
+          # byte-identical to what that step sealed in its summary_sha output: the finalize
+          # compose agent ran in between, and a comment presented as a deterministic re-run
+          # must not be forgeable by it. Planted, altered or deleted evidence is fatal
+          # (needs-human); a genuine wire miss inside the VERIFIED summary stays a ceiling,
+          # not a merge blocker.
+          WIRE_SUMMARY=observation/resolve/wire_verify/summary.md
+          if [ -f "$WIRE_SUMMARY" ] || [ -n "${WIRE_SUMMARY_SHA:-}" ]; then
+            ACTUAL_WIRE_SHA=""
+            [ -f "$WIRE_SUMMARY" ] && ACTUAL_WIRE_SHA="$(sha256sum "$WIRE_SUMMARY" | cut -d' ' -f1)"
+            if [ "$ACTUAL_WIRE_SHA" != "${WIRE_SUMMARY_SHA:-}" ]; then
+              echo "::error::wire verification evidence changed after the verification step wrote it - refusing to publish"
+              exit 1
+            fi
             { printf '%s\n\n' '### Final wire verification - the baseline-rejecting wire tasks, re-run under the resolved policy (evidence-only)'; \
-              cat observation/resolve/wire_verify/summary.md; } \
+              cat "$WIRE_SUMMARY"; } \
               | gh pr comment "$PR" -R "$REPO" --body-file - || true
           fi
           # Data-scope review gate: an array-under-free-form-object recovery is DATA-BOUND - its

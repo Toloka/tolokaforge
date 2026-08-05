@@ -26,11 +26,15 @@ shipped codec already covered - see ``PAYLOAD_ONLY_CAPABILITIES`` in
 
 The registry comparison is an AST set-diff, not a diff-text regex: quoting style,
 trailing commas, wrapped lines, dotted values, instance bindings and factory names
-cannot hide a binding, and a moved or reordered line never reads as new. Covered
-registration shapes (module top level): a dict-literal assignment to a slot registry,
-``_SLOT["key"] = Value``, and ``_SLOT.update({...})``. This is a guard, so it FAILS
-LOUD: any git error, an unparsable staged registry, or a registry in which no
-``_POLICY_REGISTRIES`` slot can be found exits 1 (needs-human) instead of skipping.
+cannot hide a binding, and a moved or reordered line never reads as new. Registration
+shapes are collected over the whole tree (``if``/``try`` nesting included):
+dict-literal (re)assignment, ``_SLOT["key"] = Value``, ``_SLOT |= {...}``,
+``_SLOT.update({...})`` / ``_SLOT.update(k=V)``, and ``_SLOT.setdefault("k", V)``.
+This is a guard, so it FAILS LOUD instead of skipping: any git error, an unparsable
+staged registry, a registry with no discoverable ``_POLICY_REGISTRIES`` slot, and any
+slot-registry mutation the gate cannot model (a non-dict reassignment, another
+AugAssign shape, ``update(**splat)``, an unrecognized method call) all exit 1
+(needs-human).
 
 ``run`` returns an exit code (1 on any violation or read failure, 0 otherwise); the
 pure helpers below are unit-tested without git, and ``run`` itself against throwaway
@@ -108,13 +112,25 @@ def _dict_bindings(registry: str, node: ast.Dict) -> set[Binding]:
     }
 
 
+# Slot-var method calls that only READ (the real presets.py resolves policies via
+# ``_X.get(...)`` and passes the dicts as function arguments). Any OTHER method call
+# on a slot registry is an un-modelable mutation and fails the gate loud.
+_READ_ONLY_METHODS = frozenset({"get", "items", "keys", "values", "copy"})
+
+
 def registry_bindings(source: str) -> set[Binding]:
     """Every registry binding in a ``presets.py`` source, as a set.
 
     Slot registries are discovered from the ``_POLICY_REGISTRIES`` index itself (its
     dict values name the per-slot dicts, or carry inline dicts), so a brand-new slot
-    the agent wires in is covered too. Raises on an unparsable source or when no slot
-    can be found - a guard that cannot see the registry must fail loud, never skip.
+    the agent wires in is covered too. Mutations are collected over the WHOLE tree
+    (``if``/``try`` nesting cannot hide a registration) in every modelable shape:
+    dict-literal (re)assignment, ``_SLOT["k"] = V``, ``_SLOT |= {...}``,
+    ``_SLOT.update({...})`` / ``_SLOT.update(k=V)``, ``_SLOT.setdefault("k", V)``.
+    Anything else that could mutate a slot registry - a non-dict reassignment, another
+    AugAssign shape, ``update(**splat)``, an unrecognized method call - RAISES, as do an
+    unparsable source and a registry with no discoverable slot: a guard that cannot
+    model what it sees must fail loud, never skip.
     """
     tree = ast.parse(source)
     slot_vars: set[str] = set()
@@ -135,10 +151,17 @@ def registry_bindings(source: str) -> set[Binding]:
             f"no _POLICY_REGISTRIES slots found in {REGISTRY_FILE} - the gate cannot "
             "see the registry"
         )
-    for node in tree.body:
-        target = _assign_target(node)
-        if target in slot_vars and isinstance(getattr(node, "value", None), ast.Dict):
-            bindings |= _dict_bindings(target, node.value)
+    for node in ast.walk(tree):
+        target = _assign_target(node) if isinstance(node, (ast.Assign, ast.AnnAssign)) else None
+        if target in slot_vars:
+            value = getattr(node, "value", None)
+            if isinstance(value, ast.Dict):
+                bindings |= _dict_bindings(target, value)
+            elif value is not None:
+                raise ValueError(
+                    f"unmodelable reassignment of registry {target} (not a dict literal)"
+                )
+            continue
         if (
             isinstance(node, ast.Assign)
             and len(node.targets) == 1
@@ -147,17 +170,46 @@ def registry_bindings(source: str) -> set[Binding]:
             and sub.value.id in slot_vars
         ):
             bindings.add(Binding(sub.value.id, _key_repr(sub.slice), _expr_repr(node.value)))
-        if (
-            isinstance(node, ast.Expr)
-            and isinstance(call := node.value, ast.Call)
-            and isinstance(call.func, ast.Attribute)
-            and call.func.attr == "update"
-            and isinstance(call.func.value, ast.Name)
-            and call.func.value.id in slot_vars
-            and call.args
-            and isinstance(call.args[0], ast.Dict)
+        elif isinstance(node, ast.AugAssign):
+            if isinstance(node.target, ast.Name) and node.target.id in slot_vars:
+                if isinstance(node.op, ast.BitOr) and isinstance(node.value, ast.Dict):
+                    bindings |= _dict_bindings(node.target.id, node.value)
+                else:
+                    raise ValueError(
+                        f"unmodelable augmented assignment to registry {node.target.id}"
+                    )
+            elif (
+                isinstance(node.target, ast.Subscript)
+                and isinstance(node.target.value, ast.Name)
+                and node.target.value.id in slot_vars
+            ):
+                raise ValueError(
+                    f"unmodelable augmented item assignment on registry {node.target.value.id}"
+                )
+        elif (
+            isinstance(node, ast.Call)
+            and isinstance(node.func, ast.Attribute)
+            and isinstance(node.func.value, ast.Name)
+            and (slot := node.func.value.id) in slot_vars
         ):
-            bindings |= _dict_bindings(call.func.value.id, call.args[0])
+            method = node.func.attr
+            if method == "update":
+                for keyword in node.keywords:
+                    if keyword.arg is None:  # **splat hides its keys from the gate
+                        raise ValueError(f"unmodelable update(**...) on registry {slot}")
+                    bindings.add(Binding(slot, keyword.arg, _expr_repr(keyword.value)))
+                if node.args:
+                    if len(node.args) == 1 and isinstance(node.args[0], ast.Dict):
+                        bindings |= _dict_bindings(slot, node.args[0])
+                    else:
+                        raise ValueError(f"unmodelable update(...) argument on registry {slot}")
+            elif method == "setdefault":
+                if len(node.args) == 2:
+                    bindings.add(Binding(slot, _key_repr(node.args[0]), _expr_repr(node.args[1])))
+                else:
+                    raise ValueError(f"unmodelable setdefault(...) on registry {slot}")
+            elif method not in _READ_ONLY_METHODS:
+                raise ValueError(f"unmodelable method call .{method}() on registry {slot}")
     return bindings
 
 

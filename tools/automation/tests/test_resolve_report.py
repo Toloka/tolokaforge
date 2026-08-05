@@ -62,6 +62,32 @@ class TestDiagnose:
         assert "did not run" in rr.diagnose(0, 0, 0, 8)
 
 
+class TestHasConverged:
+    def test_converged_and_no_targets_lines_are_terminal(self):
+        assert rr.has_converged("- Iter 3: fix produced, reprobe verdict = CONVERGED\n")
+        assert rr.has_converged(NO_TARGETS_LINE)
+
+    def test_stalls_and_reds_are_not(self):
+        assert not rr.has_converged(STALLED_ALL)
+        assert not rr.has_converged(ALL_RED)
+
+
+class TestConvergedButFinalizeFailed:
+    def test_header_and_diagnosis_point_at_the_finalize_layer(self):
+        # The needs-human step also fires when the loop CONVERGED but a finalize gate
+        # rejected the result; "why the loop did not converge" would send the human to
+        # the wrong layer.
+        summary = ALL_RED + "- Iter 3: fix produced, reprobe verdict = CONVERGED\n"
+        out = rr.build_report(summary, None, 8)
+        assert "CONVERGED, but finalize failed its gates" in out
+        assert "did not converge" not in out
+        assert "finalize step log" in out
+
+    def test_non_converged_report_is_unchanged(self):
+        out = rr.build_report(ALL_RED, None, 8)
+        assert "Why the resolve loop did not converge" in out
+
+
 class TestLatestDecision:
     def test_live_decision_wins(self, tmp_path):
         import json

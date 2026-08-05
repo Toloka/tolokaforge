@@ -102,6 +102,56 @@ class TestRegistryBindings:
             for binding in classgate.registry_bindings(source)
         )
 
+    @pytest.mark.parametrize(
+        ("statement", "key"),
+        [
+            ('_REASONING_CODECS |= {"late_codec": BrandNewCodec}', "late_codec"),
+            ("_REASONING_CODECS.update(late_codec=BrandNewCodec)", "late_codec"),
+            ('_REASONING_CODECS.setdefault("late_codec", BrandNewCodec)', "late_codec"),
+        ],
+        ids=["augassign-or", "update-kwargs", "setdefault"],
+    )
+    def test_further_mutation_shapes_are_seen(self, statement: str, key: str):
+        source = BASE_PRESETS + statement + "\n"
+        assert Binding("_REASONING_CODECS", key, "BrandNewCodec") in (
+            classgate.registry_bindings(source)
+        )
+
+    def test_registration_nested_in_a_conditional_is_seen(self):
+        source = BASE_PRESETS + 'if True:\n    _REASONING_CODECS["late_codec"] = BrandNewCodec\n'
+        assert Binding("_REASONING_CODECS", "late_codec", "BrandNewCodec") in (
+            classgate.registry_bindings(source)
+        )
+
+    @pytest.mark.parametrize(
+        "statement",
+        [
+            "_REASONING_CODECS = dict(late_codec=BrandNewCodec)",  # non-dict-literal reassign
+            "_REASONING_CODECS += extra",  # AugAssign shape the gate cannot model
+            "_REASONING_CODECS.update(**extra)",  # a splat hides its keys
+            "_REASONING_CODECS.update(make_extra())",  # non-dict positional
+            '_REASONING_CODECS.setdefault("late_codec")',  # no value bound
+            '_REASONING_CODECS.pop("openai")',  # unrecognized mutation
+        ],
+        ids=["dict-call", "augassign-add", "splat", "call-arg", "setdefault-1", "pop"],
+    )
+    def test_unmodelable_mutations_fail_loud_not_open(self, statement: str):
+        with pytest.raises(ValueError, match="unmodelable"):
+            classgate.registry_bindings(BASE_PRESETS + statement + "\n")
+
+    def test_read_only_uses_are_not_mutations(self):
+        source = BASE_PRESETS + 'x = _REASONING_CODECS.get("openai")\nresolve(_REASONING_CODECS)\n'
+        assert classgate.registry_bindings(source) == classgate.registry_bindings(BASE_PRESETS)
+
+    def test_the_real_registry_file_parses_without_raising(self):
+        # Pins the fail-loud net against false positives on the engine's actual
+        # presets.py (its .get() resolution calls and argument-position passes must
+        # stay recognized as reads).
+        source = (classgate.REPO_ROOT / classgate.REGISTRY_FILE).read_text()
+        bindings = classgate.registry_bindings(source)
+        assert len(bindings) >= 20
+        assert len({binding.registry for binding in bindings}) == 6
+
     def test_missing_registry_index_fails_loud(self):
         with pytest.raises(ValueError, match="no _POLICY_REGISTRIES slots"):
             classgate.registry_bindings("_REASONING_CODECS = {'a': A}\n")

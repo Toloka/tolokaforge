@@ -412,10 +412,11 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
         rate_str = f", {rate} of trials" if rate is not None else ""
         lines.append(f"  - `{task}` / `{shape['tool']}` rejected{rate_str}")
     infra = wire.get("infra", {})
-    lines.append(
-        f"- Infra: rate_limit={infra.get('rate_limit', 0)}, "
-        f"max_turns={infra.get('max_turns', 0)}, stuck={infra.get('stuck', 0)}."
-    )
+    # Every gate key plus the model-attributable pair: the PR-visible summary must show
+    # the same counters the gate dirties on, or an api_timeout needs-human reads as
+    # "all-zero infra" here and the reason only ever appears in Slack.
+    infra_keys = (*GATE_INFRA_KEYS, "max_turns", "stuck")
+    lines.append("- Infra: " + ", ".join(f"{key}={infra.get(key, 0)}" for key in infra_keys) + ".")
     lines.append("")
     tail = "Full artifact (capability reports + trajectories + `findings.json`) for the next step."
     if run_url:
