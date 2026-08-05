@@ -1530,6 +1530,92 @@ _ALL: list[MC] = [
         ),
     ),
     # -----------------------------------------------------------------
+    # DeepSeek V4-Flash-0731 — dated snapshot of the v4-flash line on the
+    # OpenRouter route, landed via auto-resolve (PR #893). Runs on the SHARED
+    # ``openrouter_dict_stringify_recovery`` preset (matched by its
+    # ``*deepseek-v4*`` glob) — no model-specific overlay, because the observe
+    # run was an ALL-CEILING convergence: every one of the 3 failing probes is a
+    # genuine route limit, not a policy gap, so there was nothing for a preset to
+    # fix. Observe evidence (31 capability probes x 15 reps + 6 shape variants x
+    # 15 reps + 200 wire trials / 950 tool calls, engine
+    # 9bfe374c): 28/31 capability probes 15/15, all 6 variants 15/15, ZERO
+    # tool-arg rejections on the wire.
+    #
+    # Stronger than the v4-flash / v4-pro siblings on IMPLICIT_PROMPT_CACHING,
+    # which passed 15/15 here and is therefore ``required``. Both siblings
+    # declare it ``known_unsupported`` on the rationale that a clean cold 2-call
+    # probe reads 0; that rationale does not hold on this snapshot — the probe
+    # keys its 8 k-token prefix with a per-call UUID, so a 15/15 sweep is a
+    # genuine cold-then-warm hit rather than cross-run contamination. (The
+    # siblings' posture is guarded by
+    # ``test_implicit_prompt_caching_unsupported_ratchet``; re-testing them is
+    # out of scope for this model's integration.)
+    #
+    # UNSIGNED_THINKING_REPLAY is a ceiling here, matching the siblings. The
+    # route surfaces reasoning as a flat OpenAI ``reasoning_content`` summary
+    # (so THINKING_EMITS_BLOCKS passes 15/15 under the shared preset's ``openai``
+    # codec), but that codec's ``encode_for_replay`` is a no-op, so the outgoing
+    # assistant dict carries no ``reasoning_details``. A replay-capable codec
+    # could turn the probe green by construction — but the probe is a
+    # PAYLOAD-level contract (turn 1 live, turn 2 mocked: it asserts only that
+    # the outgoing request body carries the turn-1 text), and its baseline here
+    # is 0/15 NATIVE. Per the PR #846 precedent it therefore stays
+    # ``known_unsupported`` rather than being manufactured into a ``required``.
+    # -----------------------------------------------------------------
+    MC(
+        model_id="openrouter__deepseek_deepseek-v4-flash-0731",
+        provider="openrouter",
+        name="deepseek/deepseek-v4-flash-0731",
+        env_key="OPENROUTER_API_KEY",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.PROGRESS_AFTER_SUCCESS,
+                C.LEXICAL_TOOL_INVENTION,
+                C.TOOL_NAME_DISCIPLINE,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.DICT_MAP_TOOL_CALL,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.RECURSIVE_REF_TOOL_CALL,
+                C.RE2_PATTERN_TOLERANCE,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                # Auto-cache is observable per-call on this snapshot: 15/15 on
+                # ``test_implicit_prompt_caching``. Diverges from the v4-flash /
+                # v4-pro siblings (see the block comment above).
+                C.IMPLICIT_PROMPT_CACHING,
+                C.THINKING_EMITS_BLOCKS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # No Anthropic-style ephemeral cache: call 1 created 0
+                # cache_creation_input_tokens (the OpenRouter DeepSeek route
+                # exposes no explicit cache-control markers). The auto-cache
+                # surface (IMPLICIT_PROMPT_CACHING) is required above.
+                C.PROMPT_CACHING,
+                # Signed-block replay has no source: all 333 reasoning blocks
+                # observed on this route carry ``signature: null`` ("no signed
+                # blocks on turn 1"), and no policy can manufacture a provider
+                # signature.
+                C.THINKING_REPLAY_ROUNDTRIP,
+                # The shared preset's ``openai`` codec has a no-op
+                # ``encode_for_replay``, so the assistant dict carries no
+                # ``reasoning_details``. Same posture as both siblings; see the
+                # block comment above for why the 0/15 native baseline is not
+                # papered over with a replay codec.
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
+    # -----------------------------------------------------------------
     # DeepSeek V3.2-Exp experimental V3.2 reasoning line on
     # the OpenRouter route. Live-certified 2026-06-03 via
     # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
