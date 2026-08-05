@@ -79,10 +79,13 @@ class TestBundleWrittenOnProvisionFailure:
         trial_dir = _trial_dir(tmp_path, "task-1", 0)
         assert (trial_dir / "trajectory.yaml").exists()
         assert (trial_dir / "metrics.yaml").exists()
-        # The heavy conductor snapshot never runs on this path.
+        # The heavy conductor snapshot never runs on this path. Nor does the trial,
+        # so there is no tool-call record to write and the bundle carries none —
+        # which the schema stamp does not and must not promise otherwise.
         assert not (trial_dir / "task.yaml").exists()
         assert not (trial_dir / "env.yaml").exists()
         assert not (trial_dir / "logs.yaml").exists()
+        assert not (trial_dir / "tool_log.yaml").exists()
 
         trajectory = yaml.safe_load((trial_dir / "trajectory.yaml").read_text())
         assert trajectory["status"] == "error"

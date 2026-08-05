@@ -13,13 +13,18 @@ from pydantic import BaseModel, Field, PrivateAttr, field_validator, model_valid
 
 from tolokaforge.core.deprecations import canonicalize_actor_config
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.state_composition import resolve_hash_weight
+from tolokaforge.core.grading.state_composition import (
+    refuse_probes_beside_another_state_source,
+    resolve_hash_weight,
+)
+from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
     ToolExpectations,
+    TraceChecksConfig,
 )
 
 __all__ = [
@@ -34,6 +39,7 @@ __all__ = [
     "InteractionMode",
     "LLMJudgeDefaults",
     "ProjectConfig",
+    "RETIRED_STATE_CHECK_KEYS",
     "RequiredAction",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
@@ -340,10 +346,27 @@ class RequiredAction(BaseModel):
     compare_args: list[str] | None = None  # args to compare, None = all
 
 
-class StateChecksConfig(BaseModel):
-    """State checks configuration"""
+RETIRED_STATE_CHECK_KEYS: frozenset[str] = frozenset({"env_assertions", "db_hash_check"})
+"""The ``state_checks`` keys that are neither declared fields nor unknown keys.
 
-    model_config = {"extra": "ignore"}
+Read by :class:`StateChecksConfig`'s own before-validator and by the authoring gate's
+unknown-key refusal, so the two cannot disagree about which keys a recorded bundle is
+allowed to carry.
+"""
+
+
+class StateChecksConfig(BaseModel):
+    """State checks configuration.
+
+    ``extra="forbid"`` because a dropped key leaves this component with no source and
+    the fold renormalises around it: a ``jsonpaths`` typo beside a weighted sibling
+    graded a trial ``1.0`` and passing where the assertion the author wrote scored
+    ``0.5`` and failing. The two keys in :data:`RETIRED_STATE_CHECK_KEYS` are the one
+    exception — :meth:`_reject_removed_state_check_keys` drops them, so the extra check
+    never sees them.
+    """
+
+    model_config = {"extra": "forbid"}
 
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
     hash: dict[str, Any] | None = None
@@ -371,28 +394,39 @@ class StateChecksConfig(BaseModel):
         """Fail loud with a migration message on the removed state-check keys.
 
         ``env_assertions`` and ``db_hash_check`` never produced grading signal on
-        either substrate. Because this model is ``extra="ignore"``, a populated
-        removed key would otherwise be dropped in silence — the exact failure this
-        rejection exists to convert into an error naming the replacement.
+        either substrate, so a populated one is an error naming its replacement rather
+        than a key this model quietly drops.
 
         An inert declaration (``env_assertions: []`` / ``db_hash_check: false``)
-        requests nothing and is ignored, so recorded trial bundles serialized
-        against the old schema still load.
+        requests nothing and is dropped here, so recorded trial bundles serialized
+        against the old schema still load past this model's ``extra="forbid"`` —
+        returning them untouched would not, since the extra check reads whatever this
+        validator hands back. Every other undeclared key is that check's business.
         """
         if not isinstance(data, dict):
             return data
         if data.get("env_assertions"):
             raise ValueError(
                 "state_checks.env_assertions has been removed — it never produced "
-                "grading signal on either substrate. Replace it with the check that "
-                "matches what you are asserting:\n"
+                "grading signal on either substrate. Declare the source that matches "
+                "what you are asserting, and pick one: db_probes is exclusive with the "
+                "other two, and jsonpaths beside a hash source needs a hash.weight to "
+                "fold them by. Each block below loads on its own:\n"
+                "  # state_checks.jsonpaths — per-record state assertions\n"
                 "  state_checks:\n"
-                "    jsonpaths:                     # per-record state assertions\n"
+                "    jsonpaths:\n"
                 "      - path: $.db.orders[0].status\n"
                 "        equals: shipped\n"
-                "    hash:                          # whole-state comparison\n"
+                "  — or —\n"
+                "  # state_checks.hash — whole-state comparison\n"
+                "  state_checks:\n"
+                "    hash:\n"
                 "      enabled: true\n"
-                "    db_probes:                     # substrate SQL assertions\n"
+                "      golden_actions: [...]        # or expected_state_hash\n"
+                "  — or —\n"
+                "  # state_checks.db_probes — substrate SQL assertions\n"
+                "  state_checks:\n"
+                "    db_probes:\n"
                 "      - name: order_shipped\n"
                 "        dsn: postgresql://...\n"
                 "        query: SELECT status FROM orders WHERE id = 1\n"
@@ -410,7 +444,7 @@ class StateChecksConfig(BaseModel):
                 "      enabled: true\n"
                 "      golden_actions: [...]        # or expected_state_hash"
             )
-        return data
+        return {key: value for key, value in data.items() if key not in RETIRED_STATE_CHECK_KEYS}
 
     @field_validator("id_fields")
     @classmethod
@@ -424,6 +458,22 @@ class StateChecksConfig(BaseModel):
                     f"got {field!r}"
                 )
         return value
+
+    @model_validator(mode="after")
+    def _refuse_probes_beside_another_state_source(self) -> Self:
+        """Reject at load a probe declared beside a source this component also scores.
+
+        Defined above the weight rule, which Pydantic therefore runs second: a block
+        declaring probes, assertions and a hash source with no weight satisfies both
+        conditions, and a weight is not the fix for a block refused outright.
+        """
+        refuse_probes_beside_another_state_source(
+            db_probes=self.db_probes,
+            jsonpaths=self.jsonpaths,
+            hash_config=self.hash,
+            context="grading.yaml state_checks",
+        )
+        return self
 
     @model_validator(mode="after")
     def _validate_hash_weight_declaration(self) -> Self:
@@ -446,16 +496,36 @@ class CommunicateInfo(BaseModel):
 
 
 class TranscriptRulesConfig(BaseModel):
-    """Transcript rules configuration"""
+    """Transcript rules configuration.
 
-    model_config = {"extra": "ignore"}
+    ``extra="forbid"`` for the reason the nested ``tool_expectations`` already carries:
+    every rule here defaults to asserting nothing, so a dropped key graded the trial by
+    the rules that survived. A ``must_contian`` typo scored ``1.0`` and passing on a
+    transcript the authored ``must_contain`` scored ``0.75`` and failing.
+    """
+
+    model_config = {"extra": "forbid"}
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
-    max_turns: int | None = None
+    # Both bounds are declarable from 1 up. A ceiling below 1 admits no
+    # assistant-turn count at all, and a floor of 0 asserts nothing — and the
+    # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
+    # be an unpoliced declaration.
+    max_turns: int | None = Field(default=None, ge=1)
+    min_assistant_turns: int | None = Field(default=None, ge=1)
     tool_expectations: ToolExpectations | None = None
     required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
     communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
+
+    @model_validator(mode="after")
+    def _validate_turn_window(self) -> Self:
+        validate_turn_window(
+            min_assistant_turns=self.min_assistant_turns,
+            max_turns=self.max_turns,
+            context="grading.yaml transcript_rules",
+        )
+        return self
 
 
 class GradingCombineConfig(BaseModel):
@@ -464,9 +534,14 @@ class GradingCombineConfig(BaseModel):
     ``weights`` defaults to an empty dict so a project-level defaults
     block may declare only a partial view (e.g. ``pass_threshold`` alone).
     Consumers that require weights validate presence at use-site.
+
+    ``extra="forbid"`` because every field here has a default a dropped key would
+    silently substitute: a ``pass_treshold`` typo graded the pack at ``0.8``
+    whatever the author wrote. The refusal holds on every construction path,
+    ``project.yaml``'s ``task_defaults.grading_defaults.combine`` included.
     """
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     method: CombineMethod = "weighted"
     weights: dict[str, float] = Field(default_factory=dict)
@@ -488,6 +563,7 @@ class GradingConfig(BaseModel):
     combine: GradingCombineConfig
     state_checks: StateChecksConfig | None = None
     transcript_rules: TranscriptRulesConfig | None = None
+    trace_checks: TraceChecksConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
     custom_checks: dict[str, Any] | None = None  # CustomChecksConfig as dict for flexibility
 

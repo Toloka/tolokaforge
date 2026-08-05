@@ -53,7 +53,7 @@ Each adapter must subclass `BaseAdapter` and implement:
 ## Runtime Capabilities (declarative, opt-in)
 
 The runner selects per-trial behaviour from **data on the `TaskDescription`**,
-never from the adapter's identity. Two capabilities matter to adapter authors:
+never from the adapter's identity. Three capabilities matter to adapter authors:
 
 ### `GradingConfig.grading_method`
 
@@ -116,6 +116,44 @@ will grow additively when a real second user surfaces a need. Until then,
 custom lifecycle tools must either fit within the current shape or vendor the
 missing pieces internally. See the open tracking issue for the planned
 direction.
+
+### `ToolWrapper.execute` and `ToolWrapper.execute_call`
+
+A tool call answers two questions: what the tool said, and whether the
+substrate considers the call to have failed. `ToolWrapper` exposes one method
+per question:
+
+- `execute(arguments) -> str` — the output text. Abstract; every wrapper
+  implements it. This is what the agent receives.
+- `execute_call(arguments) -> ToolCallOutcome` — that same text plus
+  `declared_failure: bool`. Concrete on the base class, which returns
+  `declared_failure=False`.
+
+A substrate with no out-of-band failure channel signals a failed call by
+**raising**, and the golden-replay loop records the raise, so the inherited
+`execute_call` is correct for such a wrapper and there is nothing to override.
+
+Override `execute_call` when your substrate answers a failed call with a flag
+*beside* the output instead of an error — MCP's `isError: true`, which arrives
+next to the error prose the model needs in order to recover. The golden-replay
+loop records a `declared_failure=True` outcome as a *raised* golden-action
+failure, exactly as it records a raise, quoting the output as the message:
+
+```python
+class MyTool(ToolWrapper):
+    async def execute(self, arguments: dict[str, Any]) -> str:
+        return (await self.execute_call(arguments)).output
+
+    async def execute_call(self, arguments: dict[str, Any]) -> ToolCallOutcome:
+        answer = await self._substrate.call(self.name, arguments)
+        return ToolCallOutcome(output=answer.text, declared_failure=answer.failed)
+```
+
+Keep one request path, as above: `execute` delegates to `execute_call` and drops
+the flag. A wrapper that sends the request twice can answer the agent and the
+grade differently. That direction holds only for a wrapper that overrides
+`execute_call`; one that inherits it implements `execute` directly, since the
+inherited `execute_call` is what calls `execute`.
 
 ## Constructor Contract
 

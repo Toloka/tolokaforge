@@ -35,7 +35,7 @@ debugging investigation and an auto-dev build-and-verify loop.
 | [`multi_service_postgres_reset`](../examples/native/multi_service_postgres_reset/README.md) | Adds the reset-recipe pattern: a `reset` postgres service re-seeded from a named `sql_dump` seed at the start of every trial. |
 | [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md) | The first pack to grade the substrate. The agent mutates postgres over a FastAPI API; `state_checks.db_probes` verifies the row directly through a read-only `grader` role — an independent oracle, not the API the agent wrote through. |
 | [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md) | The flagship. Four business services + a policy-search service backed by a postgres-FTS corpus. The agent must reconcile customer, product, site, and policy data to pick the one policy-valid resolution of three plausible paths; a wrong path grades down even with a well-formed CRM row. Declares its postgres substrate `ephemeral` explicitly and formalises the LLM user-simulator persona pattern. |
-| [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md) | The debugging scenario, and the `redis_dump` reset reference. A `redis` service `isolation: reset` is re-seeded each trial from an RDB carrying poisoned cache state; the agent diagnoses why the orders API serves stale reads across the app + cache layers and writes a root-cause note, graded three ways (`state_checks` + `transcript_rules` + `llm_judge`). A grade-fail exercises the per-service log capture. |
+| [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md) | The debugging scenario, and the `redis_dump` reset reference. A `redis` service `isolation: reset` is re-seeded each trial from an RDB carrying poisoned cache state; the agent diagnoses why the orders API serves stale reads and writes a root-cause note, graded three ways (`state_checks` + `trace_checks` + `llm_judge`). Also the multi-path grading reference: `trace_checks.alternatives` grades either of two diagnostic routes in full, behind a shared `severity: gate` that fails an agent which mutates the order instead of diagnosing it. A grade-fail exercises the per-service log capture. |
 | [`multi_service_endpoint_add`](../examples/native/multi_service_endpoint_add/README.md) | The auto-dev scenario, and the `filesystem_dir` reset reference. A source-directory `testrunner` service `isolation: reset` is re-seeded each trial from a pristine FastAPI source tree over a volume shared with the agent's `/work`; the agent reads the code, writes a missing `GET /orders/{id}/summary` endpoint, and runs the real suite over `http_request` to the test-runner, whose actual `unittest` exit code is the decisive grading floor. |
 
 ### The command
@@ -133,7 +133,8 @@ A multi-container run composes five layers:
 4. **Grading blends independent signals** — `state_checks.db_probes`
    (an independent postgres oracle via a read-only role) with
    `transcript_rules.required_actions` (did the agent take the right tool
-   actions) and an `llm_judge` rubric, combined by weight.
+   actions), `trace_checks` (did it take them in the right order) and an
+   `llm_judge` rubric, combined by weight.
 5. **Traces land in the trial dir** — `grade.yaml`, `trajectory.yaml`,
    `metrics.yaml`, `env.yaml`, and (on failure) per-service logs — the full
    post-mortem surface for one trial.
@@ -567,17 +568,21 @@ through, and it can never mutate the substrate. The runner container joins the
 task's docker network, so it reaches the service (e.g. `app-db:5432`) at grade
 time.
 
-Substrate state is one of three grader families these packs blend:
+Substrate state is one of four grader families these packs blend:
 
 - **`state_checks.db_probes`** — the independent-oracle read against the
   substrate described above.
 - **`transcript_rules.required_actions`** — asserts the agent actually took the
   named tool actions during the run (e.g. called a specific endpoint), grading
   the process rather than only the end state.
+- **`trace_checks`** — declarative conditions on the trajectory itself: ordering,
+  scoped absence, and counting over the trial's event timeline, for the process
+  claims a flat presence check cannot state (e.g. the payment was looked up
+  *before* the case was denied).
 - **`llm_judge`** — a rubric scored by a judge model, for open-ended output a
   deterministic check can't express (a root-cause note, a well-argued rationale).
 
-Full field reference for all three in [`docs/GRADING.md`](GRADING.md) §
+Full field reference for all four in [`docs/GRADING.md`](GRADING.md) §
 Substrate Grading; the `multi_service_lot_ops` pack below is the worked example.
 
 ## Further reading

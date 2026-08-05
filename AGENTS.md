@@ -129,9 +129,11 @@ uv run pytest tests/ -v -m canonical
 # Integration tests — require API keys and/or services; run in parallel
 scripts/with_env.sh uv run pytest tests/ -v -m integration -n auto
 
-# Validate task definitions (tasks/ must be cloned locally or use a custom TASKS_GLOB)
+# Validate task definitions — exits 1 on an invalid task or on a glob matching nothing
 tolokaforge validate --tasks "tasks/**/task.yaml"
 ```
+
+**`make validate`** runs the same command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target skips with a printed reason when nobody named a target — `TASKS_DIR` absent *and* `TASKS_GLOB` still the default derived from it. Point `TASKS_DIR` (or `TASKS_GLOB`) at your own pack to validate it; either override runs. The dev MCP's `validate_tasks` skips the same default for the same reason. See [`docs/CLI.md`](docs/CLI.md) § Task validation for the exit-code contract and the project layering.
 
 **`scripts/with_env.sh` convention:** Use `scripts/with_env.sh uv run ...` when you need `.env` variables (API keys, service URLs). Use plain `uv run ...` for tasks that don't need environment variables (unit tests, linting).
 
@@ -452,8 +454,8 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 
 1. **Browser automation** requires Chromium: `uv run playwright install --with-deps chromium`
 2. **Golden-set tests** depend on Git LFS data under `tests/data/projects/`. Missing LFS content → fixture failures. Run `git lfs pull` first if needed.
-3. **Formatting drift**: `ruff format --check` may report pre-existing drift in ~8 files. Known, not your fault.
-4. **`black --check`** exits non-zero on pre-existing files. Same known drift.
+3. **Formatting drift**: `ruff format --check` reports pre-existing drift across the tree — no number is quoted here because a count in a doc goes stale silently. Run `mcp__dev__format_check` scoped to the files you touched (`paths=…`) and treat only *your* files' drift as yours to fix.
+4. **`black --check` is clean tree-wide**, so a `black` failure is drift in the code you just wrote, not the known `ruff format` backlog. Both formatters must pass on a file you touch, and they disagree often enough that satisfying one is not satisfying the other.
 5. **Benchmark runs** and e2e flows require API keys in `.env`. Unit and canonical tests do not.
 6. **10 tests in `test_golden_set_projects.py`** need `git lfs pull`. Not required for normal development.
 7. **JSON DB update API** uses JSON Patch-style operations: `{"ops": [{"op": "replace", "path": "$.field", "value": ...}]}`. Supported ops: `add`, `replace`, `remove`.
@@ -487,6 +489,8 @@ Full six-step process: [`docs/ADD_NEW_MODEL.md`](docs/ADD_NEW_MODEL.md).
 | Grading | `docs/GRADING.md` |
 | Rubric grading design | `docs/RUBRIC_GRADING_DESIGN.md` |
 | Judge replay (offline re-judging) | `docs/JUDGE_REPLAY.md` |
+| Trace replay (re-checking trace constraints) | `docs/TRACE_REPLAY.md` |
+| Rubric migration (retiring a judge criterion against recorded evidence) | `docs/RUBRIC_MIGRATION.md` |
 | Configuration | `docs/CONFIG.md` |
 | Docker / Runner | `docs/RUNNER.md` |
 | Adapters | `docs/ADAPTERS.md` |

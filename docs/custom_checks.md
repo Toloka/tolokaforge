@@ -5,9 +5,9 @@ declares a `checks.py` next to `task.yaml`, wires it in via `grading.yaml`,
 and the runner executes those checks over the trial's `CheckContext`
 (initial/final state + transcript + task metadata). Per-check results and
 an aggregate score land on the grade next to `state_checks`,
-`transcript_rules`, and `llm_judge`; the weight declared in
+`transcript_rules`, `trace_checks`, and `llm_judge`; the weight declared in
 `combine.weights.custom_checks` scales that score in the weighted final.
-See [GRADING.md](GRADING.md#custom-checks) for how the four components
+See [GRADING.md](GRADING.md#custom-checks) for how the five components
 combine.
 
 Use `custom_checks` for the scoring shape no declarative primitive
@@ -23,7 +23,7 @@ most tasks) and reserve `custom_checks` for the deterministic-Python gap.
 ## Schema
 
 `custom_checks:` is a sibling of `state_checks:` / `transcript_rules:` /
-`llm_judge:` under `grading.yaml`.
+`trace_checks:` / `llm_judge:` under `grading.yaml`.
 
 ```yaml
 custom_checks:
@@ -98,7 +98,9 @@ The rules:
 - `CheckPassed(message, score=1.0, details={})` and
   `CheckFailed(message, score=0.0, details={})` accept a positional
   message and optional score / details dict. `CheckSkipped(message)` is
-  excluded from the aggregate score. Scores are clamped `[0, 1]`.
+  excluded from the aggregate score, so a suite whose every check skipped
+  produces **no** `custom_checks` component rather than a `0.0`. Scores
+  are clamped `[0, 1]`.
 - `SUPPORTED_VERSIONS` lives in
   `tolokaforge.core.grading.checks_interface`. A declared
   `interface_version` outside that set is rejected at `RegisterTrial`
@@ -192,6 +194,14 @@ The host parses that list into `Grade.custom_checks_details`
 follows `fail_on_error`: `0.0` when true, excluded from the combine when
 false.
 
+`Grade.components.custom_checks` is `null` under three conditions, on both
+substrates: the pack declares no `custom_checks` block, the block sets
+`enabled: false`, or an enabled suite decided nothing — every check returned
+`CheckSkipped`, or the file declared no `@check` at all. The third is the one
+worth reading twice: an aggregate over zero verdicts is `0.0` arithmetically,
+which would fold as a component that failed, so the component is left unscored
+and the fold decides on what was actually decided.
+
 ## Choosing a test tier
 
 - **Unit** (`tests/unit/grading/`) — pin the *check logic itself*
@@ -217,4 +227,4 @@ unit tier is for the framework, not the pack's grader.
   — runnable reference pack (ledger reconciliation).
 - [ADR-0012 — the `CheckExecutor` Protocol seam](adr/0012-custom-checks-extension.md).
 - [ADR-0018 — network policy (`no_internet` invariant)](adr/0018-multi-container-under-shared-runtime.md).
-- [GRADING.md — the four-component grade](GRADING.md#custom-checks).
+- [GRADING.md — the five-component grade](GRADING.md#custom-checks).

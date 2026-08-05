@@ -249,6 +249,9 @@ class TestPerTrialRuntimeReturnsNone:
         per_trial_manifest.requires_per_trial = True
         task_desc = MagicMock()
         task_desc.environment_manifest = per_trial_manifest
+        # A real description always names a registered adapter, and
+        # ``_task_description`` verifies that on every build.
+        task_desc.adapter_type = "native"
         adapter.to_task_description.return_value = task_desc
         orch.adapter = adapter
         assert orch._extract_run_env_manifest() is None

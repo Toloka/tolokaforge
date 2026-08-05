@@ -4,7 +4,6 @@ satisfying:
       content: "Cancel order O1."
     - role: assistant
       content: "Cancelled order O1."
-  tool_calls: []
   state: {}
 
 violating:
@@ -17,5 +16,4 @@ violating:
       content: "Still looking."
     - role: assistant
       content: "Cancelled order O1."
-  tool_calls: []
   state: {}

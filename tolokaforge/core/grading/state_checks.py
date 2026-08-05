@@ -4,11 +4,20 @@ import fnmatch
 import hashlib
 import importlib.util
 import json
+from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any, Union
 
 from jsonpath_ng.ext import parse
 
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenReplayError,
+    GoldenReplayRecord,
+    declared_failure,
+    resolve_golden_action_names,
+)
+from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.hash import canonical_number
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.utils.diff import calculate_state_diff, format_diff_summary
@@ -76,12 +85,27 @@ def consistent_hash(value: Hashable) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
-class GoldenReplayError(Exception):
-    """A golden-action replay could not be executed.
+def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
+    """Core resolves a golden-action name against the pack's ``TOOLS`` map, exactly.
 
-    There is no expected state to compare against, so the trial has no
-    state-hash verdict — not a failing one.
+    Not the runner's rule, which also accepts a single ``…_<name>`` suffix over the
+    tools it registered for the trial; #815 owns unifying the two namespaces.
     """
+    return name if name in tools else None
+
+
+def _authored_action_name(action: object) -> str | None:
+    """The name an action declares, or ``None`` where it declares no string at all.
+
+    The ``hash`` block is untyped (#730), so a name may arrive as a list or a mapping and
+    the action carrying it may be no mapping at all. Every one of those declares a name as
+    little as an absent key does, and each draws the same ``UnresolvableGoldenAction``
+    naming its index — where reading a name off a bare string raises an ``AttributeError``
+    attributable to nobody, and reaching the matcher with an unhashable name answers its
+    membership test with a ``TypeError``.
+    """
+    name = action.get("name") if isinstance(action, Mapping) else None
+    return name if isinstance(name, str) else None
 
 
 def extract_db_state(final_env_state: dict[str, Any]) -> dict[str, Any]:
@@ -110,27 +134,6 @@ class StateChecker:
             return actual.casefold() == expected.casefold()
         return actual == expected
 
-    def _contains(self, haystack: Any, needle: Any, ci: bool = False) -> bool:
-        """
-        Recursive contains check used by `contains` and `contains_ci`.
-        - Strings: substring match
-        - Lists/Tuples/Sets: any element recursively contains/matches
-        - Dicts: any value recursively contains/matches
-        - Scalars: exact match
-        """
-        if isinstance(haystack, str) and isinstance(needle, str):
-            if ci:
-                return needle.casefold() in haystack.casefold()
-            return needle in haystack
-
-        if isinstance(haystack, (list, tuple, set)):
-            return any(self._contains(item, needle, ci) for item in haystack)
-
-        if isinstance(haystack, dict):
-            return any(self._contains(v, needle, ci) for v in haystack.values())
-
-        return self._eq(haystack, needle, ci=ci)
-
     def check_jsonpaths(
         self, state: dict[str, Any], assertions: list[dict[str, Any]]
     ) -> tuple[float, list[str]]:
@@ -150,9 +153,8 @@ class StateChecker:
         - ``contains_ci``: substring (case-insensitive)
 
         Assertions with an unrecognized operator (e.g. ``op: gte`` /
-        ``expected: 5``) are treated as **failed** with an actionable reason —
-        previously they silently satisfied as long as the path existed, turning
-        strict-looking assertions into no-ops.
+        ``expected: 5``) are treated as **failed** with an actionable reason,
+        because a strict-looking assertion that cannot fail is worse than none.
 
         Args:
             state: Final environment state
@@ -253,7 +255,7 @@ class StateChecker:
                 elif expected_contains is not None:
                     # Contains check (case-sensitive)
                     for value in match_values:
-                        if self._contains(value, expected_contains, ci=False):
+                        if contains(value, expected_contains, ci=False):
                             found_match = True
                             satisfied += 1
                             break
@@ -267,7 +269,7 @@ class StateChecker:
                 elif expected_contains_ci is not None:
                     # Contains check (case-insensitive string compare)
                     for value in match_values:
-                        if self._contains(value, expected_contains_ci, ci=True):
+                        if contains(value, expected_contains_ci, ci=True):
                             found_match = True
                             satisfied += 1
                             break
@@ -279,12 +281,10 @@ class StateChecker:
                         )
 
                 else:
-                    # No recognized operator — treat as FAILED with an actionable
-                    # reason. Previously this branch silently satisfied any assertion
-                    # whose JSONPath existed, so a misspelled or unsupported operator
-                    # (e.g. ``op: gte`` / ``expected: 5``) turned a strict-looking
-                    # assertion into a no-op. Fail loud and name which operators the
-                    # checker actually consumes so the author can fix it.
+                    # A misspelled or unsupported operator (``op: gte`` /
+                    # ``expected: 5``) would otherwise turn a strict-looking assertion
+                    # into one that passes wherever the path exists, so name the
+                    # operators the checker consumes and fail.
                     unknown_keys = sorted(
                         k for k in assertion if k not in {"path", "path_glob", "description"}
                     )
@@ -337,12 +337,12 @@ class StateChecker:
 
     def _execute_golden_actions(
         self,
-        golden_actions: list[dict[str, Any]],
+        golden_actions: list[Any],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,
         task_domain: str,
-    ) -> dict[str, Any]:
+    ) -> tuple[dict[str, Any], GoldenReplayRecord]:
         """
         Execute golden actions on fresh initial state and return resulting state.
 
@@ -354,7 +354,15 @@ class StateChecker:
             task_domain: Domain name (e.g., "airline", "retail")
 
         Returns:
-            State after executing golden actions
+            The state after executing golden actions, and the record of which of them
+            took effect — an action that raised, and one that ran and reported its
+            failure by what it returned, both leave the state short of the authored
+            world and the record is the only thing that says so.
+
+        Raises:
+            UnresolvableGoldenAction: an action names no tool in the pack's ``TOOLS``
+                map, or names nothing at all. Raised before the first ``invoke``, so a
+                partial golden world is never built and never hashed against.
         """
         # 1. Load fresh initial state
         initial_state_file = task_dir / initial_state_path
@@ -391,42 +399,55 @@ class StateChecker:
                 f"Could not find TOOLS in MCP server for domain {task_domain}: {mcp_server_path}"
             )
 
+        # 4. Resolve every authored name
+        resolved_names = resolve_golden_action_names(
+            [_authored_action_name(action) for action in golden_actions],
+            candidates=tools_map.keys(),
+            match=_tool_in_pack,
+        )
+
         self.logger.debug("Executing golden actions", count=len(golden_actions))
 
-        # 4. Execute golden actions
-        for action in golden_actions:
-            action_name = action.get("name")
+        # 5. Execute golden actions
+        failures: list[FailedGoldenAction] = []
+        for index, (action_name, action) in enumerate(
+            zip(resolved_names, golden_actions, strict=True)
+        ):
             action_kwargs = action.get("kwargs", {})
-
-            if action_name not in tools_map:
-                self.logger.warning("Golden action tool not found in TOOLS map", action=action_name)
-                continue
-
             tool_class = tools_map[action_name]
             try:
                 # Tau-bench tools have invoke(data=data, **kwargs) signature
-                tool_class.invoke(data=data, **action_kwargs)
+                returned = tool_class.invoke(data=data, **action_kwargs)
+            except Exception as e:
+                self.logger.warning("Golden action failed", action=action_name, error=str(e))
+                failures.append(FailedGoldenAction.from_exception(index, action_name, e))
+                continue
+
+            reported = declared_failure(returned)
+            if reported is None:
                 self.logger.debug(
                     "Executed golden action", action=action_name, kwargs=action_kwargs
                 )
-            except Exception as e:
-                # Log but continue (some actions might fail if preconditions not met)
-                # This matches tau-bench behavior - it continues even if some actions fail
-                self.logger.warning("Golden action failed", action=action_name, error=str(e))
+                continue
 
-        return data
+            self.logger.warning(
+                "Golden action reported a failure", action=action_name, error=reported
+            )
+            failures.append(FailedGoldenAction.from_reported_failure(index, action_name, reported))
+
+        return data, GoldenReplayRecord(authored=len(golden_actions), failures=tuple(failures))
 
     def check_hash_against_golden_replay(
         self,
         db_state: dict[str, Any],
-        golden_actions: list[dict[str, Any]],
+        golden_actions: list[Any],
         task_dir: Path,
         initial_state_path: str,
         mcp_server_path: str,
         task_domain: str,
         *,
         numeric_string_fields: list[str] | None = None,
-    ) -> tuple[float, str, dict[str, Any] | None]:
+    ) -> tuple[float, str, dict[str, Any] | None, GoldenReplayRecord]:
         """
         Check state against the state a golden-action replay produces (tau-bench style).
 
@@ -441,16 +462,24 @@ class StateChecker:
                 string values fold when hashing (per-field opt-in).
 
         Returns:
-            (score 0 or 1, reason, diff_result dict or None)
+            (score 0 or 1, reason, diff_result dict or None, replay record). The verdict
+            stands whether or not every action ran; the record carries what did not, for
+            the caller to report beside the score.
 
         Raises:
             GoldenReplayError: the replay could not be executed, so there is no
-                expected state to compare against and therefore no verdict.
+                expected state to compare against and therefore no verdict. An action
+                whose name resolves to no tool raises the ``UnresolvableGoldenAction``
+                subclass, which names every offending action.
         """
         try:
-            expected_state = self._execute_golden_actions(
+            expected_state, replay = self._execute_golden_actions(
                 golden_actions, task_dir, initial_state_path, mcp_server_path, task_domain
             )
+        except GoldenReplayError:
+            # The wrapper below would flatten a subclass into the base class, losing
+            # which of the replay's preconditions the pack failed.
+            raise
         except Exception as e:
             self.logger.error("Failed to execute golden actions", error=str(e))
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
@@ -487,4 +516,4 @@ class StateChecker:
                 "State hash matches", expected_hash=expected_hash[:16], actual_hash=actual_hash[:16]
             )
 
-        return hash_score, hash_reason, diff_result
+        return hash_score, hash_reason, diff_result, replay

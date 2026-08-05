@@ -88,6 +88,26 @@ class TranscriptChecker:
         else:
             return 0.0, f"Exceeded max turns: {actual_turns} > {max_turns}"
 
+    def check_min_assistant_turns(
+        self, timeline: TrialTimeline, min_assistant_turns: int | None
+    ) -> tuple[float, str]:
+        """Check the agent produced at least the declared number of turns.
+
+        A "turn" is one assistant generation, the same counter ``max_turns``
+        bounds from above.
+        """
+        if min_assistant_turns is None:
+            return 1.0, ""
+
+        actual_turns = len(assistant_texts(timeline))
+
+        if actual_turns >= min_assistant_turns:
+            return 1.0, ""
+        return 0.0, (
+            f"Assistant turn count {actual_turns} below min_assistant_turns "
+            f"of {min_assistant_turns}"
+        )
+
     def check_tool_expectations(
         self,
         timeline: TrialTimeline,
@@ -137,6 +157,7 @@ class TranscriptChecker:
         must_contain: list[str] | None = None,
         disallow_regex: list[str] | None = None,
         max_turns: int | None = None,
+        min_assistant_turns: int | None = None,
         required_tools: list[str] | None = None,
         disallowed_tools: list[str] | None = None,
     ) -> tuple[float, str]:
@@ -164,8 +185,14 @@ class TranscriptChecker:
         )
         all_reasons.extend(tools_reasons)
 
-        # Average scores
+        floor_score, floor_reason = self.check_min_assistant_turns(timeline, min_assistant_turns)
+        if floor_reason:
+            all_reasons.append(floor_reason)
+
+        # The activity floor gates the average rather than joining it: a fifth
+        # zero bucket scores 0.8, which is the default ``pass_threshold``, so a
+        # declared floor would be unable to fail a trial.
         scores = [contain_score, regex_score, turns_score, tools_score]
-        final_score = sum(scores) / len(scores)
+        final_score = sum(scores) / len(scores) * floor_score
 
         return final_score, "; ".join(all_reasons) if all_reasons else "All checks passed"

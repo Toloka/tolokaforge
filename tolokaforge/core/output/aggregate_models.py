@@ -80,18 +80,27 @@ __all__ = [
     "ServiceLogCaptureSource",
 ]
 
-AGGREGATE_SCHEMA_VERSION = 2
+AGGREGATE_SCHEMA_VERSION = 3
 """The ``aggregate.json`` wire generation.
 
-Version 2 rates are over ``measured_trials`` — the trials that measured the
-agent — so a consumer reading a file can tell which denominator produced
+Version 3 rates are over ``measured_trials`` — the trials that measured the
+agent, including the ones whose grading refused. Such a trial reaches
+``total_trials`` and ``measured_trials``, carries its own ``ungradeable`` count
+and its own ``ungradeable_<reason>`` row, and counts as a non-pass, so a
+consumer reading a file can tell which denominator produced
 ``success_rate_micro``, ``avg_score_micro`` and ``pass@k_macro`` without
-inspecting the run that wrote it.
+inspecting the run that wrote it. The ``class`` vocabulary a consumer branches
+on has four members.
 """
 
 
 class OutcomeReasonCount(BaseModel):
-    """One ``outcomes_by_reason`` row: how a termination reason was counted.
+    """One ``outcomes_by_reason`` row: how a group of trials was counted.
+
+    The key the row hangs off is a termination reason, or ``unset_<status>`` for
+    a trial that recorded no reason, or either of those under an ``ungradeable_``
+    prefix — see :func:`~tolokaforge.core.metrics._outcome_key` for why the
+    prefix is what keeps one key mapping to exactly one ``class``.
 
     ``class`` is a Python keyword, so the field is aliased; dump with
     ``by_alias=True`` to produce the wire shape.
@@ -126,16 +135,17 @@ class PerTaskMetrics(BaseModel):
     # attempt; ``measured_trials`` counts the ones that measured the agent and
     # is the denominator of every rate in this row except ``avg_score``, whose
     # denominator is ``scored_trials`` — the measured trials that produced a
-    # grade at all. ``harness_errors`` overlaps ``measured_trials`` (our own
-    # defects are counted, and their count is a run-health signal);
-    # ``infrastructure_aborts`` does not — it is the rest of ``total_trials``,
-    # broken down per reason so provider throttling and a harness regression can
-    # never read the same.
+    # grade at all. ``harness_errors`` and ``ungradeable`` overlap
+    # ``measured_trials`` (our own defects are counted, and each count is a
+    # run-health signal); ``infrastructure_aborts`` does not — it is the rest of
+    # ``total_trials``, broken down per reason so provider throttling and a
+    # harness regression can never read the same.
     total_trials: int
     measured_trials: int
     scored_trials: int
     infrastructure_aborts: dict[TerminationReason, int] = Field(default_factory=dict)
     harness_errors: int = 0
+    ungradeable: int = 0
     outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
     successful_trials: int
     success_rate: float | None
@@ -217,6 +227,7 @@ class AggregateMetrics(BaseModel):
     scored_trials: int
     infrastructure_aborts: dict[TerminationReason, int] = Field(default_factory=dict)
     harness_errors: int = 0
+    ungradeable: int = 0
     outcomes_by_reason: dict[str, OutcomeReasonCount] = Field(default_factory=dict)
 
     # Weighted (micro) averages — set when ``weighted=True``. Rate-shaped

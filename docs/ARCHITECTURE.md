@@ -214,7 +214,8 @@ The orchestrator process and the Docker stack live on the same host. There is no
 | Concern | Where to look |
 |---|---|
 | **Secrets handling** | [AGENTS.md § Secrets — single abstraction](../AGENTS.md#secrets--single-abstraction) · `tolokaforge/secrets` |
-| **Determinism & state hashing** | [`docs/GRADING.md`](GRADING.md) · [`docs/GOLDEN_TRIALS.md`](GOLDEN_TRIALS.md) |
+| **Determinism & state hashing** | [`docs/GRADING.md`](GRADING.md) |
+| **Re-checking a recorded trial against what it recorded** | [`docs/TRACE_REPLAY.md`](TRACE_REPLAY.md) · [`docs/JUDGE_REPLAY.md`](JUDGE_REPLAY.md) · [`docs/RUBRIC_MIGRATION.md`](RUBRIC_MIGRATION.md) |
 | **Per-trial isolation & reset recipes** | [`RUNTIME_BACKENDS.md`](RUNTIME_BACKENDS.md) · [`RESET_RECIPES.md`](RESET_RECIPES.md) |
 | **Task-pack image layering (build-cache sharing)** | [`IMAGE_LAYERING_GUIDE.md`](IMAGE_LAYERING_GUIDE.md) · [`MULTI_CONTAINER_GUIDE.md`](MULTI_CONTAINER_GUIDE.md) |
 | **Per-provider capability handling** | [`docs/LLM_LAYER.md`](LLM_LAYER.md) · [AGENTS.md § Known Gotchas](../AGENTS.md#known-gotchas) |
@@ -252,7 +253,7 @@ For the phase ladder and which release delivers which phase, see [`ROADMAP.md`](
 | **Adapter** | Plugin that maps a benchmark format to the harness contract (`BaseAdapter`). |
 | **Task pack** | A directory tree of tasks resolved by an adapter (`task.yaml` for native; format varies per adapter). |
 | **Trial** | One attempt at one task with one model configuration. A run produces `N_tasks × repeats` trials. |
-| **Trajectory** | One trial's in-process record: its message trace plus `tool_log`, the ordered `RecordedToolCall` list. Only the message trace is written to `trajectory.yaml`; `tool_log` is not persisted, so a bundle read back from disk carries no per-call `status` / `executor` / `latency_seconds`. Each call's output survives on its `role: tool` message, which is what a re-graded bundle's timeline reads (`docs/GRADING.md` G6b). |
+| **Trajectory** | One trial's in-process record: its message trace plus `tool_log`, the ordered `RecordedToolCall` list. The two halves are persisted side by side — the message trace as `trajectory.yaml`, the record as the `tool_log.yaml` sidecar — so a bundle carries the per-call `status` / `executor` / `latency_seconds` nothing conversational could express. A bundle written before that sidecar existed carries the message trace alone; each call's output still survives on its `role: tool` message, which is what such a bundle's timeline reads (`docs/GRADING.md` G6b). |
 | **TrialRunner** | The in-process Python class (`tolokaforge/core/runner.py`) that owns one trial's agent–user loop and dispatches every tool call to the Runner Service over gRPC. |
 | **Runner Service** | The gRPC service (`tolokaforge/runner/service.py`) that owns tool execution, environment state, and grading. Runs in a Docker container; always required. Distinct from `TrialRunner`. |
 | **Preset** | Per-provider capability bundle (schema sanitizer, reasoning codec, params policy, cache policy, tool-content policy). |

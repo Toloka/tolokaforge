@@ -1,12 +1,8 @@
 combine:
   method: weighted
   weights:
-    state_checks: 0.6
-    transcript_rules: 0.4
+    transcript_rules: 1.0
   pass_threshold: 0.7
-
-state_checks:
-  jsonpaths: []
 
 transcript_rules:
   tool_expectations:

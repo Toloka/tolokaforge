@@ -3,24 +3,18 @@
     "method": "weighted",
     "pass_threshold": 0.7,
     "weights": {
-      "state_checks": 0.6,
-      "transcript_rules": 0.4
+      "transcript_rules": 1.0
     }
   },
   "custom_checks": null,
   "llm_judge": null,
-  "state_checks": {
-    "db_probes": [],
-    "hash": null,
-    "id_fields": {},
-    "jsonpaths": [],
-    "numeric_string_fields": [],
-    "relaxed_validation": false
-  },
+  "state_checks": null,
+  "trace_checks": null,
   "transcript_rules": {
     "communicate_info": [],
     "disallow_regex": [],
     "max_turns": 10,
+    "min_assistant_turns": null,
     "must_contain": [],
     "required_actions": [],
     "tool_expectations": {

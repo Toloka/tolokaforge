@@ -22,5 +22,6 @@
     "numeric_string_fields": [],
     "relaxed_validation": false
   },
+  "trace_checks": null,
   "transcript_rules": null
 }

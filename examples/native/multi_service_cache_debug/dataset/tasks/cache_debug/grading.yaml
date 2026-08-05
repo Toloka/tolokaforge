@@ -1,30 +1,302 @@
 # Three-way weighted grading for cache_debug.
 #
-#   llm_judge        (0.5) — the primary signal. The diagnosis is a natural-
-#     language note; the judge scores whether it identifies the stale-cache /
-#     missing-invalidation bug, explains the mechanism, and avoids a false fix.
-#   state_checks     (0.3) — a deterministic floor: the written note names the
+#   llm_judge    (0.5) — the primary signal, and deliberately the dominant one.
+#     The diagnosis is a natural-language note; the judge scores whether it
+#     identifies the stale-cache / missing-invalidation bug, explains the
+#     mechanism, and avoids a false fix. The two routes below are not equally
+#     probative — the cache inspector shows the stale value itself, while the
+#     served-vs-source comparison shows only that the read path serves something
+#     the database disagrees with — so the deterministic components must not be
+#     able to carry a weak diagnosis. At 0.25 each they sum to 0.5, below the
+#     threshold: no trial passes on process alone.
+#   state_checks (0.25) — a deterministic floor: the written note names the
 #     cache-invalidation concept (substring `invalidat`).
-#   transcript_rules (0.2) — a bonus: the agent inspected both the app layer and
-#     the cache layer over http_request and wrote a note, within the turn budget.
+#   trace_checks (0.25) — the diagnostic process: one of the two comparisons the
+#     rubric reference names, walked before the note was written, the stale value
+#     the note reports quoted out of the read that returned it, and no status
+#     update written on a diagnose-only task.
 #
-# No single check is decisive: 0.5 judge + 0.3 note already exceeds the 0.6
-# threshold, so a correct diagnosis is not sunk by an exact-URL transcript miss.
+# A correct diagnosis is not sunk by the route it took: judge 0.5 + note 0.25
+# already exceeds the 0.6 threshold whichever comparison the agent chose.
+#
+# The grounded-claim check rides inside the existing 0.25, so the calibration
+# invariant is untouched: the deterministic components still sum to 0.5, below the
+# 0.6 threshold, and no trial passes on process alone.
+#
+# CANDIDACY: the two `..._the_note_quotes_...` constraints below are declared
+# candidates to replace the `explains_mechanism` criterion, in the `migration.yaml`
+# beside this file — which is where what a retirement would still have to answer for
+# is written, and where `tolokaforge validate` checks the claim against this rubric.
+# Neither retires anything.
+#
+# RECORDS-DEPENDENCE: these two binders read `field: result`, which makes this pack
+# records-dependent for the first time — on a bundle re-graded without records the
+# binder's own matcher is undecidable and the winning route's grounded-claim
+# constraint reports that the candidate set cannot be determined, where every other
+# constraint here stays decidable. See docs/GRADING.md § What is validated before a
+# run, "A binder reading `field: result` makes its pack records-dependent".
 combine:
   method: weighted
-  weights: { state_checks: 0.3, transcript_rules: 0.2, llm_judge: 0.5 }
+  weights: { state_checks: 0.25, trace_checks: 0.25, llm_judge: 0.5 }
   pass_threshold: 0.6
 state_checks:
   jsonpaths:
     - path_glob: "/env/fs/agent-visible/submissions/*"
       contains_ci: "invalidat"
       description: "root-cause note names cache invalidation"
-transcript_rules:
-  max_turns: 20
-  required_actions:
-    - { action_id: read_app_layer,   requestor: assistant, name: http_request, arguments: { url: "http://orders-api:8000/orders/4021", method: "GET" },        compare_args: [url, method] }
-    - { action_id: read_cache_layer, requestor: assistant, name: http_request, arguments: { url: "http://cache-admin:8000/cache/order:4021", method: "GET" }, compare_args: [url, method] }
-    - { action_id: write_note,       requestor: assistant, name: write_file,   arguments: {}, compare_args: [] }
+# Two genuinely alternative diagnostic routes, each scored as a whole. The rubric
+# reference names both comparisons as locating the bug, and the task's guidance
+# asks the agent to compare the layers without preferring a pair, so an agent that
+# completes either route has derived the divergence and scores the same.
+#
+# An agent that starts down both and completes neither — the served read plus a
+# key listing, say — has observed no divergence at all, and scores the better of
+# two incomplete routes rather than the sum of two halves.
+#
+# Each route asks three questions: were both sides of the comparison read, did the
+# reads that happened happen before the note, and does the note quote the value the
+# route's own read returned. The second carries `on_missing: pass` so a read that
+# never happened is charged once, to the first question, rather than twice — which
+# makes the second vacuous when neither read happened, leaving the presence question
+# to carry that case alone. The third carries `on_unbound: pass` for the same reason.
+#
+# The gate is SHARED rather than written inside a route: "do not mutate the order
+# on a diagnose-only task" holds whatever route the agent took, and a gate inside a
+# path is consulted only when that path wins.
+#
+# The grounded-claim check is PER ROUTE rather than shared, because no single read is
+# common to both: route A is guaranteed the cache-first `GET /orders/4021`, route B
+# the cache inspector, and route B's `any_of` admits `/source` in place of the served
+# read. A shared binder would have route-dependent candidates and could fail a
+# correct route. It binds the status token the route's own stale read returned and
+# names no status value, so it generalises to whatever the cache is holding.
+#
+# It carries `on_unbound: pass` for the same charge-once reason the ordering checks
+# carry `on_missing: pass`: an agent that never made the route's stale read is
+# already charged by that route's presence check, and charging it again here would
+# cascade one wrong process into two failures.
+#
+# THE PROMPT IS THE SECOND ORACLE, AND IT IS DELIBERATELY SILENT ON THE TOKEN. The
+# check is evidence of grounding only because nothing the trial shows the agent
+# before it acts — `task.yaml`'s `initial_user_message`, the user persona's
+# backstory, the guidance — names the stale status. The on-call engineer reports an
+# out-of-date status and does not know which one, so a note paraphrasing the symptom
+# report cannot reproduce the token and reproducing it means the agent read it. That
+# silence is load-bearing: naming the status in the prompt would make this check pass
+# on a trial that observed nothing, which is what a substrate probe alone cannot see.
+#
+# The two capture patterns differ because the two payloads do. `http_request` renders
+# a JSON response as the parsed object's Python repr, so route A's served read shows
+# `'status': 'processing'` in single quotes; the cache inspector returns the cached
+# blob as a JSON string inside a JSON field, so route B's read shows `"status":
+# "processing"` in double quotes inside that repr. One pattern does not serve both.
+trace_checks:
+  constraints:
+    - id: no_status_was_written
+      description: "no status update is posted: the task is to diagnose the staleness, not to paper over it"
+      severity: gate
+      require:
+        absent:
+          match:
+            kind: tool_call
+            tool: { equals: http_request }
+            args:
+              url: { equals: "http://orders-api:8000/orders/4021" }
+              method: { equals: "POST" }
+    - id: the_note_was_written
+      description: "a root-cause note is written, whichever route located the bug"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: write_file }
+  alternatives:
+    - id: divergence_between_the_api_layers
+      description: "the bug is located by comparing the customer-facing read against the source of truth"
+      constraints:
+        - id: both_api_layer_reads_happened
+          description: "the agent read order 4021 both as customers see it and as the source of truth records it"
+          require:
+            all_of:
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: http_request }
+                    args:
+                      url: { equals: "http://orders-api:8000/orders/4021" }
+                      method: { equals: "GET" }
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: http_request }
+                    args:
+                      url: { equals: "http://orders-api:8000/orders/4021/source" }
+                      method: { equals: "GET" }
+        - id: both_api_layer_reads_precede_the_note
+          description: "each read that happened happened before the note, so the diagnosis follows from the divergence rather than preceding it"
+          on_missing: pass
+          require:
+            all_of:
+              - before:
+                  left:
+                    quantifier: first
+                    match:
+                      kind: tool_call
+                      tool: { equals: http_request }
+                      args:
+                        url: { equals: "http://orders-api:8000/orders/4021" }
+                        method: { equals: "GET" }
+                  right:
+                    quantifier: first
+                    match:
+                      kind: tool_call
+                      tool: { equals: write_file }
+              - before:
+                  left:
+                    quantifier: first
+                    match:
+                      kind: tool_call
+                      tool: { equals: http_request }
+                      args:
+                        url: { equals: "http://orders-api:8000/orders/4021/source" }
+                        method: { equals: "GET" }
+                  right:
+                    quantifier: first
+                    match:
+                      kind: tool_call
+                      tool: { equals: write_file }
+        - id: the_note_quotes_the_value_the_served_read_returned
+          description: "the status the note reports is the one the customer-facing read actually returned, so the divergence is quoted rather than assumed"
+          bind:
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              status: { equals: success }
+              args:
+                url: { equals: "http://orders-api:8000/orders/4021" }
+                method: { equals: GET }
+            values:
+              observed: { field: result, pattern: "'status': '([a-z]+)'" }
+            on_unbound: pass
+          require:
+            any_of:
+              # No note at all is charged once, to `the_note_was_written`. This is
+              # what `on_missing: pass` says for the ordering checks, written as a
+              # branch because `on_missing` is rejected over any require tree
+              # holding a `present` — nesting it under this `any_of` would not
+              # admit it.
+              - absent:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+                    args:
+                      content: { contains_binding: observed }
+    - id: divergence_against_the_cache
+      description: "the bug is located by reading the cached value and comparing it against either orders-api read"
+      constraints:
+        - id: the_cached_value_and_an_api_read_happened
+          description: "the agent read the cached order:4021 entry and read the order over the orders API too"
+          require:
+            all_of:
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: http_request }
+                    args:
+                      url: { equals: "http://cache-admin:8000/cache/order:4021" }
+                      method: { equals: "GET" }
+              - any_of:
+                  - present:
+                      match:
+                        kind: tool_call
+                        tool: { equals: http_request }
+                        args:
+                          url: { equals: "http://orders-api:8000/orders/4021" }
+                          method: { equals: "GET" }
+                  - present:
+                      match:
+                        kind: tool_call
+                        tool: { equals: http_request }
+                        args:
+                          url: { equals: "http://orders-api:8000/orders/4021/source" }
+                          method: { equals: "GET" }
+        - id: the_cache_comparison_precedes_the_note
+          description: "each side of the comparison that was read was read before the note, so the diagnosis follows from the divergence"
+          on_missing: pass
+          require:
+            all_of:
+              - before:
+                  left:
+                    quantifier: first
+                    match:
+                      kind: tool_call
+                      tool: { equals: http_request }
+                      args:
+                        url: { equals: "http://cache-admin:8000/cache/order:4021" }
+                        method: { equals: "GET" }
+                  right:
+                    quantifier: first
+                    match:
+                      kind: tool_call
+                      tool: { equals: write_file }
+              - any_of:
+                  - before:
+                      left:
+                        quantifier: first
+                        match:
+                          kind: tool_call
+                          tool: { equals: http_request }
+                          args:
+                            url: { equals: "http://orders-api:8000/orders/4021" }
+                            method: { equals: "GET" }
+                      right:
+                        quantifier: first
+                        match:
+                          kind: tool_call
+                          tool: { equals: write_file }
+                  - before:
+                      left:
+                        quantifier: first
+                        match:
+                          kind: tool_call
+                          tool: { equals: http_request }
+                          args:
+                            url: { equals: "http://orders-api:8000/orders/4021/source" }
+                            method: { equals: "GET" }
+                      right:
+                        quantifier: first
+                        match:
+                          kind: tool_call
+                          tool: { equals: write_file }
+        - id: the_note_quotes_the_value_the_cache_held
+          description: "the status the note reports is the one the cache inspector actually returned, so the divergence is quoted rather than assumed"
+          bind:
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              status: { equals: success }
+              args:
+                url: { equals: "http://cache-admin:8000/cache/order:4021" }
+                method: { equals: GET }
+            values:
+              observed: { field: result, pattern: '"status": "([a-z]+)"' }
+            on_unbound: pass
+          require:
+            any_of:
+              - absent:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+              - present:
+                  match:
+                    kind: tool_call
+                    tool: { equals: write_file }
+                    args:
+                      content: { contains_binding: observed }
 llm_judge:
   rubric:
     reference: |

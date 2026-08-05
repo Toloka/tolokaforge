@@ -1,0 +1,25 @@
+- function:
+    description: List every stored note, newest first.
+    name: list_notes
+    parameters:
+      properties: {}
+      title: list_notesArguments
+      type: object
+  type: function
+- function:
+    description: Save a new note. Returns the created note including its ID.
+    name: add_note
+    parameters:
+      properties:
+        body:
+          title: Body
+          type: string
+        title:
+          title: Title
+          type: string
+      required:
+      - title
+      - body
+      title: add_noteArguments
+      type: object
+  type: function

@@ -8,13 +8,22 @@ from typing import TYPE_CHECKING, Any
 
 import yaml
 
-from tolokaforge.adapters._task_loader import _detect_task_root, load_task_yaml
+from tolokaforge.adapters._task_loader import (
+    _detect_task_root,
+    agent_tool_configs,
+    load_task_yaml,
+    refuse_malformed_grading_shapes,
+    resolve_agent_tool_schemas,
+)
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
+from tolokaforge.core.grading.config_validation import CombineLayer
+from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
     construct_config,
+    project_grading_combine,
     resolve_effective_grading_combine,
     resolve_effective_judge_customization,
 )
@@ -25,46 +34,6 @@ if TYPE_CHECKING:
     from tolokaforge.runner.models import SearchConfig, TaskDescription
 
 logger = get_logger(__name__)
-
-
-def _builtin_tool_schemas(
-    tool_names: list[str], tool_configs: dict[str, dict] | None = None
-) -> dict[str, dict]:
-    """Return rich schemas for known builtin tools.
-
-    For each tool name in *tool_names* that the unified builtin registry
-    knows about, instantiate the tool with kwargs from
-    ``tool_configs[name]`` (e.g. ``MobileTool(apps={...})``) and extract
-    its ``get_schema()`` information so the LLM gets proper parameter
-    descriptions. Tools whose schema depends on construction args
-    (``MobileTool.apps`` populates ``actions[].app_name.enum``) need the
-    config; tools that take no args (bash, calculator) ignore it.
-
-    Tools whose construction needs runtime context only available on the
-    runner side (file tools' ``base_path``) are skipped quietly — the runner
-    provides their schemas via its own machinery. ``search_kb`` is handled
-    separately by :meth:`to_task_description` via ``create_search_kb_schema``.
-    """
-    from tolokaforge.tools.builtin import registry
-
-    configs = tool_configs or {}
-    schemas: dict[str, dict] = {}
-    for name in tool_names:
-        if not registry.is_builtin(name):
-            continue
-        try:
-            cls = registry.get_class(name)
-            tool = cls(**configs.get(name, {}))
-            raw = tool.get_schema()
-            # get_schema() returns {"type": "function", "function": {…}}
-            func_def = raw.get("function", raw)
-            schemas[name] = {
-                "description": func_def.get("description", f"Builtin tool: {name}"),
-                "parameters": func_def.get("parameters", {"type": "object", "properties": {}}),
-            }
-        except Exception as exc:
-            logger.debug("Could not load builtin schema", tool_name=name, error=str(exc))
-    return schemas
 
 
 class NativeAdapter(BaseAdapter):
@@ -335,7 +304,14 @@ class NativeAdapter(BaseAdapter):
         return system_prompt_path.read_text()
 
     def get_grading_config(self, task_id: str) -> GradingConfig:
-        """Load grading configuration from task's grading file"""
+        """Load grading configuration from task's grading file.
+
+        Raises:
+            ValueError: If the task names no grading file, or names one that is not
+                on disk.
+            RuntimeError: If the file, or any grading key it declares, is neither a
+                mapping nor absent.
+        """
         task = self.get_task(task_id)
         task_dir = self.get_task_dir(task_id)
 
@@ -349,6 +325,7 @@ class NativeAdapter(BaseAdapter):
         if grading_path.exists():
             with open(grading_path) as f:
                 grading_data = yaml.safe_load(f)
+            refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
             task_combine = grading_data.pop("combine", None)
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
@@ -362,11 +339,11 @@ class NativeAdapter(BaseAdapter):
 
         raise ValueError(f"Grading config not found: {grading_path}")
 
+    def grading_combine_layer(self) -> CombineLayer:
+        return CombineLayer(self._project_combine_defaults())
+
     def _project_combine_defaults(self) -> dict[str, Any] | None:
-        """The project's ``task_defaults.grading_defaults.combine`` sub-dict,
-        the base layer under each task's own ``grading.yaml.combine``.
-        ``None`` when the enclosing project sets no grading defaults."""
-        return self._project_task_defaults.get("grading_defaults", {}).get("combine")
+        return project_grading_combine(self._project_task_defaults)
 
     def _project_judge_customization_defaults(self) -> dict[str, Any] | None:
         """The project's ``task_defaults.grading_defaults.llm_judge.customization``
@@ -428,7 +405,14 @@ class NativeAdapter(BaseAdapter):
 
         Raises:
             ValueError: If task_id not found
-            RuntimeError: If required files cannot be loaded
+            RuntimeError: If required files cannot be loaded, or if the grading file
+                or any grading key it declares is neither a mapping nor absent
+            GoldenReplayError: ``state_checks.hash.golden_actions`` is truthy and is not
+                the list of actions to replay, or an element of it is no mapping at all.
+                Refused here rather than lowered onto the wire, this being the last
+                surface before ``RegisterTrial``. A mapping element whose ``name`` is
+                absent or empty is **not** refused: it reaches the wire as
+                ``tool_name=""`` and fails at resolve time, which is #886.
         """
         from datetime import datetime, timezone
 
@@ -448,6 +432,7 @@ class NativeAdapter(BaseAdapter):
             ToolExpectations,
             ToolSchema,
             ToolSource,
+            TraceChecksConfig,
         )
         from tolokaforge.runner.tool_factory import create_search_kb_schema
 
@@ -488,39 +473,10 @@ class NativeAdapter(BaseAdapter):
                 if not mcp_server_path.exists():
                     raise RuntimeError(f"MCP server script not found: {mcp_server_path}")
 
-            # Build tool schemas for enabled agent tools
-            enabled_tools = enabled_agent_tools
+            tool_configs = agent_tool_configs(task)
+            rich_schemas = resolve_agent_tool_schemas(task, task_dir, allow_subprocess=True)
 
-            # Lift per-tool kwargs from ``tools.agent.<name>: {...}`` blocks so
-            # they reach the runner via ``ToolSchema.tool_config`` and the
-            # adapter's own schema-enrichment pass instantiates each builtin
-            # with the right kwargs (``MobileTool(apps={...})``). Non-mapping
-            # values are user typos — surface them here, not at trial
-            # registration as a confusing TypeError.
-            tool_configs: dict[str, dict] = {}
-            for tool_name in enabled_tools:
-                raw = task.tools.agent.get(tool_name)
-                if raw is None:
-                    continue
-                if not isinstance(raw, dict):
-                    raise ValueError(
-                        f"tools.agent.{tool_name} must be a mapping of init kwargs "
-                        f"(got {type(raw).__name__}={raw!r}) in task {task.task_id!r}"
-                    )
-                tool_configs[tool_name] = dict(raw)
-
-            # Load rich schemas from fixtures/tools.json or via live MCP query.
-            # This populates real descriptions and parameter schemas (including
-            # required fields) so the LLM receives accurate tool definitions.
-            rich_schemas: dict[str, dict] = {}
-            if mcp_server_ref:
-                rich_schemas = self._load_rich_tool_schemas(task_dir, task_dir / mcp_server_ref)
-            else:
-                # No MCP server — pull parameter schemas from builtin tool
-                # implementations so the LLM receives proper descriptions.
-                rich_schemas = _builtin_tool_schemas(enabled_tools, tool_configs)
-
-            for tool_name in enabled_tools:
+            for tool_name in enabled_agent_tools:
                 if tool_name == "search_kb":
                     # The runner reconstructs search_kb as a RAGSearchToolWrapper
                     # (source-less, RAG dispatch). Carry the canonical schema so
@@ -625,6 +581,7 @@ class NativeAdapter(BaseAdapter):
             if grading_path.exists():
                 with open(grading_path) as f:
                     grading_data = yaml.safe_load(f)
+                refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
 
         # Build grading config
         state_checks = None
@@ -638,11 +595,14 @@ class NativeAdapter(BaseAdapter):
                 golden_actions: list[GoldenAction] = []
                 hash_config = state_checks_data.get("hash", {})
                 if hash_config and hash_config.get("enabled", False):
-                    for action in hash_config.get("golden_actions", []):
+                    for golden_action in require_replayable_golden_actions(
+                        hash_config.get("golden_actions"),
+                        context=f"Grading file {grading_path}",
+                    ):
                         golden_actions.append(
                             GoldenAction(
-                                tool_name=action.get("name", ""),
-                                arguments=action.get("kwargs", {}),
+                                tool_name=golden_action.get("name", ""),
+                                arguments=golden_action.get("kwargs", {}),
                             )
                         )
 
@@ -691,6 +651,7 @@ class NativeAdapter(BaseAdapter):
                     must_contain=transcript_data.get("must_contain", []),
                     disallow_regex=transcript_data.get("disallow_regex", []),
                     max_turns=transcript_data.get("max_turns"),
+                    min_assistant_turns=transcript_data.get("min_assistant_turns"),
                     tool_expectations=(
                         ToolExpectations(**tool_expectations_data)
                         if tool_expectations_data
@@ -735,12 +696,14 @@ class NativeAdapter(BaseAdapter):
             self._project_combine_defaults(), combine_data
         )
         custom_checks_data = grading_data.get("custom_checks") if grading_data else None
+        trace_checks_data = grading_data.get("trace_checks") if grading_data else None
         grading_config = RunnerGradingConfig(
             combine_method=effective_combine.method,
             weights=effective_combine.weights,
             pass_threshold=effective_combine.pass_threshold,
             state_checks=state_checks,
             transcript_rules=transcript_rules,
+            trace_checks=TraceChecksConfig(**trace_checks_data) if trace_checks_data else None,
             llm_judge=llm_judge_config,
             custom_checks=custom_checks_data,
         )
@@ -875,148 +838,6 @@ class NativeAdapter(BaseAdapter):
     # ------------------------------------------------------------------
     # Task artifact bundling (for Docker execution)
     # ------------------------------------------------------------------
-
-    def _fetch_mcp_tool_schemas(self, mcp_server_path: Path) -> dict[str, dict]:
-        """Fetch rich tool schemas from an MCP server via tools/list.
-
-        Starts the server as a subprocess, performs the MCP handshake, calls
-        ``tools/list``, and converts the response to the same format used by
-        ``fixtures/tools.json``:
-
-        .. code-block:: json
-
-            [{"name": "...", "description": "...", "parameters": { ... }}]
-
-        The ``inputSchema`` field returned by MCP becomes ``parameters`` in the
-        stored/returned format, matching what the ``tlk_mcp_core`` adapter uses.
-
-        Args:
-            mcp_server_path: Absolute path to ``mcp_server.py``.
-
-        Returns:
-            Dict mapping tool_name → ``{"name", "description", "parameters"}``.
-
-        Raises:
-            RuntimeError: if the server fails to start, the handshake fails,
-                ``tools/list`` errors, or the server returns no tools. The
-                previous silent ``return {}`` masked broken schemas as
-                "agent-reasoning bugs" — surfacing the real cause is cheaper
-                than letting the LLM run with parameter-less tool stubs.
-        """
-        from tolokaforge.runner.tool_factory import MCPServerProcess
-
-        try:
-            server = MCPServerProcess(script_path=str(mcp_server_path))
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to construct MCPServerProcess for {mcp_server_path}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-
-        try:
-            server.start()
-            result = server.send_request("tools/list", {})
-        except Exception as exc:
-            raise RuntimeError(
-                f"Failed to query tools/list from MCP server {mcp_server_path}: "
-                f"{type(exc).__name__}: {exc}"
-            ) from exc
-        finally:
-            try:
-                server.stop()
-            except Exception as stop_exc:
-                logger.warning(
-                    "MCP server stop failed after tools/list query",
-                    server=str(mcp_server_path),
-                    error=str(stop_exc),
-                )
-
-        tools_list = result.get("tools", [])
-        schemas: dict[str, dict] = {}
-        for tool in tools_list:
-            name = tool.get("name", "")
-            if not name:
-                continue
-            schemas[name] = {
-                "name": name,
-                "description": tool.get("description", f"Tool: {name}"),
-                "parameters": tool.get("inputSchema", {"type": "object", "properties": {}}),
-            }
-        if not schemas:
-            raise RuntimeError(
-                f"MCP server {mcp_server_path} returned no tools from tools/list "
-                f"(response keys: {list(result.keys())!r})"
-            )
-        logger.info(
-            "Fetched MCP tool schemas",
-            count=len(schemas),
-            server=str(mcp_server_path),
-        )
-        return schemas
-
-    def _load_rich_tool_schemas(self, task_dir: Path, mcp_server_path: Path) -> dict[str, dict]:
-        """Load rich tool schemas, preferring a static ``fixtures/tools.json``.
-
-        Resolution order:
-
-        1. ``task_dir/fixtures/tools.json`` — pre-generated static file (fastest,
-           avoids subprocess overhead, matches the ``tlk_mcp_core`` adapter pattern).
-        2. Live MCP query via ``tools/list`` — used when the static file does not
-           exist yet; result is written back to ``fixtures/tools.json`` so that
-           subsequent runs are fast.
-
-        Args:
-            task_dir: Task directory (where ``fixtures/`` lives).
-            mcp_server_path: Absolute path to ``mcp_server.py``.
-
-        Returns:
-            Dict mapping tool_name → schema dict.
-        """
-        import json
-
-        fixtures_dir = task_dir / "fixtures"
-        tools_json_path = fixtures_dir / "tools.json"
-
-        # 1. Static file — fast path
-        if tools_json_path.exists():
-            try:
-                with open(tools_json_path) as f:
-                    tools_list = json.load(f)
-                schemas = {t["name"]: t for t in tools_list if isinstance(t, dict) and "name" in t}
-                logger.info(
-                    "Loaded tool schemas from fixtures/tools.json",
-                    count=len(schemas),
-                    path=str(tools_json_path),
-                )
-                return schemas
-            except Exception as exc:
-                logger.warning(
-                    "Failed to read fixtures/tools.json; falling back to MCP query",
-                    path=str(tools_json_path),
-                    error=str(exc),
-                )
-
-        # 2. Live MCP query — generate and cache
-        schemas = self._fetch_mcp_tool_schemas(mcp_server_path)
-        if schemas:
-            try:
-                fixtures_dir.mkdir(parents=True, exist_ok=True)
-                tools_list_out = list(schemas.values())
-                with open(tools_json_path, "w") as f:
-                    json.dump(tools_list_out, f, indent=2)
-                logger.info(
-                    "Generated and cached fixtures/tools.json",
-                    path=str(tools_json_path),
-                    count=len(schemas),
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Could not write fixtures/tools.json cache",
-                    path=str(tools_json_path),
-                    error=str(exc),
-                )
-
-        return schemas
 
     def _resolve_search_config(
         self,

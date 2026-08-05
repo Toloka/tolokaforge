@@ -1,0 +1,24 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+trace_checks:
+  constraints:
+    - id: payment_looked_up_before_the_case_is_denied
+      description: "the payment is fetched before the case is denied as a duplicate"
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: billing_api_get_payment }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: servicenow_csm_update_case }
+              args:
+                u_resolution_code: { equals: denied_ineligible }

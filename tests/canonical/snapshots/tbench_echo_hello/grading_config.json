@@ -9,5 +9,6 @@
   "custom_checks": null,
   "llm_judge": null,
   "state_checks": null,
+  "trace_checks": null,
   "transcript_rules": null
 }

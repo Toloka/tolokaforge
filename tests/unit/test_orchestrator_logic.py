@@ -1430,6 +1430,9 @@ class TestPrepareRunIdempotency:
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
+        # A real directory carrying no grading.yaml: the enqueue pre-flight
+        # resolves each task's grading file under it and has nothing to check.
+        adapter.get_task_dir.return_value = tmp_path
         orch.adapter = adapter
         return orch
 

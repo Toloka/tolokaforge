@@ -1,8 +1,14 @@
 combine:
   method: all
+  # Every component this pack configures carries a weight, which is what the gate
+  # requires. `method: all` aggregates the component set and reads no weight, so the
+  # values here cannot move this pack's verdict — only their presence matters.
   weights:
     state_checks: 0.5
     transcript_rules: 0.5
+    trace_checks: 0.5
+    llm_judge: 0.5
+    custom_checks: 0.5
   pass_threshold: 0.5
 
 state_checks:
@@ -11,9 +17,10 @@ state_checks:
     expected_state_hash: "0000000000000000000000000000000000000000000000000000000000000000"
     weight: 0.75
     golden_actions:
-      - name: close_widget
+      - name: write_file
         kwargs:
-          widget_id: W1
+          path: reports/W1.md
+          content: Widget W1 closed
   jsonpaths:
     - path: "$.db.widgets[0].status"
       equals: closed
@@ -23,15 +30,9 @@ state_checks:
   id_fields:
     widgets: widget_id
   relaxed_validation: true
-  db_probes:
-    - name: widget_closed
-      dsn: "postgresql://grader:grader_pw@app-db:5432/widgets"
-      query: "SELECT status FROM widgets WHERE widget_id = 'W1'"
-      expect:
-        - path: "$.rows[0].status"
-          equals: closed
-          description: widget row is closed
-      description: the widget row is closed
+  # No db_probes here: a probe is exclusive with the hash and jsonpaths sources above,
+  # so this pack cannot declare all three. That key is carried by
+  # tests/data/tasks/db_probe_grading, and manifest totality is a union over the two.
 
 transcript_rules:
   must_contain:
@@ -39,6 +40,7 @@ transcript_rules:
   disallow_regex:
     - 'password:\s*\S+'
   max_turns: 5
+  min_assistant_turns: 1
   tool_expectations:
     required_tools:
       - write_file
@@ -55,6 +57,91 @@ transcript_rules:
   communicate_info:
     - info: "Widget W1 is now closed"
       required: true
+
+# Every constraint kind and every per-constraint field the manifest carries an
+# entry for is written here, because this pack is what proves the adapter carries
+# each of them: a key the manifest claims and this file omits is a translation
+# nothing exercises.
+trace_checks:
+  constraints:
+    - id: wrote_the_file_before_closing
+      description: the report is written before widget W1 is closed
+      weight: 2.0
+      on_missing: fail
+      within: { first_turn: 0, last_turn: 8 }
+      bind:
+        match: { kind: tool_call, tool: { equals: write_file } }
+        values:
+          report_path: { field: args.path }
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: write_file }
+              args: { path: { equals_binding: report_path } }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: close_widget }
+              args: { widget_id: { equals: W1 } }
+    - id: closed_the_widget_exactly_once
+      description: widget W1 is closed once, and the report is written at least once
+      require:
+        all_of:
+          - present: { match: { kind: tool_call, tool: { equals: write_file } } }
+          - count:
+              match: { kind: tool_call, tool: { equals: close_widget } }
+              min: 1
+              max: 1
+    - id: never_deleted_a_widget_unannounced
+      description: no widget is deleted, and nothing is deleted before the report is written
+      require:
+        any_of:
+          - absent: { match: { kind: tool_call, tool: { equals: delete_widget } } }
+          - absent_before:
+              forbidden: { kind: tool_call, tool: { equals: delete_widget } }
+              anchor:
+                quantifier: first
+                match: { kind: tool_call, tool: { equals: write_file } }
+    - id: closed_straight_after_writing_and_told_nobody_meanwhile
+      description: the close follows the write, with no notification while the work is open
+      severity: scored
+      require:
+        all_of:
+          - immediately_before:
+              left: { quantifier: first, match: { kind: tool_call, tool: { equals: write_file } } }
+              right:
+                quantifier: first
+                match: { kind: tool_call, tool: { equals: close_widget } }
+              among: tool_calls
+          - absent_between:
+              forbidden: { kind: tool_call, tool: { equals: notify_customer } }
+              start:
+                quantifier: first
+                match: { kind: tool_call, tool: { equals: write_file } }
+              end:
+                quantifier: last
+                match: { kind: tool_call, tool: { equals: close_widget } }
+          - negate:
+              present: { match: { kind: tool_call, tool: { equals: delete_widget } } }
+  alternatives:
+    - id: closed_after_writing_the_report
+      description: the widget is closed once the report exists
+      constraints:
+        - id: the_report_exists
+          description: a report file is written
+          require:
+            present: { match: { kind: tool_call, tool: { equals: write_file } } }
+    - id: closed_after_telling_the_customer
+      description: the widget is closed once the customer has been told
+      constraints:
+        - id: the_customer_was_told
+          description: the customer is notified
+          require:
+            present: { match: { kind: tool_call, tool: { equals: notify_customer } } }
 
 llm_judge:
   rubric:

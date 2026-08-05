@@ -8,6 +8,8 @@ Covers:
 * :class:`FileArtifactWriter.write_tools_schemas` — per-trial YAML
   artifact at ``trial_dir/tools_schemas.yaml``. Latest write wins
   (the trial dir is recreated fresh by the orchestrator).
+* :func:`read_recorded_tool_log` — reads ``tool_log.yaml`` back, keeping
+  a bundle that carries no record apart from a trial that called no tool.
 * Protocol conformance — :class:`FileArtifactWriter` satisfies the
   :class:`TrialArtifactWriter` structural type.
 """
@@ -20,12 +22,16 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.utils.recorded_calls import recorded_call
+from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     Message,
     MessageRole,
+    ToolExecutionStatus,
+    ToolExecutorIdentity,
     Trajectory,
     TrialStatus,
 )
@@ -33,6 +39,7 @@ from tolokaforge.core.output.artifacts import (
     FileArtifactWriter,
     TrialArtifactWriter,
     model_id_slug,
+    read_recorded_tool_log,
 )
 
 pytestmark = pytest.mark.unit
@@ -280,6 +287,7 @@ def test_file_artifact_writer_per_trial_delegates(tmp_path: Path) -> None:
     traj = _sample_trajectory()
 
     writer.write_trajectory(trial_dir, traj)
+    writer.write_tool_log(trial_dir, traj)
     writer.write_task(trial_dir, {"task_id": traj.task_id, "trial_index": 0})
     writer.write_env(trial_dir, {"final": "state"})
     writer.write_metrics(trial_dir, traj)
@@ -291,6 +299,7 @@ def test_file_artifact_writer_per_trial_delegates(tmp_path: Path) -> None:
 
     for name in (
         "trajectory.yaml",
+        "tool_log.yaml",
         "task.yaml",
         "env.yaml",
         "metrics.yaml",
@@ -298,3 +307,89 @@ def test_file_artifact_writer_per_trial_delegates(tmp_path: Path) -> None:
         "logs.yaml",
     ):
         assert (trial_dir / name).exists(), f"missing {name}"
+
+
+# ---------------------------------------------------------------------------
+# read_recorded_tool_log — the two records-less states are not the same state
+# ---------------------------------------------------------------------------
+
+
+def test_a_bundle_with_no_tool_log_reads_back_as_carrying_no_record(tmp_path: Path) -> None:
+    """Every bundle written before the record was persisted looks like this, forever.
+
+    Absence is not an error and not an empty trial — it is missing evidence, and the
+    caller is told so by the flag rather than having to infer it from an empty list.
+    """
+    FileArtifactWriter().write_trajectory(tmp_path, _sample_trajectory())
+
+    assert read_recorded_tool_log(tmp_path) == ([], False)
+
+
+def test_a_trial_that_called_no_tool_reads_back_present_and_empty(tmp_path: Path) -> None:
+    """The distinction the timeline's own flag cannot make.
+
+    ``TrialTimeline.records_present`` is ``bool(recorded_calls)``, so it reads
+    ``False`` for both a bundle that recorded nothing and a trial that did nothing —
+    which is why a report must carry the reader's flag and not the timeline's.
+    """
+    writer = FileArtifactWriter()
+    trajectory = _sample_trajectory()
+    assert trajectory.tool_log == []
+
+    writer.write_tool_log(tmp_path, trajectory)
+
+    assert read_recorded_tool_log(tmp_path) == ([], True)
+    timeline = build_trial_timeline(trajectory.messages, trajectory.tool_log, None)
+    assert timeline.records_present is False
+
+
+def test_the_record_survives_the_round_trip_field_for_field(tmp_path: Path) -> None:
+    """Including the four fields no message view could ever carry.
+
+    ``status`` a transcript words differently on each substrate, and ``executor``,
+    ``latency_seconds`` and ``sequence`` are not conversational facts at all — who
+    ran a call, how long it took, and where it sits in trial-wide order across
+    executors. The fixture varies all four so equality is not satisfied by a
+    constant, and its multiline ``output`` is the shape YAML is most likely to
+    reformat.
+    """
+    writer = FileArtifactWriter()
+    trajectory = _sample_trajectory()
+    trajectory.tool_log = [
+        recorded_call("get_user", sequence=0, output="{'id': 7}", latency_seconds=0.25),
+        recorded_call(
+            "create_order",
+            sequence=1,
+            status=ToolExecutionStatus.ERROR,
+            arguments={"lot": 7},
+            output="Status: 409\nResponse (JSON):\n{'detail': 'conflict'}",
+            latency_seconds=1.5,
+        ),
+        recorded_call(
+            "confirm",
+            sequence=2,
+            executor=ToolExecutorIdentity.USER,
+            output="ok",
+            latency_seconds=0.75,
+        ),
+    ]
+
+    writer.write_tool_log(tmp_path, trajectory)
+
+    assert read_recorded_tool_log(tmp_path) == (trajectory.tool_log, True)
+
+
+def test_an_unreadable_tool_log_names_the_file_it_could_not_read(tmp_path: Path) -> None:
+    """A corrupt record is loud. Reading it as an empty one would report a trial that
+    made no call, which is a claim about the trial rather than about the file."""
+    (tmp_path / "tool_log.yaml").write_text("- sequence: 0\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"tool_log\.yaml is not a readable tool-call record"):
+        read_recorded_tool_log(tmp_path)
+
+
+def test_a_tool_log_that_is_not_a_list_names_what_it_parsed_as(tmp_path: Path) -> None:
+    (tmp_path / "tool_log.yaml").write_text("call_id: c1\n", encoding="utf-8")
+
+    with pytest.raises(ValueError, match=r"must be a YAML list of recorded calls.*dict"):
+        read_recorded_tool_log(tmp_path)

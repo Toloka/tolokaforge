@@ -6,7 +6,13 @@ combine:
   pass_threshold: 0.7
 
 state_checks:
-  jsonpaths: []
+  # Addresses the table whose key is not the literal "id", so the block declares a
+  # source rather than configuring how an absent one would be read. W1 is seeded
+  # `pending`, so satisfying this takes a trial that moved the row.
+  jsonpaths:
+    - path: "$.db.widgets[0].status"
+      equals: active
+      description: widget W1 is no longer pending
   id_fields:
     widgets: widget_id
 

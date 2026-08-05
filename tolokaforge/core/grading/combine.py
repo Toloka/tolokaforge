@@ -22,16 +22,29 @@ from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
 from tolokaforge.core.grading.combine_method import combine_by_method
+from tolokaforge.core.grading.combine_weights import (
+    FoldedGrade,
+    require_component_weight,
+    resolve_uncounted_fold,
+)
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayRecord,
+    incomplete_replay_reason,
+    refuse_unreplayable_golden_source,
+    require_golden_replay_world,
+)
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
-    GoldenReplayError,
     StateChecker,
     extract_db_state,
 )
 from tolokaforge.core.grading.state_composition import (
     compose_state_checks_score,
     inert_hash_weight_reason,
+    refuse_probes_beside_another_state_source,
     resolve_hash_weight,
 )
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.grading.transcript import TranscriptChecker
 from tolokaforge.core.models import (
@@ -40,6 +53,8 @@ from tolokaforge.core.models import (
     GradeComponents,
     GradingConfig,
     InitialStateConfig,
+    TraceChecksResult,
+    TraceChecksSummary,
     Trajectory,
 )
 
@@ -48,11 +63,6 @@ logger = logging.getLogger(__name__)
 _HASH_NOT_CHECKED_NO_SOURCE = (
     "state_checks.hash is enabled but declares neither expected_state_hash nor "
     "golden_actions, so the state hash was not checked"
-)
-_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT = (
-    "state_checks.hash.golden_actions needs the task's directory, initial_state and "
-    "mcp_server to replay, and this grading engine has none, so the state hash was "
-    "not checked"
 )
 
 
@@ -99,6 +109,16 @@ class GradingEngine:
 
         Returns:
             Grade with score and components
+
+        Raises:
+            GoldenReplayError: a state hash the config asked for could not be computed,
+                so no component is scored and the trial is left ungraded rather than
+                graded on the sources that happened to work.
+            ValueError: ``state_checks`` declares ``db_probes`` beside a source this fold
+                also scores, so one ``state_checks`` component holds two verdicts with no
+                declared share between them. Re-resolved here rather than trusted from
+                load, because the ``hash`` block is an untyped dict a caller can mutate
+                after validation.
         """
         components = GradeComponents()
         reasons_parts = []
@@ -151,6 +171,7 @@ class GradingEngine:
                 must_contain=self.config.transcript_rules.must_contain,
                 disallow_regex=self.config.transcript_rules.disallow_regex,
                 max_turns=self.config.transcript_rules.max_turns,
+                min_assistant_turns=self.config.transcript_rules.min_assistant_turns,
                 required_tools=(
                     self.config.transcript_rules.tool_expectations.required_tools
                     if self.config.transcript_rules.tool_expectations
@@ -169,6 +190,25 @@ class GradingEngine:
             transcript_score = action_score * comm_score * legacy_score
             components.transcript_rules = transcript_score
 
+        # Trace checks — the same function the runner's GradeTrial calls, over the
+        # same timeline, so the component score does not depend on which substrate
+        # graded the trial. A result with no constraint verdicts is the trial whose
+        # timeline carries no events: the component stays unscored.
+        trace_checks_result = TraceChecksResult()
+        if self.config.trace_checks:
+            trace_checks_result = evaluate_trace_checks(timeline, self.config.trace_checks)
+            if trace_checks_result.constraints:
+                components.trace_checks = trace_checks_result.score
+                if trace_checks_result.failed_gate_ids:
+                    reasons_parts.append(
+                        f"FAILED trace gates: {', '.join(trace_checks_result.failed_gate_ids)}"
+                    )
+                reasons_parts.extend(
+                    f"Trace check {item.id}: {item.message}"
+                    for item in trace_checks_result.constraints
+                    if not item.passed
+                )
+
         # LLM Judge — NOT computed here. The rubric judge runs runner-side on the
         # shared ToolCallingLoop (runner/service.py GradeTrial → core/grading/judge.py).
         # This engine intentionally leaves ``components.llm_judge`` unset.
@@ -180,57 +220,86 @@ class GradingEngine:
                 final_env_state=final_env_state,
                 custom_config=self.config.custom_checks,
             )
-            components.custom_checks = custom_score
+            if custom_score is not None:
+                components.custom_checks = custom_score
             if custom_reasons:
                 reasons_parts.append(f"Custom: {custom_reasons}")
 
-        final_score, binary_pass = self._combine(components)
+        folded = self._combine(components)
+        if folded.reason:
+            reasons_parts.append(folded.reason)
+        binary_pass = folded.binary_pass
+
+        # A tripped trace gate fails the trial outright — independent of
+        # pass_threshold and of any other heavily-weighted component. The same act
+        # the runner performs on the rubric judge's gate in ``service.py``.
+        if trace_checks_result.gate_failed:
+            binary_pass = False
 
         return Grade(
             binary_pass=binary_pass,
-            score=final_score,
+            score=folded.score,
             components=components,
             reasons=" | ".join(reasons_parts) if reasons_parts else "All checks passed",
             state_diff=state_diff_result,
             custom_checks_details=custom_checks_details,
+            trace_check_results=trace_checks_result.constraints,
+            trace_checks_summary=TraceChecksSummary(
+                winning_path=trace_checks_result.winning_path,
+                gate_failed=trace_checks_result.gate_failed,
+                failed_gate_ids=trace_checks_result.failed_gate_ids,
+                paths=trace_checks_result.paths,
+            ),
         )
 
-    def _combine(self, components: GradeComponents) -> tuple[float, bool]:
-        """Aggregate the scored components into ``(score, binary_pass)`` by the author's method.
+    def _combine(self, components: GradeComponents) -> FoldedGrade:
+        """Aggregate the scored components into a verdict by the author's method.
 
-        ``combine.weights`` decides which components enter the map at all: a scored
-        component with no declared weight is left out of the mean's numerator, its
-        denominator and the aggregation. With nothing in the map there is nothing to
-        aggregate, and the trial's verdict is the threshold comparison alone.
+        Every component this engine scored carries a declared weight or the fold raises:
+        the mean cannot say what share a component holds without one, and both candidate
+        defaults discard something. A fold with no weighted scored component decides
+        before the aggregation, and says why — never a bare ``0.0`` beside components
+        that all read as passing, and never a ``1.0`` nothing earned.
         """
-        weights = self.config.combine.weights
-        component_scores: dict[str, float] = {}
-        final_score = 0.0
-        total_weight = 0.0
-        for name, score in (
-            ("state_checks", components.state_checks),
-            ("transcript_rules", components.transcript_rules),
-            ("llm_judge", components.llm_judge),
-            ("custom_checks", components.custom_checks),
-        ):
-            if score is None or name not in weights:
-                continue
-            component_scores[name] = score
-            final_score += score * weights[name]
-            total_weight += weights[name]
+        combine = self.config.combine
+        weights = combine.weights
+        component_scores = {
+            spec.name: score
+            for spec in GRADE_COMPONENTS
+            if (score := getattr(components, spec.core_field)) is not None
+        }
+        shares = {name: require_component_weight(name, weights) for name in component_scores}
 
-        if total_weight > 0:
-            final_score = final_score / total_weight
-
-        if not component_scores:
-            return final_score, final_score >= self.config.combine.pass_threshold
-
-        return combine_by_method(
-            method=self.config.combine.method,
-            component_scores=component_scores,
-            weighted_mean=final_score,
-            pass_threshold=self.config.combine.pass_threshold,
+        uncounted = resolve_uncounted_fold(
+            scored=component_scores,
+            requested=self._requested_components(),
+            weights=weights,
+            method=combine.method,
         )
+        if uncounted is not None:
+            return uncounted
+
+        total_weight = sum(shares.values())
+        weighted_mean = (
+            sum(score * shares[name] for name, score in component_scores.items()) / total_weight
+            if total_weight
+            else 0.0
+        )
+        score, binary_pass = combine_by_method(
+            method=combine.method,
+            component_scores=component_scores,
+            weighted_mean=weighted_mean,
+            pass_threshold=combine.pass_threshold,
+        )
+        return FoldedGrade(score=score, binary_pass=binary_pass)
+
+    def _requested_components(self) -> set[str]:
+        """The components this config asks to be scored, by the shared predicate."""
+        return {
+            spec.name
+            for spec in GRADE_COMPONENTS
+            if component_requested(spec, getattr(self.config, spec.config_section))
+        }
 
     def _grade_state_checks(
         self, final_env_state: dict[str, Any]
@@ -240,17 +309,38 @@ class GradingEngine:
         The two sources read two levels of ``final_env_state``: JSONPath assertions
         read it whole, so an author writes ``$.db.<table>``, and the hash reads the
         unwrapped database inside it (:func:`extract_db_state`).
+
+        ``None`` — the component was not evaluated — is the answer when neither
+        source produced a verdict. An empty assertion list is not a source: it
+        declares nothing to evaluate, so it yields no verdict and contributes
+        nothing to the fold.
+
+        ``db_probes`` cannot share the component with either of them, and the refusal is
+        re-resolved here for the same reason the weight is: the ``hash`` block is an
+        untyped dict, so nothing stops a caller mutating it after validation.
+
+        Raises:
+            ValueError: the block declares ``db_probes`` beside a source this fold would
+                also score, so the component has two verdicts and no declared share.
         """
         checks = self.config.state_checks
-        hash_score, hash_reasons, diff_result = self._check_state_hash(final_env_state)
-        jsonpath_score, jsonpath_reasons = self.state_checker.check_jsonpaths(
-            final_env_state, checks.jsonpaths
+        refuse_probes_beside_another_state_source(
+            db_probes=checks.db_probes,
+            jsonpaths=checks.jsonpaths,
+            hash_config=checks.hash,
+            context="grading.yaml state_checks",
         )
-        if hash_score is not None and not checks.jsonpaths:
-            # An empty assertion list scores a vacuous 1.0, which must not blend
-            # against a real hash verdict — a hash-failing tau-style pack would
-            # collect jsonpath credit for assertions it never made.
-            jsonpath_score = None
+        hash_score, hash_reasons, diff_result, replay = self._check_state_hash(final_env_state)
+        # Not called for an empty list: ``check_jsonpaths`` answers "what fraction of
+        # these assertions passed?", and its honest answer over zero assertions is
+        # ``1.0``. Keeping the vacuous value out of this scope is what stops it
+        # reaching the fold as a verdict.
+        jsonpath_score: float | None = None
+        jsonpath_reasons: list[str] = []
+        if checks.jsonpaths:
+            jsonpath_score, jsonpath_reasons = self.state_checker.check_jsonpaths(
+                final_env_state, checks.jsonpaths
+            )
 
         # Re-resolved here rather than trusted from load: ``state_checks.hash`` is an
         # untyped dict, so nothing stops a caller mutating it after validation.
@@ -268,22 +358,42 @@ class GradingEngine:
             hash_score=hash_score, jsonpath_score=jsonpath_score, hash_weight=hash_weight
         )
         reasons = jsonpath_reasons + hash_reasons
+        replay_reason = incomplete_replay_reason(replay) if replay is not None else None
+        if replay_reason:
+            reasons.append(replay_reason)
         if inert_reason:
             reasons.append(inert_reason)
         return score, "; ".join(reasons), diff_result
 
     def _check_state_hash(
         self, final_env_state: dict[str, Any]
-    ) -> tuple[float | None, list[str], dict[str, Any] | None]:
-        """Return the state-hash verdict, its reasons, and the state diff.
+    ) -> tuple[float | None, list[str], dict[str, Any] | None, GoldenReplayRecord | None]:
+        """Return the state-hash verdict, its reasons, the state diff, and the replay.
 
-        ``None`` is *no verdict*: hash grading is off, or it is on and could not
-        run — which is reported rather than scored as a failed hash check.
+        ``None`` is *no verdict*: hash grading is off, or it is on and the block
+        declares no source to check against — which is reported rather than scored as a
+        failed hash check. The replay record is ``None`` for every source but
+        ``golden_actions``, the only one that replays anything.
+
+        The two sources are read in order, and the order bounds what the replay world
+        has to hold: a truthy ``expected_state_hash`` is compared in process and returns
+        before ``golden_actions`` is read at all, so a pack declaring both never replays
+        and needs no world.
+
+        Raises:
+            UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
+                truthy without being a list at all, so no reader can iterate it. Refused
+                at this read, above the world the actions would otherwise need. An element
+                *inside* a list that is no mapping is a different shape, answered by the
+                replay's own name resolution.
+            UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
+                the task declares no world to replay them against, so there is no
+                expected state and the trial is left unscored.
         """
         checks = self.config.state_checks
         hash_config = checks.hash or {}
         if not hash_config.get("enabled", False):
-            return None, [], None
+            return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
         expected_hash = hash_config.get("expected_state_hash")
@@ -291,36 +401,37 @@ class GradingEngine:
             score, reason = self.state_checker.check_hash(
                 db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
             )
-            return score, [reason], None
+            return score, [reason], None, None
 
         golden_actions = hash_config.get("golden_actions")
         if not golden_actions:
-            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None
-        if not (self.task_dir and self.task_initial_state and self.task_mcp_server):
-            return None, [_HASH_NOT_CHECKED_NO_REPLAY_CONTEXT], None
-        if not self.task_initial_state.json_db:
-            raise GoldenReplayError(
-                "state_checks.hash.golden_actions must replay against the task's "
-                "initial_state.json_db, and this task declares none"
-            )
+            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
+        refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
+        world = require_golden_replay_world(
+            task_dir=self.task_dir,
+            initial_state_json_db=(
+                self.task_initial_state.json_db if self.task_initial_state else None
+            ),
+            mcp_server=self.task_mcp_server,
+        )
 
-        score, reason, diff_result = self.state_checker.check_hash_against_golden_replay(
+        score, reason, diff_result, replay = self.state_checker.check_hash_against_golden_replay(
             db_state=db_state,
             golden_actions=golden_actions,
-            task_dir=self.task_dir,
-            initial_state_path=self.task_initial_state.json_db,
-            mcp_server_path=self.task_mcp_server,
+            task_dir=world.task_dir,
+            initial_state_path=world.initial_state_path,
+            mcp_server_path=world.mcp_server_path,
             task_domain=self.task_domain,
             numeric_string_fields=checks.numeric_string_fields,
         )
-        return score, [reason], diff_result
+        return score, [reason], diff_result, replay
 
     def _run_custom_checks(
         self,
         trajectory: Trajectory,
         final_env_state: dict[str, Any],
         custom_config: dict[str, Any],
-    ) -> tuple[float, str, list[CustomCheckDetail] | None]:
+    ) -> tuple[float | None, str, list[CustomCheckDetail] | None]:
         """
         Run custom Python checks from checks.py.
 
@@ -330,7 +441,12 @@ class GradingEngine:
             custom_config: Custom checks configuration from grading.yaml
 
         Returns:
-            Tuple of (score, reasons_string, detailed_results)
+            Tuple of (score, reasons_string, detailed_results). The score is ``None``
+            where the suite decided nothing — every check skipped, or the file declared
+            none — so the component is left unscored rather than folded as a ``0.0``
+            nothing earned. A suite that could not run at all is a different answer and
+            keeps its ``0.0``: the checks the author declared were meant to decide the
+            trial and could not, which is a failure rather than an absence.
         """
         if not self.task_dir:
             logger.warning("Cannot run custom checks: task_dir not set")
@@ -404,7 +520,7 @@ class GradingEngine:
             reasons.append(f"{result.skipped} skipped")
 
         return (
-            result.aggregate_score,
+            result.aggregate_score if result.decided_something else None,
             ", ".join(reasons) if reasons else "no checks",
             detailed_results,
         )

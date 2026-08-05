@@ -25,7 +25,7 @@ import sys
 import threading
 import time
 import traceback
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -54,10 +54,18 @@ from tolokaforge.core.grading.checks_interface import (
 from tolokaforge.core.grading.checks_interface import (
     ToolCall as CheckToolCall,
 )
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenReplayRecord,
+    declared_failure,
+    resolve_golden_action_names,
+)
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
 from tolokaforge.core.grading.state_diff import render_state_diff
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
     TrialTimeline,
@@ -86,7 +94,7 @@ from tolokaforge.runner.db_client import (
 )
 from tolokaforge.runner.grading import (
     build_grade_reasons,
-    combine_grade_components,
+    compose_runner_trial_verdict,
     compute_state_diff,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
@@ -102,7 +110,7 @@ from tolokaforge.runner.grading_ledger import (
     JSONPATHS_KEY,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
-    NO_TRANSCRIPT_INPUT_SKIP,
+    NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
     transcript_rules_author_keys,
@@ -117,9 +125,12 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerGradeComponents,
+    RunnerTranscriptRulesConfig,
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
+    TraceChecksConfig,
+    TraceChecksResult,
     TranscriptEvaluationResult,
 )
 from tolokaforge.runner.protocol import (
@@ -136,6 +147,7 @@ from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
     RAGSearchToolWrapper,
+    ToolCallOutcome,
     ToolFactory,
     ToolLifecycleContext,
     ToolReconstructionError,
@@ -232,6 +244,84 @@ def _executor_error_to_wire(error: str) -> "pb2.CustomCheckResult":
         score=0.0,
         message=error,
         details_json="",
+    )
+
+
+def _tool_registered_for_trial(name: str, registered: Collection[str]) -> str | None:
+    """The runner resolves a golden-action name against the tools it registered.
+
+    Golden actions are authored unprefixed, so a registered name ending in
+    ``_<name>`` resolves too. Not core's rule, which matches the pack's ``TOOLS``
+    map exactly; #815 owns unifying the two namespaces.
+    """
+    if name in registered:
+        return name
+    return next((candidate for candidate in registered if candidate.endswith(f"_{name}")), None)
+
+
+async def _invoke_golden_tool(tool: Any, arguments: dict[str, Any]) -> ToolCallOutcome:
+    """What a registered tool answered a replayed golden action with, and how it read the call.
+
+    ``execute_call`` first, which every ``ToolWrapper`` carries and which is the one shape
+    able to report a substrate declaring the call a failure beside the text it answered; the
+    outcome it hands over is read for its type, its content — the output text, the flag's
+    value — being its implementor's contract to keep. Every other shape reports no declared
+    failure, having no substrate to hear from, and hands its answer back rather than dropping
+    it, because the answer is what :func:`declared_failure` reads a reported failure out of:
+    a shape whose return were dropped would record no failure a pack signalling through it
+    declared.
+
+    An answer this cannot read is refused, never recorded as a success — a registered object
+    reachable through none of those shapes, an ``execute_call`` answering anything but a
+    :class:`ToolCallOutcome`, and anything the arms above build an outcome from that is not
+    the ``str`` every payload the runner reads is. The refusal names the offending shape and
+    reaches the replay loop's ``except`` arm, which records the action as raised; a golden
+    action read as having taken effect when nothing about it could be read is the world the
+    trial is then hashed against being wrong with nothing said about it.
+    """
+    if hasattr(tool, "execute_call"):
+        outcome = await tool.execute_call(arguments)
+        if not isinstance(outcome, ToolCallOutcome):
+            raise TypeError(
+                f"A replayed golden action's execute_call answered {type(outcome).__name__!r} "
+                "where the replay reads a ToolCallOutcome, so what the call did cannot be read."
+            )
+        return outcome
+    if hasattr(tool, "execute"):
+        return _readable_outcome(await tool.execute(arguments))
+    if not callable(tool):
+        raise TypeError(
+            f"Registered tool of type {type(tool).__name__!r} answers a replayed golden action "
+            "through neither execute_call, execute, nor a call, so nothing it did can be read."
+        )
+    if inspect.iscoroutinefunction(tool):
+        return _readable_outcome(await tool(arguments))
+    loop = asyncio.get_event_loop()
+    return _readable_outcome(await loop.run_in_executor(None, lambda: tool(arguments)))
+
+
+def _readable_outcome(answer: object) -> ToolCallOutcome:
+    """The outcome a shape with no substrate to hear from answered, refused unless it reads.
+
+    Refused rather than coerced when the answer is not a ``str``: ``str()`` of a mapping
+    destroys the ``"error"`` key :func:`declared_failure` reads a reported failure out of, so
+    coercing turns a failure a pack declared into a silent success — worse than either
+    accepting or refusing it. A coroutine, which is what an ``async`` ``__call__`` hands the
+    sync-executor arm since :func:`inspect.iscoroutinefunction` reads the object rather than
+    its ``__call__``, is closed before the refusal so it draws no "never awaited" warning.
+
+    The refusal covers a *success* mapping too, so a pack out of this tree signalling through
+    a mapping-answering duck-typed callable gains a raised annotation on every golden action
+    it replays, its verdict unchanged. A wrapper answering a :class:`ToolCallOutcome` through
+    ``execute_call`` is read as it means and gains none.
+    """
+    if isinstance(answer, str):
+        return ToolCallOutcome(output=answer, declared_failure=False)
+    if inspect.iscoroutine(answer):
+        answer.close()
+    raise TypeError(
+        f"A replayed golden action answered {type(answer).__name__!r} where the replay reads a "
+        "str, so what the call did cannot be read from it."
     )
 
 
@@ -1425,9 +1515,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             accounted_keys[JSONPATHS_KEY] = EVALUATED
             logger.info(f"GradeTrial: {trial_id} - Jsonpath checks: score={jsonpath_score:.2f}")
 
-        # A.3) DB PROBES (substrate SQL assertions) — the sole state source for
-        # tasks that use it; combining db_probes with hash/jsonpath checks in one
-        # task is out of scope, so its score fills the state_checks component.
+        # A.3) DB PROBES (substrate SQL assertions) — the block's only state source:
+        # a hash verdict or a jsonpath score declared beside a probe is refused, so a
+        # probe score is the state_checks component rather than one of two candidates.
         if state_checks_config and state_checks_config.db_probes:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating "
@@ -1443,28 +1533,24 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # B) TRANSCRIPT RULES GRADING (if transcript_rules exist)
         transcript_rules_config = grading_config.transcript_rules
         if transcript_rules_config:
-            # A timeline with no events is a trial that left no trace of itself:
-            # neither a conversational turn nor a tool call. Every rule would
-            # score 0.0 against evidence we do not have, so the keys are recorded
-            # as skipped and the component is left out of the combine.
-            if timeline.events:
-                logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-                # Pass the author-facing TranscriptRulesConfig as a dict; the
-                # grader decomposes its fields (must_contain / disallow_regex /
-                # max_turns / required_actions / communicate_info) into per-field
-                # sub-checks.
-                rules_dict = transcript_rules_config.model_dump()
-                transcript_result = evaluate_transcript_rules(timeline, rules_dict)
+            transcript_result, transcript_accounting = self._grade_transcript_rules(
+                trial_id, transcript_rules_config, timeline
+            )
+            accounted_keys.update(transcript_accounting)
+            if transcript_result is not None:
                 components.transcript_pass = transcript_result.passed
                 components.transcript_score = transcript_result.score
-                accounted_keys.update(transcript_result.accounted_keys)
-            else:
-                logger.info(
-                    f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
-                )
-                accounted_keys.update(
-                    dict.fromkeys(transcript_rules_author_keys(), NO_TRANSCRIPT_INPUT_SKIP)
-                )
+
+        # B.1) TRACE CHECKS — declarative constraints over the event timeline,
+        # scored by the same function the core engine calls.
+        trace_checks_result = TraceChecksResult()
+        if grading_config.trace_checks:
+            trace_checks_result = self._grade_trace_checks(
+                trial_id, grading_config.trace_checks, timeline
+            )
+            accounted_keys.update(trace_checks_result.accounted_keys)
+            if trace_checks_result.constraints:
+                components.trace_checks_score = trace_checks_result.score
 
         # B.2) LLM JUDGE GRADING (if llm_judge configured) — runner-side read-only
         # rubric judge on the shared ToolCallingLoop. Returns per-criterion results
@@ -1514,10 +1600,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 else:
                     judge_status = pb2.JUDGE_STATUS_COMPLETED
                     judge_gate_failed = judge_result.gate_failed
-                    # A failed required criterion is a HARD fail of the component
-                    # regardless of the weighted score — a high score must not
-                    # rescue it. Feed 0.0 so the combine reflects the gate.
-                    components.llm_judge_score = 0.0 if judge_gate_failed else judge_result.score
+                    # The judge's raw aggregate; the required-criterion gate is applied
+                    # by ``compose_runner_trial_verdict`` below.
+                    components.llm_judge_score = judge_result.score
                     logger.info(
                         f"GradeTrial: {trial_id} - LLM judge: "
                         f"score={judge_result.score:.2f}, gate_failed={judge_gate_failed}"
@@ -1562,21 +1647,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 db_probe_score=components.db_probe_score,
                 hash_weight=state_checks_config.hash_weight if state_checks_config else None,
             )
+            verdict = compose_runner_trial_verdict(
+                components.model_dump(),
+                grading_config.model_dump(),
+                judge_gate_failed=judge_gate_failed,
+                trace_gate_failed=trace_checks_result.gate_failed,
+            )
         except ValueError as exc:
             logger.error(f"GradeTrial: {trial_id} - {exc}")
             return pb2.GradeTrialResponse(
                 success=False,
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
-
+        # The gated component, not the judge's raw aggregate, is what the wire grade and
+        # the reasons carry — so the write-back happens before either is built.
+        components.llm_judge_score = verdict.judge_component
         components_dict = components.model_dump()
-        grading_config_dict = grading_config.model_dump()
-        score, binary_pass = combine_grade_components(components_dict, grading_config_dict)
-
-        # A failed required rubric criterion fails the trial outright — independent
-        # of pass_threshold and any other heavily-weighted component.
-        if judge_gate_failed:
-            binary_pass = False
+        score, binary_pass = verdict.score, verdict.binary_pass
 
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None
@@ -1586,6 +1673,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             state_diff_dict,
             transcript_result_dict,
             judge_reasons=judge_reasons or None,
+            trace_checks_result=trace_checks_result.model_dump(mode="json"),
+            golden_replay=hash_result.golden_replay if hash_result is not None else None,
         )
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
             reasons += f" | JUDGE ERRORED: {judge_reasons}"
@@ -1600,14 +1689,24 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if state_checks_slot.inert_weight_reason:
             reasons += f" | {state_checks_slot.inert_weight_reason}"
 
-        # Append golden action errors if any (critical for debugging golden replay failures)
-        if hash_result and hash_result.golden_action_errors:
-            errors_str = "; ".join(hash_result.golden_action_errors)
-            reasons += f" | GOLDEN REPLAY ERRORS: {errors_str}"
+        # A fold that counted nothing is not described by any component's reasons, so its
+        # own sentence is what stops a 0.0 arriving beside components that all read as passing.
+        if verdict.reason:
+            reasons += f" | {verdict.reason}"
 
         logger.info(
             f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
             f"termination_reason={termination_reason.value if termination_reason else 'none'}"
+        )
+
+        # -1.0 is the wire's not-evaluated sentinel for a component.
+        wire_component_scores = {
+            spec.name: getattr(components, spec.runner_score_field)
+            for spec in GRADE_COMPONENTS
+            if spec.runner_score_field is not None
+        }
+        wire_component_scores["state_checks"] = (
+            -1.0 if state_checks_slot.component is None else state_checks_slot.component
         )
 
         return pb2.GradeTrialResponse(
@@ -1616,15 +1715,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             grade=pb2.Grade(
                 binary_pass=binary_pass,
                 score=score,
-                components=pb2.GradeComponents(
-                    # -1.0 is the wire's not-evaluated sentinel for a component.
-                    state_checks=(
-                        -1.0 if state_checks_slot.component is None else state_checks_slot.component
-                    ),
-                    transcript_rules=components.transcript_score,
-                    llm_judge=components.llm_judge_score,
-                    custom_checks=components.custom_checks_score,
-                ),
+                components=pb2.GradeComponents(**wire_component_scores),
                 reasons=reasons,
                 state_diff_json=json.dumps(state_diff_dict) if state_diff_dict else "",
                 custom_checks=custom_check_wire_results,
@@ -1636,6 +1727,30 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 ],
                 judge_status=judge_status,
                 judge_report=judge_report,
+                trace_checks=[
+                    pb2.TraceConstraintResult(
+                        id=item.id,
+                        kind=item.kind,
+                        passed=item.passed,
+                        weight=item.weight,
+                        message=item.message,
+                        matched_positions=item.matched_positions,
+                        severity=item.severity,
+                        undecided=item.undecided,
+                    )
+                    for item in trace_checks_result.constraints
+                ],
+                trace_checks_summary=pb2.TraceChecksSummary(
+                    winning_path=trace_checks_result.winning_path,
+                    gate_failed=trace_checks_result.gate_failed,
+                    failed_gate_ids=trace_checks_result.failed_gate_ids,
+                    paths=[
+                        pb2.TracePathResult(
+                            id=path.id, score=path.score, gate_failed=path.gate_failed
+                        )
+                        for path in trace_checks_result.paths
+                    ],
+                ),
             ),
         )
 
@@ -1672,6 +1787,74 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return llm_messages, build_trial_timeline(
             decode_transcript_wire(transcript), trial_context.recorded, termination_reason
         )
+
+    def _grade_transcript_rules(
+        self,
+        trial_id: str,
+        transcript_rules_config: RunnerTranscriptRulesConfig,
+        timeline: TrialTimeline,
+    ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
+        """Score the pack's transcript rules, returning ``(result, accounted keys)``.
+
+        A ``None`` result is the trial that left no trace of itself — a timeline
+        carrying neither a conversational turn nor a tool call — and declared no
+        activity floor: nothing is evaluated and the component is left out of the
+        combine.
+
+        A declared floor *is* evaluated on that timeline, because no events is
+        precisely the answer it asks for, while every other rule would score
+        against evidence the trial does not carry. So the floor alone reaches the
+        evaluator there and its siblings are recorded as skipped — the blanket skip
+        goes down first so the floor's own record survives it.
+        """
+        activity_floor = transcript_rules_config.min_assistant_turns
+        skipped_siblings: dict[str, KeyAccountingRecord] = {}
+        if timeline.events:
+            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
+            # The author-facing RunnerTranscriptRulesConfig as a dict; the grader
+            # decomposes its fields (must_contain / disallow_regex / max_turns /
+            # min_assistant_turns / required_actions / communicate_info) into
+            # per-field sub-checks.
+            rules_dict = transcript_rules_config.model_dump()
+        elif activity_floor is None:
+            logger.info(
+                f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
+            )
+            return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
+        else:
+            logger.info(
+                f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
+                "(no messages or tool calls)"
+            )
+            rules_dict = RunnerTranscriptRulesConfig(
+                min_assistant_turns=activity_floor
+            ).model_dump()
+            skipped_siblings = dict.fromkeys(
+                transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
+            )
+
+        result = evaluate_transcript_rules(timeline, rules_dict)
+        return result, {**skipped_siblings, **result.accounted_keys}
+
+    def _grade_trace_checks(
+        self, trial_id: str, config: TraceChecksConfig, timeline: TrialTimeline
+    ) -> TraceChecksResult:
+        """Score the pack's trace checks over the timeline both substrates build.
+
+        A result carrying no constraint verdicts is the trial that left no trace
+        of itself — a timeline with neither a conversational turn nor a tool call
+        — where every constraint would score against evidence the trial does not
+        have. The component is then left out of the combine, and the evaluator's
+        own accounting records the skip against each kind the block declared.
+        """
+        result = evaluate_trace_checks(timeline, config)
+        if not result.constraints:
+            logger.info(
+                f"GradeTrial: {trial_id} - Skipping trace checks (no messages or tool calls)"
+            )
+            return result
+        logger.info(f"GradeTrial: {trial_id} - Trace checks: score={result.score:.2f}")
+        return result
 
     async def _grade_llm_judge(
         self,
@@ -1817,6 +2000,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         follows ``fail_on_error`` — ``0.0`` when true (contributes to the
         weighted total as a fail), ``-1.0`` when false (component not
         evaluated).
+
+        A suite that ran and decided nothing — every check skipped, or the
+        file declared none — also returns ``-1.0``, the same answer the core
+        engine reaches through the shared
+        :attr:`CheckResultSet.decided_something`. Its aggregate over zero
+        verdicts is ``0.0``, which would fold as a component that failed.
         """
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
@@ -1916,6 +2105,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             f"GradeTrial: {trial_id} - custom checks: "
             f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
         )
+        if not result.decided_something:
+            return -1.0, wire_results
         return result.aggregate_score, wire_results
 
     async def _build_judge_state_diff(
@@ -2074,6 +2265,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         Execute hash-based grading algorithm.
 
         Steps:
+        0. Resolve every golden-action name
         1. Get current trial stable hash
         2. Snapshot current state
         3. Reset to initial state
@@ -2090,8 +2282,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             golden_actions: List of golden path actions to execute
 
         Returns:
-            HashGradingResult with hash_match, hash_score, and optional state_diff
+            HashGradingResult with hash_match, hash_score, an optional state_diff, and
+            the record of how much of the golden path ran
+
+        Raises:
+            UnresolvableGoldenAction: an action names no tool registered for the trial,
+                or names nothing at all. Raised before step 1, so the trial's database
+                is untouched — steps 1-4 mutate it, and a trial whose grading failed on
+                a pack defect must not be left holding the initial state.
         """
+        # 0. Resolve every authored name
+        resolved_tool_names = resolve_golden_action_names(
+            [action.tool_name for action in golden_actions],
+            candidates=trial_context.agent_tools.keys(),
+            match=_tool_registered_for_trial,
+        )
+
         # Detect MCP server wrappers — their state lives in a subprocess, not
         # in the db-service, so we must sync before hashing and reset the MCP
         # subprocess state when the db-service is reset.
@@ -2147,47 +2353,48 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # the JSON DB Service that mirrors it) uses deterministic ID generation
         # (len(existing) + 1), so hardcoded IDs in golden actions always match
         # the IDs produced on replay from the same initial state.
-        golden_action_errors: list[str] = []
+        replay_failures: list[FailedGoldenAction] = []
 
-        for i, action in enumerate(golden_actions):
+        for i, (registered_name, action) in enumerate(
+            zip(resolved_tool_names, golden_actions, strict=True)
+        ):
             tool_name = action.tool_name
             arguments = dict(action.arguments)  # copy
 
-            tool = trial_context.agent_tools.get(tool_name)
-            if tool is None:
-                # Try with domain prefix (golden actions use unprefixed names)
-                for registered_name in trial_context.agent_tools:
-                    if registered_name.endswith(f"_{tool_name}"):
-                        tool = trial_context.agent_tools[registered_name]
-                        logger.debug(
-                            f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
-                        )
-                        break
-            if tool is None:
-                # Golden action references tool that doesn't exist
-                err_msg = f"Golden action {i} ({tool_name}): tool not found"
-                logger.error(f"GradeTrial: {err_msg}")
-                golden_action_errors.append(err_msg)
-                continue  # Continue - partial golden state still useful
+            tool = trial_context.agent_tools[registered_name]
+            if registered_name != tool_name:
+                logger.debug(
+                    f"GradeTrial: Matched golden tool '{tool_name}' -> '{registered_name}'"
+                )
 
             try:
-                # Execute tool
-                if hasattr(tool, "execute"):
-                    await tool.execute(arguments)
-                elif callable(tool):
-                    if inspect.iscoroutinefunction(tool):
-                        await tool(arguments)
-                    else:
-                        loop = asyncio.get_event_loop()
-                        await loop.run_in_executor(None, lambda t=tool, a=arguments: t(a))
-                logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
-
+                outcome = await _invoke_golden_tool(tool, arguments)
             except Exception as e:
                 # Golden action failure — log with full traceback for debugging
-                err_msg = f"Golden action {i} ({tool_name}) failed: {type(e).__name__}: {e}"
-                logger.error(f"GradeTrial: {err_msg}")
+                logger.error(f"GradeTrial: Golden action {i} ({tool_name}) failed: {e}")
                 logger.error(traceback.format_exc())
-                golden_action_errors.append(err_msg)
+                replay_failures.append(FailedGoldenAction.from_exception(i, tool_name, e))
+                continue
+
+            if outcome.declared_failure:
+                logger.error(
+                    f"GradeTrial: Golden action {i} ({tool_name}) was declared a failure by its "
+                    f"substrate: {outcome.output}"
+                )
+                replay_failures.append(
+                    FailedGoldenAction.from_substrate_failure(i, tool_name, outcome.output)
+                )
+                continue
+
+            reported = declared_failure(outcome.output)
+            if reported is None:
+                logger.debug(f"GradeTrial: Golden action {i} executed: {tool_name}")
+                continue
+
+            logger.error(
+                f"GradeTrial: Golden action {i} ({tool_name}) reported a failure: {reported}"
+            )
+            replay_failures.append(FailedGoldenAction.from_reported_failure(i, tool_name, reported))
 
         # For MCP_SERVER tasks: sync subprocess state to db-service so the
         # hash reflects what the golden actions actually produced.
@@ -2244,7 +2451,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             hash_match=hash_match,
             hash_score=hash_score,
             state_diff=state_diff,
-            golden_action_errors=golden_action_errors,
+            golden_replay=GoldenReplayRecord(
+                authored=len(golden_actions), failures=tuple(replay_failures)
+            ),
         )
 
     # =========================================================================

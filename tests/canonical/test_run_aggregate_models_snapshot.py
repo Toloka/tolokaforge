@@ -82,6 +82,7 @@ def _make_trajectory(
     status: TrialStatus = TrialStatus.COMPLETED,
     termination_reason: TerminationReason | None = None,
     tool_log: list[RecordedToolCall] | None = None,
+    grading_error: str | None = None,
 ) -> Trajectory:
     """Build a Trajectory populated on every field the aggregate path reads.
 
@@ -91,7 +92,8 @@ def _make_trajectory(
     ``tool_log`` drives the tool-execution branch of
     :func:`attribute_failure`, which produces ``evidence`` entries
     carrying a ``tool`` key — the source of the ``by_tool`` counter in
-    :func:`summarize_failure_attributions`.
+    :func:`summarize_failure_attributions`. ``grading_error`` drives the
+    ungradeable path and carries no ``Grade``, the two being mutually exclusive.
     """
     now = datetime.now(tz=UTC)
     return Trajectory(
@@ -118,11 +120,16 @@ def _make_trajectory(
                 cache_read_input_tokens=90,
             ),
         ),
-        grade=Grade(
-            binary_pass=binary_pass,
-            score=score,
-            components=GradeComponents(state_checks=score),
+        grade=(
+            None
+            if grading_error
+            else Grade(
+                binary_pass=binary_pass,
+                score=score,
+                components=GradeComponents(state_checks=score),
+            )
         ),
+        grading_error=grading_error,
     )
 
 
@@ -226,15 +233,22 @@ def test_per_task_metrics_round_trip_with_every_outcome_class() -> None:
             status=TrialStatus.ERROR,
             termination_reason=TerminationReason.RATE_LIMIT,
         ),
+        _make_trajectory(
+            trial_index=3,
+            termination_reason=TerminationReason.AGENT_DONE,
+            grading_error="Grading failed for trial 'task-outcomes:3': not gradeable",
+        ),
     ]
     payload = calculate_task_metrics(trajectories)
     payload = _augment_task_metrics(payload, task_id="task-outcomes")
 
     assert payload["infrastructure_aborts"]["rate_limit"] == 1
+    assert payload["ungradeable"] == 1
     assert {row["class"] for row in payload["outcomes_by_reason"].values()} == {
         "measured",
         "harness_error",
         "infrastructure_abort",
+        "ungradeable",
     }
     _round_trip(PerTaskMetrics, payload)
     _round_trip(AggregateMetrics, calculate_aggregate_metrics([payload], weighted=True))
@@ -245,7 +259,7 @@ def test_per_task_metrics_round_trip_with_every_outcome_class() -> None:
     assert [type(reason) for reason in model.infrastructure_aborts] == [TerminationReason] * 3
     assert [type(row.outcome_class) for row in model.outcomes_by_reason.values()] == [
         TrialOutcomeClass
-    ] * 3
+    ] * 4
 
 
 @pytest.mark.parametrize(

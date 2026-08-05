@@ -1,18 +1,19 @@
 # Three-way weighted grading for helpdesk_01.
 #
-#   state_checks.db_probes (0.6) — the substrate oracle. Reads postgres directly
+#   state_checks.db_probes (0.6)  — the substrate oracle. Reads postgres directly
 #     through the read-only `grader` role and encodes *policy correctness*: the
 #     CRM case and the delivery annotation must both carry `reschedule`, the one
 #     path the after-hours policy permits for a site with neither cold storage
 #     nor a specialist. This component alone is discriminating, so a wrong-path
 #     run fails even if the llm_judge errors and is dropped from the combine.
-#   transcript_rules      (0.15) — the agent searched policy, created the case,
-#     and annotated the delivery over http_request, within the turn budget.
-#   llm_judge             (0.25) — the CRM summary names the customer + delivery
+#   trace_checks           (0.25) — the process: the query rode in the body of the
+#     fixed-URL POST /search, policy was read before the case was written, and the
+#     delivery was not annotated ahead of the policy that justifies the value.
+#   llm_judge              (0.15) — the CRM summary names the customer + delivery
 #     and justifies the reschedule from the site's lack of cold storage/specialist.
 combine:
   method: weighted
-  weights: { state_checks: 0.6, transcript_rules: 0.15, llm_judge: 0.25 }
+  weights: { state_checks: 0.6, trace_checks: 0.25, llm_judge: 0.15 }
   pass_threshold: 0.6
 state_checks:
   db_probes:
@@ -28,12 +29,57 @@ state_checks:
       query: "SELECT resolution_path FROM deliveries WHERE delivery_id = 4021"
       expect:
         - { path: "$.rows[0].resolution_path", equals: "reschedule", description: "delivery annotated with the handoff decision" }
-transcript_rules:
-  max_turns: 18
-  required_actions:
-    - { action_id: search_policy,  requestor: assistant, name: http_request, arguments: { url: "http://policy-search:8000/search", method: "POST" },  compare_args: [url, method] }
-    - { action_id: create_case,    requestor: assistant, name: http_request, arguments: { url: "http://crm:8000/cases", method: "POST" },              compare_args: [url, method] }
-    - { action_id: annotate_deliv, requestor: assistant, name: http_request, arguments: { url: "http://delivery-tracker:8000/deliveries/4021", method: "PATCH" }, compare_args: [url, method] }
+trace_checks:
+  constraints:
+    - id: policy_query_rides_in_the_body
+      description: "the policy corpus is searched with a non-empty query in the JSON body of the fixed POST /search URL"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: http_request }
+            args:
+              url: { equals: "http://policy-search:8000/search" }
+              method: { equals: "POST" }
+              json.q: { len_gt: 0 }
+    - id: policy_read_before_the_case_is_written
+      description: "the policy corpus is searched before the CRM case is created, so the recorded path follows from policy"
+      require:
+        before:
+          left:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                url: { equals: "http://policy-search:8000/search" }
+                method: { equals: "POST" }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                url: { equals: "http://crm:8000/cases" }
+                method: { equals: "POST" }
+    - id: delivery_not_annotated_before_the_policy_read
+      description: "no resolution is written onto the delivery before the policy search that justifies it"
+      require:
+        absent_before:
+          forbidden:
+            kind: tool_call
+            tool: { equals: http_request }
+            args:
+              url: { equals: "http://delivery-tracker:8000/deliveries/4021" }
+              method: { equals: "PATCH" }
+          anchor:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                url: { equals: "http://policy-search:8000/search" }
+                method: { equals: "POST" }
 llm_judge:
   rubric:
     reference: |

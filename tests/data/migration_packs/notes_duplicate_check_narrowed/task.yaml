@@ -1,0 +1,28 @@
+task_id: "notes_add_note_duplicate_check_gated"
+name: "Fixture — the notes duplicate-check criterion, narrowed"
+category: "test"
+description: >
+  A stand-in for the shipped notes duplicate-check testcase, declaring the same narrow
+  while declaring no post-migration weight map — which is what makes the source of
+  `reconcile`'s counterfactual measurable, since the map it folds under can then only have
+  come from the declaration. It declares the same task_id as the not-met bundles in
+  tests/data/migration_corpora/notes_duplicate_check/, so `tolokaforge reconcile --packs
+  tests/data/migration_packs` resolves that corpus here. That task_id is the shipped one,
+  which is why tests/data is never a default pack root.
+
+initial_state: {}
+
+tools:
+  agent:
+    enabled:
+      - list_notes
+      - add_note
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+grading: "grading.yaml"

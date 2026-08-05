@@ -3,8 +3,9 @@
 Runs the full calibration pipeline — real ``LLMJudge`` over the bundled
 golden fixture with a cheap model — and asserts it completes and produces a
 report. It does NOT assert an exact agreement number: the judge is agentic and
-nondeterministic even at temperature 0, so pinning κ would be flaky. The deterministic agreement maths is pinned by ``test_metrics.py`` and
-the plumbing by ``test_harness_scripted.py``.
+nondeterministic even at temperature 0, so pinning κ would be flaky. The
+deterministic agreement maths is pinned by ``tests/unit/grading/test_agreement.py``
+and the plumbing by ``test_harness_scripted.py``.
 
 Run with:
     scripts/with_env.sh uv run pytest \\
@@ -17,8 +18,9 @@ from pathlib import Path
 
 import pytest
 from rubric_calibrator.fixture import load_fixtures
-from rubric_calibrator.metrics import decide_gate
 from rubric_calibrator.runner import run_calibration
+
+from tolokaforge.core.grading.agreement import decide_gate
 
 pytestmark = [pytest.mark.integration, pytest.mark.requires_api, pytest.mark.llm]
 

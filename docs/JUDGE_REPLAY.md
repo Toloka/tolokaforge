@@ -5,6 +5,20 @@ run, producing new replay grade artifacts and leaving the originals untouched. I
 does not re-run the agent or any environment service, so it spends judge tokens
 only.
 
+Re-checking the **deterministic** side of the same recorded run — a pack's
+[`trace_checks`](GRADING.md#trace-checks) constraints — is
+[`tolokaforge retrace`](TRACE_REPLAY.md), a separate command because it spends
+nothing at all: no judge, no tokens, no containers. Reach for `rejudge` when the
+judge is what changed, and for `retrace` when a constraint is. Neither command
+discovers the other's output.
+
+Deciding whether a constraint can *replace* a rubric criterion is a third command,
+[`tolokaforge reconcile`](RUBRIC_MIGRATION.md), which also spends nothing: it reads the
+judge verdicts a bundle already recorded rather than producing new ones. Its labels come
+only from the original bundle's `grade.yaml.criterion_results` and never from a replay
+grade — a replay's deterministic components and gates are absent (#775), so a replay grade
+cannot supply the label a migration is judged against.
+
 ## When to use it
 
 - **Validate a judge change.** After editing the `submit_report` schema, the judge

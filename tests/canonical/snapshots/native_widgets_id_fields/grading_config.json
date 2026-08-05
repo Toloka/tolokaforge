@@ -15,14 +15,22 @@
     "id_fields": {
       "widgets": "widget_id"
     },
-    "jsonpaths": [],
+    "jsonpaths": [
+      {
+        "description": "widget W1 is no longer pending",
+        "equals": "active",
+        "path": "$.db.widgets[0].status"
+      }
+    ],
     "numeric_string_fields": [],
     "relaxed_validation": false
   },
+  "trace_checks": null,
   "transcript_rules": {
     "communicate_info": [],
     "disallow_regex": [],
     "max_turns": 5,
+    "min_assistant_turns": null,
     "must_contain": [],
     "required_actions": [],
     "tool_expectations": null

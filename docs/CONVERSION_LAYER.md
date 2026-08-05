@@ -40,7 +40,7 @@ tolokaforge adapter convert \
 | `--tasks-glob` | Yes | Glob pattern for source tasks (interpretation is adapter-specific) |
 | `--output` | Yes | Output directory |
 | `--adapter-params` | No | JSON string of extra adapter params |
-| `--validate` | No | Run validation pass on converted output |
+| `--validate` | No | Load each converted `task.yaml` after conversion — the task's own shape, not the grading gate `tolokaforge validate` applies |
 | `--verbose` | No | Enable debug logging |
 
 ## Output Format
@@ -100,7 +100,17 @@ state_checks:
   hash:
     enabled: true
     weight: 1.0
+    expected_state_hash: "3f2a…"         # the state the converted golden path produces
 ```
+
+Grading by golden-action **replay** — `hash.golden_actions` in place of the literal above —
+needs one thing more than the conversion layer writes: the actions are replayed against
+the task's own MCP server module, so `task.yaml` has to declare `tools.agent.mcp_server`
+as well. A converted pack declaring `golden_actions` without it is refused by
+`tolokaforge validate` and by a run's pre-flight, because the replay has no world to be
+built in and the trial would take no state-hash verdict at all — see
+[`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible). `convert --validate`
+does not reach that: it loads each converted `task.yaml` and nothing further.
 
 #### `fixtures/tools.json`
 

@@ -23,6 +23,7 @@ bumped and this document is updated in the same commit.
         └── {trial_index}/
             ├── task.yaml
             ├── trajectory.yaml             ← message trace + status + metrics
+            ├── tool_log.yaml               ← the trial's ordered tool-call record
             ├── env.yaml
             ├── metrics.yaml
             ├── grade.yaml                  ← only when the trial produced a grade
@@ -226,6 +227,7 @@ start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
+grading_error: null                                   # why grading produced no verdict, or null
 messages:
   - role: "user"
     content: "..."
@@ -253,6 +255,7 @@ messages:
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
 | `simulator_schema_version` | `int` | always `1` today | Monotonic; bump whenever the simulator prompt shape changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 
 ### `messages[*].reasoning.summary` — when populated
 
@@ -279,6 +282,61 @@ The `reasoning` block is extracted by the provider-specific `ReasoningCodec`
 registered on the preset (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md) § `reasoning_codec`). Non-reasoning
 models emit `reasoning: null`.
+
+## `trials/{task_id}/{trial_index}/tool_log.yaml`
+
+The trial's ordered tool-call record — one
+[`RecordedToolCall`](../tolokaforge/runner/models.py) per attempted call, in
+`sequence` order, as a plain YAML list:
+
+```yaml
+- call_id: toolu_01Hx…
+  sequence: 0
+  tool_name: http_request
+  arguments:
+    url: http://app-service:8000/lots/7
+    method: GET
+  executor: agent
+  status: success
+  output: |-
+    Status: 200
+    Response (JSON):
+    {'lot_id': 7, 'lot_code': 'LOT-1007', …}
+  latency_seconds: 0.183
+  timestamp: '2026-07-28T14:12:03.881000+00:00'
+```
+
+This is the **grader's** view of the trial, where `trajectory.yaml` carries the
+model's. Four of its fields are unreachable from a message trace: `status`
+(which each substrate words differently in prose — match on `status`, not on
+result text), `executor` (agent vs user simulator is invisible in a transcript),
+`latency_seconds`, and `sequence` (trial-wide order *across* executors). `output`
+is the executing layer's own text, untruncated — on a failed call that differs
+from the `Error: …` wording the agent-facing `role: tool` message carries.
+
+A **sidecar** rather than a key on `trajectory.yaml`: the record repeats every
+tool's output, which on a tool-heavy trial is most of the bundle, so whoever
+reads only the message trace pays nothing for it.
+
+Read it back with `read_recorded_tool_log(trial_dir)`
+([`tolokaforge/core/output/artifacts.py`](../tolokaforge/core/output/artifacts.py)),
+which returns the calls **and whether the file was there** — two states a consumer
+must keep apart:
+
+| on disk | reads back | means |
+|---|---|---|
+| absent | `([], False)` | the bundle carries no record; a check over `status`, `executor` or `latency_seconds` is undecidable on it |
+| `[]` | `([], True)` | the trial called no tool |
+
+Absence is the permanent shape of a bundle written before this artifact existed —
+not an error, and not the same fact as an empty trial. A present file that does
+not read as a list of recorded calls raises, naming the path — including the
+truncated YAML an interrupted run leaves, which must never fall through to the
+absent reading and report a broken record as a bundle written before records
+existed.
+
+The [provision-failure bundle](#provision-failure-bundle) carries no
+`tool_log.yaml`: the trial body never ran, so there is no record to write.
 
 ## `trials/{task_id}/{trial_index}/env.yaml`
 
@@ -359,10 +417,13 @@ included for forensics. Each LLM API call is also recorded in
 `latency_s` — the trial-level `cost_usd` is the sum of those entries.
 
 To help analytics consumers detect schema evolution, every trial-level
-metrics file includes a root-level `schema_version: 2` marker. Generation 2
-bundles carry no `grade.yaml` when the trial was aborted by infrastructure — the
-agent never ran, so there is no verdict to write — so a reader must not assume
-the file is there.
+metrics file includes a root-level `schema_version: 4` marker. Generation 4
+bundles carry the trial's tool-call record as
+[`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml). They carry no
+`grade.yaml` in two cases — the trial was aborted by infrastructure before the
+agent ran, or grading ran and refused to produce a verdict — so a reader must
+not assume the file is there, and must read `trajectory.yaml`'s `grading_error`
+to tell the two apart.
 
 ```yaml
 latency_total_s: 174.14
@@ -423,11 +484,9 @@ status is `success`; every other status — including a call the executor refuse
 before it reached the tool — counts as an error. `total_duration_s` sums the wall
 time measured around each call, failures included.
 
-`tool_log`, the trial's ordered `RecordedToolCall` list, is **not** written to any
-artifact. It lives on the in-process `Trajectory` and feeds grading; a bundle read
-back from disk carries the message trace but no per-call `output`, `status`,
-`latency_seconds` or `executor`. Persisting it is a stated prerequisite of #682
-(replay).
+`tool_usage` is a roll-up, not the record: the per-call `output`, `status`,
+`executor` and `latency_seconds` it aggregates live in
+[`tool_log.yaml`](#trialstask_idtrial_indextool_logyaml).
 
 Semantics per `usage` field (see
 [`docs/LLM_LAYER.md`](LLM_LAYER.md:1) § `usage` for the provider-routing
@@ -680,14 +739,16 @@ raises, or `await_ready` times out), the conductor body never runs, so the
 executor writes the trial directory itself. Only two files land —
 `trajectory.yaml` and `metrics.yaml` — plus the
 [`services/`](#trialstask_idtrial_indexservices) bundle when per-service capture
-fired inside `provision`. `task.yaml`, `env.yaml`, and `logs.yaml` are **not**
-written (no resolved model config, no environment state, no per-trial logger for
-a run that never happened).
+fired inside `provision`. `task.yaml`, `env.yaml`, `logs.yaml` and
+`tool_log.yaml` are **not** written (no resolved model config, no environment
+state, no per-trial logger, and no tool call for a run that never happened).
+The schema stamp says which generation wrote the bundle, never which files it
+contains — on this path it is stamped and most of them are absent.
 
 * `trajectory.yaml` — `status: error`, `termination_reason: provision_error`,
-  empty `messages`.
+  `grading_error: null` (grading never ran), empty `messages`.
 * `metrics.yaml` — the default-`Metrics` shape (`cost_usd: null`,
-  `schema_version: 2`, empty `tool_usage`) plus two top-level failure-signal
+  `schema_version: 4`, empty `tool_usage`) plus two top-level failure-signal
   keys:
 
   ```yaml
@@ -774,6 +835,7 @@ score: 0.0
 components:
   state_checks: 0.0
   transcript_rules: null
+  trace_checks: null
   llm_judge: null
   custom_checks: null
 reasons: "State: State hash mismatch. Diff: ..."
@@ -786,6 +848,26 @@ state_diff:  # Present when state check fails
   diff_lines: 200
   has_diff: true
 custom_checks_details: null     # list[CustomCheckDetail] or null
+trace_check_results:            # one entry per declared trace constraint; [] when none ran
+  - id: lookup_before_denial
+    kind: before
+    passed: false
+    weight: 2.0
+    severity: scored            # scored | gate
+    message: "before: no match is ordered before the other side under the declared quantifiers"
+    matched_positions: [2, 4]
+    undecided: false            # true where the trial's evidence could not settle the verdict
+trace_checks_summary:           # which route was scored and whether a gate shut
+  winning_path: served_vs_source  # "" when the pack declared no alternatives
+  gate_failed: false
+  failed_gate_ids: []
+  paths:                        # one line per alternative; [] when none declared
+    - id: served_vs_source
+      score: 1.0
+      gate_failed: false
+    - id: cache_inspector
+      score: 0.5
+      gate_failed: false
 criterion_results:              # per-criterion rubric breakdown; null unless an LLM judge ran
   - id: refund_amount
     met: true
@@ -815,6 +897,57 @@ judge_agent_prompt_included: true  # null (no judge) | false (agent policy gated
 Score scale: `0.0` ≤ `score` ≤ `1.0`. `binary_pass` is the harness-level
 pass/fail; `score` is a fractional pass rate (used for tasks with partial
 credit).
+
+### Trace-check verdicts
+
+`trace_check_results` carries one entry per constraint in the decision set that
+produced the score — the pack's shared `trace_checks.constraints` plus the
+constraints of the alternative route that won — in declaration order. It is `[]`
+when the pack declared no trace checks or when the trial's timeline carried no
+events for them to read. It is written inline rather than to a sidecar: the block
+is small, and the component score alone says a trace check failed without saying
+which.
+
+* `id` / `kind` — the author's constraint id and which of the ten constraint
+  kinds it states. See [`docs/GRADING.md`](GRADING.md#trace-checks).
+* `passed` / `weight` — the verdict and the weight it carried into the component
+  fold.
+* `severity` — `scored`, or `gate` for a check that must hold without being
+  scored. A gate enters neither side of the weighted fraction, so reproducing
+  `components.trace_checks` from these entries means folding the `scored` ones and
+  reading `0.0` whenever a `gate` did not pass. See
+  [`docs/GRADING.md`](GRADING.md#severity--a-check-that-must-hold).
+* `message` — empty on a pass; otherwise names the unmatched anchor, the failed
+  condition, or the evidence the trial does not carry.
+* `matched_positions` — the timeline positions the constraint's matchers
+  selected, resolved against `trajectory.yaml`. Positions rather than events, so
+  the grade stays scannable.
+* `undecided` — `true` where no completion of the trial's missing evidence
+  settles the verdict, which is the usual reading of a bundle re-graded without
+  its tool-call record. It scores exactly as a failure — the weight is forfeit
+  and a gate carrying it shuts — so it never appears beside `passed: true`; what
+  it adds is that a reader can tell an agent that did not do something from a
+  trial that did not record whether it did. See
+  [`docs/GRADING.md`](GRADING.md#when-a-constraint-cannot-be-decided).
+
+`trace_checks_summary` is the same evaluation seen from above: which route the
+component score came from, and whether a gate shut the trial. `binary_pass` is
+`false` whenever `gate_failed` is `true`, whatever `score` and `pass_threshold`
+say, and `reasons` carries a `FAILED trace gates: …` segment naming the same ids.
+
+* `winning_path` — the id of the alternative route that scored highest, `""`
+  when the pack declared no `alternatives`.
+* `gate_failed` / `failed_gate_ids` — whether a gate in the winning decision set
+  did not hold, and which, in declaration order.
+* `paths` — one entry per declared alternative, in declaration order, carrying
+  that route's own score and whether its gates held. A path's `score` is never
+  zeroed by a gate — only the component is — so a winner that won by a hair
+  reads differently from one that won by a mile. `[]` when the pack declared no
+  alternatives.
+
+The block is `null` only on a grade produced by a runner image predating the
+field. A runner that graded the trial reports an empty summary rather than none,
+so a gate can never open by omission.
 
 ### Rubric-judge fields
 
@@ -873,14 +1006,17 @@ layers.
 `components.custom_checks` and `custom_checks_details` are populated only when
 the pack sets `grading.custom_checks.enabled: true` and delivers a `checks.py`
 alongside the task. See [`docs/GRADING.md`](GRADING.md#custom-checks) for how
-the aggregate combines with the other three components and
+the aggregate combines with the other four components and
 [`docs/custom_checks.md`](custom_checks.md) for the `@init` + `@check`
 authoring API.
 
 * `components.custom_checks` — aggregate score over every `@check` the pack
   emitted, in `[0.0, 1.0]`. `null` when the pack has no `custom_checks` block
-  (or set `enabled: false`); when the executor errored under `fail_on_error:
-  false` the component is also excluded from the weighted combine. See
+  (or set `enabled: false`), and `null` when an enabled suite decided nothing —
+  every check returned `CheckSkipped`, or the file declared none — because an
+  aggregate over zero verdicts is not a score; when the executor errored under
+  `fail_on_error: false` the component is also excluded from the weighted
+  combine. See
   [`docs/custom_checks.md`](custom_checks.md#grade-output) for the scoring
   rules.
 
@@ -1130,6 +1266,7 @@ def load_trial(trial_dir: Path) -> dict:
     for name in (
         "task",
         "trajectory",
+        "tool_log",
         "env",
         "metrics",
         "grade",
@@ -1184,15 +1321,16 @@ to be readable:
 | Key | Meaning |
 |---|---|
 | `total_trials` | Every attempt the run made |
-| `measured_trials` | The attempts that measured the agent — the denominator of every rate in the row except `avg_score` |
+| `measured_trials` | The denominator the run holds itself accountable for — every rate in the row except `avg_score` is over it |
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
-| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}` |
+| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error` |
+| `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}` |
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`,
-`0 <= scored_trials <= measured_trials`, and
-`0 <= harness_errors <= measured_trials`.
+`0 <= scored_trials <= measured_trials`, and — a trial being classified once —
+`0 <= harness_errors + ungradeable <= measured_trials`.
 
 `success_rate`, `avg_latency_s`, `avg_turns`, `avg_tool_calls`, `stuck_rate`,
 `pass@k` and `pass_hat@k` — and their `_micro` / `_macro` aggregates — are over
@@ -1204,7 +1342,9 @@ counters and the latency percentiles cover **every** attempt: an aborted trial
 really did buy its tokens.
 
 A trial leaves the denominator only when its termination reason was produced from
-an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
+an exception type — `rate_limit`, `api_timeout`, `provision_error`. A grading
+refusal never buys a trial out of it, whatever the trial terminated as: it is
+evidence about us, and our own defects stay counted. See
 [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce no grade.
 
 ## Schema Version Stamps
@@ -1212,12 +1352,13 @@ an exception type — `rate_limit`, `api_timeout`, `provision_error`. See
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
 | `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
-| `metrics.yaml` | `schema_version` | `2` | The per-trial bundle's file set or field semantics change |
-| `aggregate.json` | `schema_version` | `2` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over |
+| `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
+| `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
 | `task.yaml.model_config.*.resolved` | — (struct-typed) | n/a | Policy registry grows; removing a slot is a breaking change |
 | `prompts.yaml` | — | n/a | Two-key mapping; field names match the legacy `Trajectory.system_prompt` / `Trajectory.user_system_prompt` |
 | `tools_schemas.yaml` | — | n/a | Format is the litellm tool-schema dict list, post-`schema_sanitizer` |
+| `tool_log.yaml` | — (struct-typed) | n/a | Format is the `RecordedToolCall` list; its presence is stamped by `metrics.yaml`'s `schema_version` |
 
 There is no global version stamp — each subsystem stamps independently so
 changes localise.

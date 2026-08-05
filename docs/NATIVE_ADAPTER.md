@@ -14,7 +14,7 @@ For adapter architecture and interface contracts see
 1. [Overview](#overview)
 2. [Task Directory Layout](#task-directory-layout)
 3. [task.yaml Schema](#taskyaml-schema)
-4. [grading.yaml Schema](#gradingyaml-schema)
+4. [grading.yaml Example](#gradingyaml-example)
 5. [Tool Schemas (fixtures/tools.json)](#tool-schemas-fixturestoolsjson)
 6. [How the Adapter Works](#how-the-adapter-works)
 7. [Docker Execution](#docker-execution)
@@ -41,7 +41,7 @@ tool registry.
 | Adapter key | `native` (built-in, no install needed) |
 | Task detection | Glob pattern matching `**/task.yaml` |
 | Tool loading | MCP server subprocess (`mcp_server.py`) |
-| Grading | JSONPath checks + transcript rules + optional hash |
+| Grading | `grading.yaml`, covering the grading dimensions listed in [GRADING.md](GRADING.md) |
 | `harness_adapter` in `run.yaml` | Not needed (auto-selected) |
 
 ---
@@ -51,7 +51,7 @@ tool registry.
 ```
 tasks/<category>/<task_id>/
 ├── task.yaml                    # required — task config
-├── grading.yaml                 # optional — grading config; auto-picked up when present
+├── grading.yaml                 # required unless task.yaml names another grading path — auto-picked up when present
 ├── system_prompt.md             # optional — agent system prompt / wiki
 ├── initial_state.json           # optional — seed data for JSON DB
 ├── mcp_server.py                # required if agent uses tools
@@ -137,7 +137,15 @@ a list of records or a dict of records keyed by ID:
 
 ---
 
-## grading.yaml Schema
+## grading.yaml Example
+
+Which grading keys exist and which substrate consumes each is answered by
+[GRADING.md § Substrate Parity](GRADING.md#substrate-parity), derived from the key
+manifest (`tolokaforge/core/grading/key_manifest.py`); for worked syntax of
+individual keys, see [REFERENCE.md § grading.yaml](REFERENCE.md#gradingyaml). How
+the component scores fold into one verdict is defined in
+[GRADING.md § Score Combination](GRADING.md#score-combination). The example below
+is one adapter-loaded configuration and uses a subset of the grading vocabulary:
 
 ```yaml
 combine:
@@ -187,29 +195,32 @@ transcript_rules:
       required: true
 ```
 
-### Grading scoring
-
-| Component | Description |
-|-----------|-------------|
-| `state_checks` | DB state after the episode. Blends hash score and JSONPath score using `hash.weight`. |
-| `hash` | Replays `golden_actions` on a fresh DB copy, hashes the result, compares to agent's final state. All-or-nothing. |
-| `jsonpaths` | Per-assertion checks against the agent's final DB state. Partial credit. |
-| `transcript_rules` | Checks tool call sequence and agent messages in the conversation transcript. |
-| `combine` | Folds the component scores by `method` — `weighted` reports their weighted mean, `all` the weakest component, `any` the strongest. See [GRADING.md § Score Combination](GRADING.md#score-combination) for each method's pass rule. |
-
 ---
 
 ## Tool Schemas (fixtures/tools.json)
 
-The adapter needs parameter schemas to tell the LLM what arguments each tool
-accepts.  Resolution order:
+The parameter schemas that tell the LLM what arguments each tool accepts come
+from one producer inside the adapter layer, `resolve_agent_tool_schemas`, so the
+schemas a run puts on the wire and the schemas a pre-run gate inspects cannot
+drift apart.  A task without an `mcp_server` gets them from the builtin
+registry; an MCP task gets them from its server, in one of two modes:
 
-1. **`fixtures/tools.json`** — pre-generated static file (fastest, avoids
-   subprocess overhead on every run).  Preferred.
-2. **Live MCP query** (`tools/list`) — used when `fixtures/tools.json` does
-   not exist.  The adapter starts `mcp_server.py` as a subprocess, performs
-   the MCP handshake, calls `tools/list`, and writes the result back to
-   `fixtures/tools.json` for subsequent runs.
+| `allow_subprocess` | Resolution | Used by |
+|---|---|---|
+| `True` | `fixtures/tools.json` first; when it is absent or unreadable, a live `tools/list` query against `mcp_server.py`, cached back into `fixtures/tools.json` | `to_task_description` — the run path |
+| `False` | `fixtures/tools.json` only; an MCP task without one resolves to no schemas at all | validation and pre-run gates |
+
+The read-only mode exists because a gate must not mutate the tree it is
+validating: spawning a server and depositing a generated fixture would change
+the task under inspection.  Its answer for an unresolved tool is *unknown*, not
+*no arguments* — see `ToolInventory.strictness` in
+[`config_validation.py`](../tolokaforge/core/grading/config_validation.py), which
+keeps a zero-argument tool (`{"properties": {}}`) apart from a tool whose schema
+never resolved.
+
+`search_kb` is resolved from `create_search_kb_schema()` in both modes: the
+runner rebuilds it as a source-less RAG wrapper, so its canonical schema — not a
+fixture entry or a registry lookup — is what the agent is handed.
 
 `fixtures/tools.json` format (list of tool descriptors):
 
@@ -241,10 +252,11 @@ accepts.  Resolution order:
 ]
 ```
 
-> **Note:** If `fixtures/tools.json` is absent and the live MCP query fails,
-> the adapter falls back to empty schemas (`{"type": "object", "properties": {}}`),
-> which causes the LLM to call tools with missing arguments.  Always commit
-> `fixtures/tools.json` or ensure `mcp_server.py` is importable before running.
+> **Note:** If `fixtures/tools.json` is absent and the live MCP query fails or
+> reports no tools, the run fails with a `RuntimeError` naming the server.  An
+> empty schema would reach the LLM as a parameter-less tool stub and read as an
+> agent-reasoning bug.  Commit `fixtures/tools.json` or ensure `mcp_server.py`
+> is importable before running.
 
 ---
 
@@ -300,11 +312,11 @@ called to serialize the task for transfer to the Runner container.
 
 | Field | Source |
 |-------|--------|
-| `agent_tools` | `tools.agent.enabled` list + schemas from `fixtures/tools.json` |
+| `agent_tools` | `tools.agent.enabled` list + schemas from `resolve_agent_tool_schemas` (see [Tool Schemas](#tool-schemas-fixturestoolsjson)) |
 | `user_tools` | `tools.user.enabled` list |
 | `initial_state.tables` | `initial_state.json` (collection → list of records) |
 | `initialization_actions` | `initial_state.initialization_actions` |
-| `grading` | `grading.yaml` (state checks + transcript rules) |
+| `grading` | `grading.yaml`, translated into the runner's grading config |
 | `system_prompt` | system prompt file content |
 | `tool_artifacts` | All `.py` files (recursive) + top-level `.json`, `.yaml`, `.yml`, `.md`, `.txt` files in the task dir, base64-encoded |
 | `metadata.mcp_server_ref` | Relative path to `mcp_server.py` |
@@ -323,8 +335,8 @@ filesystem access.
 
 ### Tool schema resolution for Docker
 
-Same two-step logic as local runs: `fixtures/tools.json` first, then live MCP
-query.  The resolved schemas are embedded in `agent_tools[*].parameters` inside
+The same producer as local runs, in its `allow_subprocess=True` mode.  The
+resolved schemas are embedded in `agent_tools[*].parameters` inside
 `TaskDescription` and sent to the Runner via gRPC `RegisterTrial`.
 
 ---
@@ -383,7 +395,7 @@ The `native` adapter was not exercised in the frozen retail evaluation runs
 `get_registry_tools()` returns `[]`.  Tool loading is handled by the
 orchestrator directly via the MCP server path from `task.yaml`.  This is a
 known architectural gap — future work would move MCP server loading fully into
-the adapter (noted in the source at `native.py:185`).
+the adapter (noted in the `NativeAdapter.get_registry_tools` docstring).
 
 #### `compute_golden_hash` delegates to grading engine
 

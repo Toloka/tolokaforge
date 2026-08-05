@@ -1,0 +1,65 @@
+latency_total_s: 6.258887052536011
+turns: 2
+api_calls: 2
+usage:
+  prompt_tokens: 650
+  completion_tokens: 46
+  reasoning_tokens: 0
+  cached_tokens: 0
+  cache_creation_input_tokens: 0
+  cache_read_input_tokens: 0
+  provider_raw:
+    completion_tokens: 14
+    prompt_tokens: 364
+    total_tokens: 378
+    completion_tokens_details:
+      accepted_prediction_tokens: null
+      audio_tokens: 0
+      reasoning_tokens: 0
+      rejected_prediction_tokens: null
+      text_tokens: null
+      image_tokens: 0
+      video_tokens: null
+    prompt_tokens_details:
+      audio_tokens: 0
+      cached_tokens: 0
+      text_tokens: null
+      image_tokens: null
+      video_tokens: 0
+      cache_write_tokens: 0
+    cost: 6.3e-05
+    is_byok: false
+    cost_details:
+      upstream_inference_cost: 6.3e-05
+      upstream_inference_prompt_cost: 5.46e-05
+      upstream_inference_completions_cost: 8.4e-06
+  calls:
+  - prompt_tokens: 286
+    completion_tokens: 32
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 6.21e-05
+    cost_source: litellm
+    latency_s: 1.4083969593048096
+  - prompt_tokens: 364
+    completion_tokens: 14
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 6.3e-05
+    cost_source: litellm
+    latency_s: 0.981128454208374
+cost_usd: 0.0001251
+tool_calls: 1
+tool_success_rate: 1.0
+stuck_detected: false
+tool_usage:
+- tool_name: add_note
+  call_count: 1
+  success_count: 1
+  error_count: 0
+  total_duration_s: 0.0
+schema_version: 1

@@ -16,6 +16,7 @@ from tolokaforge.dx.cli.main import (
     _extract_log_errors,
     _extract_tool_failures,
     _format_eta,
+    _load_task_under_its_project,
     cli,
 )
 
@@ -61,6 +62,15 @@ class TestCLIGroup:
 # ===================================================================
 
 
+def _write_task_pack(directory: Path) -> Path:
+    """Write a minimal loadable task pack and return its ``task.yaml``."""
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "grading.yaml").write_text("{}\n")
+    task_file = directory / "task.yaml"
+    task_file.write_text(yaml.dump({"task_id": directory.name, "description": "A task."}))
+    return task_file
+
+
 @pytest.mark.unit
 class TestValidateCommand:
     """Tests for 'tolokaforge validate' command."""
@@ -77,29 +87,80 @@ class TestValidateCommand:
         combined = (result.output or "") + (result.stderr or "")
         assert "Missing" in combined or "required" in combined.lower() or result.exit_code == 2
 
-    def test_validate_nonexistent_glob(self, runner: CliRunner, tmp_path: Path) -> None:
-        # Glob pattern matching no files → 0 valid, 0 invalid
-        result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "*.xyz")])
-        assert result.exit_code == 0
-        assert "0 valid" in result.stderr
+    def test_validate_fails_on_a_glob_that_matches_nothing(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """A pattern selecting no file is an invocation error, not a vacuous pass.
 
-    def test_validate_valid_task_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
-        """Validate a minimal valid task.yaml file."""
-        task_data = {
-            "task_id": "test-001",
-            "description": "Test task",
-            "tools": ["search"],
-            "grading": {
-                "method": "state_check",
-                "expected_state": {"key": "value"},
-            },
-        }
-        task_file = tmp_path / "task.yaml"
-        task_file.write_text(yaml.dump(task_data))
+        The degenerate input a sweep over real packs never produces, and the
+        shape a CI glob silently drifts into (#764).
+        """
+        pattern = str(tmp_path / "*.xyz")
+
+        result = runner.invoke(cli, ["validate", "--tasks", pattern])
+
+        assert result.exit_code == 1
+        assert pattern in result.stderr
+
+    def test_validate_exits_zero_when_every_task_is_valid(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        task_file = _write_task_pack(tmp_path / "good")
 
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
-        # Either valid or shows validation result
-        assert result.exit_code == 0 or "invalid" in result.stderr.lower()
+
+        assert result.exit_code == 0, result.stderr
+        assert "1 valid, 0 invalid" in result.stderr
+
+    def test_validate_exits_one_and_still_reports_every_task(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """One malformed task fails the command without hiding the valid one."""
+        _write_task_pack(tmp_path / "good")
+        (tmp_path / "bad").mkdir()
+        (tmp_path / "bad" / "task.yaml").write_text("description: no task_id here\n")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(tmp_path / "**" / "task.yaml")])
+
+        assert result.exit_code == 1
+        assert "✓" in result.stderr
+        assert "✗" in result.stderr
+        assert "1 valid, 1 invalid" in result.stderr
+
+    def test_validate_loads_a_task_under_its_projects_task_defaults(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """The validate path layers ``project.task_defaults`` the way a run does."""
+        (tmp_path / "project.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "layered",
+                    "task_defaults": {"max_turns": 7, "system_prompt": "voice.md"},
+                }
+            )
+        )
+        task_file = _write_task_pack(tmp_path / "tasks" / "inherits")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
+        assert result.exit_code == 0, result.stderr
+
+        task_config, _, _ = _load_task_under_its_project(task_file)
+        assert task_config.max_turns == 7
+        # Anchored to the project directory the default was declared in.
+        assert task_config.system_prompt == str(tmp_path / "voice.md")
+
+    def test_validate_reports_a_project_that_fails_to_load_against_its_task(
+        self, runner: CliRunner, tmp_path: Path
+    ) -> None:
+        """A broken ``project.yaml`` fails its tasks, naming the file — not the glob."""
+        (tmp_path / "project.yaml").write_text("- not a mapping\n")
+        task_file = _write_task_pack(tmp_path / "tasks" / "orphaned")
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
+
+        assert result.exit_code == 1
+        assert "project.yaml" in result.stderr
+        assert "0 valid, 1 invalid" in result.stderr
 
     def test_validate_invalid_yaml(self, runner: CliRunner, tmp_path: Path) -> None:
         """Validate a file with invalid YAML."""
@@ -107,13 +168,121 @@ class TestValidateCommand:
         task_file.write_text("not: valid: yaml: [broken")
 
         result = runner.invoke(cli, ["validate", "--tasks", str(task_file)])
-        # Should handle the error gracefully — Rich output routes to
-        # stderr via the shared display console.
-        assert (
-            "invalid" in result.stderr.lower()
-            or result.exit_code != 0
-            or "0 valid" in result.stderr
+
+        assert result.exit_code == 1
+        assert "0 valid, 1 invalid" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("adapter_type", "exit_code", "summary"),
+        [("tau", 0, "1 valid, 0 invalid"), ("native", 1, "0 valid, 1 invalid")],
+        ids=["adapter_validate_cannot_read", "the_native_reading_validate_owns"],
+    )
+    def test_validate_says_so_when_it_cannot_check_a_tasks_tools(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        adapter_type: str,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """A tool set validate cannot read is printed as unchecked, never as a pass.
+
+        ``validate`` reads every task through the native loader, so for a task an
+        external adapter owns it has no tool set to check names against. The same
+        pack declared native is rejected, which is what makes the first row a
+        report of ignorance rather than an accidental clean bill of health.
+        """
+        directory = tmp_path / f"pack_{adapter_type}"
+        directory.mkdir(parents=True)
+        (directory / "grading.yaml").write_text(
+            yaml.dump(
+                {
+                    # Weighted, so the only thing separating the two rows is whether
+                    # validate can read the pack's tool set.
+                    "combine": {"weights": {"trace_checks": 1.0}},
+                    "trace_checks": {
+                        "constraints": [
+                            {
+                                "id": "probe",
+                                "description": "the agent called the tool",
+                                "require": {
+                                    "present": {
+                                        "match": {
+                                            "kind": "tool_call",
+                                            "tool": {"equals": "nothing_declares_this"},
+                                        }
+                                    }
+                                },
+                            }
+                        ]
+                    },
+                }
+            )
         )
+        task_file = directory / "task.yaml"
+        task_file.write_text(
+            yaml.dump(
+                {
+                    "task_id": directory.name,
+                    "description": "A task.",
+                    "adapter_type": adapter_type,
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        if exit_code == 0:
+            assert "not checked" in result.stderr
+            assert "could not be resolved" in result.stderr
+
+    @pytest.mark.parametrize(
+        ("adapter_type", "exit_code", "summary"),
+        [("tau", 0, "1 valid, 0 invalid"), ("native", 1, "0 valid, 1 invalid")],
+        ids=["adapter_validate_cannot_ask", "the_adapter_that_grades_from_a_file"],
+    )
+    def test_validate_answers_a_task_that_declares_no_grading_source(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        adapter_type: str,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """A task naming no grading block is answered, not crashed on.
+
+        The two rows are the same pack under the two declared adapters, which is the
+        whole ruling: the native adapter grades from a file, so withholding one is a
+        refusal naming the task and both fixes; every other adapter resolves its own
+        grading config, so validate reports that it could not ask and passes the pack.
+        """
+        directory = tmp_path / f"gradeless_{adapter_type}"
+        directory.mkdir(parents=True)
+        task_file = directory / "task.yaml"
+        task_file.write_text(
+            yaml.dump(
+                {
+                    "task_id": directory.name,
+                    "description": "A task that declares no grading source.",
+                    "adapter_type": adapter_type,
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        assert "unsupported operand type(s)" not in result.stderr
+        if exit_code == 0:
+            assert "? grading not checked" in result.stderr
+            assert f"'{adapter_type}'" in result.stderr
+        else:
+            assert directory.name in result.stderr
+            assert "`grading:`" in result.stderr
+            assert "grading.yaml beside its task.yaml" in result.stderr
 
 
 # ===================================================================

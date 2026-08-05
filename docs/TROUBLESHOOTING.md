@@ -39,16 +39,44 @@ every registration and the runner refuses anything below its own, so no trial st
 and no tokens are spent.
 
 **The engine is newer than the image.** The error is a Pydantic validation failure —
-`extra_forbidden` — naming a field the older image's config models do not declare;
-`state_checks.hash_weight` is the current one, and it appears for **every** pack
-carrying a non-empty `state_checks:` block, because the engine emits the field
-whether or not the pack declares a weight. The trial spec crosses the wire as a JSON
-string parsed by `extra="forbid"` models, so an unknown key there is an error rather
-than a dropped field — unlike a proto message field, which an older runner ignores.
+`extra_forbidden` — naming a field the older image's config models do not declare.
+Three fields carry it: `state_checks.hash_weight`, which appears for **every** pack
+carrying a non-empty `state_checks:` block, `transcript_rules.min_assistant_turns`,
+which appears for **every** pack carrying a `transcript_rules:` block, and
+`trace_checks`, which appears for **every** pack. The engine emits all three whether
+or not the pack declares them, so any pack at all reproduces this against an image
+older than the engine.
+The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
+models, so an unknown key there is an error rather than a dropped field — unlike a
+proto message field, which an older runner ignores.
 
 See [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock
 and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §
 "Runner-engine version lock (both directions)".
+
+## Every Tool Call Fails: MCP server closed connection
+
+**Symptom.** Every tool call of every task declaring an `mcp_server.py` comes back
+`Tool error: RuntimeError: MCP server closed connection`. The agent burns its whole turn
+budget on failing tools and the trial grades `0.0` — a full-price run that measured nothing.
+Reproduced on `examples/native/native_shared_domain`: three trials, `tool_calls=5`, every
+call failed, `avg_score_micro=0.0`.
+
+**Cause: the image resolved its own `mcp` version.** The runner image installs the built
+wheel with **pip**, which resolves the declared dependency range itself rather than reading
+`uv.lock` — so a loose range picks up a version inside the container that the workspace venv
+never sees. `core/tools_interface.py` imports `mcp.server.fastmcp`, which `mcp` 2.x does not
+have (FastMCP moved), and the server subprocess dies at import. The host venv stays green
+throughout, which is what makes this hard to see: `uv run pytest` cannot reproduce it.
+
+**Fix.** Rebuild the image from the current tree, which now resolves the pinned range:
+
+```bash
+make docker-build-core
+```
+
+**Anyone holding an image built from an unpinned resolution must rebuild it**, whatever the
+tree they build from says today — the version is baked into the image. See #794.
 
 ## Browser Tool Errors
 

@@ -1,0 +1,37 @@
+satisfying:
+  messages:
+    - role: user
+      content: "Write this up and close it out."
+    - role: assistant
+      content: "Filing the report."
+      tool_calls:
+        - tool_name: write_report
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-4001", body: "duplicate charge refunded" }
+          output: '{"written": true}'
+    - role: assistant
+      content: "Closing the case."
+      tool_calls:
+        - tool_name: close_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-4001" }
+          output: '{"case_id": "CS-4001", "state": "closed"}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Write this up and close it out."
+    - role: assistant
+      content: "Filing the report."
+      tool_calls:
+        - tool_name: write_report
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-4001", body: "duplicate charge refunded" }
+          output: '{"written": true}'
+    - role: assistant
+      content: "That is everything."
+  state: {}

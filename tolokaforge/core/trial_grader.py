@@ -37,7 +37,10 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING, Any, Protocol, runtime_checkable
 
+from pydantic import ValidationError
+
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.transcript_wire import encode_transcript_wire
 from tolokaforge.core.models import (
     CriterionResult,
@@ -49,6 +52,8 @@ from tolokaforge.core.models import (
     JudgeStatus,
     JudgeUsage,
     TerminationReason,
+    TraceChecksSummary,
+    TraceConstraintResult,
     Trajectory,
     TrialStatus,
 )
@@ -72,8 +77,12 @@ class GradingFailedError(Exception):
     The trial was measured, so its verdict exists to be computed and only the
     grading substrate can compute it. A host-side stand-in would land in
     ``success_rate``, ``avg_score``, ``pass@k`` and ``binary_pass`` as an agent
-    failure that no measurement supports, so the failure is raised instead:
-    every published number omits the trial rather than describing it wrongly.
+    failure that no measurement supports, so the failure is raised instead.
+
+    The conductor's grading phase catches it, records the reason on
+    ``Trajectory.grading_error`` and leaves ``grade`` unset. The trial keeps its
+    own ``termination_reason``, writes its bundle, and counts as an attempt that
+    scored nothing — never as an attempt the agent failed.
     """
 
 
@@ -221,6 +230,44 @@ def _split_trial_id(trial_id: str) -> tuple[str, int]:
     return task_id, int(idx_s)
 
 
+def _parse_trace_check_results(payload: list[dict[str, Any]]) -> list[TraceConstraintResult]:
+    """The runner's per-constraint trace-check verdicts, or a grading failure.
+
+    Unlike the judge transcript and the state diff, nothing else in the bundle
+    records which trace constraint failed, and an empty payload already means "no
+    trace checks ran" — so a payload the host cannot read is a grade it cannot
+    report, not an absent artifact. A ``kind`` outside the vocabulary is the
+    version-skew shape this catches: it rejects rather than degrading into a
+    grade whose sub-checks name conditions this engine does not have.
+    """
+    try:
+        return [TraceConstraintResult(**item) for item in payload]
+    except (TypeError, ValidationError) as exc:
+        raise GradingFailedError(
+            f"the runner's Grade.trace_checks payload is not readable: {exc}"
+        ) from exc
+
+
+def _parse_trace_checks_summary(payload: dict[str, Any] | None) -> TraceChecksSummary | None:
+    """Which route won and whether a gate shut, or a grading failure.
+
+    ``None`` is the runner that predates the field, and is preserved rather than
+    filled in with an empty summary: a summary the host invented would read as a
+    gate that was evaluated and held. A payload that is present and unreadable
+    rejects for the reason :func:`_parse_trace_check_results` rejects one — a gate
+    decides whether the trial passed, so a summary this engine cannot read is a
+    grade it cannot report.
+    """
+    if payload is None:
+        return None
+    try:
+        return TraceChecksSummary(**payload)
+    except (TypeError, ValidationError) as exc:
+        raise GradingFailedError(
+            f"the runner's Grade.trace_checks_summary payload is not readable: {exc}"
+        ) from exc
+
+
 def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
     """Materialise a :class:`Grade` from the runner's ``grade_trial`` dict.
 
@@ -270,6 +317,9 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
                 )
             )
 
+    trace_check_results = _parse_trace_check_results(raw_grade.get("trace_checks") or [])
+    trace_checks_summary = _parse_trace_checks_summary(raw_grade.get("trace_checks_summary"))
+
     judge_usage: JudgeUsage | None = None
     judge_transcript: list[dict[str, Any]] | None = None
     judge_kb_gating: JudgeKbGating | None = None
@@ -315,10 +365,10 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         binary_pass=raw_grade["binary_pass"],
         score=raw_grade["score"],
         components=GradeComponents(
-            state_checks=raw_grade["components"].get("state_checks", -1.0),
-            transcript_rules=raw_grade["components"].get("transcript_rules", -1.0),
-            llm_judge=raw_grade["components"].get("llm_judge", -1.0),
-            custom_checks=raw_grade["components"].get("custom_checks", -1.0),
+            **{
+                spec.core_field: raw_grade["components"].get(spec.name, -1.0)
+                for spec in GRADE_COMPONENTS
+            }
         ),
         reasons=raw_grade.get("reasons", ""),
         state_diff=state_diff_parsed,
@@ -331,6 +381,8 @@ def _parse_grade_result(raw_grade: dict[str, Any]) -> Grade:
         judge_inputs=judge_inputs,
         judge_custom_prompt=judge_custom_prompt,
         judge_agent_prompt_included=judge_agent_prompt_included,
+        trace_check_results=trace_check_results,
+        trace_checks_summary=trace_checks_summary,
     )
 
 

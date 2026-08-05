@@ -7,6 +7,7 @@ base — plus the rate-limit probe budget invariant.
 """
 
 import warnings
+from enum import Enum
 from pathlib import Path
 from typing import Annotated, Any, Literal, Self
 
@@ -517,6 +518,34 @@ class HarnessAdapterConfig(BaseModel):
     params: dict[str, Any] = Field(default_factory=dict)
 
 
+class GradingFindingSeverity(str, Enum):
+    """How sure the authoring gate is that a finding is the author's mistake.
+
+    Most severe first: enforcing down to one class enforces every class above it.
+    ``unchecked`` is deliberately not a member — it is a channel rather than a
+    severity, and no caller may make it fatal.
+    """
+
+    ERROR = "error"
+    """The schema proves the check cannot grade what its author wrote."""
+
+    ADVISORY = "advisory"
+    """A schema that permits what it does not declare, so a probable typo."""
+
+
+class GradingValidationConfig(BaseModel):
+    """How strictly the pre-run gate reads the selected packs' grading blocks.
+
+    A sub-object rather than a bare key so a third severity class costs a member
+    of :class:`GradingFindingSeverity` and nothing else.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY
+    """The least severe finding class that fails the run."""
+
+
 class EvaluationConfig(BaseModel):
     """Evaluation configuration.
 
@@ -535,6 +564,14 @@ class EvaluationConfig(BaseModel):
     output_dir: str
     cache_images: bool = True
     harness_adapter: HarnessAdapterConfig | None = None
+    grading_validation: GradingValidationConfig = Field(default_factory=GradingValidationConfig)
+    """Severity policy for the pre-run grading gate.
+
+    ``extra="ignore"`` on this model means a misspelled *block* name —
+    ``grading_validaton:`` — is dropped without a word and the defaults stand.
+    The sub-object's own ``extra="forbid"`` catches a misspelled field inside a
+    correctly-named block. Documented in ``docs/CONFIG.md``.
+    """
 
     @model_validator(mode="before")
     @classmethod

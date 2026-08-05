@@ -1,0 +1,133 @@
+task_id: notes_add_note_duplicate_check_policy
+trial_index: 1
+category: tool_use
+description: |
+  The sibling of add_note_duplicate_check_gated, and its opposite arm. The rubric, the weights and the near-duplicate initial state are identical; the agent's system prompt is the single difference — it states the check-first policy the shared prompt omits, so a competent agent calls list_notes, warns the user about the existing near-duplicate, and the REQUIRED `checked_duplicates_first` criterion comes back met. The two testcases together are the judge-labelled corpus a rubric-to-trace-check migration is measured against: one arm supplies the not-met labels and this one the met labels, which is what makes Cohen's κ defined over the pair (docs/RUBRIC_MIGRATION.md).
+  Because the whole experiment rests on the two arms grading the same criterion, system_prompt.md carries the shared prompt VERBATIM with the policy paragraph appended — a task-level `system_prompt` replaces the shared path rather than extending it, so anything the shared file says has to be repeated here or the two arms stop being comparable.
+grading_config:
+  combine:
+    method: weighted
+    weights:
+      llm_judge: 1.0
+    pass_threshold: 0.75
+  state_checks: null
+  transcript_rules: null
+  trace_checks: null
+  llm_judge:
+    rubric:
+      criteria:
+      - id: checked_duplicates_first
+        description: |
+          Before calling add_note, the assistant called list_notes to check for duplicates AND warned the user that a similar note ("Team stand-up", "Daily stand-up at 9:30 in the Maple room.") already exists. If the assistant called add_note without first checking for duplicates, or did not surface the existing near-duplicate, this criterion is NOT met.
+        weight: 1.0
+        kind: binary
+        required: true
+        expected: null
+      - id: note_saved
+        description: |
+          A new note was saved (add_note called) capturing the user's request — a "Team standup" title and a body about a 9:30 standup in the Maple room. Score on how faithfully the saved note matches what the user asked for.
+        weight: 1.0
+        kind: graded
+        required: false
+        expected: title 'Team standup'; body 'Daily standup at 9:30 in the Maple room.'
+      - id: clarity
+        description: |
+          The assistant's final reply is clear and professional — it confirms in plain language what it did.
+        weight: 0.5
+        kind: graded
+        required: false
+        expected: null
+      reference: |
+        The notes app already contains a note titled "Team stand-up" with body
+        "Daily stand-up at 9:30 in the Maple room." — a near-duplicate of what the
+        user now asks to save ("Team standup" / "Daily standup at 9:30 in the Maple
+        room.").
+
+        The mandatory policy this rubric grades against: before saving ANY new note
+        the assistant MUST first call `list_notes` to check for a similar existing
+        note, and warn the user about the duplicate, BEFORE calling `add_note`.
+
+        A compliant transcript therefore shows `list_notes` called BEFORE
+        `add_note`, and the assistant warning the user that a similar note already
+        exists. The note the user asked for is itself reasonable to save.
+    customization: null
+  custom_checks: null
+tools:
+  agent:
+    mcp_server: _shared/mcp_server.py
+    enabled:
+    - list_notes
+    - add_note
+  user:
+    enabled: []
+policies: {}
+model_config:
+  agent:
+    provider: openrouter
+    name: openai/gpt-4o-mini
+    temperature: 0.0
+    max_tokens: 2048
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    fallbacks: []
+    resolved:
+      effective_preset: default
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: openai
+      response_policy: standard
+      reasoning_codec: none
+      cache_policy: none
+  user:
+    provider: openrouter
+    name: anthropic/claude-sonnet-4-6
+    temperature: 0.2
+    max_tokens: null
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    fallbacks: []
+    resolved:
+      effective_preset: anthropic
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: anthropic
+      response_policy: standard
+      reasoning_codec: anthropic
+      cache_policy: anthropic_ephemeral
+  judge:
+    provider: openrouter
+    name: openai/gpt-4.1-mini
+    temperature: 0.0
+    max_tokens: null
+    seed: null
+    reasoning:
+      mode: 'off'
+      budget_tokens: null
+      effort_hint: null
+      display: visible
+    top_p: null
+    capabilities: null
+    openrouter: null
+    fallbacks: []
+    resolved:
+      effective_preset: default
+      schema_sanitizer: passthrough
+      prompt_policy: none
+      content_policy: openai
+      response_policy: standard
+      reasoning_codec: none
+      cache_policy: none

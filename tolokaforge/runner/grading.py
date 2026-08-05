@@ -5,6 +5,8 @@ This module provides helper functions for the GradeTrial RPC implementation:
 - compute_state_diff: Compute human-readable diff between two stable states
 - evaluate_transcript_rules: Evaluate transcript rules against the trial's event timeline
 - combine_grade_components: Combine component scores into final grade
+- compose_runner_trial_verdict: Apply the judge and trace gates around that fold, so an
+  offline recomputation reaches the runner's verdict without repeating either gate
 
 See docs/GRPC_PROTOCOL.md for grading algorithm specification.
 """
@@ -23,7 +25,23 @@ from tolokaforge.core.grading.combine_method import (
     combine_by_method,
     validate_combine_method,
 )
+from tolokaforge.core.grading.combine_weights import (
+    FoldedGrade,
+    require_component_weight,
+    resolve_uncounted_fold,
+)
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayRecord,
+    incomplete_replay_reason,
+)
+from tolokaforge.core.grading.grade_components import (
+    GRADE_COMPONENTS,
+    component_requested,
+    runner_score_field,
+)
+from tolokaforge.core.grading.predicates import contains
 from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
     compose_state_checks_score,
     inert_hash_weight_reason,
 )
@@ -39,6 +57,7 @@ from tolokaforge.runner.grading_ledger import (
     DISALLOW_REGEX_KEY,
     EVALUATED,
     MAX_TURNS_KEY,
+    MIN_ASSISTANT_TURNS_KEY,
     MUST_CONTAIN_KEY,
     REQUIRED_ACTIONS_KEY,
     TOOL_EXPECTATIONS_KEY,
@@ -249,6 +268,10 @@ def evaluate_transcript_rules(
       assistant message → one sub-check per regex.
     - ``max_turns`` (int | None): the number of assistant turns must be within
       the limit → one sub-check when set.
+    - ``min_assistant_turns`` (int | None): the trial must have produced at least
+      this many assistant turns. A **gate on the whole component**, not a
+      sub-check: an unmet floor appends one failing row and forces ``score`` to
+      ``0.0``, and a met floor appends no row so it never dilutes the fraction.
     - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
       per declared tool. A required tool must have been called *successfully*; a
       disallowed tool must not have run at **any** status, because an attempted
@@ -263,12 +286,15 @@ def evaluate_transcript_rules(
       string must appear in an assistant message → one sub-check per required
       entry (non-required entries are advisory and not scored).
 
-    Scoring: ``score`` is the fraction of sub-checks that passed and ``passed``
-    is True iff every sub-check passed. The component score feeds
+    Scoring: ``score`` is the fraction of sub-checks that passed — unless a
+    declared ``min_assistant_turns`` floor is unmet, in which case it is ``0.0``
+    whatever the other sub-checks did. ``passed`` is True iff every sub-check
+    passed. The component score feeds
     ``combine_grade_components`` where ``pass_threshold`` is applied, so a
     fraction (rather than all-or-nothing) lets authors set partial-credit
-    thresholds (e.g. ``pass_threshold: 0.75``). An empty config (no fields set)
-    is a no-op pass with ``score=1.0`` — there is nothing to violate.
+    thresholds (e.g. ``pass_threshold: 0.75``). A config that produces no sub-check
+    rows is a no-op pass with ``score=1.0`` — no fields set, or a met floor as the
+    only declared rule, leaves nothing that could have been violated.
 
     Unknown / missing data is surfaced as a FAILING sub-check, never silently
     passed (AGENTS.md: surface failures explicitly).
@@ -288,6 +314,7 @@ def evaluate_transcript_rules(
     must_contain: list[str] = rules.get("must_contain", []) or []
     disallow_regex: list[str] = rules.get("disallow_regex", []) or []
     max_turns: int | None = rules.get("max_turns")
+    min_assistant_turns: int | None = rules.get("min_assistant_turns")
     tool_expectations: dict[str, Any] = rules.get("tool_expectations") or {}
     required_tools: list[str] = tool_expectations.get("required_tools") or []
     disallowed_tools: list[str] = tool_expectations.get("disallowed_tools") or []
@@ -297,6 +324,13 @@ def evaluate_transcript_rules(
     assistant_messages = assistant_texts(timeline)
     calls = attempted_calls(timeline)
     records_present = timeline.records_present
+
+    unmet_floor: TranscriptRuleResult | None = None
+    if min_assistant_turns is not None:
+        accounted_keys[MIN_ASSISTANT_TURNS_KEY] = EVALUATED
+        unmet_floor = _unmet_activity_floor(min_assistant_turns, len(assistant_messages))
+        if unmet_floor is not None:
+            details.append(unmet_floor)
 
     if must_contain:
         accounted_keys[MUST_CONTAIN_KEY] = EVALUATED
@@ -334,14 +368,18 @@ def evaluate_transcript_rules(
                 details.append(check)
 
     if not details:
-        # No rules configured — nothing can be violated.
+        # No sub-check rows — nothing can be violated. Either nothing was declared,
+        # or a met activity floor was the only declaration and emits no row.
         return TranscriptEvaluationResult(
             passed=True, score=1.0, details=[], accounted_keys=accounted_keys
         )
 
     passed_count = sum(1 for d in details if d.passed)
     total_count = len(details)
-    score = passed_count / total_count
+    # An unmet activity floor vetoes the whole component: a trial that did not act
+    # makes the other sub-checks' verdicts evidence of nothing, and a fraction
+    # would let any pass_threshold at or below it swallow the violation.
+    score = 0.0 if unmet_floor is not None else passed_count / total_count
     all_passed = passed_count == total_count
 
     return TranscriptEvaluationResult(
@@ -360,8 +398,8 @@ _REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
 
 _UNRECORDED = (
     "the trial carries no tool-call record, so nothing knows whether the calls it "
-    "declared ran. A timeline rebuilt from a recorded bundle is in that state, "
-    "because tool_log is not written to trajectory.yaml"
+    "declared ran. A timeline rebuilt from a bundle's trajectory.yaml alone is in "
+    "that state — the record is the bundle's tool_log.yaml sidecar"
 )
 
 
@@ -460,6 +498,24 @@ def _check_max_turns(max_turns: int, turn_count: int) -> TranscriptRuleResult:
     )
 
 
+def _unmet_activity_floor(min_assistant_turns: int, turn_count: int) -> TranscriptRuleResult | None:
+    """The failing row for an unmet activity floor, or ``None`` when it is met.
+
+    A met floor emits no row at all. The floor is a gate on the whole component,
+    so a passing row would dilute the fraction the other sub-checks produce.
+    """
+    if turn_count >= min_assistant_turns:
+        return None
+    return TranscriptRuleResult(
+        rule_type="min_assistant_turns",
+        rule={"min_assistant_turns": min_assistant_turns},
+        passed=False,
+        message=(
+            f"Assistant turn count {turn_count} below min_assistant_turns of {min_assistant_turns}"
+        ),
+    )
+
+
 def _check_required_tool(
     tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
 ) -> TranscriptRuleResult:
@@ -496,8 +552,8 @@ def _check_disallowed_tool(
     Status-insensitive on purpose: attempting a forbidden call is the violation,
     so an errored attempt fails the check just like a successful one. A call the
     agent declared on a terminating turn never reached the substrate and is not
-    counted; naming intent as a violation is a matcher question, tracked on #678.
-    That exclusion needs the record view, so a declared call the timeline holds no
+    counted; a ``trace_checks`` matcher over the call event is where that intent is
+    nameable. That exclusion needs the record view, so a declared call the timeline holds no
     records for fails the check instead of reading as one that never ran.
     """
     if _outcome_unknown(calls, tool_name, records_present=records_present):
@@ -632,8 +688,7 @@ def evaluate_jsonpath_file_checks(
     checks). It does not handle ``path:``-style JSONPath assertions on env state
     (those are evaluated host-side by ``StateChecker.check_jsonpaths``). An
     assertion missing ``path_glob:`` is treated as **failed** with an actionable
-    reason — previously such assertions were silently skipped, which made
-    misrouted assertions vanish from grading without notice.
+    reason, so a misrouted assertion is named rather than vanishing from grading.
 
     Each check has:
     - path_glob: glob pattern for files (e.g., "/env/fs/agent-visible/submissions/*")
@@ -660,10 +715,8 @@ def evaluate_jsonpath_file_checks(
         description = check.get("description", f"Check: {contains_ci}")
 
         if not path_pattern:
-            # Fail loud — historically this branch silently skipped (effectively
-            # counting as not-passed in the score, but presenting as SKIP in
-            # the reasons text, so misrouted assertions were invisible). Name
-            # what the evaluator actually accepts so the author can fix it.
+            # Named rather than skipped: a skip scores as not-passed while reading
+            # as SKIP, which is how a misrouted assertion goes unnoticed.
             other_path = check.get("path")
             if other_path:
                 reasons_parts.append(
@@ -716,16 +769,6 @@ def evaluate_jsonpath_file_checks(
     score = passed / total if total > 0 else 0.0
     reasons = "; ".join(reasons_parts)
     return score, reasons
-
-
-def _contains(haystack: Any, needle: Any, ci: bool = False) -> bool:
-    if isinstance(haystack, str) and isinstance(needle, str):
-        return needle.casefold() in haystack.casefold() if ci else needle in haystack
-    if isinstance(haystack, list | tuple | set):
-        return any(_contains(item, needle, ci=ci) for item in haystack)
-    if isinstance(haystack, dict):
-        return any(_contains(value, needle, ci=ci) for value in haystack.values())
-    return haystack == needle
 
 
 def evaluate_jsonpath_state_checks(
@@ -801,10 +844,10 @@ def evaluate_jsonpath_state_checks(
                 if value.casefold() == expected.casefold():
                     found = True
                     break
-            if op_name == "contains" and _contains(value, expected):
+            if op_name == "contains" and contains(value, expected):
                 found = True
                 break
-            if op_name == "contains_ci" and _contains(value, expected, ci=True):
+            if op_name == "contains_ci" and contains(value, expected, ci=True):
                 found = True
                 break
 
@@ -959,20 +1002,31 @@ def resolve_state_checks_component(
     db_probe_score: float,
     hash_weight: float | None,
 ) -> StateChecksOutcome:
-    """Fold the runner's three state sources into one ``state_checks`` score.
+    """Fold the runner's state sources into one ``state_checks`` score.
 
     Translates the runner's ``-1.0``-means-not-evaluated sentinel into the ``None``
-    the shared composer reads. ``db_probes`` is the sole state source for the tasks
-    that declare it (mixing it with hash/jsonpath in one task is out of scope), so
-    its score fills the slot outright and hides whatever the other two produced —
-    which is why the probe branch reports the weight as unconsulted too.
+    the shared composer reads. ``db_probes`` is the block's only state source: a probe
+    score beside a hash verdict or a JSONPath score is two verdicts for one component
+    with no declared share between them, so the pair is refused rather than one of them
+    discarded. A probe deciding alone reports a declared weight as unconsulted, the way
+    any single-source fold does.
 
-    Raises ``ValueError`` when a hash verdict and a JSONPath score are both real and
-    no ``hash_weight`` says how to fold them.
+    Reads the scores rather than a config, because that is what this fold holds; the
+    same rule over the keys an author writes is
+    ``refuse_probes_beside_another_state_source``.
+
+    Raises:
+        ValueError: a probe score arrived beside another source, carrying
+            ``CONFLICTING_STATE_SOURCES_MESSAGE`` — raised before the weight is read, so
+            a block being refused outright is never answered with a demand for a
+            ``hash.weight``; or a hash verdict and a JSONPath score are both real and no
+            ``hash_weight`` says how to fold them.
     """
+    hash_source = None if hash_score < 0 else hash_score
+    jsonpath_source = None if jsonpath_score < 0 else jsonpath_score
     probes_decide = db_probe_score >= 0
-    hash_source = None if probes_decide or hash_score < 0 else hash_score
-    jsonpath_source = None if probes_decide or jsonpath_score < 0 else jsonpath_score
+    if probes_decide and (hash_source is not None or jsonpath_source is not None):
+        raise ValueError(CONFLICTING_STATE_SOURCES_MESSAGE)
     return StateChecksOutcome(
         component=(
             db_probe_score
@@ -993,7 +1047,7 @@ def resolve_state_checks_component(
 
 def combine_grade_components(
     components: dict[str, Any], grading_config: dict[str, Any]
-) -> tuple[float, bool]:
+) -> FoldedGrade:
     """
     Combine component scores into final grade.
 
@@ -1001,6 +1055,10 @@ def combine_grade_components(
     - "all": All components must pass (score >= threshold)
     - "weighted": Weighted average of component scores
     - "any": Any component passing is sufficient
+
+    Every evaluated component carries a declared weight or the fold raises, and a fold
+    with no weighted evaluated component decides before the aggregation and reports why
+    — the two rules core's own fold applies, from the one shared definition.
 
     Args:
         components: Dict with component scores:
@@ -1019,9 +1077,11 @@ def combine_grade_components(
             }
 
     Returns:
-        Tuple of (score: float, binary_pass: bool)
+        The verdict, carrying the reason where the fold counted nothing.
 
     Raises:
+        MissingComponentWeight: an evaluated component ``combine.weights`` declares no
+            share for.
         ValueError: a hash verdict and a JSONPath score are both real and
             ``state_checks.hash_weight`` does not say how to fold them; or
             ``combine_method`` is missing or names no supported aggregation.
@@ -1035,8 +1095,6 @@ def combine_grade_components(
     weights = grading_config.get("weights", {})
     threshold = grading_config.get("pass_threshold", 1.0)
 
-    transcript_score = components.get("transcript_score", -1.0)
-
     # Determine which components are active (score >= 0 means evaluated)
     active_components: dict[str, float] = {}
     state_checks_slot = resolve_state_checks_component(
@@ -1047,65 +1105,100 @@ def combine_grade_components(
     )
     if state_checks_slot.component is not None:
         active_components["state_checks"] = state_checks_slot.component
-    if transcript_score >= 0:
-        active_components["transcript_rules"] = transcript_score
+    for spec in GRADE_COMPONENTS:
+        # state_checks is the composed slot resolved above; it has no single field here.
+        if spec.runner_score_field is None:
+            continue
+        score = components.get(spec.runner_score_field, -1.0)
+        if score >= 0:
+            active_components[spec.name] = score
 
-    # LLM judge
-    llm_judge_score = components.get("llm_judge_score", -1.0)
-    if llm_judge_score >= 0:
-        active_components["llm_judge"] = llm_judge_score
+    shares = {name: require_component_weight(name, weights) for name in active_components}
 
-    # Custom Python checks
-    custom_checks_score = components.get("custom_checks_score", -1.0)
-    if custom_checks_score >= 0:
-        active_components["custom_checks"] = custom_checks_score
-
-    # If no components are active but grading was configured, fail explicitly.
-    # This prevents refusal tasks (empty golden_actions) or misconfigured
-    # grading from silently passing with score=1.0.
-    #
-    # A component is "actually configured" when:
-    #   1. It appears in weights, AND
-    #   2. Its config section exists in grading_config (not just a model default)
-    if not active_components:
-        actually_configured: set[str] = set()
-        if "state_checks" in weights and grading_config.get("state_checks") is not None:
-            actually_configured.add("state_checks")
-        if "transcript_rules" in weights and grading_config.get("transcript_rules") is not None:
-            actually_configured.add("transcript_rules")
-        if "llm_judge" in weights and grading_config.get("llm_judge") is not None:
-            actually_configured.add("llm_judge")
-        if "custom_checks" in weights and grading_config.get("custom_checks") is not None:
-            actually_configured.add("custom_checks")
-
-        if actually_configured:
-            logger.warning(
-                "Grading configured for %s but no components were evaluated — failing",
-                actually_configured,
-            )
-            return 0.0, False
-        # Truly no grading configured at all — pass by default
-        return 1.0, True
+    # A refusal task (empty golden_actions), a misconfigured pack and a deliberately
+    # non-scoring one are three different answers, and the shared rule tells them apart.
+    uncounted = resolve_uncounted_fold(
+        scored=active_components,
+        requested={
+            spec.name
+            for spec in GRADE_COMPONENTS
+            if component_requested(spec, grading_config.get(spec.config_section))
+        },
+        weights=weights,
+        method=method,
+    )
+    if uncounted is not None:
+        if uncounted.reason:
+            logger.warning("Grading counted nothing — failing: %s", uncounted.reason)
+        return uncounted
 
     # Computed for every method, read only by ``weighted``: the shared dispatch
     # decides the aggregation and this substrate keeps its own mean.
-    total_weight = 0.0
-    weighted_sum = 0.0
-    for component_name, score in active_components.items():
-        weight = weights.get(component_name, 1.0)
-        weighted_sum += score * weight
-        total_weight += weight
-
-    if total_weight > 0:
-        weighted_mean = weighted_sum / total_weight
-    else:
-        weighted_mean = 1.0
-
-    return combine_by_method(
+    total_weight = sum(shares.values())
+    weighted_sum = sum(score * shares[name] for name, score in active_components.items())
+    score, binary_pass = combine_by_method(
         method=method,
         component_scores=active_components,
-        weighted_mean=weighted_mean,
+        weighted_mean=weighted_sum / total_weight if total_weight else 0.0,
         pass_threshold=threshold,
+    )
+    return FoldedGrade(score=score, binary_pass=binary_pass)
+
+
+_JUDGE_SCORE_FIELD = runner_score_field("llm_judge")
+
+
+@dataclass(frozen=True)
+class RunnerTrialVerdict:
+    """One trial's runner-side verdict: the two gates applied around the weighted fold.
+
+    ``judge_component`` is the score the judge component carries *after* the required-criterion
+    gate, which is what the wire grade and the reasons string report — not the weighted average
+    the judge's own aggregate returned. ``reason`` is the fold's own sentence where it counted
+    nothing, which no component's reasons would otherwise state.
+    """
+
+    judge_component: float
+    score: float
+    binary_pass: bool
+    reason: str | None
+
+
+def compose_runner_trial_verdict(
+    components: dict[str, Any],
+    grading_config: dict[str, Any],
+    *,
+    judge_gate_failed: bool,
+    trace_gate_failed: bool,
+) -> RunnerTrialVerdict:
+    """Fold ``components`` into a trial verdict, applying both gates around the combine.
+
+    One rule, two gates, in the order they bind. A failed **required** rubric criterion is a
+    hard fail of the judge *component*: its score is zeroed before the fold, so a high weighted
+    average cannot rescue it and every downstream reader of the component sees the gate. A
+    failed **trace** gate leaves the score alone and fails the trial outright. Either gate
+    therefore fails the trial independently of ``pass_threshold`` and of how heavily any other
+    component is weighted.
+
+    ``components`` carries the judge's *raw* aggregate score under its runner field; the
+    zeroing is this function's, so a caller reproducing a recorded verdict offline reaches the
+    same verdict as the runner without repeating either gate. The core substrate composes
+    independently (:mod:`~tolokaforge.core.grading.combine`) and never computes ``llm_judge``.
+
+    Raises:
+        ValueError: propagated from :func:`combine_grade_components` — an evaluated component
+            with no declared weight, an undecidable ``state_checks`` fold, or a
+            ``combine_method`` naming no supported aggregation.
+    """
+    folded = dict(components)
+    if judge_gate_failed:
+        folded[_JUDGE_SCORE_FIELD] = 0.0
+    combined = combine_grade_components(folded, grading_config)
+    return RunnerTrialVerdict(
+        judge_component=folded.get(_JUDGE_SCORE_FIELD, -1.0),
+        score=combined.score,
+        binary_pass=combined.binary_pass and not (judge_gate_failed or trace_gate_failed),
+        reason=combined.reason,
     )
 
 
@@ -1114,6 +1207,8 @@ def build_grade_reasons(
     state_diff: dict[str, Any] | None = None,
     transcript_result: dict[str, Any] | None = None,
     judge_reasons: str | None = None,
+    trace_checks_result: dict[str, Any] | None = None,
+    golden_replay: GoldenReplayRecord | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -1122,6 +1217,10 @@ def build_grade_reasons(
         components: Component scores dict
         state_diff: State diff if hash comparison failed
         transcript_result: Transcript evaluation result
+        trace_checks_result: Trace checks evaluation result
+        golden_replay: The golden replay behind the hash verdict, when one ran. An
+            incomplete replay is named beside the verdict it produced, in the sentence
+            the core engine emits too.
 
     Returns:
         Human-readable reasons string
@@ -1138,6 +1237,10 @@ def build_grade_reasons(
                 reasons.append(f"State: {state_diff['summary']}")
             else:
                 reasons.append("State: hash mismatch")
+
+    replay_reason = incomplete_replay_reason(golden_replay) if golden_replay is not None else None
+    if replay_reason:
+        reasons.append(replay_reason)
 
     # State checks reason — jsonpath file assertions
     jsonpath_score = components.get("jsonpath_score", -1.0)
@@ -1184,6 +1287,26 @@ def build_grade_reasons(
                 reasons.append("Transcript: passed")
             else:
                 reasons.append("Transcript: failed")
+
+    # Trace checks reason — the score and the route it was scored on, the gates
+    # that shut, then every failing constraint by name. The gate and constraint
+    # lines are the ones core's engine emits too, so a grade reads the same on
+    # both substrates.
+    trace_checks_score = components.get("trace_checks_score", -1.0)
+    if trace_checks_score >= 0:
+        trace_checks = trace_checks_result or {}
+        route = trace_checks.get("winning_path") or ""
+        reasons.append(
+            f"Trace checks: score={trace_checks_score:.2f}" + (f" (route {route})" if route else "")
+        )
+        failed_gate_ids = trace_checks.get("failed_gate_ids") or []
+        if failed_gate_ids:
+            reasons.append(f"FAILED trace gates: {', '.join(failed_gate_ids)}")
+        reasons.extend(
+            f"Trace check {item['id']}: {item['message']}"
+            for item in trace_checks.get("constraints", [])
+            if not item["passed"]
+        )
 
     # LLM judge reason
     llm_judge_score = components.get("llm_judge_score", -1.0)

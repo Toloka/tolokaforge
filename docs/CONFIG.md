@@ -70,10 +70,16 @@ evaluation:
   harness_adapter:
     type: "native"
     params: {}
+  # Optional: how strictly the pre-run gate reads each selected pack's grading
+  # block. Omit the whole block for the default below.
+  grading_validation:
+    fail_on: "advisory"       # "advisory" | "error"
 ```
 
 Notes:
 - `models.judge` is the optional run-level read-only rubric judge model (no default); the run fails loud up front if a selected task grades with `llm_judge` but `models.judge` is absent.
+- `evaluation.grading_validation.fail_on` (default `advisory`) names the least severe finding class the pre-run gate refuses the run over. `advisory` fails on both classes; `error` fails on errors alone. Before it schedules anything, a run puts every selected task's grading block through the same predicate `tolokaforge validate` applies and aborts naming **every** offending task; the rules and their three classes are in [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run). `unchecked` is not a value here: it is a channel rather than a severity, and is logged rather than enforced so a gate that could check nothing does not read as a clean bill of health.
+- **A misspelled `grading_validation` block name is silently dropped.** `evaluation` is `extra="ignore"`, so `grading_validaton:` leaves the defaults in place without a word. The block's own fields are `extra="forbid"`, so a misspelled *field* inside a correctly-spelled block does fail loud.
 - `models.agent.capabilities` overrides auto-detected model capabilities. Auto-detection (via `ModelCapabilities.for_model()`) covers most models; use overrides for A/B comparisons or to fix edge cases. Available fields: `dict_map_prompt_hints` (inject system prompt hints for dict-map parameters), `supports_typed_dict_maps`, `supports_schema_extras`, `fixed_temperature`, `supports_seed`, `unwrap_input_key`, `reasoning_via_extra_body`. See [Model Capability Presets](#model-capability-presets) below.
 - PyPI wheels exclude `tasks/**`; configure benchmark content via `evaluation.task_packs`.
 - `orchestrator.runtime` is a deprecated operator override for backend selection; when unset, selection is task-driven. It accepts any name registered in the `tolokaforge.runtime_backends` entry-point group (built-in `shared` / `per_trial` / `in_memory`, or a plug-in's name), resolved at run start with an actionable error listing the known names on a typo. Legacy `docker` is a retained alias for `shared`. See [RUNTIME_BACKENDS.md](RUNTIME_BACKENDS.md).
@@ -435,10 +441,12 @@ entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
 ```yaml
 combine:
   method: "weighted"
-  weights:
-    state_checks: 0.6
+  weights:                                 # one entry per component the pack configures
+    state_checks: 0.4
     transcript_rules: 0.2
-    llm_judge: 0.2
+    trace_checks: 0.2
+    llm_judge: 0.1
+    custom_checks: 0.1
   pass_threshold: 0.8
 
 state_checks:
@@ -453,6 +461,18 @@ transcript_rules:
   tool_expectations:                       # one sub-check per declared tool,
     required_tools: ["browser"]             # graded on both substrates —
     disallowed_tools: []                    # see docs/GRADING.md § Transcript Rules
+
+trace_checks:                              # ordering / absence / counting over the timeline
+  constraints:                             # see docs/GRADING.md § Trace Checks
+    - id: searched_before_answering
+      description: "the policy corpus is searched before the reply is sent"
+      require:
+        before:
+          left:  { quantifier: any,  match: { kind: tool_call, tool: { equals: search } } }
+          right: { quantifier: last, match: { kind: assistant_message } }
+
+custom_checks:                             # author-written Python, see docs/custom_checks.md
+  enabled: true                            # required; false (default) disables the block
 
 llm_judge:                                 # the judge MODEL is set once per run
                                            # under models.judge — NOT here
@@ -484,6 +504,15 @@ llm_judge:                                 # the judge MODEL is set once per run
         kind: graded
         weight: 0.5
 ```
+
+A whole-state hash is read only where the flag turns it on: `state_checks.hash`
+carrying an `expected_state_hash` or `golden_actions` under an `enabled` that is not
+truthy is rejected at load, because both substrates test the flag before reading any
+source and the pack would otherwise grade its state without the comparison the author
+wrote. The refusal is addressed at the source the pack declared. Every other
+authoring rule this file's grading block is checked against — tool names, argument
+names, `regex` compilation — is in
+[GRADING.md](GRADING.md#what-is-validated-before-a-run).
 
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,

@@ -16,10 +16,13 @@ import yaml
 from pydantic import ValidationError
 
 from tolokaforge.adapters._task_loader import (
+    GradingSource,
+    GradingSourceKind,
     _detect_task_root,
     _load_domain_dict,
     _rewrite_task_paths,
     deep_merge,
+    grading_source_under_adapter,
     load_task_yaml,
 )
 from tolokaforge.adapters.native import NativeAdapter
@@ -562,7 +565,8 @@ def test_inline_json_db_dict_survives_load(tmp_path: Path) -> None:
 class TestSiblingGradingAutoPickup:
     """A ``grading.yaml`` next to ``task.yaml`` is auto-picked when the merged
     config sets no ``grading``. Explicit ``grading:`` always wins; a missing
-    sibling leaves ``grading`` unset rather than fabricating a path."""
+    sibling leaves ``grading`` unset rather than fabricating a path — and what
+    that unset resolves to is decided by the adapter the task declares."""
 
     @staticmethod
     def _write_minimal_task(task_dir: Path, **extra: object) -> Path:
@@ -604,6 +608,113 @@ class TestSiblingGradingAutoPickup:
         task_path = self._write_minimal_task(tmp_path / "flat_task")
         task, _ = load_task_yaml(task_path)
         assert task.grading is None
+
+    @pytest.mark.parametrize(
+        ("declares_grading", "adapter_type", "kind"),
+        [
+            (True, "native", GradingSourceKind.ON_DISK),
+            (True, "tau", GradingSourceKind.ON_DISK),
+            (False, "native", GradingSourceKind.WITHHELD),
+            (False, "tau", GradingSourceKind.UNINTERROGABLE),
+        ],
+        ids=[
+            "a_declared_file_is_the_source",
+            "a_declared_file_is_the_source_whatever_the_adapter",
+            "the_adapter_that_grades_from_a_file_is_owed_one",
+            "the_adapter_that_answers_for_itself_is_owed_nothing",
+        ],
+    )
+    def test_the_grading_source_is_resolved_under_the_declared_adapter(
+        self,
+        tmp_path: Path,
+        declares_grading: bool,
+        adapter_type: str,
+        kind: GradingSourceKind,
+    ) -> None:
+        """An absent grading source means opposite things to the two adapter kinds.
+
+        ``get_grading_config`` is abstract and the implementations disagree: the
+        native one refuses a task that names no file, while the terminal-bench one
+        synthesises a whole config without reading the field. So the same absence is
+        a defect under one declared adapter and unanswerable under another — while a
+        *declared* path is the source under either, because the reading gate one
+        layer down owns whether that file is there.
+        """
+        task_dir = tmp_path / "flat_task"
+        extra: dict[str, object] = {"adapter_type": adapter_type}
+        if declares_grading:
+            extra["grading"] = "grading.yaml"
+        task, resolved_dir = load_task_yaml(self._write_minimal_task(task_dir, **extra))
+
+        source = grading_source_under_adapter(task, resolved_dir, task.adapter_type)
+
+        assert source.kind is kind
+        if kind is GradingSourceKind.ON_DISK:
+            assert source.path == task_dir / "grading.yaml"
+            assert source.reason == ""
+        else:
+            assert source.path is None
+
+    def test_a_withheld_source_names_the_task_and_both_ways_to_supply_one(
+        self, tmp_path: Path
+    ) -> None:
+        """The sentence is what an author reads instead of a leaked ``TypeError``.
+
+        It has to carry the task and both fixes, because no caller supplies them both:
+        the CLI's line names the file rather than the task, and neither it nor the
+        pre-run gate's aggregate repeats a fix.
+        """
+        task_path = self._write_minimal_task(tmp_path / "flat_task")
+        task, task_dir = load_task_yaml(task_path)
+
+        reason = grading_source_under_adapter(task, task_dir, task.adapter_type).reason
+
+        assert "'min'" in reason
+        assert "`grading:`" in reason
+        assert "grading.yaml beside its task.yaml" in reason
+        assert "before any trial is scheduled" in reason
+
+    def test_an_uninterrogable_source_names_the_adapter_it_could_not_ask(
+        self, tmp_path: Path
+    ) -> None:
+        """The skip reason travels a channel that never fails a pack, so it says
+        which declared adapter made the absence unanswerable rather than asserting
+        a defect."""
+        task_path = self._write_minimal_task(tmp_path / "flat_task", adapter_type="tau")
+        task, task_dir = load_task_yaml(task_path)
+
+        reason = grading_source_under_adapter(task, task_dir, task.adapter_type).reason
+
+        assert "'tau'" in reason
+        assert "not checkable" in reason
+
+    @pytest.mark.parametrize(
+        ("kind", "path", "reason"),
+        [
+            (GradingSourceKind.ON_DISK, None, ""),
+            (GradingSourceKind.ON_DISK, Path("grading.yaml"), "an absence"),
+            (GradingSourceKind.WITHHELD, Path("grading.yaml"), "an absence"),
+            (GradingSourceKind.WITHHELD, None, ""),
+        ],
+        ids=[
+            "an_on_disk_source_with_no_file",
+            "an_on_disk_source_explaining_itself",
+            "an_absence_carrying_a_file",
+            "an_absence_explaining_nothing",
+        ],
+    )
+    def test_a_source_that_contradicts_its_own_kind_is_refused(
+        self, kind: GradingSourceKind, path: Path | None, reason: str
+    ) -> None:
+        """A source is exactly one of a file and a sentence.
+
+        Both halves are load-bearing: a consumer reads the path on the one kind and
+        prints the sentence on the other two, so a value carrying neither would be
+        graded against nothing and a value carrying both would refuse a task it had
+        already resolved a file for.
+        """
+        with pytest.raises(ValueError, match="grading source of kind"):
+            GradingSource(kind=kind, path=path, reason=reason)
 
     def test_explicit_grading_not_overridden_by_sibling(self, tmp_path: Path) -> None:
         task_dir = tmp_path / "flat_task"

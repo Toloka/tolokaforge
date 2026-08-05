@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import pytest
 
-from tolokaforge.adapters.native import _builtin_tool_schemas
+from tolokaforge.adapters._task_loader import _builtin_tool_schemas
 from tolokaforge.tools.str_replace_editor import (
     _HEAD_CHARS,
     _MAX_OUTPUT_CHARS,

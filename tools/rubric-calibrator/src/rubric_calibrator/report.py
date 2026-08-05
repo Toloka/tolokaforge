@@ -9,7 +9,8 @@ from __future__ import annotations
 from rich.console import Console
 from rich.table import Table
 
-from .metrics import GateDecision
+from tolokaforge.core.grading.agreement import GateDecision
+
 from .runner import CalibrationRun
 
 
@@ -56,8 +57,8 @@ def render(console: Console, run: CalibrationRun, gate: GateDecision) -> None:
         console.print(f"\n[yellow]Disagreements ({len(report.disagreements)}):[/yellow]")
         for d in report.disagreements:
             console.print(
-                f"  [yellow]{d.fixture_id} / {d.criterion_id}[/yellow]: "
-                f"expected={d.expected_raw!r} judged={d.judged_raw!r}"
+                f"  [yellow]{d.observation_id} / {d.criterion_id}[/yellow]: "
+                f"expected={d.reference_raw!r} judged={d.candidate_raw!r}"
             )
             if d.justification:
                 console.print(f"      judge: {d.justification}")

@@ -58,6 +58,7 @@ sequenceDiagram
     end
 
     H->>R: GradeTrial - llm_messages_json
+    R->>R: Resolve golden-action names against the registered tools
     R->>DB: Snapshot current state
     R->>DB: Reset to initial state
     R->>R: Execute golden path
@@ -340,6 +341,44 @@ message Grade {
   // judge ran). The Runner runs the judge's LLM, so this is grading spend,
   // separate from the agent's usage.
   JudgeReport judge_report = 9;
+
+  // Per-constraint trace-check verdicts (empty unless the pack declared
+  // trace_checks and the timeline carried events). Small and scannable, so the
+  // Host writes it inline in grade.yaml rather than to a sidecar. A payload the
+  // Host cannot read fails the grade parse instead of being dropped: nothing
+  // else records which constraint failed.
+  repeated TraceConstraintResult trace_checks = 10;
+
+  // Which alternative route the component was scored on and whether a trace
+  // gate shut the trial. A message, not four scalars: proto3 scalars carry no
+  // presence, and a false gate_failed decoded from a Runner predating the field
+  // is a gate silently opening. A payload the Host cannot read fails the grade
+  // parse, for the reason trace_checks above does.
+  TraceChecksSummary trace_checks_summary = 11;
+}
+
+message TraceConstraintResult {
+  string id = 1;                        // unique within the pack's trace_checks block
+  string kind = 2;                      // one of the ten constraint kinds
+  bool passed = 3;
+  double weight = 4;                    // the author's weight, as it entered the fold
+  string message = 5;                   // empty on a pass
+  repeated int32 matched_positions = 6; // timeline positions, resolved in trajectory.yaml
+  string severity = 7;                  // "scored" | "gate"; empty from an older Runner
+  bool undecided = 8;                   // the evidence could not settle it; never true beside passed
+}
+
+message TracePathResult {
+  string id = 1;
+  double score = 2;      // the route's own score, never zeroed by a gate
+  bool gate_failed = 3;
+}
+
+message TraceChecksSummary {
+  string winning_path = 1;           // "" when the pack declared no alternatives
+  bool gate_failed = 2;              // the trial fails outright, whatever the score
+  repeated string failed_gate_ids = 3;
+  repeated TracePathResult paths = 4;  // one per alternative, in declaration order
 }
 
 message CriterionResult {
@@ -380,6 +419,10 @@ message GradeComponents {
 
   // Custom Python checks score
   double custom_checks = 4;
+
+  // Trace checks score (temporal constraints over the trial's event timeline).
+  // Explicit presence, unlike the four fields above — see the note below.
+  optional double trace_checks = 5;
 }
 
 // =============================================================================
@@ -522,7 +565,7 @@ Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that p
 
 The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
 
-The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](docs/TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
+The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/core/trial.py), which embeds the full [`TaskDescription`](TASK_DESCRIPTION_SCHEMA.md) schema at `spec.task` (shown below) alongside the per-trial execution context (`run_id`, `attempt_id`, model configs, `env_endpoints`, `runtime_context`):
 
 ```json
 {
@@ -573,6 +616,12 @@ The `trial_spec_json` field contains a serialised [`TrialSpec`](../tolokaforge/c
 validates it while decoding this payload, so any other value fails `RegisterTrial`
 with a `ValidationError` naming the value and the three it may be. Which score each
 one returns is in [GRADING.md](GRADING.md#score-combination) § Score Combination.
+
+**`grading.weights` defaults to `{}`** — an empty map, never a share for a component
+the payload did not configure. A payload that configures a component and omits its
+weight therefore reaches the `MissingComponentWeight` row below at grade time rather
+than being folded at a share nobody sent. A payload configuring nothing and weighting
+nothing is the deliberately non-scoring shape and grades `(1.0, True)`.
 
 ### ExecuteToolRequest/Response
 
@@ -670,25 +719,34 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
         decode_transcript_wire(transcript), trial_context.tool_call_history, termination_reason
     )
 
-    # 1. Get current trial state from DB Service
+    # 1. Resolve every golden-action name against the tools RegisterTrial registered.
+    #    Raises UnresolvableGoldenAction -> success=false, before anything below
+    #    writes to the trial's database.
+    resolved = resolve_golden_action_names(
+        [action.tool_name for action in grading_config.golden_actions],
+        candidates=trial_context.agent_tools.keys(),
+        match=_tool_registered_for_trial,
+    )
+
+    # 2. Get current trial state from DB Service
     trial_state = db_service.get_state(trial_id)
     
-    # 2. Compute stable hash of trial state (excludes unstable fields)
+    # 3. Compute stable hash of trial state (excludes unstable fields)
     trial_hash = db_service.get_stable_hash(trial_id)
     
-    # 3. Execute golden path on fresh state
+    # 4. Execute golden path on fresh state
     db_service.snapshot(trial_id, "pre_golden")
     db_service.reset_to_initial(trial_id)
     
-    for action in grading_config.golden_actions:
-        execute_tool(trial_id, action.tool_name, action.arguments)
+    for tool_name, action in zip(resolved, grading_config.golden_actions):
+        execute_tool(trial_id, tool_name, action.arguments)
     
     golden_hash = db_service.get_stable_hash(trial_id)
     
-    # 4. Restore trial state
+    # 5. Restore trial state
     db_service.restore(trial_id, "pre_golden")
     
-    # 5. Compare hashes
+    # 6. Compare hashes
     if trial_hash == golden_hash:
         state_score = 1.0
         state_diff = None
@@ -696,12 +754,18 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
         state_score = 0.0
         state_diff = compute_diff(golden_state, trial_state)
     
-    # 6. Evaluate transcript rules off the timeline
+    # 7. Evaluate transcript rules off the timeline
     transcript_score = evaluate_transcript_rules(timeline, grading_config.transcript_rules)
     
-    # 7. Fold the components by the method the pack declared. "weighted" returns
+    # 8. Fold the components by the method the pack declared. "weighted" returns
     #    their mean scaled by grading_config.weights, "all" the weakest component,
     #    "any" the strongest; anything else raises and the RPC returns success=false.
+    #    Every component folded here carries a share grading_config.weights declares,
+    #    and a fold with no weighted component decides before this call: nothing
+    #    configured and nothing weighted passes, anything else fails with the reason.
+    #    Shares summing to zero over the scored components is that second answer under
+    #    "weighted" alone — "all" and "any" aggregate the component set and read no
+    #    share, so a 0.0 there is inert and each component's own verdict still decides.
     final_score, binary_pass = combine_by_method(
         method=grading_config.combine_method,
         component_scores={"state_checks": state_score, "transcript_rules": transcript_score},
@@ -728,6 +792,32 @@ return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
 
 All components (DB Service, adapters, grading engine) MUST use this exact algorithm for hash comparison to work correctly.
 
+### Component scores on the wire
+
+`GradeComponents` carries one score per grading component, and "not evaluated"
+has to be distinguishable from a real `0.0` — a scored zero is a failing trial,
+an unevaluated component is excluded from the fold entirely.
+
+`state_checks`, `transcript_rules`, `llm_judge` and `custom_checks` encode it as
+the sentinel **`-1.0`**. `trace_checks` uses **explicit presence** (proto3
+`optional`) instead: it was added after those four, so a runner image predating
+it omits the field, and proto3 would decode that omission as `0.0` — recording a
+scored zero for a runner that cannot evaluate trace checks at all. The
+`RegisterTrial` version lock does not cover this direction, because a newer
+engine registers happily against an older runner. `include_agent_system_prompt`
+on `JudgeReport` and `Grade.trace_checks_summary` carry the same reasoning: the
+summary is a *message* so that an absent one is distinguishable from one
+reporting that no gate failed, which is the difference between "this runner
+cannot evaluate a gate" and "the gate held".
+
+The host reads presence, not just the value, so three things all reach `None`:
+the `-1.0` sentinel, an absent `components` submessage, and a presence-carrying
+field the sending runner never set. A `trace_checks` that is *present* and `0.0`
+is a real failing score and survives as `0.0`. Which field carries which score
+is declared once in
+[`GRADE_COMPONENTS`](../tolokaforge/core/grading/grade_components.py); see
+[GRADING.md § What a component is](GRADING.md#what-a-component-is).
+
 ### GradeTrial Error Semantics
 
 `GradeTrialResponse.success = false` leaves `grade` unset — an unusable grade is
@@ -736,18 +826,33 @@ never approximated with a score. The two views of the trial are joined into its
 so an unreadable or self-contradictory payload fails the RPC before golden replay
 touches the trial's state.
 
+Golden replay resolves too, before it writes. Every `golden_actions[].tool_name` is
+matched against the tools `RegisterTrial` registered — exactly, or against a single
+registered `…_<name>` suffix, since golden actions are authored unprefixed — as the
+first thing hash grading does. A name that matches neither is a pack defect, and the
+RPC answers `success = false` naming the action and the set the trial registered rather
+than replaying the rest and reporting a hash against a golden world the action never
+touched. Nothing has been written at that point: the MCP state sync, the `pre_golden`
+snapshot and the reset all follow resolution, so the trial's database still holds
+exactly what the agent left behind and the host can retry or re-grade it.
+
 The host does not fill the gap either: `RunnerRPCTrialGrader.grade` raises
 `GradingFailedError` on any `success = false`, so the trial is published with no
-score rather than with one the runner never computed. See
-[`GRADING.md`](GRADING.md#trial-event-timeline) for what that costs the run's
-counts.
+score rather than with one the runner never computed. The conductor catches that
+exception and records the `error` string on `Trajectory.grading_error`, so the
+trial is still counted and its bundle still written, with the cause recoverable
+from `trajectory.yaml`. See [`GRADING.md`](GRADING.md#trial-event-timeline) for
+what that costs the run's counts.
 
 | `error` | Cause |
 |---|---|
 | `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
 | `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
 | `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
-| `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions |
+| `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions. An authored pack cannot be that shape: `hash.enabled` with no source is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)), so this row is reached by a `TaskDescription` built directly against the runner or recorded before that rule |
+| `Trial '<id>' is not gradeable: ValueError: state_checks.db_probes is the sole state source for a task that declares it …` | A probe score arrived at the fold beside a hash verdict or a JSONPath score — two verdicts for one `state_checks` component with no declared share between them, so `resolve_state_checks_component` refuses. It refuses *before* the weight is read, so a block refused outright is never answered with a demand for a `hash.weight`. An authored pack cannot be that shape: both config models reject a probe declared beside a non-empty `jsonpaths` or an enabled `hash` naming a source, so such a pack stops loading on either substrate ([GRADING.md](GRADING.md#substrate-grading-state_checksdb_probes)). One shape reaches here — `hash_enabled` true with **no** declared source beside non-empty `db_probes`, which neither model refuses because neither sees a source to conflict with, yet the runner grades that hash against the trial's initial state and so produces a real verdict at grade time — reachable from a `TaskDescription` built directly against the runner, or one recorded before the rule |
+| `Trial '<id>' is not gradeable: MissingComponentWeight: <component> was scored and combine.weights declares no weight for it …` | The fold evaluated a component `grading.weights` declares no share for. Neither `1.0` nor `0.0` is defensible, so the fold refuses rather than picking one. An authored pack cannot be that shape — a configured component with no weight is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)) — so this row is reached by a `TaskDescription` built directly against the runner, or by one recorded before that rule |
+| `Hash grading failed: UnresolvableGoldenAction: golden actions naming no tool the replay can call: …` | A `golden_actions` entry names a tool the trial never registered, or names nothing at all. Every offending action is named in one error with its index and the registered set, and the trial's database is untouched |
 | `Hash grading failed: …` | Golden replay or stable-state retrieval raised |
 | `Grading config populates scored keys the runner neither evaluated nor recorded a skip for: …` | The accounted-keys ledger (below) found a populated scored key with no evaluator result and no recorded skip |
 | `Grading error: …` | Any other exception escaping the grading path |
@@ -763,7 +868,10 @@ key the manifest declares core-only that nonetheless arrives populated fails the
 same way, quoting the reason it is core-only. Scope is scored checks only:
 `state_checks.id_fields`, `state_checks.relaxed_validation` and
 `state_checks.numeric_string_fields` shape other checks instead of producing a
-component score, and `combine.*` is the aggregation itself. See
+component score, and `combine.*` is the aggregation itself. A constraint kind
+written only inside a `trace_checks.alternatives` path is covered by the
+`trace_checks.alternatives` key rather than by its own leaf, so the guarantee holds
+for the block rather than leaf by leaf there (#772). See
 [`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
 
 **The recorded skips.** A trial can legitimately reach `GradeTrial` with a
@@ -772,19 +880,21 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 
 | Skip | Condition | Keys covered |
 |---|---|---|
-| `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so every rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key |
+| `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so the rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key **except** `min_assistant_turns`, which is evaluated there because absence is that key's answer |
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
 | `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
 | `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
 | `skipped: custom checks not enabled` | The pack wrote a `custom_checks` block but left `enabled` false, so the executor never runs | `custom_checks` |
+| `skipped: the binding yielded no assignment` | A `trace_checks` constraint declaring a `bind` whose binder selected no event, or selected events carrying no value to bind, so its `require` tree was never entered | the `trace_checks.constraints.<kind>` keys **nested inside** that `require` tree. The tree's own top-level kind is `evaluated`: the constraint takes a verdict under it either way, decided by `on_unbound`. A kind any other constraint in the block did score stays `evaluated` too |
 
 A degenerate trial therefore **scores badly rather than erroring** — the skip
-suppresses the component, and the recorded reason says why.
+suppresses the component unless a declared `transcript_rules.min_assistant_turns`
+scores it `0.0`, and the recorded reason says why either way.
 
 The ledger covers scored checks, so one skip is reported beside it rather than
 through it: a `state_checks.hash_weight` the fold never consulted — because only one
-state source produced a score, or because `db_probes` filled the component outright —
-appends its own line to `Grade.reasons`, from the same constant the core engine uses.
+state source produced a score — appends its own line to `Grade.reasons`, from the same
+constant the core engine uses.
 `hash_weight` is a `CONFIG_INPUT`, not a scored check, so the ledger would never have
 seen it.
 

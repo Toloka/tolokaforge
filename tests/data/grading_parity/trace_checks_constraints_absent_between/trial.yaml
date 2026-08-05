@@ -1,0 +1,62 @@
+# Both trials open the case, close it, and notify the customer once. Only where
+# the notification falls differs, so the window between the two anchors is the
+# whole of what separates them — outside it the same call is unremarkable.
+satisfying:
+  messages:
+    - role: user
+      content: "My parcel never arrived."
+    - role: assistant
+      content: "Opening a case."
+      tool_calls:
+        - tool_name: open_case
+          executor: agent
+          status: success
+          arguments: { subject: "parcel not delivered" }
+          output: '{"case_id": "CS-3001"}'
+    - role: assistant
+      content: "Resolved — closing it."
+      tool_calls:
+        - tool_name: close_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-3001" }
+          output: '{"case_id": "CS-3001", "state": "closed"}'
+    - role: assistant
+      content: "Letting you know."
+      tool_calls:
+        - tool_name: notify_customer
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-3001", template: resolved }
+          output: '{"sent": true}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "My parcel never arrived."
+    - role: assistant
+      content: "Opening a case."
+      tool_calls:
+        - tool_name: open_case
+          executor: agent
+          status: success
+          arguments: { subject: "parcel not delivered" }
+          output: '{"case_id": "CS-3001"}'
+    - role: assistant
+      content: "Telling you it is resolved."
+      tool_calls:
+        - tool_name: notify_customer
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-3001", template: resolved }
+          output: '{"sent": true}'
+    - role: assistant
+      content: "Closing it."
+      tool_calls:
+        - tool_name: close_case
+          executor: agent
+          status: success
+          arguments: { case_id: "CS-3001" }
+          output: '{"case_id": "CS-3001", "state": "closed"}'
+  state: {}

@@ -31,7 +31,10 @@ All models use Pydantic v2 ``BaseModel`` for validation and serialization.
 from __future__ import annotations
 
 import ipaddress
+import math
 import re
+from collections import Counter
+from collections.abc import Iterator
 from datetime import datetime
 from enum import Enum
 from pathlib import Path, PurePosixPath
@@ -46,7 +49,14 @@ from tolokaforge.core.deprecations import (
     coerce_security_context_aliases,
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
-from tolokaforge.core.grading.state_composition import resolve_hash_weight, validate_hash_weight
+from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
+from tolokaforge.core.grading.state_composition import (
+    refuse_probes_beside_another_state_source,
+    resolve_hash_weight,
+    validate_hash_weight,
+)
+from tolokaforge.core.grading.trace_event_kind import TraceEventKind
+from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.netpolicy_constants import HARNESS_RESERVED_NETWORKS
 
 # ``ToolExecutionStatus`` is declared beside ``ToolResult`` in the true leaf
@@ -372,6 +382,39 @@ class RunnerStateChecksConfig(BaseModel):
             return None
         return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
 
+    def _authored_hash_block(self) -> dict[str, Any]:
+        """The author-facing ``state_checks.hash`` block these flattened fields carry.
+
+        Every rule shared with core reads the author's key names, so this model
+        translates into them once rather than once per rule.
+        """
+        return {
+            "enabled": self.hash_enabled,
+            "expected_state_hash": self.expected_hash,
+            "golden_actions": self.golden_actions,
+            "weight": self.hash_weight,
+        }
+
+    @model_validator(mode="after")
+    def _refuse_probes_beside_another_state_source(self) -> RunnerStateChecksConfig:
+        """Reject a probe declared beside a source this component also scores.
+
+        The runner is the only substrate that evaluates a probe, so such a spec would be
+        graded here by a precedence rule no author chose and graded differently by core.
+        It is refused at ``RegisterTrial``, before the trial is paid for.
+
+        Defined above the weight rule, which Pydantic therefore runs second: a spec
+        carrying probes, assertions and a hash source with no weight satisfies both
+        conditions, and a weight is not the fix for a spec refused outright.
+        """
+        refuse_probes_beside_another_state_source(
+            db_probes=self.db_probes,
+            jsonpaths=self.jsonpath_checks,
+            hash_config=self._authored_hash_block(),
+            context="task_description grading.state_checks",
+        )
+        return self
+
     @model_validator(mode="after")
     def _validate_hash_weight_declaration(self) -> RunnerStateChecksConfig:
         """Reject the one shape whose ``state_checks`` score is undecidable.
@@ -383,12 +426,7 @@ class RunnerStateChecksConfig(BaseModel):
         by a fold rule the author never chose.
         """
         resolve_hash_weight(
-            {
-                "enabled": self.hash_enabled,
-                "expected_state_hash": self.expected_hash,
-                "golden_actions": self.golden_actions,
-                "weight": self.hash_weight,
-            },
+            self._authored_hash_block(),
             jsonpaths=self.jsonpath_checks,
             context=_HASH_WEIGHT_CONTEXT,
         )
@@ -415,12 +453,1112 @@ class RunnerTranscriptRulesConfig(BaseModel):
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
-    max_turns: int | None = None
+    # Both bounds are declarable from 1 up. A ceiling below 1 admits no
+    # assistant-turn count at all, and a floor of 0 asserts nothing — and the
+    # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
+    # be an unpoliced declaration.
+    max_turns: int | None = Field(default=None, ge=1)
+    min_assistant_turns: int | None = Field(default=None, ge=1)
     tool_expectations: ToolExpectations | None = None
     required_actions: list[RunnerRequiredAction] = Field(default_factory=list)
     communicate_info: list[dict[str, Any]] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _validate_turn_window(self) -> RunnerTranscriptRulesConfig:
+        """Reject the window no assistant-turn count satisfies.
+
+        Calls the same predicate the core config calls, so an engine and a runner
+        built from different releases cannot disagree about which packs are
+        gradeable: a window core rejected at ``tolokaforge validate`` is rejected at
+        ``RegisterTrial`` too.
+        """
+        validate_turn_window(
+            min_assistant_turns=self.min_assistant_turns,
+            max_turns=self.max_turns,
+            context="task_description grading.transcript_rules",
+        )
+        return self
+
+
+TRACE_PREDICATE_OPERATORS: frozenset[str] = frozenset(
+    {
+        "equals",
+        "equals_ci",
+        "contains",
+        "contains_ci",
+        "not_equals",
+        "regex",
+        "gt",
+        "gte",
+        "lt",
+        "lte",
+        "in_",
+        "not_in",
+        "len_gt",
+        "len_gte",
+        "exists",
+        "equals_binding",
+        "contains_binding",
+    }
+)
+"""Every operator a :class:`ValuePredicate` may carry, written out rather than
+comprehended from the model, so the per-operator answer table has a second source
+to be checked against."""
+
+TRACE_PREDICATE_BINDING_OPERATORS: frozenset[str] = frozenset(
+    {"equals_binding", "contains_binding"}
+)
+"""The operators whose value is a name in the constraint's binding environment
+rather than a value to compare against."""
+
+
+class ValuePredicate(BaseModel):
+    """A conjunction of operators over one field of one event.
+
+    Every declared operator must hold, so ``{gt: 0, lt: 100}`` is a range. This is
+    deliberately unlike ``evaluate_jsonpath_state_checks``, which rejects a second
+    operator: there two operators had no conjunctive reading, while here the range
+    is the common case and a misspelled operator is already a load error.
+
+    An operator counts as declared when its value is not ``None``, so a predicate
+    means the same thing after the gRPC round trip that dumps every unset field as
+    ``null``. The one thing that reading makes inexpressible is ``equals: null`` —
+    and a ``None`` field is unmatched rather than vacuously true anyway, so that
+    predicate never had a reading.
+
+    ``equals_binding`` and ``contains_binding`` name a value the constraint's
+    ``bind`` extracted rather than writing it out, and compare with the same
+    ``equals`` / ``contains`` the literal forms use.
+    """
+
+    equals: Any = None
+    equals_ci: str | None = None
+    contains: Any = None
+    contains_ci: str | None = None
+    not_equals: Any = None
+    regex: str | None = None
+    gt: float | None = None
+    gte: float | None = None
+    lt: float | None = None
+    lte: float | None = None
+    in_: list[Any] | None = None
+    not_in: list[Any] | None = None
+    len_gt: int | None = Field(default=None, ge=0)
+    len_gte: int | None = Field(default=None, ge=0)
+    exists: bool | None = None
+    equals_binding: str | None = None
+    contains_binding: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+    def declared_operators(self) -> frozenset[str]:
+        """The operators this predicate asserts, which it is the conjunction of."""
+        return frozenset(
+            name for name in TRACE_PREDICATE_OPERATORS if getattr(self, name) is not None
+        )
+
+    def referenced_bindings(self) -> frozenset[str]:
+        """The binding names this predicate reads out of its constraint's environment."""
+        return frozenset(
+            getattr(self, name)
+            for name in TRACE_PREDICATE_BINDING_OPERATORS
+            if getattr(self, name) is not None
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_predicate_asserting_nothing(self) -> ValuePredicate:
+        if not self.declared_operators():
+            raise ValueError(
+                "a value predicate declares no operator, so it asserts nothing and "
+                f"matches every value. Write one of {sorted(TRACE_PREDICATE_OPERATORS)}, "
+                "or drop the field"
+            )
+        return self
+
+
+# Which fields a matcher may read, per event kind. A ``tool_call`` matcher reads
+# ``status`` and ``result`` from the result paired with the call, which is the only
+# way to write "a failed call to X with argument Y" — ``args`` lives on the call
+# event and ``status`` on its result. ``latency_seconds`` is on no row: wall time is
+# not compared across substrates, so grading cannot depend on it.
+TRACE_MATCHABLE_FIELDS_BY_KIND: dict[TraceEventKind, frozenset[str]] = {
+    TraceEventKind.TOOL_CALL: frozenset({"tool", "executor", "args", "status", "result"}),
+    TraceEventKind.TOOL_RESULT: frozenset({"tool", "executor", "status", "result"}),
+    TraceEventKind.ASSISTANT_MESSAGE: frozenset({"text"}),
+    TraceEventKind.USER_MESSAGE: frozenset({"text"}),
+}
+
+_MATCHER_PREDICATE_FIELDS: tuple[str, ...] = (
+    "tool",
+    "executor",
+    "args",
+    "status",
+    "result",
+    "text",
+)
+
+
+class TraceMatcher(BaseModel):
+    """Which timeline events a constraint is about.
+
+    ``kind`` is required and nothing is inferred from which predicates are present,
+    so what a matcher selects is readable from the YAML. ``args`` addresses nested
+    argument paths by dotted segments (``body.query``).
+
+    A predicate on a field the kind never carries is rejected here rather than
+    silently selecting nothing: an unmatchable matcher reads as an agent failure
+    under the default ``on_missing``, so the author's typo would be reported as the
+    agent's fault.
+    """
+
+    kind: TraceEventKind
+    tool: ValuePredicate | None = None
+    executor: ValuePredicate | None = None
+    args: dict[str, ValuePredicate] | None = Field(default=None, min_length=1)
+    status: ValuePredicate | None = None
+    result: ValuePredicate | None = None
+    text: ValuePredicate | None = None
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _reject_fields_the_kind_never_carries(self) -> TraceMatcher:
+        declared = {name for name in _MATCHER_PREDICATE_FIELDS if getattr(self, name) is not None}
+        matchable = TRACE_MATCHABLE_FIELDS_BY_KIND[self.kind]
+        unmatchable = sorted(declared - matchable)
+        if unmatchable:
+            raise ValueError(
+                f"kind {self.kind.value!r} carries no {unmatchable}, so a predicate there "
+                f"would select nothing. A {self.kind.value} matcher reads "
+                f"{sorted(matchable)}"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_a_success_status_beside_a_result_predicate(self) -> TraceMatcher:
+        """#717: a failed call's result text differs between the two substrates.
+
+        Successful result text is byte-identical across substrates and canonically
+        locked; nothing proves that for a failure, so a ``result`` predicate is
+        admitted only where portability holds. The rule is syntactic — one operator,
+        ``equals``, valued ``success`` — rather than "does this status admit a
+        failure", which would be a satisfiability question over every operator.
+        """
+        if self.result is None or _asserts_a_successful_call(self.status):
+            return self
+        raise ValueError(
+            "a result predicate needs a status predicate reading exactly "
+            f"{{equals: {ToolExecutionStatus.SUCCESS.value}}} beside it. A failed call's "
+            "result text is not identical on the two substrates (#717), so only a "
+            "successful call's result is matchable. To assert a call failed, match on "
+            "status instead"
+        )
+
+
+def _asserts_a_successful_call(status: ValuePredicate | None) -> bool:
+    """Whether ``status`` is the exact predicate #717 admits a ``result`` read beside.
+
+    Syntactic — one operator, ``equals``, valued ``success`` — rather than "does this
+    status admit a failure", which would be a satisfiability question over every
+    operator.
+    """
+    if status is None or status.declared_operators() != {"equals"}:
+        return False
+    return status.equals == ToolExecutionStatus.SUCCESS.value
+
+
+class BoundValue(BaseModel):
+    """One name a binding extracts out of the event it selected.
+
+    ``field`` addresses the extraction the same way a matcher addresses a
+    predicate — ``tool``, ``text``, ``result``, or an ``args`` path by dotted
+    segments. ``pattern`` narrows a textual field to one capture group, which is
+    what makes a figure quoted inside prose bindable.
+    """
+
+    field: str
+    pattern: str | None = None
+
+    model_config = {"extra": "forbid"}
+
+    def head_segment(self) -> str:
+        """The field name ``field`` addresses, before any nested argument path."""
+        return self.field.split(".", 1)[0]
+
+    @model_validator(mode="after")
+    def _require_a_pattern_that_captures_exactly_one_value(self) -> BoundValue:
+        """Zero groups bind the whole match under a name that reads like a capture.
+
+        Scoped to a pattern that compiles, as every other authored pattern is: an
+        uncompilable one has no group count, and the authoring gate reports it at
+        its own address rather than as a miscount here.
+        """
+        if self.pattern is None:
+            return self
+        try:
+            groups = re.compile(self.pattern).groups
+        except re.error:
+            return self
+        if groups == 1:
+            return self
+        raise ValueError(
+            f"pattern {self.pattern!r} captures {groups} groups, and a binding reads "
+            "exactly one. Wrap the value to bind in a single group — none binds the "
+            "whole match, and several leave no defined which"
+        )
+
+
+class OnUnbound(str, Enum):
+    """What a binding that selected nothing to bind decides."""
+
+    FAIL = "fail"
+    PASS = "pass"
+
+
+# Closed vocabularies of a handful of members, so a value bound out of one
+# correlates nothing an ``equals`` literal does not already say.
+_UNBINDABLE_FIELDS: frozenset[str] = frozenset({"status", "executor"})
+
+
+class TraceBinding(BaseModel):
+    """The events a constraint draws its correlated values from, and what it draws.
+
+    One binder yields one assignment over every name in ``values`` per event it
+    selects, and the constraint's ``require`` tree is evaluated once per
+    assignment. ``on_unbound`` decides the trial where the binder selected nothing:
+    the universal reading is vacuously true there, and ``fail`` is the default
+    because a task whose binder never fired is usually a task the agent did not do.
+    """
+
+    match: TraceMatcher
+    values: dict[str, BoundValue]
+    on_unbound: OnUnbound = OnUnbound.FAIL
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _require_a_binding_that_binds_something(self) -> TraceBinding:
+        """A validator rather than a ``Field`` bound, which short-circuits the message."""
+        if self.values:
+            return self
+        raise ValueError(
+            "a binding declares no values, so it binds nothing and every reference in "
+            "the constraint names an environment that does not exist. Write "
+            "values: {<name>: {field: args.<path>}}, or drop the bind"
+        )
+
+    @model_validator(mode="after")
+    def _reject_an_extraction_the_binder_cannot_read(self) -> TraceBinding:
+        """The extraction addresses a field the selected kind carries, by its head segment.
+
+        The same table a matcher's predicates are checked against, read at the head
+        of the dotted path: ``args.record_id`` is admitted on ``args``, the address
+        shape the matcher's own ``args`` keys take one level down.
+        """
+        matchable = TRACE_MATCHABLE_FIELDS_BY_KIND[self.match.kind]
+        unreadable = sorted(
+            (name, value.field)
+            for name, value in self.values.items()
+            if value.head_segment() not in matchable
+        )
+        if not unreadable:
+            return self
+        raise ValueError(
+            f"a {self.match.kind.value} binding extracts {unreadable}, addressing a field "
+            f"the kind does not carry, so the name would bind nothing on every event. A "
+            f"{self.match.kind.value} binding reads {sorted(matchable)}, an args path "
+            "naming nested keys by dotted segments below that first one"
+        )
+
+    @model_validator(mode="after")
+    def _reject_an_extraction_over_a_closed_vocabulary(self) -> TraceBinding:
+        closed = sorted(
+            name
+            for name, value in self.values.items()
+            if value.head_segment() in _UNBINDABLE_FIELDS
+        )
+        if not closed:
+            return self
+        raise ValueError(
+            f"bindings {closed} extract a {sorted(_UNBINDABLE_FIELDS)} field, whose domain "
+            "is a handful of members — every event carrying the bound value is already "
+            "selected by a predicate on that field reading an equals literal, so the "
+            "correlation says nothing the literal does not"
+        )
+
+    @model_validator(mode="after")
+    def _require_a_success_status_beside_a_result_extraction(self) -> TraceBinding:
+        """#717 over a value bound out of ``result`` rather than compared against it.
+
+        The landed rule fires on a ``result`` *predicate*, which a binder carries
+        none of. A failed call's result text differs between the substrates, and a
+        value bound out of it propagates that difference into every reference.
+        """
+        bound_from_result = sorted(
+            name for name, value in self.values.items() if value.head_segment() == "result"
+        )
+        if not bound_from_result or _asserts_a_successful_call(self.match.status):
+            return self
+        raise ValueError(
+            f"bindings {bound_from_result} read result without a status predicate reading "
+            f"exactly {{equals: {ToolExecutionStatus.SUCCESS.value}}} on the binder's "
+            "match. A failed call's result text is not identical on the two substrates "
+            "(#717), so a value bound out of it grades differently on each. Add the "
+            "status predicate, or bind an argument of the call instead"
+        )
+
+
+class Quantifier(str, Enum):
+    """How a constraint reads a side that matched more than one event."""
+
+    ANY = "any"
+    ALL = "all"
+    FIRST = "first"
+    LAST = "last"
+
+
+class AnchorQuantifier(str, Enum):
+    """The restricted domain a window anchor is selected by."""
+
+    FIRST = "first"
+    LAST = "last"
+
+
+class MatcherSide(BaseModel):
+    """One quantified side of an ordering constraint."""
+
+    quantifier: Quantifier
+    match: TraceMatcher
+
+    model_config = {"extra": "forbid"}
+
+
+class AnchorSide(BaseModel):
+    """The single event a window is measured from.
+
+    ``any`` and ``all`` are rejected rather than accepted and collapsed: over a
+    prefix or an interval ``any`` means ``first`` and ``all`` means ``last``, so the
+    four-value domain would carry two verdicts under four spellings. One selected
+    anchor is also what makes the window one interval rather than a cross-product of
+    every start against every end.
+    """
+
+    quantifier: AnchorQuantifier
+    match: TraceMatcher
+
+    model_config = {"extra": "forbid"}
+
+    @field_validator("quantifier", mode="before")
+    @classmethod
+    def _reject_the_quantifiers_a_window_cannot_read(cls, value: Any) -> Any:
+        # Before the enum, which would answer with a bare literal error naming
+        # neither the collapse nor the spelling that expresses the same intent.
+        collapses_onto = {
+            Quantifier.ANY.value: AnchorQuantifier.FIRST,
+            Quantifier.ALL.value: AnchorQuantifier.LAST,
+        }
+        # Any other malformed value — including an unhashable one a dict or list
+        # under the key would give — is left to the enum to reject.
+        equivalent = collapses_onto.get(value) if isinstance(value, str) else None
+        if equivalent is not None:
+            raise ValueError(
+                f"an anchor cannot be quantified {value!r}: over a window {value!r} means "
+                f"{equivalent.value!r}, and admitting both would give one verdict two "
+                f"spellings. Write {equivalent.value!r}"
+            )
+        return value
+
+
+class AdjacencyView(str, Enum):
+    """The event sequence adjacency is read in.
+
+    There is no default. Events interleave inside a turn — a call's own result sits
+    between it and the next call — so every candidate default is wrong for some
+    common intent: ``tool_calls`` cannot express confirm-before-acting, where one
+    side is a message, and ``events`` cannot express two consecutive calls.
+    """
+
+    TOOL_CALLS = "tool_calls"
+    TOOL_RESULTS = "tool_results"
+    MESSAGES = "messages"
+    EVENTS = "events"
+
+
+class PresentConstraint(BaseModel):
+    """At least one event matches."""
+
+    match: TraceMatcher
+
+    model_config = {"extra": "forbid"}
+
+
+class AbsentConstraint(BaseModel):
+    """No event matches."""
+
+    match: TraceMatcher
+
+    model_config = {"extra": "forbid"}
+
+
+class CountConstraint(BaseModel):
+    """The number of matching events is within the declared bounds."""
+
+    match: TraceMatcher
+    min: int | None = Field(default=None, ge=0)
+    max: int | None = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _require_a_bound_that_can_fail(self) -> CountConstraint:
+        if self.min is None and self.max is None:
+            raise ValueError(
+                "a count constraint declares neither min nor max, so every match count "
+                "satisfies it. Declare at least one bound"
+            )
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError(
+                f"count bounds min {self.min} and max {self.max} admit no match count, so "
+                "the constraint fails however the agent behaves"
+            )
+        return self
+
+
+class BeforeConstraint(BaseModel):
+    """The left side is ordered before the right side."""
+
+    left: MatcherSide
+    right: MatcherSide
+
+    model_config = {"extra": "forbid"}
+
+
+class ImmediatelyBeforeConstraint(BaseModel):
+    """The left side is adjacent to the right side in the named view."""
+
+    left: MatcherSide
+    right: MatcherSide
+    among: AdjacencyView
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _require_the_view_adjacency_is_read_in(cls, data: Any) -> Any:
+        # Before the required-field error, which names the field but not why no
+        # default can be right.
+        if isinstance(data, dict) and data.get("among") is None:
+            raise ValueError(
+                "immediately_before needs an explicit among: adjacency has no meaning "
+                "until the sequence it is read in is named, and no default is right for "
+                f"every intent. Write one of {[view.value for view in AdjacencyView]}"
+            )
+        return data
+
+
+class AbsentBeforeConstraint(BaseModel):
+    """Nothing forbidden occurs strictly before the anchor.
+
+    LTLf ``¬A U B``, and the primitive a no-prefill check is written with.
+    """
+
+    forbidden: TraceMatcher
+    anchor: AnchorSide
+
+    model_config = {"extra": "forbid"}
+
+
+class AbsentBetweenConstraint(BaseModel):
+    """Nothing forbidden occurs strictly between the two anchors."""
+
+    forbidden: TraceMatcher
+    start: AnchorSide
+    end: AnchorSide
+
+    model_config = {"extra": "forbid"}
+
+
+class TraceConstraintKind(str, Enum):
+    """One member of the closed constraint vocabulary.
+
+    Each member names a field of :class:`TraceConstraintExpr` holding that kind's
+    payload, so a kind and the payload address that reaches it are the same token.
+    """
+
+    PRESENT = "present"
+    ABSENT = "absent"
+    COUNT = "count"
+    BEFORE = "before"
+    IMMEDIATELY_BEFORE = "immediately_before"
+    ABSENT_BEFORE = "absent_before"
+    ABSENT_BETWEEN = "absent_between"
+    ALL_OF = "all_of"
+    ANY_OF = "any_of"
+    NEGATE = "negate"
+
+
+TRACE_CONSTRAINT_KINDS: frozenset[TraceConstraintKind] = frozenset(
+    {
+        TraceConstraintKind.PRESENT,
+        TraceConstraintKind.ABSENT,
+        TraceConstraintKind.COUNT,
+        TraceConstraintKind.BEFORE,
+        TraceConstraintKind.IMMEDIATELY_BEFORE,
+        TraceConstraintKind.ABSENT_BEFORE,
+        TraceConstraintKind.ABSENT_BETWEEN,
+        TraceConstraintKind.ALL_OF,
+        TraceConstraintKind.ANY_OF,
+        TraceConstraintKind.NEGATE,
+    }
+)
+"""The closed constraint vocabulary, written out rather than read off
+:class:`TraceConstraintExpr` or off :class:`TraceConstraintKind`, so the totality
+lock compares sources that can disagree."""
+
+# Kinds whose verdict is about the match itself, for which an unmatched-anchor
+# policy would decide the very thing the constraint asserts. On ``present`` the
+# pair is worse than redundant: unmatched would pass by the policy and matched by
+# the constraint, so the check could not fail.
+_KINDS_WITHOUT_AN_ANCHOR: frozenset[TraceConstraintKind] = frozenset(
+    {TraceConstraintKind.PRESENT, TraceConstraintKind.ABSENT, TraceConstraintKind.COUNT}
+)
+
+# Over one matched set, ``last`` and ``all`` on the left require the event nothing
+# follows to precede something, and ``first`` and ``all`` on the right require
+# something to precede the event nothing precedes — false at every trajectory. Their
+# complements, written out below, are the quantifiers an ordering over one matcher
+# survives on.
+_LEFT_QUANTIFIERS_LEAVING_A_SUCCESSOR: frozenset[Quantifier] = frozenset(
+    {Quantifier.FIRST, Quantifier.ANY}
+)
+_RIGHT_QUANTIFIERS_LEAVING_A_PREDECESSOR: frozenset[Quantifier] = frozenset(
+    {Quantifier.LAST, Quantifier.ANY}
+)
+
+# The one window over a self-referential ``absent_between`` that some trial opens
+# and some trial does not: from the first match to the last, which is non-empty
+# exactly when the events occur twice.
+_SELF_REFERENTIAL_WINDOW_SOME_TRIAL_OPENS = (AnchorQuantifier.FIRST, AnchorQuantifier.LAST)
+
+_ORDERING_KINDS: frozenset[TraceConstraintKind] = frozenset(
+    {TraceConstraintKind.BEFORE, TraceConstraintKind.IMMEDIATELY_BEFORE}
+)
+
+
+class TraceConstraintExpr(BaseModel):
+    """Exactly one constraint kind, holding that kind's own payload.
+
+    One optional field per kind, rather than a ``require: <name>`` discriminator
+    over a flat payload: each payload is then independently typed and
+    ``extra="forbid"`` checks it on its own, so ``before`` carrying ``min`` is a
+    load error by construction instead of a hand-written cross-field rule repeated
+    ten times.
+
+    The three composite kinds nest expressions, which carry no ``id`` / ``weight`` /
+    ``on_missing`` — those belong to the scored constraint, never to a sub-term.
+    """
+
+    present: PresentConstraint | None = None
+    absent: AbsentConstraint | None = None
+    count: CountConstraint | None = None
+    before: BeforeConstraint | None = None
+    immediately_before: ImmediatelyBeforeConstraint | None = None
+    absent_before: AbsentBeforeConstraint | None = None
+    absent_between: AbsentBetweenConstraint | None = None
+    all_of: list[TraceConstraintExpr] | None = Field(default=None, min_length=1)
+    any_of: list[TraceConstraintExpr] | None = Field(default=None, min_length=1)
+    negate: TraceConstraintExpr | None = None
+
+    model_config = {"extra": "forbid"}
+
+    def declared_kind(self) -> TraceConstraintKind:
+        """The one constraint kind this expression is."""
+        return next(iter(self.declared_kinds()))
+
+    def declared_kinds(self) -> frozenset[TraceConstraintKind]:
+        """Every constraint kind carrying a payload — exactly one after validation."""
+        return frozenset(
+            kind for kind in TRACE_CONSTRAINT_KINDS if getattr(self, kind.value) is not None
+        )
+
+    def kinds_in_tree(self) -> frozenset[TraceConstraintKind]:
+        """This expression's own kind, and recursively those of the ones it holds.
+
+        Nesting is read off the payload's shape rather than from a second list of
+        which kinds compose, so a future composite kind is walked into by existing
+        code instead of being silently treated as a leaf.
+        """
+        kind = self.declared_kind()
+        payload = getattr(self, kind.value)
+        nested = payload if isinstance(payload, list) else [payload]
+        return frozenset({kind}).union(
+            *(item.kinds_in_tree() for item in nested if isinstance(item, TraceConstraintExpr))
+        )
+
+    @model_validator(mode="after")
+    def _require_exactly_one_kind(self) -> TraceConstraintExpr:
+        declared = sorted(kind.value for kind in self.declared_kinds())
+        if len(declared) != 1:
+            raise ValueError(
+                f"a constraint expression declares {declared or 'no kind'}, and exactly one "
+                f"of {sorted(kind.value for kind in TRACE_CONSTRAINT_KINDS)} is required. "
+                "Two conditions are an "
+                "all_of over two expressions"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_an_order_over_one_matcher_that_no_trial_decides(self) -> TraceConstraintExpr:
+        """Two sides selecting one set of events, in a shape no author means to write.
+
+        An ordering whose sides carry the same matcher is satisfiable only where the
+        left selection can leave a later event and the right selection an earlier
+        one; every other quantifier pair fails whatever the agent did, and so does a
+        window measured between two selections of one set unless it runs from the
+        first match to the last. Anchoring ``absent_before`` at its own ``first`` is
+        the one rejected shape here that is not a constant: nothing precedes the
+        first match, so it decides exactly what ``present`` decides.
+        """
+        kind = self.declared_kind()
+        payload = getattr(self, kind.value)
+        if kind in _ORDERING_KINDS and payload.left.match == payload.right.match:
+            if not (
+                payload.left.quantifier in _LEFT_QUANTIFIERS_LEAVING_A_SUCCESSOR
+                and payload.right.quantifier in _RIGHT_QUANTIFIERS_LEAVING_A_PREDECESSOR
+            ):
+                raise ValueError(
+                    f"{kind.value} orders one matcher against itself, quantified "
+                    f"{payload.left.quantifier.value!r} before "
+                    f"{payload.right.quantifier.value!r}, which no trajectory satisfies: "
+                    "over the events one matcher selects, nothing follows the last of them "
+                    "and nothing precedes the first. Quantify the left side 'first' or "
+                    "'any' and the right side 'last' or 'any' for a shape a trajectory "
+                    "can decide, or give the two sides different matchers"
+                )
+        if (
+            kind is TraceConstraintKind.ABSENT_BEFORE
+            and payload.forbidden == payload.anchor.match
+            and payload.anchor.quantifier is AnchorQuantifier.FIRST
+        ):
+            raise ValueError(
+                "absent_before forbids the events its own anchor is selected from, "
+                "anchored 'first': nothing precedes the first of them, so the constraint "
+                "reduces to 'the events occurred at all' — present, written the long way "
+                "round. Write a present constraint, anchor it 'last' to assert the events "
+                "occur once, or forbid a different matcher"
+            )
+        if kind is TraceConstraintKind.ABSENT_BETWEEN and (
+            payload.forbidden == payload.start.match == payload.end.match
+        ):
+            self._require_a_self_referential_window_some_trial_opens(payload)
+        return self
+
+    @staticmethod
+    def _require_a_self_referential_window_some_trial_opens(
+        payload: AbsentBetweenConstraint,
+    ) -> None:
+        anchors = (payload.start.quantifier, payload.end.quantifier)
+        if anchors == _SELF_REFERENTIAL_WINDOW_SOME_TRIAL_OPENS:
+            return
+        raise ValueError(
+            "absent_between forbids the events its own window is measured between, "
+            f"from the {payload.start.quantifier.value!r} of them to the "
+            f"{payload.end.quantifier.value!r}, which leaves no interval any trajectory "
+            "opens: on_missing then decides the verdict however the agent behaved. Measure "
+            "from 'first' to 'last' to assert the events occur exactly twice, or forbid a "
+            "different matcher"
+        )
+
+
+class OnMissing(str, Enum):
+    """What an anchor that matched nothing decides."""
+
+    FAIL = "fail"
+    PASS = "pass"
+
+
+class TraceConstraintSeverity(str, Enum):
+    """Whether a constraint is scored or gates the trial.
+
+    A gate is excluded from the weighted average entirely — it enters neither the
+    numerator nor the denominator — and a violated one fails the trial whatever the
+    scored constraints said.
+    """
+
+    SCORED = "scored"
+    GATE = "gate"
+
+
+class TurnWindow(BaseModel):
+    """An inclusive turn range every matcher in a constraint is restricted to.
+
+    The opening user prompt shares turn 0 with the first assistant turn, so
+    ``first_turn: 0`` includes it. "Before the first user message" is therefore not
+    expressible as a window — that window is always empty, and the intent is
+    ``absent_before``.
+    """
+
+    first_turn: int | None = Field(default=None, ge=0)
+    last_turn: int | None = Field(default=None, ge=0)
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _require_a_window_some_turn_falls_in(self) -> TurnWindow:
+        if self.first_turn is None and self.last_turn is None:
+            raise ValueError(
+                "a turn window declares neither first_turn nor last_turn, so it restricts "
+                "nothing. Declare a bound, or drop within"
+            )
+        if (
+            self.first_turn is not None
+            and self.last_turn is not None
+            and self.first_turn > self.last_turn
+        ):
+            raise ValueError(
+                f"turn window first_turn {self.first_turn} is above last_turn "
+                f"{self.last_turn}, so no turn falls inside it and every matcher in the "
+                "constraint selects nothing"
+            )
+        return self
+
+
+_UNWEIGHTED_CONSTRAINT = 1.0
+"""The share a constraint that declares no ``weight`` carries."""
+
+
+def _matchers_within(value: Any) -> Iterator[TraceMatcher]:
+    """Every matcher reachable from ``value``, structurally rather than per kind.
+
+    A matcher holds no matcher of its own, so the walk stops at one; everything
+    above it — a constraint expression, a quantified side, a list of nested
+    expressions — is descended by its declared fields, and a kind added to the
+    vocabulary is walked by this code rather than by a second table.
+    """
+    if isinstance(value, TraceMatcher):
+        yield value
+    elif isinstance(value, list):
+        for item in value:
+            yield from _matchers_within(item)
+    elif isinstance(value, BaseModel):
+        for name in type(value).model_fields:
+            yield from _matchers_within(getattr(value, name))
+
+
+def _bindings_referenced_by(value: Any) -> frozenset[str]:
+    """Every binding name the predicates under ``value`` read."""
+    return frozenset(
+        name
+        for matcher in _matchers_within(value)
+        for predicate in _predicates_of(matcher)
+        for name in predicate.referenced_bindings()
+    )
+
+
+def _predicates_of(matcher: TraceMatcher) -> Iterator[ValuePredicate]:
+    """Every value predicate one matcher carries, its argument paths included."""
+    for field in _MATCHER_PREDICATE_FIELDS:
+        declared = getattr(matcher, field)
+        if isinstance(declared, ValuePredicate):
+            yield declared
+        elif isinstance(declared, dict):
+            yield from declared.values()
+
+
+class TraceConstraint(BaseModel):
+    """One trajectory condition, scored or gating.
+
+    ``weight`` scales its share of the component score, ``on_missing`` decides an
+    anchor that matched nothing — defaulting to a named failing sub-check, so an
+    unmatched anchor is never silently satisfied — and ``severity`` decides whether
+    the condition is scored at all or must simply hold. ``bind`` draws values out of
+    one event for the ``require`` tree to correlate against, which is why a binding
+    reaches exactly as far as the constraint that declares it.
+    """
+
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    weight: float = _UNWEIGHTED_CONSTRAINT
+    on_missing: OnMissing | None = None
+    severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
+    within: TurnWindow | None = None
+    bind: TraceBinding | None = None
+    require: TraceConstraintExpr
+
+    model_config = {"extra": "forbid"}
+
+    def bound_names(self) -> frozenset[str]:
+        """The names this constraint's binder puts in scope, if it declares one."""
+        return frozenset(self.bind.values) if self.bind is not None else frozenset()
+
+    @field_validator("weight")
+    @classmethod
+    def _require_a_weight_that_scores(cls, value: float) -> float:
+        """A positive weight, so the component's fold has a denominator.
+
+        Every weight being positive makes ``Σ(weight) > 0`` an invariant of a
+        populated constraint list, which is what lets the fold divide without a
+        zero-denominator branch and an invented convention for what an all-zero
+        weight set should score.
+        """
+        if not math.isfinite(value):
+            raise ValueError(
+                f"weight {value} is not a finite number, so the share of the score it "
+                "scales has no value. Write a positive weight"
+            )
+        if value <= 0.0:
+            raise ValueError(
+                f"weight {value} scores nothing: a zero-weight constraint is evaluated and "
+                "reported while contributing to neither the numerator nor the denominator "
+                "of the component score, and a negative one inverts the fold. A check that "
+                "must hold without being scored is severity: gate"
+            )
+        return value
+
+    @model_validator(mode="after")
+    def _reject_a_weight_on_a_check_nothing_scores(self) -> TraceConstraint:
+        """A gate carries no share, so a share written beside one is read by nothing.
+
+        Stated against the weight's *value* rather than against
+        ``model_fields_set``: the config is dumped whole into the trial spec and
+        revalidated inside the runner, which marks every field set, so a
+        declaredness rule would reject on the runner every gate it admitted on the
+        engine. An explicitly written ``weight: 1.0`` is therefore indistinguishable
+        from an omitted one and is admitted.
+        """
+        if self.severity is TraceConstraintSeverity.GATE and self.weight != _UNWEIGHTED_CONSTRAINT:
+            raise ValueError(
+                f"{self.id}: weight {self.weight} is written on a severity: gate constraint, "
+                "which is excluded from the weighted average — it enters neither the "
+                "numerator nor the denominator, so the weight scales nothing. Drop the "
+                "weight, or drop the severity to have the check scored"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_an_anchor_policy_that_opens_a_gate_vacuously(self) -> TraceConstraint:
+        """``on_missing: pass`` on a gate is a gate the trial satisfies by never arriving.
+
+        The policy earns its place on a *scored* constraint, where an anchor that
+        matched nothing is already charged to the check asking whether the thing
+        happened and charging it again would cost the agent the same failure twice.
+        A gate carries no share, so there is no second charge to avoid and the
+        policy buys nothing but the vacuous pass — on the one check the author said
+        must hold.
+        """
+        if self.severity is TraceConstraintSeverity.GATE and self.on_missing is OnMissing.PASS:
+            raise ValueError(
+                f"{self.id}: on_missing: pass opens a severity: gate constraint on every "
+                "trial whose anchor matched nothing, so the check that must hold holds "
+                "vacuously. A gate carries no weight, so letting the unmatched anchor "
+                "fail it double-charges nothing: drop the on_missing, or drop the "
+                "severity to have the check scored"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _reject_a_reference_to_a_name_nothing_binds(self) -> TraceConstraint:
+        """A binding reaches exactly as far as its own constraint.
+
+        The binder is a constraint field, so a reference to a name declared by
+        another constraint — or by another route — is an unbound name here rather
+        than a rule of its own, and the scoping the issue settled is structural.
+        """
+        binder = _bindings_referenced_by(self.bind.match) if self.bind else frozenset()
+        unbound = sorted((_bindings_referenced_by(self.require) | binder) - self.bound_names())
+        if not unbound:
+            return self
+        raise ValueError(
+            f"{self.id}: references {unbound} name no value this constraint binds, and a "
+            "binding is scoped to the constraint that declares it — a name another "
+            "constraint or another route binds is out of scope here. Declare it under "
+            f"this constraint's bind.values, or write a literal. In scope: "
+            f"{sorted(self.bound_names())}"
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_binder_reading_the_names_it_binds(self) -> TraceConstraint:
+        """The environment such a reference needs is the one the binder produces."""
+        if self.bind is None:
+            return self
+        self_referential = sorted(_bindings_referenced_by(self.bind.match) & self.bound_names())
+        if not self_referential:
+            return self
+        raise ValueError(
+            f"{self.id}: the binder's own match references {self_referential}, which it is "
+            "what binds — the candidates would have to be known before they are selected. "
+            "Reference the name from require, or select the binder's events by a literal"
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_bound_value_nothing_reads(self) -> TraceConstraint:
+        """A declared key nothing reads, in the family a weight beside a gate belongs to."""
+        unreferenced = sorted(self.bound_names() - _bindings_referenced_by(self.require))
+        if not unreferenced:
+            return self
+        raise ValueError(
+            f"{self.id}: bindings {unreferenced} are extracted and never referenced, so "
+            "they multiply the candidate set and decide nothing. Reference them with "
+            "equals_binding or contains_binding in require, or drop them"
+        )
+
+    @model_validator(mode="after")
+    def _reject_a_binding_policy_that_opens_a_gate_vacuously(self) -> TraceConstraint:
+        """``on_unbound: pass`` on a gate is a gate the trial satisfies by binding nothing.
+
+        The policy earns its place on a *scored* constraint, where a binder that
+        selected nothing is already charged to the check asking whether the thing
+        happened. A gate carries no share, so there is no second charge to avoid.
+        """
+        if self.bind is None or self.bind.on_unbound is not OnUnbound.PASS:
+            return self
+        if self.severity is not TraceConstraintSeverity.GATE:
+            return self
+        raise ValueError(
+            f"{self.id}: on_unbound: pass opens a severity: gate constraint on every trial "
+            "whose binder selected nothing, so the check that must hold holds vacuously. A "
+            "gate carries no weight, so letting the unbound case fail it double-charges "
+            "nothing: drop the on_unbound, or drop the severity to have the check scored"
+        )
+
+    @model_validator(mode="after")
+    def _reject_an_unmatched_anchor_policy_where_nothing_is_anchored(self) -> TraceConstraint:
+        """The policy is read at every depth, so the rule is read at every depth.
+
+        A composite threads ``on_missing`` down to each expression it holds
+        unchanged, so nesting one of these kinds under an ``all_of`` gives the
+        policy no anchor it did not have at the top — it still answers the question
+        the nested kind asks, and the vacuous pass the top-level rule refuses is
+        written one line lower.
+        """
+        anchorless = sorted(
+            kind.value for kind in self.require.kinds_in_tree() & _KINDS_WITHOUT_AN_ANCHOR
+        )
+        if self.on_missing is None or not anchorless:
+            return self
+        raise ValueError(
+            f"{self.id}: on_missing has nothing to decide over {anchorless}, whose verdict "
+            "is the match itself — a composite passes the policy down to every expression "
+            "it holds, so nesting one of them does not anchor it. Setting it would answer "
+            "the very question the constraint asks"
+        )
+
+
+class TracePath(BaseModel):
+    """One alternative route through the task, scored as a whole.
+
+    A path is a named set of constraints, not a disjunction over single steps: an
+    agent's score on it is what the shared constraints and this path's own
+    constraints say together, so half of one route plus half of another scores
+    neither.
+    """
+
+    id: str = Field(min_length=1)
+    description: str = Field(min_length=1)
+    constraints: list[TraceConstraint] = Field(min_length=1)
+
+    model_config = {"extra": "forbid"}
+
+
+class TraceChecksConfig(BaseModel):
+    """Declarative conditions on what the agent did, and in what order.
+
+    ``constraints`` hold whatever route the agent took. ``alternatives`` declare
+    genuinely alternative routes, each scored against the shared constraints plus
+    its own; a block may declare either or both.
+    """
+
+    constraints: list[TraceConstraint] = Field(default_factory=list)
+    alternatives: list[TracePath] | None = None
+
+    model_config = {"extra": "forbid"}
+
+    def _declared_ids(self) -> list[str]:
+        """Every id the block declares, across the paths and every constraint list.
+
+        One space, because that is what a grade's sub-check results and the pre-run
+        gate's findings address a check by — ``trace_checks.<id>`` for a shared
+        constraint, ``trace_checks.<path id>.<constraint id>`` for one inside a route.
+        """
+        ids = [item.id for item in self.constraints]
+        for path in self.alternatives or ():
+            ids.append(path.id)
+            ids.extend(item.id for item in path.constraints)
+        return ids
+
+    @model_validator(mode="after")
+    def _require_something_to_score(self) -> TraceChecksConfig:
+        if not self.constraints and self.alternatives is None:
+            raise ValueError(
+                "a trace_checks block declares neither constraints nor alternatives, so it "
+                "asserts nothing and scores nothing. Declare a constraints list, an "
+                "alternatives list of two or more paths, or drop the block"
+            )
+        return self
+
+    @model_validator(mode="after")
+    def _require_alternatives_to_be_alternative(self) -> TraceChecksConfig:
+        """Fewer than two routes is not a choice between routes.
+
+        A rule rather than a ``min_length`` bound, so the message can tell the author
+        what the one-path form already is — which is the argument for rejecting it.
+        """
+        if self.alternatives is None or len(self.alternatives) >= 2:
+            return self
+        raise ValueError(
+            "alternatives declares fewer than the two paths a choice between routes needs "
+            f"({len(self.alternatives)}). A single path is the flat form written the long "
+            "way round — the best of one path is that path — so move its constraints into "
+            "'constraints:' beside the shared ones, or declare the second route"
+        )
+
+    @model_validator(mode="after")
+    def _require_every_route_to_be_scored_where_any_route_is(self) -> TraceChecksConfig:
+        """A route with nothing scored in it cannot lose, so nothing else can win.
+
+        A decision set with no scored member has no weighted average to take and
+        collapses to its gates' verdict — ``1.0`` wherever they hold. Beside a route
+        that *is* scored that route ties or beats every sibling on every trajectory
+        its gates survive, so the component stops measuring the process the other
+        routes describe. The rule is stated over the block rather than over a path
+        because the shared constraints are in every decision set: a shared scored
+        check is what makes a gate-only path list scoreable.
+        """
+        scored = {
+            path.id: any(
+                item.severity is not TraceConstraintSeverity.GATE
+                for item in (*self.constraints, *path.constraints)
+            )
+            for path in self.alternatives or ()
+        }
+        unscoreable = [path_id for path_id, is_scored in scored.items() if not is_scored]
+        if not unscoreable or not any(scored.values()):
+            return self
+        raise ValueError(
+            f"paths {unscoreable} carry no scored check, beside "
+            f"{[path_id for path_id, is_scored in scored.items() if is_scored]}, which do. "
+            "A decision set with no scored member collapses to its gates' verdict — 1.0 "
+            "wherever they hold — so such a route ties or beats every scored sibling and "
+            "the component reports the gate rather than the route the agent walked. Move "
+            "the gate into the shared 'constraints:', where it applies whichever route "
+            "the agent took, or give the route a scored constraint of its own"
+        )
+
+    @model_validator(mode="after")
+    def _require_distinct_ids(self) -> TraceChecksConfig:
+        counted = Counter(self._declared_ids())
+        duplicated = sorted(name for name, total in counted.items() if total > 1)
+        if duplicated:
+            raise ValueError(
+                f"ids {duplicated} are declared more than once. The paths and every "
+                "constraint list share one id space, because an id is how the grade names "
+                "a sub-check and how the pre-run gate addresses one — trace_checks.<id> "
+                "shared, trace_checks.<path id>.<constraint id> inside a route — so a "
+                "repeat anywhere in the block makes two results indistinguishable"
+            )
+        return self
 
 
 class Criterion(BaseModel):
@@ -646,7 +1784,10 @@ class RunnerGradingConfig(BaseModel):
     """
 
     combine_method: CombineMethod = "weighted"
-    weights: dict[str, float] = Field(default_factory=lambda: {"state_checks": 1.0})
+    # Empty rather than a weight for a component the payload never configured: a share
+    # invented here reads to the fold as one the author declared, and the fold's answer to
+    # "nothing was configured" is only reachable when nothing is weighted either.
+    weights: dict[str, float] = Field(default_factory=dict)
     pass_threshold: float = 0.8
 
     @field_validator("combine_method", mode="before")
@@ -676,6 +1817,7 @@ class RunnerGradingConfig(BaseModel):
 
     state_checks: RunnerStateChecksConfig | None = None
     transcript_rules: RunnerTranscriptRulesConfig | None = None
+    trace_checks: TraceChecksConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
 
     # Custom Python checks (``@init`` + ``@check`` in a pack's ``checks.py``).
@@ -1933,6 +3075,107 @@ class TranscriptEvaluationResult(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class TraceConstraintResult(BaseModel):
+    """The verdict one declared trace constraint reached.
+
+    ``message`` is empty on a pass and names what went wrong otherwise — an
+    unmatched anchor, a failed condition, or the evidence the trial does not carry.
+    ``matched_positions`` holds timeline positions rather than events, so a grade
+    stays readable and serialisable; an event is looked up by position against
+    ``trajectory.yaml``.
+
+    ``undecided`` separates the two ways ``passed`` is ``False``: the trial did not
+    satisfy the constraint, or its evidence could not say. It changes no score —
+    an undecided constraint forfeits its weight and shuts a gate it carries,
+    exactly as a failure does — and it is the only field a reader can classify a
+    constraint's discriminating power from without matching on ``message`` prose.
+    """
+
+    id: str = Field(min_length=1)
+    kind: TraceConstraintKind
+    passed: bool
+    weight: float
+    severity: TraceConstraintSeverity = TraceConstraintSeverity.SCORED
+    message: str = ""
+    matched_positions: list[int] = Field(default_factory=list)
+    undecided: bool = False
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _reject_an_undecided_pass(self) -> TraceConstraintResult:
+        if self.undecided and self.passed:
+            raise ValueError(
+                f"trace constraint {self.id!r} passed and is undecided at once. Undecided "
+                "means no completion of the trial's missing evidence settles the verdict, "
+                "which is never a pass — a verdict reaching the host this way has lost "
+                "which of the two it is"
+            )
+        return self
+
+
+class TracePathResult(BaseModel):
+    """How one alternative route scored, whether or not it won.
+
+    ``score`` is the route's own normalised score over the shared constraints and
+    its own. A gate zeroes the *component*, never a path's number, so the value the
+    argmax compared stays readable in the grade — a winner that won by a hair reads
+    differently from one that won by a mile.
+    """
+
+    id: str = Field(min_length=1)
+    score: float
+    gate_failed: bool
+
+    model_config = {"extra": "forbid"}
+
+
+class TraceChecksSummary(BaseModel):
+    """Which route a trial was scored on and whether a gate shut it.
+
+    The part of :class:`TraceChecksResult` that survives onto the ``Grade``: the
+    per-constraint verdicts ride ``Grade.trace_check_results`` beside it, and the
+    accounting is the runner's own. ``None`` on a ``Grade`` means the runner that
+    produced it predates the field, which is a different statement from a summary
+    saying no gate failed.
+    """
+
+    winning_path: str = ""
+    gate_failed: bool = False
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    paths: list[TracePathResult] = Field(default_factory=list)
+
+    model_config = {"extra": "forbid"}
+
+
+class TraceChecksResult(BaseModel):
+    """What evaluating a pack's ``trace_checks`` block produced.
+
+    ``accounted_keys`` names the author-facing ``trace_checks.*`` keys the
+    evaluation decomposed, so the runtime ledger reads what was evaluated rather
+    than re-deriving it — the ``TranscriptEvaluationResult`` contract.
+
+    A result with no ``constraints`` is the trial that left no trace of itself: the
+    component is not scored there and the caller records the skip.
+
+    ``constraints`` holds the decision set that produced the score — the shared
+    constraints and the winning path's — so it keeps meaning "the verdicts the score
+    was made of". ``winning_path`` is ``""`` where the pack declared no
+    alternatives, and ``paths`` is empty there.
+    """
+
+    passed: bool = False
+    score: float = 0.0
+    constraints: list[TraceConstraintResult] = Field(default_factory=list)
+    winning_path: str = ""
+    gate_failed: bool = False
+    failed_gate_ids: list[str] = Field(default_factory=list)
+    paths: list[TracePathResult] = Field(default_factory=list)
+    accounted_keys: dict[str, KeyAccountingRecord] = Field(default_factory=dict)
+
+    model_config = {"extra": "forbid"}
+
+
 class RunnerGradeComponents(BaseModel):
     """Component scores for grading."""
 
@@ -1944,6 +3187,7 @@ class RunnerGradeComponents(BaseModel):
     db_probe_reasons: str = ""
     transcript_pass: bool | None = None
     transcript_score: float = -1.0
+    trace_checks_score: float = -1.0  # -1.0 means not evaluated
     llm_judge_score: float = -1.0  # -1.0 means not evaluated
     llm_judge_reasons: str = ""
     custom_checks_score: float = -1.0  # -1.0 means not evaluated
@@ -1957,6 +3201,11 @@ class HashGradingResult(BaseModel):
     hash_match: bool
     hash_score: float
     state_diff: StateDiff | None = None
-    golden_action_errors: list[str] = Field(default_factory=list)
+    golden_replay: GoldenReplayRecord
+    """How much of the golden path ran, in the shape both substrates report from.
+
+    An unresolvable name never reaches the replay — it fails the whole grade — so every
+    failure here describes an action that ran against a world it did not fit.
+    """
 
     model_config = {"extra": "forbid"}

@@ -1,0 +1,20 @@
+# One constraint reading a field only the tool-call record carries, so a trial
+# whose call was declared and never executed leaves it undecidable rather than
+# false. The same constraint over a call that ran and failed is decidably false,
+# which is the contrast the lock reads the difference against.
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.8
+
+trace_checks:
+  constraints:
+    - id: the_case_was_denied_successfully
+      description: "the case update ran and the service accepted it"
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: servicenow_csm_update_case }
+            status: { equals: success }

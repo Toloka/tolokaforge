@@ -115,10 +115,11 @@ grading: "grading.yaml"
 ```yaml
 combine:
   method: "weighted"        # weighted | all | any
-  weights:
-    state_checks: 0.6
+  weights:                  # every component the pack configures needs a weight here
+    state_checks: 0.5
     transcript_rules: 0.1
-    llm_judge: 0.3
+    trace_checks: 0.2
+    llm_judge: 0.2
   pass_threshold: 0.8
 
 state_checks:
@@ -138,9 +139,44 @@ transcript_rules:
   must_contain: ["confirmation number"]
   disallow_regex: ["(?i)password"]
   max_turns: 40
+  min_assistant_turns: 1                   # opt-in floor: 0 turns fails the component
   tool_expectations:                       # graded on both substrates
     required_tools: ["db_update"]          # must have been called SUCCESSFULLY
     disallowed_tools: ["bash"]             # must not be called at ANY status
+
+trace_checks:                              # ordering / scoped absence / counting over the timeline
+  constraints:                             # closed ten-kind vocabulary; hold whichever route was taken
+    - id: lookup_before_denial             # unique across the whole block, paths included
+      description: "payment looked up before the case is denied"
+      weight: 2.0                          # default 1.0; must be > 0
+      on_missing: fail                     # fail (default) | pass — decides an unmatched anchor
+      severity: scored                     # scored (default) | gate — a gate is not scored and must hold
+      within: { first_turn: 0, last_turn: 5 }   # optional inclusive turn window
+      bind:                                # optional; the constraint holds under EVERY candidate
+        match: { kind: tool_call, tool: { equals: deny_case } }   # whose events supply candidates
+        values:                            # name -> extraction; at least one, each referenced below
+          case:                            # the name equals_binding / contains_binding reads
+            field: args.case_url           # tool | text | result | args.<dotted path>
+            pattern: '(https://[^/]+/cases/[0-9]+)'  # optional; exactly one group, always a string
+        on_unbound: fail                   # fail (default) | pass — a binder that selected nothing
+      require:                             # exactly one constraint kind
+        before:
+          left:  { quantifier: any,   match: { kind: tool_call, tool: { equals: get_payment },
+                                               args: { case_url: { equals_binding: case } } } }
+          right: { quantifier: first, match: { kind: tool_call, tool: { equals: deny_case } } }
+  alternatives:                            # two or more routes; one path is a load error
+    - id: settled_from_the_ledger          # each is scored over the shared constraints plus its own,
+      description: "the amount is confirmed against the ledger"   # and the component is the best route's
+      constraints:
+        - id: the_ledger_was_read
+          description: "the ledger entry is read"
+          require: { present: { match: { kind: tool_call, tool: { equals: get_ledger_entry } } } }
+    - id: settled_from_the_statement
+      description: "the amount is confirmed against the statement"
+      constraints:
+        - id: the_statement_was_read
+          description: "the statement is read"
+          require: { present: { match: { kind: tool_call, tool: { equals: get_statement } } } }
 
 llm_judge:                                 # judge MODEL is run-level (models.judge), not here
   rubric:                                  # structured Rubric (NOT free text)
@@ -159,6 +195,15 @@ llm_judge:                                 # judge MODEL is run-level (models.ju
         weight: 0.5
 ```
 
+Each typed block above refuses a key its model does not declare. `combine`,
+`state_checks` and `transcript_rules` name the closest declared field and the block's
+whole accepted set, `state_checks`'s two retired keys excepted — those draw their own
+migration message. `trace_checks` and `llm_judge` refuse such a key as their model's
+bare `Extra inputs are not permitted`, and `llm_judge` only on the `rubric` /
+`model_ref` shapes its migration names. The block *names* are lenient, so `state_cheks:`
+drops a whole component and is caught only when the correct name carries a weight. See
+[GRADING.md § Which keys a grading block refuses](GRADING.md#which-keys-a-grading-block-refuses).
+
 `grading.llm_judge.rubric` is a structured `Rubric`, not a free-text blob; the
 old `rubric: "<text>"` shape, the `output_schema` field, and the per-task
 judge-model field were all removed (the judge's structured-output schema is
@@ -174,6 +219,50 @@ side, ends every per-criterion justification with a trailing `VERDICT: MET` /
 `VERDICT: NOT MET` (binary) or `SCORE: <value>` (graded) marker line that must
 match its verdict; the marker is kept verbatim in each `criterion_results`
 justification in `grade.yaml`.
+
+### migration.yaml
+
+Optional, beside a task's `grading.yaml`. Records which rubric criteria the pack's
+`trace_checks` constraints are a candidate for, have narrowed, or have replaced. **Nothing
+about grading reads it**: it is the claim [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) checks
+against recorded judge verdicts, and `tolokaforge validate` refuses a claim the pack
+contradicts. A pack without one is unchanged.
+
+```yaml
+migrations:                                  # at least one entry
+  - criterion: checked_duplicates_first      # a criterion id in this pack's llm_judge.rubric
+    mode: narrowed                           # candidate | narrowed | retired
+    by:                                      # trace_checks ids in this pack; a CONJUNCTION
+      - the_notes_were_listed_before_the_note_was_added
+    was:                                     # the criterion's PRE-migration shape
+      kind: binary                           # binary | graded; default binary
+      required: true                         # default false
+      weight: 1.0                            # default 1.0
+      description: "<the text the evidence was gathered against>"
+    residual:                                # absent for candidate; kind is fixed by mode
+      kind: text                             # none (retired) | text (narrowed)
+      reason: "<what the judge still reads / why nothing remains>"
+    combine_weights:                         # post-migration combine.weights map
+      llm_judge: 0.7                         # required for a narrowed/retired SCORED criterion
+      trace_checks: 0.3
+    evidence:                                # required for narrowed/retired, forbidden on candidate
+      corpus: tests/data/migration_corpora/notes_duplicate_check
+      observations: 17                       # checked against what reconcile measures
+      kappa: 1.0                             # nullable and required; null means undefined
+    acknowledged:                            # optional waivers, default []
+      - trial: <bundle path under evidence.corpus>
+        reason: "<why the judge's verdict on that trial is the one to discount>"
+```
+
+The file is `extra="forbid"` at every level, so a misspelled key is an error rather than a
+claim nothing reads. `residual`'s presence and kind are a **total function of `mode`** —
+absent, `text`, `none` — so a reader can tell what an entry claims from its mode alone. The
+two load-time hazard rules (a `required: true` criterion may only be claimed by **shared**
+`severity: gate` constraints; a *scored* one must declare `combine_weights`) and every other
+refusal are in
+[GRADING.md § Declaring a migration](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar);
+the bar the declaration is decided against is in
+[RUBRIC_MIGRATION.md](RUBRIC_MIGRATION.md#the-bar).
 
 ### Environment Variables
 
@@ -329,6 +418,8 @@ engine = GradingEngine(
     grading_config: GradingConfig,
     task_domain: str = "general",
     task_dir: Path | None = None,
+    task_initial_state: InitialStateConfig | None = None,
+    task_mcp_server: str | None = None,
 )
 
 grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
@@ -339,6 +430,21 @@ grade = engine.grade_trajectory(trajectory: Trajectory, final_env_state: dict)
 # taking the run-level judge ModelConfig carried on TrialSpec.judge_model_config
 # (sourced from RunConfig.models["judge"]).
 ```
+
+The last three arguments are the world a `state_checks.hash.golden_actions` replay is
+executed in, and a pack whose effective hash source is `golden_actions` grades only when
+all three are supplied: `grade_trajectory` otherwise raises
+`UnbuildableGoldenReplayWorld` (`tolokaforge.core.grading.golden_replay`, a subclass of
+`GoldenReplayError`), naming every absent one in one message — the two task-level ones by
+the `task.yaml` key that supplies them, `task_dir` as the caller's own omission — and no
+component is scored. `task_initial_state.json_db` has to be a path to a JSON file
+under `task_dir`; an inline mapping is no world to replay in. A `golden_actions` that is
+truthy without being a list is refused ahead of all three, with `UnreplayableGoldenSource`
+out of the same module: there is nothing to replay whatever world is supplied. A truthy
+`expected_state_hash` is compared in process and returns before `golden_actions` is read,
+so a pack declaring both needs none of the three. `BaseAdapter.grade` resolves all three
+from the task it grades — see
+[GRADING.md § Hash-Based Grading](GRADING.md#hash-based-grading-tau-bench-compatible).
 
 ---
 
@@ -481,6 +587,6 @@ tools:
 
 - [GRADING.md](GRADING.md) - Detailed grading system (hash algorithm, pass@k)
 - [ADAPTER_ARCHITECTURE.md](ADAPTER_ARCHITECTURE.md) - Adapter architecture for task loading
-- [CUSTOM_CHECKS.md](CUSTOM_CHECKS.md) - Custom Python validation
+- [custom_checks.md](custom_checks.md) - Custom Python validation
 - [SECURITY.md](SECURITY.md) - Security model
 - [Multi-container tasks guide](MULTI_CONTAINER_GUIDE.md) - Declaring an `environment_manifest` so a task ships its own docker-compose stack

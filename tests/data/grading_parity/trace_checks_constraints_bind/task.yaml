@@ -1,0 +1,31 @@
+task_id: trace_checks_constraints_bind
+name: "Substrate differential: trace_checks_constraints_bind"
+category: test
+description: |
+  Substrate-parity differential fixture. The grading.yaml declares exactly one
+  author key so a violating trial can only be discriminated by that key.
+
+initial_state:
+  json_db: null
+
+# The binder extracts an argument, so the tools it selects are declared and their
+# builtin schemas resolve: the authoring gate reads args.path off write_file's own
+# properties rather than skipping the extraction as unresolvable.
+tools:
+  agent:
+    enabled:
+      - read_file
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

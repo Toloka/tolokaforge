@@ -3,15 +3,32 @@
 #   state_checks.db_probes (0.5) — the substrate oracle. Reads the postgres
 #     `corrective_actions` table directly through the read-only `grader` role,
 #     NOT the agent's file or the API it just wrote to.
-#   transcript_rules      (0.2) — the agent both read (GET) and mutated (POST)
-#     over http_request, within the turn budget.
+#   trace_checks          (0.2) — the process the substrate cannot see: the
+#     reason code was read out of the catalog rather than guessed, the action was
+#     opened against a lot the agent had read, and exactly one action was opened.
 #   llm_judge             (0.3) — the operator-facing completion report reads
 #     well and states the right lot and reason.
+#
+# The substrate oracle reads the row that exists; it cannot say how the values in
+# it were obtained. `task.yaml`'s own guidance says "GET the reason-code catalog
+# to find the contamination code before opening the action; do not guess it", and
+# a guess that happens to be right lands the identical row. The two correlations
+# below bind a value out of the POST and require it to have come from something
+# the agent read, so they name no reason code and no lot number: a new code in the
+# catalog, or a different lot, needs no edit here.
+#
+# CANDIDACY: the lot correlation is a declared candidate to replace the `names_lot`
+# criterion below, in the `migration.yaml` beside this file — which is where what a
+# retirement would still have to answer for is written, and where `tolokaforge
+# validate` checks the claim against this rubric. It retires nothing. The reason-code
+# correlation is deliberately not part of that claim: `by` is a conjunction, and the
+# reason code is a different proposition from the lot, so a trial that got the lot
+# right and the code wrong would count against a claim about the lot.
 combine:
   method: weighted
   weights:
     state_checks: 0.5
-    transcript_rules: 0.2
+    trace_checks: 0.2
     llm_judge: 0.3
   pass_threshold: 0.5
 
@@ -32,19 +49,88 @@ state_checks:
           description: "exactly one corrective action exists for lot 7"
       description: "an open contamination corrective action exists for lot 7 in the substrate"
 
-transcript_rules:
-  max_turns: 10
-  required_actions:
-    - action_id: "read_over_http"
-      requestor: assistant
-      name: http_request
-      arguments: {method: "GET"}
-      compare_args: ["method"]
-    - action_id: "mutate_over_http"
-      requestor: assistant
-      name: http_request
-      arguments: {method: "POST"}
-      compare_args: ["method"]
+trace_checks:
+  constraints:
+    - id: the_reason_code_posted_was_read_from_the_catalog
+      description: "the reason code the agent posted came back in a successful API result before the action was opened, so it was looked up rather than guessed"
+      bind:
+        match:
+          kind: tool_call
+          tool: { equals: http_request }
+          args:
+            method: { equals: POST }
+            url: { regex: '/lots/[0-9]+/corrective-actions$' }
+        values:
+          code: { field: args.json.reason_code }
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              status: { equals: success }
+              result: { contains_binding: code }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                method: { equals: POST }
+                url: { regex: '/lots/[0-9]+/corrective-actions$' }
+    # The capture is the whole lot URL, not the bare id: a bound "7" is a
+    # substring of `/lots/1007` and of every other number the transcript carries,
+    # so a one-character binding correlates on noise. The full prefix compared
+    # with `equals_binding` has no substring reading at all.
+    - id: the_lot_was_read_before_the_action_was_opened
+      description: "the lot the action was opened against was read over the API first, so the action is not opened against a lot the agent never looked at"
+      bind:
+        match:
+          kind: tool_call
+          tool: { equals: http_request }
+          args:
+            method: { equals: POST }
+            url: { regex: '/lots/[0-9]+/corrective-actions$' }
+        values:
+          lot_url: { field: args.url, pattern: '(http://[^/]+/lots/[0-9]+)' }
+      require:
+        before:
+          left:
+            quantifier: any
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                method: { equals: GET }
+                url: { equals_binding: lot_url }
+          right:
+            quantifier: first
+            match:
+              kind: tool_call
+              tool: { equals: http_request }
+              args:
+                method: { equals: POST }
+                url: { regex: '/lots/[0-9]+/corrective-actions$' }
+    # The user asks for one record and `task.yaml` repeats it. The db_probe does
+    # see a double post — its third assertion reads `row_count` — but a probe
+    # passes only when every assertion does, so a duplicate takes `state_checks`
+    # to `0.0` and the remaining `0.2 + 0.3` lands on `pass_threshold` exactly,
+    # which `>=` admits. Rebalancing alone would not close that, so this is a gate:
+    # a duplicated production record is not a fraction of a correct run, and a
+    # tripped gate fails the trial whatever the weights say.
+    - id: exactly_one_corrective_action_was_opened
+      description: "the corrective action is opened once: a repeated POST writes a duplicate record the operator has to reconcile"
+      severity: gate
+      require:
+        count:
+          match:
+            kind: tool_call
+            tool: { equals: http_request }
+            args:
+              method: { equals: POST }
+              url: { regex: '/lots/[0-9]+/corrective-actions$' }
+          max: 1
 
 llm_judge:
   rubric:

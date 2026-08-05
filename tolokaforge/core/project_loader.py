@@ -29,10 +29,10 @@ task-yaml delta.
 
 from __future__ import annotations
 
-import difflib
 import os
 import re
 import warnings
+from collections.abc import Mapping
 from pathlib import Path
 from typing import Any, TypeVar
 
@@ -44,6 +44,7 @@ from tolokaforge.core.deprecations import (
     POST_M9_STRICT_FLIP_ISSUE,
     canonicalize_actor_config,
     source_context,
+    suggest_closest_field,
     warn_deprecated,
     warn_legacy_run_config_dir,
 )
@@ -70,7 +71,7 @@ def construct_config(
 
     A key in *data* that is not a field of *model* raises a
     ``DeprecationWarning`` naming the file basename, the key, the closest
-    schema match (via :func:`difflib.get_close_matches`), and a
+    schema match (via the shared :func:`suggest_closest_field`), and a
     ``(tracked in #<n>)`` suffix pointing at the strict-flip follow-up
     issue so users can plan against a concrete retirement schedule. The
     key is then silently dropped. A genuine validation failure (type
@@ -93,19 +94,12 @@ def construct_config(
 
 
 def _unknown_key_line(model: type[BaseModel], key: str, source: Path, section: str) -> str:
-    suggestion = difflib.get_close_matches(key, list(model.model_fields), n=1)
     where = source.name + (f" ({section})" if section else "")
-    line = f"unknown key '{key}' in {where}"
-    if suggestion:
-        line += f" — did you mean '{suggestion[0]}'? "
-        line += f"Rename `{key}` to `{suggestion[0]}` (or remove it if unused). "
-    else:
-        line += (
-            f" — no close match on {model.__name__}. Remove the key or "
-            f"check the schema for the correct name. "
-        )
-    line += f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
-    return line
+    return (
+        f"unknown key '{key}' in {where}"
+        f"{suggest_closest_field(model, key)}"
+        f"(tracked in #{POST_M9_STRICT_FLIP_ISSUE})"
+    )
 
 
 # ── Filesystem discovery ────────────────────────────────────────────────
@@ -450,6 +444,18 @@ def resolve_effective_run_config_data(
     # on conflict via ``deep_merge`` below.
     base = project.run_defaults.model_dump(exclude_unset=True)
     return deep_merge(base, run_config_data)
+
+
+def project_grading_combine(task_defaults: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """The ``grading_defaults.combine`` layer inside a project's ``task_defaults``.
+
+    The base layer under each task's own ``grading.yaml.combine``. ``None`` when the
+    project sets no grading defaults, which is also the answer for no project at all —
+    both mean there is no layer beneath the task's own block.
+    """
+    if not task_defaults:
+        return None
+    return (task_defaults.get("grading_defaults") or {}).get("combine")
 
 
 def resolve_effective_grading_combine(

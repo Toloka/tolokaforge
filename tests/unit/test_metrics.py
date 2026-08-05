@@ -34,6 +34,7 @@ def _trial(
     termination_reason: TerminationReason | None = TerminationReason.AGENT_DONE,
     latency_s: float = 1.0,
     turns: int = 3,
+    grading_error: str | None = None,
 ) -> Trajectory:
     """One trial. ``score=None`` means no grade at all — the shape a trial the
     infrastructure aborted now has."""
@@ -52,6 +53,7 @@ def _trial(
         messages=[],
         metrics=Metrics(latency_total_s=latency_s, turns=turns),
         grade=grade,
+        grading_error=grading_error,
     )
 
 
@@ -73,6 +75,17 @@ def _harness_error(trial_idx: int) -> Trajectory:
         status=TrialStatus.ERROR,
         termination_reason=TerminationReason.ERROR,
     )
+
+
+def _ungradeable(trial_idx: int) -> Trajectory:
+    """A trial that ended normally and whose grading then refused.
+
+    Only the presence of ``grading_error`` reaches any arithmetic here; what a
+    real refusal *says* is locked where it is produced, in
+    ``tests/unit/test_failure_attribution.py`` and
+    ``tests/unit/test_ungradeable_trial_accounting.py``.
+    """
+    return _trial(trial_idx, score=None, grading_error="grading refused")
 
 
 @pytest.mark.unit
@@ -294,6 +307,57 @@ class TestInfrastructureAbortsLeaveTheDenominator:
         }
         counted = sum(row["count"] for row in metrics["outcomes_by_reason"].values())
         assert counted == metrics["total_trials"]
+
+    def test_a_graded_and_an_ungradeable_trial_get_separate_rows(self) -> None:
+        """Both trials terminated ``agent_done``. Keying the row by the reason
+        alone files them together, and the row's class then becomes whichever
+        trial the loop saw last — so the split stops being recoverable from the
+        aggregate at all."""
+        metrics = calculate_task_metrics([_trial(0, score=1.0), _ungradeable(1)])
+
+        assert metrics["outcomes_by_reason"] == {
+            "agent_done": {"class": "measured", "count": 1},
+            "ungradeable_agent_done": {"class": "ungradeable", "count": 1},
+        }
+        counted = sum(row["count"] for row in metrics["outcomes_by_reason"].values())
+        assert counted == metrics["total_trials"]
+
+    def test_the_two_diagnostic_counts_fit_inside_the_measured_bucket(self) -> None:
+        """``harness_errors`` and ``ungradeable`` overlap the measured half
+        rather than partitioning against it, and a trial is classified once — so
+        neither may count the other's trial, and one measured trial each is the
+        whole of the measured half here."""
+        metrics = calculate_task_metrics([_harness_error(0), _ungradeable(1), _rate_limited(2)])
+
+        assert (
+            metrics["measured_trials"] + sum(metrics["infrastructure_aborts"].values())
+            == metrics["total_trials"]
+        )
+        # Both diagnostics are populated, so the bounds below answer about real
+        # counts rather than passing on two zeroes.
+        assert metrics["harness_errors"] > 0
+        assert metrics["ungradeable"] > 0
+        assert 0 <= metrics["ungradeable"] <= metrics["measured_trials"]
+        assert metrics["harness_errors"] + metrics["ungradeable"] <= metrics["measured_trials"]
+
+    def test_the_run_level_ungradeable_count_sums_across_tasks(self) -> None:
+        """An ungradeable trial is a non-pass in the rates, not an absence: it
+        keeps the denominator it earned by being measured."""
+        task_a = calculate_task_metrics([_trial(0, score=1.0), _ungradeable(1)])
+        task_b = calculate_task_metrics([_ungradeable(0)])
+
+        agg = calculate_aggregate_metrics([task_a, task_b], weighted=True)
+
+        assert task_a["ungradeable"] == 1
+        assert agg["ungradeable"] == 2
+        assert agg["measured_trials"] == 3
+        assert agg["scored_trials"] == 1
+        assert agg["success_rate_micro"] == pytest.approx(1 / 3)
+        assert agg["avg_score_micro"] == pytest.approx(1.0)
+        assert agg["outcomes_by_reason"]["ungradeable_agent_done"] == {
+            "class": "ungradeable",
+            "count": 2,
+        }
 
     def test_a_stuck_trial_still_fails_and_still_counts(self) -> None:
         """The one auto-fail verdict produced host-side stays a fail: an agent

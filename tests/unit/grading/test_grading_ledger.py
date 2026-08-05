@@ -17,7 +17,9 @@ from typing import Any
 
 import pytest
 
+from tests.utils.recorded_calls import recorded_call
 from tests.utils.runner_requests import register_request, trial_spec_json
+from tests.utils.timelines import Turn, build_turn_timeline
 from tolokaforge.core.grading.key_manifest import (
     Enforcement,
     GradingKey,
@@ -25,22 +27,33 @@ from tolokaforge.core.grading.key_manifest import (
     SubstrateCoverage,
     entry,
 )
+from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
+from tolokaforge.core.grading.trace_timeline import TrialTimeline
+from tolokaforge.core.models import ToolCall
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
     EVALUATED,
     HASH_DISABLED_SKIP,
+    TRACE_ALTERNATIVES_KEY,
+    TRACE_CONSTRAINT_KEY_BY_KIND,
+    TRACE_CONSTRAINTS_KEY,
+    UNBOUND_BINDING_SKIP,
+    accountable_author_keys,
     audit_accounted_keys,
     hash_family_accounting,
     reject_hash_members_read_by_another_evaluator,
     runner_dump_path,
 )
 from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
     KeyAccounting,
     KeyAccountingRecord,
     RunnerGradingConfig,
     RunnerStateChecksConfig,
     RunnerTranscriptRulesConfig,
+    TraceChecksConfig,
+    TraceConstraintKind,
 )
 
 pytestmark = pytest.mark.unit
@@ -228,6 +241,408 @@ def test_an_evaluated_key_is_fully_accounted():
 
 
 # --------------------------------------------------------------------------
+# trace_checks: the evaluator records what it decomposed, kind by kind
+# --------------------------------------------------------------------------
+
+# ``before`` and ``count`` are reachable only through the conjunction, so an
+# evaluator that recorded its top-level kind alone would account for neither.
+_NESTED_TRACE_BLOCK: dict[str, Any] = {
+    "constraints": [
+        {
+            "id": "checked_the_widget_before_shipping_it",
+            "description": "the widget is inspected before it ships, and not re-inspected",
+            "require": {
+                "all_of": [
+                    {
+                        "before": {
+                            "left": {
+                                "quantifier": "any",
+                                "match": {
+                                    "kind": "tool_call",
+                                    "tool": {"equals": "inspect_widget"},
+                                },
+                            },
+                            "right": {
+                                "quantifier": "first",
+                                "match": {"kind": "tool_call", "tool": {"equals": "ship_widget"}},
+                            },
+                        }
+                    },
+                    {
+                        "count": {
+                            "match": {"kind": "tool_call", "tool": {"equals": "inspect_widget"}},
+                            "max": 1,
+                        }
+                    },
+                ]
+            },
+        }
+    ]
+}
+
+_NESTED_TRACE_KEYS = {
+    "trace_checks.constraints",
+    "trace_checks.constraints.all_of",
+    "trace_checks.constraints.before",
+    "trace_checks.constraints.count",
+}
+
+
+def _inspected_then_shipped() -> TrialTimeline:
+    return build_turn_timeline(
+        [
+            Turn("user", "Ship widget w1 once you have checked it."),
+            Turn(
+                "assistant",
+                "Inspecting it.",
+                recorded=[recorded_call("inspect_widget", sequence=0)],
+            ),
+            Turn("assistant", "Shipping it.", recorded=[recorded_call("ship_widget", sequence=1)]),
+        ]
+    )
+
+
+def test_the_ledger_names_an_accountable_key_for_every_constraint_kind():
+    """A kind with no key, or a key no site records, is a check that could no-op.
+
+    The mapping is hand-written and the vocabulary is declared beside the models,
+    so this compares two sources rather than a comprehension against itself.
+    """
+    assert set(TRACE_CONSTRAINT_KEY_BY_KIND) == TRACE_CONSTRAINT_KINDS
+
+    accountable = accountable_author_keys()
+    unclaimed = sorted(set(TRACE_CONSTRAINT_KEY_BY_KIND.values()) - accountable)
+    assert not unclaimed, f"no recording site claims {unclaimed}"
+    assert TRACE_CONSTRAINTS_KEY in accountable
+    assert TRACE_ALTERNATIVES_KEY in accountable
+
+
+def test_every_constraint_kind_the_evaluation_reaches_is_accounted_for():
+    """Accounting follows the walk, so a kind nested in a composite is not lost."""
+    result = evaluate_trace_checks(
+        _inspected_then_shipped(), TraceChecksConfig(**_NESTED_TRACE_BLOCK)
+    )
+
+    assert [item.passed for item in result.constraints] == [True]
+    assert set(result.accounted_keys) == _NESTED_TRACE_KEYS
+    assert {record.outcome for record in result.accounted_keys.values()} == {
+        KeyAccounting.EVALUATED
+    }
+
+
+def test_only_the_kinds_a_block_declares_have_to_be_accounted_for():
+    """Eleven ledger keys name one list field, so populated is read per element path.
+
+    The block below declares three of the ten kinds. Reading the ``constraints``
+    field alone would mark all ten populated and demand a recording site for
+    seven kinds nothing evaluated, failing every task that writes less than the
+    whole vocabulary.
+    """
+    config = RunnerGradingConfig(trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK))
+    accounted = evaluate_trace_checks(_inspected_then_shipped(), config.trace_checks).accounted_keys
+
+    assert audit_accounted_keys(config, accounted).error is None
+
+    # The other half, so the pass above is not the ledger looking at nothing: with
+    # the accounting dropped the audit names the kinds the block does declare.
+    starved = audit_accounted_keys(config, {})
+    assert TRACE_CONSTRAINT_KEY_BY_KIND["before"] in starved.error
+    assert TRACE_CONSTRAINT_KEY_BY_KIND["present"] not in starved.error
+
+
+_ROUTED_TRACE_BLOCK: dict[str, Any] = {
+    "alternatives": [
+        {
+            "id": "by_order",
+            "description": "the widget was inspected before it shipped",
+            "constraints": [
+                {
+                    "id": "inspected_first",
+                    "description": "the inspection came before the shipment",
+                    "require": {
+                        "before": {
+                            "left": {
+                                "quantifier": "first",
+                                "match": {
+                                    "kind": "tool_call",
+                                    "tool": {"equals": "inspect_widget"},
+                                },
+                            },
+                            "right": {
+                                "quantifier": "first",
+                                "match": {"kind": "tool_call", "tool": {"equals": "ship_widget"}},
+                            },
+                        }
+                    },
+                }
+            ],
+        },
+        {
+            "id": "by_restraint",
+            "description": "the widget was inspected at most once",
+            "constraints": [
+                {
+                    "id": "inspected_once",
+                    "description": "no re-inspection",
+                    "require": {
+                        "count": {
+                            "match": {"kind": "tool_call", "tool": {"equals": "inspect_widget"}},
+                            "max": 1,
+                        }
+                    },
+                }
+            ],
+        },
+    ]
+}
+
+_ROUTED_TRACE_KEYS = {
+    "trace_checks.constraints",
+    "trace_checks.alternatives",
+    "trace_checks.constraints.before",
+    "trace_checks.constraints.count",
+}
+
+
+def test_a_kind_declared_only_inside_a_route_is_accounted_for_like_a_shared_one():
+    """The walk reaches a path's constraints, and ``alternatives`` is a key of its own.
+
+    The block declares no shared constraints at all, so an account read off
+    ``constraints`` alone records nothing the pack actually asserts — and
+    ``GradeTrial`` then rejects every trial the pack grades.
+    """
+    config = RunnerGradingConfig(trace_checks=TraceChecksConfig(**_ROUTED_TRACE_BLOCK))
+    graded = evaluate_trace_checks(_inspected_then_shipped(), config.trace_checks)
+    silent = evaluate_trace_checks(build_turn_timeline([]), config.trace_checks)
+
+    assert set(graded.accounted_keys) == _ROUTED_TRACE_KEYS
+    assert set(silent.accounted_keys) == _ROUTED_TRACE_KEYS
+    assert audit_accounted_keys(config, graded.accounted_keys).error is None
+    assert TRACE_ALTERNATIVES_KEY in audit_accounted_keys(config, {}).error
+
+
+def test_a_trial_with_no_events_accounts_every_declared_kind_as_skipped():
+    """Nothing is evaluated there, and every key the block declares says so."""
+    result = evaluate_trace_checks(
+        build_turn_timeline([]), TraceChecksConfig(**_NESTED_TRACE_BLOCK)
+    )
+
+    assert result.constraints == []
+    assert set(result.accounted_keys) == _NESTED_TRACE_KEYS
+    assert {record.detail for record in result.accounted_keys.values()} == {
+        "the trial's timeline carries no events"
+    }
+
+
+def _bound_before(constraint_id: str, binder_tool: str, **bind_fields: Any) -> dict[str, Any]:
+    """A correlated ordering whose binder selects ``binder_tool`` and nothing else."""
+    return {
+        "id": constraint_id,
+        "description": "every widget shipped was inspected first",
+        "bind": {
+            "match": {"kind": "tool_call", "tool": {"equals": binder_tool}},
+            "values": {"widget": {"field": "args.widget_id"}},
+            **bind_fields,
+        },
+        "require": {
+            "before": {
+                "left": {
+                    "quantifier": "any",
+                    "match": {
+                        "kind": "tool_call",
+                        "tool": {"equals": "inspect_widget"},
+                        "args": {"widget_id": {"equals_binding": "widget"}},
+                    },
+                },
+                "right": {
+                    "quantifier": "any",
+                    "match": {
+                        "kind": "tool_call",
+                        "tool": {"equals": binder_tool},
+                        "args": {"widget_id": {"equals_binding": "widget"}},
+                    },
+                },
+            }
+        },
+    }
+
+
+def _inspected_then_shipped_widget_w1() -> TrialTimeline:
+    """The same trajectory, with the widget named on both calls so a binder can read it."""
+    return build_turn_timeline(
+        [
+            Turn("user", "Ship widget w1 once you have checked it."),
+            Turn(
+                "assistant",
+                "Inspecting it.",
+                recorded=[
+                    recorded_call("inspect_widget", sequence=0, arguments={"widget_id": "w1"})
+                ],
+            ),
+            Turn(
+                "assistant",
+                "Shipping it.",
+                recorded=[recorded_call("ship_widget", sequence=1, arguments={"widget_id": "w1"})],
+            ),
+        ]
+    )
+
+
+def _bound_composite(constraint_id: str, binder_tool: str, **bind_fields: Any) -> dict[str, Any]:
+    """``_bound_before``'s correlation nested under a composite, beside a second kind.
+
+    The nesting separates the two accounting outcomes a zero-candidate binder
+    produces: the composite is the kind the constraint's verdict is filed under, and
+    ``before`` and ``present`` are the kinds no evaluation reached.
+    """
+    constraint = _bound_before(constraint_id, binder_tool, **bind_fields)
+    constraint["require"] = {
+        "all_of": [
+            constraint["require"],
+            {"present": {"match": {"kind": "tool_call", "tool": {"equals": "ship_widget"}}}},
+        ]
+    }
+    return constraint
+
+
+def test_a_constraint_whose_binder_selected_nothing_accounts_its_nested_kinds_as_skipped():
+    """A kind reaches the ledger by carrying a verdict, and only the outer one does.
+
+    The constraint scores under its own kind whatever the binder yielded, so filing
+    that kind as skipped would report it as unevaluated in the same grade that fails
+    the trial on it. The kinds *under* the require tree are the ones nothing reached:
+    left unaccounted the RPC fails on a key the config populates, and filed as
+    ``EVALUATED`` the grade claims an evaluation that never happened. The skip is the
+    honest record, and it is subtracted away by a sibling constraint of the same kind
+    that *did* evaluate — otherwise the grade reports a kind as skipped while another
+    constraint scored it.
+
+    ``on_unbound`` decides the verdict and nothing about the accounting: the require
+    tree went unevaluated under either policy, so both file the same skips. The audit
+    is read for its skip notes rather than only for ``error``, because a
+    non-``EVALUATED`` record is routed to ``skip_notes`` — the audit reports no error
+    over a skip filed with the wrong outcome, so ``error is None`` alone would hold
+    whatever this evaluation recorded.
+    """
+    timeline = _inspected_then_shipped_widget_w1()
+    for policy, verdict in (({}, False), ({"on_unbound": "pass"}, True)):
+        config = RunnerGradingConfig(
+            trace_checks=TraceChecksConfig(
+                constraints=[_bound_composite("no_binder_fires", "recall_widget", **policy)]
+            )
+        )
+        result = evaluate_trace_checks(timeline, config.trace_checks)
+        accounted = result.accounted_keys
+        audit = audit_accounted_keys(config, accounted)
+
+        assert audit.error is None, policy
+        assert set(audit.skip_notes) == {
+            f"{TRACE_CONSTRAINT_KEY_BY_KIND[kind]} skipped: {UNBOUND_BINDING_SKIP.detail}"
+            for kind in ("before", "present")
+        }, policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == UNBOUND_BINDING_SKIP, policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP, policy
+        assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["all_of"]] == EVALUATED, policy
+        assert accounted[TRACE_CONSTRAINTS_KEY] == EVALUATED, policy
+        assert result.constraints[0].kind is TraceConstraintKind.ALL_OF, policy
+        assert result.constraints[0].passed is verdict, policy
+
+    beside_an_evaluated_sibling = RunnerGradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[
+                _bound_composite("no_binder_fires", "recall_widget"),
+                _bound_before("the_binder_fires", "ship_widget"),
+            ]
+        )
+    )
+    both = evaluate_trace_checks(timeline, beside_an_evaluated_sibling.trace_checks).accounted_keys
+
+    assert audit_accounted_keys(beside_an_evaluated_sibling, both).error is None
+    assert both[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == EVALUATED
+    assert both[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP
+
+
+def test_a_binder_whose_value_the_trial_never_recorded_accounts_its_nested_kinds_as_skipped():
+    """The other way a ``require`` tree goes unentered: no assignment to enter it under.
+
+    The binder selects the call and the trial records no outcome for it, so the value
+    it extracts is unreadable rather than absent — a candidate with no name. There is
+    nothing to evaluate the tree under, so its nested kinds reach the ledger no more
+    than an unbound binder's do, and left unaccounted the RPC fails on a key the
+    config populates. The composite still carries the constraint's own verdict, which
+    is a failing sub-check rather than a silent resolution.
+    """
+    config = RunnerGradingConfig(
+        trace_checks=TraceChecksConfig(
+            constraints=[
+                {
+                    "id": "quoted_only_what_a_passing_inspection_returned",
+                    "description": (
+                        "every grade the agent quoted came out of an inspection, and no "
+                        "inspection failed"
+                    ),
+                    "bind": {
+                        "match": {
+                            "kind": "tool_call",
+                            "tool": {"equals": "inspect_widget"},
+                            "status": {"equals": "success"},
+                        },
+                        "values": {"grade": {"field": "result"}},
+                    },
+                    "require": {
+                        "all_of": [
+                            {
+                                "present": {
+                                    "match": {
+                                        "kind": "assistant_message",
+                                        "text": {"contains_binding": "grade"},
+                                    }
+                                }
+                            },
+                            {
+                                "absent": {
+                                    "match": {
+                                        "kind": "tool_call",
+                                        "tool": {"equals": "inspect_widget"},
+                                        "status": {"equals": "error"},
+                                    }
+                                }
+                            },
+                        ]
+                    },
+                }
+            ]
+        )
+    )
+    timeline = build_turn_timeline(
+        [
+            Turn("user", "Inspect widget w1 and tell me its grade."),
+            Turn(
+                "assistant",
+                "Widget w1 is grade A.",
+                unexecuted=[ToolCall(id="never_ran", name="inspect_widget", arguments={})],
+            ),
+        ]
+    )
+
+    result = evaluate_trace_checks(timeline, config.trace_checks)
+    audit = audit_accounted_keys(config, result.accounted_keys)
+
+    assert timeline.records_present is False
+    assert audit.error is None
+    assert set(audit.skip_notes) == {
+        f"{TRACE_CONSTRAINT_KEY_BY_KIND[kind]} skipped: {UNBOUND_BINDING_SKIP.detail}"
+        for kind in ("present", "absent")
+    }
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["absent"]] == UNBOUND_BINDING_SKIP
+    assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["all_of"]] == EVALUATED
+    assert result.constraints[0].kind is TraceConstraintKind.ALL_OF
+    assert result.constraints[0].passed is False
+    assert "cannot be decided" in result.constraints[0].message
+
+
+# --------------------------------------------------------------------------
 # runner_field resolution — a malformed manifest entry fails loud
 # --------------------------------------------------------------------------
 
@@ -316,6 +731,10 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
 
     Pins each author key the evaluators record: a typo in one of them would leave
     that key unaccounted and fail the RPC instead of grading.
+
+    The `5 / 6` fraction is also what pins the activity floor's "no row when met"
+    rule. The trial carries one assistant turn, so the declared floor of 1 is met
+    and contributes no seventh sub-check — a passing row would move this to 6 / 7.
     """
     grading = {
         "combine_method": "weighted",
@@ -326,6 +745,7 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
             "must_contain": ["shipped"],
             "disallow_regex": ["password"],
             "max_turns": 5,
+            "min_assistant_turns": 1,
             "tool_expectations": {"required_tools": [], "disallowed_tools": ["delete_widget"]},
             "required_actions": [
                 {
@@ -367,6 +787,38 @@ def test_degenerate_trial_records_the_transcript_skip_in_reasons(runner_service,
     assert response.success is True, response.error
     assert response.grade.binary_pass is False
     assert response.grade.score == pytest.approx(0.0)
+    assert (
+        "transcript_rules.must_contain skipped: the trial's timeline carries no events"
+        in response.grade.reasons
+    )
+
+
+def test_degenerate_trial_still_grades_a_declared_activity_floor(runner_service, mock_grpc_context):
+    """The most degenerate trial there is must not escape a declared floor.
+
+    No messages and no tool history is exactly the answer `min_assistant_turns`
+    asks for, so the floor is evaluated where its siblings are skipped: the
+    component is `0.0` rather than absent from the combine, the reason names the
+    bound, the floor itself is never recorded as skipped, and the sibling's skip
+    note survives the split.
+    """
+    grading = {
+        "combine_method": "weighted",
+        "weights": {"transcript_rules": 1.0},
+        "pass_threshold": 0.7,
+        "transcript_rules": {"min_assistant_turns": 1, "must_contain": ["done"]},
+    }
+
+    response = _grade(runner_service, mock_grpc_context, "ledger_degenerate_floor:0", grading)
+
+    assert response.success is True, response.error
+    assert response.grade.binary_pass is False
+    assert response.grade.components.transcript_rules == pytest.approx(0.0)
+    assert "Assistant turn count 0 below min_assistant_turns of 1" in response.grade.reasons
+    # The blanket skip sweeps the whole subtree by key prefix, so the floor is the one
+    # member that must be carved out of it. Left in, the reasons would say the floor
+    # drove the verdict *and* was never evaluated.
+    assert "transcript_rules.min_assistant_turns skipped" not in response.grade.reasons
     assert (
         "transcript_rules.must_contain skipped: the trial's timeline carries no events"
         in response.grade.reasons
@@ -467,42 +919,146 @@ def test_custom_checks_written_but_disabled_records_the_skip(runner_service, moc
     assert "custom_checks skipped: custom checks not enabled" in response.grade.reasons
 
 
+_TRACE_CHECKS_GRADING: dict[str, Any] = {
+    "combine_method": "weighted",
+    "weights": {"trace_checks": 1.0},
+    "pass_threshold": 0.7,
+    "trace_checks": {
+        "constraints": [
+            {
+                "id": "said_the_widget_shipped",
+                "description": "the agent reports the shipment and leaks no credential",
+                "require": {
+                    "all_of": [
+                        {
+                            "present": {
+                                "match": {
+                                    "kind": "assistant_message",
+                                    "text": {"contains": "shipped"},
+                                }
+                            }
+                        },
+                        {
+                            "absent": {
+                                "match": {
+                                    "kind": "assistant_message",
+                                    "text": {"contains": "password"},
+                                }
+                            }
+                        },
+                    ]
+                },
+            }
+        ]
+    },
+}
+
+
+def test_a_trace_checks_pack_grades_instead_of_erroring(runner_service, mock_grpc_context):
+    """A pack whose only scored key is `trace_checks` gets a grade through GradeTrial."""
+    response = _grade(
+        runner_service,
+        mock_grpc_context,
+        "ledger_trace_checks:0",
+        _TRACE_CHECKS_GRADING,
+        llm_messages=[{"role": "assistant", "content": "The widget was shipped"}],
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.trace_checks == pytest.approx(1.0)
+    assert response.grade.score == pytest.approx(1.0)
+    assert [(item.id, item.passed) for item in response.grade.trace_checks] == [
+        ("said_the_widget_shipped", True)
+    ]
+
+
+def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_grpc_context):
+    """No messages and no tool history: the component is not scored, and the trial fails.
+
+    Scoring it would grade constraints against evidence the trial does not carry,
+    and passing it would let the one component the pack weights decide nothing.
+    """
+    response = _grade(
+        runner_service, mock_grpc_context, "ledger_trace_degenerate:0", _TRACE_CHECKS_GRADING
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.trace_checks == -1.0
+    assert list(response.grade.trace_checks) == []
+    assert response.grade.binary_pass is False
+    # The skip is asserted together with the unscored component: a component the
+    # runner silently declined to score is as opaque to the task author as one it
+    # never accounted for.
+    assert (
+        f"{TRACE_CONSTRAINTS_KEY} skipped: the trial's timeline carries no events"
+        in response.grade.reasons
+    )
+    assert (
+        f"{TRACE_CONSTRAINT_KEY_BY_KIND['all_of']} skipped: the trial's timeline carries no "
+        "events" in response.grade.reasons
+    )
+
+
+@pytest.mark.parametrize(
+    ("evaluator_name", "grading", "unaccounted_key", "message"),
+    [
+        (
+            "evaluate_transcript_rules",
+            {
+                "combine_method": "weighted",
+                "weights": {"transcript_rules": 1.0},
+                "pass_threshold": 0.7,
+                "transcript_rules": {"must_contain": ["done"]},
+            },
+            "transcript_rules.must_contain",
+            [{"role": "assistant", "content": "All done"}],
+        ),
+        (
+            "evaluate_trace_checks",
+            _TRACE_CHECKS_GRADING,
+            TRACE_CONSTRAINT_KEY_BY_KIND["all_of"],
+            [{"role": "assistant", "content": "The widget was shipped"}],
+        ),
+    ],
+)
 def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
-    runner_service, mock_grpc_context, monkeypatch
+    evaluator_name,
+    grading,
+    unaccounted_key,
+    message,
+    runner_service,
+    mock_grpc_context,
+    monkeypatch,
 ):
     """Fault injection: the drift the ledger exists to catch, end to end.
 
     The real evaluator still runs and still scores; only its per-author-key
     accounting is dropped — what a future ``RunnerTranscriptRulesConfig`` key that
-    nothing decomposes would look like on the wire.
+    nothing decomposes would look like on the wire. The trace-checks row is the
+    leaf-granular case: the block key alone being accounted would leave a kind
+    evaluated by neither substrate invisible, so the key the error must name is
+    the kind's.
     """
     from tolokaforge.runner import service as service_module
 
-    real = service_module.evaluate_transcript_rules
+    real = getattr(service_module, evaluator_name)
 
     def drifted(*args: Any, **kwargs: Any) -> Any:
         return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
 
-    monkeypatch.setattr(service_module, "evaluate_transcript_rules", drifted)
-
-    grading = {
-        "combine_method": "weighted",
-        "weights": {"transcript_rules": 1.0},
-        "pass_threshold": 0.7,
-        "transcript_rules": {"must_contain": ["done"]},
-    }
+    monkeypatch.setattr(service_module, evaluator_name, drifted)
 
     response = _grade(
         runner_service,
         mock_grpc_context,
-        "ledger_drift:0",
+        f"ledger_drift_{evaluator_name}:0",
         grading,
-        llm_messages=[{"role": "assistant", "content": "All done"}],
+        llm_messages=message,
     )
 
     assert response.success is False
-    assert "transcript_rules.must_contain" in response.error
-    assert entry("transcript_rules.must_contain").runner_evaluator in response.error
+    assert unaccounted_key in response.error
+    assert entry(unaccounted_key).runner_evaluator in response.error
     assert not response.HasField("grade")
 
 

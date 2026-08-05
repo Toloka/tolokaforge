@@ -1,11 +1,13 @@
 # Gate-fire demo run config — runs ONLY the add_note_duplicate_check_gated
-# testcase, which demonstrates the rubric REQUIRED-criterion gate firing.
+# testcase, which demonstrates the pack's two vetoes over one policy firing.
 #
 # The agent is deliberately a cheap/weaker model: the check-first policy is NOT
 # in the agent's system prompt and the user never asks for it, so the agent
-# reliably saves the note directly and misses the required `checked_duplicates_first`
-# criterion → gate_failed → binary_pass=false, even though the graded
-# `note_saved` / `clarity` criteria still score (see grade.yaml criterion_results).
+# reliably saves the note directly. That trips the `trace_checks` gate
+# (`the_notes_were_listed_before_the_note_was_added`) and, having warned nobody, the
+# required `checked_duplicates_first` criterion → binary_pass=false, even though the
+# graded `note_saved` / `clarity` criteria still score (see grade.yaml
+# criterion_results).
 #
 # The read-only rubric `judge` is a run-level model (models.judge), separate
 # from the cheap agent under test — it must reliably terminate on agentic

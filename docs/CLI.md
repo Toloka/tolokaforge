@@ -2,7 +2,7 @@
 
 This document describes the tolokaforge CLI's shared building blocks. Per-command usage lives in `--help` output.
 
-The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
+The CLI is the reference implementation of the `RunDisplayEvents` seam (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)); it ships under the `tolokaforge.dx` namespace and installs via `pip install 'tolokaforge[dx]'`.
 
 ## Display layer
 
@@ -137,7 +137,7 @@ The root flag `--display={rich,plain,log,none}` and the equivalent env var `TOLO
 - **Optional banner (top).** Populated on the first auth-shaped `trial_failed` so a bad API key doesn't hide as one row of `fail N` in the bottom bar.
 - **Optional Engine Components widget (below the banner).** Compact status board for `tolokaforge`'s own engine infrastructure — the `EngineStack` docker services (`runner`, `db-service`) plus the gRPC runner-client, and (in future) whatever other engine-scoped seams register a component. Rendered when any engine component is tracked; absent otherwise. One row per component: `[icon] [id] [phase] [detail]` with the icon reflecting the component's `ComponentPhase` (`⏳` starting, `✓` healthy, `⚠` degraded, `✗` unhealthy, `☠` dead, `·` stopped). Under per-trial isolation the built-in engine services legitimately reach `services_ready` in Docker's `created` state (declared but never started — the per-trial stack owns runtime), which the phase mapper reports as `stopped`, not `unhealthy`: visually neutral, semantically accurate. Unhealthy components auto-expand a small log tail (last 5 records) beneath their row; healthy and stopped rows stay one line — unless the operator makes this widget the active panel (via `Tab`), walks to the row with `j` / `k`, **and** presses `l` to reveal its tail (see [§ Keyboard navigation](#keyboard-navigation)). The tail shows the container's real stdout/stderr for docker services and per-trial containers (streamed through `LogRouter`), plus any records other subsystems tag with `extra={"component_id": ...}` — the gRPC runner-client's retry loop is one example. `ServiceSnapshot` rows from `phase_changed(services=…)` populate the widget via the `_service_to_component` adapter shim, so callers that only fire the legacy event still surface here. Under the covers this is the `RunDisplayEvents.component_*` seam recorded in [ADR-0021](adr/0021-component-monitoring-seam.md). **Per-trial task containers do not appear at this top level**; they render in the per-trial "Infrastructure" sub-panel inside the Focused pane, which uses the same renderer and honours the same `Tab` + `j` / `k` focus + `l` tail-toggle gestures — one uniform interaction for every inspectable component.
 - **Optional Boot log (below the services widget).** During the startup window (before the first `run_started`) when the panel has buffered any `tolokaforge.docker.*` record: a `Panel(title="Boot log")` of the last five docker milestones, most-recent-last, formatted `HH:MM:SS.mmm | short-name | message`. Steals rows from `main` (total height unchanged) and disappears once trials dispatch.
-- **Left pane — trial list.** One line per trial: `<glyph> [N/M] task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed and `[N/M]` is the run-wide 1-indexed position, zero-padded to the width of `M`. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills. The main region is height-adaptive — three trials in a tall terminal give a short pane instead of filling the screen.
+- **Left pane — trial list.** One line per trial: `<glyph> [N/M] task_id · trial_index` where `<glyph>` is `⏳` for running, `✓` for completed, `✗` for failed and `[N/M]` is the run-wide 1-indexed position, zero-padded to the width of `M`. A completed trial carries its verdict after the row: `pass` (green), `fail` (red), or `n/a` (amber) when grading could not produce a verdict at all — an ungraded trial is not shown as one the agent failed, because the fault is the harness's. A failed trial carries its truncated error instead. Running trials always render; completed and failed trials scroll off in `last_update_ts` order once the window (default 20 rows) fills. The main region is height-adaptive — three trials in a tall terminal give a short pane instead of filling the screen.
 - **Right pane — focused trial.** Structured summary of the trial that most recently transitioned state. When the orchestrator supplies `agent_model` on `trial_started`, the pane opens with a `model: <provider>/<name>` header line. The counters line follows: `turn N · in Xk / out Y tok · $Z.ZZ · last: <event_kind>`. When an in-process LLM call is in flight the pane appends one status line below the counters:
   - `⏳ waiting on {role}: {provider}/{model} — {elapsed:.1f}s` while the attempt is on the wire.
   - `↻ retry {attempt}/5 after {next_in_s:.0f}s ({reason})` when the retry-backoff hook has fired for the next attempt.
@@ -151,7 +151,7 @@ The root flag `--display={rich,plain,log,none}` and the equivalent env var `TOLO
 
   Concrete example: `142/500 · 12 running · $0.87 · in 41.2k / out 6.8k tok · fail 3 · eta 03:14`. `cost` renders `$<0.01` below one cent and `$0.00` at zero. `prompt` / `completion` render with a `k` suffix at ≥ 5 000 tokens. `eta` is `MM:SS` under one hour, `HH:MM:SS` above, and `n/a` before the first in-run completion. The pinned literal shape lives in `tests/canonical/golden/run_display/panel_{80,120}.svg`.
 
-The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol: the run/trial boundary events (`run_started`, `trial_started`, `trial_progress`, `trial_provisioned`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`, `phase_changed`) plus the in-flight LLM-call trio (`llm_call_started`, `llm_call_finished`, `llm_retry_scheduled`) that surfaces provider activity during a generation so the panel can show progress while a slow attempt or outer-retry backoff is in flight. `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
+The orchestrator, conductor, and runner emit lifecycle events into a `RunDisplayEvents` Protocol: the run/trial boundary events (`run_started`, `trial_started`, `trial_progress`, `trial_provisioned`, `trial_completed`, `trial_failed`, `judgment_scored`, `run_finished`, `phase_changed`) plus the in-flight LLM-call trio (`llm_call_started`, `llm_call_finished`, `llm_retry_scheduled`) that surfaces provider activity during a generation so the panel can show progress while a slow attempt or outer-retry backoff is in flight. `trial_completed` carries `binary_pass: bool | None`, `None` being a trial that reached a terminal, non-retryable state with no verdict — the orchestrator passes what the trajectory actually holds and never substitutes a `False`. `LiveRunDisplay` subscribes and repaints at 4 Hz. `_NULL_EVENTS` is the default sink under any non-active mode — the orchestrator / conductor / runner never branch on `events is None`, they just call every method.
 
 Log records from `configure_root_logging` — and from any child logger whose `StreamHandler` would otherwise write straight to `sys.stderr` / `sys.stdout` / `sys.__stderr__` / `sys.__stdout__` — route through a `_LogSink` for the lifetime of the Live context. INFO / DEBUG records land in a bounded 500-record ring buffer inside the panel (available via `LiveRunDisplay.log_records()` for debug dumps) and are otherwise swallowed so the Docker-boot log wall no longer scrolls the panel off-screen; WARNING and above are printed above the panel via `Live.console.print`, so real problems surface without disrupting Rich Live's cursor coordination. `__enter__` sweeps every non-root logger in `logging.root.manager.loggerDict` — skipping `PlaceHolder` entries — and, for each handler whose stream identity matches one of the captured pre-Live terminal streams, removes the handler; loggers with `propagate=False` additionally receive a fresh `_LogSink` so their records still surface. This is what prevents chatty libraries (litellm's `LiteLLM` / `LiteLLM Router` / `LiteLLM Proxy` loggers) from stacking the panel with duplicate copies during trial execution. `__exit__` restores every removed handler and drops any child-logger `_LogSink` it installed.
 
@@ -262,7 +262,7 @@ Line history persists to `~/.tolokaforge_history` via `prompt_toolkit`'s `FileHi
 
 ### Extras dependency
 
-The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](architecture/adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
+The REPL lives in the `[dx]` extras alongside Rich panels and banners (see [ADR-0019](adr/0019-front-end-plugin-namespace.md)). A headless-server install (`pip install tolokaforge`) does not pull `click-repl` or `prompt-toolkit` in; running the `tolokaforge` console script without the extras prints the install hint from the stdlib-only shim at `tolokaforge._entry:main`.
 
 ## Dry run
 
@@ -278,7 +278,7 @@ tolokaforge run --config examples/native/tool_use/run_config.yaml --dry-run
 2. Constructs the adapter and enumerates every declared task. **Skips the TypeSense preflight** `Orchestrator.load_tasks()` performs — dry-run never starts Docker.
 3. For the first three tasks (fixed cap; more never needed in practice), materialises the first-turn wire request: system prompt, first user message, sanitized OpenAI-shape tool spec, and resolved model / judge / runtime identifiers.
 4. Renders one `rich.panel.Panel` per sample on stderr through the shared `console`.
-5. Returns exit `0`. No run directory is created, no `emit_artifact_path` fires (stdout stays empty), no [start/end banner](#run-banner) renders, and no [Live run panel](#live-run-panel---display-rich-during-tolokaforge-run) opens.
+5. Returns exit `0`. No run directory is created, no `emit_artifact_path` fires (stdout stays empty), no [start/end banner](#run-banner) renders, and no [Live run panel](#live-run-panel---displayrich-during-tolokaforge-run) opens.
 
 ### Flags
 
@@ -376,7 +376,7 @@ Current mapping:
 
 | Section    | Commands                                     |
 |------------|----------------------------------------------|
-| Runs       | `analyze`, `prepare`, `run`, `status`, `worker` |
+| Runs       | `analyze`, `browse`, `prepare`, `reconcile`, `rejudge`, `retrace`, `run`, `status`, `worker` |
 | Tasks      | `validate`                                   |
 | Docker     | `docker`                                     |
 | Config     | `config`                                     |
@@ -387,11 +387,15 @@ Abbreviated transcript of the `Commands:` region:
 
 ```
 Runs:
-  analyze  Analyze a single trial trajectory.
-  prepare  Prepare a queue-backed run directory for distributed workers.
-  run      Run benchmark with specified configuration
-  status   Show live/status snapshot for a run directory.
-  worker   Run a queue worker process (distributed execution mode).
+  analyze    Analyze a single trial trajectory.
+  browse     Open a run's output directory in the OS default handler.
+  prepare    Prepare a queue-backed run directory for distributed workers.
+  reconcile  Check a pack's declared rubric migration against recorded...
+  rejudge    Re-judge the rubric stage of recorded trials offline...
+  retrace    Re-check the trace constraints of recorded trials, spending...
+  run        Run benchmark with specified configuration
+  status     Show live/status snapshot for a run directory.
+  worker     Run a queue worker process (distributed execution mode).
 
 Tasks:
   validate  Validate task configurations
@@ -415,7 +419,31 @@ Adapters:
 
 ### Adding a new top-level command
 
-The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/test_cli_help_grouping.py::test_every_registered_command_has_a_group` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
+The root group is wired as `@click.group(cls=_GroupedCommandsGroup)`, and `_GroupedCommandsGroup.COMMAND_GROUPS` maps every command name to its section heading. Registering a new top-level command requires adding an entry to that map; a command with no mapping raises `RuntimeError("_GroupedCommandsGroup: no group heading for command '<name>'; add it to COMMAND_GROUPS")` the first time the root `--help` renders. The unit test `tests/unit/dx/test_cli_grouped_help.py::TestGroupedCommandsGroupContract::test_all_registered_commands_are_mapped` enforces the same invariant at CI time so drift is caught before `--help` is ever invoked.
+
+## Task validation
+
+`tolokaforge validate --tasks <glob>` loads every matched `task.yaml` and its referenced `grading.yaml`, prints one `✓` / `✗` line per file plus an `N valid, M invalid` summary, and is usable as a gate:
+
+| Outcome | Exit code |
+|---|---|
+| every matched task loads | `0` |
+| any matched task fails to load | `1`, after the per-task lines and the summary |
+| the glob matches no file at all | `1`, naming the pattern; nothing is loaded |
+
+An empty match is an invocation error, not a vacuous success — a pattern that selects nothing validates nothing, and a CI step whose glob has drifted off its packs would otherwise report a clean run.
+
+A key that `combine`, `state_checks` or `transcript_rules` does not declare is a `✗` line naming the file, the key, its closest declared field and the block's whole accepted set. `trace_checks` and `llm_judge` refuse such a key too, but as their model's bare `Extra inputs are not permitted` naming neither the file nor the accepted set — and `llm_judge` only on the `rubric` / `model_ref` shapes its own migration names, which are the shapes this command constructs it for. The block *names* are lenient: `state_cheks:` for `state_checks:` drops a whole grading component and is a `✗` only when the correct name carries a weight in `combine.weights`. See [docs/GRADING.md § Which keys a grading block refuses](GRADING.md#which-keys-a-grading-block-refuses).
+
+A task's grading block is also checked against the tools that task gives its actors: a matcher or a `tool_expectations` entry naming a tool the task does not declare, an argument name a tool's schema forbids, an uncompilable `regex`, a golden action naming a tool the task gives no actor, and a state hash the `enabled` flag stops anything from reading are all `✗` lines. Matchers inside a `trace_checks` alternative route are checked alongside the shared ones, and a finding there is addressed `trace_checks.<path id>.<constraint id>`. What the schema cannot answer for is printed under the task's `✓` as a `?` line naming what was not checked and why — it never fails the command. `validate` reads every task through the native loader, so for a task an external adapter owns there is no tool set to check against and the whole block is reported unchecked. The rules and their severities are in [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run).
+
+A task that names no grading source at all — no `grading:` field and no sibling `grading.yaml` — is answered by the `adapter_type` its `task.yaml` declares. Declaring `native` it is a `✗` naming the task and both ways to supply a source, because the native adapter grades from that file and the run refuses the task in its own pre-flight for the same reason. Declaring any other adapter it is a `✓` plus a `?` line: that adapter resolves its own grading config, so whether the absence is a defect is not answerable here. A task that *names* a grading file is gated on that file's contents whatever it declares.
+
+Each task loads under its enclosing project. `validate` walks up from the `task.yaml` for a `project.yaml` and layers that project's `task_defaults` beneath the task's own fields — the layering the orchestrator applies before a run — so the object validated is the one a run loads. A task with no `project.yaml` above it loads on its own. A `project.yaml` that fails to load fails the tasks beneath it, naming the project file; the rest of the glob is still validated.
+
+`project.default_environment` is not layered: it binds into a `TaskDescription`'s `EnvironmentManifest`, and `validate` builds no `TaskDescription`.
+
+`make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
 ## Run banner
 
@@ -442,7 +470,7 @@ Rendered after the display region closes, on both success and failure, before th
 
 On failure the outcome line becomes `✗ Run failed in <duration>` (bold red glyph); the underlying exception continues to propagate to Click, which renders its own traceback and exit code. The banner is complementary — it does not swallow the failure.
 
-When a budget cuts the run short (see [§ Cost, time, and sample limits](#cost-time-and-sample-limits)) the outcome line becomes `⏸ Run stopped (<reason>) in <duration>` — yellow glyph via the `warn` theme token. `<reason>` is one of `cost limit`, `time limit`, or `sample limit`, read from `LIMIT_HIT.json` under the run directory. Report and browse lines are unchanged. The stopped variant supersedes the success / failure axis: a run that both hit a budget and raised on drain still renders the stopped shape.
+When a budget cuts the run short (see [§ Cost and time limits](#cost-and-time-limits)) the outcome line becomes `⏸ Run stopped (<reason>) in <duration>` — yellow glyph via the `warn` theme token. `<reason>` is one of `cost limit`, `time limit`, or `sample limit`, read from `LIMIT_HIT.json` under the run directory. Report and browse lines are unchanged. The stopped variant supersedes the success / failure axis: a run that both hit a budget and raised on drain still renders the stopped shape.
 
 `<duration>` is `MM:SS` under one hour, `HH:MM:SS` above — the same shape the Live run panel's bottom bar uses. It is measured with `time.monotonic()` bracketing the run.
 
@@ -567,14 +595,14 @@ observability:
 | `tolokaforge prepare`                        | Absolute run-dir path (single line).  | Queue summary, log records.                                  |
 | `tolokaforge worker`                         | (empty)                               | "Worker complete" summary, log records.                      |
 | `tolokaforge status`                         | (empty)                               | Run summary, queue ETA, cost totals.                         |
-| `tolokaforge validate`                       | (empty)                               | Per-task validity lines, `N valid, M invalid` summary.       |
+| `tolokaforge validate`                       | (empty)                               | Per-task validity lines, `N valid, M invalid` summary, and the failure message when it exits `1`. See [§ Task validation](#task-validation). |
 | `tolokaforge config validate`                | (empty)                               | Per-config validity lines, error / warning counts.           |
 | `tolokaforge assets stamp`                   | (empty)                               | Digest-check summary or `--check` diff output.               |
 | `tolokaforge adapter convert`                | (empty)                               | Per-task conversion lines, `Converted N tasks` summary.      |
 | `tolokaforge analyze`                        | (empty)                               | Trajectory summary, tool-failure / log-error breakdown.      |
 | `tolokaforge docker build` / `up` / `down` / `status` | (empty)                      | Build progress, stack status, error text.                    |
 
-On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch exits with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch and every `tolokaforge validate` failure exit with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
 
 The emitted path is `Path.resolve()`'d: symlinks are canonicalised and the line is always absolute, regardless of the caller's cwd or how the config expressed `evaluation.output_dir`.
 

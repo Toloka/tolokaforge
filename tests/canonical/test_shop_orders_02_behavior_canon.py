@@ -1,6 +1,6 @@
 """Behavior canonical tests for shop_orders_02.
 
-Covers six layers:
+Covers seven layers:
 
   1. MCP tools        — TOOLS[name].invoke() works correctly (grading-mode, no subprocess).
   2. State mutations  — tools mutate the data dict as documented.
@@ -10,8 +10,10 @@ Covers six layers:
                            code path the Orchestrator uses, not directly.
   6. Trajectory YAML  — OutputWriter.write_trajectory() → YAML → reload preserves
                         tool_calls, arguments, and metadata needed for grading.
+  7. Wrapper contract — the production MCPServerToolWrapper reports the MCP
+                        protocol's isError flag beside the output text.
 
-All six layers operate exclusively within tests/data/tasks/shop_orders_02/ —
+All seven layers operate exclusively within tests/data/tasks/shop_orders_02/ —
 the self-contained mcp_server.py there mirrors the production implementation so
 tests never depend on tasks/tool_use/shop_orders_02/.
 """
@@ -39,6 +41,9 @@ from tolokaforge.core.models import (
     TrialStatus,
 )
 from tolokaforge.core.output_writer import OutputWriter
+from tolokaforge.runner.db_client import DBServiceClient
+from tolokaforge.runner.models import ToolSchema as RunnerToolSchema
+from tolokaforge.runner.tool_factory import MCPServerToolWrapper
 
 pytestmark = pytest.mark.canonical
 
@@ -71,10 +76,11 @@ class _McpSubprocess:
     """Minimal stdio JSON-RPC client for an MCP server subprocess.
 
     Mirrors the essentials of ``MCPServerProcess`` from ``runner/tool_factory.py``
-    without importing the runner package (which drags in protobuf dependencies
-    that are not available in all dev environments).
-
-    Only used by ``TestShopOrders02McpTransport``.
+    and adds the record-parsing helpers ``TestShopOrders02McpTransport`` asserts
+    against. Serving those cases is its whole reason to exist — importing the
+    runner package here is fine, and ``TestShopOrders02McpWrapperContract`` below
+    drives the production ``MCPServerToolWrapper``, so a case about wrapper
+    behaviour belongs there rather than here.
     """
 
     def __init__(self, script_path: str) -> None:
@@ -698,7 +704,8 @@ class TestShopOrders02McpTransport:
     """
 
     @pytest.fixture(scope="class")
-    def mcp_server(self, shop_orders_02_task_dir) -> _McpSubprocess:
+    @classmethod
+    def mcp_server(cls, shop_orders_02_task_dir) -> _McpSubprocess:
         """Start mcp_server.py subprocess and inject fresh initial state.
 
         Lifespan does not run when the script is started without file input,
@@ -811,7 +818,8 @@ class TestShopOrders02AdapterGradingIntegration:
     """
 
     @pytest.fixture(scope="class")
-    def real_adapter(self, test_data_dir) -> NativeAdapter:
+    @classmethod
+    def real_adapter(cls, test_data_dir) -> NativeAdapter:
         """NativeAdapter pointing at tests/data/ — same base_dir as TestNativeAdapterCanon."""
         return NativeAdapter(
             {
@@ -982,3 +990,117 @@ class TestShopOrders02TrajectoryRoundTrip:
         assert raw["status"] == "completed"
         assert raw["start_ts"] is not None
         assert raw["end_ts"] is not None
+
+
+# ---------------------------------------------------------------------------
+# TestShopOrders02McpWrapperContract
+# ---------------------------------------------------------------------------
+
+
+class TestShopOrders02McpWrapperContract:
+    """The production ``MCPServerToolWrapper`` over the real subprocess.
+
+    MCP answers a call the tool never completed with ``isError: true`` beside
+    error prose, and answers a business failure the tool *declared* with the
+    flag unset and a ``{"error": ...}`` payload the tool wrote itself. The two
+    are disjoint on this substrate by construction: ``DomainToolRegistry.tool``'s
+    generated MCP function catches ``ToolError`` and returns it as a payload, so
+    only an exception the tool did not declare reaches FastMCP's error handler.
+    These cases pin both sides of that split, and pin that ``execute`` hands the
+    agent the same text either way.
+    """
+
+    @pytest.fixture(scope="class")
+    @classmethod
+    def wrapper_for(cls, shop_orders_02_task_dir):
+        """Build wrappers for one shared ``mcp_server.py`` subprocess.
+
+        ``MCPServerToolWrapper._servers`` caches subprocesses on the class keyed
+        by script path and the instance ``cleanup()`` is a no-op, so the
+        classmethod is the only teardown there is — without it the subprocess
+        outlives the session. The cases below share the one server deliberately:
+        an argument-validation failure and two reads, none depending on what the
+        others left behind.
+
+        ``db_client`` is never reached by a tool call, so the fixture hands over a
+        real client pointed at an unroutable host: touching it fails loudly
+        instead of being absorbed by a mock.
+        """
+        script = str(shop_orders_02_task_dir / "mcp_server.py")
+
+        def build(tool_name: str) -> MCPServerToolWrapper:
+            return MCPServerToolWrapper(
+                tool_schema=RunnerToolSchema(
+                    name=tool_name,
+                    description=f"{tool_name} on the shop_orders_02 MCP server",
+                    parameters={},
+                ),
+                server_script=script,
+                db_client=DBServiceClient("http://db-service.invalid"),
+                trial_id="shop_orders_02:0",
+            )
+
+        yield build
+        MCPServerToolWrapper.cleanup_all_servers()
+
+    # ------------------------------------------------------------------
+
+    async def test_an_argument_the_signature_does_not_declare_is_a_declared_failure(
+        self, wrapper_for
+    ):
+        """A kwarg typo never runs the tool, and the wrapper says so.
+
+        FastMCP validates arguments against the generated pydantic model, so the
+        call fails before ``confirm_payment``'s body decides anything. Its prose
+        names the field that is missing, which is the actionable part for whoever
+        authored the call.
+        """
+        wrapper = wrapper_for("confirm_payment")
+
+        outcome = await wrapper.execute_call({"order_idd": "O-001"})
+
+        assert outcome.declared_failure is True
+        assert outcome.output.startswith("Error executing tool confirm_payment:")
+        assert "order_id" in outcome.output
+
+    async def test_a_failure_the_tool_declared_is_not_a_substrate_failure(self, wrapper_for):
+        """A ``ToolError`` comes back as a payload with the flag unset.
+
+        The tool ran and declined the request, which is a different defect from
+        the call never happening — the flag must not claim otherwise, or the two
+        populations collapse into one.
+        """
+        wrapper = wrapper_for("confirm_payment")
+
+        outcome = await wrapper.execute_call({"order_id": "O-999"})
+
+        assert outcome.declared_failure is False
+        assert json.loads(outcome.output) == {"error": "Order 'O-999' not found"}
+
+    async def test_a_read_that_succeeds_is_not_a_declared_failure(self, wrapper_for):
+        wrapper = wrapper_for("list_products")
+
+        outcome = await wrapper.execute_call({})
+
+        assert outcome.declared_failure is False
+        assert "Wireless Headphones" in outcome.output
+
+    @pytest.mark.parametrize(
+        ("tool_name", "arguments"),
+        [
+            ("confirm_payment", {"order_idd": "O-001"}),
+            ("confirm_payment", {"order_id": "O-999"}),
+            ("list_products", {}),
+        ],
+    )
+    async def test_execute_hands_back_the_same_text_the_outcome_carries(
+        self, wrapper_for, tool_name, arguments
+    ):
+        """The agent path is unchanged, the flagged call included.
+
+        A model recovers from its own bad call by reading the error prose, so the
+        flagged case must reach ``execute`` as text rather than as a raise.
+        """
+        wrapper = wrapper_for(tool_name)
+
+        assert await wrapper.execute(arguments) == (await wrapper.execute_call(arguments)).output

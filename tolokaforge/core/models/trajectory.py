@@ -455,9 +455,14 @@ class Trajectory(BaseModel):
     final_env_state: dict[str, Any] = Field(default_factory=dict)
     metrics: Metrics = Field(default_factory=Metrics)
     # The trial's ordered tool-call record, one entry per call across every
-    # executor. Not written to ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
+    # executor. Persisted as the ``tool_log.yaml`` sidecar, not as a key on
+    # ``trajectory.yaml`` — see docs/OUTPUT_FORMAT.md.
     tool_log: list[RecordedToolCall] = Field(default_factory=list)
     grade: Grade | None = None
+    # Grading ran for this trial and could not produce a verdict; this is the
+    # reason it gave. ``None`` means grading either succeeded or was correctly
+    # not attempted — it does not distinguish those two, ``grade`` does.
+    grading_error: str | None = None
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape is revised so that downstream analytics can gate
     # comparisons across runs. Starts at 1 per the locked design decision
@@ -465,3 +470,22 @@ class Trajectory(BaseModel):
     # because it's metadata about the message-trace shape, not the prompt
     # itself.
     simulator_schema_version: int = 1
+
+    @model_validator(mode="after")
+    def _reject_graded_and_ungradeable(self) -> Self:
+        """Refuse a value claiming both a verdict and a reason there is none.
+
+        ``Trajectory`` does not enable ``validate_assignment``, so this fires on
+        construction and ``model_validate`` but stays silent on attribute
+        assignment — which is how the conductor sets both fields. It is a
+        deserialisation-boundary guard: a contradictory trajectory cannot be
+        read back off disk or built from a dict.
+        """
+        if self.grading_error is not None and self.grade is not None:
+            raise ValueError(
+                f"trajectory {self.task_id!r}:{self.trial_index} carries both a grade "
+                f"(score {self.grade.score}) and grading_error {self.grading_error!r}. "
+                "grading_error records that no verdict could be computed, so a grade "
+                "alongside it describes a trial two different ways."
+            )
+        return self

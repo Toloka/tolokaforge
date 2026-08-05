@@ -1,0 +1,47 @@
+# Each trial reads one report and writes one, in that order. They differ in one
+# argument: the satisfying trial writes back the report it read, the violating one
+# writes a report it never opened. Every call is recorded, so the binder's own
+# extraction is decidable and neither trial turns on missing evidence.
+satisfying:
+  messages:
+    - role: user
+      content: "Refresh the lot report you already have."
+    - role: assistant
+      content: "Reading the current report."
+      tool_calls:
+        - tool_name: read_file
+          executor: agent
+          status: success
+          arguments: { path: "/reports/lot-7.md" }
+          output: "lot 7: awaiting inspection"
+    - role: assistant
+      content: "Writing the refreshed report."
+      tool_calls:
+        - tool_name: write_file
+          executor: agent
+          status: success
+          arguments: { path: "/reports/lot-7.md", content: "lot 7: inspected" }
+          output: '{"written": true}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Refresh the lot report you already have."
+    - role: assistant
+      content: "Reading the current report."
+      tool_calls:
+        - tool_name: read_file
+          executor: agent
+          status: success
+          arguments: { path: "/reports/lot-7.md" }
+          output: "lot 7: awaiting inspection"
+    - role: assistant
+      content: "Writing the refreshed report."
+      tool_calls:
+        - tool_name: write_file
+          executor: agent
+          status: success
+          arguments: { path: "/reports/lot-9.md", content: "lot 9: inspected" }
+          output: '{"written": true}'
+  state: {}

@@ -18,12 +18,20 @@ evaluation:
 tasks/<category>/<task_id>/
 ├── task.yaml
 ├── grading.yaml
+├── migration.yaml              # optional, what the rubric is migrating into trace checks
 ├── initial_state.json          # optional
 ├── www/                        # optional, for full-site browser tasks
 ├── mock_web/                   # optional, for single-page browser tasks
 ├── rag/corpus/                 # optional
 └── README.md                   # optional
 ```
+
+`migration.yaml` records which rubric criteria the task's `trace_checks` constraints are a
+candidate for, have narrowed, or have replaced. It is a sidecar beside `grading.yaml`
+because nothing about grading reads it: it carries the author's claim and the evidence
+behind it so the claim can be checked against recorded judge verdicts. `tolokaforge
+validate` refuses a declaration its pack contradicts. See
+[`docs/GRADING.md`](GRADING.md) § Trace Checks.
 
 Categories: `terminal`, `browser`, `mobile`. Use `mobile` for app-style tasks that simulate phone interactions (restricted browser actions, no URL navigation). Use `browser` for full web browsing tasks. The mock-web service discovers static files from all categories automatically.
 
@@ -63,14 +71,17 @@ grading: "grading.yaml"
 ### Minimal task
 
 The only required fields are `task_id` and `description`. Everything above is
-optional and defaults to a sane value:
+optional and defaults to a sane value, with one exception: a native task owes a
+grading source, supplied either by its own `grading:` field or by a `grading.yaml`
+beside its `task.yaml`. A Project cannot supply that source — `task_defaults`
+carries no `grading` field.
 
 | Field | Default when omitted |
 | --- | --- |
 | `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
 | `tools` | no tools enabled for agent or user |
 | `user_simulator` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
-| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; if there is none, the task has no grading configured |
+| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with neither is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
 
 So a task that inherits everything from its Project needs only:
 
@@ -78,6 +89,9 @@ So a task that inherits everything from its Project needs only:
 task_id: "api_endpoint_add"
 description: "Add a POST /orders endpoint backed by the orders table."
 ```
+
+Those two fields are a complete native pack only with a `grading.yaml` beside them,
+which is the source the `grading` row above describes.
 
 ## Initial State
 
@@ -298,12 +312,76 @@ To run a single task, change `tasks_glob` to its folder (e.g., `tasks/mobile/map
 
 ## Grading Tips
 
-- Prefer `state_checks.jsonpaths` for deterministic, objective checks.
+- Prefer `state_checks.jsonpaths` for deterministic, objective checks — four operators, exactly one per assertion ([vocabulary](GRADING.md#the-jsonpaths-assertion-vocabulary)).
 - Use `transcript_rules` to enforce tool usage patterns.
-- Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks).
-- For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding.
+- Use `trace_checks` when the condition is about **order, scoped absence, an argument the flat presence checks cannot express, a task with more than one correct route, or a condition that must hold without being scored** — see [Trace Checks](GRADING.md#trace-checks). Four worked packs: [`multi_service_helpdesk_workflow`](../examples/native/multi_service_helpdesk_workflow/README.md), whose constraints reach a nested request-body argument, an ordering, and a scoped absence; [`multi_service_cache_debug`](../examples/native/multi_service_cache_debug/README.md), which grades two alternative diagnostic routes behind one shared `severity: gate` check that a diagnose-only agent trips by mutating, and requires the note to quote the stale value the route's own read returned; [`multi_service_lot_ops`](../examples/native/multi_service_lot_ops/README.md), whose constraints [correlate arguments](GRADING.md#correlating-arguments-across-matchers) — the posted reason code has to have come back in a result the agent read, and the lot has to have been read first; and [`native_shared_domain`](../examples/native/native_shared_domain/README.md), where a shared `severity: gate` constraint and a `required` rubric criterion grade the two conjuncts of one policy, each holding the half it can see.
+- Use `llm_judge` only for genuinely subjective evaluation (not as a softener for weak state checks). Moving a mechanically checkable criterion out of the rubric and into `trace_checks` buys a verdict that does not vary between runs, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) is how that move is [declared](GRADING.md#declaring-a-migration-the-migrationyaml-sidecar) and checked against the judge's own recorded verdicts before it is trusted.
+- **Weight every component the pack configures.** A configured component missing from `combine.weights` is refused before the run, and a component a substrate scored anyway makes the fold raise on both substrates rather than being handed a share nobody declared.
+- For RL training value, use strict grading: `state_checks` weight 1.0, no LLM judge padding — unless an idle agent already satisfies the state, in which case `transcript_rules` needs a weight of its own (below).
 
 See `docs/REFERENCE.md` for full schemas.
+
+### Refusal tasks and other do-nothing passes
+
+A task whose expected final state **equals** its initial state — the agent is meant
+to refuse, or to conclude that nothing needs changing — grades an idle agent as a
+success. The unchanged state *is* the expected state, so the hash comparison and
+every `state_checks.jsonpaths` assertion written against it hold; and
+`transcript_rules.max_turns` bounds the turn counter from above only, so zero turns
+is within any limit. Nothing in such a pack asks whether the agent did anything at
+all.
+
+Declare an activity floor, and weight the component that carries it:
+
+```yaml
+transcript_rules:
+  min_assistant_turns: 1        # the agent must have produced at least one turn
+  must_contain: ["cannot"]      # and must have said why it is refusing
+
+combine:
+  weights: { state_checks: 0.5, transcript_rules: 0.5 }
+  pass_threshold: 0.8
+```
+
+The floor is a gate on the whole `transcript_rules` component rather than one more
+sub-check inside it: unmet, the component is `0.0` whatever the other keys scored,
+and `grade.reasons` carries `Assistant turn count 0 below min_assistant_turns of
+1`. **The `combine.weights` entry is not optional** — a configured component with no
+weight is refused before the run, in both directions, so a floor declared in a pack
+that weights `state_checks` alone never loads. Neither does the reverse: weighting
+`transcript_rules` in a pack that declares no floor.
+
+A floor above `max_turns` admits no turn count at all. `tolokaforge validate`
+rejects such a pack, naming both keys and both values, so an unsatisfiable window
+is caught before the run is paid for.
+
+The floor counts assistant **generations**, not answers — three tool-call-only
+turns with no prose satisfy `min_assistant_turns: 3`, so pair it with a phrase rule
+when the refusal itself is the deliverable. See
+[`docs/GRADING.md`](GRADING.md#turn-bounds) § Turn bounds for the full semantics.
+
+**The floor closes the transcript half of this hole; the state half is closed at the
+gate.** A `state_checks` block carrying no source any substrate can read — only
+`id_fields`, or an empty `jsonpaths` list — asserts nothing, and both
+`tolokaforge validate` and the pre-run gate refuse it, naming every source you
+could declare instead and the option of dropping the block.
+
+A `db_probes`-only block is what a probe pack declares, and probe-only is the whole of
+what it may declare: a probe beside a non-empty `jsonpaths`, or beside a `hash` block that
+is enabled with a source, is refused at load on both substrates, because those sources
+score the same component and one of the two verdicts would be discarded with nothing
+saying which. The block on its own is admitted because a probe is a **real**
+source. It is only not a source *core* can read: `state_checks.db_probes` is
+`RUNNER_ONLY` in the substrate-parity manifest, evaluated by `evaluate_db_probes`,
+because the probe DSN resolves only inside the task's docker network. So core leaves
+`state_checks` unevaluated on such a pack and folds the components that were actually
+decided — failing the trial, with a reason naming what produced no verdict, when
+there are none. Probes assert something; just not on the substrate that
+`tolokaforge validate` grades with.
+
+Either way, give a refusal task at least one state assertion a wrong action would
+break on the substrate you grade on: an idle agent and an agent that acted wrongly
+must not come out with the same `state_checks` score.
 
 ---
 
@@ -319,6 +397,7 @@ Tasks that always pass (100% success rate) provide zero RL training signal. Task
 - **Overly broad scripted_flow triggers.** Generic words like "done", "confirmed", "success" end the conversation before the agent finishes. Use specific triggers (order IDs, exact phrases) or use LLM user simulator.
 - **LLM judge with high weight as a softener.** An LLM judge giving 0.7 for "attempted the task" masks state_checks failures. Reserve LLM judge for genuinely subjective evaluation.
 - **JavaScript safety nets.** Code like `value || 'correct_answer'` means the graded value is always correct regardless of agent action. Record what actually happened.
+- **Grading an idle agent cannot fail.** If the expected final state equals the initial state, a do-nothing agent matches it and passes; declare an activity floor — see [Refusal tasks and other do-nothing passes](#refusal-tasks-and-other-do-nothing-passes).
 
 ### Patterns for Effective Difficulty
 

@@ -12,7 +12,15 @@ from pathlib import Path
 
 import pytest
 
-from tolokaforge.core.grading.state_composition import INERT_HASH_WEIGHT_REASON
+from tolokaforge.core.grading.golden_replay import (
+    FailedGoldenAction,
+    GoldenActionFailure,
+    GoldenReplayRecord,
+)
+from tolokaforge.core.grading.state_composition import (
+    CONFLICTING_STATE_SOURCES_MESSAGE,
+    INERT_HASH_WEIGHT_REASON,
+)
 from tolokaforge.runner import grading as grading_module
 from tolokaforge.runner.grading import (
     build_grade_reasons,
@@ -298,10 +306,7 @@ class TestStateChecksSlot:
             ("both, weight 0.0 gives the jsonpaths the verdict", 0.0, 0.5, -1.0, 0.0, 0.5, False),
             ("neither", -1.0, -1.0, -1.0, None, None, False),
             ("db_probes alone", -1.0, -1.0, 0.4, None, 0.4, False),
-            ("db_probes outrank a hash verdict", 1.0, -1.0, 0.4, None, 0.4, False),
-            ("db_probes outrank a jsonpath score", -1.0, 0.75, 0.4, None, 0.4, False),
-            ("db_probes outrank a fold of both", 1.0, 0.5, 0.4, 0.6, 0.4, True),
-            ("db_probes outrank both before a weight is needed", 1.0, 0.5, 0.4, None, 0.4, False),
+            ("db_probes alone, an inert weight is not consulted", -1.0, -1.0, 0.4, 0.6, 0.4, True),
         ],
     )
     def test_composed_value(
@@ -334,6 +339,36 @@ class TestStateChecksSlot:
                 hash_score=1.0, jsonpath_score=0.5, db_probe_score=-1.0, hash_weight=None
             )
 
+    @pytest.mark.parametrize(
+        ("case", "hash_score", "jsonpath_score", "db_probe_score", "hash_weight"),
+        [
+            ("beside a hash verdict", 1.0, -1.0, 0.4, None),
+            ("beside a jsonpath score", -1.0, 0.75, 0.4, None),
+            ("beside a fold of both", 1.0, 0.5, 0.4, 0.6),
+            ("beside both, before a weight is needed", 1.0, 0.5, 0.4, None),
+            ("the probe passing where both other sources failed", 0.0, 0.0, 1.0, None),
+        ],
+    )
+    def test_a_probe_score_beside_another_source_refuses_to_fold(
+        self, case, hash_score, jsonpath_score, db_probe_score, hash_weight
+    ):
+        """A second scored source has no share of the component, so neither verdict wins.
+
+        The last row is what makes the rule unconditional on magnitude rather than a
+        precedence between scores: the probe passing over two failures is refused exactly
+        like the probe failing under them. The no-weight rows also pin the order of the two
+        refusals — an author told to declare a ``hash.weight`` for a block that is being
+        refused outright would be fixing the wrong key.
+        """
+        with pytest.raises(ValueError) as excinfo:
+            resolve_state_checks_component(
+                hash_score=hash_score,
+                jsonpath_score=jsonpath_score,
+                db_probe_score=db_probe_score,
+                hash_weight=hash_weight,
+            )
+        assert str(excinfo.value) == CONFLICTING_STATE_SOURCES_MESSAGE, case
+
 
 @pytest.mark.parametrize(("hash_weight", "expected"), [(0.6, 0.8), (0.25, 0.625)])
 def test_combine_folds_by_the_weight_the_grading_config_carries(hash_weight, expected):
@@ -346,7 +381,7 @@ def test_combine_folds_by_the_weight_the_grading_config_carries(hash_weight, exp
             "hash_weight": hash_weight,
         },
     }
-    score, _ = combine_grade_components(components, grading_config)
+    score = combine_grade_components(components, grading_config).score
     assert score == pytest.approx(expected)
 
 
@@ -357,7 +392,7 @@ def test_combine_components_uses_jsonpath_when_hash_absent():
         "weights": {"state_checks": 1.0},
         "state_checks": {"jsonpath_checks": [{"path_glob": "x"}]},
     }
-    score, _ = combine_grade_components(components, grading_config)
+    score = combine_grade_components(components, grading_config).score
     assert score == 0.75
 
 
@@ -445,6 +480,24 @@ async def test_db_probe_connection_error_fails_loud(monkeypatch):
     assert "ConnectionError" in reasons
 
 
+@pytest.mark.parametrize(("hash_score", "expected"), [(1.0, (1.0, True)), (0.0, (0.0, False))])
+def test_combine_components_uses_a_lone_hash_verdict_as_state_checks(hash_score, expected):
+    """The golden-replay pack with no assertion set: the hash verdict *is* the component.
+
+    A binary verdict at ``pass_threshold: 1.0`` has to reach ``binary_pass`` unblended —
+    there is no second source to average it against and no weight to divide.
+    """
+    components = {"hash_score": hash_score, "jsonpath_score": -1.0, "transcript_score": -1.0}
+    grading_config = {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 1.0,
+        "state_checks": {"golden_actions": [{"name": "place_order"}]},
+    }
+    folded = combine_grade_components(components, grading_config)
+    assert (folded.score, folded.binary_pass) == expected
+
+
 def test_combine_components_uses_db_probe_as_state_checks():
     components = {"hash_score": -1.0, "jsonpath_score": -1.0, "db_probe_score": 1.0}
     grading_config = {
@@ -452,7 +505,8 @@ def test_combine_components_uses_db_probe_as_state_checks():
         "weights": {"state_checks": 1.0},
         "state_checks": {"db_probes": [{"name": "x"}]},
     }
-    score, binary_pass = combine_grade_components(components, grading_config)
+    folded = combine_grade_components(components, grading_config)
+    score, binary_pass = folded.score, folded.binary_pass
     assert score == 1.0
     assert binary_pass is True
 
@@ -467,6 +521,43 @@ def test_build_reasons_includes_db_probe_when_score_set():
     }
     text = build_grade_reasons(components)
     assert "DB probes: FAIL: probe 'ca_exists'" in text
+
+
+def test_build_reasons_names_an_incomplete_golden_replay_beside_the_verdict():
+    """The runner emits the shared sentence, under the prefix a downstream tool matches.
+
+    ``GOLDEN REPLAY ERRORS:`` is a contract, not phrasing: #599 names a consumer that
+    buckets trials by matching it. The verdict stays beside it — a replay that skipped an
+    action still produced a hash, and the sentence is what says not to trust it.
+    """
+    text = build_grade_reasons(
+        {"hash_score": 1.0, "hash_match": True},
+        golden_replay=GoldenReplayRecord(
+            authored=2,
+            failures=(
+                FailedGoldenAction(
+                    index=1,
+                    name="confirm_payment",
+                    kind=GoldenActionFailure.RAISED,
+                    error="TypeError: unexpected kwarg",
+                ),
+            ),
+        ),
+    )
+
+    assert "State: hash match" in text
+    assert "GOLDEN REPLAY ERRORS: 1 of 2" in text
+    assert "confirm_payment" in text
+
+
+def test_build_reasons_leaves_a_replay_that_ran_whole_unremarked():
+    text = build_grade_reasons(
+        {"hash_score": 1.0, "hash_match": True},
+        golden_replay=GoldenReplayRecord(authored=2),
+    )
+
+    assert "State: hash match" in text
+    assert "GOLDEN REPLAY ERRORS" not in text
 
 
 def test_build_reasons_includes_jsonpath_when_score_set():

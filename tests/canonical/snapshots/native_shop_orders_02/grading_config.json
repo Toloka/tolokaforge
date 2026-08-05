@@ -82,6 +82,7 @@
     "numeric_string_fields": [],
     "relaxed_validation": false
   },
+  "trace_checks": null,
   "transcript_rules": {
     "communicate_info": [
       {
@@ -101,6 +102,7 @@
       "(?i)(unable to place|cannot process|order failed|payment failed)"
     ],
     "max_turns": 14,
+    "min_assistant_turns": null,
     "must_contain": [],
     "required_actions": [
       {

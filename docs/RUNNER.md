@@ -24,6 +24,27 @@ Tolokaforge supports two queue backends:
 2. `worker`: leases attempts, executes them, and marks `completed`/`failed`/`requeued`.
 3. `status`: shows queue counts, ETA, estimated cost, and token totals from artifacts.
 
+### The pre-run gate
+
+Before a single trial is scheduled — by `run`, and by `prepare` so a distributed
+enqueue is rejected once rather than by every worker identically — the run makes one
+pass over every selected task and checks two things it must not discover later:
+
+- **The judge model.** A task grading with `llm_judge` when the run config carries no
+  `models.judge` aborts the run, naming the offending tasks.
+- **The grading block.** Each task's grading config goes through the same predicate
+  `tolokaforge validate` applies: the migration rejections the typed grading blocks
+  carry, and the authoring rules checked against the tools that task gives its actors
+  (see [GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)).
+  Every offending task is named in one abort — an author fixing a run's packs wants
+  the list, not the first entry. `evaluation.grading_validation.fail_on` names the
+  least severe class that is fatal; what the gate could not check is logged and fails
+  nothing.
+
+The pass resolves each task's wire description once and keeps it, so the trials that
+follow reuse it rather than rebuilding it. A task naming an adapter the host has not
+installed is rejected in the same pass.
+
 Queue attempt states:
 - `pending`
 - `leased`
@@ -138,17 +159,28 @@ runner also ignores, so calls are recorded without the id grading joins on.
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,
 parsed by `extra="forbid"` Pydantic models, so a field the older image does not
 declare is a validation error rather than a dropped byte — and the engine emits
-`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block. A
-newer engine against an older image is therefore rejected at `RegisterTrial` for
-every such pack, with a Pydantic `extra_forbidden` error naming the field. See
+`state_checks.hash_weight` on every pack with a non-empty `state_checks:` block,
+`transcript_rules.min_assistant_turns` on every pack with a `transcript_rules:`
+block, and the whole `trace_checks` section on **every** pack. A newer engine
+against an older image is therefore rejected at `RegisterTrial` for any pack at all,
+with a Pydantic `extra_forbidden` error naming the field. See
 [`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible) § "Runner-engine
 version lock (both directions)" for the full list of keys that bite and in which
 direction.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
-any `state_checks`-bearing pack — inside a registration failure the JSON payload will
-raise anyway.
+any pack bearing `state_checks` or `transcript_rules` — inside a registration failure
+the JSON payload will raise anyway.
+
+**The image's own dependency resolution is a second, unversioned skew, and no gate sees it.**
+The image installs the wheel with **pip**, which resolves each declared range itself rather
+than reading `uv.lock`, so a range loose enough to admit two majors gives the container a
+different library than the host venv — with no protocol version to disagree about. The failure
+lands at run time inside the container: see
+[`TROUBLESHOOTING.md`](TROUBLESHOOTING.md#every-tool-call-fails-mcp-server-closed-connection)
+§ Every Tool Call Fails. `make docker-build-core` is the fix, and an upper bound on the major
+is what keeps the resolution honest.
 
 That is what an engine upgrade needs: rebuild the image from the same tree
 (`make docker-build-core`) or pin an image tag that matches. The gate sits at

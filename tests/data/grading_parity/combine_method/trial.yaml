@@ -4,7 +4,6 @@ split_components:
       content: "Please refund my order."
     - role: assistant
       content: "Refund issued for order O1."
-  tool_calls: []
   state:
     db:
       orders:

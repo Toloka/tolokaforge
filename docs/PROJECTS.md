@@ -317,8 +317,9 @@ Fields a run config can touch:
   a nightly sweep.
 - **`evaluation`** — `projects` (optional; defaults to the
   enclosing project), `tasks_glob`, `output_dir`,
-  `cache_images`, `harness_adapter`. This section has no
-  equivalent in `run_defaults`; it's per-invocation only.
+  `cache_images`, `harness_adapter`, `grading_validation`.
+  This section has no equivalent in `run_defaults`; it's
+  per-invocation only.
 - **`engine`** — `presets_file` and other invocation-time engine
   config.
 
@@ -587,7 +588,7 @@ The complete set of files a project can ship:
 | `shared/environment.compose.yaml` | project root or task dir | Base compose file referenced by `default_environment` | Optional |
 | `shared/system_prompt.md` | project root | Default system prompt referenced by `task_defaults.system_prompt` | Optional |
 | `task.yaml` | task dir | Task spec (identity, adapter, max_turns, initial_user_message, initial_state, tools, actors, metadata, policies, grading path, system_prompt, adapter_settings, environment_manifest) | Required |
-| `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, llm_judge, custom_checks) | Required |
+| `grading.yaml` | task dir | Grading rules (combine, state_checks, transcript_rules, trace_checks, llm_judge, custom_checks) | Required |
 | `environment.compose.yaml` | task dir | Task-local compose (used when the task overrides the project default) | Optional |
 | `initial_state.json` | task dir | Task-local seed payload, or an overlay on a named project seed | Optional |
 | `shared/seeds/*` | project root | Named seed baselines declared in `project.yaml`'s `assets` registry | Optional |
@@ -1193,7 +1194,7 @@ field and vice versa.
 | `observability` (tracing, metrics, logging) | `project.run_defaults.observability` | `run_configs/<name>.yaml` |
 | `orchestrator` (repeats, max_turns cap, timeouts cap, auto_start_services, shuffle_trials; the lifecycle-axis field is settled in the M3 ADR) | `project.run_defaults.orchestrator` | `run_configs/<name>.yaml` |
 | `models` (open map; `agent`/`user`/`judge` conventional, plus one entry per model-backed actor) | `project.run_defaults.models` (optional) | `run_configs/<name>.yaml` |
-| `evaluation` (projects, tasks_glob, output_dir, cache_images, harness_adapter) | — | `run_configs/<name>.yaml` |
+| `evaluation` (projects, tasks_glob, output_dir, cache_images, harness_adapter, grading_validation) | — | `run_configs/<name>.yaml` |
 | `engine` (presets_file) | — | `run_configs/<name>.yaml` |
 
 ### Precedence — task-scoped fields

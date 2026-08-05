@@ -901,6 +901,23 @@ def _truncate_error(error_str: str, *, width: int = 60) -> str:
     return first_line[: width - 1] + "…"
 
 
+_VERDICT_LABELS: dict[bool | None, str] = {
+    True: "[success]pass[/success]",
+    False: "[error]fail[/error]",
+    None: "[warn]n/a[/warn]",
+}
+"""Left-pane verdict column for a trial in the ``completed`` state.
+
+``None`` is grading's own failure: the trial ran and was measured, and no
+verdict exists for it. It renders as neither ``pass`` nor ``fail`` because
+either would attribute our outcome to the agent.
+
+Every label is at most six characters. At an 80-column terminal the trials pane
+holds 28 columns of content, and a row with a six-character task id spends 22 of
+them before the verdict. A longer label wraps, and the continuation line carries
+no glyph, index or id — an orphaned word under the row it belongs to."""
+
+
 _TRIAL_LOG_TAIL_MAX = 20
 """Number of most-recent per-trial log records shown in the focused pane's
 log view. Kept small so the pane stays a fixed-height tail, not a scrollback."""
@@ -1617,7 +1634,9 @@ class LiveRunDisplay:
                 self._ingest_component_locked(_container_to_component(container, trial_id=trial_id))
             self._refresh_live_locked()
 
-    def trial_completed(self, *, trial_id: str, binary_pass: bool, score: float | None) -> None:
+    def trial_completed(
+        self, *, trial_id: str, binary_pass: bool | None, score: float | None
+    ) -> None:
         with self._lock:
             card = self._trials.get(trial_id) or self._lazy_card_locked(trial_id)
             was_running = card.status == "running"
@@ -2329,24 +2348,25 @@ class LiveRunDisplay:
             active_panel = self._active_panel
         index_width = max(len(str(total_trials)), 1) if total_trials else 1
         rendered: list[str] = []
-        has_markup = False
         for card in visible:
             glyph = glyphs.get(card.status, "•")
             human_index = card.total_index + 1
             prefix = f"[{human_index:>{index_width}}/{total_trials or '?'}]"
-            base = f"{glyph} {prefix} {card.task_id} · {card.trial_index}"
+            base = f"{glyph} {prefix} {_escape_markup(card.task_id)} · {card.trial_index}"
             if card.status == "failed" and card.error:
-                err = _truncate_error(card.error, width=40)
+                err = _escape_markup(_truncate_error(card.error, width=40))
                 rendered.append(f"{base}  [error]{err}[/error]")
-                has_markup = True
+            elif card.status == "completed":
+                rendered.append(f"{base}  {_VERDICT_LABELS[card.binary_pass]}")
             else:
                 rendered.append(base)
         if not rendered:
             body = Text("(no trials yet)")
-        elif has_markup:
-            body = Text.from_markup("\n".join(rendered))
         else:
-            body = Text("\n".join(rendered))
+            # Every row is markup: a task id or an error text carrying a
+            # ``[tag]``-shaped substring would otherwise be consumed as a
+            # style tag, or raise ``MarkupError`` out of the render path.
+            body = Text.from_markup("\n".join(rendered))
         border_style = "active" if active_panel is _Panel.TRIALS else "none"
         return Panel(body, title="Trials", border_style=border_style)
 
@@ -2425,9 +2445,10 @@ class LiveRunDisplay:
         if snapshot.status == "failed" and snapshot.error:
             hint = _derive_hint(snapshot.error)
             parts = [
-                f"[error]FAILED[/error]  {snapshot.task_id} · {snapshot.trial_index}",
+                f"[error]FAILED[/error]  {_escape_markup(snapshot.task_id)} · "
+                f"{snapshot.trial_index}",
                 "",
-                _truncate_error(snapshot.error, width=200),
+                _escape_markup(_truncate_error(snapshot.error, width=200)),
             ]
             if hint:
                 parts.append("")

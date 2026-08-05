@@ -3,10 +3,12 @@
 import json
 import logging
 import os
+import re
 import time
 from collections.abc import Callable, Mapping
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import click
 import yaml
@@ -26,6 +28,23 @@ from tolokaforge.core.grading.replay import (
     load_grading_override,
     run_replay_batch,
 )
+from tolokaforge.core.grading.rubric_migration import (
+    DEFAULT_PACKS_ROOT,
+    ReconcileError,
+    reconcile_corpus,
+    reconcile_root,
+)
+from tolokaforge.core.grading.trace_replay import (
+    TraceChecksOverrideError,
+    TraceReplayOutcomeStatus,
+    TraceReplayReportError,
+    build_trace_replay_report,
+    declared_trace_checks,
+    emit_trace_replay_report,
+    load_trace_checks_override,
+    run_trace_replay_batch,
+    trace_replay_root,
+)
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.llm.fallback_client import FallbackLLMClient
 from tolokaforge.core.llm.presets import (
@@ -38,9 +57,15 @@ from tolokaforge.core.logging import (
     configure_root_logging,
     silence_root_logging,
 )
-from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig
+from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig, TaskConfig
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
-from tolokaforge.core.project_loader import construct_config, load_effective_run_config
+from tolokaforge.core.project_loader import (
+    construct_config,
+    find_project_yaml,
+    load_effective_run_config,
+    load_project_config,
+    project_grading_combine,
+)
 from tolokaforge.core.resume import RunStateManager, resolve_resume_run_directory
 from tolokaforge.core.run_queue import create_run_queue
 from tolokaforge.dx._display import (
@@ -56,6 +81,11 @@ from tolokaforge.dx.banners import (
 )
 from tolokaforge.dx.dry_run_render import render_dry_run
 from tolokaforge.dx.live_panel import LiveRunDisplay
+from tolokaforge.dx.rubric_migration_render import render_reconcile_report
+from tolokaforge.dx.trace_replay_render import (
+    render_trace_replay_dispositions,
+    render_trace_replay_report,
+)
 from tolokaforge.secrets import init_default, install_global_redactor
 
 # Initialize SecretManager singleton — reads .env via DotEnvProvider, then
@@ -173,7 +203,9 @@ class _GroupedCommandsGroup(click.Group):
         "status": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
+        "reconcile": "Runs",
         "rejudge": "Runs",
+        "retrace": "Runs",
         "validate": "Tasks",
         "docker": "Docker",
         "config": "Config",
@@ -948,6 +980,210 @@ def rejudge(
         raise SystemExit(1)
 
 
+#: A replay id names one directory in the subtree its command owns under ``<source>``, so
+#: it is held to the characters a single directory name is built from. Without it ``..``
+#: walks out of the subtree the read-only guarantee is scoped to and a separator writes
+#: into a tree the operator never named.
+_REPLAY_ID_CHARACTERS = re.compile(r"[A-Za-z0-9._-]+")
+
+
+def _checked_replay_id(ctx: click.Context, param: click.Parameter, value: str | None) -> str | None:
+    """Refuse a ``--replay-id`` that is anything but one directory name."""
+    if value is None or (_REPLAY_ID_CHARACTERS.fullmatch(value) and value not in {".", ".."}):
+        return value
+    raise click.BadParameter(
+        f"{value!r} is not a directory name: a replay id may hold letters, digits, "
+        "'.', '_' and '-' only, and cannot be '.' or '..'. It names one directory in the "
+        "subtree the command owns under <source>, and a separator or '..' in it would "
+        "write outside that subtree",
+        ctx=ctx,
+        param=param,
+    )
+
+
+@cli.command(name="retrace")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
+        "task.yaml + trajectory.yaml — a trial is worth re-checking whether or not it "
+        "was graded."
+    ),
+)
+@click.option(
+    "--trial",
+    default=None,
+    type=click.Path(exists=True, file_okay=False),
+    help="Re-check a single bundle dir instead of the whole --source (default: whole source).",
+)
+@click.option(
+    "--constraints",
+    default=None,
+    type=click.Path(exists=True, dir_okay=False),
+    help=(
+        "Replace each bundle's trace_checks block with the one this file carries — a "
+        "grading document with a 'trace_checks:' key, or a bare "
+        "'constraints:'/'alternatives:' block. Replaces wholesale, never merges. "
+        "Default: the block each bundle recorded."
+    ),
+)
+@click.option(
+    "--replay-id",
+    default=None,
+    callback=_checked_replay_id,
+    help="Name for this replay's artifact subdirectory — letters, digits, '.', '_' and "
+    "'-' only (default: timestamped id).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Discover + classify + rebuild each trial's timeline and report what would "
+    "be re-checked, writing nothing.",
+)
+def retrace(
+    source: str,
+    trial: str | None,
+    constraints: str | None,
+    replay_id: str | None,
+    dry_run: bool,
+):
+    """Re-check the trace constraints of recorded trials, spending nothing.
+
+    Rebuilds each trial's timeline from its bundle and scores a trace_checks block
+    against it again — no agent, no environment, no judge, so no tokens and no
+    containers. Reports per constraint whether it separated the corpus at all, which
+    is the answer to "is this constraint worth shipping".
+
+    Exits non-zero when a bundle cannot be re-checked, when a supplied constraint
+    file fails the authoring gate, or when --source holds no bundle at all. A
+    constraint that discriminated nothing and a replay disagreeing with the recorded
+    grade are *results*: they are reported and the command exits zero. See
+    docs/TRACE_REPLAY.md.
+    """
+    source_path = Path(source)
+    replay_id = replay_id or f"retrace_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    console.print(f"[bold blue]Re-checking trace constraints under {source_path}...[/bold blue]")
+    try:
+        override = load_trace_checks_override(Path(constraints)) if constraints else None
+        outcomes = run_trace_replay_batch(
+            source_path,
+            replay_id=replay_id,
+            trial=Path(trial) if trial else None,
+            override=override,
+            dry_run=dry_run,
+        )
+    except TraceChecksOverrideError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_trace_replay_dispositions(outcomes, source=source_path, dry_run=dry_run, console=console)
+    declared = declared_trace_checks(outcomes)
+    # A dry run has to build the report to report anything and must not write it, so
+    # the writing path is the only one that emits. Both answer None on empty
+    # discovery, which is the signal below.
+    try:
+        report = (
+            build_trace_replay_report(
+                outcomes, declared=declared, source=source_path, replay_id=replay_id
+            )
+            if dry_run
+            else emit_trace_replay_report(
+                outcomes, declared=declared, source=source_path, replay_id=replay_id
+            )
+        )
+    except TraceReplayReportError as exc:
+        raise click.ClickException(str(exc)) from exc
+    if report is None:
+        raise click.ClickException(
+            f"no trial bundle under {source_path} — a selector matching nothing validates "
+            "nothing. A bundle is a directory holding task.yaml + trajectory.yaml"
+        )
+
+    render_trace_replay_report(
+        report,
+        artifacts_dir=None if dry_run else trace_replay_root(source_path, replay_id),
+        console=console,
+    )
+    if any(o.status is TraceReplayOutcomeStatus.FAILED for o in outcomes):
+        raise SystemExit(1)
+
+
+@cli.command(name="reconcile")
+@click.option(
+    "--source",
+    required=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Corpus of recorded trial bundles the migration's evidence comes from — a run dir, "
+        "a flat collection of bundle dirs, or a single bundle dir."
+    ),
+)
+@click.option(
+    "--packs",
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Directory searched recursively for the pack each bundle's task_id names; repeatable. "
+        f"A task_id resolving in none of them, or in more than one, is an error naming the id "
+        f"and the roots searched. Default: {DEFAULT_PACKS_ROOT}."
+    ),
+)
+@click.option(
+    "--replay-id",
+    default=None,
+    callback=_checked_replay_id,
+    help="Name for this reconciliation's artifact subdirectory — letters, digits, '.', '_' "
+    "and '-' only (default: timestamped id).",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Reconcile and report, writing no artifact.",
+)
+def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
+    """Check a pack's declared rubric migration against recorded judge verdicts.
+
+    For every criterion a pack's migration.yaml declares, recomputes the trace constraints
+    it names over each recorded trial and joins that verdict to the judge's own recorded
+    verdict for the criterion. Reports κ, the 2×2 contingency table and every disagreement
+    with the judge's own justification. Spends nothing — no agent, no judge, no containers —
+    and edits no pack whatever the verdict.
+
+    Exits zero only when every narrowed/retired entry reaches `no_counter_evidence`: an
+    undefined κ (`insufficient_evidence`) and a refusal both exit non-zero, as does an
+    unreadable bundle. A `candidate` entry's verdict is reported and gates nothing. See
+    docs/RUBRIC_MIGRATION.md.
+    """
+    source_path = Path(source)
+    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+
+    console.print(f"[bold blue]Reconciling declared migrations under {source_path}...[/bold blue]")
+    try:
+        report = reconcile_corpus(
+            source_path,
+            replay_id=replay_id,
+            packs=[Path(root) for root in packs] or None,
+            dry_run=dry_run,
+        )
+    except ReconcileError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_reconcile_report(
+        report,
+        artifacts_dir=None if dry_run else reconcile_root(source_path, replay_id),
+        console=console,
+    )
+    blocking = report.blocking
+    if not blocking:
+        return
+    for reason in blocking:
+        console.print(f"[error]blocks the migration[/error] {reason}")
+    raise SystemExit(1)
+
+
 @cli.command(name="prepare")
 @click.option(
     "--config", required=True, type=click.Path(exists=True), help="Path to run config YAML"
@@ -1189,6 +1425,40 @@ def _extract_log_errors(logs: list[dict]) -> list[str]:
     return errors
 
 
+def _load_task_under_its_project(
+    task_file: Path,
+) -> tuple[TaskConfig, Path, dict[str, Any] | None]:
+    """Load a task the way a run loads it — under its enclosing project's defaults.
+
+    The shared-domain merge (a ``task.yaml`` carrying a ``domain:`` ref) happens
+    inside ``load_task_yaml``, so both the flat and the shared-domain layout
+    resolve here.
+
+    Returns the task, its effective directory, and the project's
+    ``grading_defaults.combine`` layer — the third because the grading gate reads
+    the *effective* combine, and a task inheriting its weights from the project
+    declares none of its own.
+
+    ``project.default_environment`` is deliberately not layered: the orchestrator
+    forwards it so the adapter can bind it into a ``TaskDescription``'s
+    ``EnvironmentManifest``, and validation builds no ``TaskDescription``.
+    """
+    from tolokaforge.adapters._task_loader import load_task_yaml
+
+    project_yaml = find_project_yaml(task_file)
+    if project_yaml is None:
+        return (*load_task_yaml(task_file), None)
+    try:
+        project = load_project_config(project_yaml)
+    except Exception as exc:
+        raise RuntimeError(f"enclosing project {project_yaml} failed to load: {exc}") from exc
+    task_defaults = project.task_defaults.model_dump(exclude_defaults=True) or None
+    return (
+        *load_task_yaml(task_file, project_task_defaults=task_defaults),
+        project_grading_combine(task_defaults),
+    )
+
+
 @cli.command()
 @click.option("--tasks", required=True, help="Glob pattern for task files")
 def validate(tasks: str):
@@ -1197,31 +1467,59 @@ def validate(tasks: str):
 
     import glob
 
-    from tolokaforge.adapters._task_loader import load_task_yaml, validate_grading_yaml
+    from tolokaforge.adapters._task_loader import (
+        GradingSourceKind,
+        grading_source_under_adapter,
+        replay_world_under_adapter,
+        tool_inventory_under_adapter,
+        validate_grading_yaml,
+    )
+    from tolokaforge.core.grading.config_validation import AuthoringReport, CombineLayer, Skip
+    from tolokaforge.core.grading.migration_declaration import inspect_migration_declaration
 
     task_files = glob.glob(tasks, recursive=True)
+    if not task_files:
+        raise click.ClickException(
+            f"no task file matches {tasks!r} — a pattern selecting nothing validates nothing"
+        )
 
     valid = 0
     invalid = 0
 
     for task_file in task_files:
         try:
-            # load_task_yaml applies the shared-domain merge (if the task.yaml
-            # carries a ``domain:`` ref) before TaskConfig validation, so this
-            # CLI accepts both flat and shared-domain layouts.
-            task_config, task_dir = load_task_yaml(Path(task_file))
-            # Also validate the referenced grading.yaml so that schema breaks —
-            # e.g. the removed free-text ``rubric: str`` / ``output_schema`` —
-            # fail loud here with a clear migration message rather than only at
-            # run time.
-            validate_grading_yaml(task_dir / task_config.grading)
+            task_config, task_dir, project_combine = _load_task_under_its_project(Path(task_file))
+            source = grading_source_under_adapter(task_config, task_dir, task_config.adapter_type)
+            if source.kind is GradingSourceKind.WITHHELD:
+                raise ValueError(source.reason)
+            if source.path is None:
+                report = AuthoringReport().with_unchecked(Skip("grading", source.reason))
+            else:
+                # Schema breaks in the referenced grading.yaml — e.g. the removed
+                # free-text ``rubric: str`` / ``output_schema`` — fail here with a
+                # migration message rather than only at run time.
+                report = validate_grading_yaml(
+                    source.path,
+                    inventory=tool_inventory_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
+                    replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
+                    combine_layer=CombineLayer(project_combine),
+                )
+                # Only here, and deliberately not in the pre-run gate: a migration
+                # declaration cannot affect a grade, so a run must not abort on it.
+                inspect_migration_declaration(source.path)
             console.print(f"[green]✓ {task_file}[/green]")
+            for skip in report.unchecked:
+                console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")
             valid += 1
         except Exception as e:
             console.print(f"[red]✗ {task_file}: {str(e)}[/red]")
             invalid += 1
 
     console.print(f"\n[bold]Summary:[/bold] {valid} valid, {invalid} invalid")
+    if invalid:
+        raise click.ClickException(f"{invalid} of {len(task_files)} task files failed validation")
 
 
 def _collect_run_spend_and_tokens(run_dir: Path) -> tuple[float, int, int]:
