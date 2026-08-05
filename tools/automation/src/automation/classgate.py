@@ -2,156 +2,303 @@
 
 Every policy class the resolve agent writes has to be registered in a
 ``_POLICY_REGISTRIES`` slot (``tolokaforge/core/llm/presets.py``) to be referenceable
-from a preset, so the staged diff of that file is a complete, deterministic index of
-what the integration added. This gate reads it and requires two things per new class:
+from a preset, so the registry is a complete, deterministic index of what the
+integration added. This gate compares the STAGED registry against HEAD and requires
+two things per newly added binding:
 
-  1. A unit test under ``tests/unit/llm/`` mentions the class by name. ``docs/ADD_NEW_MODEL.md``
-     step 5 already mandates this ("add a unit-test fixture ... so the codec round-trip is
-     unit-testable without burning provider spend"), but nothing enforced it: the fix-loop's
-     success signal is the live reprobe, so a missing unit test was invisible.
-  2. The class is actually referenced from the overlay. An unreferenced new class is dead
-     public API - the agent solved the probe some other way and left the class behind.
+  1. A unit test under ``tests/unit/llm/`` - read from the INDEX, i.e. the tree the
+     finalize commit will actually ship - mentions the bound class by name.
+     ``docs/ADD_NEW_MODEL.md`` step 5 already mandates this ("add a unit-test fixture
+     ... so the codec round-trip is unit-testable without burning provider spend"),
+     but nothing enforced it: the fix-loop's success signal is the live reprobe, so a
+     missing unit test was invisible. The mention is name-level (word-boundary), not
+     an executed test - the reviewer still checks the test is real.
+  2. The class is actually referenced - by registry key in a VALUE position of the
+     overlay or of the staged ``model_presets.yaml``, or by class name in either. An
+     unreferenced new class is dead public API: the agent solved the probe some other
+     way and left the class behind.
 
-Why this matters beyond hygiene: a unit test is the cheapest place where a *reviewer* sees
-the class's real input/output shape. Both defects this gate targets shipped together in
-PR #846 (a new reasoning codec with no unit test, whose behaviour a shipped codec already
-covered - see ``PAYLOAD_ONLY_CAPABILITIES`` in :mod:`automation.cert`).
+Why this matters beyond hygiene: a unit test is the cheapest place where a *reviewer*
+sees the class's real input/output shape. Both defects this gate targets shipped
+together in PR #846 (a new reasoning codec with no unit test, whose behaviour a
+shipped codec already covered - see ``PAYLOAD_ONLY_CAPABILITIES`` in
+:mod:`automation.cert`).
 
-``run`` returns an exit code (1 on any violation, 0 otherwise); the pure helpers below are
-unit-tested without touching git.
+The registry comparison is an AST set-diff, not a diff-text regex: quoting style,
+trailing commas, wrapped lines, dotted values, instance bindings and factory names
+cannot hide a binding, and a moved or reordered line never reads as new. Covered
+registration shapes (module top level): a dict-literal assignment to a slot registry,
+``_SLOT["key"] = Value``, and ``_SLOT.update({...})``. This is a guard, so it FAILS
+LOUD: any git error, an unparsable staged registry, or a registry in which no
+``_POLICY_REGISTRIES`` slot can be found exits 1 (needs-human) instead of skipping.
+
+``run`` returns an exit code (1 on any violation or read failure, 0 otherwise); the
+pure helpers below are unit-tested without git, and ``run`` itself against throwaway
+git repos.
 """
 
 from __future__ import annotations
 
+import ast
 import pathlib
 import re
 import subprocess
+from typing import NamedTuple
 
 REGISTRY_FILE = "tolokaforge/core/llm/presets.py"
+PRESETS_FILE = "tolokaforge/core/data/model_presets.yaml"
 DEFAULT_TESTS_DIR = "tests/unit/llm"
 
-# One added binding line, e.g. ``+    "json_coerce": JsonCoerceResponse,``. The leading
-# ``[A-Z]`` is what separates a CLASS binding from a registry-slot line (the
-# ``_POLICY_REGISTRIES`` values are underscore-prefixed), so slot lines never register as
-# new classes. Single source of truth for the line shape - every reader below goes through
-# :func:`added_bindings`.
-_REGISTRY_BINDING = re.compile(r'^\+\s*"([A-Za-z0-9_]+)"\s*:\s*([A-Z][A-Za-z0-9_]*)\s*,')
-_DIFF_FILE_HEADER = re.compile(r"^\+\+\+ b/(.+)$")
+# The repo root anchored to THIS file (tools/automation/src/automation/classgate.py),
+# like cert._load_cert - never the caller's CWD, which silently empties every git
+# answer from a subdirectory and turns the gate into a no-op.
+REPO_ROOT = pathlib.Path(__file__).resolve().parents[4]
 
 
-def added_bindings(diff_text: str) -> list[tuple[str, str]]:
-    """``(registry_key, ClassName)`` for every binding this diff ADDS to the registry file.
+class Binding(NamedTuple):
+    """One registry entry: which slot registry, under which key, bound to what."""
 
-    Scoped to added lines inside that file's hunks, so a class merely *defined* elsewhere
-    in the diff (or a registry line that only moved) is not reported. Order is source
-    order, so failure messages read deterministically. A class bound under several keys
-    yields one pair per key.
+    registry: str
+    key: str
+    value: str
+
+
+def _expr_repr(node: ast.expr) -> str:
+    """A stable identifier rendering for a binding value.
+
+    ``Name`` -> ``Cls``; ``Attribute`` -> ``pkg.Cls``; ``Call`` -> ``Cls()`` (an
+    instance or factory binding still names what was bound); anything else falls back
+    to ``ast.dump`` so an exotic shape still produces a DISTINCT, diffable binding
+    (detected as new -> gated) rather than vanishing.
     """
-    bindings: list[tuple[str, str]] = []
-    in_registry_file = False
-    for line in diff_text.splitlines():
-        header = _DIFF_FILE_HEADER.match(line)
-        if header:
-            in_registry_file = header.group(1) == REGISTRY_FILE
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return f"{_expr_repr(node.value)}.{node.attr}"
+    if isinstance(node, ast.Call):
+        return f"{_expr_repr(node.func)}()"
+    if isinstance(node, ast.Constant):
+        return repr(node.value)
+    return ast.dump(node)
+
+
+def _key_repr(node: ast.expr) -> str:
+    """Registry keys are string constants; anything else renders via ``_expr_repr``
+    so a computed key still surfaces as a (necessarily unreferenced) new binding."""
+    if isinstance(node, ast.Constant) and isinstance(node.value, str):
+        return node.value
+    return _expr_repr(node)
+
+
+def _assign_target(node: ast.stmt) -> str | None:
+    """The single ``Name`` target of an ``Assign``/``AnnAssign``, else ``None``."""
+    if isinstance(node, ast.Assign) and len(node.targets) == 1:
+        target = node.targets[0]
+        return target.id if isinstance(target, ast.Name) else None
+    if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+        return node.target.id
+    return None
+
+
+def _dict_bindings(registry: str, node: ast.Dict) -> set[Binding]:
+    return {
+        Binding(registry, _key_repr(key), _expr_repr(value))
+        for key, value in zip(node.keys, node.values)
+        if key is not None  # a ``**spread`` entry has no literal key to gate on
+    }
+
+
+def registry_bindings(source: str) -> set[Binding]:
+    """Every registry binding in a ``presets.py`` source, as a set.
+
+    Slot registries are discovered from the ``_POLICY_REGISTRIES`` index itself (its
+    dict values name the per-slot dicts, or carry inline dicts), so a brand-new slot
+    the agent wires in is covered too. Raises on an unparsable source or when no slot
+    can be found - a guard that cannot see the registry must fail loud, never skip.
+    """
+    tree = ast.parse(source)
+    slot_vars: set[str] = set()
+    bindings: set[Binding] = set()
+    for node in tree.body:
+        if _assign_target(node) != "_POLICY_REGISTRIES":
             continue
-        if not in_registry_file:
-            continue
-        match = _REGISTRY_BINDING.match(line)
-        if match:
-            pair = (match.group(1), match.group(2))
-            if pair not in bindings:
-                bindings.append(pair)
+        index = node.value
+        if not isinstance(index, ast.Dict):
+            raise ValueError("_POLICY_REGISTRIES is not a dict literal - the gate cannot read it")
+        for key, value in zip(index.keys, index.values):
+            if isinstance(value, ast.Name):
+                slot_vars.add(value.id)
+            elif isinstance(value, ast.Dict):
+                bindings |= _dict_bindings(_key_repr(key) if key else "?", value)
+    if not slot_vars and not bindings:
+        raise ValueError(
+            f"no _POLICY_REGISTRIES slots found in {REGISTRY_FILE} - the gate cannot "
+            "see the registry"
+        )
+    for node in tree.body:
+        target = _assign_target(node)
+        if target in slot_vars and isinstance(getattr(node, "value", None), ast.Dict):
+            bindings |= _dict_bindings(target, node.value)
+        if (
+            isinstance(node, ast.Assign)
+            and len(node.targets) == 1
+            and isinstance(sub := node.targets[0], ast.Subscript)
+            and isinstance(sub.value, ast.Name)
+            and sub.value.id in slot_vars
+        ):
+            bindings.add(Binding(sub.value.id, _key_repr(sub.slice), _expr_repr(node.value)))
+        if (
+            isinstance(node, ast.Expr)
+            and isinstance(call := node.value, ast.Call)
+            and isinstance(call.func, ast.Attribute)
+            and call.func.attr == "update"
+            and isinstance(call.func.value, ast.Name)
+            and call.func.value.id in slot_vars
+            and call.args
+            and isinstance(call.args[0], ast.Dict)
+        ):
+            bindings |= _dict_bindings(call.func.value.id, call.args[0])
     return bindings
 
 
-def added_registry_classes(diff_text: str) -> list[str]:
-    """Distinct class names newly bound into a ``_POLICY_REGISTRIES`` slot by this diff."""
-    seen: list[str] = []
-    for _key, name in added_bindings(diff_text):
-        if name not in seen:
-            seen.append(name)
-    return seen
+def added_bindings(staged_source: str, head_source: str) -> list[Binding]:
+    """Bindings present in the staged registry but not in HEAD's, sorted.
 
-
-def unreferenced(classes: list[str], overlay_text: str, diff_text: str) -> list[str]:
-    """New classes named by neither the overlay nor a preset entry in the diff.
-
-    An overlay references a class through its registry KEY, not its name, so match on
-    either: the class name appearing in the diff's preset YAML hunks, or ANY of the keys
-    it was bound to appearing in the overlay (a class bound under several keys is
-    referenced if the overlay uses any one of them). Keeping this permissive is deliberate
-    - the gate is here to catch a class nobody wired up at all, not to police style.
+    A set diff, so a binding that merely moved (the agent alphabetized a dict while
+    inserting its entry) is not reported - only genuinely new (registry, key, value)
+    triples are.
     """
-    keys_by_class = _registry_keys(diff_text)
-    return [
+    return sorted(registry_bindings(staged_source) - registry_bindings(head_source))
+
+
+def bound_name(value_repr: str) -> str:
+    """``codecs.BrandNewCodec()`` -> ``BrandNewCodec``: the identifier a test must name."""
+    return value_repr.removesuffix("()").rsplit(".", 1)[-1]
+
+
+def untested(names: list[str], test_blob: str) -> list[str]:
+    """Names no unit-test source mentions as a whole word.
+
+    Word-boundary, not substring: an existing mention of ``MinimaxM3TagRecoveryResponse``
+    must not vouch for a new ``TagRecoveryResponse``.
+    """
+    return [name for name in names if not re.search(rf"\b{re.escape(name)}\b", test_blob)]
+
+
+def _key_referenced(key: str, text: str) -> bool:
+    """A registry key counts as referenced only in a YAML VALUE position
+    (``slot: key`` / ``slot: "key"``), not as a raw substring - a short family key
+    like ``qwen`` must not be satisfied by a ``match:`` glob that merely contains it."""
+    return re.search(rf""":\s*['"]?{re.escape(key)}\b""", text) is not None
+
+
+def unreferenced(bindings: list[Binding], overlay_text: str, presets_text: str) -> list[str]:
+    """Bound names that neither the overlay nor the staged preset file references.
+
+    A reference is any of that name's registry keys in a value position, or the name
+    itself as a whole word, in either source. Keeping this permissive is deliberate -
+    the gate catches a class nobody wired up at all, not style.
+    """
+    keys_by_name: dict[str, set[str]] = {}
+    for binding in bindings:
+        keys_by_name.setdefault(bound_name(binding.value), set()).add(binding.key)
+    combined = (overlay_text, presets_text)
+    return sorted(
         name
-        for name in classes
-        if name not in overlay_text
-        and not any(key in overlay_text for key in keys_by_class.get(name, ()))
-    ]
-
-
-def _registry_keys(diff_text: str) -> dict[str, tuple[str, ...]]:
-    """``{ClassName: (registry_key, ...)}`` for bindings added in the registry file."""
-    keys: dict[str, tuple[str, ...]] = {}
-    for key, name in added_bindings(diff_text):
-        keys[name] = (*keys.get(name, ()), key)
-    return keys
-
-
-def untested(classes: list[str], test_blob: str) -> list[str]:
-    """New classes no unit-test source mentions by name."""
-    return [name for name in classes if name not in test_blob]
-
-
-def read_tests(tests_dir: str = DEFAULT_TESTS_DIR) -> str:
-    """Concatenate every unit-test source under ``tests_dir`` (missing dir -> empty)."""
-    root = pathlib.Path(tests_dir)
-    if not root.is_dir():
-        return ""
-    return "\n".join(path.read_text(errors="replace") for path in sorted(root.rglob("test_*.py")))
-
-
-def _staged_diff() -> str:
-    proc = subprocess.run(
-        ["git", "diff", "--cached", "--unified=0", "--", REGISTRY_FILE],
-        capture_output=True,
-        text=True,
-        check=False,
+        for name, keys in keys_by_name.items()
+        if not any(_key_referenced(key, text) for key in keys for text in combined)
+        and not any(re.search(rf"\b{re.escape(name)}\b", text) for text in combined)
     )
+
+
+def _git(args: list[str], root: pathlib.Path) -> str:
+    """Run git anchored at ``root``; any failure raises with git's own stderr.
+
+    A guard must fail loud: swallowing a nonzero exit here is how "not a git repo"
+    or a wrong CWD used to read as "no new policy class registered".
+    """
+    proc = subprocess.run(["git", *args], capture_output=True, text=True, cwd=root, check=False)
+    if proc.returncode != 0:
+        raise RuntimeError(
+            f"git {' '.join(args)} failed (rc={proc.returncode}): {proc.stderr.strip()}"
+        )
     return proc.stdout
 
 
-def run(overlay_path: str | None = None, tests_dir: str = DEFAULT_TESTS_DIR) -> int:
-    """Gate the STAGED diff. Returns 1 on any violation (finalize routes that to
-    needs-human), 0 otherwise. No new class -> nothing to check -> 0."""
-    diff_text = _staged_diff()
-    classes = added_registry_classes(diff_text)
-    if not classes:
-        print("classgate: OK (no new policy class registered)")
-        return 0
+def _git_optional(args: list[str], root: pathlib.Path) -> str:
+    """Like ``_git`` but a path absent from the requested tree reads as empty - used
+    only for reference SOURCES (a missing preset file just means no reference can
+    come from it), never for the registry the gate exists to judge."""
+    try:
+        return _git(args, root)
+    except RuntimeError as exc:
+        message = str(exc)
+        if "does not exist" in message or "but not in" in message:
+            return ""
+        raise
+
+
+def read_index_tests(root: pathlib.Path, tests_dir: str = DEFAULT_TESTS_DIR) -> str:
+    """Concatenate every ``test_*.py`` under ``tests_dir`` as staged in the INDEX.
+
+    The index is the tree the finalize commit ships. A worktree-only test file (never
+    ``git add``-ed) deliberately does not count: it would satisfy the gate and then
+    vanish from the commit - the exact false assurance this gate exists to prevent.
+    """
+    listed = _git(["ls-files", "--cached", "--", tests_dir], root)
+    sources = []
+    for path in sorted(line for line in listed.splitlines() if line):
+        name = pathlib.PurePosixPath(path).name
+        if name.startswith("test_") and name.endswith(".py"):
+            sources.append(_git(["show", f":{path}"], root))
+    return "\n".join(sources)
+
+
+def run(
+    overlay_path: str | None = None,
+    tests_dir: str = DEFAULT_TESTS_DIR,
+    root: str | None = None,
+) -> int:
+    """Gate the STAGED registry against HEAD. Returns 1 on any violation or read
+    failure (finalize routes both to needs-human), 0 otherwise. No new binding ->
+    nothing to check -> 0."""
+    repo = pathlib.Path(root).resolve() if root else REPO_ROOT
+    try:
+        staged = _git(["show", f":{REGISTRY_FILE}"], repo)
+        head = _git(["show", f"HEAD:{REGISTRY_FILE}"], repo)
+        added = added_bindings(staged, head)
+        if not added:
+            print("classgate: OK (no new policy class registered)")
+            return 0
+        test_blob = read_index_tests(repo, tests_dir)
+        presets_text = _git_optional(["show", f":{PRESETS_FILE}"], repo)
+    except Exception as exc:  # fail loud - a guard must never silently pass
+        print(f"::error::classgate could not read the staged tree: {exc}")
+        return 1
 
     overlay_text = ""
     if overlay_path and pathlib.Path(overlay_path).is_file():
         overlay_text = pathlib.Path(overlay_path).read_text(errors="replace")
 
+    names = sorted({bound_name(binding.value) for binding in added})
     violations = [
-        f"UNTESTED-CLASS: `{name}` is registered in {REGISTRY_FILE} but no unit test under "
-        f"{tests_dir}/ mentions it. docs/ADD_NEW_MODEL.md step 5 requires a unit test (with a "
-        "captured real-response fixture) for a new policy class - the live reprobe does not "
-        "substitute for one."
-        for name in untested(classes, read_tests(tests_dir))
+        f"UNTESTED-CLASS: `{name}` is registered in {REGISTRY_FILE} but no STAGED unit test "
+        f"under {tests_dir}/ mentions it. docs/ADD_NEW_MODEL.md step 5 requires a unit test "
+        "(prefer a captured real-response fixture) for a new policy class - the live reprobe "
+        "does not substitute for one, and a test left unstaged would not ship."
+        for name in untested(names, test_blob)
     ]
     violations += [
         f"UNREFERENCED-CLASS: `{name}` is registered in {REGISTRY_FILE} but neither the "
-        "overlay nor a preset entry references it - dead public API. Wire it up or drop it."
-        for name in unreferenced(classes, overlay_text, diff_text)
+        f"overlay nor the staged {PRESETS_FILE} references it (by key in a value position, "
+        "or by name) - dead public API. Wire it up or drop it."
+        for name in unreferenced(added, overlay_text, presets_text)
     ]
 
     for violation in violations:
         print(f"::error::classgate: {violation}")
     if violations:
-        print(f"classgate: FAIL ({len(violations)} violation(s) over {len(classes)} new class(es))")
+        print(f"classgate: FAIL ({len(violations)} violation(s) over {len(names)} new class(es))")
         return 1
-    print(f"classgate: OK ({len(classes)} new class(es) tested and referenced)")
+    print(f"classgate: OK ({len(names)} new class(es) tested and referenced)")
     return 0
