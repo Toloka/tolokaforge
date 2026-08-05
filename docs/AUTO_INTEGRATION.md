@@ -106,8 +106,21 @@ bundle uploads separately, before the gate, as `integration-observation-pr<N>`).
   round-trips against the tool's Pydantic schema (`test_policy_array_recovery`). The cert itself is
   reconciled against the observe baseline (`automation reconcile-cert`, run before the stash so
   `findings.json` is still present): every probed capability must be declared (no silent auto-skip),
-  and no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
-  free-form cert's under-declaration and false-pessimism.
+  no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
+  free-form cert's under-declaration and false-pessimism - and a PAYLOAD-ONLY capability
+  (`thinking_replay_roundtrip` / `unsigned_thinking_replay`, whose probes mock the provider turn
+  and assert only our own outgoing payload) may be `required` only on a MEASURED passing native
+  baseline: promotion off a failing or absent baseline is SELF-REFERENTIAL and hard-fails, and any
+  other `required` with no probe result warns as UNBACKED. A newly registered policy class must
+  additionally be wired and covered (`automation check-new-classes`, an AST set-diff of the STAGED
+  `presets.py` registry against HEAD): referenced from the overlay or the staged
+  `model_presets.yaml` (by key in a value position, or by name), and mentioned by a unit test under
+  `tests/unit/llm/` as staged in the INDEX - the finalize commit stages that directory, so the
+  test the gate credits is the test that ships. Before any of these gates run, the workflow
+  re-pins `tools/automation/` to HEAD and requires `observation/findings.json` to hash-match the
+  value captured at aggregation time - the resolve/finalize agents run earlier, with Bash, in the
+  same workspace, and must not be able to weaken the gates or the evidence without it showing in
+  the PR diff.
   Only then does it commit to the PR branch, comment the record, and label
   `automation:integrate-done`. A broken / over-reaching / divergent fix (or a cert that does not
   reconcile) fails verification here and goes to `automation:integrate-needs-human`. Never
@@ -387,9 +400,17 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   auto-merge price gate.
 - `automation reconcile-cert` - reconciles the finalized cert against the observe
   `findings.json`: fails if any probed capability is undeclared, if a capability the baseline shows
-  passing (>= 0.9) is marked `known_unsupported`, or if any CORE capability (e.g.
-  `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap). Runs in the finalize gate
+  passing (>= 0.9) is marked `known_unsupported`, if any CORE capability (e.g.
+  `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap), or if a PAYLOAD-ONLY
+  capability is `required` against a failing or absent native baseline (SELF-REFERENTIAL); any
+  other `required` with no probe result warns as UNBACKED. Runs in the finalize gate
   before the stash.
+- `automation check-new-classes` - finalize gate for newly registered policy classes: an AST
+  set-diff of the STAGED `presets.py` registry against HEAD (so quoting, wrapping, moves and
+  binding style cannot hide or fake an addition), requiring each new binding's class to be
+  mentioned by a unit test under `tests/unit/llm/` as staged in the INDEX and referenced from the
+  overlay or the staged `model_presets.yaml`. Fails loud on any git/parse error - a guard that
+  cannot see the registry must not skip.
 - `automation slack` - Slack thread notifier (`ensure-root` / `reply` / `post-thread`
   subcommands); dry-run no-op without a token. See "Slack notifications" above. `post-thread`
   posts a plain threaded reply under an arbitrary message ts (the poller's per-request
