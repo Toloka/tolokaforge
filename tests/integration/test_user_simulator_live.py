@@ -1,14 +1,17 @@
 """Live regression test: the user simulator must not restart the conversation.
 
-Reproduces the failure shape behind the seeded-opening fix against a real
+Exercises the failure shape behind the seeded-opening fix against a real
 user-model. The reproducing recipe is generic: a backstory that quotes the
 exact opening line and instructs the simulator to open with it exactly once,
 plus a shared transcript in which the agent has already fully answered that
-opening. With the pre-fix context construction (the simulator's own opening
-trimmed from its flipped view), the model re-sent the scripted opening
-verbatim, restarting the conversation. The context-construction fix is locked
-deterministically by ``tests/unit/test_user_simulator_context.py``; this test
-pins the behavioural consequence with a real model. See tests/README.md
+opening. When the simulator's own opening is missing from its flipped view,
+the model re-sends the scripted opening, restarting the conversation
+(pre-fix reproduction evidence — a character-for-character re-send — is in
+PR #905). What this test pins: the reply neither re-sends the opening nor
+re-introduces the customer as if unanswered. A paraphrased re-ask that skips
+the self-introduction is out of its reach — that judgement needs a grader,
+not a substring. The context-construction lock itself is deterministic in
+``tests/unit/test_user_simulator_context.py``; see tests/README.md
 § "Live user-simulator no-restart regression" for the cost note and why the
 deterministic lock alone is not considered sufficient.
 
@@ -105,12 +108,13 @@ def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator
     reply = result.text.strip()
 
     assert reply, "simulator returned an empty reply"
-    # The bug's signature was the scripted opening re-sent as if unanswered.
+    # The bug's signature: the scripted opening re-sent as if unanswered.
     # A restart — verbatim or lightly paraphrased — re-introduces the caller
-    # and re-states the request; an acknowledgement does neither.
-    assert (
-        "wanted to check whether" not in reply
-    ), f"simulator restarted the conversation: {reply!r}"
-    assert not reply.startswith(
-        "Hi, this is Alex Quill"
-    ), f"simulator restarted the conversation: {reply!r}"
+    # (name, customer number) or re-states the request line; an
+    # acknowledgement or a short confirming follow-up does neither.
+    restarted = (
+        "wanted to check whether" in reply
+        or reply.startswith("Hi, this is Alex Quill")
+        or "55001234" in reply
+    )
+    assert not restarted, f"simulator restarted the conversation: {reply!r}"

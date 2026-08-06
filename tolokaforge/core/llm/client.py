@@ -2280,7 +2280,7 @@ Rules:
         sim_context: list[Message] = []
         flip = {MessageRole.USER: MessageRole.ASSISTANT, MessageRole.ASSISTANT: MessageRole.USER}
         for msg in context:
-            if not (msg.content and msg.content.strip()):
+            if not msg.content.strip():
                 continue
             role = flip.get(msg.role)
             if role is None:

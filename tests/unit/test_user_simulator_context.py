@@ -7,10 +7,10 @@ turns. Four invariants locked here:
 
 1. The trial's seeded opening (a USER message at index 0, which flips to
    ``assistant``) is *preserved* behind a synthetic agent-side greeting —
-   not trimmed. Trimming it made the simulator believe it never asked, so
-   on its first live turn it restarted the conversation verbatim after the
-   agent had already answered (observed in production runs: duplicate
-   side effects, ``state_checks`` fail).
+   not trimmed. Trimming it makes the simulator believe it never asked:
+   on its first live turn it restarts the conversation verbatim after the
+   agent has already answered (duplicate side effects, ``state_checks``
+   fail).
 2. Agent tool-call turns with no dialogue text are skipped instead of
    replaying as empty ``user`` turns, and adjacent same-role turns are
    coalesced so the request alternates strictly.

@@ -388,17 +388,19 @@ turns carrying no dialogue text (agent tool-call turns, whitespace-only
 replies), and coalesces adjacent same-role turns so the request
 alternates strictly. Two invariants hold on the request it sends:
 
-1. **It leads with a user-role turn.** When the trial's opening was
-   caller-seeded, the flipped context starts with the simulator's own
-   opening (`assistant` after the flip), so the synthetic agent greeting
-   `SIMULATOR_GREETING` is prepended — the same greeting the runner
-   dispatches when the simulator bootstraps turn 0. The simulator's own
-   opening is always preserved: trimming it makes the model believe it
-   never asked and restart the conversation after the agent has answered.
+1. **It leads with a user-role turn.** Whenever the flipped context starts
+   assistant-side (the simulator's own opening comes first — caller-seeded
+   or simulator-bootstrapped), the agent greeting `SIMULATOR_GREETING` is
+   prepended: for a bootstrapped opening this replays the greeting the
+   runner actually dispatched at turn 0; for a caller-seeded opening it is
+   synthetic. The simulator's own opening is always preserved: trimming it
+   makes the model believe it never asked and restart the conversation
+   after the agent has answered.
 2. **It ends on a user-role turn the simulator can answer.** A transcript
-   whose last agent turn carries no dialogue text is unanswerable — a
-   trailing assistant-role message is a prefill the provider would
-   continue — so `reply()` raises `RuntimeError` and the trial ends
+   whose last agent turn carries no dialogue text — or that carries no
+   dialogue text at all — is unanswerable: a trailing assistant-role
+   message is a prefill the provider would continue, and an empty request
+   cannot be dispatched. `reply()` raises `RuntimeError` and the trial ends
    `status=error` / `termination_reason=error` instead of silently
    improvising.
 

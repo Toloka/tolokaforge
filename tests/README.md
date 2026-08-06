@@ -81,9 +81,10 @@ it) reproducing the seeded-opening restart shape: a backstory quoting the exact
 opening line plus a transcript where the agent has already answered it. The
 deterministic context-shape lock lives in
 `tests/unit/test_user_simulator_context.py`; this live test exists because the
-failure was a *model behaviour* triggered by context shape — the unit test pins
-what the model is shown, this one pins that a real model shown it does not
-restart. Costs one Sonnet call per integration run.
+failure mode is a *model behaviour* triggered by context shape — the unit test
+pins what the model is shown, this one pins that a real model shown it neither
+re-sends the opening nor re-introduces the customer. Costs one Sonnet call per
+integration run.
 
 ## Directory Structure
 
