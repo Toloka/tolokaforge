@@ -28,9 +28,9 @@ Fifteen claims over the packs an author reads as the reference:
    ``examples/`` and ``tests/data/tasks/`` is checked against its own task's tool
    inventory *and* its own effective combine, and produces no error, no advisory and
    nothing unchecked — the measured proof that the gate ships green rather than the
-   claim that it does. The rules that read the block alone are held over the wider
-   93-pack walk too, so a pack outside the two task roots cannot declare a section
-   that asserts nothing.
+   claim that it does. The rules a ``task.yaml`` holder can run without a tool set
+   are held over the wider 93-pack walk too, so a pack outside the two task roots
+   cannot declare a section that asserts nothing.
 6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
    passed by mutating.** Either comparison its rubric reference names scores in full
    and records itself as the winner; completing neither scores below completing
@@ -104,6 +104,7 @@ from tests.utils.timelines import Turn, build_turn_timeline
 from tests.utils.trace_overrides import override_file
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
+    hash_source_layer_under_adapter,
     load_task_yaml,
     replay_world_under_adapter,
 )
@@ -111,6 +112,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
+    HashSourceLayer,
     ReplayWorld,
     ToolInventory,
     inspect_grading_authoring,
@@ -496,6 +498,7 @@ def _gate_reports(
     grading: Mapping[str, Any],
     inventory: ToolInventory,
     world: ReplayWorld,
+    hash_sources: HashSourceLayer,
 ) -> tuple[AuthoringReport, AuthoringReport]:
     """A pack's own gate report, and the same pack's under one weight naming nothing.
 
@@ -505,9 +508,11 @@ def _gate_reports(
     gating a whole pack owes that — so a clean sweep would still read clean with those
     two rules never run. The probed report is empty in exactly that case.
 
-    The replay world is the pack's own too, resolved the way the gate's callers resolve
-    it: an unresolvable one would report a skip for every pack replaying golden actions
-    and the ``unchecked`` assertion below would stop saying which rules were skipped.
+    The replay world and the hash layer are the pack's own too, resolved the way the
+    gate's callers resolve each: an unresolvable world would report a skip for every
+    pack replaying golden actions, an unresolvable layer one for every hash block whose
+    flag and source disagree, and the ``unchecked`` assertion below would stop saying
+    which rules were skipped either way.
     """
     combine = _effective_combine(task_yaml, grading)
     probed = combine.model_copy(
@@ -515,9 +520,19 @@ def _gate_reports(
     )
     return (
         inspect_grading_authoring(
-            grading, inventory, replay_world=world, effective_combine=combine
+            grading,
+            inventory,
+            replay_world=world,
+            hash_sources=hash_sources,
+            effective_combine=combine,
         ),
-        inspect_grading_authoring(grading, inventory, replay_world=world, effective_combine=probed),
+        inspect_grading_authoring(
+            grading,
+            inventory,
+            replay_world=world,
+            hash_sources=hash_sources,
+            effective_combine=probed,
+        ),
     )
 
 
@@ -554,7 +569,11 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
             without_an_inventory.append(task.task_id)
             continue
         report, probed = _gate_reports(
-            task_yaml, grading, inventory, replay_world_under_adapter(task, task.adapter_type)
+            task_yaml,
+            grading,
+            inventory,
+            replay_world_under_adapter(task, task.adapter_type),
+            hash_source_layer_under_adapter(task.adapter_type),
         )
         reported = [
             f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
@@ -601,16 +620,17 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
     :func:`_gated_packs`, so without this the rule's corpus proof stops at the packs
     that happen to live under the two task roots. The inventory is deliberately
     unresolvable: the rules that need a tool set are the gate guard's business above,
-    and what is wanted here is every rule that reads the block alone, over the widest
-    walk in the file.
+    and what is wanted here is every rule a caller holding a ``task.yaml`` can run
+    without one, over the widest walk in the file.
 
     The ``unchecked`` assertion is what stops that from reading as a clean bill of
     health. Every pack reports exactly the one tool-set skip; a rule moved behind
     ``inventory.known`` would show up here as a second skip rather than as a silent
-    loss of coverage. Each pack's real replay world is passed for that assertion's sake:
-    it is the one input besides the block that a caller holding a ``task.yaml`` always
-    has, so leaving it unresolvable would add a second skip to the four packs that
-    replay golden actions and say nothing about any rule.
+    loss of coverage. Each pack's real replay world and real hash layer are passed for
+    that assertion's sake: both are resolved off the ``task.yaml`` every caller here
+    holds, so leaving either unresolvable would add a second skip — to the four packs
+    that replay golden actions, or to any pack whose hash flag and source disagree —
+    and say nothing about any rule.
     """
     findings: dict[str, list[str]] = {}
     unchecked: dict[str, list[str]] = {}
@@ -624,6 +644,7 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
             grading,
             ToolInventory.unresolvable(),
             replay_world=replay_world_under_adapter(task, task.adapter_type),
+            hash_sources=hash_source_layer_under_adapter(task.adapter_type),
         )
         pack = str(task_yaml.relative_to(_REPO))
         if report.errors or report.advisories:

@@ -62,7 +62,7 @@ from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
 )
-from tolokaforge.core.grading.config_validation import ToolInventory
+from tolokaforge.core.grading.config_validation import HashSourceLayer, ToolInventory
 from tolokaforge.core.models import (
     GradingCombineConfig,
     GradingConfig,
@@ -509,7 +509,7 @@ def test_validate_rejects_a_hash_the_flag_stops_anything_from_reading(
 
     grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
     with pytest.raises(ValueError, match="the comparison never runs"):
-        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED, hash_sources=HashSourceLayer())
 
 
 def test_validate_rejects_a_flag_with_nothing_to_compare_against(tmp_path: Path):
@@ -528,7 +528,78 @@ def test_validate_rejects_a_flag_with_nothing_to_compare_against(tmp_path: Path)
 
     grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
     with pytest.raises(ValueError, match="declares no expected_state_hash or golden_actions"):
-        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+        validate_grading_yaml(grading, inventory=_UNRESOLVED, hash_sources=HashSourceLayer())
+
+
+def test_validate_passes_an_external_adapters_sourceless_hash_and_reports_it(tmp_path: Path):
+    """The shape #911 was filed for, at the surface a pack's author runs.
+
+    The frozen-core adapters compute the hash source from fixtures the authored block
+    never names, so their packs write ``hash: {enabled: true, weight: 1.0}`` and
+    nothing else. Whether that grades is the adapter's to answer, so validate prints
+    the shape beside the task as unchecked rather than refusing the file — the native
+    reading's refusal rejected every frozen pack at v0.15.0.
+    """
+    task_dir = tmp_path / "frozen_hash"
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        _TASK_YAML.replace(
+            "task_id: rubric_migration_probe",
+            "task_id: frozen_hash_probe\nadapter_type: tlk_mcp_core",
+        )
+    )
+    (task_dir / "grading.yaml").write_text(textwrap.dedent("""
+        combine:
+          method: weighted
+          weights:
+            state_checks: 1.0
+        state_checks:
+          hash:
+            enabled: true
+            weight: 1.0
+        """).strip())
+
+    result = CliRunner(mix_stderr=False).invoke(
+        cli, ["validate", "--tasks", str(task_dir / "task.yaml")]
+    )
+
+    out = result.stderr
+    assert "1 valid, 0 invalid" in out
+    assert "state_checks.hash.enabled not checked" in out
+    assert "an external adapter may compute the source" in out
+    assert result.exit_code == 0
+
+
+def test_validate_refuses_a_native_packs_sourceless_hash_through_the_resolver(tmp_path: Path):
+    """The native mirror of the pass above, through the same layer resolver.
+
+    The direct ``validate_grading_yaml`` locks above hand the rule the resolved layer
+    themselves, so none of them notices ``hash_source_layer_under_adapter`` ceasing to
+    resolve ``native`` — a helper returning unresolvable for every adapter type keeps
+    them green while both gates quietly stop refusing anything. This test dies with
+    that mutation: the pack declares no ``adapter_type``, so the CLI resolves the
+    layer off the native default and the refusal must survive end to end.
+    """
+    task_file = _write_task(
+        tmp_path / "native_hash",
+        """
+        combine:
+          method: weighted
+          weights:
+            state_checks: 1.0
+        state_checks:
+          hash:
+            enabled: true
+            weight: 1.0
+        """,
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(cli, ["validate", "--tasks", str(task_file)])
+
+    out = result.stderr
+    assert "0 valid, 1 invalid" in out
+    assert "declares no expected_state_hash or golden_actions" in out
+    assert result.exit_code != 0
 
 
 @pytest.mark.parametrize("weight", [2.0, -0.1])

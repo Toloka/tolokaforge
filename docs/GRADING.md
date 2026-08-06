@@ -196,12 +196,17 @@ authorable source shapes, and for the two the authoring gate refuses:
   runner falls back on refusal semantics and compares the trial against the
   **initial** state where core compares it against the author's literal.
 - **`hash.enabled` with no declared source** — not proven, and **refused at the
-  authoring gate** for that reason. Core produces **no** verdict (below), while the
-  runner runs hash grading anyway for the refusal shape and produces a real binary
-  one. Measured, on a pack with live assertions scoring `0.5` at `weight: 0.6`: core's
-  component is `0.5` on both hash outcomes, the runner's is `0.8` on a match and `0.2`
-  on a divergence. What remains reachable is a directly built config and a bundle
-  recorded before the rule.
+  authoring gate** for that reason where the task declares `adapter_type: native`.
+  Core produces **no** verdict (below), while the runner runs hash grading anyway for
+  the refusal shape and produces a real binary one. Measured, on a pack with live
+  assertions scoring `0.5` at `weight: 0.6`: core's component is `0.5` on both hash
+  outcomes, the runner's is `0.8` on a match and `0.2` on a divergence. What remains
+  reachable is a directly built config, a bundle recorded before the rule, and — by
+  design — every pack another `adapter_type` grades, which the gate reports unchecked
+  instead: such an adapter may compute the source itself, the way the frozen-core
+  family replays a golden-actions fixture the authored block never names, so whether
+  either substrate reading measured here is the one that pack takes is not settled
+  here — which is why the gate reports rather than refuses.
 - **`golden_actions` with no world to replay them in** — not proven, and **refused at
   the authoring gate** for the same reason. Core raises `UnbuildableGoldenReplayWorld`
   and the trial is left unscored (below), while the runner has nothing to lack: its
@@ -974,7 +979,11 @@ a real number in that range — a bool, a numeric string — is rejected on **bo
 substrates rather than coerced into one.
 
 **The flag and a source are declared together, or neither is.** Both halves are
-rejected at load:
+rejected at load where the task declares `adapter_type: native`; under any other
+`adapter_type` the same shapes are reported unchecked at the same address instead,
+because an external adapter may supply the source the authored block never names —
+see the unchecked row in
+[What is validated before a run](#what-is-validated-before-a-run):
 
 - **Either source under a falsy `enabled`** is a comparison that never runs. Both
   substrates test the flag before reading any source, so the pack grades its state
@@ -2376,8 +2385,9 @@ Findings come in three classes:
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
-| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
+| either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — where the task's declared `adapter_type` is `native` | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
+| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions`, where the task's declared `adapter_type` is `native` | error | `state_checks.hash.enabled` |
+| either flag/source mismatch above, where the task declares any other `adapter_type` — an external adapter may compute the source it compares against from its own fixtures, the way the frozen-core family replays a golden-actions fixture the block never names | unchecked | the address the error would have carried |
 | a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
@@ -2405,8 +2415,10 @@ false-reject mode. It is surfaced beside the task all the same — `validate` pr
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, a property
-whose schema writes no `type`, a replay world no caller resolved, and a task naming no
-grading source under an adapter that resolves its own all land here.
+whose schema writes no `type`, a replay world no caller resolved, a hash block whose
+flag and source disagree under an external adapter that may supply the source itself,
+and a task naming no grading source under an adapter that resolves its own all land
+here.
 
 **A missing grading source is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter

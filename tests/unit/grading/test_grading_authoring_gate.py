@@ -47,6 +47,7 @@ from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
     CombineLayer,
     Finding,
+    HashSourceLayer,
     ReplayWorld,
     ToolInventory,
     inspect_grading_authoring,
@@ -182,6 +183,14 @@ _NO_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_ser
 _AN_INLINE_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.INLINE, mcp_server=True)
 _A_TASK_SUPPLYING_NEITHER = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=False)
 
+# The two answers a caller can give the hash-source rule. The resolved layer is what both
+# pack gates report for a native task — the authored block is the only place a source can
+# come from — and what every row here means by grading natively. The unresolvable one is
+# the answer for a task an external adapter grades, whose source may live in fixtures the
+# block never names.
+_THE_BLOCK_IS_THE_WHOLE_LAYER = HashSourceLayer()
+_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE = HashSourceLayer.unresolvable()
+
 
 def _quotes(operator: str, name: str) -> dict[str, Any]:
     """A ``present`` over an assistant message whose text reads the bound *name*."""
@@ -197,7 +206,9 @@ class _Rule:
     matcher, and a weight finding beside one would report two defects for one typo.
     ``world`` reads the same way: unresolvable leaves the replay-world rule reporting
     nothing in either finding channel, so only the row that is about the world says
-    what the task supplies.
+    what the task supplies. ``hash_sources`` defaults to the native reading — the
+    authored block is the whole layer — so only the rows about the layer say who else
+    may supply the source.
     """
 
     label: str
@@ -208,6 +219,7 @@ class _Rule:
     message: str
     combine: GradingCombineConfig | None = None
     world: ReplayWorld = ReplayWorld.unresolvable()
+    hash_sources: HashSourceLayer = _THE_BLOCK_IS_THE_WHOLE_LAYER
 
 
 _RULES: tuple[_Rule, ...] = (
@@ -298,6 +310,24 @@ _RULES: tuple[_Rule, ...] = (
         checker="_check_hash_source_declared",
         channel="errors",
         message="Declare expected_state_hash or golden_actions",
+    ),
+    _Rule(
+        label="enabled_hash_whose_source_an_adapter_may_supply",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="unchecked",
+        message="an external adapter may compute the source",
+        hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+    ),
+    _Rule(
+        label="hash_source_without_the_flag_under_an_unresolved_layer",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}}},
+        checker="_check_hash_source_declared",
+        channel="unchecked",
+        message="an external adapter may compute the source",
+        hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
     ),
     _Rule(
         label="probes_beside_a_source_that_scores_the_same_component",
@@ -418,6 +448,7 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
         _inventory(rule.task),
         effective_combine=rule.combine,
         replay_world=rule.world,
+        hash_sources=rule.hash_sources,
     )
 
     reported = _texts(report, rule.channel)
@@ -461,6 +492,7 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
             _inventory(rule.task),
             effective_combine=rule.combine,
             replay_world=rule.world,
+            hash_sources=rule.hash_sources,
         )
 
     assert answered == declared
@@ -665,7 +697,9 @@ def test_an_unresolvable_inventory_still_runs_the_rules_that_need_no_tools(
 
     with pytest.raises(ValueError) as excinfo:
         validate_grading_yaml(
-            _write_grading(tmp_path, grading), inventory=ToolInventory.unresolvable()
+            _write_grading(tmp_path, grading),
+            inventory=ToolInventory.unresolvable(),
+            hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
         )
 
     message = str(excinfo.value)
@@ -847,7 +881,9 @@ def test_a_truthy_hash_flag_with_no_source_is_refused(enabled: Any) -> None:
     """
     grading = {"state_checks": {"hash": {"enabled": enabled}}}
 
-    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER
+    )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
 
@@ -864,7 +900,9 @@ def test_an_enabled_hash_beside_an_empty_jsonpath_list_is_refused() -> None:
     """
     grading = {"state_checks": {"hash": {"enabled": True}, "jsonpaths": []}}
 
-    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER
+    )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
 
@@ -879,9 +917,49 @@ def test_an_empty_golden_action_list_is_not_a_hash_source() -> None:
     """
     grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": []}}}
 
-    report = inspect_grading_authoring(grading, _inventory(_HELPDESK))
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER
+    )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+
+
+def test_the_frozen_adapter_convention_is_unchecked_rather_than_refused() -> None:
+    """The shape #911 was filed for: hash on, nothing declared, the adapter supplies it.
+
+    ``enabled: true`` beside only a ``weight`` is the frozen-core adapters' own
+    convention — the source lives in a golden-actions fixture the block never names —
+    so under a layer no caller resolved, the rule reports the shape it cannot check
+    instead of refusing packs that grade fine. The skip is addressed where the native
+    refusal would have been, so an author reading either finds the same key.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "weight": 1.0}}}
+
+    report = inspect_grading_authoring(
+        grading, ToolInventory.unresolvable(), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
+    )
+
+    assert report.errors == ()
+    assert report.advisories == ()
+    assert [skip.where for skip in report.unchecked if skip.where != "grading"] == [
+        "state_checks.hash.enabled"
+    ]
+
+
+def test_a_block_the_hash_rule_accepts_reports_nothing_on_an_unresolved_layer() -> None:
+    """A clean block is clean on either layer, so the skip names only refusable shapes.
+
+    Reporting every external pack's hash block as unchecked would bury the one skip that
+    means something under one per healthy pack: the rule found nothing to refuse, so
+    there is nothing it failed to check.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "expected_state_hash": "aaaa"}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
+    )
+
+    assert report == AuthoringReport()
 
 
 def test_golden_actions_alone_are_a_hash_source() -> None:
@@ -985,7 +1063,12 @@ def test_a_golden_action_under_a_disabled_flag_is_refused_at_the_source(
     """
     grading = _golden_actions({"name": "close_widget"}, enabled=False)
 
-    report = inspect_grading_authoring(grading, _inventory(_HELPDESK), replay_world=world)
+    report = inspect_grading_authoring(
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=world,
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
+    )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
     assert report.advisories == ()
@@ -1014,7 +1097,10 @@ def test_every_hash_source_under_a_disabled_flag_is_refused_at_its_own_key(key: 
     grading = {"state_checks": {"hash": {"enabled": False, key: _A_TRUTHY_HASH_SOURCE[key]}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
     )
 
     assert [finding.where for finding in report.errors] == [f"state_checks.hash.{key}"]
@@ -1045,7 +1131,10 @@ def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
     grading = {"state_checks": {"hash": {**flag, "golden_actions": [{"name": "write_file"}]}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
     )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
@@ -1342,7 +1431,10 @@ def test_a_golden_source_no_replay_can_iterate_under_a_falsy_flag_is_the_flags_f
     grading = {"state_checks": {"hash": {"enabled": False, "golden_actions": "write_file"}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
     )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
@@ -1388,7 +1480,10 @@ def test_a_falsy_golden_source_alone_is_a_block_declaring_no_source(golden_actio
     grading = {"state_checks": {"hash": {"enabled": True, "golden_actions": golden_actions}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
     )
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
@@ -1535,7 +1630,11 @@ def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
     so it draws one finding rather than one per source, addressed at the literal — the
     source core reads first.
     """
-    report = inspect_grading_authoring({"state_checks": state_checks}, _inventory(_HELPDESK))
+    report = inspect_grading_authoring(
+        {"state_checks": state_checks},
+        _inventory(_HELPDESK),
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
+    )
 
     assert [finding.where for finding in report.errors] == [address]
 
@@ -1604,9 +1703,14 @@ def test_the_state_sources_a_probe_may_be_declared_beside(
 
     The inventory is unresolvable and the replay world is left so, which makes every row
     the proof that this rule reads the authored block alone: no tool name, no world, no
-    fold.
+    fold. The hash layer is resolved, because the last three rows are the hash rule's and
+    that rule does read it.
     """
-    report = inspect_grading_authoring(_probes_beside(**beside), ToolInventory.unresolvable())
+    report = inspect_grading_authoring(
+        _probes_beside(**beside),
+        ToolInventory.unresolvable(),
+        hash_sources=_THE_BLOCK_IS_THE_WHOLE_LAYER,
+    )
 
     assert [finding.where for finding in report.errors] == addresses
     assert report.advisories == ()
