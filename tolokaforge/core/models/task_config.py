@@ -337,7 +337,7 @@ class TaskConfig(BaseModel):
 class RequiredAction(BaseModel):
     """Required tool call that must appear in trajectory"""
 
-    model_config = {"extra": "ignore"}
+    model_config = {"extra": "forbid"}
 
     action_id: str  # unique identifier for this action
     requestor: Literal["assistant", "user"]  # who should make the call
