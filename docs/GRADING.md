@@ -332,29 +332,37 @@ declared without one.
 
 | Key | kind | coverage | enforcement |
 |---|---|---|---|
+| `transcript_rules.must_contain` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.disallow_regex` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.max_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.required_actions` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.communicate_info` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.tool_expectations` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.weight` / `.on_missing` / `.severity` / `.within` / `.bind` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
-The `trace_checks` rows are the only scored family where **every** member is
-differentially proven in-process, which is what one shared evaluator buys: there
-is no second implementation whose agreement has to be measured, only two
+`trace_checks` and `transcript_rules` are the two scored families where **every**
+member is differentially proven in-process, which is what one shared evaluator buys:
+there is no second implementation whose agreement has to be measured, only two
 integration points and one pack per leaf. The ten kinds are
 `present`, `absent`, `count`, `before`, `immediately_before`, `absent_before`,
 `absent_between`, `all_of`, `any_of`, `negate` — the same closed set the evaluator
 and the runtime ledger read, asserted equal across all three sources.
 
-`transcript_rules.min_assistant_turns` is the only `transcript_rules` key the
-manifest records at score parity; the other six are recorded `BOTH_SIGNAL_PARITY`
-(#685). **Its parity rests on a different mechanism than
+**Both families rest on a different mechanism than
 `state_checks.hash.golden_actions`'.** That key agrees because both substrates fold
 their inputs through one shared composer, so the aggregation itself is common code.
-`min_assistant_turns` agrees on a narrower ground of its own: it contributes
-*nothing* when met and forces `0.0` on **both** substrates when unmet, so it can
-never itself be the source of a disagreement whatever else the pack declares. See
-[§ Turn bounds](#turn-bounds) for what the key asserts.
+The two shared-evaluator families agree a tier earlier: `evaluate_trace_checks` and
+`evaluate_transcript_rules` are each the single implementation both substrates call,
+so a component score for a given config and trajectory is identical by construction
+rather than by measurement. The parity suite still drives every one of these keys
+through both substrates' own paths and asserts the two scores equal — construction is
+what makes the agreement true, and the differential is what keeps a second
+implementation from reappearing unnoticed. See
+[§ Transcript Rules](#transcript-rules) for what each of the seven keys asserts.
 
 ### What the guard cannot see
 
