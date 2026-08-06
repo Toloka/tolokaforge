@@ -505,14 +505,23 @@ same thing whichever substrate grades the trial:
 
 ### Both substrates consume it
 
-Every transcript rule is evaluated off the timeline on both substrates. The
-runner builds it once in `GradeTrial`, before any grading component runs, and
-`evaluate_transcript_rules(timeline, rules)` decomposes the author's config
-against it. The core `GradingEngine` builds it from the trajectory and
-`TranscriptChecker.grade(timeline, …)` reads the same events. The call/result
-join and the assistant-turn view are shared accessors on the timeline module
-(`attempted_calls`, `assistant_texts`), so the two substrates cannot drift into
-reading one timeline differently.
+Every transcript rule is evaluated off the timeline on both substrates.
+`evaluate_transcript_rules(timeline, rules)`
+(`tolokaforge/core/grading/transcript.py`) is the one evaluator: it takes the
+trial's timeline and the validated `TranscriptRulesConfig` — the model, not a
+dump, so the two substrates cannot hand it differently-shaped configs — and
+decomposes the author's block into one sub-check per declared entry. The runner
+builds the timeline once in `GradeTrial`, before any grading component runs, and
+calls it there. The call/result join and the assistant-turn view are shared
+accessors on the timeline module (`attempted_calls`, `assistant_texts`), so the
+two substrates cannot drift into reading one timeline differently.
+
+The core `GradingEngine` builds the same timeline from the trajectory and still
+folds it its own way — the mean of four rule buckets under an activity gate
+(`tolokaforge/core/grading/transcript_buckets.py`), multiplied by the
+`required_actions` and `communicate_info` scores its own evaluators produce. That
+second fold is what #685 removes; the divergences it produces are enumerated in
+the table `tests/canonical/test_transcript_substrate_parity.py` drives.
 
 **A reconciliation failure fails the RPC, and the host does not substitute a
 verdict.** `TimelineInconsistencyError` from either builder call is never folded
@@ -553,7 +562,7 @@ never counting one attempt twice.
 **One key is still evaluated from different sources.** The core engine evaluates
 `transcript_rules.required_actions` and `transcript_rules.communicate_info`
 through `ActionEvaluator` / `CommunicateEvaluator` over `trajectory.messages`,
-outside `TranscriptChecker` and therefore off the timeline; the runner evaluates
+outside the shared evaluator and therefore off the timeline; the runner evaluates
 `required_actions` from the timeline's records. Both substrates read the key and
 both discriminate it, so the manifest's parity claim holds — but the *evidence*
 differs, and the manifest freezes config keys, not evaluation sources. Closing

@@ -41,6 +41,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.models import (
     Message,
     MessageRole,
@@ -50,7 +51,6 @@ from tolokaforge.core.models import (
     ToolExecutorIdentity,
     Trajectory,
 )
-from tolokaforge.runner.grading import evaluate_transcript_rules
 
 pytestmark = pytest.mark.canonical
 
@@ -407,7 +407,7 @@ def _runner_component(adapter: NativeAdapter, row: _Row) -> float:
     """``transcript_rules`` as the runner's real evaluator scores it."""
     timeline = build_trial_timeline(list(row.messages), list(row.tool_log), None)
     grading = adapter.to_task_description(row.pack).grading
-    return evaluate_transcript_rules(timeline, grading.transcript_rules.model_dump()).score
+    return evaluate_transcript_rules(timeline, grading.transcript_rules).score
 
 
 @pytest.mark.parametrize("row", [_param(row) for row in _ROWS])

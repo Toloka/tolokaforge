@@ -20,12 +20,14 @@ from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
-from tolokaforge.core.grading.trace_timeline import TrialTimeline
+from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.hash import compute_stable_hash
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
     Message,
+    MessageRole,
     Metrics,
     RecordedToolCall,
     TerminationReason,
@@ -39,7 +41,6 @@ from tolokaforge.runner.grading import (
     build_grade_reasons,
     combine_grade_components,
     compute_state_diff,
-    evaluate_transcript_rules,
 )
 from tolokaforge.runner.models import (
     RequiredAction,
@@ -498,17 +499,17 @@ class TestLLMJudgePlaceholderStatus:
 class TestTranscriptRulesEvaluation:
     """Real-behaviour tests for the author-facing TranscriptRulesConfig grader.
 
-    ``evaluate_transcript_rules`` takes the trial's :class:`TrialTimeline` plus a
-    single ``TranscriptRulesConfig.model_dump()`` dict (the schema authors write
-    in grading.yaml) and decomposes the config's fields into per-field sub-checks.
-    These tests exercise each field honestly with realistic fixtures and prove the
-    historical always-pass no-op bug is gone.
+    ``evaluate_transcript_rules`` takes the trial's :class:`TrialTimeline` plus the
+    validated ``TranscriptRulesConfig`` (the schema authors write in grading.yaml)
+    and decomposes the config's fields into per-field sub-checks. These tests
+    exercise each field honestly with realistic fixtures and prove the historical
+    always-pass no-op bug is gone.
     """
 
     @staticmethod
     def _config(**fields):
-        """Build a TranscriptRulesConfig dump with only the given fields set."""
-        return TranscriptRulesConfig(**fields).model_dump()
+        """Build a TranscriptRulesConfig with only the given fields set."""
+        return TranscriptRulesConfig(**fields)
 
     @staticmethod
     def _timeline(
@@ -533,6 +534,19 @@ class TestTranscriptRulesEvaluation:
             arguments=arguments,
             executor=ToolExecutorIdentity(executor),
         )
+
+    # --- the typed seam ----------------------------------------------------
+
+    def test_a_dumped_config_is_refused(self):
+        """The seam both substrates meet at is the model, and only the model.
+
+        A dump reads field-for-field like the model and validates nothing, which is
+        how two spellings of the tool field and seven semantic divergences lived
+        side by side unnoticed. A caller handing one over is refused rather than
+        scored.
+        """
+        with pytest.raises(TypeError, match="validated TranscriptRulesConfig, not dict"):
+            evaluate_transcript_rules(self._timeline(), self._config().model_dump())
 
     # --- empty config (no-op pass) -----------------------------------------
 
@@ -571,6 +585,29 @@ class TestTranscriptRulesEvaluation:
         what the agent communicated."""
         timeline = self._timeline([("user", "please say confirmed"), ("assistant", "Okay.")])
         result = evaluate_transcript_rules(timeline, self._config(must_contain=["confirmed"]))
+        assert result.passed is False
+        assert result.score == 0.0
+
+    def test_a_harness_annotation_cannot_satisfy_a_required_phrase(self):
+        """``role: system`` turns are harness text, not trial text.
+
+        A termination notice the harness wrote is not a timeline event at all, so
+        an author cannot have a phrase rule satisfied by the harness announcing
+        the trial ran out of turns.
+        """
+        timeline = build_trial_timeline(
+            [
+                Message(role=MessageRole.ASSISTANT, content="Done."),
+                Message(role=MessageRole.SYSTEM, content="Trial terminated: max turns reached"),
+            ],
+            [],
+            None,
+        )
+
+        result = evaluate_transcript_rules(
+            timeline, self._config(must_contain=["max turns reached"])
+        )
+
         assert result.passed is False
         assert result.score == 0.0
 
@@ -841,6 +878,28 @@ class TestTranscriptRulesEvaluation:
         assert len(result.details) == 4
         assert result.score == 0.5
         assert result.passed is False
+
+    def test_sub_check_rows_follow_the_declared_order_on_every_run(self):
+        """Output is reproducible across runs, and the order is the author's own.
+
+        The rows a caller reads and a snapshot pins carry no set iteration
+        anywhere: one row per declared entry, in declaration order. A set-derived
+        ordering drifts between processes, which is how these reasons used to
+        differ machine to machine for the same trial.
+        """
+        config = self._config(
+            tool_expectations=ToolExpectations(required_tools=["zebra_tool", "alpha_tool"])
+        )
+        timeline = self._timeline(calls=[self._call("mango_tool")])
+
+        first = evaluate_transcript_rules(timeline, config)
+        second = evaluate_transcript_rules(timeline, config)
+
+        assert [d.message for d in first.details] == [
+            "Required tool 'zebra_tool' was never called successfully",
+            "Required tool 'alpha_tool' was never called successfully",
+        ]
+        assert [d.model_dump() for d in first.details] == [d.model_dump() for d in second.details]
 
     # --- required_actions --------------------------------------------------
 

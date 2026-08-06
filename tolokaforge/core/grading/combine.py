@@ -46,7 +46,7 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript import TranscriptChecker
+from tolokaforge.core.grading.transcript_buckets import score_transcript_rules_by_bucket_average
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -91,7 +91,6 @@ class GradingEngine:
         self.task_initial_state = task_initial_state
         self.task_mcp_server = task_mcp_server
         self.state_checker = StateChecker()
-        self.transcript_checker = TranscriptChecker()
         self.action_evaluator = ActionEvaluator()
         self.communicate_evaluator = CommunicateEvaluator()
 
@@ -165,29 +164,14 @@ class GradingEngine:
             else:
                 comm_score = 1.0
 
-            # Use legacy transcript checker for other rules
-            legacy_score, transcript_reasons = self.transcript_checker.grade(
-                timeline=timeline,
-                must_contain=self.config.transcript_rules.must_contain,
-                disallow_regex=self.config.transcript_rules.disallow_regex,
-                max_turns=self.config.transcript_rules.max_turns,
-                min_assistant_turns=self.config.transcript_rules.min_assistant_turns,
-                required_tools=(
-                    self.config.transcript_rules.tool_expectations.required_tools
-                    if self.config.transcript_rules.tool_expectations
-                    else None
-                ),
-                disallowed_tools=(
-                    self.config.transcript_rules.tool_expectations.disallowed_tools
-                    if self.config.transcript_rules.tool_expectations
-                    else None
-                ),
+            bucket_score, transcript_reasons = score_transcript_rules_by_bucket_average(
+                timeline, self.config.transcript_rules
             )
             if transcript_reasons:
                 reasons_parts.append(f"Transcript: {transcript_reasons}")
 
             # Combine transcript scores (product for strictness)
-            transcript_score = action_score * comm_score * legacy_score
+            transcript_score = action_score * comm_score * bucket_score
             components.transcript_rules = transcript_score
 
         # Trace checks — the same function the runner's GradeTrial calls, over the

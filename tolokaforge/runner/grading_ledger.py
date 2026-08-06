@@ -20,10 +20,16 @@ from typing import Any
 
 from pydantic import BaseModel
 
-from tolokaforge.core.grading.key_manifest import EVALUATED as EVALUATED
 from tolokaforge.core.grading.key_manifest import (
+    COMMUNICATE_INFO_KEY,
+    DISALLOW_REGEX_KEY,
     GRADING_KEYS,
+    MAX_TURNS_KEY,
+    MIN_ASSISTANT_TURNS_KEY,
+    MUST_CONTAIN_KEY,
+    REQUIRED_ACTIONS_KEY,
     RUNNER_HASH_EVALUATOR,
+    TOOL_EXPECTATIONS_KEY,
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
@@ -34,6 +40,7 @@ from tolokaforge.core.grading.key_manifest import (
     family_author_keys,
     scored_keys_claiming_runner,
 )
+from tolokaforge.core.grading.key_manifest import EVALUATED as EVALUATED
 from tolokaforge.core.grading.key_manifest import (
     NO_TIMELINE_EVENTS_SKIP as NO_TIMELINE_EVENTS_SKIP,
 )
@@ -64,13 +71,6 @@ CUSTOM_CHECKS_DISABLED_SKIP = KeyAccountingRecord(
 )
 
 
-MUST_CONTAIN_KEY = checked_author_key("transcript_rules.must_contain")
-DISALLOW_REGEX_KEY = checked_author_key("transcript_rules.disallow_regex")
-MAX_TURNS_KEY = checked_author_key("transcript_rules.max_turns")
-MIN_ASSISTANT_TURNS_KEY = checked_author_key("transcript_rules.min_assistant_turns")
-TOOL_EXPECTATIONS_KEY = checked_author_key("transcript_rules.tool_expectations")
-REQUIRED_ACTIONS_KEY = checked_author_key("transcript_rules.required_actions")
-COMMUNICATE_INFO_KEY = checked_author_key("transcript_rules.communicate_info")
 JSONPATHS_KEY = checked_author_key("state_checks.jsonpaths")
 DB_PROBES_KEY = checked_author_key("state_checks.db_probes")
 LLM_JUDGE_KEY = checked_author_key("llm_judge")

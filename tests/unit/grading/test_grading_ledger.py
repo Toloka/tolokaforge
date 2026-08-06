@@ -21,6 +21,7 @@ from tests.utils.recorded_calls import recorded_call
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.timelines import Turn, build_turn_timeline
 from tolokaforge.core.grading.key_manifest import (
+    MIN_ASSISTANT_TURNS_KEY,
     Enforcement,
     GradingKey,
     KeyKind,
@@ -39,7 +40,6 @@ from tolokaforge.runner.grading_ledger import (
     HASH_DISABLED_SKIP,
     JSONPATHS_KEY,
     LEDGER_KEYS,
-    MIN_ASSISTANT_TURNS_KEY,
     NO_TIMELINE_EVENTS_SKIP,
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,

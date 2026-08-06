@@ -280,7 +280,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 | `tolokaforge/core/grading/combine.py` | Imports `core.evaluators.*` (orchestrator-only). |
 | `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
 | `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
-| `tolokaforge/core/grading/transcript.py` | Consumed only by orchestrator-side code paths. |
+| `tolokaforge/core/grading/transcript_buckets.py` | Read only by the core engine's own fold. |
 | `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
 | `tolokaforge/tools/user_tools.py` | Imports `core.env_state` (orchestrator-only). |
 

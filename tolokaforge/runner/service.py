@@ -71,6 +71,7 @@ from tolokaforge.core.grading.trace_timeline import (
     TrialTimeline,
     build_trial_timeline,
 )
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
     split_leading_system_message,
@@ -98,7 +99,6 @@ from tolokaforge.runner.grading import (
     compute_state_diff,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
-    evaluate_transcript_rules,
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
@@ -1811,11 +1811,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         skipped_siblings: dict[str, KeyAccountingRecord] = {}
         if timeline.events:
             logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-            # The author-facing TranscriptRulesConfig as a dict; the grader
-            # decomposes its fields (must_contain / disallow_regex / max_turns /
-            # min_assistant_turns / required_actions / communicate_info) into
-            # per-field sub-checks.
-            rules_dict = transcript_rules_config.model_dump()
+            scored_rules = transcript_rules_config
         elif activity_floor is None:
             logger.info(
                 f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
@@ -1826,12 +1822,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
                 "(no messages or tool calls)"
             )
-            rules_dict = TranscriptRulesConfig(min_assistant_turns=activity_floor).model_dump()
+            scored_rules = TranscriptRulesConfig(min_assistant_turns=activity_floor)
             skipped_siblings = dict.fromkeys(
                 transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
             )
 
-        result = evaluate_transcript_rules(timeline, rules_dict)
+        result = evaluate_transcript_rules(timeline, scored_rules)
         return result, {**skipped_siblings, **result.accounted_keys}
 
     def _grade_trace_checks(
