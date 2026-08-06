@@ -507,12 +507,14 @@ llm_judge:                                 # the judge MODEL is set once per run
 
 A whole-state hash is read only where the flag turns it on: `state_checks.hash`
 carrying an `expected_state_hash` or `golden_actions` under an `enabled` that is not
-truthy is rejected at load, because both substrates test the flag before reading any
-source and the pack would otherwise grade its state without the comparison the author
-wrote. The refusal is addressed at the source the pack declared. Every other
-authoring rule this file's grading block is checked against — tool names, argument
-names, `regex` compilation — is in
-[GRADING.md](GRADING.md#what-is-validated-before-a-run).
+truthy is rejected at load where the task declares `adapter_type: native`, because
+both substrates test the flag before reading any source and the pack would otherwise
+grade its state without the comparison the author wrote. The refusal is addressed at
+the source the pack declared; under any other `adapter_type` the same shape is
+reported unchecked at the same address, because an external adapter may supply the
+source the authored block never names. Every other authoring rule this file's
+grading block is checked against — tool names, argument names, `regex` compilation —
+is in [GRADING.md](GRADING.md#what-is-validated-before-a-run).
 
 The rubric is a structured `Rubric` (per-criterion scoring + a required gate),
 not a free-text blob; a free-text `rubric: "<text>"`, an `output_schema` field,

@@ -204,8 +204,9 @@ authorable source shapes, and for the two the authoring gate refuses:
   reachable is a directly built config, a bundle recorded before the rule, and — by
   design — every pack another `adapter_type` grades, which the gate reports unchecked
   instead: such an adapter may compute the source itself, the way the frozen-core
-  family replays a golden-actions fixture the authored block never names, so neither
-  substrate reading measured here is the one that pack takes.
+  family replays a golden-actions fixture the authored block never names, so whether
+  either substrate reading measured here is the one that pack takes is not settled
+  here — which is why the gate reports rather than refuses.
 - **`golden_actions` with no world to replay them in** — not proven, and **refused at
   the authoring gate** for the same reason. Core raises `UnbuildableGoldenReplayWorld`
   and the trial is left unscored (below), while the runner has nothing to lack: its
