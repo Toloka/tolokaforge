@@ -254,7 +254,7 @@ messages:
 
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
-| `simulator_schema_version` | `int` | always `2` today | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `simulator_schema_version` | `int` | current value: `2` | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 
 ### `messages[*].reasoning.summary` — when populated

@@ -588,6 +588,15 @@ class TrialRunner:
                 first_user_result = self.user_simulator.reply(
                     greeting_context, observation=self._user_observation
                 )
+                # An empty opening would seed the transcript with a blank USER
+                # turn: the simulator's flipped context then drops it, loses
+                # every trace of having asked, and restarts the conversation —
+                # the failure mode the seeded-opening fix exists to prevent.
+                if not first_user_result.text.strip():
+                    raise RuntimeError(
+                        "User simulator bootstrap produced an empty first message; "
+                        "a blank opening cannot seed the conversation."
+                    )
                 self.logger.debug("User simulator generated first message")
                 return first_user_result.text
             except Exception as exc:

@@ -807,3 +807,21 @@ class TestUserSimulatorIntegration:
         assert user_sim.reply.called
         assert traj.messages[0].role == MessageRole.USER
         assert traj.messages[0].content == "I need help with my order"
+
+    def test_empty_bootstrap_first_message_fails_loud(self) -> None:
+        """A simulator bootstrap that returns empty/whitespace text raises.
+
+        A blank opening would seed the transcript with an empty USER turn:
+        the simulator's flipped context later drops dialogue-free turns, so
+        it would lose every trace of having asked and restart the
+        conversation — the failure mode the seeded-opening fix prevents.
+        """
+        user_sim = MagicMock()
+        user_sim.reply.return_value = GenerationResult(
+            text="   \n\t ",
+            tool_calls=[],
+        )
+        runner = _make_runner(user_simulator=user_sim)
+
+        with pytest.raises(RuntimeError, match="empty first message"):
+            runner._bootstrap_via_simulator()

@@ -383,9 +383,10 @@ for the full evidence trail.
 
 The LLM user simulator converses from the customer's seat: before each
 generation it role-flips the shared transcript (its own past USER turns
-replay as `assistant`, the agent's ASSISTANT turns as `user`) and skips
-turns carrying no dialogue text (agent tool-call turns). Two invariants
-hold on the request it sends:
+replay as `assistant`, the agent's ASSISTANT turns as `user`), skips
+turns carrying no dialogue text (agent tool-call turns, whitespace-only
+replies), and coalesces adjacent same-role turns so the request
+alternates strictly. Two invariants hold on the request it sends:
 
 1. **It leads with a user-role turn.** When the trial's opening was
    caller-seeded, the flipped context starts with the simulator's own

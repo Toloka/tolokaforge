@@ -12,12 +12,14 @@ turns. Four invariants locked here:
    agent had already answered (observed in production runs: duplicate
    side effects, ``state_checks`` fail).
 2. Agent tool-call turns with no dialogue text are skipped instead of
-   replaying as empty ``user`` turns.
+   replaying as empty ``user`` turns, and adjacent same-role turns are
+   coalesced so the request alternates strictly.
 3. TOOL and SYSTEM messages never reach the simulator.
 4. The request always ends on a user-role turn the simulator can answer;
    a transcript whose last agent turn carries no dialogue text raises
    instead of sending a trailing assistant-role message (a prefill of the
-   simulator's own words) or an empty request.
+   simulator's own words) or an empty request. A refused dispatch stamps
+   no ``last_system_prompt``.
 
 The shared ``context`` list itself is never mutated — the greeting exists
 only in the simulator's private request, never in the trial transcript.
@@ -138,16 +140,19 @@ def test_multi_turn_alternation_preserved() -> None:
 def test_raises_when_final_agent_turn_has_no_dialogue_text() -> None:
     """A transcript ending on a dialogue-free agent turn is unanswerable —
     silently sending it would trail the simulator's own assistant-role
-    message, which providers treat as a prefill to continue."""
+    message, which providers treat as a prefill to continue. The refused
+    dispatch stamps no ``last_system_prompt``: ``prompts.yaml`` must never
+    name a prompt that drove no generation."""
     sim, client = _sim_with_capture()
     context = [
         Message(role=MessageRole.USER, content="Opening request.", ts=_TS),
         Message(role=MessageRole.ASSISTANT, content="", ts=_TS),
     ]
 
-    with pytest.raises(RuntimeError, match="no agent turn to answer"):
+    with pytest.raises(RuntimeError, match="no agent dialogue turn to answer"):
         sim.reply(context)
     assert client.messages is None
+    assert sim.last_system_prompt is None
 
 
 def test_raises_when_no_turn_carries_dialogue_text() -> None:
@@ -158,9 +163,55 @@ def test_raises_when_no_turn_carries_dialogue_text() -> None:
         Message(role=MessageRole.TOOL, content='{"ok": true}', ts=_TS),
     ]
 
-    with pytest.raises(RuntimeError, match="no agent turn to answer"):
+    with pytest.raises(RuntimeError, match="no agent dialogue turn to answer"):
         sim.reply(context)
     assert client.messages is None
+    assert sim.last_system_prompt is None
+
+
+def test_adjacent_same_role_turns_coalesce() -> None:
+    """Two agent dialogue turns separated only by a skipped tool-call turn
+    coalesce into one user-role turn — strict-alternation providers reject
+    back-to-back same-role messages."""
+    sim, client = _sim_with_capture()
+    context = [
+        Message(role=MessageRole.USER, content="Opening request.", ts=_TS),
+        Message(role=MessageRole.ASSISTANT, content="Let me check that.", ts=_TS),
+        Message(role=MessageRole.ASSISTANT, content="", ts=_TS),  # tool-call turn
+        Message(role=MessageRole.TOOL, content='{"ok": true}', ts=_TS),
+        Message(role=MessageRole.ASSISTANT, content="Here is your answer.", ts=_TS),
+    ]
+
+    sim.reply(context)
+
+    assert client.messages is not None
+    assert [(m.role, m.content) for m in client.messages] == [
+        (MessageRole.USER, SIMULATOR_GREETING),
+        (MessageRole.ASSISTANT, "Opening request."),
+        (MessageRole.USER, "Let me check that.\n\nHere is your answer."),
+    ]
+
+
+def test_whitespace_user_turn_dropped_and_alternation_preserved() -> None:
+    """A whitespace-only simulator reply recorded in the shared transcript is
+    skipped, and the agent turns it separated coalesce — the request never
+    carries back-to-back same-role messages."""
+    sim, client = _sim_with_capture()
+    context = [
+        Message(role=MessageRole.USER, content="Opening request.", ts=_TS),
+        Message(role=MessageRole.ASSISTANT, content="First answer.", ts=_TS),
+        Message(role=MessageRole.USER, content="   ", ts=_TS),
+        Message(role=MessageRole.ASSISTANT, content="Anything else?", ts=_TS),
+    ]
+
+    sim.reply(context)
+
+    assert client.messages is not None
+    assert [(m.role, m.content) for m in client.messages] == [
+        (MessageRole.USER, SIMULATOR_GREETING),
+        (MessageRole.ASSISTANT, "Opening request."),
+        (MessageRole.USER, "First answer.\n\nAnything else?"),
+    ]
 
 
 def test_no_greeting_when_context_starts_agent_side() -> None:
