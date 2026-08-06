@@ -1,13 +1,16 @@
 """Live regression test: the user simulator must not restart the conversation.
 
-Reproduces the CBT-021 failure shape against a real user-model. In that run
-the simulator's first live turn fired after the agent had fully answered the
-seeded opening, but the simulator's flipped context had its own opening
-trimmed away — so the model believed it had not asked yet and re-sent the
-scripted opening verbatim, restarting the conversation (duplicate tickets,
-``state_checks`` fail). The context-construction fix is locked deterministically
-by ``tests/unit/test_user_simulator_context.py``; this test pins the
-behavioural consequence with the same user model the run used.
+Reproduces the failure shape behind the seeded-opening fix against a real
+user-model. The reproducing recipe is generic: a backstory that quotes the
+exact opening line and instructs the simulator to open with it exactly once,
+plus a shared transcript in which the agent has already fully answered that
+opening. With the pre-fix context construction (the simulator's own opening
+trimmed from its flipped view), the model re-sent the scripted opening
+verbatim, restarting the conversation. The context-construction fix is locked
+deterministically by ``tests/unit/test_user_simulator_context.py``; this test
+pins the behavioural consequence with a real model. See tests/README.md
+§ "Live user-simulator no-restart regression" for the cost note and why the
+deterministic lock alone is not considered sufficient.
 
 Run with:
     scripts/with_env.sh uv run pytest tests/integration/test_user_simulator_live.py \\
@@ -30,21 +33,22 @@ pytestmark = [
     pytest.mark.llm,
 ]
 
-_TS = datetime(2026, 8, 4, 13, 26, 0, tzinfo=timezone.utc)
+_TS = datetime(2026, 1, 1, 12, 0, 0, tzinfo=timezone.utc)
 
 _OPENING = (
-    "Hi, this is Mortimer Pemberton, account 13000019. I just wanted to check "
-    "whether a corrected 1099-B has been issued for my account for tax year 2024?"
+    "Hi, this is Alex Quill, customer number 55001234. I just wanted to check "
+    "whether a replacement warranty certificate has been issued for my order for "
+    "purchase year 2025?"
 )
 
-# Condensed from the CBT-021 task pack backstory — keeps the two ingredients
-# that made the bug bite: the exact quoted opening line and the instruction to
-# open with it.
+# Synthetic backstory keeping the two ingredients that made the bug bite: the
+# exact quoted opening line and the instruction to open with it exactly once.
 _BACKSTORY = f"""You are a customer contacting customer service.
 
 Your details:
-You are Mortimer Pemberton contacting support to ask whether a corrected 1099-B
-has been issued on your account (13000019) for tax year 2024.
+You are Alex Quill contacting support to ask whether a replacement warranty
+certificate has been issued on your customer account (55001234) for purchase
+year 2025.
 
 Your reason for contacting support:
 "{_OPENING}"
@@ -54,8 +58,8 @@ provides the final outcomes, acknowledge them briefly and end the conversation;
 do not repeat or restart the original request."""
 
 _AGENT_ANSWER = (
-    "Hi Mortimer. I checked your 2024 tax documents. No corrected Form 1099-B "
-    "has been issued; only the original 1099-B is currently on file."
+    "Hi Alex. I checked your 2025 purchase records. No replacement warranty "
+    "certificate has been issued; only the original certificate is currently on file."
 )
 
 
@@ -63,12 +67,13 @@ _AGENT_ANSWER = (
 def simulator() -> UserSimulator:
     if not os.getenv("OPENROUTER_API_KEY"):
         pytest.skip("OPENROUTER_API_KEY not set — skipping live simulator test")
+    # ``_llm_reply`` pins its own generation temperature; the config value is
+    # not the control here, so none is claimed.
     return UserSimulator(
         mode="llm",
         llm_config=ModelConfig(
             provider="openrouter",
             name="anthropic/claude-sonnet-4.6",
-            temperature=0.0,
             max_tokens=1024,
         ),
         backstory=_BACKSTORY,
@@ -78,9 +83,9 @@ def simulator() -> UserSimulator:
 def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator) -> None:
     """First live simulator turn after a full answer must continue, not reopen.
 
-    The shared transcript is exactly the CBT-021 shape at the failure point:
-    seeded opening, agent tool-call turns (no dialogue text), tool results,
-    then the agent's complete answer.
+    The shared transcript is exactly the failure shape: seeded opening, an
+    agent tool-call turn (no dialogue text), a tool result, then the agent's
+    complete answer.
     """
     context = [
         Message(role=MessageRole.USER, content=_OPENING, ts=_TS),
@@ -88,9 +93,8 @@ def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator
         Message(
             role=MessageRole.TOOL,
             content=(
-                '{"documents": [{"id": "TAX-00077006", "account_id": "13000019", '
-                '"tax_year": 2024, "document_type": "1099_b", "status": "original", '
-                '"corrected_flag": false}]}'
+                '{"certificates": [{"id": "CERT-0042", "customer_id": "55001234", '
+                '"purchase_year": 2025, "status": "original", "replaced_flag": false}]}'
             ),
             ts=_TS,
         ),
@@ -101,12 +105,12 @@ def test_simulator_does_not_restart_after_agent_answers(simulator: UserSimulator
     reply = result.text.strip()
 
     assert reply, "simulator returned an empty reply"
-    # The bug's signature was the scripted opening re-sent verbatim. Any
-    # substantial overlap with the opening request means the simulator is
-    # reopening a resolved conversation.
+    # The bug's signature was the scripted opening re-sent as if unanswered.
+    # A restart — verbatim or lightly paraphrased — re-introduces the caller
+    # and re-states the request; an acknowledgement does neither.
     assert (
-        "wanted to check whether a corrected 1099-B" not in reply
+        "wanted to check whether" not in reply
     ), f"simulator restarted the conversation: {reply!r}"
     assert not reply.startswith(
-        "Hi, this is Mortimer Pemberton"
+        "Hi, this is Alex Quill"
     ), f"simulator restarted the conversation: {reply!r}"

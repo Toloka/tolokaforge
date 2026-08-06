@@ -2106,9 +2106,11 @@ class LLMClient:
         )
 
 
-# Synthetic agent-side greeting prepended to the simulator's flipped context
-# when the conversation was seeded by the caller (the seeded opening flips to
-# ``assistant`` at index 0, and providers require a leading user-role message).
+# The canned agent-side greeting: dispatched by the runner when the simulator
+# bootstraps turn 0, and re-used to lead the simulator's flipped context when
+# the opening was caller-seeded (see ``_llm_reply``). One constant so the two
+# sites cannot diverge — the mid-conversation reconstruction must show the
+# simulator the same agent opening it answers at bootstrap.
 SIMULATOR_GREETING = "Hi! How can I help you today?"
 
 
@@ -2298,6 +2300,17 @@ Rules:
                     content=SIMULATOR_GREETING,
                     ts=sim_context[0].ts,
                 ),
+            )
+
+        # The request must end on a user-role turn the simulator can answer.
+        # A trailing assistant-role message is a prefill of the simulator's
+        # own words (the provider continues it), and an empty list is
+        # unanswerable — both mean the agent's last turn carried no dialogue
+        # text, so surface that instead of letting the simulator improvise.
+        if not sim_context or sim_context[-1].role != MessageRole.USER:
+            raise RuntimeError(
+                "User simulator dispatched with no agent turn to answer: the "
+                "agent's last turn carried no dialogue text."
             )
 
         result = self.llm_client.generate(

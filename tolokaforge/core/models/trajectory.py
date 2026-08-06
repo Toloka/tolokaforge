@@ -466,11 +466,8 @@ class Trajectory(BaseModel):
     # Monotonic integer stamped on every trajectory; bumped whenever the
     # simulator prompt shape or the conversation context the simulator sees
     # is revised so that downstream analytics can gate comparisons across
-    # runs. Starts at 1 per the locked design decision (see plan § "Locked
-    # design decisions" item 5). Stays on Trajectory because it's metadata
-    # about the message-trace shape, not the prompt itself.
-    # v2: the simulator retains its seeded opening (behind a synthetic
-    # agent greeting) instead of having it trimmed from its context.
+    # runs. Stays on Trajectory because it's metadata about the
+    # message-trace shape, not the prompt itself.
     simulator_schema_version: int = 2
 
     @model_validator(mode="after")

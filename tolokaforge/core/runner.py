@@ -6,7 +6,7 @@ from typing import Any
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
-from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
@@ -578,7 +578,7 @@ class TrialRunner:
         greeting_context = [
             Message(
                 role=MessageRole.ASSISTANT,
-                content="Hi! How can I help you today?",
+                content=SIMULATOR_GREETING,
                 ts=datetime.now(tz=timezone.utc),
             )
         ]

@@ -9,7 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, OpenRouterConfig, ToolCall
 
@@ -153,8 +153,10 @@ class TestMessageConversion:
 class TestUserSimulatorMessageOrdering:
     """Test UserSimulator handles message ordering for Nova compatibility."""
 
-    def test_removes_leading_assistant_message(self):
-        """Nova rejects conversations starting with ASSISTANT role."""
+    def test_prepends_greeting_when_context_starts_assistant_side(self):
+        """Nova rejects conversations starting with ASSISTANT role, so the
+        flipped context leads with a synthetic user-role greeting — and the
+        simulator's own opening survives right behind it."""
         # Create mock LLM client
         mock_llm = MagicMock()
         mock_llm.generate.return_value = GenerationResult(
@@ -182,9 +184,11 @@ class TestUserSimulatorMessageOrdering:
         call_kwargs = mock_llm.generate.call_args[1]
         sim_messages = call_kwargs["messages"]
 
-        # First message should be USER (from agent's perspective, which is USER for simulator)
-        if sim_messages:
-            assert sim_messages[0].role == MessageRole.USER
+        assert [(m.role, m.content) for m in sim_messages] == [
+            (MessageRole.USER, SIMULATOR_GREETING),
+            (MessageRole.ASSISTANT, "Previous user message"),
+            (MessageRole.USER, "Agent response"),
+        ]
 
 
 class TestNovaProviderConfiguration:
