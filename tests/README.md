@@ -105,6 +105,7 @@ tests/
 ├── data/                    # Test data
 │   ├── tasks/               # Task fixtures (calc_basic, browser_basic, calc_custom_checks)
 │   ├── grading_parity/      # Substrate-parity packs; own glob, outside tasks/**
+│   ├── transcript_parity/   # transcript_rules differential packs; own glob, may author two keys
 │   ├── projects/            # Full project snapshots (food_delivery_2, tau_retail_mini)
 │   ├── migration_corpora/   # Judge-labelled trial bundles reconcile reads (notes_duplicate_check)
 │   ├── migration_packs/     # Migration declarations reconcile resolves; shipped task_ids, never a default root
@@ -168,6 +169,18 @@ Compare output against committed golden snapshots in `snapshots/`.
   missing from the lock's driver table fails
   `test_every_ledger_key_names_a_driver_that_can_populate_it` instead, which means a
   new ledger key arrived with no way to drive it: add a driver, never drop the row.
+- Transcript rules substrate parity (`test_transcript_substrate_parity.py`) — one
+  authored pack under `tests/data/transcript_parity/`, one trial, graded through both
+  substrates' real adapter paths, must produce the same `transcript_rules` component
+  and the value the row pins. Twenty rows: eighteen sit on the eight scoring questions
+  a transcript rule has to answer the same way on either substrate, and two unmarked
+  **anchor** rows, at two different scores, sit on no question at all and are the
+  harness's own proof. A row pinning a value the runner does not produce raises
+  `_FixtureDefect` — that is the table being wrong, not the substrates disagreeing.
+  Fix the divergence in `tolokaforge/core/grading/transcript.py`, never the pinned
+  column. What an events-less trial scores is a property of the fold rather than of one
+  pack's verdict, so the two named tests beside the table drive the core engine's
+  `grade_trajectory` against the runner's own `GradeTrial` RPC instead.
 - Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one
   scripted tool-call sequence driven through each substrate's real recording path
   must build the same events. A failure means one substrate's recording drifted,
@@ -252,6 +265,17 @@ expression, where they are part of the constraint under test rather than next to
 it. Write the two trials so that a build ignoring the thing under test would score
 them *identically*: that is what makes discrimination evidence for the key rather
 than for the pack.
+
+`tests/data/transcript_parity/` is the second parity root, read only by
+`test_transcript_substrate_parity.py` through its own glob. Its packs author a
+`task.yaml` and a `grading.yaml` and **no `trial.yaml`**: each trial's messages and
+its `tool_log` live in the module's table beside the score the row pins, because
+whether the trial kept a record of the calls it declared is one of the things the
+two substrates read differently, and a fixture loader deriving records from the
+message view could not express its absence. A pack here may author **two** author
+keys — a veto is only distinguishable from a fraction with a second rule beside it —
+which is why these packs cannot live under `grading_parity`, whose one-key rule is
+what keeps a violating trial attributable to the key under test.
 
 Use `--update-canon` flag to regenerate the snapshots under `snapshots/` after
 intentional changes. The guard modules above that compare code against a doc or a

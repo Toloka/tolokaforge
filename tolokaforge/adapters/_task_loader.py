@@ -78,8 +78,10 @@ from tolokaforge.core.grading.unknown_keys import refuse_unknown_grading_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
     RETIRED_STATE_CHECK_KEYS,
+    CommunicateInfo,
     GradingCombineConfig,
     GradingFindingSeverity,
+    RequiredAction,
     StateChecksConfig,
     TaskConfig,
     TaskDefaults,
@@ -179,9 +181,19 @@ class _TypedGradingBlock:
     gate_names_unknown_keys: bool = True
     """Whether this gate writes the refusal for a key the block does not declare.
 
-    ``trace_checks`` is the one entry that does not: its model is the runner's own, so
-    an unknown key there draws the bare ``extra_forbidden`` naming no file and no
-    accepted set, the same as it does on the wire.
+    ``trace_checks`` is the one entry that does not: an unknown key there draws the
+    bare ``extra_forbidden`` naming no file and no accepted set, the same as it does
+    on the wire.
+    """
+
+    element_models: tuple[tuple[str, type[BaseModel]], ...] = ()
+    """List-valued fields whose *elements* draw the addressed refusal too, in order.
+
+    A key the block itself does not declare is answered by the model's own
+    ``extra="forbid"`` in one unaddressed line; a key an element does not declare is
+    answered the same way and reads worse, because the author has to count list
+    positions to find it. Every field named here gets the same message its parent
+    block gets, naming the element by index.
     """
 
 
@@ -202,7 +214,13 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
     # so the component is 0.0 however the agent behaves. Constructing the block rather
     # than the two fields also puts the ``min_assistant_turns`` domain and a misspelled
     # key inside the ``extra="forbid"`` ``tool_expectations`` under the same gate.
-    "transcript_rules": _TypedGradingBlock(model=TranscriptRulesConfig),
+    "transcript_rules": _TypedGradingBlock(
+        model=TranscriptRulesConfig,
+        element_models=(
+            ("required_actions", RequiredAction),
+            ("communicate_info", CommunicateInfo),
+        ),
+    ),
     # Every rejection the matcher vocabulary makes — an unmatchable field for the kind,
     # a predicate asserting nothing, two constraint kinds under one require — is a check
     # that would otherwise select nothing and read as an agent failure at grade time.
@@ -239,8 +257,9 @@ def validate_grading_yaml(
     rule those models carry answers at authoring time; ``llm_judge`` is constructed only on a
     block declaring a ``rubric`` or the relocated ``model_ref``, which are the shapes its
     own migration names — an ``output_schema`` alone reaches no judge config here. For
-    the three blocks the engine's own models define — ``combine``, ``state_checks`` and
-    ``transcript_rules`` — a key the block does not declare is refused here naming the
+    three of those blocks — ``combine``, ``state_checks`` and ``transcript_rules``, plus
+    the ``required_actions`` and ``communicate_info`` elements the last of them nests —
+    a key the block does not declare is refused here naming the
     file, the closest declared field and the accepted set, which the models' own
     ``extra="forbid"`` refuses on every other path in one line without an address;
     ``trace_checks`` and ``llm_judge`` draw that bare refusal here too. ``state_checks``'s two retired keys are not the addressed
@@ -396,8 +415,9 @@ def _construct_declared_block(
     """Construct *block* against the model that owns it, unless it is absent.
 
     Raises:
-        ValueError: If the block declares a key the model does not, where this gate
-            writes that refusal.
+        ValueError: If the block, or an element of one of its
+            :attr:`_TypedGradingBlock.element_models` lists, declares a key the model
+            does not — where this gate writes that refusal.
         pydantic.ValidationError: If the block fails any rule its model carries.
     """
     if block is None:
@@ -410,6 +430,17 @@ def _construct_declared_block(
             grading_path=grading_path,
             answered_elsewhere=typed.retired_keys,
         )
+        for field_name, element_model in typed.element_models:
+            # An element that is no mapping at all has no keys to name; the
+            # construction below refuses it in pydantic's own words.
+            for index, element in enumerate(block.get(field_name) or []):
+                if isinstance(element, Mapping):
+                    refuse_unknown_grading_keys(
+                        element_model,
+                        element,
+                        block_name=f"{block_name}.{field_name}[{index}]",
+                        grading_path=grading_path,
+                    )
     typed.model(**block)
 
 

@@ -4,7 +4,7 @@
     "custom_checks": null,
     "llm_judge": null,
     "state_checks": null,
-    "transcript_rules": 0.5
+    "transcript_rules": 0.666667
   },
-  "score": 0.5
+  "score": 0.666667
 }

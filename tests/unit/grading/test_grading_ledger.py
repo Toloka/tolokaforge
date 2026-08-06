@@ -21,6 +21,7 @@ from tests.utils.recorded_calls import recorded_call
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tests.utils.timelines import Turn, build_turn_timeline
 from tolokaforge.core.grading.key_manifest import (
+    MIN_ASSISTANT_TURNS_KEY,
     Enforcement,
     GradingKey,
     KeyKind,
@@ -39,7 +40,6 @@ from tolokaforge.runner.grading_ledger import (
     HASH_DISABLED_SKIP,
     JSONPATHS_KEY,
     LEDGER_KEYS,
-    MIN_ASSISTANT_TURNS_KEY,
     NO_TIMELINE_EVENTS_SKIP,
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
@@ -60,9 +60,9 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     RunnerGradingConfig,
     RunnerStateChecksConfig,
-    RunnerTranscriptRulesConfig,
     TraceChecksConfig,
     TraceConstraintKind,
+    TranscriptRulesConfig,
 )
 
 pytestmark = pytest.mark.unit
@@ -182,7 +182,7 @@ def test_core_only_key_arriving_populated_quotes_its_manifest_reason():
 def test_an_explicitly_empty_check_is_not_populated():
     """``disallowed_tools: []`` written out is indistinguishable from unset."""
     config = RunnerGradingConfig(
-        transcript_rules=RunnerTranscriptRulesConfig(
+        transcript_rules=TranscriptRulesConfig(
             tool_expectations={"required_tools": [], "disallowed_tools": []}
         )
     )
@@ -711,7 +711,7 @@ def _partially_populated_config() -> RunnerGradingConfig:
         state_checks=RunnerStateChecksConfig(
             jsonpath_checks=[_JSONPATH_CHECK], expected_hash="deadbeef"
         ),
-        transcript_rules=RunnerTranscriptRulesConfig(must_contain=["shipped"]),
+        transcript_rules=TranscriptRulesConfig(must_contain=["shipped"]),
         trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK),
         custom_checks={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
     )
@@ -865,7 +865,7 @@ def test_every_transcript_rule_and_jsonpath_key_grades_together(runner_service, 
                 {
                     "action_id": "a1",
                     "requestor": "assistant",
-                    "tool_name": "ship_widget",
+                    "name": "ship_widget",
                     "arguments": {"widget_id": "w1"},
                 }
             ],
@@ -1144,7 +1144,7 @@ def test_grade_trial_fails_loud_when_an_evaluator_stops_decomposing_a_key(
     """Fault injection: the drift the ledger exists to catch, end to end.
 
     The real evaluator still runs and still scores; only its per-author-key
-    accounting is dropped — what a future ``RunnerTranscriptRulesConfig`` key that
+    accounting is dropped — what a future ``TranscriptRulesConfig`` key that
     nothing decomposes would look like on the wire. The trace-checks row is the
     leaf-granular case: the block key alone being accounted would leave a kind
     evaluated by neither substrate invisible, so the key the error must name is

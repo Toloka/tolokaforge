@@ -316,10 +316,9 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 
 | Path | Excluded because |
 |---|---|
-| `tolokaforge/core/grading/combine.py` | Imports `core.evaluators.*` (orchestrator-only). |
+| `tolokaforge/core/grading/combine.py` | Imports `core.grading.state_checks`, itself orchestrator-only. |
 | `tolokaforge/core/grading/replay.py` | Imports `core.output.artifacts` (orchestrator-only). |
 | `tolokaforge/core/grading/state_checks.py` | Imports `core.utils.diff` (orchestrator-only). |
-| `tolokaforge/core/grading/transcript.py` | Consumed only by orchestrator-side code paths. |
 | `tolokaforge/core/llm/fallback_client.py` | Consumed only by `dx/cli/main.py`. |
 | `tolokaforge/tools/user_tools.py` | Imports `core.env_state` (orchestrator-only). |
 
@@ -328,7 +327,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 materialisation, engine run state, backend capabilities, the `RuntimeBackend` /
 `Conductor` / `TrialGrader` Protocol definitions and their factories, the
 `run_trial` library entry, run queue, resume, project loader, plugin registry,
-metrics, budgets, and the remaining utility modules); `tolokaforge/core/evaluators/`;
+metrics, budgets, and the remaining utility modules);
 `tolokaforge/core/output/`; `tolokaforge/core/search/`; `tolokaforge/core/utils/`;
 `tolokaforge/core/schema/`; `tolokaforge/adapters/`; `tolokaforge/dx/`;
 `tolokaforge/docker/`; `tolokaforge/env/`; `tolokaforge/runtime/`;
