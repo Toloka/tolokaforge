@@ -28,9 +28,12 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.utils.recorded_calls import records_from_messages
 from tolokaforge.adapters.base import AdapterEnvironment
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
+from tolokaforge.core.grading.trace_event_kind import TraceEventKind
+from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.models import (
     GradingConfig,
     InitialStateConfig,
@@ -166,81 +169,83 @@ class _McpSubprocess:
 
 def _make_passing_trajectory() -> Trajectory:
     """Minimal passing trajectory: all required_actions + all communicate_info."""
+    messages = [
+        Message(
+            role=MessageRole.USER,
+            content=(
+                "Hi! I'm customer C-101 (Alex Torres). I'd like to buy "
+                "1 × Wireless Headphones and 2 × USB-C Hub 7-Port."
+            ),
+        ),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="Checking the catalog and your account.",
+            tool_calls=[
+                ToolCall(id="tc-1", name="list_products", arguments={}),
+                ToolCall(
+                    id="tc-2",
+                    name="get_customer",
+                    arguments={"customer_id": "C-101"},
+                ),
+            ],
+        ),
+        Message(role=MessageRole.TOOL, content="[products]", tool_call_id="tc-1"),
+        Message(role=MessageRole.TOOL, content="[customer]", tool_call_id="tc-2"),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="Placing your order now.",
+            tool_calls=[
+                ToolCall(
+                    id="tc-3",
+                    name="place_order",
+                    arguments={
+                        "customer_id": "C-101",
+                        "items": [
+                            {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
+                            {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
+                        ],
+                    },
+                )
+            ],
+        ),
+        Message(
+            role=MessageRole.TOOL,
+            content='{"id":"O-001","status":"pending"}',
+            tool_call_id="tc-3",
+        ),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content="Processing payment.",
+            tool_calls=[
+                ToolCall(
+                    id="tc-4",
+                    name="confirm_payment",
+                    arguments={"order_id": "O-001"},
+                )
+            ],
+        ),
+        Message(
+            role=MessageRole.TOOL,
+            content='{"id":"O-001","status":"paid"}',
+            tool_call_id="tc-4",
+        ),
+        Message(
+            role=MessageRole.ASSISTANT,
+            content=(
+                "Order O-001 has been placed and the payment status is paid. "
+                "Your remaining balance is $141.01."
+            ),
+        ),
+        Message(role=MessageRole.USER, content="Thank you! ###STOP###"),
+    ]
     return Trajectory(
         task_id="shop_orders_02",
         trial_index=0,
         start_ts=datetime(2026, 1, 1),
         end_ts=datetime(2026, 1, 1),
         status=TrialStatus.COMPLETED,
-        messages=[
-            Message(
-                role=MessageRole.USER,
-                content=(
-                    "Hi! I'm customer C-101 (Alex Torres). I'd like to buy "
-                    "1 × Wireless Headphones and 2 × USB-C Hub 7-Port."
-                ),
-            ),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content="Checking the catalog and your account.",
-                tool_calls=[
-                    ToolCall(id="tc-1", name="list_products", arguments={}),
-                    ToolCall(
-                        id="tc-2",
-                        name="get_customer",
-                        arguments={"customer_id": "C-101"},
-                    ),
-                ],
-            ),
-            Message(role=MessageRole.TOOL, content="[products]", tool_call_id="tc-1"),
-            Message(role=MessageRole.TOOL, content="[customer]", tool_call_id="tc-2"),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content="Placing your order now.",
-                tool_calls=[
-                    ToolCall(
-                        id="tc-3",
-                        name="place_order",
-                        arguments={
-                            "customer_id": "C-101",
-                            "items": [
-                                {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
-                                {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
-                            ],
-                        },
-                    )
-                ],
-            ),
-            Message(
-                role=MessageRole.TOOL,
-                content='{"id":"O-001","status":"pending"}',
-                tool_call_id="tc-3",
-            ),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content="Processing payment.",
-                tool_calls=[
-                    ToolCall(
-                        id="tc-4",
-                        name="confirm_payment",
-                        arguments={"order_id": "O-001"},
-                    )
-                ],
-            ),
-            Message(
-                role=MessageRole.TOOL,
-                content='{"id":"O-001","status":"paid"}',
-                tool_call_id="tc-4",
-            ),
-            Message(
-                role=MessageRole.ASSISTANT,
-                content=(
-                    "Order O-001 has been placed and the payment status is paid. "
-                    "Your remaining balance is $141.01."
-                ),
-            ),
-            Message(role=MessageRole.USER, content="Thank you! ###STOP###"),
-        ],
+        messages=messages,
+        tool_log=records_from_messages(messages),
     )
 
 
@@ -473,81 +478,83 @@ class TestShopOrders02GradingPipeline:
 
     def _passing_trajectory(self) -> Trajectory:
         """Trajectory with all required_actions called and all communicate_info present."""
+        messages = [
+            Message(
+                role=MessageRole.USER,
+                content=(
+                    "Hi! I'm customer C-101 (Alex Torres). I'd like to buy "
+                    "1 × Wireless Headphones and 2 × USB-C Hub 7-Port."
+                ),
+            ),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="Checking the catalog and your account.",
+                tool_calls=[
+                    ToolCall(id="tc-1", name="list_products", arguments={}),
+                    ToolCall(
+                        id="tc-2",
+                        name="get_customer",
+                        arguments={"customer_id": "C-101"},
+                    ),
+                ],
+            ),
+            Message(role=MessageRole.TOOL, content="[products]", tool_call_id="tc-1"),
+            Message(role=MessageRole.TOOL, content="[customer]", tool_call_id="tc-2"),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="Placing your order now.",
+                tool_calls=[
+                    ToolCall(
+                        id="tc-3",
+                        name="place_order",
+                        arguments={
+                            "customer_id": "C-101",
+                            "items": [
+                                {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
+                                {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
+                            ],
+                        },
+                    )
+                ],
+            ),
+            Message(
+                role=MessageRole.TOOL,
+                content='{"id":"O-001","status":"pending"}',
+                tool_call_id="tc-3",
+            ),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content="Processing payment.",
+                tool_calls=[
+                    ToolCall(
+                        id="tc-4",
+                        name="confirm_payment",
+                        arguments={"order_id": "O-001"},
+                    )
+                ],
+            ),
+            Message(
+                role=MessageRole.TOOL,
+                content='{"id":"O-001","status":"paid"}',
+                tool_call_id="tc-4",
+            ),
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=(
+                    "Order O-001 has been placed and the payment status is paid. "
+                    "Your remaining balance is $141.01."
+                ),
+            ),
+            Message(role=MessageRole.USER, content="Thank you! ###STOP###"),
+        ]
         return Trajectory(
             task_id="shop_orders_02",
             trial_index=0,
             start_ts=datetime(2026, 1, 1),
             end_ts=datetime(2026, 1, 1),
             status=TrialStatus.COMPLETED,
-            messages=[
-                Message(
-                    role=MessageRole.USER,
-                    content=(
-                        "Hi! I'm customer C-101 (Alex Torres). I'd like to buy "
-                        "1 × Wireless Headphones and 2 × USB-C Hub 7-Port."
-                    ),
-                ),
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content="Checking the catalog and your account.",
-                    tool_calls=[
-                        ToolCall(id="tc-1", name="list_products", arguments={}),
-                        ToolCall(
-                            id="tc-2",
-                            name="get_customer",
-                            arguments={"customer_id": "C-101"},
-                        ),
-                    ],
-                ),
-                Message(role=MessageRole.TOOL, content="[products]", tool_call_id="tc-1"),
-                Message(role=MessageRole.TOOL, content="[customer]", tool_call_id="tc-2"),
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content="Placing your order now.",
-                    tool_calls=[
-                        ToolCall(
-                            id="tc-3",
-                            name="place_order",
-                            arguments={
-                                "customer_id": "C-101",
-                                "items": [
-                                    {"product_id": "P-001", "quantity": 1, "unit_price": 89.99},
-                                    {"product_id": "P-002", "quantity": 2, "unit_price": 34.5},
-                                ],
-                            },
-                        )
-                    ],
-                ),
-                Message(
-                    role=MessageRole.TOOL,
-                    content='{"id":"O-001","status":"pending"}',
-                    tool_call_id="tc-3",
-                ),
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content="Processing payment.",
-                    tool_calls=[
-                        ToolCall(
-                            id="tc-4",
-                            name="confirm_payment",
-                            arguments={"order_id": "O-001"},
-                        )
-                    ],
-                ),
-                Message(
-                    role=MessageRole.TOOL,
-                    content='{"id":"O-001","status":"paid"}',
-                    tool_call_id="tc-4",
-                ),
-                Message(
-                    role=MessageRole.ASSISTANT,
-                    content=(
-                        "Order O-001 has been placed and the payment status is paid. "
-                        "Your remaining balance is $141.01."
-                    ),
-                ),
-                Message(role=MessageRole.USER, content="Thank you! ###STOP###"),
-            ],
+            messages=messages,
+            tool_log=records_from_messages(messages),
         )
 
     def _no_tool_calls_trajectory(self) -> Trajectory:
@@ -570,6 +577,30 @@ class TestShopOrders02GradingPipeline:
     # ------------------------------------------------------------------
     # Tests
     # ------------------------------------------------------------------
+
+    @pytest.mark.parametrize("builder", ["module_level", "class_level"])
+    def test_passing_trajectory_records_what_its_tools_returned(self, builder):
+        """Both passing builders carry a record, and it reports what their tools returned.
+
+        ``required_actions`` is a claim about a call the trial made, so a builder
+        with no ``tool_log`` pins the record-absent path while its name claims the
+        semantic one. A ``TOOL_RESULT``'s text comes from the record whenever one
+        exists, so a record built without ``output`` blanks every tool result the
+        message view shows.
+        """
+        trajectory = {
+            "module_level": _make_passing_trajectory,
+            "class_level": self._passing_trajectory,
+        }[builder]()
+        timeline = build_trial_timeline(trajectory.messages, trajectory.tool_log, None)
+
+        assert timeline.records_present is True
+        recorded_text = [
+            event.result for event in timeline.events if event.kind is TraceEventKind.TOOL_RESULT
+        ]
+        assert recorded_text == [
+            message.content for message in trajectory.messages if message.role is MessageRole.TOOL
+        ]
 
     def test_passing_trajectory_scores_1_0(self, mcp_tools, shop_orders_02_task_dir):
         """Correct tool sequence + communicated info + correct final DB → score 1.0."""
