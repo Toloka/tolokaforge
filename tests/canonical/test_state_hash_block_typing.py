@@ -34,6 +34,12 @@ observable — the gate's verdict and every field of the resulting ``Grade``. An
 mapping constructs a block and a ``null`` does not, so every site asking "is a hash
 block configured?" asks it as ``is not None`` rather than by truthiness; this is what
 says the two answer alike.
+
+The third is the other half of declaring ``description``: a key the block accepts and
+nothing reads is the same invisibility as a key it drops. The reasons are pinned as
+whole strings rather than as a substring search, so the row where the block declares
+none pins that the text an author never wrote leaves no trace — an empty ``()``
+suffix is as much a change as a missing description is.
 """
 
 from dataclasses import dataclass
@@ -104,6 +110,20 @@ _RUNNER_FLATTENED_FIELD_NAMES: dict[str, Any] = {
     "expected_hash": _NEVER_MATCHING_HASH,
     "hash_weight": 0.5,
 }
+
+_DESCRIPTION = "the duplicate charge is reversed"
+
+_GRADE_SCORE = 0.5
+
+# Written out rather than composed from _DESCRIPTION: an expected string built by the
+# rule under test agrees with that rule whatever it does.
+_UNDESCRIBED_REASONS = (
+    "State: State hash mismatch: expected 0000000000000000..., got 20bf272dadce184d..."
+)
+_DESCRIBED_REASONS = (
+    "State: State hash mismatch: expected 0000000000000000..., got 20bf272dadce184d... "
+    "(the duplicate charge is reversed)"
+)
 
 _ABSENT = object()
 """No ``hash`` key at all — distinct from a key written with an empty or null value."""
@@ -247,6 +267,34 @@ def test_a_typo_inside_the_hash_block_buys_no_better_grade(
         "the grading config loaded a hash block carrying keys it does not declare, and "
         "the trial then graded higher than the same block spelled correctly"
     )
+
+
+@pytest.mark.parametrize(
+    ("hash_block", "expected_reasons"),
+    [
+        pytest.param(_CORRECTLY_SPELLED, _UNDESCRIBED_REASONS, id="no-description-key"),
+        pytest.param(
+            {**_CORRECTLY_SPELLED, "description": ""},
+            _UNDESCRIBED_REASONS,
+            id="empty-description",
+        ),
+        pytest.param(
+            {**_CORRECTLY_SPELLED, "description": _DESCRIPTION},
+            _DESCRIBED_REASONS,
+            id="declared-description",
+        ),
+    ],
+)
+def test_the_hash_verdict_reports_the_description_the_block_declares(
+    hash_block: dict[str, Any], expected_reasons: str, tmp_path: Path
+) -> None:
+    """A declared ``description`` reaches the reasons; the default leaves them untouched."""
+    cell = _measure(_grading_config(hash_block, [_PASSING_ASSERTION]), tmp_path / "described.yaml")
+
+    assert cell.gate_refusal is None, cell.gate_refusal
+    assert cell.grade is not None, cell.load_refusal
+    assert cell.grade.reasons == expected_reasons
+    assert cell.grade.score == _GRADE_SCORE, "the description moved the verdict it describes"
 
 
 @pytest.mark.parametrize(

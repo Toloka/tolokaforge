@@ -428,7 +428,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field="StateHashConfig.description",
         runner_field=None,
-        core_evaluator=None,
+        core_evaluator="tolokaforge.core.grading.combine.GradingEngine._check_state_hash",
         reason=(
             "the runner's flattened hash block declares no description field, so there is "
             "nothing on that substrate for the key to resolve against: the wire carries the "

@@ -343,6 +343,10 @@ class GradingEngine:
         before ``golden_actions`` is read at all, so a pack declaring both never replays
         and needs no world.
 
+        A ``description`` the block declares is appended to every reason the verdict
+        carries, in the parenthesised shape ``state_checks.jsonpaths[*].description``
+        already reads into an assertion's reason.
+
         Raises:
             UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
                 truthy without being a list at all, so no reader can iterate it. Refused
@@ -360,34 +364,43 @@ class GradingEngine:
 
         db_state = extract_db_state(final_env_state)
         expected_hash = hash_config.expected_state_hash
+        score: float | None
+        diff_result: dict[str, Any] | None = None
+        replay: GoldenReplayRecord | None = None
+
         if expected_hash:
             score, reason = self.state_checker.check_hash(
                 db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
             )
-            return score, [reason], None, None
+            reasons = [reason]
+        elif not hash_config.golden_actions:
+            score, reasons = None, [_HASH_NOT_CHECKED_NO_SOURCE]
+        else:
+            golden_actions = hash_config.golden_actions
+            refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
+            world = require_golden_replay_world(
+                task_dir=self.task_dir,
+                initial_state_json_db=(
+                    self.task_initial_state.json_db if self.task_initial_state else None
+                ),
+                mcp_server=self.task_mcp_server,
+            )
+            score, reason, diff_result, replay = (
+                self.state_checker.check_hash_against_golden_replay(
+                    db_state=db_state,
+                    golden_actions=golden_actions,
+                    task_dir=world.task_dir,
+                    initial_state_path=world.initial_state_path,
+                    mcp_server_path=world.mcp_server_path,
+                    task_domain=self.task_domain,
+                    numeric_string_fields=checks.numeric_string_fields,
+                )
+            )
+            reasons = [reason]
 
-        golden_actions = hash_config.golden_actions
-        if not golden_actions:
-            return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
-        refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
-        world = require_golden_replay_world(
-            task_dir=self.task_dir,
-            initial_state_json_db=(
-                self.task_initial_state.json_db if self.task_initial_state else None
-            ),
-            mcp_server=self.task_mcp_server,
-        )
-
-        score, reason, diff_result, replay = self.state_checker.check_hash_against_golden_replay(
-            db_state=db_state,
-            golden_actions=golden_actions,
-            task_dir=world.task_dir,
-            initial_state_path=world.initial_state_path,
-            mcp_server_path=world.mcp_server_path,
-            task_domain=self.task_domain,
-            numeric_string_fields=checks.numeric_string_fields,
-        )
-        return score, [reason], diff_result, replay
+        if hash_config.description:
+            reasons = [f"{reason} ({hash_config.description})" for reason in reasons]
+        return score, reasons, diff_result, replay
 
     def _run_custom_checks(
         self,

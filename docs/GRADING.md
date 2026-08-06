@@ -174,6 +174,7 @@ declared `reason`.
 | Key | kind | coverage | enforcement | Why only one substrate | Tracked |
 |---|---|---|---|---|---|
 | `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
+| `state_checks.hash.description` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | the runner's flattened hash block declares no description field, so there is nothing on that substrate for the key to resolve against — the wire carries the runner's hash verdict, not the reason text an author writes beside it | architectural |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
 | `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
@@ -1107,6 +1108,17 @@ share a file and not an object, which is what makes the second read load-bearing
 `tolokaforge run-trial` runs no grading pre-flight, so the description build is the only
 read a trial there passes through, and a key dropped at that read reaches
 `RegisterTrial` as an absent hash and is paid for.
+
+| key | what it declares |
+|---|---|
+| `enabled` | whether the hash is compared at all. A source under a falsy flag, or a truthy flag with no source, is refused rather than graded |
+| `expected_state_hash` | the literal to compare the final state against. Read first, so it returns before `golden_actions` is looked at |
+| `golden_actions` | the actions to replay for an expected state, where no literal is declared |
+| `weight` | the hash's share of the `state_checks` component where `jsonpaths` is non-empty too. No default — the shape that needs one and declares none is refused |
+| `description` | what the hash asserts, in the author's words. A non-empty value is appended in parentheses to the hash verdict's reason in `grade.reasons`, the way an assertion's `description` reads into its own |
+
+`description` is the one key of the five the runner's flattened block does not declare, so
+a trial the runner graded reports the hash verdict without it.
 
 **`golden_actions` is the list of actions to replay, or there is no replay.** A **falsy**
 value — `[]`, `{}`, `""`, `0`, `false`, or the key written bare, which is what an author
