@@ -2,6 +2,17 @@
 
 All notable changes to this project are documented in this file.
 
+## v0.16.0 (2026-08-06)
+
+### Feat
+
+- **skills**: JSONL progress channel for orchestration subagents (#909)
+
+### Fix
+
+- **grading**: hash-source rule skips a pack whose adapter may supply the source (#911) (#914)
+- **llm**: user simulator restarts the conversation after the agent answers (CBT-021) (#905)
+
 ## v0.15.0 (2026-08-05)
 
 ### Feat
