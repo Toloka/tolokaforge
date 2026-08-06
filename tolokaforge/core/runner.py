@@ -677,7 +677,7 @@ class TrialRunner:
 
         Embeds user tool-call results in the user message text (Anthropic does
         not support ``tool_use`` from the USER role) while preserving the
-        original ``tool_calls`` so ``ActionEvaluator`` can track required actions.
+        original ``tool_calls`` so ``transcript_rules.required_actions`` can match them.
 
         Stop-token handling has two shapes:
 

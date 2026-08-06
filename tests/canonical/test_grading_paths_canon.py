@@ -7,8 +7,8 @@ at the component level — so a future grading refactor can prove it didn't chan
 verdicts:
 
 - jsonpath partial-credit state checks (``satisfied / total``)
-- transcript ``required_actions`` + ``communicate_info`` (tau2 evaluators, combined
-  multiplicatively with the legacy transcript checker)
+- transcript ``required_actions`` + ``communicate_info``, one sub-check per declared
+  entry and the score the fraction of them that passed
 - the same transcript block on a trial carrying **no tool-call record**, so the
   record-absent path is pinned by a scenario whose name says that is its subject
 - the weighted-combine normalization across multiple live components
@@ -139,7 +139,7 @@ def _transcript_actions_messages() -> list[Message]:
 
 
 def _scenario_transcript_actions_and_info():
-    """required_actions 1/2 found (0.5) x communicate_info 1/1 found (1.0) -> transcript 0.5."""
+    """required_actions 1 of 2 found + communicate_info 1 of 1 -> transcript 2 of 3."""
     messages = _transcript_actions_messages()
     traj = _trajectory(messages, records_from_messages(messages))
     return _transcript_actions_config(), traj, {}

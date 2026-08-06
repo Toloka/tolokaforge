@@ -10,7 +10,7 @@ PROJECT RULES: Tests use real behavior, no mocks.
 """
 
 from collections.abc import Sequence
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pytest
 
@@ -18,6 +18,7 @@ pytestmark = pytest.mark.unit
 
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
+from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
@@ -26,6 +27,7 @@ from tolokaforge.core.hash import compute_stable_hash
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
+    GradingConfig,
     Message,
     MessageRole,
     Metrics,
@@ -1112,6 +1114,52 @@ class TestTranscriptRulesEvaluation:
         result = evaluate_transcript_rules(timeline, config)
         assert result.passed is False
         assert result.score == 0.75  # 3 of 4 sub-checks pass
+
+
+class TestCoreEngineTranscriptComponent:
+    """What the core engine reports for ``transcript_rules``, through the real grade.
+
+    The evaluator's own arithmetic is locked above; what these lock is the engine's
+    caller — the component the author reads in ``grade.yaml`` is the fraction the
+    shared evaluator scored, with nothing folded on top of it.
+    """
+
+    @staticmethod
+    def _component(transcript_rules: dict, messages: list[Message]) -> float | None:
+        config = GradingConfig(
+            combine={"method": "weighted", "weights": {"transcript_rules": 1.0}},
+            transcript_rules=transcript_rules,
+        )
+        grade = GradingEngine(config).grade_trajectory(
+            Trajectory(
+                task_id="transcript_component",
+                trial_index=0,
+                start_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                end_ts=datetime(2026, 1, 1, tzinfo=timezone.utc),
+                messages=messages,
+            ),
+            {},
+        )
+        return grade.components.transcript_rules
+
+    def test_a_declared_but_empty_rule_set_scores_one(self):
+        """A block declaring no rule can be violated by nothing, so it scores ``1.0``.
+
+        The block is still declared, so the component is scored rather than left
+        unset — presence follows the ``transcript_rules:`` key, not its contents.
+        """
+        assert self._component({}, [Message(role=MessageRole.USER, content="go")]) == 1.0
+
+    def test_a_single_violated_rule_scores_zero(self):
+        """One declared rule, violated, is the whole denominator — no free buckets."""
+        component = self._component(
+            {"tool_expectations": {"required_tools": ["write_file"]}},
+            [
+                Message(role=MessageRole.USER, content="write the report"),
+                Message(role=MessageRole.ASSISTANT, content="I wrote nothing."),
+            ],
+        )
+        assert component == 0.0
 
 
 class TestStableHashComputation:

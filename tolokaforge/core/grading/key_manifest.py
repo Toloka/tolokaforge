@@ -223,24 +223,6 @@ _COMBINE_WEIGHTS_MEMBERSHIP_REASON = (
     "the disagreement is a verdict flip rather than a magnitude"
 )
 
-_TRANSCRIPT_AGGREGATION_REASON = (
-    "core averages four fixed buckets while the runner scores one sub-check per "
-    "declared entry, so the two component scores differ in magnitude"
-)
-
-_TRANSCRIPT_PHRASE_REASON = (
-    "two independent divergences, and the second one flips the verdict rather than "
-    "scaling it. Aggregation: core averages four fixed buckets while the runner scores "
-    "one sub-check per declared entry, so the magnitudes differ. Evidence set: core "
-    "searches user turns, assistant turns and tool results, while the runner searches "
-    "assistant turns alone — so a phrase that appears only in a tool result is FOUND "
-    "core-side and MISSING runner-side for the same trial. Measured on a records-present "
-    "timeline: must_contain(['refunds allowed']) against a tool result carrying it returns "
-    "1.0 on core and 0.0 on the runner. Both predate #676; the runner's narrower set is "
-    "pinned by test_must_contain_only_searches_assistant_turns, so it is deliberate rather "
-    "than an oversight, and #685 must reconcile the evidence sets and not only the averaging"
-)
-
 _TRACE_CHECKS_EVALUATOR = "tolokaforge.core.grading.trace_checks.evaluate_trace_checks"
 """The one evaluator both substrates score ``trace_checks`` with.
 
@@ -511,7 +493,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.must_contain",
         core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_PHRASE_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -523,7 +504,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.disallow_regex",
         core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_PHRASE_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -535,7 +515,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.max_turns",
         core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -555,9 +534,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.required_actions",
         runner_field="TranscriptRulesConfig.required_actions",
-        core_evaluator="tolokaforge.core.evaluators.action_evaluator.ActionEvaluator.evaluate_actions",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -567,12 +545,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.communicate_info",
         runner_field="TranscriptRulesConfig.communicate_info",
-        core_evaluator=(
-            "tolokaforge.core.evaluators.communicate_evaluator."
-            "CommunicateEvaluator.evaluate_communication"
-        ),
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
         tracking_issue=685,
     ),
     GradingKey(
@@ -584,11 +558,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         runner_field="TranscriptRulesConfig.tool_expectations",
         core_evaluator=_TRANSCRIPT_EVALUATOR,
         runner_evaluator=_TRANSCRIPT_EVALUATOR,
-        reason=(
-            "core folds both tool lists into one of four averaged buckets and ignores call "
-            "status; the runner scores one sub-check per declared tool and requires a "
-            "required tool's call to have succeeded"
-        ),
         tracking_issue=685,
     ),
     GradingKey(

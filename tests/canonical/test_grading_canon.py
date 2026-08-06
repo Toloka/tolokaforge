@@ -6,11 +6,12 @@ from tests.utils.recorded_calls import recorded_call
 from tests.utils.timelines import build_timeline
 from tolokaforge.core.grading.rubric import build_submit_report_tool
 from tolokaforge.core.grading.state_checks import StateChecker
-from tolokaforge.core.grading.transcript_buckets import score_transcript_rules_by_bucket_average
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.runner.models import (
     Criterion,
     Rubric,
     ToolExpectations,
+    TranscriptEvaluationResult,
     TranscriptRulesConfig,
 )
 
@@ -65,11 +66,23 @@ class TestStateCheckerCanon:
         snap.assert_match({"score": score, "reasons": "; ".join(reasons)}, "fail_result.json")
 
 
-class TestTranscriptBucketAverageCanon:
-    """Canonical tests for the core engine's transcript fold."""
+def _transcript_verdict(result: TranscriptEvaluationResult) -> dict:
+    """The evaluator's verdict, per sub-check, rounded against float-repr churn."""
+    return {
+        "score": round(result.score, 6),
+        "passed": result.passed,
+        "sub_checks": [
+            {"rule_type": row.rule_type, "passed": row.passed, "message": row.message}
+            for row in result.details
+        ],
+    }
+
+
+class TestTranscriptRulesCanon:
+    """Canonical tests for the shared ``transcript_rules`` evaluator."""
 
     def test_minimal_calculation_transcript_pass(self, canon_snapshot):
-        """The fold grades a passing transcript for minimal_calculation."""
+        """Every declared rule is satisfied for minimal_calculation."""
         timeline = build_timeline(
             [
                 ("user", "Please calculate 17 times 23 and save the answer to result.txt."),
@@ -79,13 +92,13 @@ class TestTranscriptBucketAverageCanon:
             [recorded_call("write_file", arguments={"path": "result.txt", "content": "391"})],
         )
 
-        score, reasons = score_transcript_rules_by_bucket_average(timeline, _CALC_RULES)
+        result = evaluate_transcript_rules(timeline, _CALC_RULES)
 
         snap = canon_snapshot("grading_transcript_calc")
-        snap.assert_match({"score": score, "reasons": reasons}, "pass_result.json")
+        snap.assert_match(_transcript_verdict(result), "pass_result.json")
 
     def test_minimal_calculation_transcript_fail(self, canon_snapshot):
-        """The fold grades a failing transcript — missing required tool."""
+        """One declared rule of three fails — the required tool was never called."""
         timeline = build_timeline(
             [
                 ("user", "Please calculate 17 times 23 and save the answer to result.txt."),
@@ -93,10 +106,10 @@ class TestTranscriptBucketAverageCanon:
             ],
         )  # No tool calls
 
-        score, reasons = score_transcript_rules_by_bucket_average(timeline, _CALC_RULES)
+        result = evaluate_transcript_rules(timeline, _CALC_RULES)
 
         snap = canon_snapshot("grading_transcript_calc")
-        snap.assert_match({"score": score, "reasons": reasons}, "fail_result.json")
+        snap.assert_match(_transcript_verdict(result), "fail_result.json")
 
 
 class TestSubmitReportToolCanon:

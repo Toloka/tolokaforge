@@ -1409,11 +1409,10 @@ def test_each_cache_debug_route_scores_in_full_and_records_itself_the_winner(
     """Both diagnostic routes the pack's rubric reference names are worth full marks.
 
     The served-vs-source run is the one the shipped pack docked. Driven through the
-    fold at the pack's old weights it scored CORE ``(0.9333, True)`` on 2 of 3
-    ``required_actions`` and RUNNER ``(0.95, True)`` on 3 of 4 rule rows: docked on
-    both substrates for a route the task never required. The two numbers differ only
-    by the aggregation divergence #685 already owns — core multiplies action x comm x
-    legacy, the runner takes the fraction of rows — not by anything this pack says.
+    fold at the pack's old weights it scored ``(0.9333, True)`` on 2 of 3
+    ``required_actions`` and ``(0.95, True)`` on 3 of 4 rule rows: docked for a route
+    the task never required, which is what moved the weights rather than anything
+    this pack says.
     """
     result = _cache_debug_result(calls)
     assert result.score == pytest.approx(1.0)

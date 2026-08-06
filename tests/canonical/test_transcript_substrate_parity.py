@@ -11,19 +11,18 @@ is graded through **both** substrates' real paths:
 Driving through the adapter is what keeps the rows readable as authored packs
 rather than as either substrate's internal config model.
 
-Seventeen of the rows are the seven ways the two implementations disagree today,
-and each is marked ``xfail(strict=True)``: a row that starts passing fails the
-suite, so a marker cannot rot into a silent skip. The two unmarked **anchor** rows
-are cases the substrates already agree on, asserted directly and at two different
-scores — a harness that drove one substrate twice, or returned a constant, fails
-one of them.
+Seventeen of the rows sit on the seven scoring questions a transcript rule has to
+answer the same way on either substrate — how the sub-checks aggregate, what
+denominator they aggregate over, which events a phrase rule reads, whether a
+phrase matches case-insensitively, whether a call's status counts, whether a veto
+beats a fraction, and what a missing tool-call record proves. The rows are pinned
+at two different scores and the two **anchor** rows sit on no question at all, so
+a harness that drove one substrate twice, or returned a constant, fails some of
+them.
 
-``raises=AssertionError`` is on every marker for the same reason ``strict`` is: a
-bare ``xfail`` swallows *any* failure, so a row whose pack stopped loading would
-report as the expected divergence and its pinned score would never be read. The
-runner's column is checked before that assertion and outside it — a table pinning
-a value the runner does not produce raises :class:`_FixtureDefect`, which no
-marker absorbs.
+The runner's column is checked first and separately: a table pinning a value the
+runner does not produce raises :class:`_FixtureDefect` rather than reading as the
+substrates disagreeing.
 
 The fixture root is separate from ``grading_parity`` on purpose: that corpus's
 packs each declare exactly one author key, and several rows here declare two so a
@@ -58,8 +57,8 @@ _PARITY_GLOB = "transcript_parity/**/task.yaml"
 _FIXTURE_TIMESTAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
-class _Divergence(str, Enum):
-    """The seven ways the two implementations of ``transcript_rules`` disagree."""
+class _ScoringQuestion(str, Enum):
+    """The seven scoring questions both substrates have to answer alike."""
 
     AGGREGATION = "aggregation"
     DENOMINATOR = "denominator"
@@ -113,7 +112,7 @@ class _Row:
 
     ``tool_log`` is stated per row rather than derived from the messages: whether
     the trial kept a record of the calls it declared is itself one of the seven
-    things the substrates read differently.
+    questions.
     """
 
     row_id: str
@@ -121,7 +120,7 @@ class _Row:
     messages: tuple[Message, ...]
     tool_log: tuple[RecordedToolCall, ...]
     expected: float
-    divergence: _Divergence | None
+    question: _ScoringQuestion | None
 
 
 _ROWS: tuple[_Row, ...] = (
@@ -134,7 +133,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=_Divergence.AGGREGATION,
+        question=_ScoringQuestion.AGGREGATION,
     ),
     _Row(
         row_id="disallow_regex_matched",
@@ -145,7 +144,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=_Divergence.AGGREGATION,
+        question=_ScoringQuestion.AGGREGATION,
     ),
     _Row(
         row_id="max_turns_exceeded",
@@ -157,7 +156,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=_Divergence.AGGREGATION,
+        question=_ScoringQuestion.AGGREGATION,
     ),
     _Row(
         row_id="disallowed_tool_called",
@@ -168,7 +167,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(_record_for(_DELETE_CUSTOMER, ToolExecutionStatus.SUCCESS, output="deleted"),),
         expected=0.0,
-        divergence=_Divergence.AGGREGATION,
+        question=_ScoringQuestion.AGGREGATION,
     ),
     _Row(
         row_id="required_tool_never_called",
@@ -179,7 +178,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=_Divergence.AGGREGATION,
+        question=_ScoringQuestion.AGGREGATION,
     ),
     _Row(
         row_id="must_contain_one_of_two",
@@ -190,7 +189,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.5,
-        divergence=_Divergence.DENOMINATOR,
+        question=_ScoringQuestion.DENOMINATOR,
     ),
     _Row(
         row_id="disallow_regex_one_of_two_matched",
@@ -201,7 +200,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.5,
-        divergence=_Divergence.DENOMINATOR,
+        question=_ScoringQuestion.DENOMINATOR,
     ),
     _Row(
         row_id="must_contain_only_in_a_tool_result",
@@ -218,7 +217,7 @@ _ROWS: tuple[_Row, ...] = (
             ),
         ),
         expected=0.0,
-        divergence=_Divergence.EVIDENCE_SET,
+        question=_ScoringQuestion.EVIDENCE_SET,
     ),
     _Row(
         row_id="must_contain_only_in_a_user_turn",
@@ -229,7 +228,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=_Divergence.EVIDENCE_SET,
+        question=_ScoringQuestion.EVIDENCE_SET,
     ),
     _Row(
         row_id="disallow_regex_only_in_a_tool_result",
@@ -246,7 +245,7 @@ _ROWS: tuple[_Row, ...] = (
             ),
         ),
         expected=1.0,
-        divergence=_Divergence.EVIDENCE_SET,
+        question=_ScoringQuestion.EVIDENCE_SET,
     ),
     _Row(
         row_id="disallow_regex_only_in_a_user_turn",
@@ -257,7 +256,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=1.0,
-        divergence=_Divergence.EVIDENCE_SET,
+        question=_ScoringQuestion.EVIDENCE_SET,
     ),
     _Row(
         row_id="must_contain_differs_only_in_case",
@@ -268,7 +267,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=1.0,
-        divergence=_Divergence.CASE,
+        question=_ScoringQuestion.CASE,
     ),
     _Row(
         row_id="required_tool_call_errored",
@@ -279,7 +278,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(_record_for(_WRITE_FILE, ToolExecutionStatus.ERROR, output="disk full"),),
         expected=0.0,
-        divergence=_Divergence.CALL_STATUS,
+        question=_ScoringQuestion.CALL_STATUS,
     ),
     _Row(
         row_id="disallowed_tool_call_errored",
@@ -290,7 +289,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(_record_for(_DELETE_CUSTOMER, ToolExecutionStatus.ERROR, output="denied"),),
         expected=0.0,
-        divergence=_Divergence.CALL_STATUS,
+        question=_ScoringQuestion.CALL_STATUS,
     ),
     _Row(
         row_id="communicate_info_missing_beside_a_found_phrase",
@@ -301,7 +300,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.5,
-        divergence=_Divergence.VETO_VS_FRACTION,
+        question=_ScoringQuestion.VETO_VS_FRACTION,
     ),
     _Row(
         row_id="required_action_missing_beside_a_found_phrase",
@@ -312,7 +311,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.5,
-        divergence=_Divergence.VETO_VS_FRACTION,
+        question=_ScoringQuestion.VETO_VS_FRACTION,
     ),
     _Row(
         row_id="required_action_declared_with_no_record",
@@ -323,7 +322,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=_Divergence.RECORD_ABSENT,
+        question=_ScoringQuestion.RECORD_ABSENT,
     ),
     _Row(
         row_id="anchor_required_action_never_declared",
@@ -334,7 +333,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=0.0,
-        divergence=None,
+        question=None,
     ),
     _Row(
         row_id="anchor_optional_communicate_info_absent",
@@ -345,7 +344,7 @@ _ROWS: tuple[_Row, ...] = (
         ),
         tool_log=(),
         expected=1.0,
-        divergence=None,
+        question=None,
     ),
 )
 
@@ -353,28 +352,10 @@ _ROWS: tuple[_Row, ...] = (
 class _FixtureDefect(Exception):
     """The row cannot measure what it claims, so its verdict is about the fixture.
 
-    Deliberately not an ``AssertionError``: every divergence marker declares
-    ``raises=AssertionError``, so this reaches the report as a failure on rows the
-    marker would otherwise absorb as the expected divergence.
+    A pack that declares no ``transcript_rules`` block, or a pinned column the
+    runner does not produce, is the table being wrong rather than the two
+    substrates disagreeing — raised rather than asserted so the report says which.
     """
-
-
-def _param(row: _Row):
-    """The one place a row is marked, so no row can be ``xfail`` without ``strict``."""
-    if row.divergence is None:
-        return pytest.param(row, id=row.row_id)
-    return pytest.param(
-        row,
-        id=row.row_id,
-        marks=pytest.mark.xfail(
-            strict=True,
-            raises=AssertionError,
-            reason=(
-                f"transcript_rules diverges on {row.divergence.value}: the core engine "
-                f"does not score this pack the {row.expected} the runner does"
-            ),
-        ),
-    )
 
 
 @pytest.fixture(scope="module")
@@ -410,14 +391,15 @@ def _runner_component(adapter: NativeAdapter, row: _Row) -> float:
     return evaluate_transcript_rules(timeline, grading.transcript_rules).score
 
 
-@pytest.mark.parametrize("row", [_param(row) for row in _ROWS])
+@pytest.mark.parametrize("row", [pytest.param(row, id=row.row_id) for row in _ROWS])
 def test_both_substrates_score_one_transcript_rules_pack_alike(
     row: _Row, parity_adapter: NativeAdapter, tmp_path: Path
 ):
     """One authored pack and one trial score the same on both substrates.
 
     The pinned value is the runner's own verdict, which is the semantics the
-    unification adopts, so a row is satisfied only by the core engine moving to it.
+    shared evaluator carries, so a row is satisfied only by the core engine
+    reaching it too.
     """
     runner_score = _runner_component(parity_adapter, row)
     if runner_score != row.expected:
@@ -432,3 +414,13 @@ def test_both_substrates_score_one_transcript_rules_pack_alike(
         f"row {row.row_id!r}: the core engine scores transcript_rules {core_score} where "
         f"the runner scores {runner_score}"
     )
+
+
+def test_every_scoring_question_is_measured_by_a_row():
+    """Each of the seven questions keeps a row that answers it.
+
+    ``_ScoringQuestion`` is declared independently of the table, so a row dropped
+    from ``_ROWS`` leaves the question it carried with nothing measuring it.
+    """
+    measured = {row.question for row in _ROWS if row.question is not None}
+    assert measured == set(_ScoringQuestion)

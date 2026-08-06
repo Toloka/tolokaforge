@@ -939,9 +939,9 @@ class TestShopOrders02TrajectoryRoundTrip:
     will diverge from the original run.
 
     Fields critical for grading:
-      - tool_calls[].name  → ActionEvaluator.required_actions matching
+      - tool_calls[].name  → transcript_rules.required_actions matching
       - tool_calls[].arguments → compare_args matching (future use)
-      - assistant content → CommunicateEvaluator.communicate_info matching
+      - assistant content → transcript_rules.communicate_info matching
       - task_id / status  → trajectory provenance
     """
 
@@ -993,7 +993,7 @@ class TestShopOrders02TrajectoryRoundTrip:
     def test_communicate_info_values_survive_in_assistant_messages(self, tmp_path):
         """Assistant message content with O-001/paid/141.01 is preserved verbatim.
 
-        CommunicateEvaluator does substring search on assistant message content.
+        A communicate_info sub-check searches assistant message content.
         If YAML escaping mangles the text (e.g., dollar sign or decimals),
         communicate_info checks would silently fail on replayed trajectories.
         """
@@ -1007,7 +1007,7 @@ class TestShopOrders02TrajectoryRoundTrip:
         for info in ("O-001", "paid", "141.01"):
             assert info in assistant_texts, (
                 f"'{info}' not found in reloaded assistant messages — "
-                "CommunicateEvaluator would mis-score replayed trajectory"
+                "communicate_info would mis-score the replayed trajectory"
             )
 
     def test_trajectory_metadata_fields_survive_yaml_round_trip(self, tmp_path):
