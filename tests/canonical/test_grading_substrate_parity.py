@@ -1797,14 +1797,18 @@ def _replay_authored_calls(
         assert executed.status == pb2.EXECUTION_STATUS_SUCCESS, executed.error_message
 
 
-def _runner_trace_checks_grade(
+def _register_pack(
     servicer: RunnerServiceImpl,
-    task_description: runner_models.TaskDescription,
-    case: _TrialCase,
-    trial_id: str,
     context: Any,
-) -> pb2.Grade:
-    """The runner's own ``GradeTrial`` verdict on ``case``, over real gRPC handlers."""
+    task_description: runner_models.TaskDescription,
+    trial_id: str,
+) -> None:
+    """Put ``task_description`` on the runner through its own ``RegisterTrial``.
+
+    The spec round-trips through JSON, so the runner grades the config it rebuilt
+    rather than the caller's object — which is why a caller that needs the graded
+    config reads it back off ``servicer.trials[trial_id]``.
+    """
     registered = servicer.RegisterTrial(
         register_request(
             trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
@@ -1813,13 +1817,42 @@ def _runner_trace_checks_grade(
         context,
     )
     assert registered.success is True, registered.error
+
+
+def _grade_pack_through_the_runner(
+    servicer: RunnerServiceImpl,
+    context: Any,
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    trial_id: str,
+) -> pb2.GradeTrialResponse:
+    """Register the task, replay ``case``'s calls, grade — the runner's whole path.
+
+    The ``GradeTrialResponse`` comes back unasserted. A caller may be reading the
+    RPC's own verdict — a failed audit is an outcome, not a fixture error — so
+    asserting ``success`` here would consume the very fact it was called for.
+    Registration is asserted, because a trial that never registered is a broken
+    fixture whichever outcome the caller wants.
+    """
+    _register_pack(servicer, context, task_description, trial_id)
     _replay_authored_calls(servicer, context, trial_id, case)
-    response = servicer.GradeTrial(
+    return servicer.GradeTrial(
         pb2.GradeTrialRequest(
             trial_id=trial_id, llm_messages_json=json.dumps(case.runner_messages)
         ),
         context,
     )
+
+
+def _runner_trace_checks_grade(
+    servicer: RunnerServiceImpl,
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    trial_id: str,
+    context: Any,
+) -> pb2.Grade:
+    """The runner's own ``GradeTrial`` verdict on ``case``, over real gRPC handlers."""
+    response = _grade_pack_through_the_runner(servicer, context, task_description, case, trial_id)
     assert response.success is True, response.error
     return response.grade
 
@@ -2066,14 +2099,7 @@ def _runner_undecided_grade(
     a hand-written counterpart could describe a trial the runner did not have, and
     then the two substrates would be graded on two different trials.
     """
-    registered = servicer.RegisterTrial(
-        register_request(
-            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
-            trial_id=trial_id,
-        ),
-        context,
-    )
-    assert registered.success is True, registered.error
+    _register_pack(servicer, context, task_description, trial_id)
 
     lookup = _execute_declared_call(servicer, context, trial_id, _UNDECIDED_LOOKUP, succeeds=True)
     assert lookup.status == pb2.EXECUTION_STATUS_SUCCESS, lookup.error_message
@@ -2176,6 +2202,52 @@ def test_an_undecided_verdict_crosses_the_wire_as_the_fact_it_is(
     )
     assert (core_unrecorded.passed, core_unrecorded.undecided) == (False, True)
     assert (core_failed.passed, core_failed.undecided) == (False, False)
+
+
+# --------------------------------------------------------------------------
+# The runner's own registration path reaches the DB-reading packs
+# --------------------------------------------------------------------------
+
+_STATE_READING_PACKS = (
+    ("state_checks_jsonpaths", "state_checks"),
+    ("custom_checks", "custom_checks"),
+)
+
+
+@pytest.mark.parametrize(("task_id", "component"), _STATE_READING_PACKS)
+def test_a_state_reading_pack_grades_through_the_runners_own_registration(
+    task_id, component, test_data_dir, runner_service, mock_grpc_context
+):
+    """Both DB-reading parity packs are reachable through ``RegisterTrial`` and score.
+
+    Every other parity pack grades off the transcript, so these two are the only
+    ones whose runner path depends on the trial's DB service having been
+    provisioned — and ``RegisterTrial`` provisions it from ``initial_state``, not
+    from the trial fixture's ``state:``.
+
+    Only the satisfying case is asserted. The rows come from ``initial_state``, so
+    the violating case replays its messages against those same rows and scores
+    identically; discriminating the two is lock 3's claim, made over the trial
+    fixture's state. What is claimed here is reachability of the runner's own path.
+    """
+    adapter = _parity_adapter(test_data_dir)
+    task_description = adapter.to_task_description(task_id)
+    case = _load_case(test_data_dir / "grading_parity" / task_id, "satisfying")
+
+    response = _grade_pack_through_the_runner(
+        runner_service,
+        mock_grpc_context,
+        task_description,
+        case,
+        f"reachability_{task_id}:0",
+    )
+
+    assert response.success is True, response.error
+    assert getattr(response.grade.components, component) == pytest.approx(1.0), (
+        f"{task_id} reached GradeTrial but scored {component} at "
+        f"{getattr(response.grade.components, component)}: the runner graded against "
+        "a database RegisterTrial did not provision from initial_state"
+    )
 
 
 # --------------------------------------------------------------------------

@@ -5,8 +5,15 @@ description: |
   Substrate-parity differential fixture. The grading.yaml declares exactly one
   author key so a violating trial can only be discriminated by that key.
 
+# RegisterTrial provisions the trial's DB service only when initial_state carries
+# tables, and checks.py reads `ctx.final_state.data["orders"]`, so grading this pack
+# through the runner's own handlers needs the rows declared here rather than only on
+# the trial.
 initial_state:
-  json_db: null
+  json_db:
+    orders:
+      - id: O1
+        status: shipped
 
 tools:
   agent:
