@@ -263,7 +263,7 @@ def test_write_trajectory_does_not_include_system_prompt(tmp_path):
     assert "user_system_prompt" not in data
     # ``simulator_schema_version`` stays — it's metadata about the
     # message-trace shape, not a prompt itself.
-    assert data["simulator_schema_version"] == 1
+    assert data["simulator_schema_version"] == 2
 
 
 def test_write_task_info_includes_model_config(tmp_path):

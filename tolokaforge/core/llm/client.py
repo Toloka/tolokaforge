@@ -2106,6 +2106,12 @@ class LLMClient:
         )
 
 
+# Synthetic agent-side greeting prepended to the simulator's flipped context
+# when the conversation was seeded by the caller (the seeded opening flips to
+# ``assistant`` at index 0, and providers require a leading user-role message).
+SIMULATOR_GREETING = "Hi! How can I help you today?"
+
+
 class UserSimulator(Actor):
     """User simulator for benchmarking.
 
@@ -2263,8 +2269,15 @@ Rules:
         system_prompt = self._build_system_prompt()
         self.last_system_prompt = system_prompt
 
+        # The simulator converses from the customer's seat: its own past
+        # messages replay as ``assistant`` turns and the agent's as ``user``
+        # turns. Agent tool-call turns with no dialogue text are skipped —
+        # replaying them as empty user turns adds noise the simulator's
+        # provider may reject.
         sim_context: list[Message] = []
         for msg in context:
+            if not (msg.content and msg.content.strip()):
+                continue
             if msg.role == MessageRole.USER:
                 sim_context.append(
                     Message(role=MessageRole.ASSISTANT, content=msg.content, ts=msg.ts)
@@ -2272,8 +2285,20 @@ Rules:
             elif msg.role == MessageRole.ASSISTANT:
                 sim_context.append(Message(role=MessageRole.USER, content=msg.content, ts=msg.ts))
 
+        # Providers require the first message to be user-role, and the trial's
+        # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
+        # agent-side greeting rather than dropping the opening: without its own
+        # opening in context the simulator believes it never asked and restarts
+        # the conversation verbatim after the agent has already answered.
         if sim_context and sim_context[0].role == MessageRole.ASSISTANT:
-            sim_context = sim_context[1:]
+            sim_context.insert(
+                0,
+                Message(
+                    role=MessageRole.USER,
+                    content=SIMULATOR_GREETING,
+                    ts=sim_context[0].ts,
+                ),
+            )
 
         result = self.llm_client.generate(
             system=system_prompt,

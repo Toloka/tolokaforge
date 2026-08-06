@@ -1,6 +1,6 @@
 task_id: canon-reasoning-001
 trial_index: 0
-simulator_schema_version: 1
+simulator_schema_version: 2
 start_ts: '2026-01-01T12:00:00+00:00'
 end_ts: '2026-01-01T12:00:00+00:00'
 status: completed

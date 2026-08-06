@@ -315,7 +315,7 @@ def test_trajectory_yaml_does_not_carry_prompts(tmp_path: Path) -> None:
     ), "trajectory.yaml must not carry the user simulator prompt — moved to prompts.yaml"
     # ``simulator_schema_version`` stays — it's metadata about the
     # message-trace shape, not a prompt itself.
-    assert data["simulator_schema_version"] == 1
+    assert data["simulator_schema_version"] == 2
 
 
 def test_tools_schemas_yaml_matches_sanitizer_output(tmp_path: Path) -> None:

@@ -222,7 +222,7 @@ agent and user-simulator system prompts live in
 ```yaml
 task_id: "051fa6cb-..."
 trial_index: 0
-simulator_schema_version: 1
+simulator_schema_version: 2
 start_ts: "2026-01-01T12:00:00+00:00"
 end_ts: "2026-01-01T12:05:00+00:00"
 status: "completed"                                   # TrialStatus enum
@@ -254,7 +254,7 @@ messages:
 
 | Field | Type | When populated | Purpose |
 |---|---|---|---|
-| `simulator_schema_version` | `int` | always `1` today | Monotonic; bump whenever the simulator prompt shape changes. Analytics consumers gate cross-run comparisons on this stamp. |
+| `simulator_schema_version` | `int` | always `2` today | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. v2: the simulator retains its seeded opening (behind a synthetic agent greeting) instead of having it trimmed from its context. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 
 ### `messages[*].reasoning.summary` — when populated
@@ -1351,7 +1351,7 @@ evidence about us, and our own defects stay counted. See
 
 | File | Field | Current value | Bumped on |
 |---|---|---|---|
-| `trajectory.yaml` | `simulator_schema_version` | `1` | Any revision to the LLM user-simulator prompt body |
+| `trajectory.yaml` | `simulator_schema_version` | `2` | Any revision to the LLM user-simulator prompt body or the conversation context it sees |
 | `metrics.yaml` | `schema_version` | `4` | The per-trial bundle's file set or field semantics change |
 | `aggregate.json` | `schema_version` | `3` | The meaning of a run-level metric changes — e.g. the denominator its rates are computed over, or the `outcomes_by_reason` class vocabulary |
 | `metrics.yaml` (`usage` block) | — (struct-typed) | n/a | Usage fields grow; removal breaks downstream analytics |
