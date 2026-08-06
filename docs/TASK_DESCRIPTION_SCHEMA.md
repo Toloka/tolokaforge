@@ -150,6 +150,11 @@ class InitializationAction(BaseModel):
     Action to execute before trial starts.
     
     Used by Native adapter for user device setup (toggle_airplane_mode, etc.)
+
+    The tool is spelled `tool_name` here and `name` on RequiredAction below:
+    this is a harness setup instruction, not a grading assertion about the
+    agent, and its author-side spelling in `task.yaml` is `func_name` — a third
+    surface, unrelated to either wire field.
     """
     env_type: Literal["assistant", "user"]
     tool_name: str
@@ -205,9 +210,15 @@ class RequiredAction(BaseModel):
     """Tool call that must appear in the trajectory."""
     action_id: str
     requestor: Literal["assistant", "user"]
-    tool_name: str
+    name: str                                     # the tool the call names
     arguments: Dict[str, Any] = Field(default_factory=dict)
     compare_args: Optional[List[str]] = None      # Which args to compare, None = all
+
+
+class CommunicateInfo(BaseModel):
+    """Information the agent must communicate to the user."""
+    info: str
+    required: bool = True
 
 
 class DbProbe(BaseModel):
@@ -251,7 +262,7 @@ class TranscriptRulesConfig(BaseModel):
     min_assistant_turns: Optional[int] = Field(default=None, ge=1)  # gate: unmet → component 0.0
     tool_expectations: Optional[ToolExpectations] = None
     required_actions: List[RequiredAction] = Field(default_factory=list)
-    communicate_info: List[Dict[str, Any]] = Field(default_factory=list)
+    communicate_info: List[CommunicateInfo] = Field(default_factory=list)
 
 
 class Criterion(BaseModel):
@@ -636,8 +647,8 @@ class TaskDescription(BaseModel):
     "transcript_rules": {
       "max_turns": 20,
       "required_actions": [
-        {"action_id": "toggle_airplane_mode_0", "requestor": "user", "tool_name": "toggle_airplane_mode"},
-        {"action_id": "toggle_data_1", "requestor": "user", "tool_name": "toggle_data"}
+        {"action_id": "toggle_airplane_mode_0", "requestor": "user", "name": "toggle_airplane_mode"},
+        {"action_id": "toggle_data_1", "requestor": "user", "name": "toggle_data"}
       ]
     }
   },

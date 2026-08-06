@@ -1174,8 +1174,9 @@ class LLMClient:
         expects. See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md)
         § ``cache_policy`` for the contract.
 
-        User tool calls are kept in Message objects for ActionEvaluator,
-        but stripped here since most LLM APIs don't support tool_use from USER role.
+        User tool calls are kept in Message objects so ``required_actions`` can
+        match them, but stripped here since most LLM APIs don't support tool_use
+        from USER role.
         """
         litellm_messages: list[dict[str, Any]] = []
 
