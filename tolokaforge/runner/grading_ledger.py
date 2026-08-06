@@ -218,12 +218,13 @@ def accountable_author_keys() -> frozenset[str]:
     fails the canonical suite rather than failing ``GradeTrial`` in production for
     every task that populates it.
 
-    Its sole consumer is that canonical suite — no runtime path calls it. Every
-    member is named per site, or derived from a hand-written mapping that same
-    site is handed — the two hash-family tuples, and the per-kind trace-constraint
-    keys. Comprehending any member from :data:`LEDGER_KEYS` would make lock 5
-    compare that set against itself: a tautological assertion is worse than a
-    missing one, because the next reader trusts its message and stops looking.
+    No runtime path calls it: its only callers are that canonical lock and the
+    ledger's own unit tests. Every member is named per site, or derived from a
+    hand-written mapping that same site is handed — the two hash-family tuples,
+    and the per-kind trace-constraint keys. Comprehending any member from
+    :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
+    tautological assertion is worse than a missing one, because the next reader
+    trusts its message and stops looking.
     """
     return frozenset(
         {
@@ -287,12 +288,9 @@ def audit_accounted_keys(
     ``disallowed_tools: []`` is indistinguishable from unset, and an empty check
     has nothing to evaluate either way.
     """
-    dumped = grading_config.model_dump(exclude_defaults=True)
     unaccounted: list[str] = []
     skip_notes: list[str] = []
-    for item in LEDGER_KEYS:
-        if item.runner_field is None or not _populated(dumped, item):
-            continue
+    for item in _populated_items(grading_config):
         record = accounted_keys.get(item.author_key)
         if record is None:
             unaccounted.append(_unaccounted_detail(item))
@@ -312,14 +310,21 @@ def populated_ledger_keys(grading_config: RunnerGradingConfig) -> frozenset[str]
 
     Restricted to keys naming a ``runner_field``, as the audit's loop is: the
     ``state_checks.hash`` family root names none, and resolving it raises. So the
-    domain is the 26 keys a recording site can be driven for, and a caller
+    domain is the ledger keys a recording site can be driven for, and a caller
     reading this set is reading the same fact the audit acted on.
+
+    No runtime path calls it: its only callers are lock 15 of
+    ``tests/canonical/test_grading_substrate_parity.py`` and the ledger's own unit
+    tests.
     """
+    return frozenset(item.author_key for item in _populated_items(grading_config))
+
+
+def _populated_items(grading_config: RunnerGradingConfig) -> tuple[GradingKey, ...]:
+    """Every ledger key the config populates — the one predicate both readers visit."""
     dumped = grading_config.model_dump(exclude_defaults=True)
-    return frozenset(
-        item.author_key
-        for item in LEDGER_KEYS
-        if item.runner_field is not None and _populated(dumped, item)
+    return tuple(
+        item for item in LEDGER_KEYS if item.runner_field is not None and _populated(dumped, item)
     )
 
 

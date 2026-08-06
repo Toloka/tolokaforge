@@ -57,8 +57,11 @@ The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10 and 11 drive a real trial, and each reads it through one fixture
-loader, so what a ``grading_parity`` pack can express bounds what they can prove.
+Locks 3, 6, 7, 9, 10, 11 and 15 drive a real trial, and each reads it through one
+fixture loader, so what a ``grading_parity`` pack can express bounds what they can
+prove — for lock 15 that bound covers the keys its driver table sends to a parity
+pack, the hash family, the probes and the judge being driven from tasks written out
+in this module instead.
 That loader's contract — a tool call belongs to the message that requested it, and
 carries that call's own result text — is locked at the end of this module.
 """
@@ -2821,6 +2824,11 @@ def _assert_the_site_reported(
     )
 
     if item.coverage is SubstrateCoverage.CORE_ONLY:
+        assert author_key in family_author_keys(_HASH_FAMILY_ROOT), (
+            f"{author_key} is CORE_ONLY but outside the hash family, and "
+            "CORE_ONLY_HASH_SKIP is the only standing-skip record this helper "
+            "knows. Map coverage to the record its site files, per key"
+        )
         expected = skip_note(author_key, CORE_ONLY_HASH_SKIP)
         assert expected in response.grade.reasons, (
             f"{author_key} is CORE_ONLY, so its recording site must file the standing "
@@ -3120,7 +3128,8 @@ def test_a_judge_with_no_transcript_messages_records_its_skip(
 
 
 # Fault injections. Without them lock 15 is a gate nobody has seen fail, so each
-# drives a real trial through a broken runner and asserts the helper rejects it.
+# asserts the helper rejects a trial the runner graded — five through a broken
+# runner, one through a config that never asked for the key.
 
 _INJECTION_JSONPATHS = "state_checks.jsonpaths"
 _INJECTION_TRACE = "trace_checks.constraints.all_of"
@@ -3152,8 +3161,7 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
 
     Patching the module-level ``EVALUATED`` stands in for the class of defect rather
     than reproducing one site's edit: every inline site reads this global, so the
-    downgrade lands on all of them at once. The targeted single-line edit is the
-    reviewer differential quoted in this stage's report.
+    downgrade lands on all of them at once.
     """
     monkeypatch.setattr(
         runner_service_module,

@@ -207,6 +207,10 @@ authorable — wall time is not compared across substrates, so a pinned value wo
 be one nothing reads. Any other key fails the load naming itself, because a
 fixture key the loader ignores expresses less than its author wrote.
 
+A pack whose key reads DB state declares its rows in `task.yaml`'s `initial_state`,
+not only in the case's `state:` — the runner provisions a trial's DB service from
+`initial_state`, and lock 15 grades every pack through `RegisterTrial`.
+
 The pack directory is the author key with its dots replaced by underscores, so a
 leaf key inside a list field gets its own pack:
 `trace_checks.constraints.absent_before` is
