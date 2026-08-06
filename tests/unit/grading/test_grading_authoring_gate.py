@@ -50,6 +50,7 @@ from tolokaforge.core.grading.config_validation import (
     HashSourceLayer,
     ReplayWorld,
     ToolInventory,
+    _authored_hash_is_a_state_source,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import (
@@ -67,6 +68,8 @@ from tolokaforge.core.grading.grade_components import (
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
+    StateHashConfig,
+    hash_block_is_a_state_source,
 )
 from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
@@ -1139,6 +1142,100 @@ def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
     assert f"hash.enabled is {flag.get('enabled')!r}" in report.errors[0].message
+
+
+#: Every row's verdict is written here rather than derived from either side, so a row
+#: pins what "the hash is a state source" *means* instead of asserting the two readings
+#: agree — two readings that drifted together would still fail. ``model_accepts`` is
+#: ``False`` where ``StateHashConfig`` refuses the block outright; ``is_a_state_source``
+#: is then ``False`` too, because a pack that cannot load is not a pack the probe
+#: exclusivity rule reports a second finding over.
+_HASH_BLOCK_STATE_SOURCE_VERDICTS = (
+    pytest.param({}, True, False, id="empty_block"),
+    pytest.param({"enabled": True}, True, False, id="flag_with_no_source"),
+    pytest.param({"enabled": True, "golden_actions": []}, True, False, id="empty_replay"),
+    pytest.param(
+        {"enabled": True, "expected_state_hash": "aaaa"}, True, True, id="flag_and_a_hash"
+    ),
+    pytest.param(
+        {"enabled": False, "golden_actions": [{"name": "write_file"}]},
+        True,
+        False,
+        id="replay_under_a_false_flag",
+    ),
+    pytest.param(
+        {"enabled": "false", "expected_state_hash": "aaaa"},
+        True,
+        False,
+        id="yaml_string_false",
+    ),
+    pytest.param({"enabled": "no"}, True, False, id="yaml_string_no_alone"),
+    pytest.param(
+        {"enabled": "no", "expected_state_hash": "aaaa"}, True, False, id="yaml_string_no"
+    ),
+    pytest.param(
+        {"enabled": "off", "golden_actions": [{"name": "write_file"}]},
+        True,
+        False,
+        id="yaml_string_off",
+    ),
+    pytest.param({"enabled": 1}, True, False, id="one_with_no_source"),
+    pytest.param({"enabled": 1, "expected_state_hash": "aaaa"}, True, True, id="one_and_a_hash"),
+    pytest.param(
+        {"enabled": "maybe", "expected_state_hash": "aaaa"}, False, False, id="unparsable_flag"
+    ),
+    pytest.param({"enabled": True, "expected_state_hash": 123}, False, False, id="hash_not_a_str"),
+    pytest.param(
+        {"enabled": True, "expected_state_hash": "aaaa", "weight": 2.0},
+        False,
+        False,
+        id="weight_out_of_domain",
+    ),
+    pytest.param(
+        {"enabled": True, "expected_state_hash": "aaaa", "enalbed": True},
+        False,
+        False,
+        id="undeclared_key",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    ("block", "model_accepts", "is_a_state_source"), _HASH_BLOCK_STATE_SOURCE_VERDICTS
+)
+def test_the_gate_and_the_model_answer_one_state_source_rule(
+    block: dict[str, Any], model_accepts: bool, is_a_state_source: bool
+) -> None:
+    """The gate reads the block the way a run does, coercion included.
+
+    ``StateHashConfig`` is what a run grades on, and Pydantic coerces the YAML string
+    ``"false"`` — and ``"no"`` and ``"off"`` — to ``False``. A gate re-reading
+    ``enabled`` off the raw mapping would read those as truthy and refuse a pack that
+    loads and grades cleanly, so the two would disagree on which packs declare a hash
+    source at all. Both sides are pinned to the table's own verdict, which is what
+    stops the pair drifting together onto a rule neither should have.
+    """
+    if model_accepts:
+        hash_config = StateHashConfig.model_validate(block)
+        assert hash_block_is_a_state_source(hash_config) is is_a_state_source
+    else:
+        assert is_a_state_source is False, "a refused block declares nothing"
+        with pytest.raises(ValidationError):
+            StateHashConfig.model_validate(block)
+
+    assert _authored_hash_is_a_state_source({"state_checks": {"hash": block}}) is is_a_state_source
+
+
+def test_the_state_source_table_holds_all_three_answers() -> None:
+    """A table of one answer would pass against a rule that always gives it.
+
+    The lock above compares nothing across rows, so it is only as strong as the answers
+    the table asks for: without a source row a rule returning ``False`` outright passes
+    it, and without a refusal row the coercion the fix turns on is never reached.
+    """
+    answers = {(param.values[1], param.values[2]) for param in _HASH_BLOCK_STATE_SOURCE_VERDICTS}
+
+    assert answers == {(True, True), (True, False), (False, False)}
 
 
 def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> None:

@@ -128,12 +128,16 @@ state_checks:
       equals: true
     - path: "$.orders[-1].status"
       equals: "completed"
-  hash:
+  hash:                               # CLOSED: enabled, expected_state_hash,
+                                      # golden_actions, weight, description — any
+                                      # other key is a load error
     enabled: true
     expected_state_hash: "abc123..."  # SHA256 of normalized final state
+    golden_actions: []                # replay these instead, to derive the hash
     weight: 0.5                       # REQUIRED in exactly this shape: hash source
                                       # + non-empty jsonpaths. No default; rejected
                                       # at load without it. See docs/GRADING.md.
+    description: "matches golden run"  # read into the hash verdict's reason
 
 transcript_rules:
   must_contain: ["confirmation number"]

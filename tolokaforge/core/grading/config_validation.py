@@ -39,7 +39,7 @@ from dataclasses import dataclass
 from enum import Enum
 from typing import Any
 
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tolokaforge.core.grading.golden_replay import (
     InitialStateSource,
@@ -53,6 +53,8 @@ from tolokaforge.core.grading.grade_components import (
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
+    StateHashConfig,
+    hash_block_is_a_state_source,
     probes_conflict_with_another_state_source,
 )
 from tolokaforge.core.models import (
@@ -957,15 +959,26 @@ def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
 def _authored_hash_is_a_state_source(grading: Mapping[str, Any]) -> bool:
     """Whether the authored block is enabled with something to compare against.
 
-    The block **as written** rather than as constructed, mirroring
-    :func:`~tolokaforge.core.grading.state_composition.hash_block_is_a_state_source`
-    over the shape this module reads: the rule below reaches only a caller holding a
-    fragment it never built a ``StateHashConfig`` from.
+    Answered by building the block here and asking
+    :func:`~tolokaforge.core.grading.state_composition.hash_block_is_a_state_source`,
+    rather than by reading the raw keys a second time: the rule below reaches only a
+    caller holding a fragment it never built a ``StateHashConfig`` from, and a second
+    reading is a second rule. Pydantic's coercion is part of what the question means —
+    ``enabled: "false"`` is the ``False`` a run grades on, not the truthy string — so
+    re-reading the key would refuse a pack that loads and grades cleanly.
+
+    A block the model refuses is a load error every surface constructing it already
+    reports, so it declares no source here rather than drawing a second finding over a
+    pack that cannot load at all.
     """
     hash_block = _hash_block(grading)
     if hash_block is None:
         return False
-    return bool(hash_block.get("enabled")) and any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
+    try:
+        hash_config = StateHashConfig.model_validate(hash_block)
+    except ValidationError:
+        return False
+    return hash_block_is_a_state_source(hash_config)
 
 
 def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringReport:

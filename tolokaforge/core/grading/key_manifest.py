@@ -37,7 +37,8 @@ class KeyKind(str, Enum):
     """Produces a component score from a trajectory or a final state."""
 
     CONFIG_INPUT = "CONFIG_INPUT"
-    """Shapes how another check behaves; carries no score of its own."""
+    """Shapes how another check behaves or how its verdict is reported; carries no
+    score of its own."""
 
     AGGREGATION = "AGGREGATION"
     """Combines component scores into the final score."""

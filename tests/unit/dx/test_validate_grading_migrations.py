@@ -1133,7 +1133,10 @@ def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
     ("transcript_rules", "match"),
     [
         ({"min_assistant_turns": 0}, "greater than or equal to 1"),
-        ({"tool_expectations": {"required_toolz": ["db_update"]}}, "required_toolz"),
+        (
+            {"tool_expectations": {"required_toolz": ["db_update"]}},
+            r"transcript_rules\.tool_expectations accepts: ",
+        ),
         (
             {"must_contain": ["shipped"], "must_contian": ["refunded"]},
             "unknown key 'must_contian'",
@@ -1149,8 +1152,10 @@ def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     A gate that read the two window fields off the raw dict and compared them
     directly — never constructing the model — would leave a floor of 0 asserting
     nothing. The two misspellings are the addressed refusal's, one at the block's own
-    tier and one inside the ``tool_expectations`` block it nests, each of which graded
-    as an empty list before it was refused.
+    tier and one inside the ``tool_expectations`` block it nests, each of which would
+    otherwise grade as an empty list. The nested row matches the addressed sentence
+    rather than the key alone, which the model's bare ``extra_forbidden`` also quotes:
+    that spelling passes with the block unregistered and the refusal unaddressed.
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(

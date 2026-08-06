@@ -2782,11 +2782,11 @@ for one; `info`, `required` for the other). A block a field holds whole —
 `state_checks.hash` and `transcript_rules.tool_expectations` — is named by its dotted
 path and answered the same way: `state_checks.hash accepts: enabled,
 expected_state_hash, golden_actions, weight, description`. Every field at this tier has
-a default a dropped key substituted silently: `compare_args` resolving to `None`
-compares **every** declared argument, so a `compare_arg` typo made the check strictly
-harder than its author wrote it and failed trials that satisfied what they wrote, and a
-misspelled key inside `hash` left the hash unscored while the trial graded on whatever
-survived beside it.
+a default a dropped key would substitute silently: `compare_args` resolving to `None`
+compares **every** declared argument, so a `compare_arg` typo makes the check strictly
+harder than its author wrote it and fails trials that satisfy what they wrote, and a key
+`hash` does not declare requests *nothing*, leaving the hash unscored while the trial
+grades on whatever survives beside it.
 
 `state_checks` has two exceptions, and they are not leniency. A **populated**
 `env_assertions` or `db_hash_check` draws the migration message naming the check that
@@ -2815,10 +2815,8 @@ in the grading engine, runner-side at grade time — so the author hears it afte
 trial is paid for. #873 owns closing that gap.
 
 **A dict-typed field's contents are values, not keys**, so no `extra` setting reaches
-them: `state_checks.hash.*` and the `state_checks.jsonpaths[*]` operators are policed
-by their own rules instead (see
-[§ The `jsonpaths` assertion vocabulary](#the-jsonpaths-assertion-vocabulary) and the
-`hash` rules in the findings table above).
+them: the `state_checks.jsonpaths[*]` operators are policed by their own rules instead
+(see [§ The `jsonpaths` assertion vocabulary](#the-jsonpaths-assertion-vocabulary)).
 
 **What this means for a pack read by an engine of another release.** An engine from
 this release onward **refuses** a grading key its own model does not declare, so a pack

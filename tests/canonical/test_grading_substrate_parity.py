@@ -3,7 +3,8 @@
 Fifteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
-   one manifest entry, and every claimed field resolves;
+   one manifest entry, and every claimed field resolves; a position below a claimed
+   field is addressed by an element path, which is the only such mechanism;
 2. the exemption sets are frozen here — in the test module, never beside the
    manifest data they guard — so widening one is a reviewable edit, every entry
    matching lock 3's predicate names both evaluators and owns a fixture, and every
