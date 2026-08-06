@@ -822,6 +822,36 @@ def test_a_populated_retired_key_draws_its_migration_and_not_the_unknown_key_ref
     assert "unknown key" not in message, message
 
 
+def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(tmp_path: Path):
+    """The block this refusal exists for, addressed one tier below the block that holds it.
+
+    Every key ``hash`` drops requests *nothing*: ``enalbed`` beside a real
+    ``expected_state_hash`` leaves the hash unscored while the trial grades on whatever
+    else the pack declared, which scores higher than the same block spelled correctly.
+    The parent's construction refuses the key either way; what is locked here is the
+    sentence, because the bare ``extra_forbidden`` names neither the file, the accepted
+    set, nor the field the author meant — and the accepted set is where an author reads
+    that ``description`` is a key this block takes.
+    """
+    grading = _write_grading(
+        tmp_path,
+        {"jsonpaths": _ASSERTIONS, "hash": {"enalbed": True, "expected_state_hash": "aaaa"}},
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "the task's own state_checks.hash block" in message, message
+    assert "unknown key 'enalbed'" in message, message
+    assert "did you mean 'enabled'?" in message, message
+    assert (
+        "state_checks.hash accepts: enabled, expected_state_hash, golden_actions, weight, "
+        "description." in message
+    ), message
+
+
 # ---------------------------------------------------------------------------
 # combine.method — the aggregation an author names, rejected at validate time
 #
@@ -1114,13 +1144,13 @@ def test_validate_accepts_the_corpus_turn_window(tmp_path: Path):
 def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
     tmp_path: Path, transcript_rules: dict, match: str
 ):
-    """The gate constructs the whole block, so its siblings are validated too.
+    """The gate answers every tier of this block, not only the window it is named for.
 
     A gate that read the two window fields off the raw dict and compared them
-    directly — never constructing the model — would leave all three of these loading: a
-    floor of 0 asserting nothing, a misspelled ``tool_expectations`` key grading as an
-    empty list, and a misspelled rule key at the top of the block doing the same one
-    level up.
+    directly — never constructing the model — would leave a floor of 0 asserting
+    nothing. The two misspellings are the addressed refusal's, one at the block's own
+    tier and one inside the ``tool_expectations`` block it nests, each of which graded
+    as an empty list before it was refused.
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(
@@ -1584,6 +1614,77 @@ def test_every_block_that_addresses_its_refusal_names_each_list_of_models_it_dec
 
     assert named == (listed if block.gate_names_unknown_keys else set()), (
         f"{block_name} declares {sorted(listed)} as lists of models but names "
+        f"{sorted(named)} for the addressed refusal"
+    )
+
+
+# ---------------------------------------------------------------------------
+# the nested-block tier — the same drift, one shape over
+#
+# ``_TypedGradingBlock.nested_block_models`` names the fields holding one block of
+# their own, and it names them by string and by class exactly as its list twin does.
+# Nothing in the registry makes that pair agree with the annotation, or makes a newly
+# declared block arrive with an entry, so both are asserted against the models here.
+# ---------------------------------------------------------------------------
+
+
+_NESTED_ENTRIES = tuple(
+    pytest.param(name, field, model, id=f"{name}.{field}")
+    for name, block in _TYPED_GRADING_BLOCKS.items()
+    for field, model in block.nested_block_models
+)
+
+
+def _nested_model_of(annotation: object) -> type[BaseModel] | None:
+    """The model a field holds one of, or ``None`` for every other shape.
+
+    ``Model | None`` counts for the reason its list twin's optional does: a block a
+    pack may omit still reaches the gate as a mapping wherever one is written, so
+    reading only the bare ``Model`` would let a field opt out of the addressed refusal
+    by gaining a default of ``None``.
+    """
+    candidates = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    for candidate in candidates:
+        if isinstance(candidate, type) and issubclass(candidate, BaseModel):
+            return candidate
+    return None
+
+
+@pytest.mark.parametrize(("block_name", "field_name", "nested_model"), _NESTED_ENTRIES)
+def test_every_nested_entry_names_the_model_its_block_field_actually_holds(
+    block_name: str, field_name: str, nested_model: type[BaseModel]
+):
+    """An entry naming a sibling's model addresses the refusal at the wrong key set.
+
+    The gate reports ``nested_model.model_fields`` as the accepted set, so an entry that
+    drifted from the annotation tells the author to write keys the block does not
+    declare — and for ``state_checks.hash``, whose five keys are what this refusal is
+    for, that is worse than the bare one.
+    """
+    annotation = _TYPED_GRADING_BLOCKS[block_name].model.model_fields[field_name].annotation
+    held = _nested_model_of(annotation)
+
+    assert held is nested_model, f"{block_name}.{field_name} holds {held}, not {nested_model}"
+
+
+@pytest.mark.parametrize("block_name", sorted(_TYPED_GRADING_BLOCKS))
+def test_every_block_that_addresses_its_refusal_names_each_block_it_nests(block_name: str):
+    """A block nested inside a gated one arrives with an entry, or without one.
+
+    Without one its keys fall back to the bare ``extra_forbidden`` at a dotted path,
+    which is the message this registry exists to replace. ``trace_checks`` draws that
+    bare refusal by declaration, so its own flag excuses it here as it does one tier up.
+    """
+    block = _TYPED_GRADING_BLOCKS[block_name]
+    declared = {
+        field
+        for field, info in block.model.model_fields.items()
+        if _nested_model_of(info.annotation) is not None
+    }
+    named = {field for field, _ in block.nested_block_models}
+
+    assert named == (declared if block.gate_names_unknown_keys else set()), (
+        f"{block_name} declares {sorted(declared)} as blocks of its own but names "
         f"{sorted(named)} for the addressed refusal"
     )
 

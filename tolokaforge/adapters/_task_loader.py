@@ -74,6 +74,7 @@ from tolokaforge.core.grading.config_validation import (
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import classify_initial_state
+from tolokaforge.core.grading.state_composition import StateHashConfig
 from tolokaforge.core.grading.unknown_keys import refuse_unknown_grading_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -85,6 +86,7 @@ from tolokaforge.core.models import (
     StateChecksConfig,
     TaskConfig,
     TaskDefaults,
+    ToolExpectations,
     TraceChecksConfig,
     TranscriptRulesConfig,
 )
@@ -196,6 +198,15 @@ class _TypedGradingBlock:
     block gets, naming the element by index.
     """
 
+    nested_block_models: tuple[tuple[str, type[BaseModel]], ...] = ()
+    """Fields holding one block of their own, which draws the addressed refusal too.
+
+    The same tier as :attr:`element_models` and the other shape a block reaches it in:
+    a list of elements there, a single mapping here. Every field named here gets its
+    parent's message under its own dotted name, so the accepted set an author reads is
+    the nested block's rather than the one holding it.
+    """
+
 
 _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
     # The aggregation an author names decides how every component score folds, and a
@@ -205,21 +216,27 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
     "combine": _TypedGradingBlock(model=GradingCombineConfig),
     # Every rule this block carries — a removed key's migration, a probe declared
     # beside a source this component also scores, a hash whose composition weight is
-    # undecidable in one shape — describes a pack a run would refuse to grade.
+    # undecidable in one shape — describes a pack a run would refuse to grade. Its
+    # ``hash`` block is addressed by name because every key that block drops requests
+    # nothing: the hash goes unscored and the trial grades on what survived, which is a
+    # better grade than the same block spelled correctly.
     "state_checks": _TypedGradingBlock(
         model=StateChecksConfig,
         retired_keys=RETIRED_STATE_CHECK_KEYS,
+        nested_block_models=(("hash", StateHashConfig),),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,
     # so the component is 0.0 however the agent behaves. Constructing the block rather
-    # than the two fields also puts the ``min_assistant_turns`` domain and a misspelled
-    # key inside the ``extra="forbid"`` ``tool_expectations`` under the same gate.
+    # than the two fields also puts the ``min_assistant_turns`` domain under the same
+    # gate; a key ``tool_expectations`` does not declare grades as an empty list, so it
+    # is addressed at its own name rather than at the block holding it.
     "transcript_rules": _TypedGradingBlock(
         model=TranscriptRulesConfig,
         element_models=(
             ("required_actions", RequiredAction),
             ("communicate_info", CommunicateInfo),
         ),
+        nested_block_models=(("tool_expectations", ToolExpectations),),
     ),
     # Every rejection the matcher vocabulary makes — an unmatchable field for the kind,
     # a predicate asserting nothing, two constraint kinds under one require — is a check
@@ -258,7 +275,8 @@ def validate_grading_yaml(
     block declaring a ``rubric`` or the relocated ``model_ref``, which are the shapes its
     own migration names — an ``output_schema`` alone reaches no judge config here. For
     three of those blocks — ``combine``, ``state_checks`` and ``transcript_rules``, plus
-    the ``required_actions`` and ``communicate_info`` elements the last of them nests —
+    the positions they nest: the ``required_actions`` and ``communicate_info`` elements,
+    the ``hash`` block and the ``tool_expectations`` one —
     a key the block does not declare is refused here naming the
     file, the closest declared field and the accepted set, which the models' own
     ``extra="forbid"`` refuses on every other path in one line without an address;
@@ -415,9 +433,10 @@ def _construct_declared_block(
     """Construct *block* against the model that owns it, unless it is absent.
 
     Raises:
-        ValueError: If the block, or an element of one of its
-            :attr:`_TypedGradingBlock.element_models` lists, declares a key the model
-            does not — where this gate writes that refusal.
+        ValueError: If the block, an element of one of its
+            :attr:`_TypedGradingBlock.element_models` lists, or one of the blocks its
+            :attr:`_TypedGradingBlock.nested_block_models` names, declares a key the
+            model does not — where this gate writes that refusal.
         pydantic.ValidationError: If the block fails any rule its model carries.
     """
     if block is None:
@@ -441,6 +460,17 @@ def _construct_declared_block(
                         block_name=f"{block_name}.{field_name}[{index}]",
                         grading_path=grading_path,
                     )
+        for field_name, nested_model in typed.nested_block_models:
+            nested = block.get(field_name)
+            # A field carrying nothing is the absent block, and one carrying a
+            # non-mapping has no keys to name — the construction below answers both.
+            if isinstance(nested, Mapping):
+                refuse_unknown_grading_keys(
+                    nested_model,
+                    nested,
+                    block_name=f"{block_name}.{field_name}",
+                    grading_path=grading_path,
+                )
     typed.model(**block)
 
 

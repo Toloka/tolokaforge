@@ -2760,15 +2760,20 @@ declared field and the whole accepted set. `trace_checks` draws that bare refusa
 `llm_judge` draws it only on the `rubric` / `model_ref` shapes its own migration names,
 which are the shapes `validate` constructs it for at all.
 
-**One tier further down, `transcript_rules`' two element lists get the same message.**
-A `required_actions` or `communicate_info` element refuses a key it does not declare,
-and `validate` names it with the element's index —
+**One tier further down, the positions those blocks nest get the same message.** Two
+shapes reach it. A `required_actions` or `communicate_info` element refuses a key it
+does not declare, and `validate` names it with the element's index —
 `transcript_rules.required_actions[0]` — beside the closest declared field and that
 element's accepted set (`action_id`, `requestor`, `name`, `arguments`, `compare_args`
-for one; `info`, `required` for the other). Every field there has a default a dropped
-key substituted silently: `compare_args` resolving to `None` compares **every**
-declared argument, so a `compare_arg` typo made the check strictly harder than its
-author wrote it and failed trials that satisfied what they wrote.
+for one; `info`, `required` for the other). A block a field holds whole —
+`state_checks.hash` and `transcript_rules.tool_expectations` — is named by its dotted
+path and answered the same way: `state_checks.hash accepts: enabled,
+expected_state_hash, golden_actions, weight, description`. Every field at this tier has
+a default a dropped key substituted silently: `compare_args` resolving to `None`
+compares **every** declared argument, so a `compare_arg` typo made the check strictly
+harder than its author wrote it and failed trials that satisfied what they wrote, and a
+misspelled key inside `hash` left the hash unscored while the trial graded on whatever
+survived beside it.
 
 `state_checks` has two exceptions, and they are not leniency. A **populated**
 `env_assertions` or `db_hash_check` draws the migration message naming the check that
