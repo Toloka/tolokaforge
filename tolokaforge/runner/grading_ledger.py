@@ -150,6 +150,32 @@ class LedgerAudit:
     skip_notes: tuple[str, ...]
 
 
+def skip_note_prefix(author_key: str) -> str:
+    """How every skip note for ``author_key`` starts, whatever the detail.
+
+    A caller asserting a key was *not* skipped has no hypothetical detail to
+    match on, so it matches this instead: the prefix is the whole format the
+    audit renders, and single-sourcing it is what stops a test from spelling a
+    sentence production never emits.
+    """
+    return f"{author_key} skipped: "
+
+
+def skip_note(author_key: str, record: KeyAccountingRecord) -> str:
+    """The sentence ``grade.reasons`` carries for ``author_key``'s recorded skip.
+
+    Raises ``ValueError`` on an ``EVALUATED`` record: an evaluated key produces
+    no note at all, and rendering one would let a caller assert against text the
+    audit never emits.
+    """
+    if record.outcome is KeyAccounting.EVALUATED:
+        raise ValueError(
+            f"{author_key}: an EVALUATED record has no skip note — the audit renders "
+            "a note only for a populated key that was skipped"
+        )
+    return f"{skip_note_prefix(author_key)}{record.detail}"
+
+
 def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, KeyAccountingRecord]:
     """The whole ``state_checks.hash`` family's accounting for one component phase.
 
@@ -181,16 +207,21 @@ def transcript_rules_author_keys() -> tuple[str, ...]:
 
 
 def accountable_author_keys() -> frozenset[str]:
-    """Every author key some recording site in the grading path can record.
+    """The per-key human declaration that a recording site files each author key.
 
-    Lock 5 of ``tests/canonical/test_grading_substrate_parity.py`` asserts every
-    ledger key with a ``runner_field`` is in here, so a manifest entry no site
-    claims fails the canonical suite rather than failing ``GradeTrial`` in
-    production for every task that populates it.
+    A declaration, not evidence. Lock 15 of
+    ``tests/canonical/test_grading_substrate_parity.py`` drives every ledger key's
+    site through a real ``GradeTrial`` and reads the outcome it filed; what this
+    set adds is the claim a person made, key by key, independent of whether anyone
+    could build a driver for it. If a driver is ever narrowed or removed, the
+    declaration is what survives. Lock 5 reads it, and a key missing from here
+    fails the canonical suite rather than failing ``GradeTrial`` in production for
+    every task that populates it.
 
-    Every member is therefore named per site, or derived from a hand-written
-    mapping that same site is handed — the two hash-family tuples, and the
-    per-kind trace-constraint keys. Comprehending any member from
+    No runtime path calls it: its only callers are that canonical lock and the
+    ledger's own unit tests. Every member is named per site, or derived from a
+    hand-written mapping that same site is handed — the two hash-family tuples,
+    and the per-kind trace-constraint keys. Comprehending any member from
     :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
     tautological assertion is worse than a missing one, because the next reader
     trusts its message and stops looking.
@@ -257,17 +288,14 @@ def audit_accounted_keys(
     ``disallowed_tools: []`` is indistinguishable from unset, and an empty check
     has nothing to evaluate either way.
     """
-    dumped = grading_config.model_dump(exclude_defaults=True)
     unaccounted: list[str] = []
     skip_notes: list[str] = []
-    for item in LEDGER_KEYS:
-        if item.runner_field is None or not _populated(dumped, item):
-            continue
+    for item in _populated_items(grading_config):
         record = accounted_keys.get(item.author_key)
         if record is None:
             unaccounted.append(_unaccounted_detail(item))
         elif record.outcome is not KeyAccounting.EVALUATED:
-            skip_notes.append(f"{item.author_key} skipped: {record.detail}")
+            skip_notes.append(skip_note(item.author_key, record))
     error = None
     if unaccounted:
         error = (
@@ -275,6 +303,29 @@ def audit_accounted_keys(
             f"recorded a skip for: {'; '.join(unaccounted)}"
         )
     return LedgerAudit(error=error, skip_notes=tuple(skip_notes))
+
+
+def populated_ledger_keys(grading_config: RunnerGradingConfig) -> frozenset[str]:
+    """The ledger keys ``grading_config`` populates, by the audit's own predicate.
+
+    Restricted to keys naming a ``runner_field``, as the audit's loop is: the
+    ``state_checks.hash`` family root names none, and resolving it raises. So the
+    domain is the ledger keys a recording site can be driven for, and a caller
+    reading this set is reading the same fact the audit acted on.
+
+    No runtime path calls it: its only callers are lock 15 of
+    ``tests/canonical/test_grading_substrate_parity.py`` and the ledger's own unit
+    tests.
+    """
+    return frozenset(item.author_key for item in _populated_items(grading_config))
+
+
+def _populated_items(grading_config: RunnerGradingConfig) -> tuple[GradingKey, ...]:
+    """Every ledger key the config populates — the one predicate both readers visit."""
+    dumped = grading_config.model_dump(exclude_defaults=True)
+    return tuple(
+        item for item in LEDGER_KEYS if item.runner_field is not None and _populated(dumped, item)
+    )
 
 
 def _populated(dumped: dict[str, Any], item: GradingKey) -> bool:
