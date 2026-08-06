@@ -1122,9 +1122,9 @@ def _check_golden_action_names(
     against the tools it registered for the trial, and neither is readable here without
     importing the pack's server module. #815 owns unifying the three.
 
-    A name that is not a string at all — the block being untyped — is refused as one
-    resolving to nothing rather than tested for membership, which an unhashable value
-    answers with a ``TypeError``.
+    A name that is not a string at all — ``golden_actions`` claims nothing about its
+    elements — is refused as one resolving to nothing rather than tested for membership,
+    which an unhashable value answers with a ``TypeError``.
     """
     errors = tuple(
         Finding(
@@ -1142,8 +1142,9 @@ def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
 
     Nothing at all where the flag is falsy, so the caller reads only the source a
     substrate would read. An action that is not a mapping, and one carrying no ``name``,
-    both yield ``None``: the ``hash`` block is untyped (#730), so there is no load error
-    to defer to, and the index of the offending action is what an author acts on.
+    both yield ``None``: ``golden_actions`` leaves its elements unclaimed (#907), so there
+    is no load error to defer to, and the index of the offending action is what an author
+    acts on.
     """
     hash_block = _hash_block(grading)
     if hash_block is None or not hash_block.get("enabled"):

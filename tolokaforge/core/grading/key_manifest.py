@@ -11,6 +11,12 @@ load-bearing: a key added to either substrate's config model without an entry
 here fails that suite, and every entry claiming both substrates at
 :attr:`Enforcement.DIFFERENTIAL_CANONICAL` must demonstrably move both
 substrates' component scores.
+
+Every entry addresses a *declared model field*, and ``*_element_path`` is the one
+way to name a position below one. A key living inside a field whose contents no
+model declares therefore has no address here: give that field a model, or add an
+addressing mechanism the parity suite can walk. A hand-declared address the suite
+cannot introspect is the invisibility this manifest exists to prevent.
 """
 
 from collections.abc import Mapping
@@ -74,9 +80,7 @@ class GradingKey:
 
     ``core_field`` / ``runner_field`` are dotted *model attribute* paths
     (``"StateChecksConfig.jsonpaths"``), ``None`` when that substrate does not
-    declare the key at all. When the author key lives inside an untyped dict
-    field, ``*_field`` names the dict field and ``*_dict_key`` the key inside it
-    — the dict half is declared data, not introspection-verified.
+    declare the key at all.
 
     When the author key lives *inside the elements* of a ``list[BaseModel]``
     field, ``*_field`` names the list and ``*_element_path`` is a dotted path
@@ -103,8 +107,6 @@ class GradingKey:
     enforcement: Enforcement
     core_field: str | None
     runner_field: str | None
-    core_dict_key: str | None = None
-    runner_dict_key: str | None = None
     core_element_path: str | None = None
     runner_element_path: str | None = None
     core_evaluator: str | None = None
@@ -131,19 +133,12 @@ class GradingKey:
                 "pytest nodeid. Name the test function that runs the differential: "
                 "<module path>::<test function>"
             )
-        for substrate, field, dict_key, element_path in (
-            ("core", self.core_field, self.core_dict_key, self.core_element_path),
-            ("runner", self.runner_field, self.runner_dict_key, self.runner_element_path),
+        for substrate, field, element_path in (
+            ("core", self.core_field, self.core_element_path),
+            ("runner", self.runner_field, self.runner_element_path),
         ):
             if element_path is None:
                 continue
-            if dict_key is not None:
-                raise ValueError(
-                    f"{self.author_key}: {substrate}_element_path {element_path!r} and "
-                    f"{substrate}_dict_key {dict_key!r} address the same field two ways. A "
-                    "dict key is declared data inside an untyped field; an element path is "
-                    "walked against the element model. Keep one"
-                )
             if field is None:
                 raise ValueError(
                     f"{self.author_key}: {substrate}_element_path {element_path!r} is walked "

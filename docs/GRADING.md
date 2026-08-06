@@ -2593,8 +2593,9 @@ nothing costs the whole trial: both substrates resolve the authored names before
 first action runs and refuse the replay outright, so the tokens are spent and no
 state-hash verdict comes back at all (see
 [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)). An action with no
-`name` key, `name: ""`, `name: null`, or — the `hash` block being untyped — a `name`
-written as anything but a string resolves to nothing the same way and draws the same
+`name` key, `name: ""`, `name: null`, or — `golden_actions` claiming nothing about its
+elements (#907) — a `name` written as anything but a string resolves to nothing the same
+way and draws the same
 error, and each offending action is addressed by its own index — a name may repeat, and a
 nameless action carries nothing else to tell it apart by.
 
@@ -2868,9 +2869,10 @@ The migration for either is the same: indent the block's own keys one level unde
 key rather than writing its contents beside it.
 
 **One value below the key names carries its own shape rule.**
-`state_checks.hash.golden_actions` is neither a grading key nor a block — it is a value
-inside `hash`, which is an untyped mapping (#730) — so the refusal above says nothing about
-it. It is the list of actions to replay, or there is no replay: a falsy value loads at
+`state_checks.hash.golden_actions` is neither a grading key nor a block — it is a declared
+field of the `hash` block, annotated to claim nothing about the value it holds or the
+elements inside it (#907) — so the refusal above says nothing about it. It is the list of
+actions to replay, or there is no replay: a falsy value loads at
 every read site as nothing to replay, and a truthy value that is not a list can be replayed
 by neither substrate and is refused by the golden-replay precondition, at the authoring
 gate and again at each substrate's own read of the block — core reaching that read without

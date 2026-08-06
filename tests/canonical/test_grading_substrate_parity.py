@@ -309,10 +309,6 @@ def _field_of(item: GradingKey, substrate: str) -> str | None:
     return item.core_field if substrate == "core" else item.runner_field
 
 
-def _dict_key_of(item: GradingKey, substrate: str) -> str | None:
-    return item.core_dict_key if substrate == "core" else item.runner_dict_key
-
-
 def _element_path_of(item: GradingKey, substrate: str) -> str | None:
     return item.core_element_path if substrate == "core" else item.runner_element_path
 
@@ -320,18 +316,14 @@ def _element_path_of(item: GradingKey, substrate: str) -> str | None:
 def _claimed_fields(substrate: str) -> dict[str, list[str]]:
     """Model field paths claimed directly -> author keys.
 
-    An entry addressing a dict key or an element path is not claiming the field:
-    it claims one place *inside* it, and several such entries share the field.
-    Counting them as claims would report the shared field as claimed twice over.
+    An entry carrying an element path is not claiming the field: it claims one
+    place *inside* it, and several such entries share the field. Counting them as
+    claims would report the shared field as claimed twice over.
     """
     claims: dict[str, list[str]] = {}
     for item in GRADING_KEYS:
         field = _field_of(item, substrate)
-        addressed_inside = (
-            _dict_key_of(item, substrate) is not None
-            or _element_path_of(item, substrate) is not None
-        )
-        if field is None or addressed_inside:
+        if field is None or _element_path_of(item, substrate) is not None:
             continue
         claims.setdefault(field, []).append(item.author_key)
     return claims
@@ -357,10 +349,6 @@ def _direct_model(annotation: Any) -> type[BaseModel] | None:
         ):
             return option
     return None
-
-
-def _is_dict_field(annotation: Any) -> bool:
-    return any(get_origin(option) is dict for option in _union_options(annotation))
 
 
 def _element_model(annotation: Any) -> type[BaseModel] | None:
@@ -896,18 +884,6 @@ def test_manifest_covers_every_declared_config_field():
                 f"{model_name} has no field {field_name!r}"
             )
 
-        for item in GRADING_KEYS:
-            dict_key = _dict_key_of(item, substrate)
-            field = _field_of(item, substrate)
-            if dict_key is None or field is None:
-                continue
-            model_name, _, field_name = field.partition(".")
-            annotation = registry[model_name].model_fields[field_name].annotation
-            assert _is_dict_field(annotation), (
-                f"{item.author_key}: {substrate}_dict_key {dict_key!r} requires "
-                f"{field!r} to be a dict field, got {annotation}"
-            )
-
         _assert_element_paths_resolve(substrate, registry)
 
     assert containers == _CONTAINER_FIELDS, (
@@ -915,6 +891,50 @@ def test_manifest_covers_every_declared_config_field():
         "container's leaves must be claimed individually; a new container here means "
         "a new key family landed on a substrate."
     )
+
+
+def test_a_position_inside_a_claimed_field_is_addressed_by_an_element_path():
+    """An element path is the manifest's one address for a place below a field.
+
+    An entry whose author key sits under another entry's, on a substrate where that
+    parent claims a field, names a position inside that field's value rather than a
+    field of its own. Read as a set equality so both halves are findings: a key
+    inside a claimed field carrying no element path addresses nothing the suite can
+    walk, and an element path under a parent that claims no field is walked from
+    nowhere. The field the path starts at is then checked to be the parent's own.
+    """
+    by_key = {item.author_key: item for item in GRADING_KEYS}
+    for substrate in _SUBSTRATE_ROOTS:
+        inside_a_claimed_field = {
+            item.author_key
+            for item in GRADING_KEYS
+            if (parent := by_key.get(item.author_key.rpartition(".")[0])) is not None
+            and _field_of(parent, substrate) is not None
+        }
+        element_addressed = {
+            item.author_key
+            for item in GRADING_KEYS
+            if _element_path_of(item, substrate) is not None
+        }
+        assert element_addressed, (
+            f"no {substrate} entry carries an element path, so this lock compares two "
+            "empty sets and asserts nothing about how a nested position is addressed"
+        )
+        assert inside_a_claimed_field == element_addressed, (
+            f"{substrate}: the keys sitting inside a claimed field and the keys carrying "
+            f"an element path have diverged. Inside a claimed field: "
+            f"{sorted(inside_a_claimed_field)}. Element-addressed: "
+            f"{sorted(element_addressed)}. A position below a declared field is "
+            "addressed by an element path, which the suite walks against the element "
+            "model; there is no other way to name one."
+        )
+        for key in sorted(element_addressed):
+            parent_field = _field_of(by_key[key.rpartition(".")[0]], substrate)
+            assert _field_of(by_key[key], substrate) == parent_field, (
+                f"{key}: {substrate}_element_path is walked from {parent_field!r}, the "
+                f"field its parent key claims, but the entry names "
+                f"{_field_of(by_key[key], substrate)!r}"
+            )
 
 
 # --------------------------------------------------------------------------
