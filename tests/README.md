@@ -157,14 +157,15 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Transcript rules substrate parity (`test_transcript_substrate_parity.py`) — one
   authored pack under `tests/data/transcript_parity/`, one trial, graded through both
   substrates' real adapter paths, must produce the same `transcript_rules` component
-  and the value the row pins. The two implementations disagree today, so seventeen
-  rows carry `xfail(strict=True, raises=AssertionError)`: `strict` fails the suite on a
-  row that starts passing, and `raises` stops a row whose pack merely failed to load
-  from reporting as the expected divergence. Two unmarked **anchor** rows, at two
-  different scores, are the harness's own proof. A row pinning a value the runner does
-  not produce raises `_FixtureDefect`, which no marker absorbs — that is the
-  table being wrong, not the substrates disagreeing. Fix the divergence in
-  `tolokaforge/core/grading/transcript.py`, never the pinned column.
+  and the value the row pins. Twenty rows: eighteen sit on the eight scoring questions
+  a transcript rule has to answer the same way on either substrate, and two unmarked
+  **anchor** rows, at two different scores, sit on no question at all and are the
+  harness's own proof. A row pinning a value the runner does not produce raises
+  `_FixtureDefect` — that is the table being wrong, not the substrates disagreeing.
+  Fix the divergence in `tolokaforge/core/grading/transcript.py`, never the pinned
+  column. What an events-less trial scores is a property of the fold rather than of one
+  pack's verdict, so the two named tests beside the table drive the core engine's
+  `grade_trajectory` against the runner's own `GradeTrial` RPC instead.
 - Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one
   scripted tool-call sequence driven through each substrate's real recording path
   must build the same events. A failure means one substrate's recording drifted,

@@ -51,6 +51,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner.models import (
+    CommunicateInfo,
     Criterion,
     JudgeCustomization,
     LLMJudgeConfig,
@@ -207,6 +208,7 @@ def test_reconciled_wire_types_forbid_extras():
         RequiredAction,
         {"action_id": "a", "requestor": "assistant", "name": "t"},
     )
+    _requires_forbid(CommunicateInfo, {"info": "x"})
     _requires_forbid(
         RunnerInitializationAction,
         {"env_type": "assistant", "tool_name": "t"},

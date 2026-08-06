@@ -364,6 +364,12 @@ what makes the agreement true, and the differential is what keeps a second
 implementation from reappearing unnoticed. See
 [§ Transcript Rules](#transcript-rules) for what each of the seven keys asserts.
 
+Whether `transcript_rules` produces a component at all is shared the same way.
+`scored_transcript_rules` decides which rules a trial's timeline carries evidence
+for — nothing, on an events-less timeline under a pack declaring no activity floor,
+and the floor alone when it declared one — and both integration points fold through
+it, so the component drops out of the combine on both substrates or on neither.
+
 ### What the guard cannot see
 
 `model_fields` introspection enumerates typed config fields, and the contents of a
@@ -1253,7 +1259,10 @@ check — a non-empty assistant message after the last tool call — is **#678**
 checks; do not read a green floor as evidence the agent replied.
 
 **A declared floor is evaluated on an events-less timeline**, where every other
-transcript rule is skipped — see [The runtime ledger](#the-runtime-ledger).
+transcript rule is skipped, on both substrates. Without a floor the whole component
+drops out of the combine there; with one, the floor alone scores it `0.0`. The
+runner additionally records the skip against each sibling key — see
+[The runtime ledger](#the-runtime-ledger).
 
 **A window no trial can land in is rejected at load.** A floor above the ceiling
 admits no assistant-turn count at all, so the component would be `0.0` however the

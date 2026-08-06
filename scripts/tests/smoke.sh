@@ -45,12 +45,11 @@ run_tier "Tier 2: Pipeline components" \
     tests/unit/test_metrics.py \
     tests/unit/test_resume.py \
     tests/unit/grading/test_state_checks.py \
-    tests/unit/grading/test_transcript.py
+    tests/unit/grading/test_grading_correctness.py
 
-# Tier 3: Functional smoke — browser tool contract, evaluators, config parsing
+# Tier 3: Functional smoke — browser tool contract, config parsing
 run_tier "Tier 3: Functional smoke" \
     tests/unit/test_browser_tool.py::test_browser_schema \
-    tests/unit/grading/test_evaluators.py \
     tests/unit/test_adapters.py::TestAdapterConfigParsing
 
 # Tier 4: Docker health (conditional — only if Docker daemon is reachable)

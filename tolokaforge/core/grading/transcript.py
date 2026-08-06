@@ -16,6 +16,7 @@ The authored vocabulary is documented in ``docs/GRADING.md`` § "Transcript Rule
 
 import re
 from collections.abc import Sequence
+from typing import Literal
 
 from tolokaforge.core.grading.key_manifest import (
     COMMUNICATE_INFO_KEY,
@@ -92,7 +93,7 @@ def evaluate_transcript_rules(
     only declared rule, leaves nothing that could have been violated.
 
     Unknown / missing data is surfaced as a FAILING sub-check, never silently
-    passed (AGENTS.md: surface failures explicitly).
+    passed.
 
     ``accounted_keys`` names the author keys this call decomposed, for the
     runner's runtime ledger. The core engine has no ledger and discards it: the
@@ -193,10 +194,34 @@ def evaluate_transcript_rules(
     )
 
 
+def scored_transcript_rules(
+    timeline: TrialTimeline, rules: TranscriptRulesConfig
+) -> TranscriptRulesConfig | None:
+    """The part of ``rules`` the trial's timeline carries evidence for.
+
+    ``None`` is the trial that left no trace of itself — a timeline carrying
+    neither a conversational turn nor a tool call — under a pack declaring no
+    activity floor: nothing is evaluable, so the component is left out of the
+    combine rather than scored against evidence the trial does not have.
+
+    A declared floor *is* evaluated on that timeline, because no events is
+    precisely the answer it asks for, so the floor comes back alone while every
+    other rule it was declared beside does not.
+
+    Both substrates fold ``transcript_rules`` through this decision, so whether an
+    events-less trial scores the component does not depend on which one graded it.
+    """
+    if timeline.events:
+        return rules
+    if rules.min_assistant_turns is None:
+        return None
+    return TranscriptRulesConfig(min_assistant_turns=rules.min_assistant_turns)
+
+
 # Map the RequiredAction.requestor vocabulary ("assistant"/"user", the
 # author-facing role names) onto the recorded executor identity. They name the
 # same actor.
-_REQUESTOR_TO_EXECUTOR: dict[str, ToolExecutorIdentity] = {
+_REQUESTOR_TO_EXECUTOR: dict[Literal["assistant", "user"], ToolExecutorIdentity] = {
     "assistant": ToolExecutorIdentity.AGENT,
     "user": ToolExecutorIdentity.USER,
 }
@@ -404,7 +429,7 @@ def _check_required_action(
     names no tool, so it is refused rather than matched against every call.
     """
     declared = action.model_dump()
-    expected_executor = _REQUESTOR_TO_EXECUTOR.get(action.requestor)
+    expected_executor = _REQUESTOR_TO_EXECUTOR[action.requestor]
 
     if action.compare_args is None:
         keys_to_compare = list(action.arguments.keys())
@@ -435,7 +460,7 @@ def _check_required_action(
     for call in calls:
         if call.tool_name != action.name:
             continue
-        if expected_executor is not None and call.executor is not expected_executor:
+        if call.executor is not expected_executor:
             continue
         if call.status is not ToolExecutionStatus.SUCCESS:
             continue

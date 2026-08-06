@@ -1063,11 +1063,7 @@ class TestTranscriptRulesEvaluation:
     # --- regression: the old always-pass no-op bug -------------------------
 
     def test_violating_config_no_longer_silently_passes(self):
-        """REGRESSION: previously the full TranscriptRulesConfig dict was passed
-        as a single rule with no ``type`` key, hitting the unknown-type branch
-        and ALWAYS returning passed=True / score=1.0. A config the transcript
-        clearly violates must now fail.
-        """
+        """A config the transcript clearly violates fails, one sub-check per entry."""
         # The required action never happened, so the timeline carries no records.
         timeline = self._timeline([("assistant", "I did nothing useful.")])
         config = self._config(

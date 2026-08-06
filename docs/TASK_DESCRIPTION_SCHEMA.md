@@ -150,6 +150,11 @@ class InitializationAction(BaseModel):
     Action to execute before trial starts.
     
     Used by Native adapter for user device setup (toggle_airplane_mode, etc.)
+
+    The tool is spelled `tool_name` here and `name` on RequiredAction below:
+    this is a harness setup instruction, not a grading assertion about the
+    agent, and its author-side spelling in `task.yaml` is `func_name` — a third
+    surface, unrelated to either wire field.
     """
     env_type: Literal["assistant", "user"]
     tool_name: str

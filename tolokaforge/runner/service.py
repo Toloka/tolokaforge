@@ -71,7 +71,10 @@ from tolokaforge.core.grading.trace_timeline import (
     TrialTimeline,
     build_trial_timeline,
 )
-from tolokaforge.core.grading.transcript import evaluate_transcript_rules
+from tolokaforge.core.grading.transcript import (
+    evaluate_transcript_rules,
+    scored_transcript_rules,
+)
 from tolokaforge.core.grading.transcript_wire import (
     decode_transcript_wire,
     split_leading_system_message,
@@ -1796,33 +1799,28 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     ) -> tuple[TranscriptEvaluationResult | None, dict[str, KeyAccountingRecord]]:
         """Score the pack's transcript rules, returning ``(result, accounted keys)``.
 
-        A ``None`` result is the trial that left no trace of itself — a timeline
-        carrying neither a conversational turn nor a tool call — and declared no
-        activity floor: nothing is evaluated and the component is left out of the
-        combine.
-
-        A declared floor *is* evaluated on that timeline, because no events is
-        precisely the answer it asks for, while every other rule would score
-        against evidence the trial does not carry. So the floor alone reaches the
-        evaluator there and its siblings are recorded as skipped — the blanket skip
-        goes down first so the floor's own record survives it.
+        Which rules an events-less timeline leaves evaluable is
+        :func:`scored_transcript_rules`, shared with the core engine so the fold
+        does not depend on which substrate graded the trial. A ``None`` result is
+        that decision coming back empty. When it comes back as the activity floor
+        alone, the floor's siblings are recorded as skipped — the blanket skip goes
+        down first so the floor's own record survives it.
         """
-        activity_floor = transcript_rules_config.min_assistant_turns
-        skipped_siblings: dict[str, KeyAccountingRecord] = {}
-        if timeline.events:
-            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
-            scored_rules = transcript_rules_config
-        elif activity_floor is None:
+        scored_rules = scored_transcript_rules(timeline, transcript_rules_config)
+        if scored_rules is None:
             logger.info(
                 f"GradeTrial: {trial_id} - Skipping transcript rules (no messages or tool calls)"
             )
             return None, dict.fromkeys(transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP)
+
+        skipped_siblings: dict[str, KeyAccountingRecord] = {}
+        if timeline.events:
+            logger.info(f"GradeTrial: {trial_id} - Evaluating transcript rules")
         else:
             logger.info(
                 f"GradeTrial: {trial_id} - Evaluating the activity floor alone "
                 "(no messages or tool calls)"
             )
-            scored_rules = TranscriptRulesConfig(min_assistant_turns=activity_floor)
             skipped_siblings = dict.fromkeys(
                 transcript_rules_author_keys(), NO_TIMELINE_EVENTS_SKIP
             )

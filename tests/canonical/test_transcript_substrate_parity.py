@@ -1,6 +1,6 @@
 """Differential lock: one ``transcript_rules`` pack, two substrates, one score.
 
-Nineteen rows, each an authored pack under ``tests/data/transcript_parity/`` plus
+Twenty rows, each an authored pack under ``tests/data/transcript_parity/`` plus
 the trial's two views of itself — its messages and its tool-call record. Every row
 is graded through **both** substrates' real paths:
 
@@ -11,14 +11,20 @@ is graded through **both** substrates' real paths:
 Driving through the adapter is what keeps the rows readable as authored packs
 rather than as either substrate's internal config model.
 
-Seventeen of the rows sit on the seven scoring questions a transcript rule has to
+Eighteen of the rows sit on the eight scoring questions a transcript rule has to
 answer the same way on either substrate — how the sub-checks aggregate, what
 denominator they aggregate over, which events a phrase rule reads, whether a
-phrase matches case-insensitively, whether a call's status counts, whether a veto
-beats a fraction, and what a missing tool-call record proves. The rows are pinned
-at two different scores and the two **anchor** rows sit on no question at all, so
-a harness that drove one substrate twice, or returned a constant, fails some of
-them.
+phrase matches case-insensitively, whether it matches as the phrase or as a bag of
+its words, whether a call's status counts, whether a veto beats a fraction, and
+what a missing tool-call record proves. The rows are pinned at two different
+scores and the two **anchor** rows sit on no question at all, so a harness that
+drove one substrate twice, or returned a constant, fails some of them.
+
+A ninth question is not a row, because its answer is that neither substrate
+produces a component at all: what an events-less trial scores is a property of the
+fold rather than of one pack's verdict, so it is locked by the two named tests
+below, which drive the core engine's ``grade_trajectory`` against the runner's own
+``GradeTrial`` RPC.
 
 The runner's column is checked first and separately: a table pinning a value the
 runner does not produce raises :class:`_FixtureDefect` rather than reading as the
@@ -36,6 +42,7 @@ from pathlib import Path
 
 import pytest
 
+from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
@@ -50,6 +57,8 @@ from tolokaforge.core.models import (
     ToolExecutorIdentity,
     Trajectory,
 )
+from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.service import RunnerServiceImpl
 
 pytestmark = pytest.mark.canonical
 
@@ -58,12 +67,13 @@ _FIXTURE_TIMESTAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 class _ScoringQuestion(str, Enum):
-    """The seven scoring questions both substrates have to answer alike."""
+    """The eight scoring questions both substrates have to answer alike."""
 
     AGGREGATION = "aggregation"
     DENOMINATOR = "denominator"
     EVIDENCE_SET = "evidence set"
     CASE = "case"
+    MATCHING_MODE = "matching mode"
     CALL_STATUS = "call status"
     VETO_VS_FRACTION = "veto vs fraction"
     RECORD_ABSENT = "record-absent evidence"
@@ -270,6 +280,18 @@ _ROWS: tuple[_Row, ...] = (
         question=_ScoringQuestion.CASE,
     ),
     _Row(
+        row_id="communicate_info_paraphrased_word_by_word",
+        pack="communicate_info_and_must_contain",
+        messages=(
+            _user("Please refund my order."),
+            # Every word of the required info, none of it as the phrase asks.
+            _assistant("Ticket closed. Your 50 dollars refund has been processed."),
+        ),
+        tool_log=(),
+        expected=0.5,
+        question=_ScoringQuestion.MATCHING_MODE,
+    ),
+    _Row(
         row_id="required_tool_call_errored",
         pack="required_tools_one",
         messages=(
@@ -417,10 +439,101 @@ def test_both_substrates_score_one_transcript_rules_pack_alike(
 
 
 def test_every_scoring_question_is_measured_by_a_row():
-    """Each of the seven questions keeps a row that answers it.
+    """Each of the eight questions keeps a row that answers it.
 
     ``_ScoringQuestion`` is declared independently of the table, so a row dropped
     from ``_ROWS`` leaves the question it carried with nothing measuring it.
     """
     measured = {row.question for row in _ROWS if row.question is not None}
     assert measured == set(_ScoringQuestion)
+
+
+#: The value the wire carries for a component no substrate scored. ``GradeComponents``
+#: is a proto3 message of bare doubles, so the runner spells "unevaluated" as a
+#: sentinel where the core engine spells it ``None``.
+_UNSCORED_ON_THE_WIRE = -1.0
+
+
+def _core_eventless_grade(adapter: NativeAdapter, pack: str, task_dir: Path) -> core_models.Grade:
+    """The core engine's grade for a trial with neither a message nor a record."""
+    trajectory = Trajectory(
+        task_id=pack,
+        trial_index=0,
+        start_ts=_FIXTURE_TIMESTAMP,
+        end_ts=_FIXTURE_TIMESTAMP,
+        messages=[],
+        tool_log=[],
+    )
+    config: core_models.GradingConfig = adapter.get_grading_config(pack)
+    return GradingEngine(config, task_dir=task_dir).grade_trajectory(trajectory, {})
+
+
+def _runner_eventless_grade(
+    adapter: NativeAdapter, pack: str, servicer: RunnerServiceImpl, context: object
+) -> pb2.Grade:
+    """``GradeTrial``'s verdict on a trial that sent no transcript at all.
+
+    An empty ``llm_messages_json`` is the runner's own events-less timeline: with
+    no calls executed either, the RPC builds a timeline with nothing on it — the
+    same input the core engine gets from a trajectory carrying no messages.
+    """
+    trial_id = f"eventless:{pack}"
+    described = adapter.to_task_description(pack).model_dump(mode="json")
+    spec = trial_spec_json(described, trial_id=trial_id)
+    registered = servicer.RegisterTrial(register_request(spec, trial_id=trial_id), context)
+    assert registered.success is True, registered.error
+
+    response = servicer.GradeTrial(
+        pb2.GradeTrialRequest(trial_id=trial_id, llm_messages_json=""), context
+    )
+    assert response.success is True, response.error
+    return response.grade
+
+
+def test_an_events_less_trial_leaves_transcript_rules_unscored_on_both_substrates(
+    parity_adapter: NativeAdapter, tmp_path: Path, runner_service, mock_grpc_context
+):
+    """A trial that left no trace scores no ``transcript_rules`` on either substrate.
+
+    Every rule ``must_contain_one`` declares would be scored against evidence the
+    trial does not carry, so the component is left out of the fold rather than
+    recorded as a failure the agent earned. Both substrates are driven through
+    their own integration point — ``grade_trajectory`` and the ``GradeTrial`` RPC —
+    so a substrate reaching the decision only inside the shared evaluator, or not
+    reaching it at all, fails here.
+    """
+    pack = "must_contain_one"
+    core_component = _core_eventless_grade(
+        parity_adapter, pack, tmp_path
+    ).components.transcript_rules
+    runner_grade = _runner_eventless_grade(parity_adapter, pack, runner_service, mock_grpc_context)
+
+    assert core_component is None, (
+        f"the core engine scored transcript_rules {core_component} on a trial whose "
+        "timeline carries no events"
+    )
+    assert runner_grade.components.transcript_rules == _UNSCORED_ON_THE_WIRE, (
+        f"the runner scored transcript_rules {runner_grade.components.transcript_rules} "
+        "on a trial whose timeline carries no events"
+    )
+
+
+def test_an_events_less_trial_with_a_declared_floor_is_scored_by_the_floor_alone(
+    parity_adapter: NativeAdapter, tmp_path: Path, runner_service, mock_grpc_context
+):
+    """A declared activity floor is the one rule an events-less timeline answers.
+
+    ``activity_floor_and_must_contain`` declares a floor beside a phrase rule. No
+    events is precisely the floor's answer, so both substrates score the component
+    — and score it on the floor alone, which is why neither account of the grade
+    names the phrase it was declared beside.
+    """
+    pack = "activity_floor_and_must_contain"
+    core_grade = _core_eventless_grade(parity_adapter, pack, tmp_path)
+    runner_grade = _runner_eventless_grade(parity_adapter, pack, runner_service, mock_grpc_context)
+
+    assert core_grade.components.transcript_rules == runner_grade.components.transcript_rules == 0.0
+    for substrate, reasons in (("core", core_grade.reasons), ("runner", runner_grade.reasons)):
+        account = f"{substrate} on an events-less timeline: {reasons}"
+        assert "min_assistant_turns" in reasons, f"the floor was not evaluated — {account}"
+        assert "Refund issued" not in reasons, f"the floor's siblings were scored — {account}"

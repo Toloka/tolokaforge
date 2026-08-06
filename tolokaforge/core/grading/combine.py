@@ -44,7 +44,10 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript import evaluate_transcript_rules
+from tolokaforge.core.grading.transcript import (
+    evaluate_transcript_rules,
+    scored_transcript_rules,
+)
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -136,13 +139,19 @@ class GradingEngine:
 
         # Transcript rules — the same function the runner's GradeTrial calls, over
         # the same timeline and the same validated config, so the component score
-        # does not depend on which substrate graded the trial.
+        # does not depend on which substrate graded the trial. A trial whose
+        # timeline carries no events leaves the component unscored unless the pack
+        # declared an activity floor, which is the same decision the runner folds.
         if self.config.transcript_rules:
-            transcript_result = evaluate_transcript_rules(timeline, self.config.transcript_rules)
-            components.transcript_rules = transcript_result.score
-            reasons_parts.extend(
-                f"Transcript: {row.message}" for row in transcript_result.details if not row.passed
-            )
+            scored_rules = scored_transcript_rules(timeline, self.config.transcript_rules)
+            if scored_rules is not None:
+                transcript_result = evaluate_transcript_rules(timeline, scored_rules)
+                components.transcript_rules = transcript_result.score
+                reasons_parts.extend(
+                    f"Transcript: {row.message}"
+                    for row in transcript_result.details
+                    if not row.passed
+                )
 
         # Trace checks — the same function the runner's GradeTrial calls, over the
         # same timeline, so the component score does not depend on which substrate

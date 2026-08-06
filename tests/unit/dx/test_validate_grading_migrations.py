@@ -52,15 +52,21 @@ reddens every one of them. What a *resolvable* inventory rejects is locked in
 from __future__ import annotations
 
 import textwrap
+import types
 from pathlib import Path
+from typing import Union, get_args, get_origin
 
 import pytest
 import yaml
 from click.testing import CliRunner
-from pydantic import ValidationError
+from pydantic import BaseModel, ValidationError
 
 from tests.utils.trace_checks_configs import every_kind_block
-from tolokaforge.adapters._task_loader import _GRADING_BLOCK_SHAPES, validate_grading_yaml
+from tolokaforge.adapters._task_loader import (
+    _GRADING_BLOCK_SHAPES,
+    _TYPED_GRADING_BLOCKS,
+    validate_grading_yaml,
+)
 from tolokaforge.core.grading.combine_method import (
     COMBINE_METHODS,
     RETIRED_COMBINE_METHOD_ALIASES,
@@ -1033,6 +1039,12 @@ def test_validate_names_a_key_a_transcript_element_does_not_declare_and_the_acce
     carries: ``tool_name`` is the name the wire used before one model served both
     surfaces, and an author who copied it from a recorded description gets told which
     field replaced it rather than a bare ``extra_forbidden`` at a list index.
+
+    This is the gate's addressed message. That both elements refuse the key on the
+    model itself — so ``RegisterTrial`` and direct Python are refused too, which is
+    what makes the ``tool_name`` row a rename rather than a second accepted spelling
+    — is
+    ``tests/canonical/test_runner_models_reconcile.py::test_reconciled_wire_types_forbid_extras``.
     """
     grading = _write_transcript_rules(tmp_path, {field_name: [element]})
     model = {"required_actions": RequiredAction, "communicate_info": CommunicateInfo}[field_name]
@@ -1047,23 +1059,6 @@ def test_validate_names_a_key_a_transcript_element_does_not_declare_and_the_acce
     assert f"did you mean '{declared}'?" in message, message
     for field in model.model_fields:
         assert field in message, message
-
-
-@pytest.mark.parametrize(
-    ("model", "element"),
-    [(RequiredAction, _A_REQUIRED_ACTION), (CommunicateInfo, _A_COMMUNICATE_INFO)],
-    ids=["required_actions", "communicate_info"],
-)
-def test_a_transcript_element_refuses_a_key_it_does_not_declare(model: type, element: dict):
-    """On the model, so ``RegisterTrial`` and direct Python are refused too.
-
-    The gate above is one path; this is the total guarantee, and it is what makes the
-    ``tool_name`` row a rename rather than a second accepted spelling.
-    """
-    with pytest.raises(ValidationError) as excinfo:
-        model(**element, definitely_unknown_key=1)
-
-    assert [error["loc"] for error in excinfo.value.errors()] == [("definitely_unknown_key",)]
 
 
 def test_validate_accepts_the_transcript_elements_the_corpus_ships(tmp_path: Path):
@@ -1330,6 +1325,83 @@ def test_the_trace_checks_shape_refusal_names_both_keys_the_block_may_carry(tmp_
         validate_grading_yaml(
             _write_grading_key(tmp_path, "trace_checks", [{"id": "a"}]), inventory=_UNRESOLVED
         )
+
+
+# ---------------------------------------------------------------------------
+# the element tier — ``element_models`` restates a model fact, so it can drift
+#
+# ``_TypedGradingBlock.element_models`` names the list-valued fields whose *elements*
+# draw the addressed refusal, and it names them by string and by class. Nothing in the
+# registry makes that pair agree with the block model's own annotation, or makes a
+# newly-listed field arrive with an entry, so both are asserted against the models.
+# ---------------------------------------------------------------------------
+
+
+_UNION_ORIGINS = (types.UnionType, Union)
+
+_ELEMENT_ENTRIES = tuple(
+    pytest.param(name, field, model, id=f"{name}.{field}")
+    for name, block in _TYPED_GRADING_BLOCKS.items()
+    for field, model in block.element_models
+)
+
+
+def _element_model_of(annotation: object) -> type[BaseModel] | None:
+    """The model a field holds one list of, or ``None`` for every other shape.
+
+    ``list[Model] | None`` counts: an optional list still reaches the gate as a list of
+    elements, so reading only the bare ``list[Model]`` would let a field opt out of the
+    addressed refusal by gaining a default of ``None``.
+    """
+    candidates = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    for candidate in candidates:
+        if get_origin(candidate) is not list:
+            continue
+        (inner,) = get_args(candidate)
+        if isinstance(inner, type) and issubclass(inner, BaseModel):
+            return inner
+    return None
+
+
+@pytest.mark.parametrize(("block_name", "field_name", "element_model"), _ELEMENT_ENTRIES)
+def test_every_element_entry_names_the_model_its_block_field_actually_holds(
+    block_name: str, field_name: str, element_model: type[BaseModel]
+):
+    """An entry naming a sibling's model addresses the refusal at the wrong key set.
+
+    The gate reports ``element_model.model_fields`` as the accepted set, so an entry
+    that drifted from the annotation tells the author to write keys the element does
+    not declare — an addressed message that is worse than the bare refusal.
+    """
+    expected = list[element_model]
+    annotation = _TYPED_GRADING_BLOCKS[block_name].model.model_fields[field_name].annotation
+
+    assert annotation == expected, f"{block_name}.{field_name} is {annotation}, not {expected}"
+
+
+@pytest.mark.parametrize("block_name", sorted(_TYPED_GRADING_BLOCKS))
+def test_every_block_that_addresses_its_refusal_names_each_list_of_models_it_declares(
+    block_name: str,
+):
+    """A list-valued field added to a gated block arrives with an entry, or without one.
+
+    Without one its elements fall back to the bare ``extra_forbidden`` at a list index,
+    which is the message this registry exists to replace. ``trace_checks`` is the block
+    that draws that bare refusal by declaration, so its own flag — not a hand-kept
+    exemption here — is what excuses it.
+    """
+    block = _TYPED_GRADING_BLOCKS[block_name]
+    listed = {
+        field
+        for field, info in block.model.model_fields.items()
+        if _element_model_of(info.annotation) is not None
+    }
+    named = {field for field, _ in block.element_models}
+
+    assert named == (listed if block.gate_names_unknown_keys else set()), (
+        f"{block_name} declares {sorted(listed)} as lists of models but names "
+        f"{sorted(named)} for the addressed refusal"
+    )
 
 
 # ---------------------------------------------------------------------------
