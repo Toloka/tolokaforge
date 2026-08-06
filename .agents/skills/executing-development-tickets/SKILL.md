@@ -39,6 +39,19 @@ The skill expects the issue to live in `Toloka/tolokaforge`. If a different repo
 
 ## Workflow
 
+### Step 0 — Progress channel
+
+Before Step 1, set up a JSONL progress channel so main can observe subagent activity in real time. Every subagent this skill launches writes phase-transition lines to a well-known file; main tails that stream via a background bash + `Monitor`.
+
+1. Pick a `launch_id` root — `issue-<N>` for a numbered issue, or `adhoc-<UTC-timestamp>` if invoked without an issue number.
+2. Create the progress directory: `mkdir -p ~/.claude/plans/toloka-tolokaforge/progress/<launch_id>/`.
+3. Start the tail as a background bash — `tail -F ~/.claude/plans/toloka-tolokaforge/progress/<launch_id>/*.jsonl 2>/dev/null` — with `run_in_background: true`, and subscribe to it via the `Monitor` tool. Each JSONL line becomes a notification; main can read the stream without polling.
+4. Pass the concrete file path to every subagent as `PROGRESS_FILE=~/.claude/plans/toloka-tolokaforge/progress/<launch_id>/<agent-role>-<UTC-timestamp>.jsonl` in the launch prompt (see per-step prompts below).
+
+Progress files are scratch, never committed. They live outside the repo per the same convention as plan and briefing files. The full schema, per-agent phase lists, and reference examples are in the `## Progress protocol` section at the end of this file — read it once, then apply per subagent.
+
+Watchdog behaviour (soft-idle nudge / hard-timeout escalation) is not part of this step yet; it lands in a follow-up change and reads the same stream. For now, the stream exists so main can *see* activity — that alone is enough to distinguish a working agent from a wedged one at a glance.
+
 ### Step 1 — Fetch the issue
 
 Use GitHub MCP `issue_read` with `owner=Toloka`, `repo=tolokaforge`, `issue_number=<N>`. Capture title, body, labels.
@@ -84,6 +97,10 @@ Honour your binding principles: interfaces over implementation, compatibility
 surfaces need explicit migration (internals refactor cleanly), diagnose by
 running, lock behaviour with tests at the right tier, no compromise, surface
 discovered issues, comment hygiene.
+
+PROGRESS_FILE=<path built by main per Step 0, e.g. ~/.claude/plans/toloka-tolokaforge/progress/issue-<N>/system-architect-planner-<UTC-ts>.jsonl>
+Append one JSONL line to $PROGRESS_FILE at each phase transition per your
+charter's Progress reporting section.
 ```
 
 ### Step 3b — Assemble the per-issue briefing pack
@@ -139,6 +156,10 @@ Otherwise, before the user sees the plan, pressure-test it:
    Apply your critique dimensions. Verify the plan's claims against the repo and
    (read-only) the running behaviour. Return your structured verdict block. Do not
    edit the plan — the architect owns it.
+
+   PROGRESS_FILE=<path built by main per Step 0>
+   Append one JSONL line to $PROGRESS_FILE at each phase transition per your
+   charter's Progress reporting section.
    ```
 2. **Verdict `APPROVE` / `APPROVE WITH NOTES`** → proceed to Step 5, carrying any 🟡 notes into the user summary.
 3. **Verdict `REVISE`** → `SendMessage` the findings verbatim to the architect. The architect revises the plan and returns per-finding dispositions (fixed / rebutted-with-evidence). `SendMessage` the revision summary + dispositions back to the critic for re-critique.
@@ -189,6 +210,10 @@ The "one stage = one commit" contract, the drift-handling rules, and the correct
    Contract: the stage is not done until the behaviour-locking test exists at the
    tier the stage names (unit / canonical / integration), exercises real behaviour
    (not mocks), and passes. One stage = one commit. Return your structured report.
+
+   PROGRESS_FILE=<path built by main per Step 0>
+   Append one JSONL line to $PROGRESS_FILE at each phase transition per your
+   charter's Progress reporting section.
    ```
 2. **Validate the report.** When it returns:
    - Contract matches the stage spec — flag drift in your next user message.
@@ -218,6 +243,10 @@ Review the current branch vs <base_branch> against AGENTS.md and the code-review
 skill rules within YOUR scope. Plan: <~/.claude/plans/toloka-tolokaforge/...>.
 Briefing: <~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md> if present.
 Cover branch + staged + unstaged. Return findings in the standard format.
+
+PROGRESS_FILE=<path built by main per Step 0, one per shard>
+Append one JSONL line to $PROGRESS_FILE at each phase transition per your
+charter's Progress reporting section.
 ```
 
 When all three return:
@@ -241,6 +270,10 @@ If the reviewer returns 🔴 Blocker or 🟠 Major findings:
    commit. Return your structured report.
 
    <paste reviewer findings verbatim>
+
+   PROGRESS_FILE=<path built by main per Step 0, fix-round scoped>
+   Append one JSONL line to $PROGRESS_FILE at each phase transition per your
+   charter's Progress reporting section.
    ```
 3. Re-launch the three sharded reviewers (`reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`) in parallel on the updated branch, same as Step 8. Merge findings the same way.
 4. Loop until every lane's verdict is `APPROVE` or `APPROVE WITH NITS`. **Cap: 2 fix rounds.** If any lane keeps finding the same Blocker, stop and ask the user — don't grind the implementer.
@@ -323,3 +356,52 @@ Surface to the user:
 - **Don't skip Step 5's approval.** The plan needs the user's eyes before main starts mutating the repo — the critic's verdict doesn't replace them.
 - **Don't run this skill for `docs:` / `chore:` issues** that don't need staged implementation. Just edit and commit directly.
 - **Don't dispatch this skill for issues already in progress on a branch.** Continue manually or ask the user.
+
+## Progress protocol
+
+Every subagent this skill launches writes JSONL progress lines to a per-launch file main opens in Step 0. Main tails the directory via a background `tail -F` + `Monitor`. The stream lets main *see* activity in real time without polling, and is the substrate the watchdog (soft-nudge / hard-timeout) will read in a follow-up change.
+
+### Path convention
+
+```
+~/.claude/plans/toloka-tolokaforge/progress/<launch_id_root>/<agent-role>-<UTC-timestamp>.jsonl
+```
+
+- `<launch_id_root>` = `issue-<N>` for a numbered issue, `adhoc-<UTC-ts>` otherwise. Under `/implement-milestone` the root is `milestone-<N>/issue-<K>`.
+- `<agent-role>` = `system-architect-planner`, `plan-critic`, `plan-stage-implementer`, `branch-code-reviewer`, `reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`.
+- `<UTC-timestamp>` = `date -u +%Y%m%dT%H%M%SZ` at launch. Rerunning the same role (fix-loop rounds, corrective launches) yields a distinct file per launch — history is preserved.
+
+Progress files are scratch, never committed, never referenced from PR bodies. They live outside the repo, alongside plan and briefing files.
+
+### Schema
+
+One JSON object per line, `≤ 300 bytes`, no PII:
+
+```json
+{"ts":"2026-08-06T12:34:56Z","agent":"plan-stage-implementer","launch_id":"impl-issue-237-s2","phase":"impl","step":"lint_check","detail":"pass","elapsed_s":42,"issue":237,"stage":2}
+```
+
+Required fields: `ts` (UTC ISO-8601), `agent` (role name), `launch_id` (main-assigned; see below), `phase` (from the per-agent phase list in the charter). Optional: `step`, `detail`, `elapsed_s`, `issue`, `stage`, `round`.
+
+Main assigns `launch_id`: for a persistent implementer, `impl-issue-<N>[-s<stage>]`; for shard reviewers, `reviewer-<lane>-issue-<N>[-r<round>]`; for architect/critic, `architect-issue-<N>` / `critic-issue-<N>[-r<round>]`. The `launch_id` is the join key: every line for a single Agent-tool launch (or its SendMessage continuations) carries the same value.
+
+### When subagents write
+
+Per each agent's `## Progress reporting` section in its charter:
+
+- On start.
+- At each phase transition (phase list is role-specific).
+- Before any tool call expected to exceed 60 s (`phase:"long_call"` + `step:"<tool>"`).
+- On caught error.
+
+### Main-side watcher
+
+Main launches at Step 0, once per invocation:
+
+```bash
+tail -F ~/.claude/plans/toloka-tolokaforge/progress/<launch_id_root>/*.jsonl 2>/dev/null
+```
+
+as a background bash (`run_in_background: true`), subscribed via the `Monitor` tool. New JSONL lines arrive as notifications; main reads them opportunistically. Nothing needs to poll.
+
+Watchdog behaviour (soft-idle nudge, hard-timeout `TaskStop`) is not part of this iteration — it lands in a follow-up change and consumes this same stream. For now the observability alone is the win: a wedged agent shows no new lines, and that gap is visible without waiting for a return that never comes.

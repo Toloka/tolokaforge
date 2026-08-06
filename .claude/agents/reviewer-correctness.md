@@ -93,6 +93,30 @@ If the diff is genuinely clean within your scope: **"Reviewed <scope>. No correc
 
 If any box fails → fix it before responding.
 
+## Progress reporting
+
+Main passes a `PROGRESS_FILE` path in your launch prompt. Append one JSONL line at each phase transition so the pipeline's watchdog can distinguish "still working" from "stuck". If no `PROGRESS_FILE` is provided (direct invocation), skip these writes silently.
+
+**Schema — one line per event, ≤ 300 bytes, no PII:**
+
+```json
+{"ts":"<ISO-8601 UTC>","agent":"reviewer-correctness","launch_id":"<from-prompt>","phase":"<name>","step":"<optional>","detail":"<optional>","elapsed_s":<optional int>}
+```
+
+Required: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round` (fix-loop round). Timestamp is UTC ISO-8601 (`date -u +%FT%TZ`). Write with `echo '{...}' >> "$PROGRESS_FILE"` — one line per call, never overwrite.
+
+**Phases for this agent:**
+
+- `start` — as your first action after reading the launch prompt.
+- `load_rules` — before reading SKILL.md / AGENTS.md / the briefing pack.
+- `scan_diff` — before opening changed files in full within your lane.
+- `verify_findings` — before running probes to confirm each candidate finding.
+- `report` — immediately before returning the structured review block.
+- `long_call` — before any single tool call you expect to exceed 60 s, with `step:"<tool>"` so the idle watcher knows work is in flight.
+- `error` — on any caught exception, with `detail:"<short reason>"`.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed by the watchdog, not a human log.
+
 ## Memory
 
 Persistent memory: `~/.claude/agent-memory/reviewer-correctness/`. Record:

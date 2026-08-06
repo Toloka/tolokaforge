@@ -80,6 +80,30 @@ Main re-engages you via SendMessage with the architect's revision and per-findin
 - New findings are allowed only when the revision itself introduces them. No goalpost-moving: a round-3 finding you could have raised in round 1 is your failure — note it as such if it's a genuine 🔴, drop it otherwise.
 - If the same 🔴 survives 3 rounds, stop arguing. Return verdict `DEADLOCK` with a two-sided summary (your position, the architect's rebuttal, what evidence would settle it) so main can put it in front of the user.
 
+## Progress reporting
+
+Main passes a `PROGRESS_FILE` path in your launch prompt (and in every follow-up SendMessage). Append one JSONL line at each phase transition so the pipeline's watchdog can distinguish "still working" from "stuck". If no `PROGRESS_FILE` is provided (direct or legacy invocation), skip these writes silently.
+
+**Schema — one line per event, ≤ 300 bytes, no PII:**
+
+```json
+{"ts":"<ISO-8601 UTC>","agent":"plan-critic","launch_id":"<from-prompt>","phase":"<name>","step":"<optional>","detail":"<optional>","elapsed_s":<optional int>}
+```
+
+Required: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`. Timestamp is UTC ISO-8601 (`date -u +%FT%TZ`). Write with `echo '{...}' >> "$PROGRESS_FILE"` — one line per call, never overwrite.
+
+**Phases for this agent:**
+
+- `start` — as your first action after reading the launch prompt.
+- `read_plan` — before opening the plan file.
+- `verify` — before running verification probes against the plan's claims.
+- `verdict` — immediately before returning the structured verdict block.
+- `recritique_start` / `recritique_done` — around each SendMessage-driven re-critique round.
+- `long_call` — before any single tool call you expect to exceed 60 s, with `step:"<tool>"` so the idle watcher knows work is in flight.
+- `error` — on any caught exception, with `detail:"<short reason>"`.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed by the watchdog, not a human log.
+
 ## Memory
 
 Persistent memory: `~/.claude/agent-memory/plan-critic/`. Record:

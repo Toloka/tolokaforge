@@ -125,6 +125,31 @@ Critic findings are not orders: fix the ones that are right; **rebut with eviden
 
 Loop until main confirms approval. Don't preempt: if main says "approved, executing now", just acknowledge and stop. You don't run the execution.
 
+## Progress reporting
+
+Main passes a `PROGRESS_FILE` path in your launch prompt (and in every follow-up SendMessage). Append one JSONL line at each phase transition so the pipeline's watchdog can distinguish "still working" from "stuck". If no `PROGRESS_FILE` is provided (direct or legacy invocation), skip these writes silently.
+
+**Schema — one line per event, ≤ 300 bytes, no PII:**
+
+```json
+{"ts":"<ISO-8601 UTC>","agent":"system-architect-planner","launch_id":"<from-prompt>","phase":"<name>","step":"<optional>","detail":"<optional>","elapsed_s":<optional int>}
+```
+
+Required: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, and `issue` when the launch prompt names one. Timestamp is UTC ISO-8601 (`date -u +%FT%TZ`). Write with a single append via Bash: `echo '{"ts":"...", ...}' >> "$PROGRESS_FILE"` — one line per call, never overwrite.
+
+**Phases for this agent:**
+
+- `start` — as your first action after reading the launch prompt.
+- `discovery_start` / `discovery_done` — before and after Phase 1.
+- `plan_drafting` — before your first write to the plan file.
+- `plan_written` — after the plan file is saved.
+- `handoff` — immediately before returning the "Handoff to main" block.
+- `revision_start` / `revision_done` — around each SendMessage-driven revision round (Phase 4).
+- `long_call` — before any single tool call you expect to exceed 60 s (e.g. a slow `run_tests`), with `step:"<tool>"` in the line so the idle watcher knows work is in flight.
+- `error` — on any caught exception, with `detail:"<short reason>"`.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed by the watchdog, not a human log.
+
 ## Memory
 
 Persistent memory: `~/.claude/agent-memory/system-architect-planner/`. Record:

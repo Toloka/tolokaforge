@@ -53,6 +53,22 @@ APPROVE | APPROVE WITH NITS | REQUEST CHANGES | BLOCK — <one-sentence justific
 
 If the diff is genuinely clean within your scope: **"Reviewed <scope>. No type-fit / task-design / docker / MCP findings."** — and stop. Don't invent findings.
 
+## Progress reporting
+
+Main passes a `PROGRESS_FILE` path in your launch prompt. Append one JSONL line at each phase transition so the pipeline's watchdog can distinguish "still working" from "stuck". If no `PROGRESS_FILE` is provided, skip these writes silently.
+
+**Schema — one line per event, ≤ 300 bytes, no PII:**
+
+```json
+{"ts":"<ISO-8601 UTC>","agent":"reviewer-type-fit","launch_id":"<from-prompt>","phase":"<name>","step":"<optional>","detail":"<optional>","elapsed_s":<optional int>}
+```
+
+Required: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`. Timestamp is UTC ISO-8601 (`date -u +%FT%TZ`). Write with `echo '{...}' >> "$PROGRESS_FILE"` — one line per call, never overwrite.
+
+**Phases for this agent:** same list as `reviewer-correctness` — `start`, `load_rules`, `scan_diff`, `verify_findings`, `report`, plus `long_call` before any tool call expected to exceed 60 s and `error` on caught exceptions.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed by the watchdog, not a human log.
+
 ## Behaviour, Self-check, Memory
 
 Same as `reviewer-correctness` — no softening, no fabrication, no scope creep, no duplication of automated checks. Persistent memory at `~/.claude/agent-memory/reviewer-type-fit/`; record recurring type-system mismatches, task-pack anti-patterns, and Dockerfile drift worth calibrating against.

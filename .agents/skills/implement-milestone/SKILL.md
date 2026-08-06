@@ -39,6 +39,18 @@ Invoking this skill **is** the user's explicit grant to, without re-asking:
 
 **Never granted — always stop and ask:** releases and version tags (`release.yml` / `release-gate.yml` are human-triggered), publishing packages, anything touching provider accounts or API-key budgets beyond normal test runs, force-pushing or committing directly to `main`, deleting the milestone, merging on red or unverified-flaky CI, and — critically — **merging the consolidation PR into `main`**. The consolidation PR is prepared but never auto-merged; the human reviews and merges it.
 
+## Step 0 — Progress channel
+
+Before Step 1, set up a milestone-scoped JSONL progress channel so main can observe subagent activity in real time across the whole milestone. Every per-issue sub-skill run inherits it; every subagent writes to it.
+
+1. Create the milestone progress root: `mkdir -p ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/`.
+2. Start the tail as a background bash — `tail -F ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/*.jsonl 2>/dev/null` — with `run_in_background: true`, and subscribe to it via the `Monitor` tool. Every subagent line surfaces as a notification without polling.
+3. Pass the milestone-scoped path root to each per-issue sub-skill invocation. The sub-skill's own Step 0 creates a per-issue subdirectory (`milestone-<N>/issue-<K>/`) under it and passes concrete `PROGRESS_FILE=...` paths to each subagent.
+
+Progress files are scratch, never committed. Schema and per-agent phase lists live in `/executing-development-tickets` §Progress protocol — the same protocol applies here; the milestone loop only adds a wider tail so cross-issue activity is visible in one stream.
+
+Watchdog behaviour (soft-idle nudge / hard-timeout escalation) is not part of this step yet — it lands in a follow-up. For now the stream exists so main can *see* activity, which is enough to distinguish a working agent from a wedged one at a glance across a long milestone run.
+
 ## Step 1 — Intake
 
 1. Resolve the milestone: `gh api 'repos/Toloka/tolokaforge/milestones/<N>'` (the URL's trailing number is the milestone number). List its issues, open and closed: `gh api 'repos/Toloka/tolokaforge/issues?milestone=<N>&state=all&per_page=100'`.
