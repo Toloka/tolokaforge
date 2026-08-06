@@ -35,6 +35,7 @@ from typing import Any
 
 import pytest
 import yaml
+from pydantic import ValidationError
 
 from tests.utils.golden_source_shapes import (
     elements_that_are_no_action,
@@ -318,3 +319,52 @@ def test_the_run_trial_path_refuses_a_falsy_grading_shape(tmp_path: Path) -> Non
         adapter.to_task_description(task.task_id)
 
     assert "'transcript_rules'" in str(excinfo.value)
+
+
+_A_REQUIRED_ACTION: dict[str, Any] = {
+    "action_id": "cancel_the_order",
+    "requestor": "assistant",
+    "name": "cancel_order",
+    "arguments": {"order_id": "O1"},
+}
+"""One well-formed ``required_actions`` element, in the spelling an author writes."""
+
+
+def _transcript_pack(tmp_path: Path, required_actions: list[Any]) -> NativeAdapter:
+    return _pack(
+        tmp_path,
+        grading_yaml=yaml.safe_dump({"transcript_rules": {"required_actions": required_actions}}),
+    )
+
+
+def test_a_required_action_reaches_the_wire_under_the_name_its_author_wrote(
+    tmp_path: Path,
+) -> None:
+    """One model serves the block and the wire, so the read validates instead of copying.
+
+    The positive control for the rows below: without it, a read that dropped
+    ``required_actions`` on the floor entirely would satisfy every rejection here.
+    """
+    action = _wire_grading(_transcript_pack(tmp_path, [_A_REQUIRED_ACTION])).transcript_rules
+    assert [a.name for a in action.required_actions] == ["cancel_order"]
+    assert [a.action_id for a in action.required_actions] == ["cancel_the_order"]
+
+
+@pytest.mark.parametrize("omitted", ["name", "action_id", "requestor"])
+def test_a_required_action_missing_a_field_it_must_declare_is_refused_at_the_wire_read(
+    tmp_path: Path, omitted: str
+) -> None:
+    """A field the read once substituted a default for now fails before the trial is paid for.
+
+    Each of these was read off the raw mapping with a fallback — ``""`` for the tool and
+    the id, ``"user"`` for the requestor — so a pack omitting one registered cleanly and
+    graded a required action nothing could satisfy, or one whose requestor the author
+    never wrote.
+    """
+    element = {key: value for key, value in _A_REQUIRED_ACTION.items() if key != omitted}
+    adapter = _transcript_pack(tmp_path, [element])
+
+    with pytest.raises(ValidationError) as excinfo:
+        adapter.to_task_description(_TASK_ID)
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [("required_actions", 0, omitted)]

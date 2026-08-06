@@ -11,7 +11,7 @@ Fifteen claims over the packs an author reads as the reference:
    what ``NativeAdapter.get_grading_config`` returns after the project layer merges —
    because five shipped packs declare no ``combine`` of their own and inherit
    ``llm_judge: 1.0`` from ``project.yaml``. Over raw ``grading.yaml`` the same guard
-   is red on those five on day one. Both corpus roots are walked: the 64 project-less
+   is red on those five on day one. Both corpus roots are walked: the 77 project-less
    ``tests/data`` packs are where every stray weight was.
 2. **``helpdesk_01``'s ``trace_checks`` block asserts the process its README calls
    ungradeable by any other rule**, and each of its three constraints can fail on
@@ -29,7 +29,7 @@ Fifteen claims over the packs an author reads as the reference:
    inventory *and* its own effective combine, and produces no error, no advisory and
    nothing unchecked — the measured proof that the gate ships green rather than the
    claim that it does. The rules a ``task.yaml`` holder can run without a tool set
-   are held over the wider 94-pack walk too, so a pack outside the two task roots
+   are held over the wider 106-pack walk too, so a pack outside the two task roots
    cannot declare a section that asserts nothing.
 6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
    passed by mutating.** Either comparison its rubric reference names scores in full
@@ -79,7 +79,7 @@ Fifteen claims over the packs an author reads as the reference:
 15. **Every pack that replays a golden path is authored against a task that gives it a
     world to replay in.** An initial-state JSON file and an MCP server module are
     ``task.yaml`` facts, unreadable from ``grading.yaml``, and without them core hashes
-    nothing and refuses to grade the trial at all. Each of the 94 packs is checked
+    nothing and refuses to grade the trial at all. Each of the 106 packs is checked
     against its own resolved world, and again with that world's server module withheld
     and any ``expected_state_hash`` removed — the removal being what makes the control
     fire on the one pack that ships both hash sources.
@@ -269,9 +269,9 @@ _TASKS_OUTSIDE_THE_GRADED_CORPUS = _TASKS_WITHOUT_A_PROJECT + (
 )
 
 # Every authored pack in the repository whose grading config loads: 29 under
-# ``examples/``, each beneath a ``project.yaml``, and 65 project-less packs under
+# ``examples/``, each beneath a ``project.yaml``, and 77 project-less packs under
 # ``tests/data``. Reconciled by the partition guard rather than only counted here.
-_AUTHORED_PACK_COUNT = 94
+_AUTHORED_PACK_COUNT = 106
 
 
 def _is_a_recorded_artifact(task_yaml: Path) -> bool:
@@ -367,7 +367,7 @@ def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> No
 
     Keyed by path rather than by task id: two ``migration_packs`` fixtures reuse the
     task ids of the ``native_shared_domain`` packs they were narrowed from, so a
-    corpus keyed by id silently measures 92 of the 94.
+    corpus keyed by id silently measures 104 of the 106.
     """
     corpus = {task_yaml: _grading_config(task_yaml)[1] for task_yaml in _authored_packs()}
     assert len(corpus) == _AUTHORED_PACK_COUNT, (
@@ -614,9 +614,10 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
 
 
 def test_no_authored_grading_block_asserts_nothing() -> None:
-    """Rule 1 over all 94 authored packs, which is 35 more than the gate walk reaches.
+    """Rule 1 over all 106 authored packs, which is 47 more than the gate walk reaches.
 
-    ``tests/data/grading_parity`` and ``tests/data/projects`` sit outside
+    ``tests/data/grading_parity``, ``tests/data/transcript_parity`` and
+    ``tests/data/projects`` sit outside
     :func:`_gated_packs`, so without this the rule's corpus proof stops at the packs
     that happen to live under the two task roots. The inventory is deliberately
     unresolvable: the rules that need a tool set are the gate guard's business above,
@@ -677,10 +678,10 @@ _A_TOOL_NO_ACTOR_CAN_CALL = "a_tool_no_actor_can_call"
 def _golden_action_findings(report: AuthoringReport) -> list[str]:
     """Only what the golden-action name rule reported, out of the whole gate's report.
 
-    Scoped to one rule because this walk is 35 packs wider than
+    Scoped to one rule because this walk is 46 packs wider than
     :func:`_gated_packs`, and the extra packs are wire-parity fixtures that name tools
     no actor is given on purpose — over the whole report the guard below would be red on
-    20 of them for reasons that are not this rule's. Widening the gate walk itself is a
+    21 of them for reasons that are not this rule's. Widening the gate walk itself is a
     corpus measurement of its own.
     """
     return [
@@ -693,9 +694,9 @@ def _golden_action_findings(report: AuthoringReport) -> list[str]:
 def _naming_a_tool_no_actor_can_call(grading: Mapping[str, Any]) -> dict[str, Any]:
     """*grading* with one more golden action, naming a tool no pack in the corpus declares.
 
-    Injected into every pack rather than one, because only 4 of the 94 declare a golden
+    Injected into every pack rather than one, because only 4 of the 106 declare a golden
     action at all: a rule that stopped firing would otherwise leave this guard reading
-    green over the 89 that never provoke it. The flag is written on for the same reason
+    green over the 102 that never provoke it. The flag is written on for the same reason
     the rule reads it — a source under a falsy flag is resolved by nobody.
     """
     state_checks = {**(grading.get("state_checks") or {})}
@@ -714,7 +715,7 @@ def _naming_a_tool_no_actor_can_call(grading: Mapping[str, Any]) -> dict[str, An
 def test_no_authored_golden_action_names_a_tool_no_actor_can_call() -> None:
     """Every golden action in the repo resolves against the tools its task declares.
 
-    Over all 94 authored packs, which is where the golden-action packs live: three of
+    Over all 106 authored packs, which is where the golden-action packs live: three of
     the four sit under ``tests/data/projects`` and ``tests/data/grading_parity``, outside
     :func:`_gated_packs` entirely, so a guard over that walk would reach one of them.
 
@@ -770,7 +771,7 @@ _GOLDEN_REPLAY_WORLD_ADDRESS = "state_checks.hash.golden_actions"
 def _replay_world_findings(report: AuthoringReport) -> list[str]:
     """Only what the replay-world rule reported, out of the whole gate's report.
 
-    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 35
+    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 46
     packs the gate walk does not, and they name tools no actor is given on purpose.
     """
     return [
@@ -783,7 +784,7 @@ def _replay_world_findings(report: AuthoringReport) -> list[str]:
 def _a_golden_replay_with_no_world(grading: Mapping[str, Any]) -> dict[str, Any]:
     """*grading* with a golden path to replay and no literal hash to answer in its place.
 
-    Injected into every pack rather than one, because only 4 of the 94 declare a golden
+    Injected into every pack rather than one, because only 4 of the 106 declare a golden
     action at all. Any ``expected_state_hash`` is removed first, and that step is what
     makes the control fire on ``tests/data/grading_parity/all_keys``: it ships both hash
     sources, core answers from the literal before the replay is reached, and the rule
@@ -807,7 +808,7 @@ def _a_golden_replay_with_no_world(grading: Mapping[str, Any]) -> dict[str, Any]
 def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> None:
     """Every pack that replays a golden path is authored against a task supplying one.
 
-    Over all 94 authored packs, each against **its own** replay world resolved the way
+    Over all 106 authored packs, each against **its own** replay world resolved the way
     the gate's callers resolve it, because the facts the rule reads live in ``task.yaml``
     rather than in the block. The tool inventory is deliberately unresolvable: this rule
     reads no tool, and the packs outside the two task roots name tools no actor is given
@@ -816,7 +817,7 @@ def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> N
     Every pack is checked a second time with its MCP server module withheld, a golden
     action injected and any ``expected_state_hash`` removed, which has to be refused —
     without that control a rule that stopped firing would read as a corpus with no
-    defects in it, since 90 of the 94 replay nothing.
+    defects in it, since 102 of the 106 replay nothing.
 
     The unresolvable-world arm is **not** exercised here and cannot be: every authored
     pack in the repository is native, so every world resolved below is ``known``. That
@@ -872,16 +873,16 @@ _AN_INJECTED_PROBE = {
     "expect": [{"path": "$.row_count", "equals": 1}],
 }
 
-# How many of the 94 declare a state source the fold also scores, so the control's two
-# arms cannot silently collapse into one: 25 packs where injecting a probe must be
-# refused, and 69 where it must not, because the injection leaves them probe-only.
+# How many of the 106 declare a state source the fold also scores, so the control's two
+# arms cannot silently collapse into one: 24 packs where injecting a probe must be
+# refused, and 81 where it must not, because the injection leaves them probe-only.
 _PACKS_DECLARING_A_FOLD_SCORED_STATE_SOURCE = 25
 
 
 def _probe_exclusivity_findings(report: AuthoringReport) -> list[str]:
     """Only what the state-source exclusivity rule reported, out of the whole report.
 
-    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 35
+    Scoped for the reason :func:`_golden_action_findings` gives: this walk reaches 46
     packs the gate walk does not, and they name tools no actor is given on purpose.
     """
     return [
@@ -912,9 +913,9 @@ def _declares_a_state_source_the_fold_scores(grading: Mapping[str, Any]) -> bool
 def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> dict[str, Any]:
     """*grading* with one more ``db_probes`` entry and every other source left as written.
 
-    Injected into every pack rather than one, because 3 of the 94 declare a probe at all.
+    Injected into every pack rather than one, because 3 of the 106 declare a probe at all.
     Nothing else is touched, which is what splits the walk: a pack already declaring a
-    source the fold scores becomes the refused shape, and a pack declaring none — 69 of
+    source the fold scores becomes the refused shape, and a pack declaring none — 81 of
     them — becomes a probe-only block, which is the shape this rule exists to leave alone.
     """
     state_checks = {**(grading.get("state_checks") or {})}
@@ -925,7 +926,7 @@ def _a_probe_beside_whatever_the_pack_declares(grading: Mapping[str, Any]) -> di
 def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None:
     """No shipped pack declares a probe beside a state source the fold also scores.
 
-    Over all 94 authored packs: the probe packs sit under ``examples/native`` and
+    Over all 106 authored packs: the probe packs sit under ``examples/native`` and
     ``tests/data/tasks``, and the packs carrying the sources they may not join are spread
     across both roots and ``tests/data/grading_parity``, which is outside
     :func:`_gated_packs` entirely.
@@ -935,8 +936,8 @@ def test_no_authored_pack_declares_a_probe_beside_another_state_source() -> None
     non-empty ``jsonpaths`` or an enabled hash over a source has to be refused, and
     injecting one into a pack declaring neither has to be admitted — that block is
     probe-only, which is exactly what a probe pack ships. A control that injected blindly
-    and expected a finding everywhere would assert the opposite of the rule on 69 of the
-    93. Both arms are collected, and the size of the refused arm is pinned so a corpus
+    and expected a finding everywhere would assert the opposite of the rule on 81 of the
+    106. Both arms are collected, and the size of the refused arm is pinned so a corpus
     that stopped declaring hash and JSONPath sources could not leave the positive arm
     vacuous.
 
@@ -1429,11 +1430,10 @@ def test_each_cache_debug_route_scores_in_full_and_records_itself_the_winner(
     """Both diagnostic routes the pack's rubric reference names are worth full marks.
 
     The served-vs-source run is the one the shipped pack docked. Driven through the
-    fold at the pack's old weights it scored CORE ``(0.9333, True)`` on 2 of 3
-    ``required_actions`` and RUNNER ``(0.95, True)`` on 3 of 4 rule rows: docked on
-    both substrates for a route the task never required. The two numbers differ only
-    by the aggregation divergence #685 already owns — core multiplies action x comm x
-    legacy, the runner takes the fraction of rows — not by anything this pack says.
+    fold at the pack's old weights it scored ``(0.9333, True)`` on 2 of 3
+    ``required_actions`` and ``(0.95, True)`` on 3 of 4 rule rows: docked for a route
+    the task never required, which is what moved the weights rather than anything
+    this pack says.
     """
     result = _cache_debug_result(calls)
     assert result.score == pytest.approx(1.0)

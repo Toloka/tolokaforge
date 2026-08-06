@@ -424,15 +424,13 @@ class NativeAdapter(BaseAdapter):
             RunnerGradingConfig,
             RunnerInitializationAction,
             RunnerInitialStateConfig,
-            RunnerRequiredAction,
             RunnerStateChecksConfig,
-            RunnerTranscriptRulesConfig,
             RunnerUserSimulatorConfig,
             TaskDescription,
-            ToolExpectations,
             ToolSchema,
             ToolSource,
             TraceChecksConfig,
+            TranscriptRulesConfig,
         )
         from tolokaforge.runner.tool_factory import create_search_kb_schema
 
@@ -631,35 +629,13 @@ class NativeAdapter(BaseAdapter):
                     relaxed_validation=relaxed_validation,
                 )
 
-            # Build transcript rules
+            # Build transcript rules. One model serves the authored block and the
+            # wire, so the block is validated rather than copied field by field:
+            # a key it does not declare, or an element missing one it requires, is
+            # refused here instead of reaching the runner as a default.
             transcript_data = grading_data.get("transcript_rules", {})
             if transcript_data:
-                required_actions: list[RunnerRequiredAction] = []
-                for action in transcript_data.get("required_actions", []):
-                    required_actions.append(
-                        RunnerRequiredAction(
-                            action_id=action.get("action_id", ""),
-                            requestor=action.get("requestor", "user"),
-                            tool_name=action.get("name", ""),
-                            arguments=action.get("arguments", {}),
-                            compare_args=action.get("compare_args"),
-                        )
-                    )
-
-                tool_expectations_data = transcript_data.get("tool_expectations")
-                transcript_rules = RunnerTranscriptRulesConfig(
-                    must_contain=transcript_data.get("must_contain", []),
-                    disallow_regex=transcript_data.get("disallow_regex", []),
-                    max_turns=transcript_data.get("max_turns"),
-                    min_assistant_turns=transcript_data.get("min_assistant_turns"),
-                    tool_expectations=(
-                        ToolExpectations(**tool_expectations_data)
-                        if tool_expectations_data
-                        else None
-                    ),
-                    required_actions=required_actions,
-                    communicate_info=transcript_data.get("communicate_info", []),
-                )
+                transcript_rules = TranscriptRulesConfig(**transcript_data)
 
         # Build LLM judge config
         #

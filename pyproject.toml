@@ -292,7 +292,6 @@ exclude = [
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
     "tolokaforge/core/grading/trace_replay.py",
-    "tolokaforge/core/grading/transcript.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
     "tolokaforge/tools/user_tools.py",

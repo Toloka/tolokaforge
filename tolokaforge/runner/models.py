@@ -7,13 +7,13 @@ The types in this module fall into three tiers:
   ``LLMJudgeConfig`` / ``EnvironmentManifest`` (and its supporting
   ``EnvironmentPatch`` / ``StackPatch`` / ``ResetSpec`` / ``ServiceSpec`` /
   ``ServiceIsolation`` / ``ServiceNetworkAccess``) / ``ToolExpectations`` /
+  ``TranscriptRulesConfig`` / ``RequiredAction`` / ``CommunicateInfo`` /
   ``RecordedToolCall`` / ``ToolCallRecorder`` / ``ToolExecutorIdentity``.
   Their canonical home stays here; the ``core.models`` shim re-exports them
   so callers reach one module for the whole recorded-tool-call + wire-schema
   vocabulary.
 - **Runner-only wire types with a ``Runner`` prefix** —
   ``RunnerGradingConfig`` / ``RunnerStateChecksConfig`` /
-  ``RunnerTranscriptRulesConfig`` / ``RunnerRequiredAction`` /
   ``RunnerInitialStateConfig`` / ``RunnerInitializationAction`` /
   ``RunnerUserSimulatorConfig`` / ``RunnerGradeComponents``. Each is the
   strict, wire-shaped Pydantic model the runner produces or consumes;
@@ -292,12 +292,19 @@ class GoldenAction(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class RunnerRequiredAction(BaseModel):
-    """Tool call that must appear in the trajectory."""
+class RequiredAction(BaseModel):
+    """Tool call that must appear in the trajectory.
+
+    ``name`` is the tool the call names, on the wire as in ``grading.yaml``.
+    ``RunnerInitializationAction`` spells the same concept ``tool_name`` and
+    ``InitializationAction`` spells it ``func_name``: that is a harness setup
+    instruction rather than a grading assertion about the agent, and its wire
+    surface is unrelated to this one.
+    """
 
     action_id: str
     requestor: Literal["assistant", "user"]
-    tool_name: str
+    name: str
     arguments: dict[str, Any] = Field(default_factory=dict)
     compare_args: list[str] | None = None  # Which args to compare, None = all
 
@@ -443,8 +450,29 @@ class ToolExpectations(BaseModel):
     model_config = {"extra": "forbid"}
 
 
-class RunnerTranscriptRulesConfig(BaseModel):
-    """Transcript-based grading configuration."""
+class CommunicateInfo(BaseModel):
+    """Information the agent must communicate to the user.
+
+    ``extra="forbid"`` for the reason its ``required_actions`` sibling carries: a
+    key the element does not declare would otherwise be carried as data, and
+    ``required`` defaults to ``True``, so a misspelled opt-out scored a rule the
+    author had written off.
+    """
+
+    info: str
+    required: bool = True
+
+    model_config = {"extra": "forbid"}
+
+
+class TranscriptRulesConfig(BaseModel):
+    """Transcript-based grading configuration, on both substrates.
+
+    ``extra="forbid"`` for the reason the nested ``tool_expectations`` already carries:
+    every rule here defaults to asserting nothing, so a dropped key graded the trial by
+    the rules that survived. A ``must_contian`` typo scored ``1.0`` and passing on a
+    transcript the authored ``must_contain`` scored ``0.75`` and failing.
+    """
 
     must_contain: list[str] = Field(default_factory=list)
     disallow_regex: list[str] = Field(default_factory=list)
@@ -455,24 +483,23 @@ class RunnerTranscriptRulesConfig(BaseModel):
     max_turns: int | None = Field(default=None, ge=1)
     min_assistant_turns: int | None = Field(default=None, ge=1)
     tool_expectations: ToolExpectations | None = None
-    required_actions: list[RunnerRequiredAction] = Field(default_factory=list)
-    communicate_info: list[dict[str, Any]] = Field(default_factory=list)
+    required_actions: list[RequiredAction] = Field(default_factory=list)
+    communicate_info: list[CommunicateInfo] = Field(default_factory=list)
 
     model_config = {"extra": "forbid"}
 
     @model_validator(mode="after")
-    def _validate_turn_window(self) -> RunnerTranscriptRulesConfig:
+    def _validate_turn_window(self) -> TranscriptRulesConfig:
         """Reject the window no assistant-turn count satisfies.
 
-        Calls the same predicate the core config calls, so an engine and a runner
-        built from different releases cannot disagree about which packs are
-        gradeable: a window core rejected at ``tolokaforge validate`` is rejected at
-        ``RegisterTrial`` too.
+        The context names ``grading.yaml`` on both surfaces: the wire value is
+        translated from the pack's own block, so that file is where an author
+        rejected at ``RegisterTrial`` makes the fix.
         """
         validate_turn_window(
             min_assistant_turns=self.min_assistant_turns,
             max_turns=self.max_turns,
-            context="task_description grading.transcript_rules",
+            context="grading.yaml transcript_rules",
         )
         return self
 
@@ -1811,7 +1838,7 @@ class RunnerGradingConfig(BaseModel):
     grading_method: Literal["hash", "test_execution", "transcript", "llm"] | None = None
 
     state_checks: RunnerStateChecksConfig | None = None
-    transcript_rules: RunnerTranscriptRulesConfig | None = None
+    transcript_rules: TranscriptRulesConfig | None = None
     trace_checks: TraceChecksConfig | None = None
     llm_judge: LLMJudgeConfig | None = None
 

@@ -473,7 +473,7 @@ class TestTrialRunnerRun:
         """Simulator reply with both tool_calls and text-glued ``###STOP###``.
 
         The stop-token strip must not drop the ``tool_calls`` — they still
-        need to reach ``ActionEvaluator`` for required-action tracking.
+        need to reach the transcript-rules evaluator for required-action matching.
         """
         sim_tool_call = ToolCall(id="uc1", name="user_lookup", arguments={"id": "42"})
         agent = _make_agent_client(

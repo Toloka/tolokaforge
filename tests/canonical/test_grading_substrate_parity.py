@@ -108,6 +108,7 @@ from tolokaforge.core.grading.key_manifest import (
 from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
+from tolokaforge.core.grading.transcript import evaluate_transcript_rules
 from tolokaforge.core.models import (
     Message,
     RecordedToolCall,
@@ -124,7 +125,6 @@ from tolokaforge.runner.grading import (
     combine_grade_components,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
-    evaluate_transcript_rules,
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
@@ -836,9 +836,7 @@ def _runner_verdict(
         )
         components = {"jsonpath_score": component}
     elif family == "transcript_rules":
-        result = evaluate_transcript_rules(
-            case.runner_timeline, grading.transcript_rules.model_dump()
-        )
+        result = evaluate_transcript_rules(case.runner_timeline, grading.transcript_rules)
         component = result.score
         components = {"transcript_score": component}
     elif family == "custom_checks":
@@ -1140,7 +1138,7 @@ def _translation_carriers(
     return {
         "RunnerGradingConfig": grading,
         "RunnerStateChecksConfig": grading.state_checks,
-        "RunnerTranscriptRulesConfig": grading.transcript_rules,
+        "TranscriptRulesConfig": grading.transcript_rules,
         "TraceChecksConfig": grading.trace_checks,
     }
 
@@ -1245,7 +1243,7 @@ declared it.
 def test_every_ledger_key_resolves_in_the_runner_config_dump():
     runner_dump = runner_models.RunnerGradingConfig(
         state_checks=runner_models.RunnerStateChecksConfig(),
-        transcript_rules=runner_models.RunnerTranscriptRulesConfig(),
+        transcript_rules=runner_models.TranscriptRulesConfig(),
         trace_checks=_LEDGER_PROBE_TRACE_CHECKS,
     ).model_dump()
 
@@ -1737,7 +1735,7 @@ def _runner_method_verdict(test_data_dir: Path, root: Path, *, method: str) -> _
         grading.state_checks.jsonpath_checks, state=case.state
     )
     transcript_score = evaluate_transcript_rules(
-        case.runner_timeline, grading.transcript_rules.model_dump()
+        case.runner_timeline, grading.transcript_rules
     ).score
     folded = combine_grade_components(
         {"jsonpath_score": jsonpath_score, "transcript_score": transcript_score},
@@ -2605,7 +2603,8 @@ def test_a_scored_component_with_no_declared_weight_refuses_on_both_substrates(c
     runner_components = {
         "jsonpath_score": jsonpath_score,
         "transcript_score": evaluate_transcript_rules(
-            trial.runner_timeline, runner_config["transcript_rules"]
+            trial.runner_timeline,
+            runner_models.TranscriptRulesConfig(**runner_config["transcript_rules"]),
         ).score,
     }
 

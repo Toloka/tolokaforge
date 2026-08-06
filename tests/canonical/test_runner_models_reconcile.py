@@ -2,9 +2,12 @@
 
 The runner-side wire schema and the core-side YAML-authoring schema each
 own the concerns that share a concept but differ in serialisation shape
-(flat vs nested, strict vs lax). After the reconcile the runner-side
-types carry a ``Runner`` prefix so a single import namespace no longer
-carries two classes with the same name.
+(flat vs nested, strict vs lax). Where the two shapes genuinely differ the
+runner-side type carries a ``Runner`` prefix, so a single import namespace
+never carries two classes with the same name; where one shape serves both
+— ``TranscriptRulesConfig`` and its ``RequiredAction`` / ``CommunicateInfo``
+elements, as ``TraceChecksConfig`` already did — there is one unprefixed
+class, defined in ``runner.models`` and re-exported by the core shim.
 
 These tests exercise the four real user paths that touch the reconciled
 types:
@@ -13,8 +16,8 @@ types:
   the native adapter round-trips through ``model_dump_json()`` /
   ``model_validate_json()`` bit-for-bit, so every nested runner-side
   wire type (``RunnerGradingConfig``, ``RunnerStateChecksConfig``,
-  ``RunnerTranscriptRulesConfig``, ``RunnerInitialStateConfig``,
-  ``RunnerUserSimulatorConfig``, ``RunnerRequiredAction``,
+  ``TranscriptRulesConfig``, ``RunnerInitialStateConfig``,
+  ``RunnerUserSimulatorConfig``, ``RequiredAction``,
   ``RunnerInitializationAction``) survives the wire.
 - **Persona 2 (RunnerRPCTrialGrader contract)** — a
   ``RunnerGradingConfig`` carrying a real ``LLMJudgeConfig`` +
@@ -28,8 +31,8 @@ types:
   Python object the name resolves to.
 - **Persona 4 (JSON-Lines / adapter output)** — ``NativeAdapter``
   builds a ``TaskDescription`` from a bundled example and every
-  runner-side nested class in that description is the ``Runner``-
-  prefixed type (never the core-side sibling).
+  nested slot in that description carries the wire-side class, never a
+  core-side sibling of the same concern.
 
 The runner-side classes are used through ``tolokaforge.runner.models``;
 the core-side siblings are still importable through
@@ -48,21 +51,22 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner.models import (
+    CommunicateInfo,
     Criterion,
     JudgeCustomization,
     LLMJudgeConfig,
     RecordedToolCall,
+    RequiredAction,
     Rubric,
     RunnerGradeComponents,
     RunnerGradingConfig,
     RunnerInitializationAction,
     RunnerInitialStateConfig,
-    RunnerRequiredAction,
     RunnerStateChecksConfig,
-    RunnerTranscriptRulesConfig,
     RunnerUserSimulatorConfig,
     TaskDescription,
     ToolExpectations,
+    TranscriptRulesConfig,
 )
 
 pytestmark = pytest.mark.canonical
@@ -129,13 +133,13 @@ def _sample_task_description() -> TaskDescription:
                 hash_weight=1.0,
                 jsonpath_checks=[{"path": "$.orders[0].status", "equals": "refunded"}],
             ),
-            transcript_rules=RunnerTranscriptRulesConfig(
+            transcript_rules=TranscriptRulesConfig(
                 must_contain=["refund"],
                 required_actions=[
-                    RunnerRequiredAction(
+                    RequiredAction(
                         action_id="refund_call",
                         requestor="assistant",
-                        tool_name="issue_refund",
+                        name="issue_refund",
                         arguments={"order_id": 1},
                     )
                 ],
@@ -169,25 +173,25 @@ def test_task_description_round_trips_through_grpc_json_wire():
     # Bit-for-bit identical JSON on both sides.
     assert reloaded.model_dump_json() == wire
 
-    # And every reconciled nested type is the Runner-prefixed one.
+    # And every reconciled nested slot carries its wire-side class.
     assert isinstance(reloaded.grading, RunnerGradingConfig)
     assert isinstance(reloaded.grading.state_checks, RunnerStateChecksConfig)
-    assert isinstance(reloaded.grading.transcript_rules, RunnerTranscriptRulesConfig)
+    assert isinstance(reloaded.grading.transcript_rules, TranscriptRulesConfig)
     assert isinstance(reloaded.grading.llm_judge, LLMJudgeConfig)
     assert isinstance(reloaded.initial_state, RunnerInitialStateConfig)
     assert isinstance(reloaded.user_simulator, RunnerUserSimulatorConfig)
     assert all(isinstance(a, RunnerInitializationAction) for a in reloaded.initialization_actions)
     tr_rules = reloaded.grading.transcript_rules
     assert tr_rules is not None
-    assert all(isinstance(a, RunnerRequiredAction) for a in tr_rules.required_actions)
+    assert all(isinstance(a, RequiredAction) for a in tr_rules.required_actions)
 
 
 def test_reconciled_wire_types_forbid_extras():
     """The runner-side wire types stay strict — a stray key is a wire
     contract violation and must fail loud, not be silently dropped.
 
-    Locks each renamed class independently (``TaskDescription``'s own
-    forbid rule doesn't reach nested siblings by construction).
+    Locks each class independently (``TaskDescription``'s own forbid rule
+    doesn't reach nested siblings by construction).
     """
     from pydantic import ValidationError
 
@@ -197,13 +201,14 @@ def test_reconciled_wire_types_forbid_extras():
 
     _requires_forbid(RunnerGradingConfig, {})
     _requires_forbid(RunnerStateChecksConfig, {})
-    _requires_forbid(RunnerTranscriptRulesConfig, {})
+    _requires_forbid(TranscriptRulesConfig, {})
     _requires_forbid(RunnerInitialStateConfig, {})
     _requires_forbid(RunnerUserSimulatorConfig, {"mode": "llm", "persona": "cooperative"})
     _requires_forbid(
-        RunnerRequiredAction,
-        {"action_id": "a", "requestor": "assistant", "tool_name": "t"},
+        RequiredAction,
+        {"action_id": "a", "requestor": "assistant", "name": "t"},
     )
+    _requires_forbid(CommunicateInfo, {"info": "x"})
     _requires_forbid(
         RunnerInitializationAction,
         {"env_type": "assistant", "tool_name": "t"},
@@ -317,15 +322,15 @@ def test_no_top_level_pydantic_class_name_is_defined_in_both_modules():
 
 
 # ────────────────────────────────────────────────────────────────
-# Persona 4 — NativeAdapter emits Runner-prefixed wire types
+# Persona 4 — NativeAdapter emits the wire-side classes
 # ────────────────────────────────────────────────────────────────
 
 
-def test_native_adapter_builds_task_description_with_runner_prefixed_types(tmp_path):
+def test_native_adapter_builds_task_description_with_the_wire_side_types(tmp_path):
     """Persona 4 — a real bundled example goes through
     ``NativeAdapter.to_task_description`` and every reconciled slot
-    carries a ``Runner``-prefixed instance. This is the path the
-    orchestrator actually runs before every trial.
+    carries its wire-side class. This is the path the orchestrator
+    actually runs before every trial.
 
     The example's rubric-less grading exercises the state-checks +
     transcript-rules + user-simulator + initial-state slots; the
@@ -347,9 +352,9 @@ def test_native_adapter_builds_task_description_with_runner_prefixed_types(tmp_p
     if td.grading.state_checks is not None:
         assert isinstance(td.grading.state_checks, RunnerStateChecksConfig)
     if td.grading.transcript_rules is not None:
-        assert isinstance(td.grading.transcript_rules, RunnerTranscriptRulesConfig)
+        assert isinstance(td.grading.transcript_rules, TranscriptRulesConfig)
         for action in td.grading.transcript_rules.required_actions:
-            assert isinstance(action, RunnerRequiredAction)
+            assert isinstance(action, RequiredAction)
     for action in td.initialization_actions:
         assert isinstance(action, RunnerInitializationAction)
 
@@ -388,9 +393,14 @@ def test_task_description_json_wire_shape_uses_flat_wire_field_names():
     tr = grading["transcript_rules"]
     assert set(tr) >= {"must_contain", "required_actions", "tool_expectations"}
     for action in tr["required_actions"]:
-        # Wire schema keeps ``tool_name``, not ``name``.
-        assert "tool_name" in action
+        # One model serves the authored block and the wire, so the wire carries the
+        # author's ``name``. The two surfaces are version-locked in both directions:
+        # a spec spelling it ``tool_name`` is refused by ``extra="forbid"``.
+        assert "name" in action
+        assert "tool_name" not in action
 
-    # Initialization actions keep their wire ``tool_name`` too.
+    # ``initialization_actions`` keeps its wire ``tool_name``: it is a harness setup
+    # instruction rather than a grading assertion about the agent, and its author-side
+    # spelling (``func_name``) differs from both.
     for action in dumped["initialization_actions"]:
         assert "tool_name" in action

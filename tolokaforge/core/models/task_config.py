@@ -18,20 +18,18 @@ from tolokaforge.core.grading.state_composition import (
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
 )
-from tolokaforge.core.grading.turn_bounds import validate_turn_window
 from tolokaforge.core.models.run_config import RunDefaults
 from tolokaforge.runner.models import (
     EnvironmentPatch,
     JudgeCustomization,
     LLMJudgeConfig,
-    ToolExpectations,
     TraceChecksConfig,
+    TranscriptRulesConfig,
 )
 
 __all__ = [
     "ActorSpec",
     "AssetsConfig",
-    "CommunicateInfo",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -41,7 +39,6 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
-    "RequiredAction",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
     "SeedRef",
@@ -54,7 +51,6 @@ __all__ = [
     "TaskMetadata",
     "TimeoutDefaults",
     "ToolsConfig",
-    "TranscriptRulesConfig",
     "UserSimulatorConfig",
 ]
 
@@ -335,18 +331,6 @@ class TaskConfig(BaseModel):
         )
 
 
-class RequiredAction(BaseModel):
-    """Required tool call that must appear in trajectory"""
-
-    model_config = {"extra": "ignore"}
-
-    action_id: str  # unique identifier for this action
-    requestor: Literal["assistant", "user"]  # who should make the call
-    name: str  # tool name
-    arguments: dict[str, Any] = Field(default_factory=dict)  # tool arguments
-    compare_args: list[str] | None = None  # args to compare, None = all
-
-
 RETIRED_STATE_CHECK_KEYS: frozenset[str] = frozenset({"env_assertions", "db_hash_check"})
 """The ``state_checks`` keys that are neither declared fields nor unknown keys.
 
@@ -477,48 +461,6 @@ class StateChecksConfig(BaseModel):
             self.hash,
             jsonpaths=self.jsonpaths,
             context="grading.yaml state_checks.hash.weight",
-        )
-        return self
-
-
-class CommunicateInfo(BaseModel):
-    """Information that should be communicated to user"""
-
-    model_config = {"extra": "ignore"}
-
-    info: str  # information text to check for
-    required: bool = True  # whether this info is required
-
-
-class TranscriptRulesConfig(BaseModel):
-    """Transcript rules configuration.
-
-    ``extra="forbid"`` for the reason the nested ``tool_expectations`` already carries:
-    every rule here defaults to asserting nothing, so a dropped key graded the trial by
-    the rules that survived. A ``must_contian`` typo scored ``1.0`` and passing on a
-    transcript the authored ``must_contain`` scored ``0.75`` and failing.
-    """
-
-    model_config = {"extra": "forbid"}
-
-    must_contain: list[str] = Field(default_factory=list)
-    disallow_regex: list[str] = Field(default_factory=list)
-    # Both bounds are declarable from 1 up. A ceiling below 1 admits no
-    # assistant-turn count at all, and a floor of 0 asserts nothing — and the
-    # runtime key ledger tests a declared key by truthiness, so a floor of 0 would
-    # be an unpoliced declaration.
-    max_turns: int | None = Field(default=None, ge=1)
-    min_assistant_turns: int | None = Field(default=None, ge=1)
-    tool_expectations: ToolExpectations | None = None
-    required_actions: list[RequiredAction] = Field(default_factory=list)  # NEW
-    communicate_info: list[CommunicateInfo] = Field(default_factory=list)  # NEW
-
-    @model_validator(mode="after")
-    def _validate_turn_window(self) -> Self:
-        validate_turn_window(
-            min_assistant_turns=self.min_assistant_turns,
-            max_turns=self.max_turns,
-            context="grading.yaml transcript_rules",
         )
         return self
 
