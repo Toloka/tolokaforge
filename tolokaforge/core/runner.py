@@ -6,7 +6,7 @@ from typing import Any
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
-from tolokaforge.core.llm import GenerationResult, LLMClient, UserSimulator
+from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
 from tolokaforge.core.logging_context import trial_id_scope
 from tolokaforge.core.loop import (
@@ -578,7 +578,7 @@ class TrialRunner:
         greeting_context = [
             Message(
                 role=MessageRole.ASSISTANT,
-                content="Hi! How can I help you today?",
+                content=SIMULATOR_GREETING,
                 ts=datetime.now(tz=timezone.utc),
             )
         ]
@@ -588,6 +588,15 @@ class TrialRunner:
                 first_user_result = self.user_simulator.reply(
                     greeting_context, observation=self._user_observation
                 )
+                # An empty opening would seed the transcript with a blank USER
+                # turn: the simulator's flipped context then drops it, loses
+                # every trace of having asked, and restarts the conversation —
+                # the failure mode the seeded-opening fix exists to prevent.
+                if not first_user_result.text.strip():
+                    raise RuntimeError(
+                        "User simulator bootstrap produced an empty first message; "
+                        "a blank opening cannot seed the conversation."
+                    )
                 self.logger.debug("User simulator generated first message")
                 return first_user_result.text
             except Exception as exc:

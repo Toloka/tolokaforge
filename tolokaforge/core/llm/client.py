@@ -2106,6 +2106,14 @@ class LLMClient:
         )
 
 
+# The canned agent-side greeting: dispatched by the runner when the simulator
+# bootstraps turn 0, and re-used to lead the simulator's flipped context when
+# the opening was caller-seeded (see ``_llm_reply``). One constant so the two
+# sites cannot diverge — the mid-conversation reconstruction must show the
+# simulator the same agent opening it answers at bootstrap.
+SIMULATOR_GREETING = "Hi! How can I help you today?"
+
+
 class UserSimulator(Actor):
     """User simulator for benchmarking.
 
@@ -2258,22 +2266,65 @@ Rules:
         if not self.llm_client:
             raise RuntimeError("LLM client not initialized for LLM mode")
 
-        # Capture every system prompt so the runner can persist it into
-        # ``prompts.yaml`` after ``run()`` returns.
+        # The simulator converses from the customer's seat: its own past
+        # messages replay as ``assistant`` turns and the agent's as ``user``
+        # turns. Turns with no dialogue text (agent tool-call turns,
+        # whitespace-only replies) are skipped — replaying them as empty
+        # turns adds noise the simulator's provider may reject. The skip is
+        # text-only: a turn carrying ``content_blocks`` with no text would be
+        # dropped too, a latent gap no USER/ASSISTANT call site produces
+        # today (the flip has never carried blocks).
+        # Adjacent same-role turns are coalesced so the request alternates
+        # strictly — a skipped turn can leave two dialogue turns of the same
+        # party back to back, which strict-alternation providers reject.
+        sim_context: list[Message] = []
+        flip = {MessageRole.USER: MessageRole.ASSISTANT, MessageRole.ASSISTANT: MessageRole.USER}
+        for msg in context:
+            if not msg.content.strip():
+                continue
+            role = flip.get(msg.role)
+            if role is None:
+                continue
+            if sim_context and sim_context[-1].role == role:
+                previous = sim_context[-1]
+                sim_context[-1] = Message(
+                    role=role, content=f"{previous.content}\n\n{msg.content}", ts=msg.ts
+                )
+            else:
+                sim_context.append(Message(role=role, content=msg.content, ts=msg.ts))
+
+        # Providers require the first message to be user-role, and the trial's
+        # seeded opening flips to ``assistant`` at index 0. Prepend a synthetic
+        # agent-side greeting rather than dropping the opening: without its own
+        # opening in context the simulator believes it never asked and restarts
+        # the conversation verbatim after the agent has already answered.
+        if sim_context and sim_context[0].role == MessageRole.ASSISTANT:
+            sim_context.insert(
+                0,
+                Message(
+                    role=MessageRole.USER,
+                    content=SIMULATOR_GREETING,
+                    ts=sim_context[0].ts,
+                ),
+            )
+
+        # The request must end on a user-role turn the simulator can answer.
+        # A trailing assistant-role message is a prefill of the simulator's
+        # own words (the provider continues it), and an empty list is
+        # unanswerable — both mean no agent dialogue turn is awaiting a
+        # reply, so surface that instead of letting the simulator improvise.
+        if not sim_context or sim_context[-1].role != MessageRole.USER:
+            raise RuntimeError(
+                "User simulator dispatched with no agent dialogue turn to answer "
+                f"(flipped context roles: {[m.role.value for m in sim_context]}; "
+                f"shared transcript roles: {[m.role.value for m in context]})."
+            )
+
+        # Captured only for a request that is actually dispatched, so the
+        # runner persists into ``prompts.yaml`` a prompt that really drove a
+        # generation — never one belonging to a refused dispatch.
         system_prompt = self._build_system_prompt()
         self.last_system_prompt = system_prompt
-
-        sim_context: list[Message] = []
-        for msg in context:
-            if msg.role == MessageRole.USER:
-                sim_context.append(
-                    Message(role=MessageRole.ASSISTANT, content=msg.content, ts=msg.ts)
-                )
-            elif msg.role == MessageRole.ASSISTANT:
-                sim_context.append(Message(role=MessageRole.USER, content=msg.content, ts=msg.ts))
-
-        if sim_context and sim_context[0].role == MessageRole.ASSISTANT:
-            sim_context = sim_context[1:]
 
         result = self.llm_client.generate(
             system=system_prompt,

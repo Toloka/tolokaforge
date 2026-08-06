@@ -450,7 +450,8 @@ class TestNovaProviderBugFixes:
 
         The UserSimulator reverses roles (USER↔ASSISTANT) for simulation.
         After reversal, the first message could be ASSISTANT, which Nova rejects.
-        The fix removes leading ASSISTANT messages from sim_context.
+        The flipped context leads with a synthetic user-role greeting so Nova
+        never sees an assistant-first conversation.
         """
         from tolokaforge.core.llm import UserSimulator
 
@@ -465,7 +466,7 @@ class TestNovaProviderBugFixes:
 
         # Context that would start with ASSISTANT after role reversal
         # Original: [USER, ASSISTANT] -> After reversal: [ASSISTANT, USER]
-        # The first ASSISTANT message should be removed
+        # A synthetic user-role greeting is prepended ahead of it
         context = [
             Message(role=MessageRole.USER, content="Hi, I'd like to check my order."),
             Message(role=MessageRole.ASSISTANT, content="Sure! What's your order ID?"),
