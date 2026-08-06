@@ -1,0 +1,29 @@
+task_id: disallow_regex_two
+name: "Transcript substrate differential: disallow_regex_two"
+category: test
+description: |
+  Transcript-rules substrate differential fixture. The pack authors one
+  transcript_rules block; the trials that grade it live in the parity module's
+  own table, because a row's tool_log is an input the two substrates read
+  differently and is therefore stated beside the expected score.
+
+initial_state:
+  json_db: null
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml
