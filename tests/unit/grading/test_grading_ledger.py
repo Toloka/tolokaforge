@@ -33,8 +33,14 @@ from tolokaforge.core.models import ToolCall
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
+    CUSTOM_CHECKS_DISABLED_SKIP,
+    DB_PROBES_KEY,
     EVALUATED,
     HASH_DISABLED_SKIP,
+    JSONPATHS_KEY,
+    LEDGER_KEYS,
+    MIN_ASSISTANT_TURNS_KEY,
+    NO_TIMELINE_EVENTS_SKIP,
     TRACE_ALTERNATIVES_KEY,
     TRACE_CONSTRAINT_KEY_BY_KIND,
     TRACE_CONSTRAINTS_KEY,
@@ -42,8 +48,11 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     audit_accounted_keys,
     hash_family_accounting,
+    populated_ledger_keys,
     reject_hash_members_read_by_another_evaluator,
     runner_dump_path,
+    skip_note,
+    skip_note_prefix,
 )
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
@@ -195,6 +204,14 @@ def test_config_inputs_are_outside_the_ledger_by_kind():
 
 
 def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
+    """The note is also exactly ``skip_note``'s rendering of the same record.
+
+    The canonical guard rail decides a key was skipped by matching ``skip_note``'s
+    output against ``grade.reasons``. An audit that rendered its own sentence
+    would leave every such match silently unsatisfiable, so the second equality
+    is what stops the two spellings from drifting apart while the first keeps the
+    text itself pinned.
+    """
     config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
 
     audit = audit_accounted_keys(
@@ -204,6 +221,9 @@ def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
     assert audit.error is None
     assert audit.skip_notes == (
         "state_checks.hash.expected_state_hash skipped: hash grading not enabled",
+    )
+    assert audit.skip_notes == (
+        skip_note("state_checks.hash.expected_state_hash", HASH_DISABLED_SKIP),
     )
 
 
@@ -537,7 +557,7 @@ def test_a_constraint_whose_binder_selected_nothing_accounts_its_nested_kinds_as
 
         assert audit.error is None, policy
         assert set(audit.skip_notes) == {
-            f"{TRACE_CONSTRAINT_KEY_BY_KIND[kind]} skipped: {UNBOUND_BINDING_SKIP.detail}"
+            skip_note(TRACE_CONSTRAINT_KEY_BY_KIND[kind], UNBOUND_BINDING_SKIP)
             for kind in ("before", "present")
         }, policy
         assert accounted[TRACE_CONSTRAINT_KEY_BY_KIND["before"]] == UNBOUND_BINDING_SKIP, policy
@@ -631,7 +651,7 @@ def test_a_binder_whose_value_the_trial_never_recorded_accounts_its_nested_kinds
     assert timeline.records_present is False
     assert audit.error is None
     assert set(audit.skip_notes) == {
-        f"{TRACE_CONSTRAINT_KEY_BY_KIND[kind]} skipped: {UNBOUND_BINDING_SKIP.detail}"
+        skip_note(TRACE_CONSTRAINT_KEY_BY_KIND[kind], UNBOUND_BINDING_SKIP)
         for kind in ("present", "absent")
     }
     assert result.accounted_keys[TRACE_CONSTRAINT_KEY_BY_KIND["present"]] == UNBOUND_BINDING_SKIP
@@ -640,6 +660,86 @@ def test_a_binder_whose_value_the_trial_never_recorded_accounts_its_nested_kinds
     assert result.constraints[0].kind is TraceConstraintKind.ALL_OF
     assert result.constraints[0].passed is False
     assert "cannot be decided" in result.constraints[0].message
+
+
+# --------------------------------------------------------------------------
+# The predicates the canonical guard rail reads
+# --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "record",
+    [HASH_DISABLED_SKIP, CUSTOM_CHECKS_DISABLED_SKIP],
+    ids=["hash_disabled", "custom_checks_disabled"],
+)
+def test_a_skip_note_starts_with_its_key_prefix_whatever_the_detail(record):
+    """A caller expecting a key to be *evaluated* asserts the prefix is absent.
+
+    It knows the key and cannot know what detail a hypothetical skip would carry,
+    so the prefix is the whole needle it has. Both halves are needed: a prefix
+    that were not literally how the note starts would let that assertion pass
+    over a key that was in fact skipped, and one that did not name the key would
+    make it fail over a sibling key's skip.
+    """
+    assert skip_note(JSONPATHS_KEY, record).startswith(skip_note_prefix(JSONPATHS_KEY))
+    assert not skip_note(DB_PROBES_KEY, record).startswith(skip_note_prefix(JSONPATHS_KEY))
+
+
+def test_an_evaluated_record_has_no_skip_note_to_render():
+    """Rendering one would let a caller match a sentence the audit never emits."""
+    with pytest.raises(ValueError, match="an EVALUATED record has no skip note"):
+        skip_note(JSONPATHS_KEY, EVALUATED)
+
+
+_PARTIALLY_POPULATED_KEYS = frozenset(
+    {
+        "custom_checks",
+        "state_checks.hash.expected_state_hash",
+        "state_checks.jsonpaths",
+        "trace_checks.constraints",
+        "trace_checks.constraints.all_of",
+        "trace_checks.constraints.before",
+        "trace_checks.constraints.count",
+        "transcript_rules.must_contain",
+    }
+)
+
+
+def _partially_populated_config() -> RunnerGradingConfig:
+    """A config populating :data:`_PARTIALLY_POPULATED_KEYS` and no other ledger key."""
+    return RunnerGradingConfig(
+        state_checks=RunnerStateChecksConfig(
+            jsonpath_checks=[_JSONPATH_CHECK], expected_hash="deadbeef"
+        ),
+        transcript_rules=RunnerTranscriptRulesConfig(must_contain=["shipped"]),
+        trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK),
+        custom_checks={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
+    )
+
+
+def test_populated_ledger_keys_agrees_with_the_audit_on_what_is_populated():
+    """Two answers to "did this config populate the key" must not diverge.
+
+    The canonical guard rail asserts that a driver populated the key it claims to
+    drive; on a predicate that had drifted from the one the audit visits keys by,
+    it would vouch for a key the audit never looked at. Starving the audit of
+    records makes it name every key it visited, which is the only observation of
+    its own predicate it exposes.
+
+    ``state_checks.hash`` is absent because it names no ``runner_field``:
+    resolving one raises, so the comprehension over :data:`LEDGER_KEYS` written
+    without the audit's guard would fail on every call rather than return a set.
+    """
+    config = _partially_populated_config()
+
+    populated = populated_ledger_keys(config)
+    starved = audit_accounted_keys(config, {})
+
+    assert populated == _PARTIALLY_POPULATED_KEYS
+    assert "state_checks.hash" not in populated
+    domain = frozenset(item.author_key for item in LEDGER_KEYS if item.runner_field is not None)
+    assert frozenset(key for key in domain if f"{key} (" in starved.error) == populated
+    assert domain - populated, "the config must leave ledger keys unpopulated to discriminate"
 
 
 # --------------------------------------------------------------------------
@@ -832,7 +932,7 @@ def test_degenerate_trial_still_grades_a_declared_activity_floor(runner_service,
     # The blanket skip sweeps the whole subtree by key prefix, so the floor is the one
     # member that must be carved out of it. Left in, the reasons would say the floor
     # drove the verdict *and* was never evaluated.
-    assert "transcript_rules.min_assistant_turns skipped" not in response.grade.reasons
+    assert skip_note_prefix(MIN_ASSISTANT_TURNS_KEY) not in response.grade.reasons
     assert (
         "transcript_rules.must_contain skipped: the trial's timeline carries no events"
         in response.grade.reasons
@@ -1003,13 +1103,10 @@ def test_a_degenerate_trial_leaves_trace_checks_unscored(runner_service, mock_gr
     # The skip is asserted together with the unscored component: a component the
     # runner silently declined to score is as opaque to the task author as one it
     # never accounted for.
+    assert skip_note(TRACE_CONSTRAINTS_KEY, NO_TIMELINE_EVENTS_SKIP) in response.grade.reasons
     assert (
-        f"{TRACE_CONSTRAINTS_KEY} skipped: the trial's timeline carries no events"
+        skip_note(TRACE_CONSTRAINT_KEY_BY_KIND["all_of"], NO_TIMELINE_EVENTS_SKIP)
         in response.grade.reasons
-    )
-    assert (
-        f"{TRACE_CONSTRAINT_KEY_BY_KIND['all_of']} skipped: the trial's timeline carries no "
-        "events" in response.grade.reasons
     )
 
 
