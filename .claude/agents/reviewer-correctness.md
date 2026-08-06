@@ -95,27 +95,33 @@ If any box fails → fix it before responding.
 
 ## Progress reporting
 
-Main passes a `PROGRESS_FILE` path in your launch prompt. Append one JSONL line at each phase transition so the pipeline's watchdog can distinguish "still working" from "stuck". If no `PROGRESS_FILE` is provided (direct invocation), skip these writes silently.
+Main passes `PROGRESS_FILE=<path>` and `LAUNCH_ID=<id>` in your launch prompt when this is a pipeline-mode invocation. Append one JSONL event line to `$PROGRESS_FILE` at each phase transition. Direct invocations set neither — skip writes silently, the guard in the recipe below handles it.
 
-**Schema — one line per event, ≤ 300 bytes, no PII:**
+**Write recipe** (quote-safe via `jq`; skip-safe under `set -u`):
 
-```json
-{"ts":"<ISO-8601 UTC>","agent":"reviewer-correctness","launch_id":"<from-prompt>","phase":"<name>","step":"<optional>","detail":"<optional>","elapsed_s":<optional int>}
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "reviewer-correctness" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "scan_diff" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
 ```
 
-Required: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round` (fix-loop round). Timestamp is UTC ISO-8601 (`date -u +%FT%TZ`). Write with `echo '{...}' >> "$PROGRESS_FILE"` — one line per call, never overwrite.
+Extend with `--arg step "<value>" --arg detail "<value>" --argjson elapsed_s <int>` as needed. Keep lines terse (target ≤ 300 bytes; truncate `detail` if it would blow past). Required fields: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`.
 
 **Phases for this agent:**
 
-- `start` — as your first action after reading the launch prompt.
+- `start` — first action after reading the launch prompt.
 - `load_rules` — before reading SKILL.md / AGENTS.md / the briefing pack.
 - `scan_diff` — before opening changed files in full within your lane.
-- `verify_findings` — before running probes to confirm each candidate finding.
+- `verify_findings_start` / `verify_findings_done` — around running probes to confirm each candidate finding.
 - `report` — immediately before returning the structured review block.
-- `long_call` — before any single tool call you expect to exceed 60 s, with `step:"<tool>"` so the idle watcher knows work is in flight.
+- `long_call_start` / `long_call_done` — around any single tool call you expect to exceed 60 s. Include `step:"<tool>"`.
 - `error` — on any caught exception, with `detail:"<short reason>"`.
 
-Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed by the watchdog, not a human log.
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed, not a human log.
 
 ## Memory
 

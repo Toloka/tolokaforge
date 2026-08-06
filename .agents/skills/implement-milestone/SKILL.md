@@ -41,15 +41,22 @@ Invoking this skill **is** the user's explicit grant to, without re-asking:
 
 ## Step 0 — Progress channel
 
-Before Step 1, set up a milestone-scoped JSONL progress channel so main can observe subagent activity in real time across the whole milestone. Every per-issue sub-skill run inherits it; every subagent writes to it.
+Every per-issue sub-skill run writes its subagent events into a milestone-scoped tree; the milestone loop tails a rollup file so cross-issue activity is visible in one stream.
 
-1. Create the milestone progress root: `mkdir -p ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/`.
-2. Start the tail as a background bash — `tail -F ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/*.jsonl 2>/dev/null` — with `run_in_background: true`, and subscribe to it via the `Monitor` tool. Every subagent line surfaces as a notification without polling.
-3. Pass the milestone-scoped path root to each per-issue sub-skill invocation. The sub-skill's own Step 0 creates a per-issue subdirectory (`milestone-<N>/issue-<K>/`) under it and passes concrete `PROGRESS_FILE=...` paths to each subagent.
+1. Create the milestone events file (touching first guarantees the tail has a real file to follow):
+   ```bash
+   mkdir -p ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/
+   : > ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/rollup.jsonl
+   ```
+2. Start the tail as a **single-file** background bash and subscribe with `Monitor`:
+   ```bash
+   tail -n0 -F ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/rollup.jsonl
+   ```
+   Use `run_in_background: true`. No glob, no directory watch.
+3. For each per-issue sub-skill invocation in Step 3.2, pass `progress_root=~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/issue-<K>/`. The sub-skill creates its own `events.jsonl` under that directory and threads `PROGRESS_FILE=<progress_root>/events.jsonl` into each subagent launch.
+4. After the sub-skill completes for issue K, main appends the issue's event lines into the milestone rollup so the milestone tail surfaces them: `cat <progress_root>/events.jsonl >> ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/rollup.jsonl`. Per-issue files are kept in place as the authoritative per-issue record; the rollup is a stream convenience.
 
-Progress files are scratch, never committed. Schema and per-agent phase lists live in `/executing-development-tickets` §Progress protocol — the same protocol applies here; the milestone loop only adds a wider tail so cross-issue activity is visible in one stream.
-
-Watchdog behaviour (soft-idle nudge / hard-timeout escalation) is not part of this step yet — it lands in a follow-up. For now the stream exists so main can *see* activity, which is enough to distinguish a working agent from a wedged one at a glance across a long milestone run.
+Progress files are scratch, never committed. Schema, write recipe, and per-agent phase lists live in `/executing-development-tickets` §Progress protocol.
 
 ## Step 1 — Intake
 

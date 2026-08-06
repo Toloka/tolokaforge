@@ -57,19 +57,25 @@ If the diff is genuinely clean within your scope: **"Reviewed <scope>. No hygien
 
 ## Progress reporting
 
-Main passes a `PROGRESS_FILE` path in your launch prompt. Append one JSONL line at each phase transition so the pipeline's watchdog can distinguish "still working" from "stuck". If no `PROGRESS_FILE` is provided, skip these writes silently.
+Main passes `PROGRESS_FILE=<path>` and `LAUNCH_ID=<id>` in your launch prompt when this is a pipeline-mode invocation. Append one JSONL event line to `$PROGRESS_FILE` at each phase transition. Direct invocations set neither — skip writes silently.
 
-**Schema — one line per event, ≤ 300 bytes, no PII:**
+**Write recipe** (quote-safe via `jq`; skip-safe under `set -u`):
 
-```json
-{"ts":"<ISO-8601 UTC>","agent":"reviewer-hygiene","launch_id":"<from-prompt>","phase":"<name>","step":"<optional>","detail":"<optional>","elapsed_s":<optional int>}
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "reviewer-hygiene" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "scan_diff" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
 ```
 
-Required: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`. Timestamp is UTC ISO-8601 (`date -u +%FT%TZ`). Write with `echo '{...}' >> "$PROGRESS_FILE"` — one line per call, never overwrite.
+Extend with `--arg step "<value>" --arg detail "<value>" --argjson elapsed_s <int>` as needed. Keep lines terse (target ≤ 300 bytes; truncate `detail` if it would blow past). Required fields: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`.
 
-**Phases for this agent:** same list as `reviewer-correctness` — `start`, `load_rules`, `scan_diff`, `verify_findings`, `report`, plus `long_call` before any tool call expected to exceed 60 s and `error` on caught exceptions.
+**Phases for this agent:** same list as `reviewer-correctness` — `start`, `load_rules`, `scan_diff`, `verify_findings_start`/`_done`, `report`, plus `long_call_start`/`_done` around any tool call expected to exceed 60 s and `error` on caught exceptions.
 
-Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed by the watchdog, not a human log.
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed, not a human log.
 
 ## Behaviour, Self-check, Memory
 

@@ -23,7 +23,7 @@ Main is responsible for: target confirmation, critique-loop mediation, plan appr
 ## Invocation
 
 ```
-/executing-development-tickets <issue-number> [base_branch=<ref>]
+/executing-development-tickets <issue-number> [base_branch=<ref>] [progress_root=<path>]
 ```
 
 or natural language: "execute issue #237", "let's do #244".
@@ -37,20 +37,32 @@ The skill expects the issue to live in `Toloka/tolokaforge`. If a different repo
 
 **Base branch.** Optional context, defaults to `main`. Direct invocations should almost always use the default. `/implement-milestone` passes `base_branch=feat/<milestone-slug>` so per-issue branches stack on the milestone integration branch and per-issue PRs merge into it rather than `main`. When set, it replaces `main` in Step 6 (branch creation) and Step 10 (PR creation). Nothing else changes — the critic, implementer, and reviewer are agnostic to the base branch.
 
+**Progress root.** Optional path to the directory where the per-run events file (`events.jsonl`) is created. Defaults to `~/.claude/plans/toloka-tolokaforge/progress/issue-<N>/` for direct invocations. `/implement-milestone` passes `progress_root=~/.claude/plans/toloka-tolokaforge/progress/milestone-<M>/issue-<N>/` so per-issue events flow into a milestone-scoped tree that the milestone loop tails at a wider scope. Direct users leave it unset.
+
 ## Workflow
 
 ### Step 0 — Progress channel
 
-Before Step 1, set up a JSONL progress channel so main can observe subagent activity in real time. Every subagent this skill launches writes phase-transition lines to a well-known file; main tails that stream via a background bash + `Monitor`.
+Every subagent this skill launches appends phase-transition JSONL lines to a **single aggregate events file** for the run. Main tails that one file via a background bash + `Monitor`, so no glob or directory-watch is involved.
 
-1. Pick a `launch_id` root — `issue-<N>` for a numbered issue, or `adhoc-<UTC-timestamp>` if invoked without an issue number.
-2. Create the progress directory: `mkdir -p ~/.claude/plans/toloka-tolokaforge/progress/<launch_id>/`.
-3. Start the tail as a background bash — `tail -F ~/.claude/plans/toloka-tolokaforge/progress/<launch_id>/*.jsonl 2>/dev/null` — with `run_in_background: true`, and subscribe to it via the `Monitor` tool. Each JSONL line becomes a notification; main can read the stream without polling.
-4. Pass the concrete file path to every subagent as `PROGRESS_FILE=~/.claude/plans/toloka-tolokaforge/progress/<launch_id>/<agent-role>-<UTC-timestamp>.jsonl` in the launch prompt (see per-step prompts below).
+1. Resolve `progress_root`. If the invocation passed one, use it verbatim. Otherwise default to `~/.claude/plans/toloka-tolokaforge/progress/issue-<N>/` (or `adhoc-<UTC-ts>/` when there is no issue number).
+2. Create the events file — touching first guarantees the tail has a real file to follow, sidestepping the empty-directory / glob failure modes:
+   ```bash
+   mkdir -p "$progress_root" && : > "$progress_root/events.jsonl"
+   ```
+3. Start the tail as a **single-file** background bash (no glob, no directory watch) and subscribe with `Monitor`:
+   ```bash
+   tail -n0 -F "$progress_root/events.jsonl"
+   ```
+   Use `run_in_background: true`. Each appended line arrives as a Monitor notification; no polling. Under `/implement-milestone` the milestone loop already runs a wider tail one level up — if `progress_root` was inherited, main skips this step to avoid a duplicate follower.
+4. For every subagent launch in this skill (Steps 3, 4, 7, 8, 9), append two lines to the launch prompt:
+   ```
+   PROGRESS_FILE=<progress_root>/events.jsonl
+   LAUNCH_ID=<main-assigned identifier — see naming scheme below>
+   ```
+   Naming: `architect-issue-<N>` / `critic-issue-<N>[-r<round>]` / `impl-issue-<N>[-s<stage>]` / `reviewer-<lane>-issue-<N>[-r<round>]` / `fix-issue-<N>-r<round>`. The `launch_id` is the JSON join key across every event line for that Agent-tool launch (and its SendMessage continuations in persistent mode).
 
-Progress files are scratch, never committed. They live outside the repo per the same convention as plan and briefing files. The full schema, per-agent phase lists, and reference examples are in the `## Progress protocol` section at the end of this file — read it once, then apply per subagent.
-
-Watchdog behaviour (soft-idle nudge / hard-timeout escalation) is not part of this step yet; it lands in a follow-up change and reads the same stream. For now, the stream exists so main can *see* activity — that alone is enough to distinguish a working agent from a wedged one at a glance.
+Progress files are scratch, never committed. They live outside the repo per the same convention as plan and briefing files. Full schema and per-agent phase lists live in the `## Progress protocol` reference section at the end of this file.
 
 ### Step 1 — Fetch the issue
 
@@ -98,9 +110,10 @@ surfaces need explicit migration (internals refactor cleanly), diagnose by
 running, lock behaviour with tests at the right tier, no compromise, surface
 discovered issues, comment hygiene.
 
-PROGRESS_FILE=<path built by main per Step 0, e.g. ~/.claude/plans/toloka-tolokaforge/progress/issue-<N>/system-architect-planner-<UTC-ts>.jsonl>
+PROGRESS_FILE=<progress_root>/events.jsonl
+LAUNCH_ID=architect-issue-<N>
 Append one JSONL line to $PROGRESS_FILE at each phase transition per your
-charter's Progress reporting section.
+charter's Progress reporting section. Use $LAUNCH_ID as the launch_id field.
 ```
 
 ### Step 3b — Assemble the per-issue briefing pack
@@ -157,9 +170,10 @@ Otherwise, before the user sees the plan, pressure-test it:
    (read-only) the running behaviour. Return your structured verdict block. Do not
    edit the plan — the architect owns it.
 
-   PROGRESS_FILE=<path built by main per Step 0>
+   PROGRESS_FILE=<progress_root>/events.jsonl
+   LAUNCH_ID=critic-issue-<N>[-r<round>]
    Append one JSONL line to $PROGRESS_FILE at each phase transition per your
-   charter's Progress reporting section.
+   charter's Progress reporting section. Use $LAUNCH_ID as the launch_id field.
    ```
 2. **Verdict `APPROVE` / `APPROVE WITH NOTES`** → proceed to Step 5, carrying any 🟡 notes into the user summary.
 3. **Verdict `REVISE`** → `SendMessage` the findings verbatim to the architect. The architect revises the plan and returns per-finding dispositions (fixed / rebutted-with-evidence). `SendMessage` the revision summary + dispositions back to the critic for re-critique.
@@ -211,9 +225,10 @@ The "one stage = one commit" contract, the drift-handling rules, and the correct
    tier the stage names (unit / canonical / integration), exercises real behaviour
    (not mocks), and passes. One stage = one commit. Return your structured report.
 
-   PROGRESS_FILE=<path built by main per Step 0>
+   PROGRESS_FILE=<progress_root>/events.jsonl
+   LAUNCH_ID=impl-issue-<N>-s<stage>
    Append one JSONL line to $PROGRESS_FILE at each phase transition per your
-   charter's Progress reporting section.
+   charter's Progress reporting section. Use $LAUNCH_ID as the launch_id field.
    ```
 2. **Validate the report.** When it returns:
    - Contract matches the stage spec — flag drift in your next user message.
@@ -244,9 +259,10 @@ skill rules within YOUR scope. Plan: <~/.claude/plans/toloka-tolokaforge/...>.
 Briefing: <~/.claude/plans/toloka-tolokaforge/issue-<N>-briefing.md> if present.
 Cover branch + staged + unstaged. Return findings in the standard format.
 
-PROGRESS_FILE=<path built by main per Step 0, one per shard>
+PROGRESS_FILE=<progress_root>/events.jsonl
+LAUNCH_ID=reviewer-<lane>-issue-<N>[-r<round>]
 Append one JSONL line to $PROGRESS_FILE at each phase transition per your
-charter's Progress reporting section.
+charter's Progress reporting section. Use $LAUNCH_ID as the launch_id field.
 ```
 
 When all three return:
@@ -271,9 +287,10 @@ If the reviewer returns 🔴 Blocker or 🟠 Major findings:
 
    <paste reviewer findings verbatim>
 
-   PROGRESS_FILE=<path built by main per Step 0, fix-round scoped>
+   PROGRESS_FILE=<progress_root>/events.jsonl
+   LAUNCH_ID=fix-issue-<N>-r<round>
    Append one JSONL line to $PROGRESS_FILE at each phase transition per your
-   charter's Progress reporting section.
+   charter's Progress reporting section. Use $LAUNCH_ID as the launch_id field.
    ```
 3. Re-launch the three sharded reviewers (`reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`) in parallel on the updated branch, same as Step 8. Merge findings the same way.
 4. Loop until every lane's verdict is `APPROVE` or `APPROVE WITH NITS`. **Cap: 2 fix rounds.** If any lane keeps finding the same Blocker, stop and ask the user — don't grind the implementer.
@@ -359,49 +376,51 @@ Surface to the user:
 
 ## Progress protocol
 
-Every subagent this skill launches writes JSONL progress lines to a per-launch file main opens in Step 0. Main tails the directory via a background `tail -F` + `Monitor`. The stream lets main *see* activity in real time without polling, and is the substrate the watchdog (soft-nudge / hard-timeout) will read in a follow-up change.
+Every subagent this skill launches appends JSONL event lines to one aggregate file per run. Main tails that single file and can see activity in real time without waiting for the subagent to return.
 
-### Path convention
+### Path
 
 ```
-~/.claude/plans/toloka-tolokaforge/progress/<launch_id_root>/<agent-role>-<UTC-timestamp>.jsonl
+<progress_root>/events.jsonl
 ```
 
-- `<launch_id_root>` = `issue-<N>` for a numbered issue, `adhoc-<UTC-ts>` otherwise. Under `/implement-milestone` the root is `milestone-<N>/issue-<K>`.
-- `<agent-role>` = `system-architect-planner`, `plan-critic`, `plan-stage-implementer`, `branch-code-reviewer`, `reviewer-correctness`, `reviewer-hygiene`, `reviewer-type-fit`.
-- `<UTC-timestamp>` = `date -u +%Y%m%dT%H%M%SZ` at launch. Rerunning the same role (fix-loop rounds, corrective launches) yields a distinct file per launch — history is preserved.
-
-Progress files are scratch, never committed, never referenced from PR bodies. They live outside the repo, alongside plan and briefing files.
+`<progress_root>` defaults to `~/.claude/plans/toloka-tolokaforge/progress/issue-<N>/`, or the value passed as the `progress_root` invocation parameter (see Invocation). Under `/implement-milestone` it is `~/.claude/plans/toloka-tolokaforge/progress/milestone-<M>/issue-<N>/`. One file per run; every subagent appends. Scratch, never committed, never referenced from PR bodies.
 
 ### Schema
 
-One JSON object per line, `≤ 300 bytes`, no PII:
+One JSON object per line. Keep lines terse (target ≤ 300 bytes; truncate `detail` if needed). No PII.
 
 ```json
 {"ts":"2026-08-06T12:34:56Z","agent":"plan-stage-implementer","launch_id":"impl-issue-237-s2","phase":"impl","step":"lint_check","detail":"pass","elapsed_s":42,"issue":237,"stage":2}
 ```
 
-Required fields: `ts` (UTC ISO-8601), `agent` (role name), `launch_id` (main-assigned; see below), `phase` (from the per-agent phase list in the charter). Optional: `step`, `detail`, `elapsed_s`, `issue`, `stage`, `round`.
+Required fields: `ts` (UTC ISO-8601), `agent` (role name), `launch_id` (from the `LAUNCH_ID=` line in the launch prompt), `phase` (from the per-agent phase list in the charter). Optional: `step`, `detail`, `elapsed_s`, `issue`, `stage`, `round`.
 
-Main assigns `launch_id`: for a persistent implementer, `impl-issue-<N>[-s<stage>]`; for shard reviewers, `reviewer-<lane>-issue-<N>[-r<round>]`; for architect/critic, `architect-issue-<N>` / `critic-issue-<N>[-r<round>]`. The `launch_id` is the join key: every line for a single Agent-tool launch (or its SendMessage continuations) carries the same value.
+`launch_id` is the join key — every line for a single Agent-tool launch (and its SendMessage continuations in persistent mode) carries the same value. Main assigns it in the launch prompt per the naming scheme in Step 0.
+
+### Write recipe
+
+Subagents write with `jq -cn` so JSON string values are quote-safe (apostrophes, newlines, and special characters in `detail` do not break the shell):
+
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "plan-stage-implementer" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "impl" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
+```
+
+The leading `[ -n "${PROGRESS_FILE:-}" ]` guard makes progress writes safe under `set -u`: direct-invoke callers without a `PROGRESS_FILE` skip the write silently.
 
 ### When subagents write
 
 Per each agent's `## Progress reporting` section in its charter:
 
-- On start.
-- At each phase transition (phase list is role-specific).
-- Before any tool call expected to exceed 60 s (`phase:"long_call"` + `step:"<tool>"`).
-- On caught error.
+- On start, at each phase transition, and on caught error.
+- Around any span the watchdog would want to time: emit a `long_call` phase before a tool call expected to exceed 60 s and a `long_call_done` after it returns. Similarly for the paired `_start`/`_done` phases (discovery, revision, recritique).
 
 ### Main-side watcher
 
-Main launches at Step 0, once per invocation:
-
-```bash
-tail -F ~/.claude/plans/toloka-tolokaforge/progress/<launch_id_root>/*.jsonl 2>/dev/null
-```
-
-as a background bash (`run_in_background: true`), subscribed via the `Monitor` tool. New JSONL lines arrive as notifications; main reads them opportunistically. Nothing needs to poll.
-
-Watchdog behaviour (soft-idle nudge, hard-timeout `TaskStop`) is not part of this iteration — it lands in a follow-up change and consumes this same stream. For now the observability alone is the win: a wedged agent shows no new lines, and that gap is visible without waiting for a return that never comes.
+Main starts the tail in Step 0 as a background `tail -n0 -F <progress_root>/events.jsonl` subscribed via `Monitor`. New lines arrive as notifications; nothing polls.
