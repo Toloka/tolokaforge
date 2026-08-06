@@ -1092,6 +1092,22 @@ empty `golden_actions` list replays nothing, so it is no more a source than an a
 one. The rules' class and the rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
 
+**The block is closed, and both of the adapter's reads of it refuse the same key.** A key
+`hash` does not declare requests *nothing* — a misspelled `enalbed` or
+`expected_state_hsah` leaves the hash unscored while the trial grades on whatever else
+the pack declared, which scores *higher* than the same block spelled correctly. So the
+accepted set is exactly `enabled`, `expected_state_hash`, `golden_actions`, `weight` and
+`description`, and anything else is a load error
+([§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses)).
+`NativeAdapter` reads a `grading.yaml` on two errands — `get_grading_config` builds the
+host-side config, `to_task_description` lowers the block onto the runner's flattened
+`hash_enabled` / `expected_hash` / `hash_weight` fields — and **both construct the block
+rather than reading it key by key**, so neither lowers a key the other refuses. The two
+share a file and not an object, which is what makes the second read load-bearing:
+`tolokaforge run-trial` runs no grading pre-flight, so the description build is the only
+read a trial there passes through, and a key dropped at that read reaches
+`RegisterTrial` as an absent hash and is paid for.
+
 **`golden_actions` is the list of actions to replay, or there is no replay.** A **falsy**
 value — `[]`, `{}`, `""`, `0`, `false`, or the key written bare, which is what an author
 reaches by commenting the actions out — is no replay at every read site on either
