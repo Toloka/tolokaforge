@@ -196,12 +196,16 @@ authorable source shapes, and for the two the authoring gate refuses:
   runner falls back on refusal semantics and compares the trial against the
   **initial** state where core compares it against the author's literal.
 - **`hash.enabled` with no declared source** — not proven, and **refused at the
-  authoring gate** for that reason. Core produces **no** verdict (below), while the
-  runner runs hash grading anyway for the refusal shape and produces a real binary
-  one. Measured, on a pack with live assertions scoring `0.5` at `weight: 0.6`: core's
-  component is `0.5` on both hash outcomes, the runner's is `0.8` on a match and `0.2`
-  on a divergence. What remains reachable is a directly built config and a bundle
-  recorded before the rule.
+  authoring gate** for that reason where the task declares `adapter_type: native`.
+  Core produces **no** verdict (below), while the runner runs hash grading anyway for
+  the refusal shape and produces a real binary one. Measured, on a pack with live
+  assertions scoring `0.5` at `weight: 0.6`: core's component is `0.5` on both hash
+  outcomes, the runner's is `0.8` on a match and `0.2` on a divergence. What remains
+  reachable is a directly built config, a bundle recorded before the rule, and — by
+  design — every pack another `adapter_type` grades, which the gate reports unchecked
+  instead: such an adapter may compute the source itself, the way the frozen-core
+  family replays a golden-actions fixture the authored block never names, so neither
+  substrate reading measured here is the one that pack takes.
 - **`golden_actions` with no world to replay them in** — not proven, and **refused at
   the authoring gate** for the same reason. Core raises `UnbuildableGoldenReplayWorld`
   and the trial is left unscored (below), while the runner has nothing to lack: its
@@ -974,7 +978,11 @@ a real number in that range — a bool, a numeric string — is rejected on **bo
 substrates rather than coerced into one.
 
 **The flag and a source are declared together, or neither is.** Both halves are
-rejected at load:
+rejected at load where the task declares `adapter_type: native`; under any other
+`adapter_type` the same shapes are reported unchecked at the same address instead,
+because an external adapter may supply the source the authored block never names —
+see the unchecked row in
+[What is validated before a run](#what-is-validated-before-a-run):
 
 - **Either source under a falsy `enabled`** is a comparison that never runs. Both
   substrates test the flag before reading any source, so the pack grades its state
