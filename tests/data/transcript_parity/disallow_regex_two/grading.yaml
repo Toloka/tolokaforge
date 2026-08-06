@@ -1,0 +1,10 @@
+combine:
+  method: weighted
+  weights:
+    transcript_rules: 1.0
+  pass_threshold: 0.8
+
+transcript_rules:
+  disallow_regex:
+    - "cancel"
+    - "escalate"

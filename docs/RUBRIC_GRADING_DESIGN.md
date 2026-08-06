@@ -169,5 +169,3 @@ evidence" is not "agreement".
   graded-magnitude drift (a future per-graded MAE metric would).
 - **Single-call grading** risks cross-criterion anchoring; per-criterion calls
   remain a fallback if calibration shows bias.
-- **Two `RequiredAction`/`TranscriptRulesConfig` schemas** (host `core/models.py`
-  vs runner `runner/models.py`) could be consolidated.

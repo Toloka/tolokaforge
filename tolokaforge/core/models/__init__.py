@@ -78,7 +78,6 @@ from tolokaforge.core.models.task_config import (
     SEED_KIND_BY_EXTENSION,
     ActorSpec,
     AssetsConfig,
-    CommunicateInfo,
     GradingCombineConfig,
     GradingConfig,
     GradingDefaults,
@@ -86,7 +85,6 @@ from tolokaforge.core.models.task_config import (
     InitialStateConfig,
     LLMJudgeDefaults,
     ProjectConfig,
-    RequiredAction,
     SeedKind,
     SeedRef,
     StateChecksConfig,
@@ -98,7 +96,6 @@ from tolokaforge.core.models.task_config import (
     TaskMetadata,
     TimeoutDefaults,
     ToolsConfig,
-    TranscriptRulesConfig,
     UserSimulatorConfig,
 )
 from tolokaforge.core.models.trajectory import (
@@ -122,9 +119,10 @@ from tolokaforge.core.models.trajectory import (
 # Cross-package wire types re-exported so callers reach one module for
 # the whole recorded-tool-call + wire-schema vocabulary. Canonical
 # homes stay in ``runner.models`` (rubric / criterion / judge config /
-# environment manifest / tool expectations / service specs / recorded
-# tool call / the trace-check matcher and constraint vocabulary) and
-# ``tools.registry`` (tool execution status).
+# environment manifest / tool expectations / the transcript-rules block
+# and its elements / service specs / recorded tool call / the trace-check
+# matcher and constraint vocabulary) and ``tools.registry`` (tool
+# execution status).
 from tolokaforge.runner.models import (
     AbsentBeforeConstraint,
     AbsentBetweenConstraint,
@@ -134,6 +132,7 @@ from tolokaforge.runner.models import (
     AnchorSide,
     BeforeConstraint,
     BoundValue,
+    CommunicateInfo,
     CountConstraint,
     Criterion,
     CriterionResult,
@@ -152,6 +151,7 @@ from tolokaforge.runner.models import (
     ReadinessKind,
     ReadinessSpec,
     RecordedToolCall,
+    RequiredAction,
     ResetSpec,
     Rubric,
     ServiceIsolation,
@@ -173,6 +173,7 @@ from tolokaforge.runner.models import (
     TraceMatcher,
     TracePath,
     TracePathResult,
+    TranscriptRulesConfig,
     TurnWindow,
     ValuePredicate,
 )
@@ -239,7 +240,6 @@ __all__ = [
     # Task config
     "ActorSpec",
     "AssetsConfig",
-    "CommunicateInfo",
     "GradingCombineConfig",
     "GradingConfig",
     "GradingDefaults",
@@ -248,7 +248,6 @@ __all__ = [
     "LLMJudgeDefaults",
     "ProjectConfig",
     "RETIRED_STATE_CHECK_KEYS",
-    "RequiredAction",
     "SEED_KIND_BY_EXTENSION",
     "SeedKind",
     "SeedRef",
@@ -261,7 +260,6 @@ __all__ = [
     "TaskMetadata",
     "TimeoutDefaults",
     "ToolsConfig",
-    "TranscriptRulesConfig",
     "UserSimulatorConfig",
     # Cross-package re-exports (runner.models canonical wire types)
     "AbsentBeforeConstraint",
@@ -272,6 +270,7 @@ __all__ = [
     "AnchorSide",
     "BeforeConstraint",
     "BoundValue",
+    "CommunicateInfo",
     "CountConstraint",
     "Criterion",
     "CriterionResult",
@@ -290,6 +289,7 @@ __all__ = [
     "ReadinessKind",
     "ReadinessSpec",
     "RecordedToolCall",
+    "RequiredAction",
     "ResetSpec",
     "Rubric",
     "ServiceIsolation",
@@ -311,6 +311,7 @@ __all__ = [
     "TraceMatcher",
     "TracePath",
     "TracePathResult",
+    "TranscriptRulesConfig",
     "TurnWindow",
     "ValuePredicate",
     "ToolExecutionStatus",

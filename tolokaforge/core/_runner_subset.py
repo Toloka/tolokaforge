@@ -118,7 +118,6 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
     "tolokaforge/core/grading/trace_replay.py",
-    "tolokaforge/core/grading/transcript.py",
     "tolokaforge/core/grading/unknown_keys.py",
     "tolokaforge/core/llm/fallback_client.py",
     "tolokaforge/tools/user_tools.py",
@@ -137,13 +136,12 @@ per-turn artefacts.
 Six grading-side files (``core.grading.combine``, ``core.grading.replay``,
 ``core.grading.rubric_migration``, ``core.grading.state_checks``,
 ``core.grading.trace_replay``, ``core.tools.user_tools``) reach
-orchestrator-only siblings (``core.evaluators``, ``core.output.artifacts``,
-``core.utils.diff``, ``core.env_state``, ``adapters._task_loader``) —
-including any of these in the subset would drag those orchestrator-only
-surfaces along with them, or fail at import time inside the runner
-container. The remaining six (``core.grading.agreement``,
-``core.grading.config_validation``, ``core.grading.migration_declaration``,
-``core.grading.transcript``, ``core.grading.unknown_keys``,
+orchestrator-only siblings (``core.output.artifacts``, ``core.utils.diff``,
+``core.env_state``, ``adapters._task_loader``) — including any of these in
+the subset would drag those orchestrator-only surfaces along with them, or
+fail at import time inside the runner container. The remaining five
+(``core.grading.agreement``, ``core.grading.config_validation``,
+``core.grading.migration_declaration``, ``core.grading.unknown_keys``,
 ``core.llm.fallback_client``) have only shared-spine imports but are consumed
 exclusively by orchestrator-side code — the pre-run authoring gate and the
 rubric-to-trace-check migration both run on the host, before any trial is

@@ -162,8 +162,7 @@ class GradingKey:
             )
 
 
-_CORE_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.TranscriptChecker.grade"
-_RUNNER_TRANSCRIPT_EVALUATOR = "tolokaforge.runner.grading.evaluate_transcript_rules"
+_TRANSCRIPT_EVALUATOR = "tolokaforge.core.grading.transcript.evaluate_transcript_rules"
 _CORE_HASH_EVALUATOR = "tolokaforge.core.grading.state_checks.StateChecker.check_hash"
 
 RUNNER_HASH_EVALUATOR = "tolokaforge.runner.service.RunnerServiceImpl._execute_hash_grading"
@@ -222,24 +221,6 @@ _COMBINE_WEIGHTS_MEMBERSHIP_REASON = (
     "a db_probes one, both RUNNER_ONLY by design, so on a judge- or probe-graded pack the two "
     "component sets differ whatever the map says — and all/any aggregate that set alone, so "
     "the disagreement is a verdict flip rather than a magnitude"
-)
-
-_TRANSCRIPT_AGGREGATION_REASON = (
-    "core averages four fixed buckets while the runner scores one sub-check per "
-    "declared entry, so the two component scores differ in magnitude"
-)
-
-_TRANSCRIPT_PHRASE_REASON = (
-    "two independent divergences, and the second one flips the verdict rather than "
-    "scaling it. Aggregation: core averages four fixed buckets while the runner scores "
-    "one sub-check per declared entry, so the magnitudes differ. Evidence set: core "
-    "searches user turns, assistant turns and tool results, while the runner searches "
-    "assistant turns alone — so a phrase that appears only in a tool result is FOUND "
-    "core-side and MISSING runner-side for the same trial. Measured on a records-present "
-    "timeline: must_contain(['refunds allowed']) against a tool result carrying it returns "
-    "1.0 on core and 0.0 on the runner. Both predate #676; the runner's narrower set is "
-    "pinned by test_must_contain_only_searches_assistant_turns, so it is deliberate rather "
-    "than an oversight, and #685 must reconcile the evidence sets and not only the averaging"
 )
 
 _TRACE_CHECKS_EVALUATOR = "tolokaforge.core.grading.trace_checks.evaluate_trace_checks"
@@ -506,38 +487,32 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
     GradingKey(
         author_key="transcript_rules.must_contain",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.must_contain",
-        runner_field="RunnerTranscriptRulesConfig.must_contain",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_PHRASE_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.must_contain",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.disallow_regex",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.disallow_regex",
-        runner_field="RunnerTranscriptRulesConfig.disallow_regex",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_PHRASE_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.disallow_regex",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.max_turns",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.max_turns",
-        runner_field="RunnerTranscriptRulesConfig.max_turns",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.max_turns",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.min_assistant_turns",
@@ -545,54 +520,39 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.min_assistant_turns",
-        runner_field="RunnerTranscriptRulesConfig.min_assistant_turns",
-        core_evaluator=_CORE_TRANSCRIPT_EVALUATOR,
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
+        runner_field="TranscriptRulesConfig.min_assistant_turns",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.required_actions",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.required_actions",
-        runner_field="RunnerTranscriptRulesConfig.required_actions",
-        core_evaluator="tolokaforge.core.evaluators.action_evaluator.ActionEvaluator.evaluate_actions",
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.required_actions",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.communicate_info",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.communicate_info",
-        runner_field="RunnerTranscriptRulesConfig.communicate_info",
-        core_evaluator=(
-            "tolokaforge.core.evaluators.communicate_evaluator."
-            "CommunicateEvaluator.evaluate_communication"
-        ),
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=_TRANSCRIPT_AGGREGATION_REASON,
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.communicate_info",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="transcript_rules.tool_expectations",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="TranscriptRulesConfig.tool_expectations",
-        runner_field="RunnerTranscriptRulesConfig.tool_expectations",
-        core_evaluator=(
-            "tolokaforge.core.grading.transcript.TranscriptChecker.check_tool_expectations"
-        ),
-        runner_evaluator=_RUNNER_TRANSCRIPT_EVALUATOR,
-        reason=(
-            "core folds both tool lists into one of four averaged buckets and ignores call "
-            "status; the runner scores one sub-check per declared tool and requires a "
-            "required tool's call to have succeeded"
-        ),
-        tracking_issue=685,
+        runner_field="TranscriptRulesConfig.tool_expectations",
+        core_evaluator=_TRANSCRIPT_EVALUATOR,
+        runner_evaluator=_TRANSCRIPT_EVALUATOR,
     ),
     GradingKey(
         author_key="trace_checks",
@@ -739,6 +699,14 @@ NO_TIMELINE_EVENTS_SKIP = KeyAccountingRecord(
 UNBOUND_BINDING_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="the binding yielded no assignment"
 )
+
+MUST_CONTAIN_KEY = checked_author_key("transcript_rules.must_contain")
+DISALLOW_REGEX_KEY = checked_author_key("transcript_rules.disallow_regex")
+MAX_TURNS_KEY = checked_author_key("transcript_rules.max_turns")
+MIN_ASSISTANT_TURNS_KEY = checked_author_key("transcript_rules.min_assistant_turns")
+TOOL_EXPECTATIONS_KEY = checked_author_key("transcript_rules.tool_expectations")
+REQUIRED_ACTIONS_KEY = checked_author_key("transcript_rules.required_actions")
+COMMUNICATE_INFO_KEY = checked_author_key("transcript_rules.communicate_info")
 
 TRACE_CONSTRAINTS_KEY = checked_author_key("trace_checks.constraints")
 

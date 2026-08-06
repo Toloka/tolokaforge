@@ -337,33 +337,43 @@ declared without one.
 
 | Key | kind | coverage | enforcement |
 |---|---|---|---|
+| `transcript_rules.must_contain` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.disallow_regex` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.max_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `transcript_rules.min_assistant_turns` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.required_actions` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.communicate_info` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
+| `transcript_rules.tool_expectations` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints` | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.<kind>` × 10 | `SCORED_CHECK` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks.constraints.weight` / `.on_missing` / `.severity` / `.within` / `.bind` | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 | `trace_checks` (family root) | `CONFIG_INPUT` | `BOTH_SCORE_PARITY` | `DIFFERENTIAL_CANONICAL` |
 
-The `trace_checks` rows are the only scored family where **every** member is
-differentially proven in-process, which is what one shared evaluator buys: there
-is no second implementation whose agreement has to be measured, only two
+`trace_checks` and `transcript_rules` are the two scored families where **every**
+member is differentially proven in-process, which is what one shared evaluator buys:
+there is no second implementation whose agreement has to be measured, only two
 integration points and one pack per leaf. The ten kinds are
 `present`, `absent`, `count`, `before`, `immediately_before`, `absent_before`,
 `absent_between`, `all_of`, `any_of`, `negate` — the same closed set the evaluator
 and the runtime ledger read, asserted equal across all three sources.
 
-`transcript_rules.min_assistant_turns` is the only `transcript_rules` key claiming
-score parity — the other six are
-`BOTH_SIGNAL_PARITY` (#685), because the core engine averages four always-present
-buckets where the runner takes a fraction of decomposed sub-checks, so the two
-magnitudes differ on a mixed pack. **Its parity rests on a different mechanism than
+**Both families rest on a different mechanism than
 `state_checks.hash.golden_actions`'.** That key agrees because both substrates fold
 their inputs through one shared composer, so the aggregation itself is common code.
-`min_assistant_turns` has no shared code path at all: it agrees because it
-contributes *nothing* when met and forces `0.0` on **both** substrates when unmet, so
-it can never itself be the source of a disagreement. On a pack that also declares
-phrase or tool rules any divergence in the component belongs to those keys'
-aggregation, which is #685's territory, not the floor's. See
-[§ Turn bounds](#turn-bounds) for what the key asserts.
+The two shared-evaluator families agree a tier earlier: `evaluate_trace_checks` and
+`evaluate_transcript_rules` are each the single implementation both substrates call,
+so a component score for a given config and trajectory is identical by construction
+rather than by measurement. The parity suite still drives every one of these keys
+through both substrates' own paths and asserts the two scores equal — construction is
+what makes the agreement true, and the differential is what keeps a second
+implementation from reappearing unnoticed. See
+[§ Transcript Rules](#transcript-rules) for what each of the seven keys asserts.
+
+Whether `transcript_rules` produces a component at all is shared the same way.
+`scored_transcript_rules` decides which rules a trial's timeline carries evidence
+for — nothing, on an events-less timeline under a pack declaring no activity floor,
+and the floor alone when it declared one — and both integration points fold through
+it, so the component drops out of the combine on both substrates or on neither.
 
 ### What the guard cannot see
 
@@ -389,12 +399,6 @@ authored `grading.yaml` follows the same path and descends through the composite
 kinds, so a constraint kind written only inside an `all_of` counts as declared;
 descent stops outside a constraint kind, because a matcher's `args` keys are the
 author's own argument names.
-
-It also cannot see a key the two substrates read from **different evidence**. The
-manifest freezes config keys and field paths, not evaluation sources, so
-`transcript_rules.required_actions` passes every lock while core evaluates it from
-`trajectory.messages` and the runner evaluates it from the tool-call record — see
-[Both substrates consume it](#both-substrates-consume-it).
 
 Nor can a satisfying/violating pair reach a key's **degenerate** boundary, the input
 that declares nothing at all: both cells of a discriminating pair have to declare
@@ -510,14 +514,23 @@ same thing whichever substrate grades the trial:
 
 ### Both substrates consume it
 
-Every transcript rule is evaluated off the timeline on both substrates. The
-runner builds it once in `GradeTrial`, before any grading component runs, and
-`evaluate_transcript_rules(timeline, rules)` decomposes the author's config
-against it. The core `GradingEngine` builds it from the trajectory and
-`TranscriptChecker.grade(timeline, …)` reads the same events. The call/result
-join and the assistant-turn view are shared accessors on the timeline module
+Every transcript rule is evaluated off the timeline on both substrates.
+`evaluate_transcript_rules(timeline, rules)`
+(`tolokaforge/core/grading/transcript.py`) is the one evaluator: it takes the
+trial's timeline and the validated `TranscriptRulesConfig` — the model, not a
+dump, so the two substrates cannot hand it differently-shaped configs — and
+decomposes the author's block into one sub-check per declared entry. The runner
+builds the timeline once in `GradeTrial`, before any grading component runs, and
+calls it there; the core `GradingEngine` builds the same timeline from the
+trajectory and calls it in `grade_trajectory`. The call/result join and the
+assistant-turn view are shared accessors on the timeline module
 (`attempted_calls`, `assistant_texts`), so the two substrates cannot drift into
 reading one timeline differently.
+
+One config + one trial therefore reaches one component score whichever substrate
+graded it, by construction rather than by measurement. The differential that
+drives an authored pack through both substrates' real paths and asserts the two
+columns equal is `tests/canonical/test_transcript_substrate_parity.py`.
 
 **A reconciliation failure fails the RPC, and the host does not substitute a
 verdict.** `TimelineInconsistencyError` from either builder call is never folded
@@ -554,15 +567,6 @@ reads the trajectory's own status and reason, which grading's failure does not
 touch. A grading failure that a second attempt would have got past is therefore
 recorded ungradeable on the first: the price of never fabricating a verdict and
 never counting one attempt twice.
-
-**One key is still evaluated from different sources.** The core engine evaluates
-`transcript_rules.required_actions` and `transcript_rules.communicate_info`
-through `ActionEvaluator` / `CommunicateEvaluator` over `trajectory.messages`,
-outside `TranscriptChecker` and therefore off the timeline; the runner evaluates
-`required_actions` from the timeline's records. Both substrates read the key and
-both discriminate it, so the manifest's parity claim holds — but the *evidence*
-differs, and the manifest freezes config keys, not evaluation sources. Closing
-#685 should unify the source as well as the averaging.
 
 ### The event
 
@@ -938,7 +942,7 @@ registration before any key is read — see
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Six keys carry the lock:
+being dropped. Seven keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field. Such an
@@ -962,6 +966,12 @@ being dropped. Six keys carry the lock:
   rejected by an older image. An **old engine** translating a name the set no longer
   holds is refused by a current image at the version gate, before the value is
   validated at all.
+- `transcript_rules.required_actions[*].name`, which the wire spelled `tool_name`
+  before one model served both the authored block and the trial spec. A **new engine**
+  emits `name`, which a runner image older than this release does not declare, and an
+  **old engine** emits `tool_name`, which a current one does not — so this key is
+  rejected in *both* directions rather than one. The authored `grading.yaml` key is
+  `name:` and is unchanged; nothing in a task pack migrates.
 - `state_checks.id_fields`, whose declared **value** shape admits a composite
   (list-valued) key. A runner image that predates the list form declares the value
   as a plain string, so a **new engine against an old runner image** emitting a
@@ -972,7 +982,9 @@ being dropped. Six keys carry the lock:
 The first two bite on **every** pack carrying a non-empty `state_checks:` block,
 `min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
 `trace_checks` on **every** pack at all — whether or not the pack declares the key,
-because the adapter emits all four unconditionally. `combine_method` bites only on a
+because the adapter emits all four unconditionally. `required_actions[*].name` bites
+only on a pack that declares `required_actions`, since an empty list carries no element
+to spell either way. `combine_method` bites only on a
 pack declaring an affected value — `weighted` and `all` cross in either direction —
 and `id_fields` only on a pack declaring a composite key: a single-field declaration
 crosses as the same plain string it always did. So
@@ -1289,11 +1301,12 @@ the block, and both read it off the
 call the agent declared on a terminating turn never ran, so it satisfies no
 `required_tools` entry and violates no `disallowed_tools` entry. A phrase rule
 (`must_contain`, `disallow_regex`, `communicate_info`) sees the agent's own text
-runner-side; core-side it also sees the user's turns and the text tools returned —
-from the record while the trial carries one and from the `role: tool` messages
-otherwise (G6b), so re-grading a recorded bundle still reads tool output. Neither
-substrate can see the harness's `role: system` annotations — a termination notice
-cannot satisfy a required phrase (N3).
+and nothing else: not the user's turns, so a phrase the user supplied cannot
+satisfy a rule about what the agent said, and not the text a tool returned, which
+is [trace checks](#trace-checks) territory — a result predicate beside
+`status: {equals: success}` is where an assertion about tool output lives. Nor can
+either substrate see the harness's `role: system` annotations — a termination
+notice cannot satisfy a required phrase (N3).
 
 ### Turn bounds
 
@@ -1332,7 +1345,10 @@ check — a non-empty assistant message after the last tool call — is **#678**
 checks; do not read a green floor as evidence the agent replied.
 
 **A declared floor is evaluated on an events-less timeline**, where every other
-transcript rule is skipped — see [The runtime ledger](#the-runtime-ledger).
+transcript rule is skipped, on both substrates. Without a floor the whole component
+drops out of the combine there; with one, the floor alone scores it `0.0`. The
+runner additionally records the skip against each sibling key — see
+[The runtime ledger](#the-runtime-ledger).
 
 **A window no trial can land in is rejected at load.** A floor above the ceiling
 admits no assistant-turn count at all, so the component would be `0.0` however the
@@ -1346,9 +1362,9 @@ satisfies both bounds and every trial fails the transcript component. Lower
 min_assistant_turns to at most 3, or raise max_turns to at least 5.
 ```
 
-One predicate (`core/grading/turn_bounds.py`) is called by **both**
-`TranscriptRulesConfig` models, so a window the engine rejects at validate time is
-rejected at `RegisterTrial` too rather than registering and grading. A floor *equal*
+One `TranscriptRulesConfig` serves the authored block and the trial spec, so a window
+the engine rejects at validate time is rejected at `RegisterTrial` too rather than
+registering and grading. A floor *equal*
 to the ceiling is satisfiable — by exactly that many turns — and either key on its
 own bounds one side only, so only a pack declaring both can close the window.
 
@@ -1356,8 +1372,8 @@ own bounds one side only, so only a pack declaring both can close the window.
 true: a ceiling of `0` closes the window on its own, and a floor of `0` asserts
 nothing. Either is rejected at load naming the key and the bound.
 
-**Runner-engine version lock**: `min_assistant_turns` is declared on the
-runner-side `TranscriptRulesConfig` (`extra="forbid"`), so an engine of this release
+**Runner-engine version lock**: `min_assistant_turns` is declared on
+`TranscriptRulesConfig` (`extra="forbid"`), so an engine of this release
 requires a runner image built from it — the engine emits the field on **every** pack
 carrying a `transcript_rules:` block, as `null` when the pack declares no floor, so
 an older image rejects such a pack at `RegisterTrial` whether or not it asks for a
@@ -1378,12 +1394,12 @@ transcript_rules:
     disallowed_tools: ["bash"]           # none may be called, at any status
 ```
 
-**One sub-check per declared tool** on the runner path, the same decomposition
-`must_contain` and `disallow_regex` get: the component score is the fraction of
-sub-checks that passed — unless a declared `min_assistant_turns` floor is unmet,
-which forces the component to `0.0` — and every failure is named in
-`grade.reasons`. A task declaring two required and two disallowed tools yields four
-independent sub-checks.
+**One sub-check per declared tool**, the same decomposition `must_contain` and
+`disallow_regex` get: the component score is the fraction of sub-checks that
+passed — unless a declared `min_assistant_turns` floor is unmet, which forces the
+component to `0.0` — and every failure is named in `grade.reasons`. A task
+declaring two required and two disallowed tools yields four independent
+sub-checks.
 
 **The two lists treat call status differently, deliberately.** A `required_tools`
 entry is satisfied only by a call with `status == "success"` — an errored call did
@@ -1403,12 +1419,7 @@ it. So both lists are checked against the task's declared tool set by
 is an authoring error naming the tools the task does declare. See
 [What is validated before a run](#what-is-validated-before-a-run).
 
-**Score parity:** signal, not score. Both substrates discriminate, but the core
-`GradingEngine` folds both lists into one of four averaged buckets, so a violation
-that scores `0.0` on the runner scores `0.75` core-side (#685). Core also ignores
-call status. See [Substrate Parity](#substrate-parity).
-
-**Runner-engine version lock**: `tool_expectations` is declared on the runner-side
+**Runner-engine version lock**: `tool_expectations` is declared on
 `TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
 requires a runner image built from the same release — `RegisterTrial` rejects it
 otherwise. Old engine + new runner is safe **for this key**: an engine that predates it
@@ -2742,12 +2753,22 @@ A `grading.yaml` has two tiers of key, and they answer a misspelling differently
 a key their model does not declare, on every construction path. Nearly every field in
 them carries a default, so a dropped key would substitute one silently: the mis-keyed
 rule or source simply leaves the fold, and the surviving weight renormalises to a score
-the author never asked for. For the three blocks the engine's own models define
-(`combine`, `state_checks`, `transcript_rules`) `tolokaforge validate` says more than
+the author never asked for. For three of them — `combine`, `state_checks` and
+`transcript_rules` — `tolokaforge validate` says more than
 the model's bare `extra_forbidden` can: the file, the offending key, its closest
 declared field and the whole accepted set. `trace_checks` draws that bare refusal, and
 `llm_judge` draws it only on the `rubric` / `model_ref` shapes its own migration names,
 which are the shapes `validate` constructs it for at all.
+
+**One tier further down, `transcript_rules`' two element lists get the same message.**
+A `required_actions` or `communicate_info` element refuses a key it does not declare,
+and `validate` names it with the element's index —
+`transcript_rules.required_actions[0]` — beside the closest declared field and that
+element's accepted set (`action_id`, `requestor`, `name`, `arguments`, `compare_args`
+for one; `info`, `required` for the other). Every field there has a default a dropped
+key substituted silently: `compare_args` resolving to `None` compares **every**
+declared argument, so a `compare_arg` typo made the check strictly harder than its
+author wrote it and failed trials that satisfied what they wrote.
 
 `state_checks` has two exceptions, and they are not leniency. A **populated**
 `env_assertions` or `db_hash_check` draws the migration message naming the check that

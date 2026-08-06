@@ -1,4 +1,21 @@
 {
-  "reasons": "All checks passed",
-  "score": 1.0
+  "passed": true,
+  "score": 1.0,
+  "sub_checks": [
+    {
+      "message": "Found required text '391' in an assistant message",
+      "passed": true,
+      "rule_type": "must_contain"
+    },
+    {
+      "message": "Assistant turn count 2 within limit of 10",
+      "passed": true,
+      "rule_type": "max_turns"
+    },
+    {
+      "message": "Required tool 'write_file' was called successfully",
+      "passed": true,
+      "rule_type": "required_tool"
+    }
+  ]
 }

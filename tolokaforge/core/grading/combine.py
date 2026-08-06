@@ -4,8 +4,6 @@ import logging
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.core.evaluators.action_evaluator import ActionEvaluator
-from tolokaforge.core.evaluators.communicate_evaluator import CommunicateEvaluator
 from tolokaforge.core.grading.check_runner import CheckRunner
 from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
 from tolokaforge.core.grading.checks_interface import (
@@ -46,7 +44,10 @@ from tolokaforge.core.grading.state_composition import (
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
-from tolokaforge.core.grading.transcript import TranscriptChecker
+from tolokaforge.core.grading.transcript import (
+    evaluate_transcript_rules,
+    scored_transcript_rules,
+)
 from tolokaforge.core.models import (
     CustomCheckDetail,
     Grade,
@@ -91,9 +92,6 @@ class GradingEngine:
         self.task_initial_state = task_initial_state
         self.task_mcp_server = task_mcp_server
         self.state_checker = StateChecker()
-        self.transcript_checker = TranscriptChecker()
-        self.action_evaluator = ActionEvaluator()
-        self.communicate_evaluator = CommunicateEvaluator()
 
     def grade_trajectory(
         self,
@@ -139,56 +137,21 @@ class GradingEngine:
 
             components.state_checks = state_score
 
-        # Transcript rules
+        # Transcript rules — the same function the runner's GradeTrial calls, over
+        # the same timeline and the same validated config, so the component score
+        # does not depend on which substrate graded the trial. A trial whose
+        # timeline carries no events leaves the component unscored unless the pack
+        # declared an activity floor, which is the same decision the runner folds.
         if self.config.transcript_rules:
-            # Use tau2 action evaluator if required_actions specified
-            if self.config.transcript_rules.required_actions:
-                action_result = self.action_evaluator.evaluate_actions(
-                    trajectory=trajectory.messages,
-                    required_actions=self.config.transcript_rules.required_actions,
+            scored_rules = scored_transcript_rules(timeline, self.config.transcript_rules)
+            if scored_rules is not None:
+                transcript_result = evaluate_transcript_rules(timeline, scored_rules)
+                components.transcript_rules = transcript_result.score
+                reasons_parts.extend(
+                    f"Transcript: {row.message}"
+                    for row in transcript_result.details
+                    if not row.passed
                 )
-                action_score = action_result.score
-                if action_result.reasons:
-                    reasons_parts.extend(action_result.reasons)
-            else:
-                action_score = 1.0
-
-            # Use tau2 communicate evaluator if communicate_info specified
-            if self.config.transcript_rules.communicate_info:
-                comm_result = self.communicate_evaluator.evaluate_communication(
-                    trajectory=trajectory.messages,
-                    communicate_info=self.config.transcript_rules.communicate_info,
-                )
-                comm_score = comm_result.score
-                if comm_result.reasons:
-                    reasons_parts.extend(comm_result.reasons)
-            else:
-                comm_score = 1.0
-
-            # Use legacy transcript checker for other rules
-            legacy_score, transcript_reasons = self.transcript_checker.grade(
-                timeline=timeline,
-                must_contain=self.config.transcript_rules.must_contain,
-                disallow_regex=self.config.transcript_rules.disallow_regex,
-                max_turns=self.config.transcript_rules.max_turns,
-                min_assistant_turns=self.config.transcript_rules.min_assistant_turns,
-                required_tools=(
-                    self.config.transcript_rules.tool_expectations.required_tools
-                    if self.config.transcript_rules.tool_expectations
-                    else None
-                ),
-                disallowed_tools=(
-                    self.config.transcript_rules.tool_expectations.disallowed_tools
-                    if self.config.transcript_rules.tool_expectations
-                    else None
-                ),
-            )
-            if transcript_reasons:
-                reasons_parts.append(f"Transcript: {transcript_reasons}")
-
-            # Combine transcript scores (product for strictness)
-            transcript_score = action_score * comm_score * legacy_score
-            components.transcript_rules = transcript_score
 
         # Trace checks — the same function the runner's GradeTrial calls, over the
         # same timeline, so the component score does not depend on which substrate
