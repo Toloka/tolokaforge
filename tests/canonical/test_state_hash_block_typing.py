@@ -1,9 +1,8 @@
 """Differential lock: a typo inside ``state_checks.hash`` buys no better grade.
 
-The block is an untyped ``dict[str, Any]`` and every member is read with ``.get()``,
-so a misspelled key is dropped without a word and the block requests *nothing* —
-which is not a failing check but an absent one. Two authored shapes reach that,
-both internally consistent enough that every rule the authoring gate carries
+A key the block does not declare would request *nothing* — not a failing check but an
+absent one — so it is refused at load rather than dropped. Two authored shapes reach
+that, both internally consistent enough that every rule the authoring gate carries
 passes them:
 
 - the author's own keys misspelled (``enalbed`` / ``expected_state_hsah``);
@@ -20,22 +19,21 @@ state that satisfies the assertion.
 **The locked predicate is that the typo cell either refuses at load or grades no
 higher than the correct cell**, rather than that the two cells agree. The two are
 not the same claim: a typo refused at load produces no score to agree with, so an
-equality would have to be rewritten the moment the defect is fixed — and a
-reproduction lock whose assertion gets edited to make it pass has stopped measuring
-the thing it was written for. Phrased as "no better", the predicate is false today
-(1.0 against 0.5, and nothing raises) and true once the key is refused, so removing
-the ``xfail`` marker is the whole flip.
+equality would assert nothing about the refusal it is meant to lock. Phrased as "no
+better", the predicate holds whichever way a build answers the typo, and it is false
+for a build that drops the key — such a block grades 1.0 and passes where the same
+block spelled correctly grades 0.5 and fails.
 
 ``combine.pass_threshold`` is the model's own default rather than the correct cell's
 score: at 0.5 both cells would pass and the ``binary_pass`` half of the predicate
 would assert nothing.
 
-The second test is the other side of typing the block, and it passes today: an empty
-``hash`` mapping, an explicit ``null`` and no ``hash`` key at all are one shape in
-every observable — the gate's verdict and every field of the resulting ``Grade``.
-An empty mapping is falsy and a model instance is not, so the three sites that ask
-"is a hash block configured?" by truthiness have to start asking it another way; this
-is what says that move changed nothing.
+The second test is the other side of the block being a model: an empty ``hash``
+mapping, an explicit ``null`` and no ``hash`` key at all are one shape in every
+observable — the gate's verdict and every field of the resulting ``Grade``. An empty
+mapping constructs a block and a ``null`` does not, so every site asking "is a hash
+block configured?" asks it as ``is not None`` rather than by truthiness; this is what
+says the two answer alike.
 """
 
 from dataclasses import dataclass
@@ -106,23 +104,6 @@ _RUNNER_FLATTENED_FIELD_NAMES: dict[str, Any] = {
     "expected_hash": _NEVER_MATCHING_HASH,
     "hash_weight": 0.5,
 }
-
-_TYPO_WINS_TODAY = pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason=(
-        "#730: state_checks.hash is an untyped dict, so a key it does not declare is "
-        "dropped at every read and the block requests nothing — the trial grades 1.0 "
-        "and PASSes where the same block spelled correctly grades 0.5 and fails."
-    ),
-)
-"""Both rows carry this one marker, so no row can be xfail without ``strict``.
-
-``raises=AssertionError`` is what keeps the rows honest: a bare ``xfail`` swallows
-any exception, so a row whose config stopped loading would report as the divergence
-it is supposed to be measuring. :class:`_FixtureDefect` is deliberately not an
-``AssertionError`` for the same reason.
-"""
 
 _ABSENT = object()
 """No ``hash`` key at all — distinct from a key written with an empty or null value."""
@@ -247,12 +228,8 @@ def _correctly_spelled_grade(tmp_path: Path) -> Grade:
 @pytest.mark.parametrize(
     "typo_block",
     [
-        pytest.param(_MISSPELLED_AUTHOR_KEYS, id="misspelled-author-keys", marks=_TYPO_WINS_TODAY),
-        pytest.param(
-            _RUNNER_FLATTENED_FIELD_NAMES,
-            id="runner-flattened-field-names",
-            marks=_TYPO_WINS_TODAY,
-        ),
+        pytest.param(_MISSPELLED_AUTHOR_KEYS, id="misspelled-author-keys"),
+        pytest.param(_RUNNER_FLATTENED_FIELD_NAMES, id="runner-flattened-field-names"),
     ],
 )
 def test_a_typo_inside_the_hash_block_buys_no_better_grade(

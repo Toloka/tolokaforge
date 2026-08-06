@@ -16,8 +16,8 @@ and the trial is paid for before anything notices.
 **One tier below those keys, and one errand refuses it.** ``state_checks.hash.golden_actions``
 is the list of actions a golden replay executes, and :meth:`to_task_description` is the read
 that lowers each action onto the wire — so it is the one that refuses a shape it cannot
-lower. :meth:`get_grading_config` hands the untyped block on to the core engine, which
-refuses the same shape at its own read
+lower. :meth:`get_grading_config` hands the block's unclaimed ``golden_actions`` on to the
+core engine, which refuses the same shape at its own read
 (``tests/unit/grading/test_state_checks_composition.py``), and :meth:`compute_golden_hash`
 reads the source for truth alone and returns no hash for any other shape (#836). So the rows
 below are not parametrised over the errands. A *falsy* source is no replay rather than a

@@ -378,12 +378,11 @@ it, so the component drops out of the combine on both substrates or on neither.
 ### What the guard cannot see
 
 `model_fields` introspection enumerates typed config fields, and the contents of a
-**dict-typed** field are values rather than fields. So `state_checks.hash.*`, the
-`state_checks.jsonpaths[*]` operator vocabulary, and `custom_checks.*` internals
-are structurally outside the enumeration whatever their parent model does with an
-unknown key — the manifest records nested dict keys as **declared data**, verified
-only to live inside a dict-typed field. And a green parity suite proves each key
-*discriminates*, not that its discrimination is *correct*.
+**dict-typed** field are values rather than fields. So the
+`state_checks.jsonpaths[*]` operator vocabulary and `custom_checks.*` internals are
+structurally outside the enumeration whatever their parent model does with an
+unknown key. And a green parity suite proves each key *discriminates*, not that its
+discrimination is *correct*.
 
 An author key living inside the **elements** of a `list[SomeModel]` field is the
 one nested position that is *not* declared data. The field walker treats such a

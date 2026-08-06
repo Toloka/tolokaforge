@@ -954,6 +954,20 @@ def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return hash_block if isinstance(hash_block, Mapping) else None
 
 
+def _authored_hash_is_a_state_source(grading: Mapping[str, Any]) -> bool:
+    """Whether the authored block is enabled with something to compare against.
+
+    The block **as written** rather than as constructed, mirroring
+    :func:`~tolokaforge.core.grading.state_composition.hash_block_is_a_state_source`
+    over the shape this module reads: the rule below reaches only a caller holding a
+    fragment it never built a ``StateHashConfig`` from.
+    """
+    hash_block = _hash_block(grading)
+    if hash_block is None:
+        return False
+    return bool(hash_block.get("enabled")) and any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
+
+
 def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringReport:
     """A declared golden replay is the list of actions to replay.
 
@@ -1018,7 +1032,7 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
     if not probes_conflict_with_another_state_source(
         db_probes=state_checks.get("db_probes") or (),
         jsonpaths=state_checks.get("jsonpaths") or (),
-        hash_config=_hash_block(grading),
+        hash_is_a_state_source=_authored_hash_is_a_state_source(grading),
     ):
         return AuthoringReport()
     return AuthoringReport(

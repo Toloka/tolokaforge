@@ -220,6 +220,7 @@ _HASH_VERDICT_PRODUCERS = frozenset(
 _ARCHITECTURAL_EXEMPTIONS = frozenset(
     {
         "state_checks.db_probes",
+        "state_checks.hash.description",
         "llm_judge",
         "grading_method",
     }
@@ -272,6 +273,7 @@ _TRACE_CONFIG_INPUT_KEYS: tuple[str, ...] = (
 _NON_TRACKED_FIELD_RESOLUTION_KEYS = frozenset(
     {
         "combine.pass_threshold",
+        "state_checks.hash.description",
         "state_checks.id_fields",
         "state_checks.relaxed_validation",
         "grading_method",
@@ -283,6 +285,7 @@ _CONTAINER_FIELDS = frozenset(
     {
         "core:GradingConfig.combine",
         "core:GradingConfig.state_checks",
+        "core:StateChecksConfig.hash",
         "core:GradingConfig.transcript_rules",
         "core:GradingConfig.trace_checks",
         "runner:RunnerGradingConfig.state_checks",

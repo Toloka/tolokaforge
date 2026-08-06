@@ -362,7 +362,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field=None,
         runner_field=None,
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
@@ -375,9 +375,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.enabled",
         runner_field="RunnerStateChecksConfig.hash_enabled",
-        core_dict_key="enabled",
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
@@ -388,9 +387,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.golden_actions",
         runner_field="RunnerStateChecksConfig.golden_actions",
-        core_dict_key="golden_actions",
         core_evaluator=(
             "tolokaforge.core.grading.state_checks.StateChecker.check_hash_against_golden_replay"
         ),
@@ -402,9 +400,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.CORE_ONLY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.expected_state_hash",
         runner_field="RunnerStateChecksConfig.expected_hash",
-        core_dict_key="expected_state_hash",
         core_evaluator=_CORE_HASH_EVALUATOR,
         reason=(
             "the adapter translates it onto the runner's expected_hash field and no "
@@ -419,11 +416,24 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.weight",
         runner_field="RunnerStateChecksConfig.hash_weight",
-        core_dict_key="weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
         runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
+    ),
+    GradingKey(
+        author_key="state_checks.hash.description",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.CORE_ONLY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field="StateHashConfig.description",
+        runner_field=None,
+        core_evaluator=None,
+        reason=(
+            "the runner's flattened hash block declares no description field, so there is "
+            "nothing on that substrate for the key to resolve against: the wire carries the "
+            "runner's hash verdict, not the reason text an author writes beside it"
+        ),
     ),
     GradingKey(
         author_key="state_checks.jsonpaths",

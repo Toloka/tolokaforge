@@ -370,17 +370,16 @@ class NativeAdapter(BaseAdapter):
         """
         grading = self.get_grading_config(task_id)
 
-        if not grading.state_checks or not grading.state_checks.hash:
+        if grading.state_checks is None or grading.state_checks.hash is None:
             return None
 
         hash_config = grading.state_checks.hash
-        if not hash_config.get("enabled", False):
+        if not hash_config.enabled:
             return None
 
-        golden_actions = hash_config.get("golden_actions", [])
-        if not golden_actions:
+        if not hash_config.golden_actions:
             # Pre-computed hash
-            return hash_config.get("expected_state_hash")
+            return hash_config.expected_state_hash
 
         # Execute golden actions to compute hash dynamically
         # This requires MCP server access - delegated to grading engine

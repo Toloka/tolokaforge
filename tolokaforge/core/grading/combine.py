@@ -37,6 +37,7 @@ from tolokaforge.core.grading.state_checks import (
     extract_db_state,
 )
 from tolokaforge.core.grading.state_composition import (
+    AUTHORED_HASH_WEIGHT_CONTEXT,
     compose_state_checks_score,
     inert_hash_weight_reason,
     refuse_probes_beside_another_state_source,
@@ -115,8 +116,7 @@ class GradingEngine:
             ValueError: ``state_checks`` declares ``db_probes`` beside a source this fold
                 also scores, so one ``state_checks`` component holds two verdicts with no
                 declared share between them. Re-resolved here rather than trusted from
-                load, because the ``hash`` block is an untyped dict a caller can mutate
-                after validation.
+                load, because the config is mutable after validation.
         """
         components = GradeComponents()
         reasons_parts = []
@@ -279,8 +279,8 @@ class GradingEngine:
         nothing to the fold.
 
         ``db_probes`` cannot share the component with either of them, and the refusal is
-        re-resolved here for the same reason the weight is: the ``hash`` block is an
-        untyped dict, so nothing stops a caller mutating it after validation.
+        re-resolved here for the same reason the weight is: the config is mutable, so
+        nothing stops a caller changing it after validation.
 
         Raises:
             ValueError: the block declares ``db_probes`` beside a source this fold would
@@ -305,12 +305,12 @@ class GradingEngine:
                 final_env_state, checks.jsonpaths
             )
 
-        # Re-resolved here rather than trusted from load: ``state_checks.hash`` is an
-        # untyped dict, so nothing stops a caller mutating it after validation.
+        # Re-resolved here rather than trusted from load: the block is mutable, so
+        # nothing stops a caller changing it after validation.
         hash_weight = resolve_hash_weight(
             checks.hash,
             jsonpaths=checks.jsonpaths,
-            context="grading.yaml state_checks.hash.weight",
+            context=AUTHORED_HASH_WEIGHT_CONTEXT,
         )
         score = compose_state_checks_score(
             hash_score=hash_score,
@@ -354,19 +354,19 @@ class GradingEngine:
                 expected state and the trial is left unscored.
         """
         checks = self.config.state_checks
-        hash_config = checks.hash or {}
-        if not hash_config.get("enabled", False):
+        hash_config = checks.hash
+        if hash_config is None or not hash_config.enabled:
             return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
-        expected_hash = hash_config.get("expected_state_hash")
+        expected_hash = hash_config.expected_state_hash
         if expected_hash:
             score, reason = self.state_checker.check_hash(
                 db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
             )
             return score, [reason], None, None
 
-        golden_actions = hash_config.get("golden_actions")
+        golden_actions = hash_config.golden_actions
         if not golden_actions:
             return None, [_HASH_NOT_CHECKED_NO_SOURCE], None, None
         refuse_unreplayable_golden_source(golden_actions, context="grading.yaml")
