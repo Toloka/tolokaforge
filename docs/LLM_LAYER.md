@@ -379,6 +379,33 @@ corruption observed in the post-PR-#88 production run:
 See [`plans/eval_post_pr88_schema_sanitizer_diagnosis.md`](../plans/eval_post_pr88_schema_sanitizer_diagnosis.md)
 for the full evidence trail.
 
+## `UserSimulator` context construction
+
+The LLM user simulator converses from the customer's seat: before each
+generation it role-flips the shared transcript (its own past USER turns
+replay as `assistant`, the agent's ASSISTANT turns as `user`) and skips
+turns carrying no dialogue text (agent tool-call turns). Two invariants
+hold on the request it sends:
+
+1. **It leads with a user-role turn.** When the trial's opening was
+   caller-seeded, the flipped context starts with the simulator's own
+   opening (`assistant` after the flip), so the synthetic agent greeting
+   `SIMULATOR_GREETING` is prepended — the same greeting the runner
+   dispatches when the simulator bootstraps turn 0. The simulator's own
+   opening is always preserved: trimming it makes the model believe it
+   never asked and restart the conversation after the agent has answered.
+2. **It ends on a user-role turn the simulator can answer.** A transcript
+   whose last agent turn carries no dialogue text is unanswerable — a
+   trailing assistant-role message is a prefill the provider would
+   continue — so `reply()` raises `RuntimeError` and the trial ends
+   `status=error` / `termination_reason=error` instead of silently
+   improvising.
+
+The greeting exists only in the simulator's private request; it never
+enters the shared transcript or `trajectory.yaml`. Context-shape revisions
+bump `Trajectory.simulator_schema_version` (see
+[`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps).
+
 ## litellm OpenRouter routing caveat
 
 `OpenrouterConfig` in litellm inherits from `OpenAIGPTConfig` (generic),

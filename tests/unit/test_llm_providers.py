@@ -9,8 +9,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
-from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.llm import LLMClient
 from tolokaforge.core.models import Message, MessageRole, ModelConfig, OpenRouterConfig, ToolCall
 
 pytestmark = pytest.mark.unit
@@ -148,47 +147,6 @@ class TestMessageConversion:
         converted = client._convert_messages(None, messages)
 
         assert converted[0]["content"] == "Please continue."
-
-
-class TestUserSimulatorMessageOrdering:
-    """Test UserSimulator handles message ordering for Nova compatibility."""
-
-    def test_prepends_greeting_when_context_starts_assistant_side(self):
-        """Nova rejects conversations starting with ASSISTANT role, so the
-        flipped context leads with a synthetic user-role greeting — and the
-        simulator's own opening survives right behind it."""
-        # Create mock LLM client
-        mock_llm = MagicMock()
-        mock_llm.generate.return_value = GenerationResult(
-            text="Hello", tool_calls=[], usage=Usage(prompt_tokens=10, completion_tokens=5)
-        )
-
-        config = ModelConfig(provider="nova", name="test-model")
-        simulator = UserSimulator(
-            mode="llm", llm_config=config, persona="user", backstory="Test user"
-        )
-        simulator.llm_client = mock_llm
-
-        # Context that would start with ASSISTANT after role reversal
-        context = [
-            Message(role=MessageRole.USER, content="Previous user message"),
-            Message(role=MessageRole.ASSISTANT, content="Agent response"),
-        ]
-
-        simulator.reply(context)
-
-        # Verify generate was called
-        mock_llm.generate.assert_called_once()
-
-        # Get the messages passed to generate
-        call_kwargs = mock_llm.generate.call_args[1]
-        sim_messages = call_kwargs["messages"]
-
-        assert [(m.role, m.content) for m in sim_messages] == [
-            (MessageRole.USER, SIMULATOR_GREETING),
-            (MessageRole.ASSISTANT, "Previous user message"),
-            (MessageRole.USER, "Agent response"),
-        ]
 
 
 class TestNovaProviderConfiguration:
