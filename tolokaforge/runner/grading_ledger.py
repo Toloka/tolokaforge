@@ -207,19 +207,23 @@ def transcript_rules_author_keys() -> tuple[str, ...]:
 
 
 def accountable_author_keys() -> frozenset[str]:
-    """Every author key some recording site in the grading path can record.
+    """The per-key human declaration that a recording site files each author key.
 
-    Lock 5 of ``tests/canonical/test_grading_substrate_parity.py`` asserts every
-    ledger key with a ``runner_field`` is in here, so a manifest entry no site
-    claims fails the canonical suite rather than failing ``GradeTrial`` in
-    production for every task that populates it.
+    A declaration, not evidence. Lock 15 of
+    ``tests/canonical/test_grading_substrate_parity.py`` drives every ledger key's
+    site through a real ``GradeTrial`` and reads the outcome it filed; what this
+    set adds is the claim a person made, key by key, independent of whether anyone
+    could build a driver for it. If a driver is ever narrowed or removed, the
+    declaration is what survives. Lock 5 reads it, and a key missing from here
+    fails the canonical suite rather than failing ``GradeTrial`` in production for
+    every task that populates it.
 
-    Every member is therefore named per site, or derived from a hand-written
-    mapping that same site is handed — the two hash-family tuples, and the
-    per-kind trace-constraint keys. Comprehending any member from
-    :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
-    tautological assertion is worse than a missing one, because the next reader
-    trusts its message and stops looking.
+    Its sole consumer is that canonical suite — no runtime path calls it. Every
+    member is named per site, or derived from a hand-written mapping that same
+    site is handed — the two hash-family tuples, and the per-kind trace-constraint
+    keys. Comprehending any member from :data:`LEDGER_KEYS` would make lock 5
+    compare that set against itself: a tautological assertion is worse than a
+    missing one, because the next reader trusts its message and stops looking.
     """
     return frozenset(
         {

@@ -1,6 +1,6 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Fifteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves;
@@ -14,9 +14,10 @@ Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
    production evaluator and its real combine;
 4. every key both substrates declare survives adapter translation;
 5. every ledger key's ``runner_field`` resolves to a place in the runner
-   ``GradingConfig`` dump *and* some recording site in the grading path claims
-   it, so a malformed or unclaimed entry fails here rather than at grade time in
-   production;
+   ``GradingConfig`` dump *and* is declared in ``accountable_author_keys()``, the
+   per-key human claim that a recording site files it, so a malformed or
+   undeclared entry fails here rather than at grade time in production — lock 15
+   is what drives the site itself;
 6. both substrates fold a hash verdict and a JSONPath score into one
    ``state_checks`` component by the author's weight, pinned cell by cell to
    arithmetic this module computes for itself;
@@ -41,7 +42,16 @@ Thirteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 13. a state source that declares nothing leaves ``state_checks`` unscored on both
     substrates, and the one asymmetry the rule permits — a probe-only pack, which
     only the runner can read, and which is the whole of what a pack declaring a probe
-    may be — is asserted against the manifest's own claim rather than assumed.
+    may be — is asserted against the manifest's own claim rather than assumed;
+14. every scored component a pack produces declares a share of ``combine.weights``
+    on both substrates, and a fold with no share to read decides rather than
+    defaulting to one;
+15. every ledger key's recording site is *driven*: a real
+    ``RegisterTrial → ExecuteTool → GradeTrial`` populates the key, lets its
+    evaluator run, and the outcome the ledger reports is the one the manifest
+    implies. Editing a declaration cannot satisfy it — deleting a recording site,
+    downgrading it to a skip, filing ``EVALUATED`` over an evaluation that never
+    ran, or driving a config that never populated the key each fail it.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -61,6 +71,7 @@ import re
 import shutil
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
+from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, UnionType
 from typing import Any, Union, get_args, get_origin
@@ -104,6 +115,7 @@ from tolokaforge.core.models import (
 from tolokaforge.runner import grading as runner_grading
 from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.grading import (
     combine_grade_components,
     evaluate_db_probes,
@@ -112,11 +124,20 @@ from tolokaforge.runner.grading import (
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
+    CORE_ONLY_HASH_SKIP,
     LEDGER_KEYS,
     accountable_author_keys,
+    populated_ledger_keys,
     runner_dump_path,
+    skip_note,
+    skip_note_prefix,
 )
-from tolokaforge.runner.models import TRACE_CONSTRAINT_KINDS, TraceConstraintExpr
+from tolokaforge.runner.models import (
+    TRACE_CONSTRAINT_KINDS,
+    KeyAccounting,
+    KeyAccountingRecord,
+    TraceConstraintExpr,
+)
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
@@ -1190,7 +1211,7 @@ def test_adapter_translation_carries_every_runner_key(test_data_dir):
 
 
 # --------------------------------------------------------------------------
-# 5. Every ledger key resolves in the runner config dump and has a recording site
+# 5. Every ledger key resolves in the runner config dump and declares a site
 # --------------------------------------------------------------------------
 
 _LEDGER_PROBE_TRACE_CHECKS = runner_models.TraceChecksConfig(
@@ -1240,10 +1261,12 @@ def test_every_ledger_key_resolves_in_the_runner_config_dump():
             "the ledger would never see the key as populated"
         )
         assert item.author_key in accountable, (
-            f"{item.author_key} reaches the runner but no recording site in the grading "
-            "path claims it, so every task populating it would fail GradeTrial. Add an "
-            "evaluate-or-skip site in _grade_trial_async (or the evaluator it calls) and "
-            "list the key in grading_ledger.accountable_author_keys"
+            f"{item.author_key} reaches the runner but nobody has declared a recording "
+            "site for it in grading_ledger.accountable_author_keys, so every task "
+            "populating it would fail GradeTrial. Add an evaluate-or-skip site in "
+            "_grade_trial_async (or the evaluator it calls) and list the key there. "
+            "This asserts the declaration only; lock 15 is what drives the site and "
+            "reads the outcome it filed"
         )
 
 
@@ -2676,6 +2699,300 @@ def test_a_config_scoring_nothing_passes_only_when_it_asked_for_nothing(weights,
         return
     assert named in core.reasons, core.reasons
     assert named in (runner.reason or ""), runner.reason
+
+
+# --------------------------------------------------------------------------
+# 15. Every ledger key's recording site is driven through a real GradeTrial
+# --------------------------------------------------------------------------
+
+
+class _Driver(str, Enum):
+    """How lock 15 gets one ledger key populated with its evaluator able to run."""
+
+    PARITY_PACK = "parity_pack"
+    HASH_FAMILY = "hash_family"
+    DB_PROBES = "db_probes"
+    LLM_JUDGE = "llm_judge"
+
+
+_LEDGER_KEY_DRIVERS: Mapping[str, _Driver] = MappingProxyType(
+    {
+        "custom_checks": _Driver.PARITY_PACK,
+        "state_checks.jsonpaths": _Driver.PARITY_PACK,
+        "transcript_rules.must_contain": _Driver.PARITY_PACK,
+        "transcript_rules.disallow_regex": _Driver.PARITY_PACK,
+        "transcript_rules.max_turns": _Driver.PARITY_PACK,
+        "transcript_rules.min_assistant_turns": _Driver.PARITY_PACK,
+        "transcript_rules.tool_expectations": _Driver.PARITY_PACK,
+        "transcript_rules.required_actions": _Driver.PARITY_PACK,
+        "transcript_rules.communicate_info": _Driver.PARITY_PACK,
+        "trace_checks.constraints": _Driver.PARITY_PACK,
+        "trace_checks.alternatives": _Driver.PARITY_PACK,
+        "trace_checks.constraints.present": _Driver.PARITY_PACK,
+        "trace_checks.constraints.absent": _Driver.PARITY_PACK,
+        "trace_checks.constraints.count": _Driver.PARITY_PACK,
+        "trace_checks.constraints.before": _Driver.PARITY_PACK,
+        "trace_checks.constraints.immediately_before": _Driver.PARITY_PACK,
+        "trace_checks.constraints.absent_before": _Driver.PARITY_PACK,
+        "trace_checks.constraints.absent_between": _Driver.PARITY_PACK,
+        "trace_checks.constraints.all_of": _Driver.PARITY_PACK,
+        "trace_checks.constraints.any_of": _Driver.PARITY_PACK,
+        "trace_checks.constraints.negate": _Driver.PARITY_PACK,
+        "state_checks.hash.enabled": _Driver.HASH_FAMILY,
+        "state_checks.hash.golden_actions": _Driver.HASH_FAMILY,
+        "state_checks.hash.expected_state_hash": _Driver.HASH_FAMILY,
+        "state_checks.db_probes": _Driver.DB_PROBES,
+        "llm_judge": _Driver.LLM_JUDGE,
+    }
+)
+"""Which driver can populate each ledger key and let its evaluator run.
+
+Written out per key, like ``accountable_author_keys()`` and for the same reason:
+comprehended from :data:`LEDGER_KEYS` the totality assertion below would compare
+that set against itself, and a key nothing can drive would join the sweep as a row
+that silently proves nothing.
+"""
+
+_LEDGER_SITE_KEYS = tuple(item.author_key for item in LEDGER_KEYS if item.runner_field is not None)
+
+_UNSCORED_COMPONENT = -1.0
+"""What ``GradeComponents`` carries for a component the runner did not score.
+
+Every component evaluator in ``tolokaforge/runner/grading.py`` returns it when
+handed nothing to evaluate, so a slot holding it means no evaluation happened
+whatever the ledger recorded for the keys that feed it.
+"""
+
+
+def test_every_ledger_key_names_a_driver_that_can_populate_it():
+    """A ledger key absent from the table would drop out of the sweep, not fail it."""
+    undriven = sorted(set(_LEDGER_SITE_KEYS) - set(_LEDGER_KEY_DRIVERS))
+    stale = sorted(set(_LEDGER_KEY_DRIVERS) - set(_LEDGER_SITE_KEYS))
+
+    assert not undriven and not stale, (
+        f"the lock-15 driver table names no driver for {undriven or 'nothing'} and "
+        f"names {stale or 'nothing'} that is not a ledger key with a runner_field. "
+        "Every ledger key needs a driver here, or its recording site is unverified"
+    )
+
+
+def _assert_the_site_reported(
+    author_key: str,
+    grading_config: runner_models.RunnerGradingConfig,
+    response: pb2.GradeTrialResponse,
+) -> None:
+    """Assert the runner reported ``author_key`` the way the manifest implies.
+
+    ``grading_config`` is the config the runner *graded* — read off the registered
+    trial, not the test's own copy, because the spec round-trips through JSON and
+    the two are siblings.
+
+    The manifest decides which outcome to expect and the ledger supplies the text,
+    so neither this module nor a task author can spell an expectation production
+    never emits.
+    """
+    item = entry(author_key)
+
+    assert author_key in populated_ledger_keys(grading_config), (
+        f"{author_key}: the config the runner graded does not populate the key, so "
+        "the audit never visited it and every claim below would hold over a config "
+        "that asked for nothing"
+    )
+    assert response.success is True, (
+        f"{author_key}: GradeTrial failed, which is what the audit does when no "
+        f"recording site filed the key — {response.error}"
+    )
+
+    if item.coverage is SubstrateCoverage.CORE_ONLY:
+        expected = skip_note(author_key, CORE_ONLY_HASH_SKIP)
+        assert expected in response.grade.reasons, (
+            f"{author_key} is CORE_ONLY, so its recording site must file the standing "
+            f"skip and the grade must say so. Expected {expected!r} in "
+            f"{response.grade.reasons!r}"
+        )
+        return
+
+    assert item.runner_evaluator is not None, (
+        f"{author_key}: the manifest gives it neither a runner evaluator nor CORE_ONLY "
+        "coverage, so this lock cannot say what its recording site should have filed"
+    )
+    assert skip_note_prefix(author_key) not in response.grade.reasons, (
+        f"{author_key} declares the runner evaluator {item.runner_evaluator}, so its "
+        "recording site must file EVALUATED — the grade instead carries a skip note "
+        f"for it: {response.grade.reasons!r}"
+    )
+    component = author_key.split(".")[0]
+    assert getattr(response.grade.components, component) != _UNSCORED_COMPONENT, (
+        f"{author_key} was recorded as evaluated, but the {component} component it "
+        "feeds is the unscored sentinel — the site filed an evaluation that did not "
+        "happen"
+    )
+
+
+def _drive_parity_pack(
+    author_key: str,
+    test_data_dir: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    *,
+    label: str,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade the key's own pack, and hand back the config the runner actually graded.
+
+    ``label`` separates one caller's trial from another's. The DB service keeps a
+    trial's rows for the whole session, so two calls naming the same trial collide
+    at ``RegisterTrial`` rather than grading.
+    """
+    task_id = _task_id_for(author_key)
+    task_description = _parity_adapter(test_data_dir).to_task_description(task_id)
+    case = _load_case(_pack_dir(test_data_dir, author_key), "satisfying")
+    trial_id = f"ledger_site_{label}_{task_id}:0"
+    response = _grade_pack_through_the_runner(servicer, context, task_description, case, trial_id)
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _sweep_params() -> list[Any]:
+    """One row per ledger key, the not-yet-driven ones marked ``xfail(strict=True)``.
+
+    Strict is what makes the marks self-removing: the row that starts passing when
+    its driver lands fails until the mark goes with it.
+    """
+    params = []
+    for author_key in _LEDGER_SITE_KEYS:
+        driver = _LEDGER_KEY_DRIVERS.get(author_key)
+        marks = (
+            ()
+            if driver is _Driver.PARITY_PACK
+            else (
+                pytest.mark.xfail(
+                    strict=True,
+                    reason=f"the {driver.value if driver else 'missing'} driver is not built yet",
+                ),
+            )
+        )
+        params.append(pytest.param(author_key, id=author_key, marks=marks))
+    return params
+
+
+@pytest.mark.parametrize("author_key", _sweep_params())
+def test_every_ledger_keys_recording_site_is_driven(
+    author_key, test_data_dir, runner_service, mock_grpc_context
+):
+    """Drive a real ``GradeTrial`` per ledger key and read what its site filed.
+
+    Editing ``accountable_author_keys()`` cannot satisfy this: the key has to be
+    populated on a config the runner registered, its evaluator has to run, and the
+    outcome the ledger reports has to be the one the manifest implies.
+    """
+    driver = _LEDGER_KEY_DRIVERS[author_key]
+    assert driver is _Driver.PARITY_PACK, (
+        f"{author_key} is driven by {driver.value}, which is not built yet — its "
+        "recording site is declared but never driven"
+    )
+
+    grading_config, response = _drive_parity_pack(
+        author_key, test_data_dir, runner_service, mock_grpc_context, label="sweep"
+    )
+
+    _assert_the_site_reported(author_key, grading_config, response)
+
+
+# Fault injections. Without them lock 15 is a gate nobody has seen fail, so each
+# drives a real trial through a broken runner and asserts the helper rejects it.
+
+_INJECTION_JSONPATHS = "state_checks.jsonpaths"
+_INJECTION_TRACE = "trace_checks.constraints.all_of"
+_INJECTION_TRANSCRIPT = "transcript_rules.must_contain"
+
+
+def test_the_site_lock_rejects_a_config_that_populated_nothing(
+    test_data_dir, runner_service, mock_grpc_context
+):
+    """Claim 1: a real grade beside a config that never asked for the key."""
+    _, response = _drive_parity_pack(
+        _INJECTION_JSONPATHS, test_data_dir, runner_service, mock_grpc_context, label="unpopulated"
+    )
+
+    with pytest.raises(AssertionError, match="does not populate the key"):
+        _assert_the_site_reported(
+            _INJECTION_JSONPATHS, runner_models.RunnerGradingConfig(), response
+        )
+
+
+def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
+    test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 3: a recording site downgraded to a skip while its evaluator still ran.
+
+    Patching the module-level ``EVALUATED`` stands in for the class of defect rather
+    than reproducing one site's edit: every inline site reads this global, so the
+    downgrade lands on all of them at once. The targeted single-line edit is the
+    reviewer differential quoted in this stage's report.
+    """
+    monkeypatch.setattr(
+        runner_service_module,
+        "EVALUATED",
+        KeyAccountingRecord(outcome=KeyAccounting.SKIPPED, detail="downgraded by injection"),
+    )
+
+    grading_config, response = _drive_parity_pack(
+        _INJECTION_JSONPATHS, test_data_dir, runner_service, mock_grpc_context, label="downgraded"
+    )
+
+    assert response.success is True, response.error
+    with pytest.raises(AssertionError, match="must file EVALUATED"):
+        _assert_the_site_reported(_INJECTION_JSONPATHS, grading_config, response)
+
+
+@pytest.mark.parametrize(
+    ("evaluator_name", "author_key"),
+    [
+        ("evaluate_trace_checks", _INJECTION_TRACE),
+        ("evaluate_transcript_rules", _INJECTION_TRANSCRIPT),
+    ],
+)
+def test_the_site_lock_rejects_an_evaluator_that_stopped_accounting(
+    evaluator_name, author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 2: the evaluator still scores, but records no key — the audit fails the RPC."""
+    real = getattr(runner_service_module, evaluator_name)
+
+    def drifted(*args: Any, **kwargs: Any) -> Any:
+        return real(*args, **kwargs).model_copy(update={"accounted_keys": {}})
+
+    monkeypatch.setattr(runner_service_module, evaluator_name, drifted)
+
+    grading_config, response = _drive_parity_pack(
+        author_key, test_data_dir, runner_service, mock_grpc_context, label="unaccounted"
+    )
+
+    assert response.success is False, "the audit was meant to fail the RPC"
+    with pytest.raises(AssertionError, match="GradeTrial failed"):
+        _assert_the_site_reported(author_key, grading_config, response)
+
+
+def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_not_run(
+    test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 4: real accounting filed EVALUATED while the component stayed unscored."""
+    real = runner_service_module.evaluate_transcript_rules
+
+    def hollow(*args: Any, **kwargs: Any) -> Any:
+        return real(*args, **kwargs).model_copy(update={"score": _UNSCORED_COMPONENT})
+
+    monkeypatch.setattr(runner_service_module, "evaluate_transcript_rules", hollow)
+
+    grading_config, response = _drive_parity_pack(
+        _INJECTION_TRANSCRIPT, test_data_dir, runner_service, mock_grpc_context, label="hollow"
+    )
+
+    assert response.success is True, response.error
+    assert skip_note_prefix(_INJECTION_TRANSCRIPT) not in response.grade.reasons, (
+        "the key must still be recorded as evaluated, or claim 3 would fire here "
+        "and claim 4 would go unmeasured"
+    )
+    with pytest.raises(AssertionError, match="unscored sentinel"):
+        _assert_the_site_reported(_INJECTION_TRANSCRIPT, grading_config, response)
 
 
 # --------------------------------------------------------------------------

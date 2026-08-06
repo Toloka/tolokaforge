@@ -144,6 +144,13 @@ Compare output against committed golden snapshots in `snapshots/`.
   ledger cannot resolve. Fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
+  A **lock 15** failure is narrower: one ledger key's recording site was deleted,
+  downgraded to a skip, filed `EVALUATED` for an evaluation that did not run, or its
+  driver stopped populating the key. The failing row names the key — fix the
+  evaluate-or-skip site in `_grade_trial_async` (or the evaluator it calls) rather
+  than the assertion. A key missing from the lock's driver table fails
+  `test_every_ledger_key_names_a_driver_that_can_populate_it` instead, which means a
+  new ledger key arrived with no way to drive it: add a driver, never drop the row.
 - Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one
   scripted tool-call sequence driven through each substrate's real recording path
   must build the same events. A failure means one substrate's recording drifted,
