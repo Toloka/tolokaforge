@@ -91,6 +91,7 @@ from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
+from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
     Enforcement,
@@ -126,6 +127,8 @@ from tolokaforge.runner.grading import (
 from tolokaforge.runner.grading_ledger import (
     CORE_ONLY_HASH_SKIP,
     LEDGER_KEYS,
+    LLM_JUDGE_KEY,
+    NO_JUDGE_MESSAGES_SKIP,
     accountable_author_keys,
     populated_ledger_keys,
     runner_dump_path,
@@ -1825,21 +1828,40 @@ def _register_pack(
     context: Any,
     task_description: runner_models.TaskDescription,
     trial_id: str,
+    *,
+    judge_model_config: core_models.ModelConfig | None = None,
 ) -> None:
     """Put ``task_description`` on the runner through its own ``RegisterTrial``.
 
     The spec round-trips through JSON, so the runner grades the config it rebuilt
     rather than the caller's object — which is why a caller that needs the graded
     config reads it back off ``servicer.trials[trial_id]``.
+
+    ``judge_model_config`` rides the spec for a task declaring an ``llm_judge``
+    rubric, which ``_grade_llm_judge`` refuses to grade without.
     """
     registered = servicer.RegisterTrial(
         register_request(
-            trial_spec_json(task_description.model_dump(mode="json"), trial_id=trial_id),
+            trial_spec_json(
+                task_description.model_dump(mode="json"),
+                trial_id=trial_id,
+                judge_model_config=judge_model_config,
+            ),
             trial_id=trial_id,
         ),
         context,
     )
     assert registered.success is True, registered.error
+
+
+def _grade_registered_trial(
+    servicer: RunnerServiceImpl, context: Any, trial_id: str, llm_messages_json: str
+) -> pb2.GradeTrialResponse:
+    """``GradeTrial`` on an already-registered trial, response unasserted."""
+    return servicer.GradeTrial(
+        pb2.GradeTrialRequest(trial_id=trial_id, llm_messages_json=llm_messages_json),
+        context,
+    )
 
 
 def _grade_pack_through_the_runner(
@@ -1859,12 +1881,7 @@ def _grade_pack_through_the_runner(
     """
     _register_pack(servicer, context, task_description, trial_id)
     _replay_authored_calls(servicer, context, trial_id, case)
-    return servicer.GradeTrial(
-        pb2.GradeTrialRequest(
-            trial_id=trial_id, llm_messages_json=json.dumps(case.runner_messages)
-        ),
-        context,
-    )
+    return _grade_registered_trial(servicer, context, trial_id, json.dumps(case.runner_messages))
 
 
 def _runner_trace_checks_grade(
@@ -2829,72 +2846,277 @@ def _assert_the_site_reported(
     )
 
 
+def _ledger_trial_id(label: str, author_key: str) -> str:
+    """A trial id unique to one caller and one key.
+
+    The DB service keeps a trial's rows for the whole session, so two tests naming
+    the same trial collide at ``RegisterTrial`` instead of grading. Sibling keys
+    sharing a driver — the three hash-family members — still need one trial each.
+    """
+    return f"ledger_site_{label}_{_task_id_for(author_key)}:0"
+
+
 def _drive_parity_pack(
     author_key: str,
     test_data_dir: Path,
     servicer: RunnerServiceImpl,
     context: Any,
     *,
-    label: str,
+    trial_id: str,
 ) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
-    """Grade the key's own pack, and hand back the config the runner actually graded.
-
-    ``label`` separates one caller's trial from another's. The DB service keeps a
-    trial's rows for the whole session, so two calls naming the same trial collide
-    at ``RegisterTrial`` rather than grading.
-    """
-    task_id = _task_id_for(author_key)
-    task_description = _parity_adapter(test_data_dir).to_task_description(task_id)
+    """Grade the key's own pack, and hand back the config the runner actually graded."""
+    task_description = _parity_adapter(test_data_dir).to_task_description(_task_id_for(author_key))
     case = _load_case(_pack_dir(test_data_dir, author_key), "satisfying")
-    trial_id = f"ledger_site_{label}_{task_id}:0"
     response = _grade_pack_through_the_runner(servicer, context, task_description, case, trial_id)
     return servicer.trials[trial_id].grading_config, response
 
 
-def _sweep_params() -> list[Any]:
-    """One row per ledger key, the not-yet-driven ones marked ``xfail(strict=True)``.
+_HASH_DRIVER_TOOL = "ship_order"
 
-    Strict is what makes the marks self-removing: the row that starts passing when
-    its driver lands fails until the mark goes with it.
+_HASH_DRIVER_TASK: dict[str, Any] = {
+    "task_id": "ledger_hash_family",
+    "name": "Ledger hash family",
+    "category": "test",
+    "description": "A hash-graded trial, for the hash family's recording site",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {
+        "tables": {"orders": [{"order_id": "O1", "status": "pending"}]},
+        "schemas": [
+            {
+                "table_name": "orders",
+                "fields": {"order_id": "string", "status": "string"},
+                "primary_key": "order_id",
+            }
+        ],
+    },
+    # The golden action resolves against the trial's registered callables rather
+    # than against declared tool sources, so the tool is bound after registration
+    # and declaring it here would only ask the runner to reconstruct it.
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.5,
+        "state_checks": {
+            "hash_enabled": True,
+            "golden_actions": [{"tool_name": _HASH_DRIVER_TOOL, "arguments": {"order_id": "O1"}}],
+            "expected_hash": "deadbeef",
+        },
+    },
+}
+
+_JUDGE_DRIVER_TASK: dict[str, Any] = {
+    "task_id": "ledger_llm_judge",
+    "name": "Ledger llm judge",
+    "category": "test",
+    "description": "A rubric-graded trial, for the judge's recording site",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {},
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"llm_judge": 1.0},
+        "pass_threshold": 0.5,
+        "llm_judge": {
+            "rubric": {
+                "criteria": [
+                    {
+                        "id": "explained",
+                        "description": "the agent explained the outcome",
+                        "kind": "binary",
+                        "weight": 1.0,
+                    }
+                ]
+            }
+        },
+    },
+}
+
+_JUDGE_TRANSCRIPT = json.dumps(
+    [{"role": "assistant", "content": "I shipped order O1, so the request is complete."}]
+)
+_PROBE_TRANSCRIPT = json.dumps([{"role": "assistant", "content": "Corrective action recorded."}])
+_HASH_TRANSCRIPT = json.dumps([{"role": "assistant", "content": "Order O1 is shipped."}])
+
+#: Rows standing in for the postgres the pack's probe queries. The DSN resolves only
+#: inside the task's docker network, which is why the manifest enforces this key's
+#: *score* at the integration tier — orthogonal to whether its *recording site* can be
+#: driven here, which is what lock 15 asks.
+_PROBE_ROWS = [{"reason_code": "CAPA-01", "status": "open"}]
+
+
+class _StubJudge:
+    """Stands in for the model provider at the seam ``service.LLMJudge`` names.
+
+    What it replaces is an external LLM call, not a recording site, an evaluator's
+    decision, the audit or the combine — all of those stay real on this path.
     """
-    params = []
-    for author_key in _LEDGER_SITE_KEYS:
-        driver = _LEDGER_KEY_DRIVERS.get(author_key)
-        marks = (
-            ()
-            if driver is _Driver.PARITY_PACK
-            else (
-                pytest.mark.xfail(
-                    strict=True,
-                    reason=f"the {driver.value if driver else 'missing'} driver is not built yet",
-                ),
-            )
+
+    def __init__(self, model_config: Any, **_kwargs: Any) -> None:
+        self.model_config = model_config
+
+    def run(self, **_kwargs: Any) -> JudgeResult:
+        return JudgeResult(
+            status=JudgeStatus.COMPLETED, usage=JudgeUsage(), reasons="ok", score=1.0
         )
-        params.append(pytest.param(author_key, id=author_key, marks=marks))
-    return params
 
 
-@pytest.mark.parametrize("author_key", _sweep_params())
+async def _shipped(arguments: dict[str, Any]) -> str:
+    return json.dumps({"order_id": arguments["order_id"], "status": "shipped"})
+
+
+def _drive_hash_family(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a hash-enabled trial whose one golden action names a registered tool.
+
+    Asserts the replay ran whole. ``hash_family_accounting(EVALUATED)`` is recorded
+    whenever ``_execute_hash_grading`` returns — including when every golden action
+    failed to take effect, which still grades ``success=True`` with
+    ``state_checks == 1.0``. All four of lock 15's claims hold on that hollow
+    evaluation, so without this guard claim 4 would mean nothing for the hash family.
+    """
+    task_description = runner_models.TaskDescription.model_validate(_HASH_DRIVER_TASK)
+    _register_pack(servicer, context, task_description, trial_id)
+    servicer.trials[trial_id].agent_tools[_HASH_DRIVER_TOOL] = _shipped
+
+    response = _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
+
+    assert "GOLDEN REPLAY ERRORS" not in response.grade.reasons, (
+        "the golden replay did not run whole, so the hash verdict was computed "
+        f"against a partial golden world and evaluating it proves nothing: "
+        f"{response.grade.reasons!r}"
+    )
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_db_probes(
+    test_data_dir: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    monkeypatch: Any,
+    *,
+    trial_id: str,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade the ``db_probe_grading`` pack with the probe's postgres substituted.
+
+    ``_fetch_probe_rows`` is the seam lock 13 already reads this pack through. The
+    probe's own ``expect`` assertions, the fold that reads the score, the recording
+    site and the audit are all the real ones.
+    """
+
+    async def _rows(_dsn: str, _query: str) -> list[dict[str, Any]]:
+        return _PROBE_ROWS
+
+    monkeypatch.setattr(runner_grading, "_fetch_probe_rows", _rows)
+    task_description = _adapter_for(test_data_dir, _TASKS_GLOB).to_task_description(_PROBE_PACK)
+    _register_pack(servicer, context, task_description, trial_id)
+
+    response = _grade_registered_trial(servicer, context, trial_id, _PROBE_TRANSCRIPT)
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_llm_judge(
+    servicer: RunnerServiceImpl,
+    context: Any,
+    monkeypatch: Any,
+    *,
+    trial_id: str,
+    transcript: str = _JUDGE_TRANSCRIPT,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a rubric-configured trial with the model provider substituted.
+
+    The spec carries a judge ``ModelConfig``: ``_grade_llm_judge`` raises before it
+    ever constructs the judge without one, so the row would otherwise red on claim 2
+    for a reason with nothing to do with the recording site.
+    """
+    monkeypatch.setattr(runner_service_module, "LLMJudge", _StubJudge)
+    task_description = runner_models.TaskDescription.model_validate(_JUDGE_DRIVER_TASK)
+    _register_pack(
+        servicer,
+        context,
+        task_description,
+        trial_id,
+        judge_model_config=core_models.ModelConfig(name="test-judge", provider="test"),
+    )
+
+    response = _grade_registered_trial(servicer, context, trial_id, transcript)
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_the_key(
+    author_key: str,
+    test_data_dir: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    monkeypatch: Any,
+    *,
+    label: str,
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Whichever driver the table names for ``author_key``."""
+    driver = _LEDGER_KEY_DRIVERS[author_key]
+    trial_id = _ledger_trial_id(label, author_key)
+    if driver is _Driver.PARITY_PACK:
+        return _drive_parity_pack(author_key, test_data_dir, servicer, context, trial_id=trial_id)
+    if driver is _Driver.HASH_FAMILY:
+        return _drive_hash_family(servicer, context, trial_id=trial_id)
+    if driver is _Driver.DB_PROBES:
+        return _drive_db_probes(test_data_dir, servicer, context, monkeypatch, trial_id=trial_id)
+    if driver is _Driver.LLM_JUDGE:
+        return _drive_llm_judge(servicer, context, monkeypatch, trial_id=trial_id)
+    raise AssertionError(f"{author_key}: the {driver.value} driver has no implementation")
+
+
+@pytest.mark.parametrize("author_key", _LEDGER_SITE_KEYS)
 def test_every_ledger_keys_recording_site_is_driven(
-    author_key, test_data_dir, runner_service, mock_grpc_context
+    author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch
 ):
     """Drive a real ``GradeTrial`` per ledger key and read what its site filed.
 
     Editing ``accountable_author_keys()`` cannot satisfy this: the key has to be
     populated on a config the runner registered, its evaluator has to run, and the
     outcome the ledger reports has to be the one the manifest implies.
-    """
-    driver = _LEDGER_KEY_DRIVERS[author_key]
-    assert driver is _Driver.PARITY_PACK, (
-        f"{author_key} is driven by {driver.value}, which is not built yet — its "
-        "recording site is declared but never driven"
-    )
 
-    grading_config, response = _drive_parity_pack(
-        author_key, test_data_dir, runner_service, mock_grpc_context, label="sweep"
+    Two rows substitute an external service — the probe's postgres and the judge's
+    model provider — and nothing else. A key the manifest enforces at the
+    *integration* tier for its **score** is still canonically drivable for its
+    **recording site**; the two are orthogonal, and conflating them is what would
+    leave a residue here.
+    """
+    grading_config, response = _drive_the_key(
+        author_key, test_data_dir, runner_service, mock_grpc_context, monkeypatch, label="sweep"
     )
 
     _assert_the_site_reported(author_key, grading_config, response)
+
+
+def test_a_judge_with_no_transcript_messages_records_its_skip(
+    runner_service, mock_grpc_context, monkeypatch
+):
+    """The judge's other branch, kept beside the sweep rather than in it.
+
+    Every sweep row carries one manifest-derived expectation; this trial populates
+    ``llm_judge`` and legitimately skips it, which is the one shape that expectation
+    cannot describe. Its note is what tells a task author the rubric scored nothing.
+    """
+    grading_config, response = _drive_llm_judge(
+        runner_service,
+        mock_grpc_context,
+        monkeypatch,
+        trial_id=_ledger_trial_id("skip", LLM_JUDGE_KEY),
+        transcript="",
+    )
+
+    assert response.success is True, response.error
+    assert LLM_JUDGE_KEY in populated_ledger_keys(grading_config)
+    assert skip_note(LLM_JUDGE_KEY, NO_JUDGE_MESSAGES_SKIP) in response.grade.reasons, (
+        "a judge-configured trial with no transcript to judge must say so on the "
+        f"grade: {response.grade.reasons!r}"
+    )
 
 
 # Fault injections. Without them lock 15 is a gate nobody has seen fail, so each
@@ -2910,7 +3132,11 @@ def test_the_site_lock_rejects_a_config_that_populated_nothing(
 ):
     """Claim 1: a real grade beside a config that never asked for the key."""
     _, response = _drive_parity_pack(
-        _INJECTION_JSONPATHS, test_data_dir, runner_service, mock_grpc_context, label="unpopulated"
+        _INJECTION_JSONPATHS,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("unpopulated", _INJECTION_JSONPATHS),
     )
 
     with pytest.raises(AssertionError, match="does not populate the key"):
@@ -2936,7 +3162,11 @@ def test_the_site_lock_rejects_a_site_that_filed_a_skip_where_it_evaluated(
     )
 
     grading_config, response = _drive_parity_pack(
-        _INJECTION_JSONPATHS, test_data_dir, runner_service, mock_grpc_context, label="downgraded"
+        _INJECTION_JSONPATHS,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("downgraded", _INJECTION_JSONPATHS),
     )
 
     assert response.success is True, response.error
@@ -2963,7 +3193,11 @@ def test_the_site_lock_rejects_an_evaluator_that_stopped_accounting(
     monkeypatch.setattr(runner_service_module, evaluator_name, drifted)
 
     grading_config, response = _drive_parity_pack(
-        author_key, test_data_dir, runner_service, mock_grpc_context, label="unaccounted"
+        author_key,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("unaccounted", author_key),
     )
 
     assert response.success is False, "the audit was meant to fail the RPC"
@@ -2983,7 +3217,11 @@ def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_n
     monkeypatch.setattr(runner_service_module, "evaluate_transcript_rules", hollow)
 
     grading_config, response = _drive_parity_pack(
-        _INJECTION_TRANSCRIPT, test_data_dir, runner_service, mock_grpc_context, label="hollow"
+        _INJECTION_TRANSCRIPT,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("hollow", _INJECTION_TRANSCRIPT),
     )
 
     assert response.success is True, response.error
@@ -2993,6 +3231,30 @@ def test_the_site_lock_rejects_an_evaluated_record_over_an_evaluation_that_did_n
     )
     with pytest.raises(AssertionError, match="unscored sentinel"):
         _assert_the_site_reported(_INJECTION_TRANSCRIPT, grading_config, response)
+
+
+def test_the_site_lock_rejects_hash_accounting_that_files_nothing(
+    runner_service, mock_grpc_context, monkeypatch
+):
+    """Claim 2 for the mechanism the hash family alone uses.
+
+    The whole family reaches the ledger through one ``hash_family_accounting`` call,
+    so that call returning nothing is how this family's recording site disappears.
+    The assertion is on lock 15's own helper: the mutation also breaks a dozen unit
+    tests elsewhere, and a lock that relied on those going red would not be reading
+    its own claim.
+    """
+    monkeypatch.setattr(runner_service_module, "hash_family_accounting", lambda outcome: {})
+
+    grading_config, response = _drive_hash_family(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id("unaccounted_hash", "state_checks.hash.enabled"),
+    )
+
+    assert response.success is False, "the audit was meant to fail the RPC"
+    with pytest.raises(AssertionError, match="GradeTrial failed"):
+        _assert_the_site_reported("state_checks.hash.enabled", grading_config, response)
 
 
 # --------------------------------------------------------------------------

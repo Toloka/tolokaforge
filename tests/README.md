@@ -146,9 +146,11 @@ Compare output against committed golden snapshots in `snapshots/`.
   frozen exemption set in the test module is the deliberate last resort.
   A **lock 15** failure is narrower: one ledger key's recording site was deleted,
   downgraded to a skip, filed `EVALUATED` for an evaluation that did not run, or its
-  driver stopped populating the key. The failing row names the key — fix the
-  evaluate-or-skip site in `_grade_trial_async` (or the evaluator it calls) rather
-  than the assertion. A key missing from the lock's driver table fails
+  driver stopped populating the key. The sweep covers **every** ledger key naming a
+  runner field — the hash family, the db probes and the judge included, not a subset
+  — so the failing row names the key. Fix the evaluate-or-skip site in
+  `_grade_trial_async` (or the evaluator it calls) rather than the assertion. A key
+  missing from the lock's driver table fails
   `test_every_ledger_key_names_a_driver_that_can_populate_it` instead, which means a
   new ledger key arrived with no way to drive it: add a driver, never drop the row.
 - Trace timeline substrate parity (`test_trace_timeline_substrate_parity.py`) — one

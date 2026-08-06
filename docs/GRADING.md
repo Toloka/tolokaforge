@@ -105,6 +105,17 @@ manifest declares `CORE_ONLY` that nonetheless arrives populated fails the same
 way, quoting that entry's `reason` — unless a recording site claims it as a
 standing skip, per **Every skip is recorded, not silent** below.
 
+Every one of those recording sites is *driven*, per key, by the canonical suite —
+the hash family, the db probes and the judge included. For each ledger key naming a
+runner field, a real `RegisterTrial → ExecuteTool → GradeTrial` populates the key,
+lets its evaluator run, and the outcome the ledger reports is asserted to be the one
+the manifest implies. Two external services are substituted and nothing else: the
+judge's model provider, and the postgres a db probe queries, whose DSN resolves only
+inside the task's docker network. Neither stands in for a recording site, an
+evaluator's decision, the audit or the combine. A key the manifest enforces at the
+integration tier for its **score** is still driven here for its **recording site**;
+the two are orthogonal.
+
 Three properties keep the ledger from rejecting configs that grade correctly:
 
 - **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
