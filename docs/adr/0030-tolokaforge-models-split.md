@@ -10,7 +10,7 @@
 
 Adding a model to tolokaforge today requires cutting an engine release even when the change is pure data — a price-table entry plus a preset routing that composes *existing* policy classes. The overlay seam described in [ADR-0002](0002-external-model-registry.md) (`--presets-file` / `RunConfig.engine.presets_file`, loaded at [`tolokaforge/core/llm/presets.py`](../../tolokaforge/core/llm/presets.py)) opened the *run-time* half of that decoupling: an operator can point an evaluation at an out-of-tree preset overlay and never touch the engine repo. But the *release-time* half is unfinished. Model onboarding still gates on an engine PR, which drags a wheel release with it.
 
-The pattern is measurable in the release log. Between v0.8.4 → v0.11.2 (mid-July 2026, ~15 days), **2 of 10 releases were pure zero-engine model shims** — v0.9.1 (kimi-k3 + muse-spark-1.1) and v0.9.3 (gemini-3.5-flash), both with empty `### Feat` / `### Fix` blocks in [`CHANGELOG.md`](../../CHANGELOG.md). A third (v0.11.1) bundled claude-opus-5 with unrelated engine work. v0.9.1 was cut hours after v0.9.0; v0.9.3 one day after v0.9.2. The "two releases per model" pattern [ADR-0002 § Context](0002-external-model-registry.md#context-and-problem-statement) called out is still visible on `git log --tags`.
+The pattern is measurable in the release log. Between v0.8.4 → v0.11.2 (2026-07-15 → 2026-07-27, 12 days), **2 of 9 releases were pure zero-engine model shims** — v0.9.1 (kimi-k3 + muse-spark-1.1) and v0.9.3 (gemini-3.5-flash), both with no `### Feat` / `### Fix` sub-sections in [`CHANGELOG.md`](../../CHANGELOG.md) (bare version headers). A third (v0.11.1) bundled claude-opus-5 with unrelated engine work. v0.9.1 was cut hours after v0.9.0; v0.9.3 one day after v0.9.2. The "two releases per model" pattern [ADR-0002 § Context](0002-external-model-registry.md#context-and-problem-statement) called out is still visible on `git log --tags`.
 
 Downstream consequence: consumers that pin `tolokaforge` by tag drift across engine versions purely as a side effect of model onboarding. For any consumer that compares evaluation results across models, "which engine version did this run on" becomes a per-model question instead of a constant, and every difference then needs its own justification.
 
@@ -162,7 +162,7 @@ The overlay section (`--presets-file`) stays as the documented private / experim
 ### Positive
 
 - **Engine version stops moving on model onboarding.** Downstream consumers pin `tolokaforge` and stop drifting across versions purely as a side effect of when a model was added. "Which engine version did this run on" becomes a constant across compared models.
-- **Bucket A cycle time collapses.** A price fix or new preset ships without a full engine release chain — cut `models-vX.Y.Z`, `pip install --upgrade tolokaforge-models`, done. The empty-CHANGELOG-block release shims stop existing.
+- **Bucket A cycle time collapses.** A price fix or new preset ships without a full engine release chain — cut `models-vX.Y.Z`, `pip install --upgrade tolokaforge-models`, done. The zero-content engine-release shims stop existing.
 - **The seam is versioned and pinnable.** Consumers who want reproducibility pin both wheels; consumers who want the latest models let `tolokaforge-models` float and keep `tolokaforge` on a fixed engine.
 - **Certification becomes a first-class public seam.** Both in-tree tests and out-of-tree model-data CI run the same test bodies — the engine remains authoritative about what "supported" means without owning the data.
 - **Overlay stays intact.** `--presets-file` continues to work as the private / experimental escape hatch; nothing about the run-time seam changes.
@@ -180,10 +180,10 @@ The overlay section (`--presets-file`) stays as the documented private / experim
 
 ### Follow-ups
 
-**Sub-issues under [TECHDEL-552](https://toloka.atlassian.net/browse/TECHDEL-552)** — decompose via `/writing-development-tickets` after this ADR merges. Each maps to one PR; landing order below is chosen so each step unblocks the next.
+**Sub-issues under the umbrella tracked at [GH #645](https://github.com/Toloka/tolokaforge/issues/645)** — decompose via `/writing-development-tickets` after this ADR merges. Each maps to one PR; landing order below is chosen so each step unblocks the next.
 
 1. **Fail-loud entry-point registry semantics.** Fix the [GH #544](https://github.com/Toloka/tolokaforge/issues/544) pattern on `tolokaforge.adapters` preventatively — the mechanism must be fail-loud on the day someone adds a second registered publisher. Small self-contained PR against [`tolokaforge/adapters/__init__.py`](../../tolokaforge/adapters/__init__.py) at line 86.
-2. **Extract certification into `tolokaforge.testing.certify`.** Load-bearing — nothing else can be exercised out-of-tree until this ships. Move `_capability.py`, `registry.py`, conftest fixtures, and the ~30 test bodies; leave the in-tree suite as a thin wrapper.
+2. **Extract certification into a public seam.** Load-bearing — nothing else can be exercised out-of-tree until this ships. Two destinations, as the layout above shows: `_capability.py` (the `Capability` enum + `ModelCertificate` dataclass) and `registry.py` (`ALL_MODELS`) move to `tolokaforge_models/certificates/` — they have zero engine deps and belong with the data they describe. The conftest fixtures (`live_client`, `skip_unless_capability_declared`) and the ~30 `test_*.py` bodies move to `tolokaforge/testing/certify/` — they import engine code (`LLMClient`, `ModelConfig`, presets loader) and belong on that side. The engine seam re-exports `Capability` and `ModelCertificate` from `tolokaforge_models.certificates` so callers can `from tolokaforge.testing.certify import Capability, ModelCertificate` without depending on the models package directly. In-tree suite becomes a thin wrapper.
 3. **Fingerprint in `engine_run_state.json`.** Independent — can ship at any point. Adds `models_fingerprint`.
 4. **Create `tolokaforge-models` package and cut over the engine loader.** The main structural PR. Move the two data files, add `tolokaforge/core/model_data.py`, wire `presets.py` + `pricing.py`, add the hatch custom builder + partition file + canonical smoke, extend engine dep list, register PyPI project, update the runner-subset in the same PR.
 5. **Docs flip.** Invert `docs/ADD_NEW_MODEL.md`. Docs-only.
@@ -202,7 +202,7 @@ The overlay section (`--presets-file`) stays as the documented private / experim
 ## Links
 
 - Related ADRs:
-  - [ADR-0002](0002-external-model-registry.md) — this ADR advances Option 3 of ADR-0002. ADR-0002 is promoted from `Proposed` to `Accepted` in the same PR that lands this one.
+  - [ADR-0002](0002-external-model-registry.md) — this ADR lands the packaged model-data artifact ADR-0002 § Context anticipated, deliberately narrower than ADR-0002's own Option 3 (single Toloka-published wheel, not a multi-publisher plugin registry). ADR-0002 is promoted from `Proposed` to `Accepted` in the same PR that lands this one.
   - [ADR-0025](0025-runner-wheel-split.md) — this ADR reaffirms ADR-0025's *"one PyPI wheel for engine code"* clause and explicitly does not extend the PyPI-publish pattern to the runner-subset. The two ADRs cover disjoint artifact categories: data (this ADR) and engine code (ADR-0025).
 - Related code:
   - [`tolokaforge/core/llm/presets.py`](../../tolokaforge/core/llm/presets.py) — the preset loader whose data source shifts from an in-tree `core/data/` file to the new `tolokaforge.core.model_data` seam.
