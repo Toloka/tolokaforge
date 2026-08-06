@@ -279,7 +279,7 @@ def evaluate_transcript_rules(
       no records for a call the message view declared — whether it ran is then
       unknown, and a "did not run" reading would pass every forbidden call.
     - ``required_actions`` (list[RequiredAction]): each declared tool call must
-      appear on the timeline, matched by ``tool_name`` + ``requestor`` and
+      appear on the timeline, matched by ``name`` + ``requestor`` and
       by the argument subset named in ``compare_args`` (``None`` = compare all
       declared args, ``[]`` = compare none) → one sub-check per action.
     - ``communicate_info`` (list[{info, required}]): each ``required`` info
@@ -586,7 +586,7 @@ def _check_required_action(
     """A declared tool call must appear on the timeline.
 
     Matching:
-    - ``tool_name`` must match exactly;
+    - ``name`` must match the called tool exactly;
     - ``requestor`` ("assistant"/"user") must match the call's ``executor``
       ("agent"/"user");
     - the call must have ``status == "success"`` (a failed call did not happen);
@@ -595,7 +595,7 @@ def _check_required_action(
       none (presence of the tool call is enough).
     """
     action_id = action.get("action_id", "")
-    tool_name = action.get("tool_name", "")
+    tool_name = action.get("name", "")
     requestor = action.get("requestor", "")
     declared_args = action.get("arguments", {}) or {}
     compare_args = action.get("compare_args")
@@ -614,7 +614,7 @@ def _check_required_action(
             rule_type="required_action",
             rule=action,
             passed=False,
-            message=f"{label}: no tool_name declared",
+            message=f"{label}: no name declared",
         )
 
     if _outcome_unknown(calls, tool_name, records_present=records_present):

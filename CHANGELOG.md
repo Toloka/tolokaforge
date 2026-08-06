@@ -2,6 +2,14 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Changed
+
+- **grading**: **`transcript_rules` is one config model, and its wire spelling of a required action's tool is `name`.** The engine-side and runner-side twins are merged: `TranscriptRulesConfig`, `RequiredAction` and `CommunicateInfo` are declared once (`tolokaforge/runner/models.py`) and re-exported by `tolokaforge.core.models`, as `TraceChecksConfig` already was. **No `grading.yaml` edit is required**: the authored key has always been `name:` and is unchanged, and no in-repo pack migrates — measured across 252 `grading.yaml` / `task.yaml` / `project.yaml` files under `tests/data` and `examples`, carrying 41 `required_actions` elements (every one exactly `{action_id, requestor, name, arguments, compare_args}`) and 16 `communicate_info` elements (every one exactly `{info, required}`). What changes is the **trial spec on the wire**, which spelled the field `tool_name`: `transcript_rules.required_actions[*].name` joins the five keys under *Runner-engine version lock (both directions)* in [`docs/GRADING.md`](docs/GRADING.md) as a sixth, and unlike the others it bites in **both** directions — a new engine emits `name`, which an older runner image does not declare, and an older engine emits `tool_name`, which a current image does not. It bites only on a pack that declares `required_actions`. `initialization_actions` deliberately keeps its wire `tool_name`: it is a harness setup instruction rather than a grading assertion about the agent, and its author-side spelling (`func_name`) differs from both.
+
+- **grading**: **a `required_actions` or `communicate_info` element now refuses a key it does not declare, naming the element and the accepted set.** `RequiredAction` was `extra="ignore"` where every sibling grading model is `extra="forbid"`, so a `compare_arg` (singular) typo was accepted silently and `compare_args` resolved to `None` — "compare **every** declared argument" — making the check strictly harder than its author wrote it and failing trials that satisfied what they wrote. `CommunicateInfo` had the same policy and the same exposure through `required`. Both are `extra="forbid"`, `communicate_info` is a list of the typed model rather than of raw dicts, and `tolokaforge validate` names the offending key with the element's index (`transcript_rules.required_actions[0]`), its closest declared field and that element's whole accepted set — the message the block's own keys already got. Two author-visible tightenings ride along, both from `NativeAdapter.to_task_description` validating the block instead of copying it field by field: a `required_actions` element omitting `name`, `action_id` or `requestor` now fails at load rather than translating to `""` / `"user"`, and a `communicate_info` entry carrying a stray key fails at `RegisterTrial` rather than crossing as data. Closes #900.
+
 ## v0.15.0 (2026-08-05)
 
 ### Feat

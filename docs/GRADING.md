@@ -875,7 +875,7 @@ from this release onward refuses a key it does not declare instead of ignoring i
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Five keys carry the lock:
+being dropped. Six keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -895,11 +895,19 @@ being dropped. Five keys carry the lock:
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
   rejected by an older image, and an **old engine** translating a name the set no
   longer holds is rejected by a current one.
+- `transcript_rules.required_actions[*].name`, which the wire spelled `tool_name`
+  before one model served both the authored block and the trial spec. A **new engine**
+  emits `name`, which a runner image older than this release does not declare, and an
+  **old engine** emits `tool_name`, which a current one does not — so this key is
+  rejected in *both* directions rather than one. The authored `grading.yaml` key is
+  `name:` and is unchanged; nothing in a task pack migrates.
 
 The first two bite on **every** pack carrying a non-empty `state_checks:` block,
 `min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
 `trace_checks` on **every** pack at all — whether or not the pack declares the key,
-because the adapter emits all four unconditionally. `combine_method` bites only on a
+because the adapter emits all four unconditionally. `required_actions[*].name` bites
+only on a pack that declares `required_actions`, since an empty list carries no element
+to spell either way. `combine_method` bites only on a
 pack declaring an affected value — `weighted` and `all` cross in either direction. So
 a new engine requires a runner image from the same release for any pack, and
 `make docker-build-core` is part of every engine upgrade. (`db_hash_check` was never
@@ -1260,9 +1268,9 @@ satisfies both bounds and every trial fails the transcript component. Lower
 min_assistant_turns to at most 3, or raise max_turns to at least 5.
 ```
 
-One predicate (`core/grading/turn_bounds.py`) is called by **both**
-`TranscriptRulesConfig` models, so a window the engine rejects at validate time is
-rejected at `RegisterTrial` too rather than registering and grading. A floor *equal*
+One `TranscriptRulesConfig` serves the authored block and the trial spec, so a window
+the engine rejects at validate time is rejected at `RegisterTrial` too rather than
+registering and grading. A floor *equal*
 to the ceiling is satisfiable — by exactly that many turns — and either key on its
 own bounds one side only, so only a pack declaring both can close the window.
 
@@ -1270,8 +1278,8 @@ own bounds one side only, so only a pack declaring both can close the window.
 true: a ceiling of `0` closes the window on its own, and a floor of `0` asserts
 nothing. Either is rejected at load naming the key and the bound.
 
-**Runner-engine version lock**: `min_assistant_turns` is declared on the
-runner-side `TranscriptRulesConfig` (`extra="forbid"`), so an engine of this release
+**Runner-engine version lock**: `min_assistant_turns` is declared on
+`TranscriptRulesConfig` (`extra="forbid"`), so an engine of this release
 requires a runner image built from it — the engine emits the field on **every** pack
 carrying a `transcript_rules:` block, as `null` when the pack declares no floor, so
 an older image rejects such a pack at `RegisterTrial` whether or not it asks for a
@@ -1322,7 +1330,7 @@ is an authoring error naming the tools the task does declare. See
 that scores `0.0` on the runner scores `0.75` core-side (#685). Core also ignores
 call status. See [Substrate Parity](#substrate-parity).
 
-**Runner-engine version lock**: `tool_expectations` is declared on the runner-side
+**Runner-engine version lock**: `tool_expectations` is declared on
 `TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
 requires a runner image built from the same release — `RegisterTrial` rejects it
 otherwise. Old engine + new runner is safe **for this key**: an engine that predates it
@@ -2653,12 +2661,22 @@ A `grading.yaml` has two tiers of key, and they answer a misspelling differently
 a key their model does not declare, on every construction path. Nearly every field in
 them carries a default, so a dropped key would substitute one silently: the mis-keyed
 rule or source simply leaves the fold, and the surviving weight renormalises to a score
-the author never asked for. For the three blocks the engine's own models define
-(`combine`, `state_checks`, `transcript_rules`) `tolokaforge validate` says more than
+the author never asked for. For three of them — `combine`, `state_checks` and
+`transcript_rules` — `tolokaforge validate` says more than
 the model's bare `extra_forbidden` can: the file, the offending key, its closest
 declared field and the whole accepted set. `trace_checks` draws that bare refusal, and
 `llm_judge` draws it only on the `rubric` / `model_ref` shapes its own migration names,
 which are the shapes `validate` constructs it for at all.
+
+**One tier further down, `transcript_rules`' two element lists get the same message.**
+A `required_actions` or `communicate_info` element refuses a key it does not declare,
+and `validate` names it with the element's index —
+`transcript_rules.required_actions[0]` — beside the closest declared field and that
+element's accepted set (`action_id`, `requestor`, `name`, `arguments`, `compare_args`
+for one; `info`, `required` for the other). Every field there has a default a dropped
+key substituted silently: `compare_args` resolving to `None` compares **every**
+declared argument, so a `compare_arg` typo made the check strictly harder than its
+author wrote it and failed trials that satisfied what they wrote.
 
 `state_checks` has two exceptions, and they are not leniency. A **populated**
 `env_assertions` or `db_hash_check` draws the migration message naming the check that

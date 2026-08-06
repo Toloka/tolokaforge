@@ -23,9 +23,12 @@ migration:
   one meant; a key the block does not declare is rejected naming the closest
   declared field and the accepted set.
 * ``transcript_rules``: a turn window whose ``min_assistant_turns`` floor sits above
-  its ``max_turns`` ceiling admits no assistant-turn count, and is rejected on both
-  substrates' models naming both keys and both values; a key the block does not
-  declare is rejected on both models too.
+  its ``max_turns`` ceiling admits no assistant-turn count, and is rejected naming both
+  keys and both values; a key the block does not declare is rejected too, and so is one
+  a ``required_actions`` / ``communicate_info`` element does not declare — each named
+  with the element's index, the closest declared field and that element's accepted set.
+  One model serves the authored block and the wire, so no rule here can hold on one
+  substrate and not the other.
 * ``trace_checks``: the whole matcher vocabulary is validated here, so a constraint
   that could only ever select nothing is rejected before a trial is paid for.
 * The shape tier, above every key's own rules: a grading key declared as anything
@@ -64,15 +67,16 @@ from tolokaforge.core.grading.combine_method import (
 )
 from tolokaforge.core.grading.config_validation import ToolInventory
 from tolokaforge.core.models import (
+    CommunicateInfo,
     GradingCombineConfig,
     GradingConfig,
     GradingDefaults,
+    RequiredAction,
     StateChecksConfig,
+    TranscriptRulesConfig,
 )
-from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.core.project_loader import resolve_effective_grading_combine
 from tolokaforge.dx.cli.main import cli
-from tolokaforge.runner.models import RunnerTranscriptRulesConfig as RunnerTranscriptRules
 
 pytestmark = pytest.mark.unit
 
@@ -812,10 +816,6 @@ def test_validate_cli_reports_a_misspelled_combine_key_as_invalid(tmp_path: Path
 # ---------------------------------------------------------------------------
 
 
-_TRANSCRIPT_MODELS = (CoreTranscriptRules, RunnerTranscriptRules)
-_MODEL_IDS = ("core", "runner")
-
-
 def _write_transcript_rules(tmp_path: Path, transcript_rules: object) -> Path:
     """Serialise the block beside a valid ``combine``, so a rejection below is the
     transcript gate's and not the combine gate's."""
@@ -831,28 +831,26 @@ def _write_transcript_rules(tmp_path: Path, transcript_rules: object) -> Path:
     return grading
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
 @pytest.mark.parametrize(
     ("floor", "ceiling"),
     [(5, 3), (4, 3), (2, 1)],
     ids=["clear", "off_by_one", "ceiling_of_one"],
 )
-def test_both_substrates_reject_an_unsatisfiable_turn_window(model: type, floor: int, ceiling: int):
-    """One predicate, both models: the engine and the runner agree on what loads.
+def test_the_transcript_block_rejects_an_unsatisfiable_turn_window(floor: int, ceiling: int):
+    """One model, so the engine and the runner cannot disagree about what loads.
 
     Asserted on the paired key-and-value text rather than the bare digits — a
     message naming only the bound it tripped leaves the author guessing which of
     the two keys to move, and digits alone appear in any pydantic error.
     """
     with pytest.raises(ValueError) as excinfo:
-        model(min_assistant_turns=floor, max_turns=ceiling)
+        TranscriptRulesConfig(min_assistant_turns=floor, max_turns=ceiling)
 
     message = str(excinfo.value)
     assert f"min_assistant_turns ({floor})" in message, message
     assert f"max_turns ({ceiling})" in message, message
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
 @pytest.mark.parametrize(
     "transcript_rules",
     [
@@ -864,26 +862,23 @@ def test_both_substrates_reject_an_unsatisfiable_turn_window(model: type, floor:
     ],
     ids=["floor_equals_ceiling", "all_keys_pack_shape", "floor_alone", "ceiling_alone", "neither"],
 )
-def test_both_substrates_accept_every_window_a_trial_can_land_in(
-    model: type, transcript_rules: dict
-):
+def test_the_transcript_block_accepts_every_window_a_trial_can_land_in(transcript_rules: dict):
     """The gate must stay narrow: only a pack declaring *both* can close the window.
 
     ``floor_equals_ceiling`` is satisfied by exactly that many turns, and
     ``all_keys_pack_shape`` is what ``tests/data/grading_parity/all_keys`` ships — the
     corpus shape a gate reading either key on its own would reject.
     """
-    model(**transcript_rules)
+    TranscriptRulesConfig(**transcript_rules)
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
 @pytest.mark.parametrize(
     "transcript_rules",
     [{"min_assistant_turns": 0}, {"max_turns": 0}],
     ids=["floor_below_the_domain", "ceiling_below_the_domain"],
 )
-def test_both_substrates_reject_a_turn_bound_below_the_domain(model: type, transcript_rules: dict):
-    """Each bound is declarable from 1 up, on the wire model as well as the core one.
+def test_the_transcript_block_rejects_a_turn_bound_below_the_domain(transcript_rules: dict):
+    """Each bound is declarable from 1 up.
 
     A floor of 0 asserts nothing, and the runtime key ledger tests a declared key by
     truthiness, so it would be an unpoliced declaration. A ceiling below 1 is the
@@ -892,7 +887,7 @@ def test_both_substrates_reject_a_turn_bound_below_the_domain(model: type, trans
     gate rejects when a pack writes both keys.
     """
     with pytest.raises(ValueError, match="greater than or equal to 1"):
-        model(**transcript_rules)
+        TranscriptRulesConfig(**transcript_rules)
 
 
 def test_validate_rejects_a_pack_whose_turn_window_admits_nothing(tmp_path: Path):
@@ -943,18 +938,16 @@ def test_validate_rejects_a_malformed_transcript_block_beside_a_valid_window(
         )
 
 
-@pytest.mark.parametrize("model", _TRANSCRIPT_MODELS, ids=_MODEL_IDS)
-def test_both_substrates_refuse_a_rule_key_the_block_does_not_declare(model: type):
-    """One answer, both models: the engine and the runner agree on what loads.
+def test_the_transcript_block_refuses_a_rule_key_it_does_not_declare():
+    """One model, so the engine and the runner cannot disagree about what loads.
 
     Every rule here defaults to asserting nothing, so the dropped key graded the trial
     by the rules that survived — measured, ``must_contian: ['refund issued']`` scored
     ``1.0`` and passing on a transcript the authored ``must_contain`` scored ``0.75``
-    and failing. The runner model has refused this since it was written; the engine's
-    is what a ``grading.yaml`` is read by.
+    and failing.
     """
     with pytest.raises(ValidationError) as excinfo:
-        model(must_contian=["refund issued"])
+        TranscriptRulesConfig(must_contian=["refund issued"])
 
     assert [error["loc"] for error in excinfo.value.errors()] == [("must_contian",)]
 
@@ -977,8 +970,113 @@ def test_validate_names_a_misspelled_transcript_rule_key_and_the_accepted_set(tm
     assert str(grading) in message, message
     assert "did you mean 'must_contain'?" in message, message
     assert "the task's own transcript_rules block" in message, message
-    for field in CoreTranscriptRules.model_fields:
+    for field in TranscriptRulesConfig.model_fields:
         assert field in message, message
+
+
+# ---------------------------------------------------------------------------
+# transcript_rules' nested elements — a key a required_actions / communicate_info
+# element does not declare, refused at load
+#
+# The block's own keys are answered above. One tier down, every field has a default
+# a dropped key silently substituted: ``compare_args`` resolving to ``None`` compares
+# **every** declared argument, so a ``compare_arg`` typo made the check strictly
+# harder than the author wrote it and failed trials that satisfied what they wrote.
+# ---------------------------------------------------------------------------
+
+
+_A_REQUIRED_ACTION = {
+    "action_id": "cancel_the_order",
+    "requestor": "assistant",
+    "name": "cancel_order",
+    "arguments": {"order_id": "O1", "reason": "duplicate"},
+    "compare_args": ["order_id"],
+}
+
+_A_COMMUNICATE_INFO = {"info": "O-001", "required": True}
+
+
+def _with_key_renamed(element: dict, old: str, new: str) -> dict:
+    return {(new if key == old else key): value for key, value in element.items()}
+
+
+@pytest.mark.parametrize(
+    ("field_name", "element", "unknown", "declared"),
+    [
+        (
+            "required_actions",
+            _with_key_renamed(_A_REQUIRED_ACTION, "compare_args", "compare_arg"),
+            "compare_arg",
+            "compare_args",
+        ),
+        (
+            "required_actions",
+            _with_key_renamed(_A_REQUIRED_ACTION, "name", "tool_name"),
+            "tool_name",
+            "name",
+        ),
+        (
+            "communicate_info",
+            _with_key_renamed(_A_COMMUNICATE_INFO, "required", "requred"),
+            "requred",
+            "required",
+        ),
+    ],
+    ids=["a_dropped_plural", "the_wire_spelling_of_the_tool", "a_misspelled_opt_out"],
+)
+def test_validate_names_a_key_a_transcript_element_does_not_declare_and_the_accepted_set(
+    tmp_path: Path, field_name: str, element: dict, unknown: str, declared: str
+):
+    """#900's acceptance, one row per element list, at the tier an author reads.
+
+    ``the_wire_spelling_of_the_tool`` is the shape a pre-release engine's trial spec
+    carries: ``tool_name`` is the name the wire used before one model served both
+    surfaces, and an author who copied it from a recorded description gets told which
+    field replaced it rather than a bare ``extra_forbidden`` at a list index.
+    """
+    grading = _write_transcript_rules(tmp_path, {field_name: [element]})
+    model = {"required_actions": RequiredAction, "communicate_info": CommunicateInfo}[field_name]
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert f"transcript_rules.{field_name}[0]" in message, message
+    assert f"unknown key '{unknown}'" in message, message
+    assert f"did you mean '{declared}'?" in message, message
+    for field in model.model_fields:
+        assert field in message, message
+
+
+@pytest.mark.parametrize(
+    ("model", "element"),
+    [(RequiredAction, _A_REQUIRED_ACTION), (CommunicateInfo, _A_COMMUNICATE_INFO)],
+    ids=["required_actions", "communicate_info"],
+)
+def test_a_transcript_element_refuses_a_key_it_does_not_declare(model: type, element: dict):
+    """On the model, so ``RegisterTrial`` and direct Python are refused too.
+
+    The gate above is one path; this is the total guarantee, and it is what makes the
+    ``tool_name`` row a rename rather than a second accepted spelling.
+    """
+    with pytest.raises(ValidationError) as excinfo:
+        model(**element, definitely_unknown_key=1)
+
+    assert [error["loc"] for error in excinfo.value.errors()] == [("definitely_unknown_key",)]
+
+
+def test_validate_accepts_the_transcript_elements_the_corpus_ships(tmp_path: Path):
+    """The refusing direction is worthless without this one: every in-repo pack's
+    elements carry exactly these key sets, measured across 41 ``required_actions`` and
+    16 ``communicate_info`` elements."""
+    validate_grading_yaml(
+        _write_transcript_rules(
+            tmp_path,
+            {"required_actions": [_A_REQUIRED_ACTION], "communicate_info": [_A_COMMUNICATE_INFO]},
+        ),
+        inventory=_UNRESOLVED,
+    )
 
 
 def test_validate_cli_reports_an_unsatisfiable_turn_window_as_invalid(tmp_path: Path):

@@ -46,8 +46,8 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     RunnerGradingConfig,
     RunnerStateChecksConfig,
-    RunnerTranscriptRulesConfig,
     TraceChecksConfig,
+    TranscriptRulesConfig,
 )
 
 HASH_DISABLED_SKIP = KeyAccountingRecord(
@@ -78,11 +78,11 @@ CUSTOM_CHECKS_KEY = checked_author_key("custom_checks")
 
 # Every model the runner's RunnerGradingConfig reaches, with where its fields sit
 # in ``RunnerGradingConfig.model_dump()``. Keys match the Python class names so a
-# manifest ``runner_field="RunnerXxx.field"`` resolves via a single lookup.
+# manifest ``runner_field="ModelName.field"`` resolves via a single lookup.
 _RUNNER_CONFIG_MODELS: dict[str, tuple[type[BaseModel], tuple[str, ...]]] = {
     "RunnerGradingConfig": (RunnerGradingConfig, ()),
     "RunnerStateChecksConfig": (RunnerStateChecksConfig, ("state_checks",)),
-    "RunnerTranscriptRulesConfig": (RunnerTranscriptRulesConfig, ("transcript_rules",)),
+    "TranscriptRulesConfig": (TranscriptRulesConfig, ("transcript_rules",)),
     "TraceChecksConfig": (TraceChecksConfig, ("trace_checks",)),
 }
 

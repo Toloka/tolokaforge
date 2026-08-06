@@ -1140,7 +1140,7 @@ def _translation_carriers(
     return {
         "RunnerGradingConfig": grading,
         "RunnerStateChecksConfig": grading.state_checks,
-        "RunnerTranscriptRulesConfig": grading.transcript_rules,
+        "TranscriptRulesConfig": grading.transcript_rules,
         "TraceChecksConfig": grading.trace_checks,
     }
 
@@ -1245,7 +1245,7 @@ declared it.
 def test_every_ledger_key_resolves_in_the_runner_config_dump():
     runner_dump = runner_models.RunnerGradingConfig(
         state_checks=runner_models.RunnerStateChecksConfig(),
-        transcript_rules=runner_models.RunnerTranscriptRulesConfig(),
+        transcript_rules=runner_models.TranscriptRulesConfig(),
         trace_checks=_LEDGER_PROBE_TRACE_CHECKS,
     ).model_dump()
 
