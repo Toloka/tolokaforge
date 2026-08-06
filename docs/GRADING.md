@@ -82,9 +82,12 @@ key that claims both substrates at `DIFFERENTIAL_CANONICAL` must move both
 substrates' component scores against
 [`tests/data/grading_parity/`](../tests/data/grading_parity/) fixtures; every key
 both substrates declare must survive adapter translation non-default; and every key
-the runtime ledger checks must resolve to a field on the runner config **and** be
-claimed by one of the ledger's recording sites, so a key no site records fails the
-suite instead of failing every `GradeTrial` that carries it.
+the runtime ledger checks must resolve to a field on the runner config, be declared
+in `accountable_author_keys()`, **and** have its recording site driven — a real
+`RegisterTrial → ExecuteTool → GradeTrial` per key, with the outcome the ledger
+reports asserted to be the one the manifest implies. A key whose site is deleted,
+downgraded to a skip, or filed as `EVALUATED` over an evaluation that never ran
+fails the suite instead of failing every `GradeTrial` that carries it.
 
 ### The runtime ledger
 
@@ -101,6 +104,17 @@ expects — never a grade, and never a `0.0` folded into the combine. A key the
 manifest declares `CORE_ONLY` that nonetheless arrives populated fails the same
 way, quoting that entry's `reason` — unless a recording site claims it as a
 standing skip, per **Every skip is recorded, not silent** below.
+
+Every one of those recording sites is *driven*, per key, by the canonical suite —
+the hash family, the db probes and the judge included. For each ledger key naming a
+runner field, a real `RegisterTrial → ExecuteTool → GradeTrial` populates the key,
+lets its evaluator run, and the outcome the ledger reports is asserted to be the one
+the manifest implies. Two external services are substituted and nothing else: the
+judge's model provider, and the postgres a db probe queries, whose DSN resolves only
+inside the task's docker network. Neither stands in for a recording site, an
+evaluator's decision, the audit or the combine. A key the manifest enforces at the
+integration tier for its **score** is still driven here for its **recording site**;
+the two are orthogonal.
 
 Three properties keep the ledger from rejecting configs that grade correctly:
 
