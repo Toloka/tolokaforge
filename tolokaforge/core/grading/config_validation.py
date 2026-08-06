@@ -175,6 +175,30 @@ class CombineLayer:
 
 
 @dataclass(frozen=True)
+class HashSourceLayer:
+    """What supplies a hash source beneath a task's authored ``state_checks.hash`` block.
+
+    The native reading has nothing beneath the block: the authored keys are the only
+    place a source can come from, so an enabled block declaring none grades nothing —
+    which is what the default construction reports. A caller that cannot say what the
+    grading adapter supplies reports :meth:`unresolvable` — distinct from resolving
+    "nothing beneath", because the two decide opposite things: the second makes the
+    sourceless shape the authoring defect :func:`_check_hash_source_declared` refuses,
+    while the first makes it uncheckable. An external adapter may compute the source it
+    compares against from its own fixtures — the frozen-core family replays a
+    golden-actions fixture the authored block never names — so reading the block as
+    the whole layer there refuses packs that grade fine.
+    """
+
+    known: bool = True
+
+    @classmethod
+    def unresolvable(cls) -> HashSourceLayer:
+        """The layer of a caller that cannot say what the grading adapter supplies."""
+        return cls(known=False)
+
+
+@dataclass(frozen=True)
 class ReplayWorld:
     """What a task gives a golden-action replay to be executed against.
 
@@ -473,8 +497,15 @@ _UNRESOLVED_REPLAY_WORLD_REASON = (
     "world to be built in is not checkable"
 )
 
+_UNRESOLVED_HASH_SOURCE_REASON = (
+    "no caller resolved what the adapter grading this task supplies beneath the authored "
+    "hash block — an external adapter may compute the source it compares against from its "
+    "own fixtures — so whether this block grades as written is not checkable here"
+)
+
 # Bound once so the signature's default is the value, not a call in the annotation.
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
+_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
 
 
 def inspect_grading_authoring(
@@ -483,6 +514,7 @@ def inspect_grading_authoring(
     *,
     effective_combine: GradingCombineConfig | None = None,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
+    hash_sources: HashSourceLayer = _UNRESOLVED_HASH_SOURCE_LAYER,
 ) -> AuthoringReport:
     """Report what a task's tools, its replay world and its fold say about its grading block.
 
@@ -492,9 +524,10 @@ def inspect_grading_authoring(
 
     Every rule that needs the task's tools is skipped into ``unchecked`` when the
     inventory is unresolvable. The rules outside that set still run: regex compilation,
-    the hash-source declaration, the golden source's shape and the state-source
-    exclusivity, which read nothing but the block, and the replay-world rule, which reads
-    the world and skips on its own account.
+    the golden source's shape and the state-source exclusivity, which read nothing but
+    the block, the replay-world rule, which reads the world and skips on its own
+    account, and the hash-source declaration, which skips on the hash layer the same
+    way.
 
     Args:
         grading: The authored block, as written.
@@ -513,6 +546,11 @@ def inspect_grading_authoring(
             The default, :meth:`ReplayWorld.unresolvable`, is the answer for a caller
             holding no ``task.yaml`` — it skips the one rule that reads the world where
             that rule would have run, and fails nothing.
+        hash_sources: What supplies a hash source beneath the authored block. The
+            default, :meth:`HashSourceLayer.unresolvable`, is the answer for a caller
+            that cannot say which adapter grades the task — it moves the hash-source
+            rule's finding to ``unchecked`` where that rule would have refused, and
+            fails nothing.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -521,7 +559,7 @@ def inspect_grading_authoring(
     reports = [
         _check_sections_declare_something(grading),
         _check_regex_compiles(sites, binders, rules.disallow_regex if rules else ()),
-        _check_hash_source_declared(grading),
+        _check_hash_source_declared(grading, hash_sources),
         _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
@@ -824,7 +862,9 @@ def _check_regex_compiles(
     return AuthoringReport(errors=tuple(finding for finding in findings if finding is not None))
 
 
-def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
+def _check_hash_source_declared(
+    grading: Mapping[str, Any], hash_sources: HashSourceLayer
+) -> AuthoringReport:
     """The hash check and something to compare against are declared together.
 
     Either half alone grades the state without the comparison the author wrote. A
@@ -852,6 +892,15 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     empty ``golden_actions`` list replays nothing, which is why both substrates
     treat it as no source at all and why such a block is
     :func:`_check_sections_declare_something`'s rather than this rule's.
+
+    Both halves also hold only where the authored block is the whole layer, which is
+    *hash_sources*'s to say: an external adapter may compute the source it compares
+    against from its own fixtures, so under :meth:`HashSourceLayer.unresolvable` the
+    finding either half would have drawn moves to ``unchecked``, addressed where the
+    finding would have been — for the reason the tool rules skip an unresolvable
+    inventory, that refusing a reading the adapter does not use rejects packs that
+    grade fine. A block this rule finds nothing wrong with reports nothing on either
+    layer, so the skip names only the shape a native pack would have been refused for.
     """
     hash_block = _hash_block(grading)
     if hash_block is None:
@@ -859,6 +908,10 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
     enabled = hash_block.get("enabled")
     declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
     if enabled and declared is None:
+        if not hash_sources.known:
+            return AuthoringReport(
+                unchecked=(Skip("state_checks.hash.enabled", _UNRESOLVED_HASH_SOURCE_REASON),)
+            )
         sources = " or ".join(HASH_SOURCE_KEYS)
         return AuthoringReport(
             errors=(
@@ -874,6 +927,10 @@ def _check_hash_source_declared(grading: Mapping[str, Any]) -> AuthoringReport:
         )
     if enabled or declared is None:
         return AuthoringReport()
+    if not hash_sources.known:
+        return AuthoringReport(
+            unchecked=(Skip(f"state_checks.hash.{declared}", _UNRESOLVED_HASH_SOURCE_REASON),)
+        )
     return AuthoringReport(
         errors=(
             Finding(

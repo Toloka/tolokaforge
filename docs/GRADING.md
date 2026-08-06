@@ -2376,8 +2376,9 @@ Findings come in three classes:
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
-| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions` | error | `state_checks.hash.enabled` |
+| either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — where the task's declared `adapter_type` is `native` | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
+| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions`, where the task's declared `adapter_type` is `native` | error | `state_checks.hash.enabled` |
+| either flag/source mismatch above, where the task declares any other `adapter_type` — an external adapter may compute the source it compares against from its own fixtures, the way the frozen-core family replays a golden-actions fixture the block never names | unchecked | the address the error would have carried |
 | a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
@@ -2405,8 +2406,10 @@ false-reject mode. It is surfaced beside the task all the same — `validate` pr
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, a property
-whose schema writes no `type`, a replay world no caller resolved, and a task naming no
-grading source under an adapter that resolves its own all land here.
+whose schema writes no `type`, a replay world no caller resolved, a hash block whose
+flag and source disagree under an external adapter that may supply the source itself,
+and a task naming no grading source under an adapter that resolves its own all land
+here.
 
 **A missing grading source is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter

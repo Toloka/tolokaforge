@@ -67,6 +67,7 @@ from tolokaforge.core.grading.config_validation import (
     UNRESOLVED_COMBINE_REASON,
     AuthoringReport,
     CombineLayer,
+    HashSourceLayer,
     ReplayWorld,
     Skip,
     ToolInventory,
@@ -104,6 +105,7 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 # Bound once so each signature's default is the value, not a call in the annotation.
 _UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
+_UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
 
 
 _GRADING_BLOCK_SHAPES: dict[str, str] = {
@@ -222,6 +224,7 @@ def validate_grading_yaml(
     *,
     inventory: ToolInventory,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
+    hash_sources: HashSourceLayer = _UNRESOLVED_HASH_SOURCE_LAYER,
     combine_layer: CombineLayer = _UNRESOLVED_COMBINE_LAYER,
     fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
 ) -> AuthoringReport:
@@ -267,6 +270,11 @@ def validate_grading_yaml(
             A caller that cannot resolve it leaves the default,
             :meth:`ReplayWorld.unresolvable`, which skips the rule reading it into
             ``unchecked`` wherever that rule would have run.
+        hash_sources: What supplies a hash source beneath the authored block. A
+            caller that cannot say which adapter grades the task leaves the default,
+            :meth:`HashSourceLayer.unresolvable`, which moves the hash-source rule's
+            finding into ``unchecked`` where that rule would have refused; the two
+            gates resolve it through :func:`hash_source_layer_under_adapter`.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
             :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
@@ -317,7 +325,11 @@ def validate_grading_yaml(
             combine_layer.project_combine, grading_data.get("combine")
         )
     report = inspect_grading_authoring(
-        grading_data, inventory, replay_world=replay_world, effective_combine=effective_combine
+        grading_data,
+        inventory,
+        replay_world=replay_world,
+        hash_sources=hash_sources,
+        effective_combine=effective_combine,
     )
     if effective_combine is None:
         report = report.with_unchecked(Skip("combine.weights", UNRESOLVED_COMBINE_REASON))
@@ -673,6 +685,26 @@ def replay_world_under_adapter(task: TaskConfig, adapter_type: str) -> ReplayWor
         initial_state=classify_initial_state(task.initial_state.json_db),
         mcp_server=bool(task.tools.agent.get("mcp_server")) if task.tools.agent else False,
     )
+
+
+def hash_source_layer_under_adapter(adapter_type: str) -> HashSourceLayer:
+    """What supplies a hash source beneath a task's authored block, under *adapter_type*.
+
+    The authored ``state_checks.hash`` keys are the native reading's whole layer, so a
+    native task's enabled-but-sourceless block grades nothing and is the gate's to
+    refuse. A task an external adapter owns gets :meth:`HashSourceLayer.unresolvable`
+    for the reason :func:`tool_inventory_under_adapter` gives: the frozen-core adapter
+    family computes the source it compares against from its own fixtures, a reading no
+    surface here resolves, so refusing the bare block would reject packs that grade
+    fine. Letting an adapter *answer* with the source it supplies — so a fixture it
+    lost is refused before the trial is paid for — is the layer's designed extension,
+    deliberately not built here.
+    """
+    from tolokaforge.runner.models import AdapterType
+
+    if adapter_type != AdapterType.NATIVE.value:
+        return HashSourceLayer.unresolvable()
+    return HashSourceLayer()
 
 
 class GradingSourceKind(str, Enum):

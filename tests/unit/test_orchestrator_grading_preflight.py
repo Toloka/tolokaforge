@@ -100,6 +100,13 @@ A_GOLDEN_REPLAY = {
     "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "http_request"}]}},
 }
 
+# The frozen-core adapter convention #911 was filed for: hash grading on, nothing
+# declared to compare against, the source living in fixtures the block never names.
+AN_ADAPTER_SUPPLIED_HASH = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": {"hash": {"enabled": True, "weight": 1.0}},
+}
+
 _MCP_TOOLS_FIXTURE = [
     {
         "name": "add_note",
@@ -658,6 +665,38 @@ def test_a_gradeless_pack_an_adapter_answers_for_itself_reaches_its_trials(
         ("TASK-NO-GRADING-SOURCE", "grading")
     ]
     assert "'terminal_bench'" in warned[0].reason
+    assert len(conductor.call_log.runs) == 1
+
+
+def test_an_enabled_sourceless_hash_an_adapter_supplies_reaches_its_trials(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A hash source an external adapter computes is not the authored block's to declare.
+
+    The shape #911 was filed for: the frozen-core adapters grade the hash against a
+    golden-actions fixture the authored block never names, so their packs write
+    ``hash: {enabled: true, weight: 1.0}`` and nothing else — and refusing that would
+    reject every pack the adapter grades fine. Both halves are the lock again: the run
+    proceeds, and the shape the gate could not check is logged beside the task rather
+    than passed as a clean bill of health.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-ADAPTER-HASH", AN_ADAPTER_SUPPLIED_HASH)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.adapter = _NativeAdapterResolvingToAnExternalType(
+        {"task_packs": [str(root)], "tasks_glob": "**/task.yaml"}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    warned = {
+        (record.task_id, record.where): record.reason
+        for record in caplog.records
+        if "could not check" in record.getMessage()
+    }
+    reason = warned[("TASK-ADAPTER-HASH", "state_checks.hash.enabled")]
+    assert "an external adapter may compute the source" in reason
     assert len(conductor.call_log.runs) == 1
 
 
