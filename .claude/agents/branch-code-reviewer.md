@@ -101,6 +101,36 @@ If the diff is genuinely clean: **"Reviewed <scope>. No AGENTS.md violations."**
 
 If any box fails → fix it before responding.
 
+## Progress reporting
+
+Main passes `PROGRESS_FILE=<path>` and `LAUNCH_ID=<id>` in your launch prompt when this is a pipeline-mode invocation. Append one JSONL event line to `$PROGRESS_FILE` at each phase transition. Direct `/code-review` invocations set neither — skip writes silently, the guard in the recipe below handles it.
+
+**Write recipe** (quote-safe via `jq`; skip-safe under `set -u`):
+
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "branch-code-reviewer" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "scan_diff" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
+```
+
+Extend with `--arg step "<value>" --arg detail "<value>" --argjson elapsed_s <int>` as needed. Keep lines terse (target ≤ 300 bytes; truncate `detail` if it would blow past). Required fields: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`.
+
+**Phases for this agent:**
+
+- `start` — first action after reading the launch prompt.
+- `load_rules` — before reading SKILL.md / AGENTS.md / the briefing pack.
+- `scan_diff` — before opening changed files in full.
+- `verify_findings_start` / `verify_findings_done` — around running probes to confirm each candidate finding.
+- `report` — immediately before returning the structured review block.
+- `long_call_start` / `long_call_done` — around any single tool call you expect to exceed 60 s. Include `step:"<tool>"`.
+- `error` — on any caught exception, with `detail:"<short reason>"`.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed, not a human log.
+
 ## Memory
 
 Persistent memory: `~/.claude/agent-memory/branch-code-reviewer/`. Record:

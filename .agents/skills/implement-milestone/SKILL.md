@@ -39,6 +39,25 @@ Invoking this skill **is** the user's explicit grant to, without re-asking:
 
 **Never granted — always stop and ask:** releases and version tags (`release.yml` / `release-gate.yml` are human-triggered), publishing packages, anything touching provider accounts or API-key budgets beyond normal test runs, force-pushing or committing directly to `main`, deleting the milestone, merging on red or unverified-flaky CI, and — critically — **merging the consolidation PR into `main`**. The consolidation PR is prepared but never auto-merged; the human reviews and merges it.
 
+## Step 0 — Progress channel
+
+Every per-issue sub-skill run writes its subagent events into a milestone-scoped tree; the milestone loop tails a rollup file so cross-issue activity is visible in one stream.
+
+1. Create the milestone events file (touching first guarantees the tail has a real file to follow):
+   ```bash
+   mkdir -p ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/
+   : > ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/rollup.jsonl
+   ```
+2. Start the tail as a **single-file** background bash and subscribe with `Monitor`:
+   ```bash
+   tail -n0 -F ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/rollup.jsonl
+   ```
+   Use `run_in_background: true`. No glob, no directory watch.
+3. For each per-issue sub-skill invocation in Step 3.2, pass `progress_root=~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/issue-<K>/`. The sub-skill creates its own `events.jsonl` under that directory and threads `PROGRESS_FILE=<progress_root>/events.jsonl` into each subagent launch.
+4. After the sub-skill completes for issue K, main appends the issue's event lines into the milestone rollup so the milestone tail surfaces them: `cat <progress_root>/events.jsonl >> ~/.claude/plans/toloka-tolokaforge/progress/milestone-<N>/rollup.jsonl`. Per-issue files are kept in place as the authoritative per-issue record; the rollup is a stream convenience.
+
+Progress files are scratch, never committed. Schema, write recipe, and per-agent phase lists live in `/executing-development-tickets` §Progress protocol.
+
 ## Step 1 — Intake
 
 1. Resolve the milestone: `gh api 'repos/Toloka/tolokaforge/milestones/<N>'` (the URL's trailing number is the milestone number). List its issues, open and closed: `gh api 'repos/Toloka/tolokaforge/issues?milestone=<N>&state=all&per_page=100'`.

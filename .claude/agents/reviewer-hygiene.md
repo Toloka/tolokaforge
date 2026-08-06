@@ -55,6 +55,28 @@ APPROVE | APPROVE WITH NITS | REQUEST CHANGES | BLOCK — <one-sentence justific
 
 If the diff is genuinely clean within your scope: **"Reviewed <scope>. No hygiene / boundary / doc findings."** — and stop. Don't invent findings.
 
+## Progress reporting
+
+Main passes `PROGRESS_FILE=<path>` and `LAUNCH_ID=<id>` in your launch prompt when this is a pipeline-mode invocation. Append one JSONL event line to `$PROGRESS_FILE` at each phase transition. Direct invocations set neither — skip writes silently.
+
+**Write recipe** (quote-safe via `jq`; skip-safe under `set -u`):
+
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "reviewer-hygiene" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "scan_diff" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
+```
+
+Extend with `--arg step "<value>" --arg detail "<value>" --argjson elapsed_s <int>` as needed. Keep lines terse (target ≤ 300 bytes; truncate `detail` if it would blow past). Required fields: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`.
+
+**Phases for this agent:** same list as `reviewer-correctness` — `start`, `load_rules`, `scan_diff`, `verify_findings_start`/`_done`, `report`, plus `long_call_start`/`_done` around any tool call expected to exceed 60 s and `error` on caught exceptions.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed, not a human log.
+
 ## Behaviour, Self-check, Memory
 
 Same as `reviewer-correctness` — no softening, no fabrication, no scope creep, no duplication of automated checks. Persistent memory at `~/.claude/agent-memory/reviewer-hygiene/`; record recurring doc-drift patterns, comment-hygiene traps, and structure-violation locations that keep regressing.

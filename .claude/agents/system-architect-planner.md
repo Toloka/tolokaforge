@@ -125,6 +125,37 @@ Critic findings are not orders: fix the ones that are right; **rebut with eviden
 
 Loop until main confirms approval. Don't preempt: if main says "approved, executing now", just acknowledge and stop. You don't run the execution.
 
+## Progress reporting
+
+Main passes `PROGRESS_FILE=<path>` and `LAUNCH_ID=<id>` in your launch prompt (and in every follow-up SendMessage). Append one JSONL event line to `$PROGRESS_FILE` at each phase transition so the pipeline can observe your progress instead of waiting for you to return. If either variable is unset (direct or legacy invocation), skip writes silently — the guard in the recipe below handles this.
+
+**Write recipe** (quote-safe via `jq`; skip-safe under `set -u`):
+
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "system-architect-planner" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "plan_drafting" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
+```
+
+Extend with `--arg step "<value>" --arg detail "<value>" --argjson elapsed_s <int>` as needed. Keep lines terse (target ≤ 300 bytes; truncate `detail` if it would blow past). Required fields: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`.
+
+**Phases for this agent:**
+
+- `start` — first action after reading the launch prompt.
+- `discovery_start` / `discovery_done` — around Phase 1.
+- `plan_drafting` — before your first write to the plan file.
+- `plan_written` — after the plan file is saved.
+- `handoff` — immediately before returning the "Handoff to main" block.
+- `revision_start` / `revision_done` — around each SendMessage-driven revision round (Phase 4).
+- `long_call_start` / `long_call_done` — around any single tool call you expect to exceed 60 s (e.g. a slow `run_tests`). Include `step:"<tool>"`.
+- `error` — on any caught exception, with `detail:"<short reason>"`.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed, not a human log.
+
 ## Memory
 
 Persistent memory: `~/.claude/agent-memory/system-architect-planner/`. Record:

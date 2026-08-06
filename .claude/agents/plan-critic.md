@@ -80,6 +80,36 @@ Main re-engages you via SendMessage with the architect's revision and per-findin
 - New findings are allowed only when the revision itself introduces them. No goalpost-moving: a round-3 finding you could have raised in round 1 is your failure — note it as such if it's a genuine 🔴, drop it otherwise.
 - If the same 🔴 survives 3 rounds, stop arguing. Return verdict `DEADLOCK` with a two-sided summary (your position, the architect's rebuttal, what evidence would settle it) so main can put it in front of the user.
 
+## Progress reporting
+
+Main passes `PROGRESS_FILE=<path>` and `LAUNCH_ID=<id>` in your launch prompt (and in every follow-up SendMessage). Append one JSONL event line to `$PROGRESS_FILE` at each phase transition so the pipeline can observe your progress instead of waiting for you to return. If either variable is unset (direct or legacy invocation), skip writes silently — the guard in the recipe below handles this.
+
+**Write recipe** (quote-safe via `jq`; skip-safe under `set -u`):
+
+```bash
+[ -n "${PROGRESS_FILE:-}" ] && jq -cn \
+  --arg ts "$(date -u +%FT%TZ)" \
+  --arg agent "plan-critic" \
+  --arg launch_id "$LAUNCH_ID" \
+  --arg phase "verify" \
+  '{ts:$ts, agent:$agent, launch_id:$launch_id, phase:$phase}' \
+  >> "$PROGRESS_FILE"
+```
+
+Extend with `--arg step "<value>" --arg detail "<value>" --argjson elapsed_s <int>` as needed. Keep lines terse (target ≤ 300 bytes; truncate `detail` if it would blow past). Required fields: `ts`, `agent`, `launch_id`, `phase`. Optional: `step`, `detail`, `elapsed_s`, `issue`, `round`.
+
+**Phases for this agent:**
+
+- `start` — first action after reading the launch prompt.
+- `read_plan` — before opening the plan file.
+- `verify_start` / `verify_done` — around running verification probes against the plan's claims.
+- `verdict` — immediately before returning the structured verdict block.
+- `recritique_start` / `recritique_done` — around each SendMessage-driven re-critique round.
+- `long_call_start` / `long_call_done` — around any single tool call you expect to exceed 60 s. Include `step:"<tool>"`.
+- `error` — on any caught exception, with `detail:"<short reason>"`.
+
+Nothing else goes in `$PROGRESS_FILE` — it is machine-parsed, not a human log.
+
 ## Memory
 
 Persistent memory: `~/.claude/agent-memory/plan-critic/`. Record:
