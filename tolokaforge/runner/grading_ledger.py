@@ -150,6 +150,32 @@ class LedgerAudit:
     skip_notes: tuple[str, ...]
 
 
+def skip_note_prefix(author_key: str) -> str:
+    """How every skip note for ``author_key`` starts, whatever the detail.
+
+    A caller asserting a key was *not* skipped has no hypothetical detail to
+    match on, so it matches this instead: the prefix is the whole format the
+    audit renders, and single-sourcing it is what stops a test from spelling a
+    sentence production never emits.
+    """
+    return f"{author_key} skipped: "
+
+
+def skip_note(author_key: str, record: KeyAccountingRecord) -> str:
+    """The sentence ``grade.reasons`` carries for ``author_key``'s recorded skip.
+
+    Raises ``ValueError`` on an ``EVALUATED`` record: an evaluated key produces
+    no note at all, and rendering one would let a caller assert against text the
+    audit never emits.
+    """
+    if record.outcome is KeyAccounting.EVALUATED:
+        raise ValueError(
+            f"{author_key}: an EVALUATED record has no skip note — the audit renders "
+            "a note only for a populated key that was skipped"
+        )
+    return f"{skip_note_prefix(author_key)}{record.detail}"
+
+
 def hash_family_accounting(runner_outcome: KeyAccountingRecord) -> dict[str, KeyAccountingRecord]:
     """The whole ``state_checks.hash`` family's accounting for one component phase.
 
@@ -267,7 +293,7 @@ def audit_accounted_keys(
         if record is None:
             unaccounted.append(_unaccounted_detail(item))
         elif record.outcome is not KeyAccounting.EVALUATED:
-            skip_notes.append(f"{item.author_key} skipped: {record.detail}")
+            skip_notes.append(skip_note(item.author_key, record))
     error = None
     if unaccounted:
         error = (
@@ -275,6 +301,22 @@ def audit_accounted_keys(
             f"recorded a skip for: {'; '.join(unaccounted)}"
         )
     return LedgerAudit(error=error, skip_notes=tuple(skip_notes))
+
+
+def populated_ledger_keys(grading_config: RunnerGradingConfig) -> frozenset[str]:
+    """The ledger keys ``grading_config`` populates, by the audit's own predicate.
+
+    Restricted to keys naming a ``runner_field``, as the audit's loop is: the
+    ``state_checks.hash`` family root names none, and resolving it raises. So the
+    domain is the 26 keys a recording site can be driven for, and a caller
+    reading this set is reading the same fact the audit acted on.
+    """
+    dumped = grading_config.model_dump(exclude_defaults=True)
+    return frozenset(
+        item.author_key
+        for item in LEDGER_KEYS
+        if item.runner_field is not None and _populated(dumped, item)
+    )
 
 
 def _populated(dumped: dict[str, Any], item: GradingKey) -> bool:
