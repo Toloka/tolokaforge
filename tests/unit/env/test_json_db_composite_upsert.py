@@ -4,7 +4,8 @@ An upsert's ``key`` is a single field name or an ordered list of component
 names. A composite match holds only when the candidate row agrees with the
 incoming record on **every** component — never on a concatenation, which
 collides (``"a_b" + "c"`` vs ``"a" + "b_c"``) — and a composite upsert whose
-record omits a component is refused before any row moves.
+record omits a component, or carries ``None`` for one, is refused before any
+row moves.
 """
 
 from __future__ import annotations
@@ -119,6 +120,29 @@ def test_composite_upsert_missing_component_is_refused(db_test_client):
     assert detail["details"]["missing_components"] == ["symbol"]
     assert detail["details"]["record_keys"] == ["account_id", "qty"]
     assert _rows(db_test_client, "t_comp_missing", "positions") == POSITIONS
+
+
+def test_composite_upsert_null_component_is_refused(db_test_client):
+    # A row seeded without `symbol` must not be reachable through an explicit
+    # null component: None == None would merge into the row that carries no
+    # `symbol` at all — the composite variant of the keyless collapse.
+    seeded = [{"account_id": "A1", "qty": 10}]
+    _init(db_test_client, "t_comp_null", {"positions": seeded})
+
+    resp = _upsert(
+        db_test_client,
+        "t_comp_null",
+        "positions",
+        {"account_id": "A1", "symbol": None, "qty": 99},
+        key=["account_id", "symbol"],
+    )
+
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "InvalidOperation"
+    assert detail["details"]["table_name"] == "positions"
+    assert detail["details"]["missing_components"] == ["symbol"]
+    assert _rows(db_test_client, "t_comp_null", "positions") == seeded
 
 
 def test_empty_key_list_is_refused(db_test_client):

@@ -173,7 +173,7 @@ The runtime ledger hands a single outcome to the whole family, so a member namin
 different evaluator needs its own recording site.
 """
 
-_ID_FIELDS_LOAD_CHECK = "tolokaforge.runner.id_resolution.check_id_fields_reference_known_tables"
+_ID_FIELDS_LOAD_CHECK = "tolokaforge.runner.id_resolution.check_id_fields_against_seeded_tables"
 
 _HASH_COMPOSITION_WIRE_TEST = (
     "tests/integration/test_docker_grading_hash_composition.py"

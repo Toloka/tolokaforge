@@ -116,7 +116,7 @@ from tolokaforge.runner.grading_ledger import (
     transcript_rules_author_keys,
 )
 from tolokaforge.runner.id_resolution import (
-    check_id_fields_reference_known_tables,
+    check_id_fields_against_seeded_tables,
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
@@ -954,7 +954,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         relaxed = bool(state_checks.relaxed_validation) if state_checks else False
         # Belt-and-suspenders: NativeAdapter runs this check at task-description build
         # time, but engines using other adapters (mcp_core, custom) bypass it.
-        err = check_id_fields_reference_known_tables(
+        err = check_id_fields_against_seeded_tables(
             id_fields, initial_state_data, context=f"RegisterTrial: {trial_id}", relaxed=relaxed
         )
         if err:

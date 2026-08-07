@@ -56,7 +56,7 @@ def table_key(table: str, id_fields: Mapping[str, str | list[str]]) -> TableKey:
         return TableKey((_DEFAULT_KEY_FIELD,))
     if isinstance(declared, str):
         fields: tuple[str, ...] = (declared,)
-    elif isinstance(declared, (list, tuple)):
+    elif isinstance(declared, list):
         fields = tuple(declared)
     else:
         raise IdFieldResolutionError(
@@ -124,7 +124,7 @@ def compute_diff_ops(
     """Compute the mutation ops that transform ``before`` into ``after``.
 
     Emits ops in the order ``[inserts, upserts, deletes]`` so downstream
-    consumers see the same batch shape as the pre-refactor call sites. Records
+    consumers see the same batch shape as the callers expect. Records
     are indexed by the table's key tuple (see :func:`table_key`); a record
     missing any key component or sharing its full key value with another
     record in the same list raises :class:`IdFieldResolutionError`.
@@ -182,22 +182,26 @@ def _index_by_key(
 def _first_duplicate_key_value(
     records: list[dict[str, Any]],
     key: TableKey,
-) -> dict[str, Any] | None:
-    """Return the first key value two of ``records`` share, or ``None``.
+) -> tuple[dict[str, Any], list[dict[str, Any]]] | None:
+    """Return the first key value two of ``records`` share plus those records.
 
-    Equality scan rather than a hash index, so an unhashable seeded component
-    value cannot crash the gate before it reports.
+    A record lacking a component projects it as ``None`` here, so the caller
+    receives the colliding records and can tell a genuine duplicate from rows
+    that simply do not carry a component. Equality scan rather than a hash
+    index, so an unhashable seeded component value cannot crash the gate
+    before it reports.
     """
-    seen: list[tuple[Any, ...]] = []
+    seen: list[tuple[tuple[Any, ...], dict[str, Any]]] = []
     for record in records:
         value = tuple(record.get(field) for field in key.fields)
-        if value in seen:
-            return dict(zip(key.fields, value, strict=True))
-        seen.append(value)
+        for prior_value, prior_record in seen:
+            if prior_value == value:
+                return dict(zip(key.fields, value, strict=True)), [prior_record, record]
+        seen.append((value, record))
     return None
 
 
-def check_id_fields_reference_known_tables(
+def check_id_fields_against_seeded_tables(
     id_fields: Mapping[str, str | list[str]],
     tables: Mapping[str, list[dict[str, Any]]],
     *,
@@ -212,8 +216,11 @@ def check_id_fields_reference_known_tables(
     single or composite — that does not uniquely identify the table's seeded
     records. The record-level checks are skipped for a table seeded empty —
     its rows may arrive via ``initialization_actions``, which this gate cannot
-    see — and the uniqueness check is skipped when a component is absent,
-    because the component finding already owns that defect.
+    see — and the uniqueness check is skipped when a component is absent from
+    every record, because the component finding already owns that defect. A
+    collision between records that merely lack a component (an absent
+    component projects as ``None`` in the scan) is likewise reported as the
+    component defect, not as a ``None``-valued duplicate.
 
     Returns ``None`` when the checks pass or the findings are downgraded via
     ``relaxed=True`` (one warning is logged in that case). Returns the message
@@ -248,17 +255,29 @@ def check_id_fields_reference_known_tables(
                 f"state_checks.relaxed_validation: true."
             )
             continue
-        colliding = _first_duplicate_key_value(records, key)
-        if colliding is not None:
-            findings.append(
-                f"state_checks.id_fields[{table!r}] declares key "
-                f"{list(key.fields)!r}, which does not uniquely identify "
-                f"table {table!r}'s seeded records: key value {colliding!r} "
-                f"appears on more than one record. Declare a key that "
-                f"distinguishes the rows (a composite list widens it), fix "
-                f"the seeded data, or set "
-                f"state_checks.relaxed_validation: true."
-            )
+        duplicate = _first_duplicate_key_value(records, key)
+        if duplicate is not None:
+            colliding, involved = duplicate
+            lacking = sorted({f for f in key.fields for r in involved if f not in r})
+            if lacking:
+                findings.append(
+                    f"state_checks.id_fields[{table!r}] declares key "
+                    f"{list(key.fields)!r}, but key component(s) {lacking} are "
+                    f"absent from seeded records of table {table!r} that "
+                    f"therefore share key value {colliding!r}. Seed the "
+                    f"component(s) on those records, fix the declaration, or "
+                    f"set state_checks.relaxed_validation: true."
+                )
+            else:
+                findings.append(
+                    f"state_checks.id_fields[{table!r}] declares key "
+                    f"{list(key.fields)!r}, which does not uniquely identify "
+                    f"table {table!r}'s seeded records: key value {colliding!r} "
+                    f"appears on more than one record. Declare a key that "
+                    f"distinguishes the rows (a composite list widens it), fix "
+                    f"the seeded data, or set "
+                    f"state_checks.relaxed_validation: true."
+                )
     if not findings:
         return None
     msg = f"[{context}] " + " ".join(findings)

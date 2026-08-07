@@ -825,8 +825,7 @@ state_checks:
 
 Map keys are the table names as they appear in `initial_state`. This is config
 data that travels with the task, so key resolution never depends on reading model
-source at runtime (the previous `inspect.getsource`-based guess broke whenever the
-domain source was not on disk). A table keyed by neither `"id"` nor a declared
+source at runtime. A table keyed by neither `"id"` nor a declared
 field fails loud at write time with the exact `id_fields` entry to add, and a
 record missing any declared key component fails loud naming the table, the
 missing component and the full declared key — per component, not just for the

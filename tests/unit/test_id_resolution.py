@@ -12,7 +12,7 @@ import pytest
 from tolokaforge.runner.id_resolution import (
     IdFieldResolutionError,
     TableKey,
-    check_id_fields_reference_known_tables,
+    check_id_fields_against_seeded_tables,
     compute_diff_ops,
     resolve_record_id,
     table_key,
@@ -144,7 +144,7 @@ def test_resolve_record_id_unhashable_component_raises_contract_error():
 
 
 # ---------------------------------------------------------------------------
-# check_id_fields_reference_known_tables — shared by NativeAdapter and the
+# check_id_fields_against_seeded_tables — shared by NativeAdapter and the
 # runner's RegisterTrial belt-and-suspenders block.
 # ---------------------------------------------------------------------------
 
@@ -154,14 +154,14 @@ _SEEDED_WIDGETS = {"widgets": [{"widget_id": "W1", "status": "new"}]}
 
 def test_check_returns_none_when_id_fields_empty():
     assert (
-        check_id_fields_reference_known_tables({}, _SEEDED_WIDGETS, context="t", relaxed=False)
+        check_id_fields_against_seeded_tables({}, _SEEDED_WIDGETS, context="t", relaxed=False)
         is None
     )
 
 
 def test_check_returns_none_when_all_tables_known():
     assert (
-        check_id_fields_reference_known_tables(
+        check_id_fields_against_seeded_tables(
             {"widgets": "widget_id"},
             {**_SEEDED_WIDGETS, "users": [{"id": "U1"}]},
             context="t",
@@ -172,7 +172,7 @@ def test_check_returns_none_when_all_tables_known():
 
 
 def test_check_returns_error_string_on_unknown_table():
-    err = check_id_fields_reference_known_tables(
+    err = check_id_fields_against_seeded_tables(
         {"widgetz": "widget_id"}, _SEEDED_WIDGETS, context="task_x", relaxed=False
     )
     assert err is not None
@@ -184,7 +184,7 @@ def test_check_returns_error_string_on_unknown_table():
 
 def test_check_returns_none_when_relaxed_but_logs_warning(caplog):
     with caplog.at_level(logging.WARNING):
-        err = check_id_fields_reference_known_tables(
+        err = check_id_fields_against_seeded_tables(
             {"widgetz": "widget_id"}, _SEEDED_WIDGETS, context="task_x", relaxed=True
         )
     assert err is None
@@ -196,7 +196,7 @@ def test_check_message_shape_stable_across_call_sites():
     # NativeAdapter and RunnerServiceImpl.RegisterTrial both call this helper;
     # the message must remain actionable regardless of the `context` prefix.
     for context in ("widgets_task", "RegisterTrial: trial-42"):
-        err = check_id_fields_reference_known_tables(
+        err = check_id_fields_against_seeded_tables(
             {"unknown_tbl": "id"}, _SEEDED_WIDGETS, context=context, relaxed=False
         )
         assert err is not None
@@ -209,7 +209,7 @@ def test_check_component_present_in_any_seeded_record_passes():
     # field carried by only some records (sparse seeding) is still a legal key
     # component at the gate; a record actually missing it fails loud at
     # resolve_record_id time instead.
-    err = check_id_fields_reference_known_tables(
+    err = check_id_fields_against_seeded_tables(
         {"positions": ["account_id", "symbol"]},
         {"positions": [{"account_id": "A1"}, {"account_id": "A2", "symbol": "MSFT"}]},
         context="t",
@@ -218,8 +218,51 @@ def test_check_component_present_in_any_seeded_record_passes():
     assert err is None
 
 
+def test_check_collision_between_records_lacking_a_component_blames_the_absence():
+    # Rows without `symbol` collide only because the scan projects the absent
+    # component as None; the diagnosis must point at the absent component, not
+    # at a None-valued duplicate the author never wrote.
+    err = check_id_fields_against_seeded_tables(
+        {"positions": ["account_id", "symbol"]},
+        {
+            "positions": [
+                {"account_id": "A1"},
+                {"account_id": "A1"},
+                {"account_id": "A2", "symbol": "MSFT"},
+            ]
+        },
+        context="t",
+        relaxed=False,
+    )
+    assert err is not None
+    assert "'symbol'" in err  # the component the colliding rows lack
+    assert "absent" in err
+    assert "relaxed_validation" in err  # escape-hatch hint
+    assert "does not uniquely identify" not in err  # not misread as a duplicate
+
+
+def test_check_collision_between_complete_records_keeps_the_duplicate_diagnosis():
+    # The genuine duplicate is between two complete rows; a third row lacking
+    # `symbol` (and colliding with nothing) must not redirect the diagnosis.
+    err = check_id_fields_against_seeded_tables(
+        {"positions": ["account_id", "symbol"]},
+        {
+            "positions": [
+                {"account_id": "A1", "symbol": "AAPL"},
+                {"account_id": "A1", "symbol": "AAPL"},
+                {"account_id": "A2"},
+            ]
+        },
+        context="t",
+        relaxed=False,
+    )
+    assert err is not None
+    assert "does not uniquely identify" in err
+    assert "'AAPL'" in err  # names the colliding value
+
+
 def test_check_reports_unknown_table_and_absent_component_in_one_message():
-    err = check_id_fields_reference_known_tables(
+    err = check_id_fields_against_seeded_tables(
         {"widgetz": "widget_id", "positions": ["account_id", "ticker"]},
         {**_SEEDED_WIDGETS, "positions": [{"account_id": "A1", "symbol": "AAPL"}]},
         context="task_x",
@@ -252,7 +295,7 @@ def _positions_fixture() -> tuple[list[dict], list[dict]]:
 
 
 def test_compute_diff_ops_emits_inserts_then_upserts_then_deletes():
-    # Ordering matters for downstream consumers: pre-refactor call sites emitted
+    # Ordering matters for downstream consumers: ops arrive as
     # [all inserts, all upserts, all deletes]. This locks the batch shape.
     before = [{"id": "A", "v": 1}, {"id": "B", "v": 2}]
     after = [{"id": "A", "v": 1}, {"id": "B", "v": 99}, {"id": "C", "v": 3}]

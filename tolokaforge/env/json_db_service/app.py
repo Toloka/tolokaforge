@@ -620,7 +620,9 @@ def upsert_key_fields(
     A string (or omitted) key resolves to that single field with no record
     check — the single-field hole where a record missing its key field matches
     another keyless record is #920's scope. A composite key must name at least
-    one field, and every component must be present in the record.
+    one field, and every component must carry a non-null value in the record —
+    an absent component and an explicit ``None`` both match rows via
+    ``None == None``, so both are refused.
     """
     if not isinstance(key, list):
         return [key or "id"]
@@ -633,7 +635,7 @@ def upsert_key_fields(
                 {"table_name": table_name},
             ),
         )
-    missing = [field for field in key if field not in record]
+    missing = [field for field in key if record.get(field) is None]
     if missing:
         record_keys = sorted(record)
         raise HTTPException(
@@ -641,7 +643,8 @@ def upsert_key_fields(
             detail=error_response(
                 "InvalidOperation",
                 f"Upsert record for table '{table_name}' is missing key "
-                f"component(s) {missing}; record keys: {record_keys}",
+                f"component(s) {missing} (a null-valued component cannot "
+                f"address a row); record keys: {record_keys}",
                 {
                     "table_name": table_name,
                     "missing_components": missing,

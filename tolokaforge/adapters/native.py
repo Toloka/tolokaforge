@@ -28,7 +28,7 @@ from tolokaforge.core.project_loader import (
     resolve_effective_judge_customization,
 )
 from tolokaforge.core.project_loader import resolve as resolve_environment
-from tolokaforge.runner.id_resolution import check_id_fields_reference_known_tables
+from tolokaforge.runner.id_resolution import check_id_fields_against_seeded_tables
 
 if TYPE_CHECKING:
     from tolokaforge.runner.models import SearchConfig, TaskDescription
@@ -610,7 +610,7 @@ class NativeAdapter(BaseAdapter):
 
                 id_fields_declared = dict(state_checks_data.get("id_fields", {}))
                 relaxed_validation = bool(state_checks_data.get("relaxed_validation", False))
-                err = check_id_fields_reference_known_tables(
+                err = check_id_fields_against_seeded_tables(
                     id_fields_declared,
                     initial_tables,
                     context=task_id,

@@ -309,8 +309,9 @@ row that agrees with `record` on **every** named field is updated in place;
 when no row matches, `record` is appended. Components are compared
 individually, never as a concatenation — `("a_b", "c")` and `("a", "b_c")` are
 distinct keys. A composite upsert is refused with HTTP 400 when the `key` list
-is empty or when `record` omits any component; the error names the table, the
-missing component(s), and the record's keys.
+is empty or when `record` omits any component or carries `null` for one (a
+`null` component would match rows via `null == null`); the error names the
+table, the missing component(s), and the record's keys.
 
 #### Response
 
