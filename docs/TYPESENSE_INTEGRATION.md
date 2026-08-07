@@ -136,16 +136,26 @@ server says.
 
 ## Runner-Side Client Registration
 
-`RegisterTrial` registers a TypeSense client inside the runner container when **both** halves of a two-part predicate hold:
+`RegisterTrial` registers a TypeSense client inside the runner container when **all three** conditions hold:
 
-1. **Run-level** — an address resolved, so the run has a TypeSense plane.
-2. **Task-level** — the task declares a knowledge base: `search.documents_path` is set.
+1. **The plane** — the plane serving this task's corpus is `typesense`.
+2. **The corpus** — the task declares a knowledge base: `search.documents_path` is set.
+3. **The address** — an address resolved, so the run has a TypeSense plane to serve it.
 
-Neither half is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate RAG indexing block; a TypeSense-only domain sets `enabled: false` and still registers. Both halves are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, and a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base.
-
-One shape that skips the plane is refused rather than registered: a run configured a plane, the task declares no `documents_path`, and a `docindex/` corpus nonetheless arrived in its artifacts. The declaration and the bundle disagree, and registering would hand the task a `search_policy` tool with nothing behind it.
+None of them is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate RAG indexing block; a TypeSense-only domain sets `enabled: false` and still registers. All three are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base, and a rag corpus stays on its own plane in a run that offers both.
 
 The TypeSense gate runs before the RAG gate. A task that declares both and whose TypeSense plane is broken reports the TypeSense failure.
+
+### Which plane serves a corpus
+
+`search.plane` is a fact about the task — `typesense` or `rag_service` — and it is what condition 1 reads. A task that declares none has its plane derived from the connection details it carries: a task naming a `host` is read as `typesense`. `rag_service` is never derived, only declared, so no run changes which rag work it does.
+
+The runner reports which of the two happened alongside the address: every refusal names the plane and whether it was `declared` or `derived_from_connection_details`.
+
+Two shapes are refused rather than registered:
+
+- **The declaration and the bundle disagree** — a run configured a plane, the task declares no `documents_path`, and a `docindex/` corpus nonetheless arrived in its artifacts. Registering would hand the task a `search_policy` tool with nothing behind it.
+- **No plane serves a declared corpus** — the task declares `documents_path`, an address resolved, nothing names or implies a plane, and `search.enabled` is false, so rag-service will not serve it either. This is what an adapter produces when it stops emitting connection details before it declares `search.plane`; the migration order that avoids it is in [`ADAPTER_INTERFACE.md`](ADAPTER_INTERFACE.md#searchconfigplane).
 
 ### Database Domain Assignment
 
@@ -193,7 +203,7 @@ The two tiers are deliberately different.
 
 **Per-trial (runner) — a broken plane for one task refuses that trial's registration.**
 
-`RegisterTrial` returns `success=false` with an error naming the trial, the domain, the address tried and the source that named it. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Eight paths, in four classes:
+`RegisterTrial` returns `success=false` with an error naming the trial, the domain, the plane and how it was resolved, the address tried and the source that named it. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Nine paths, in five classes:
 
 | # | path | class |
 |---|---|---|
@@ -204,13 +214,14 @@ The two tiers are deliberately different.
 | 5 | a `docindex/*.md` file cannot be read, so the collection name would not match the host-side index | corpus broken |
 | 6 | the task declares a knowledge base but no readable `*.md` arrived in the trial's artifacts | corpus broken |
 | 7 | a `docindex/` corpus arrived for a task declaring no `documents_path`, in a run that configured a plane | declaration and bundle disagree |
-| 8 | the stack set `TYPESENSE_HOST` without `TYPESENSE_PORT`, or either without the other, or a port that is not a number | the stack's address is half-declared |
+| 8 | the task declares a knowledge base, an address resolved, no plane serves it, and `search.enabled` is false | no plane serves a declared corpus |
+| 9 | the stack set `TYPESENSE_HOST` without `TYPESENSE_PORT`, or either without the other, or a port that is not a number | the stack's address is half-declared |
 
-Row 8 is resolved before the gate and refuses whatever the task declares — a half-configured stack is an operator error, and the task's own connection details are not a repair for it.
+Row 9 is resolved before the gate and refuses whatever the task declares — a half-configured stack is an operator error, and the task's own connection details are not a repair for it.
 
-Rows 1–6 are reached only when both halves of the registration gate hold: an address resolved and the task declares a knowledge base (`search.documents_path`). Row 6 is narrow by construction — reaching it already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists, so it fires when a declared corpus failed to survive bundling and extraction.
+Rows 1–6 are reached only when all three conditions of the registration gate hold: the plane is `typesense`, the task declares a knowledge base (`search.documents_path`), and an address resolved. Row 6 is narrow by construction — reaching it already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists, so it fires when a declared corpus failed to survive bundling and extraction.
 
-Row 7 is the shape the gate would otherwise pass over in silence. The bundle carries a corpus the declaration never asks for, so no client is registered and every `search_policy` call fails — with registration reporting success. Both spellings are adapter bugs: either declare `documents_path` for the task, or stop bundling the corpus.
+Rows 7 and 8 are the shapes the gate would otherwise pass over in silence, and each is an adapter bug. In row 7 the bundle carries a corpus the declaration never asks for; either declare `documents_path` for the task, or stop bundling the corpus. In row 8 the corpus is declared and nothing serves it; declare `search.plane`. Both would otherwise register no client while reporting success, and every `search_policy` call in the trial would fail.
 
 ## Testing
 
@@ -220,6 +231,7 @@ Row 7 is the shape the gate would otherwise pass over in silence. The bundle car
 | unit | `tests/unit/test_orchestrator_typesense_cache_invalidation.py` | the Docker bridge either completes or aborts, and a description cached before the rewrite never reaches a trial |
 | unit | `tests/unit/test_runner_search_plane_refusal.py` | the refusal paths reached through the gate, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
 | unit | `tests/unit/test_runner_typesense_address.py` | which source names the address, the basis reaching the message, and the half-declared stack refusal |
+| unit | `tests/unit/test_runner_search_plane_declaration.py` | which plane serves a corpus, the derivation and its basis, and the refusal of a corpus no plane serves |
 | unit | `tests/unit/test_runner_pipeline.py::TestRegisterTrialSearchPlanes` | the TypeSense and RAG planes stay decoupled |
 
 ## Server Configuration

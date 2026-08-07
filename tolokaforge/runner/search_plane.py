@@ -1,15 +1,17 @@
-"""Where this runner reaches TypeSense, and which source said so.
+"""Which plane serves a task's corpus, where this runner reaches TypeSense, and who said so.
 
-The address is a property of the running stack: the container is created already
-knowing it, in ``TYPESENSE_HOST`` / ``TYPESENSE_PORT``. A task description may
-still carry connection details of its own — adapters emitted them before the
-stack did, and a runner nobody started for this run (``auto_start_services:
-false``, worker mode) has no stack variables at all — so the two sources coexist
-and the stack wins.
+The plane is a property of the task: a corpus is served by TypeSense or by
+rag-service, and the task description says which. The address is a property of
+the running stack: the container is created already knowing it, in
+``TYPESENSE_HOST`` / ``TYPESENSE_PORT``. A task description may still carry
+connection details of its own — adapters emitted them before the stack did, and
+a runner nobody started for this run (``auto_start_services: false``, worker
+mode) has no stack variables at all — so the two address sources coexist and the
+stack wins.
 
-Which one answered is resolved once per registration and returned with the
-address, never re-derived at a message site, so every log line and refusal names
-the source the client was actually built from.
+Both are resolved once per registration and returned with the basis they came
+from, never re-derived at a message site, so every log line and refusal names the
+plane and the source the client was actually built from.
 """
 
 from __future__ import annotations
@@ -18,7 +20,7 @@ import os
 from dataclasses import dataclass
 from enum import Enum
 
-from tolokaforge.runner.models import SearchConfig
+from tolokaforge.runner.models import SearchConfig, SearchPlane
 from tolokaforge.secrets import get_default
 
 _STACK_HOST_VAR = "TYPESENSE_HOST"
@@ -28,6 +30,41 @@ _API_KEY_SECRET = "TYPESENSE_API_KEY"
 # The port the TypeSense image listens on, and what a task naming a host but no
 # port meant.
 _DEFAULT_PORT = 8108
+
+
+class SearchPlaneBasis(str, Enum):
+    """Whether the task named its plane or the runner worked it out."""
+
+    DECLARED = "declared"
+    """The task description's ``search.plane``."""
+
+    DERIVED_FROM_CONNECTION_DETAILS = "derived_from_connection_details"
+    """The task carried a TypeSense address instead of a plane."""
+
+
+@dataclass(frozen=True)
+class ResolvedSearchPlane:
+    """The plane serving this task's corpus, and whether the task said so."""
+
+    plane: SearchPlane
+    basis: SearchPlaneBasis
+
+
+def resolve_search_plane(search_config: SearchConfig) -> ResolvedSearchPlane | None:
+    """Resolve which plane serves this task's corpus, or ``None`` if nothing says.
+
+    Deriving from the task's own connection details serves the transition only,
+    and derives ``TYPESENSE`` alone: rag indexing is gated on ``enabled`` and no
+    run changes which rag work it does because a plane was worked out for it.
+    """
+    if search_config.plane is not None:
+        return ResolvedSearchPlane(plane=search_config.plane, basis=SearchPlaneBasis.DECLARED)
+    if search_config.host is not None:
+        return ResolvedSearchPlane(
+            plane=SearchPlane.TYPESENSE,
+            basis=SearchPlaneBasis.DERIVED_FROM_CONNECTION_DETAILS,
+        )
+    return None
 
 
 class TypeSenseAddressBasis(str, Enum):
