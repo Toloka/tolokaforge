@@ -573,7 +573,7 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
             grading,
             inventory,
             replay_world_under_adapter(task, task.adapter_type),
-            hash_source_layer_under_adapter(task.adapter_type),
+            hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
         )
         reported = [
             f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
@@ -645,7 +645,7 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
             grading,
             ToolInventory.unresolvable(),
             replay_world=replay_world_under_adapter(task, task.adapter_type),
-            hash_sources=hash_source_layer_under_adapter(task.adapter_type),
+            hash_sources=hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
         )
         pack = str(task_yaml.relative_to(_REPO))
         if report.errors or report.advisories:

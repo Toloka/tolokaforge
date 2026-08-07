@@ -1560,7 +1560,9 @@ def validate(tasks: str):
                         task_config, task_dir, task_config.adapter_type
                     ),
                     replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
-                    hash_sources=hash_source_layer_under_adapter(task_config.adapter_type),
+                    hash_sources=hash_source_layer_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
                     combine_layer=CombineLayer(project_combine),
                 )
                 # Only here, and deliberately not in the pre-run gate: a migration

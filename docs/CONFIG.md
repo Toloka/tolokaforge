@@ -634,12 +634,13 @@ llm_judge:                                 # the judge MODEL is set once per run
 
 A whole-state hash is read only where the flag turns it on: `state_checks.hash`
 carrying a `golden_actions` or `expect_initial_state` under an `enabled` that is not
-truthy is rejected at load where the task declares `adapter_type: native`, because
-both substrates test the flag before reading any source and the pack would otherwise
-grade its state without the comparison the author wrote. The refusal is addressed at
-the source the pack declared; under any other `adapter_type` the same shape is
-reported unchecked at the same address, because an external adapter may supply the
-source the authored block never names. Every other authoring rule this file's
+truthy is rejected at load wherever the adapter grading the task answers the
+hash-source question at all — both substrates test the flag before reading any
+source, so a source the block declares and nothing reads is the author's defect
+whatever the adapter supplies. The refusal is addressed at the source the pack
+declared; where no adapter answers — the declared `adapter_type` names an adapter
+this environment has not installed, or one that has not implemented the hook — the
+same shape is reported unchecked at the same address. Every other authoring rule this file's
 grading block is checked against — tool names, argument names, `regex` compilation —
 is in [GRADING.md](GRADING.md#what-is-validated-before-a-run).
 
