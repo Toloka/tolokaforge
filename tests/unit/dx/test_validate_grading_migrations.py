@@ -705,8 +705,12 @@ def test_validate_rejects_an_id_fields_key_that_cannot_key_its_table(
 def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
     """`positions: [account_id, symbol]` passes `tolokaforge validate` end to end.
 
-    Driven through the CLI rather than ``validate_grading_yaml`` so the run also
-    crosses the adapter's id_fields-vs-initial_state cross-check with a list value.
+    Driven through the CLI rather than ``validate_grading_yaml`` so the list form
+    is accepted by the whole load path, not just the config model in isolation.
+    ``validate`` never builds a ``TaskDescription``, so the adapter's
+    id_fields-vs-initial_state cross-check is out of its reach (#923) — that gate
+    is locked at its own boundary in
+    ``tests/unit/test_native_adapter_id_fields_validation.py``.
     """
     task_dir = tmp_path / "composite_key"
     task_dir.mkdir(parents=True)

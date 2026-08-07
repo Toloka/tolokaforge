@@ -149,16 +149,23 @@ def test_resolve_record_id_unhashable_component_raises_contract_error():
 # ---------------------------------------------------------------------------
 
 
+_SEEDED_WIDGETS = {"widgets": [{"widget_id": "W1", "status": "new"}]}
+
+
 def test_check_returns_none_when_id_fields_empty():
     assert (
-        check_id_fields_reference_known_tables({}, ["widgets"], context="t", relaxed=False) is None
+        check_id_fields_reference_known_tables({}, _SEEDED_WIDGETS, context="t", relaxed=False)
+        is None
     )
 
 
 def test_check_returns_none_when_all_tables_known():
     assert (
         check_id_fields_reference_known_tables(
-            {"widgets": "widget_id"}, ["widgets", "users"], context="t", relaxed=False
+            {"widgets": "widget_id"},
+            {**_SEEDED_WIDGETS, "users": [{"id": "U1"}]},
+            context="t",
+            relaxed=False,
         )
         is None
     )
@@ -166,7 +173,7 @@ def test_check_returns_none_when_all_tables_known():
 
 def test_check_returns_error_string_on_unknown_table():
     err = check_id_fields_reference_known_tables(
-        {"widgetz": "widget_id"}, ["widgets"], context="task_x", relaxed=False
+        {"widgetz": "widget_id"}, _SEEDED_WIDGETS, context="task_x", relaxed=False
     )
     assert err is not None
     assert "task_x" in err  # context prefix included
@@ -178,7 +185,7 @@ def test_check_returns_error_string_on_unknown_table():
 def test_check_returns_none_when_relaxed_but_logs_warning(caplog):
     with caplog.at_level(logging.WARNING):
         err = check_id_fields_reference_known_tables(
-            {"widgetz": "widget_id"}, ["widgets"], context="task_x", relaxed=True
+            {"widgetz": "widget_id"}, _SEEDED_WIDGETS, context="task_x", relaxed=True
         )
     assert err is None
     warns = [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
@@ -190,11 +197,38 @@ def test_check_message_shape_stable_across_call_sites():
     # the message must remain actionable regardless of the `context` prefix.
     for context in ("widgets_task", "RegisterTrial: trial-42"):
         err = check_id_fields_reference_known_tables(
-            {"unknown_tbl": "id"}, ["widgets"], context=context, relaxed=False
+            {"unknown_tbl": "id"}, _SEEDED_WIDGETS, context=context, relaxed=False
         )
         assert err is not None
         assert context in err
         assert "Fix a typo" in err
+
+
+def test_check_component_present_in_any_seeded_record_passes():
+    # The component check reads the union of the seeded records' keys, so a
+    # field carried by only some records (sparse seeding) is still a legal key
+    # component at the gate; a record actually missing it fails loud at
+    # resolve_record_id time instead.
+    err = check_id_fields_reference_known_tables(
+        {"positions": ["account_id", "symbol"]},
+        {"positions": [{"account_id": "A1"}, {"account_id": "A2", "symbol": "MSFT"}]},
+        context="t",
+        relaxed=False,
+    )
+    assert err is None
+
+
+def test_check_reports_unknown_table_and_absent_component_in_one_message():
+    err = check_id_fields_reference_known_tables(
+        {"widgetz": "widget_id", "positions": ["account_id", "ticker"]},
+        {**_SEEDED_WIDGETS, "positions": [{"account_id": "A1", "symbol": "AAPL"}]},
+        context="task_x",
+        relaxed=False,
+    )
+    assert err is not None
+    assert "widgetz" in err  # finding 1: unknown table
+    assert "ticker" in err  # finding 2: absent component
+    assert "symbol" in err  # the fields the seeded records do carry
 
 
 # ---------------------------------------------------------------------------

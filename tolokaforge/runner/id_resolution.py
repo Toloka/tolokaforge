@@ -181,31 +181,53 @@ def _index_by_key(
 
 def check_id_fields_reference_known_tables(
     id_fields: Mapping[str, str | list[str]],
-    known_tables: list[str] | set[str],
+    tables: Mapping[str, list[dict[str, Any]]],
     *,
     context: str,
     relaxed: bool,
 ) -> str | None:
-    """Validate that every ``id_fields`` key names a table that exists.
+    """Validate every ``id_fields`` entry against the seeded tables.
 
-    Returns ``None`` when the check passes or the mismatch is downgraded via
-    ``relaxed=True`` (a warning is logged in that case). Returns the error
-    message string on a strict failure so callers can raise or return it.
+    One gate, two findings, reported together in a single message: a declared
+    table absent from ``tables``, and a declared key component absent from the
+    union of the table's seeded records' keys. The component check is skipped
+    for a table seeded empty — its rows may arrive via
+    ``initialization_actions``, which this gate cannot see.
+
+    Returns ``None`` when the checks pass or the findings are downgraded via
+    ``relaxed=True`` (one warning is logged in that case). Returns the message
+    string on a strict failure so callers can raise or return it.
 
     ``context`` prefixes the message (e.g. task id or ``"RegisterTrial: <trial>"``).
     """
     if not id_fields:
         return None
-    unknown = sorted(set(id_fields) - set(known_tables))
-    if not unknown:
+    findings: list[str] = []
+    unknown = sorted(set(id_fields) - set(tables))
+    if unknown:
+        findings.append(
+            f"state_checks.id_fields references table(s) not present "
+            f"in initial_state: unknown={unknown}, known={sorted(tables)}. "
+            f"Fix a typo, add the table to initial_state, or set "
+            f"state_checks.relaxed_validation: true."
+        )
+    for table in sorted(set(id_fields) & set(tables)):
+        records = tables[table]
+        if not records:
+            continue
+        seeded_fields = set().union(*(record.keys() for record in records))
+        absent = [f for f in table_key(table, id_fields).fields if f not in seeded_fields]
+        if absent:
+            findings.append(
+                f"state_checks.id_fields[{table!r}] declares key component(s) "
+                f"{absent} absent from every seeded record of table {table!r} "
+                f"(seeded record fields: {sorted(seeded_fields)}). "
+                f"Fix a typo, seed a record carrying the field(s), or set "
+                f"state_checks.relaxed_validation: true."
+            )
+    if not findings:
         return None
-    known = sorted(known_tables)
-    msg = (
-        f"[{context}] state_checks.id_fields references table(s) not present "
-        f"in initial_state: unknown={unknown}, known={known}. "
-        f"Fix a typo, add the table to initial_state, or set "
-        f"state_checks.relaxed_validation: true."
-    )
+    msg = f"[{context}] " + " ".join(findings)
     if relaxed:
         logger.warning(msg)
         return None

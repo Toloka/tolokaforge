@@ -955,7 +955,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Belt-and-suspenders: NativeAdapter runs this check at task-description build
         # time, but engines using other adapters (mcp_core, custom) bypass it.
         err = check_id_fields_reference_known_tables(
-            id_fields, db_table_names, context=f"RegisterTrial: {trial_id}", relaxed=relaxed
+            id_fields, initial_state_data, context=f"RegisterTrial: {trial_id}", relaxed=relaxed
         )
         if err:
             logger.error(err)

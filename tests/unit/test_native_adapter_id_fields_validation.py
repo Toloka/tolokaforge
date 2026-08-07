@@ -1,9 +1,13 @@
-"""Adapter-side cross-check: ``state_checks.id_fields`` keys must exist in ``initial_state``.
+"""Adapter-side cross-check of ``state_checks.id_fields`` against ``initial_state``.
 
-Runs inside :meth:`NativeAdapter.to_task_description` — the earliest surface
-where task authors see conversion output. Fail loud on typos so a bad task
-doesn't reach the runner and hard-fail at trial time on a message the author
-never sees.
+Runs inside :meth:`NativeAdapter.to_task_description` — the entry point the
+orchestrator's pre-run gradeability pass resolves every selected task through,
+so a refusal here lands before the first trial is paid for. Fail loud on typos
+so a bad task doesn't reach the runner and hard-fail (or silently corrupt
+state) at trial time on a message the author never sees. One gate, two
+findings: a declared table absent from ``initial_state``, and a declared key
+component absent from every seeded record of its table (skipped for a table
+seeded empty, whose rows may arrive via ``initialization_actions``).
 
 ``state_checks.relaxed_validation: true`` downgrades the raise to a warning
 for legacy tasks that pre-date the check.
@@ -27,7 +31,7 @@ def _write_task_pack(
     root: Path,
     *,
     initial_state: dict,
-    id_fields: dict[str, str] | None,
+    id_fields: dict[str, str | list[str]] | None,
     relaxed: bool = False,
 ) -> Path:
     """Emit a minimal native task pack at ``root/tasks/widgets/`` and return the base dir."""
@@ -123,6 +127,81 @@ def test_unknown_table_with_relaxed_warns(tmp_path: Path, caplog) -> None:
     # Warning was emitted, but the task built successfully.
     warns = [rec for rec in caplog.records if rec.levelno >= logging.WARNING]
     assert any("widgetz" in rec.getMessage() for rec in warns)
+    assert td.grading.state_checks.relaxed_validation is True
+
+
+_SEEDED_POSITIONS = {
+    "positions": [
+        {"account_id": "A1", "symbol": "AAPL", "qty": 5},
+        {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+    ]
+}
+
+
+def test_composite_key_over_seeded_table_builds(tmp_path: Path) -> None:
+    _write_task_pack(
+        tmp_path,
+        initial_state=_SEEDED_POSITIONS,
+        id_fields={"positions": ["account_id", "symbol"]},
+    )
+    td = _adapter(tmp_path).to_task_description("widgets")
+    assert td.grading.state_checks.id_fields == {"positions": ["account_id", "symbol"]}
+
+
+def test_absent_composite_component_raises(tmp_path: Path) -> None:
+    _write_task_pack(
+        tmp_path,
+        initial_state=_SEEDED_POSITIONS,
+        id_fields={"positions": ["account_id", "ticker"]},
+    )
+    with pytest.raises(ValueError) as ei:
+        _adapter(tmp_path).to_task_description("widgets")
+    msg = str(ei.value)
+    assert "ticker" in msg  # names the absent component
+    assert "positions" in msg  # names the table
+    assert "symbol" in msg  # surfaces the fields the records do carry
+    assert "relaxed_validation" in msg  # hints at the escape hatch
+
+
+def test_misspelled_single_key_raises(tmp_path: Path) -> None:
+    # A single field is a one-component key; the rule cannot hold for lists only.
+    _write_task_pack(
+        tmp_path,
+        initial_state={"widgets": [{"widget_id": "W1", "status": "new"}]},
+        id_fields={"widgets": "widgit_id"},
+    )
+    with pytest.raises(ValueError) as ei:
+        _adapter(tmp_path).to_task_description("widgets")
+    msg = str(ei.value)
+    assert "widgit_id" in msg
+    assert "widget_id" in msg  # the seeded field the author meant
+    assert "relaxed_validation" in msg
+
+
+def test_table_seeded_empty_is_not_component_checked(tmp_path: Path) -> None:
+    # An empty seeded table may be populated by initialization_actions, so its
+    # declared components cannot be checked against anything.
+    _write_task_pack(
+        tmp_path,
+        initial_state={"positions": []},
+        id_fields={"positions": ["account_id", "symbol"]},
+    )
+    td = _adapter(tmp_path).to_task_description("widgets")
+    assert td.grading.state_checks.id_fields == {"positions": ["account_id", "symbol"]}
+
+
+def test_relaxed_downgrades_both_findings_in_one_warning(tmp_path: Path, caplog) -> None:
+    _write_task_pack(
+        tmp_path,
+        initial_state={"widgets": [{"widget_id": "W1"}]},
+        id_fields={"widgetz": "widget_id", "widgets": "widgit_id"},
+        relaxed=True,
+    )
+    with caplog.at_level(logging.WARNING):
+        td = _adapter(tmp_path).to_task_description("widgets")
+
+    warns = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert any("widgetz" in m and "widgit_id" in m for m in warns)  # one message, both findings
     assert td.grading.state_checks.relaxed_validation is True
 
 

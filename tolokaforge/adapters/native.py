@@ -612,7 +612,7 @@ class NativeAdapter(BaseAdapter):
                 relaxed_validation = bool(state_checks_data.get("relaxed_validation", False))
                 err = check_id_fields_reference_known_tables(
                     id_fields_declared,
-                    list(initial_tables),
+                    initial_tables,
                     context=task_id,
                     relaxed=relaxed_validation,
                 )
