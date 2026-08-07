@@ -71,11 +71,8 @@ class TypeSenseServerManager:
     Example:
         ```python
         with TypeSenseServerManager(port="auto") as server:
-            # Server is running, use server.port and server.api_key
-            provider = create_typesense_provider(
-                port=server.port,
-                api_key=server.api_key
-            )
+            # Server is running; hand its address to a search client
+            params = server.get_connection_params()
         # Server automatically stopped
         ```
 

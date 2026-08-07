@@ -823,14 +823,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Documents are already indexed by the host-side adapter; we just
         # register a client inside this container pointing at the same server.
         #
-        # Gated on ``host`` (TypeSense is configured) ONLY — independent of
-        # ``enabled``. ``enabled`` now means just "this task needs rag-service"
-        # (it gates the RAG indexing block below); it does NOT govern TypeSense.
-        # A TypeSense-only domain therefore sets ``enabled=False`` + ``host=…``:
-        # TypeSense inits here, the RAG block is skipped (no rag_client needed).
+        # Neither half is ``enabled``: that flag means only "this task needs
+        # rag-service" and gates the RAG indexing block below. A TypeSense-only
+        # domain sets ``enabled=False`` + ``host=…`` and registers here without
+        # a rag_client. This gate runs BEFORE the RAG one deliberately — a task
+        # declaring both reports its TypeSense failure, which is the nearer one.
         search_config = task_description.search
-        if search_config and search_config.host:
-            self._init_typesense_for_trial(search_config, artifacts_dir)
+        # Run-level: this run configured a TypeSense plane. #927 moves the
+        # connection details to stack-level config and replaces this half.
+        run_configures_typesense = search_config is not None and search_config.host is not None
+        # Task-level: this task declares a knowledge base. #927 keeps this half.
+        task_declares_kb = search_config is not None and search_config.documents_path is not None
+        if run_configures_typesense and task_declares_kb:
+            typesense_error = self._init_typesense_for_trial(trial_id, search_config, artifacts_dir)
+            if typesense_error is not None:
+                # Extraction ran before this gate, so a refusal leaves the tmp dir
+                # on disk and on ``sys.path`` — drop it as the custom-checks gate does.
+                self._cleanup_trial_artifacts(trial_id)
+                logger.error(f"RegisterTrial: {trial_id} - {typesense_error}")
+                return pb2.RegisterTrialResponse(success=False, error=typesense_error)
 
         # Create trial context with validated TaskDescription
         trial_context = TrialContextRuntime(
@@ -2947,11 +2958,49 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     # TypeSense Client Initialization (for mcp_core search tools)
     # =========================================================================
 
+    def _read_docindex_snippets(
+        self,
+        artifacts_dir: Path | None,
+        context: str,
+    ) -> tuple[list[str], str | None]:
+        """Read the trial's ``docindex/*.md`` corpus.
+
+        Returns the snippets, or the reason the declared knowledge base cannot
+        be used. The collection name is derived from the whole corpus, so a
+        corpus read that skipped a file would address a collection the
+        host-side indexer never created.
+        """
+        docindex_dir = artifacts_dir / "docindex" if artifacts_dir else None
+        snippets: list[str] = []
+        if docindex_dir is not None and docindex_dir.is_dir():
+            for md_file in sorted(docindex_dir.glob("*.md")):
+                try:
+                    content = md_file.read_text(encoding="utf-8")
+                except (OSError, UnicodeDecodeError) as e:
+                    return [], (
+                        f"{context} — the knowledge base is unusable: cannot read "
+                        f"{md_file} ({e}). Every document feeds the collection name, so "
+                        f"skipping it would address a collection the host-side index "
+                        f"never created."
+                    )
+                if content.strip():
+                    snippets.append(content)
+
+        if not snippets:
+            return [], (
+                f"{context} — the knowledge base is unusable: the task declares one, but "
+                f"no readable '*.md' arrived in the trial's artifacts (looked in "
+                f"{docindex_dir}). The declared corpus did not survive bundling and "
+                f"extraction."
+            )
+        return snippets, None
+
     def _init_typesense_for_trial(
         self,
+        trial_id: str,
         search_config: Any,  # SearchConfig from models
         artifacts_dir: Path | None,
-    ) -> None:
+    ) -> str | None:
         """Initialise mcp_core TypeSense registry for search_policy tools.
 
         Inside Docker, the ``search_policy`` tool calls
@@ -2965,42 +3014,29 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         The document snippets are needed solely to compute the deterministic
         collection name (``<domain>_<sha256[:8]>``).
-        """
-        try:
-            from mcp_core.search.typesense_registry import initialize_typesense_for_domain
-        except ImportError:
-            logger.warning(
-                "mcp_core.search.typesense_registry not available — "
-                "search_policy tools will fail with 'Search service is not available'"
-            )
-            return
 
+        Returns ``None`` when the plane is usable, otherwise the reason
+        registration must be refused: a trial whose search plane is dead spends
+        paid turns on ``search_policy`` calls that cannot work, and grades the
+        result as agent behaviour.
+        """
         domain = search_config.domain_name or "default"
         host = search_config.host
         port = search_config.port or 8108
         api_key = search_config.api_key
+        context = f"Trial {trial_id}: domain '{domain}', TypeSense at {host}:{port}"
 
-        # Load document snippets from extracted docindex/ directory.
-        # These are needed to compute the deterministic collection name
-        # that matches what the host-side adapter already indexed.
-        snippets: list[str] = []
-        if artifacts_dir:
-            docindex_dir = artifacts_dir / "docindex"
-            if docindex_dir.is_dir():
-                for md_file in sorted(docindex_dir.glob("*.md")):
-                    try:
-                        content = md_file.read_text(encoding="utf-8")
-                        if content.strip():
-                            snippets.append(content)
-                    except Exception as e:
-                        logger.warning(f"Failed to read docindex file {md_file}: {e}")
-
-        if not snippets:
-            logger.warning(
-                f"No docindex snippets found for domain '{domain}' "
-                f"(artifacts_dir={artifacts_dir}) — TypeSense client not registered"
+        try:
+            from mcp_core.search.typesense_registry import initialize_typesense_for_domain
+        except ImportError as e:
+            return (
+                f"{context} — this runner image cannot provide a search client: "
+                f"mcp_core.search.typesense_registry is not importable ({e})."
             )
-            return
+
+        snippets, corpus_error = self._read_docindex_snippets(artifacts_dir, context)
+        if corpus_error is not None:
+            return corpus_error
 
         logger.info(
             f"Initialising TypeSense client for domain '{domain}': "
@@ -3015,22 +3051,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 port=port,
                 api_key=api_key,
             )
-            if client:
-                logger.info(
-                    f"TypeSense client registered for domain '{domain}' "
-                    f"(is_available={client.is_available})"
-                )
-            else:
-                logger.warning(
-                    f"TypeSense initialization returned None for domain '{domain}' — "
-                    "search_policy tools will fail"
-                )
         except Exception as e:
-            # Graceful degradation: log but don't fail the whole trial
-            logger.warning(
-                f"TypeSense initialization failed for domain '{domain}': {e} — "
-                "search_policy tools will fail"
+            return f"{context} — registering the search client failed: {e}"
+
+        if client is None:
+            return (
+                f"{context} — the server is unreachable or refused the collection: "
+                f"initialize_typesense_for_domain returned no client."
             )
+        if not client.is_available:
+            return f"{context} — the registered search client reports the server as unavailable."
+
+        logger.info(f"TypeSense client registered for domain '{domain}'")
+        return None
 
     # =========================================================================
     # RAG Document Indexing

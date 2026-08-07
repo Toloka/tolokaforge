@@ -334,7 +334,7 @@ class TypeSenseConfig(BaseModel):
     Supports three modes:
     - local: Orchestrator manages a local Docker container (auto start/stop)
     - remote: Connect to an external TypeSense server
-    - disabled: TypeSense is disabled, search_policy returns empty results
+    - disabled: no server is started and no client is registered for any trial
     """
 
     model_config = {"extra": "ignore"}
