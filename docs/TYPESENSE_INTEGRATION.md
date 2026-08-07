@@ -199,7 +199,7 @@ The two tiers are deliberately different.
 **Run-level (orchestrator) — a broken plane aborts the whole run, before any trial.**
 
 - The local server does not become ready within `timeout`, or the Docker foundation layer is unavailable.
-- The bridge onto `runner-net` cannot be built: no TypeSense container, no `runner-net`, an adapter that cannot carry the rewritten address, or any Docker SDK failure.
+- The bridge onto `runner-net` cannot be built: no TypeSense container, no `runner-net`, no `orchestrator.typesense` block, or any Docker SDK failure.
 
 **Per-trial (runner) — a broken plane for one task refuses that trial's registration.**
 
@@ -228,7 +228,7 @@ Rows 7 and 8 are the shapes the gate would otherwise pass over in silence, and e
 | Lane | File | Locks |
 |---|---|---|
 | unit | `tests/unit/test_orchestrator_typesense_startup.py` | a server that never became ready aborts the run, and does not leave its would-be address in the config |
-| unit | `tests/unit/test_orchestrator_typesense_cache_invalidation.py` | the Docker bridge either completes or aborts, and a description cached before the rewrite never reaches a trial |
+| unit | `tests/unit/test_orchestrator_typesense_bridge.py` | the Docker bridge either completes or aborts, and a completed bridge leaves the run config, the adapter and the description cache untouched |
 | unit | `tests/unit/test_runner_search_plane_refusal.py` | the refusal paths reached through the gate, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
 | unit | `tests/unit/test_runner_typesense_address.py` | which source names the address, the basis reaching the message, and the half-declared stack refusal |
 | unit | `tests/unit/test_runner_search_plane_declaration.py` | which plane serves a corpus, the derivation and its basis, and the refusal of a corpus no plane serves |
@@ -333,13 +333,11 @@ With `mode: local`, the orchestrator handles everything automatically:
 
 ### Docker Networking
 
-When the orchestrator manages the server (`mode: local`) and the run uses the engine's built-in stack, the TypeSense container is bridged onto the runner's network once that stack has started:
+When the orchestrator manages the server (`mode: local`) and the run uses the engine's built-in stack, the TypeSense container joins `runner-net` under the alias `typesense` once that stack has started. That is the whole of the bridge.
 
-- TypeSense joins `runner-net` under the alias `typesense`
-- `orchestrator.typesense` is rewritten to `typesense:8108` — inside a Docker network containers reach each other on the container port, never the host-mapped one
-- the rewritten address is propagated to the adapter, and task descriptions resolved before the rewrite are dropped so trials rebuild against it
+The runner container was created knowing `typesense:8108` — inside a Docker network containers reach each other on the container port, never the host-mapped one — and joining the network is what makes that alias resolve. Nothing here touches `orchestrator.typesense`, the adapter's parameters, or the resolved task descriptions: the host-side address stays where the orchestrator and the adapter index against it.
 
-A bridge that cannot be completed aborts the run. A missing TypeSense container, a missing `runner-net`, an adapter that cannot carry the rewritten address, or any Docker SDK failure raises with the address trials would otherwise have kept. There is no partial bridge: the alternative is trials configured with the host-side address, which inside the runner container resolves to the runner itself.
+A bridge that cannot be completed aborts the run. A missing TypeSense container, a missing `runner-net`, a missing `orchestrator.typesense` block, or any Docker SDK failure raises, naming both the alias the runner was handed and the host-side address the server answers on. There is no partial bridge: the alternative is a runner asking for an alias no network resolves, and every `search_policy` call in every trial failing.
 
 A run whose tasks declare their own compose stack cannot be bridged at all — the TypeSense KB and a task-declared `environment_manifest` are mutually exclusive, and the orchestrator refuses that combination up front.
 

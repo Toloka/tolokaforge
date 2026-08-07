@@ -453,8 +453,7 @@ class Orchestrator:
         # — repeating that K times for ``repeats=K`` trials of the same
         # task is wasted work. Populated by whichever resolver runs first
         # (the pre-run grading gate, backend selection, or trial-spec
-        # building) and dropped when the TypeSense Docker rewrite makes
-        # every cached SearchConfig address stale (#925).
+        # building) and held for the life of the run.
         self._task_desc_cache: dict[str, TaskDescription] = {}
         # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
         # (0..total-1). Populated by :meth:`_build_pending_trials` and
@@ -502,7 +501,7 @@ class Orchestrator:
             task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
         params["task_packs"] = task_packs
 
-        typesense_config = self._effective_typesense_config()
+        typesense_config = self.config.orchestrator.effective_typesense()
         if typesense_config is not None:
             params["typesense"] = typesense_config.model_dump()
 
@@ -1188,23 +1187,6 @@ class Orchestrator:
         self._total_index_by_key = {key: idx for idx, key in enumerate(pending_trials)}
         return pending_trials
 
-    def _effective_typesense_config(self) -> TypeSenseConfig | None:
-        """Return the run's TypeSense plane, or ``None`` when it has none.
-
-        ``mode: disabled`` is as final as ``enabled: false``: no server is
-        started for either, so a plane exists only when the block is enabled
-        AND the mode is not ``disabled``. Every consumer that has to answer
-        "does this run have a TypeSense plane" — the adapter's connection
-        details, the address injected into the runner container — reads this
-        one answer, so they cannot drift apart.
-        """
-        typesense_config = self.config.orchestrator.typesense
-        if not typesense_config or not typesense_config.enabled:
-            return None
-        if typesense_config.mode == "disabled":
-            return None
-        return typesense_config
-
     def _ensure_typesense_started(self) -> None:
         """Start TypeSense server if configured for local mode.
 
@@ -1214,7 +1196,7 @@ class Orchestrator:
         the redaction set and in the ``TOLOKAFORGE_SECRETS_JSON`` payload the
         runner container is built with.
         """
-        typesense_config = self._effective_typesense_config()
+        typesense_config = self.config.orchestrator.effective_typesense()
         if typesense_config is None:
             return
         needs_start = typesense_config.mode == "local" and (
@@ -1329,34 +1311,34 @@ class Orchestrator:
         without the variables and "variable present" == "a plane was
         configured".
         """
-        typesense_config = self._effective_typesense_config()
+        typesense_config = self.config.orchestrator.effective_typesense()
         if typesense_config is None:
             return {}
         return {"typesense_address": self._injected_typesense_address(typesense_config)}
 
     def _connect_typesense_to_runner_network(self, service_stack: Any) -> None:
-        """Connect TypeSense container to the core stack's Docker network.
+        """Connect the TypeSense container to the core stack's Docker network.
 
-        After core_stack starts, the Runner is on 'runner-net'. TypeSense is on
-        its own network. We connect TypeSense to runner-net so the Runner can
-        reach it via Docker DNS (container name / alias).
+        The runner container was created knowing the alias and the container
+        port, which are static by construction — but that address resolves only
+        while TypeSense is a member of ``runner-net``. Building that membership
+        is the whole of this method: nothing here touches the run config, the
+        adapter, or the description cache.
 
-        The container port is ALWAYS 8108 inside Docker networks — only the
-        host-mapped port differs, and that is irrelevant for inter-container
-        communication.
-
-        Every failure aborts the run. A bridge that is only half-built leaves
-        the host-side address in the trial-facing config, and inside the runner
-        container that address is the runner itself (#925).
+        Every failure aborts the run. Without the bridge the runner asks for an
+        alias no network resolves, and every ``search_policy`` call in every
+        trial fails.
         """
         import docker as docker_lib
 
+        injected = f"{_TYPESENSE_NETWORK_ALIAS}:{_TYPESENSE_CONTAINER_PORT}"
         typesense_config = self.config.orchestrator.typesense
         if typesense_config is None:
             raise RuntimeError(
                 "orchestrator.typesense: the TypeSense bridge ran with no TypeSense "
-                "configuration to rewrite. A server was started for this run, so the "
-                "run config must still carry an orchestrator.typesense block here."
+                "configuration. A server was started for this run, so the run config "
+                "must still carry an orchestrator.typesense block here — it names the "
+                "host-side address a failed bridge reports."
             )
         host_side = f"{typesense_config.host}:{typesense_config.port}"
 
@@ -1366,71 +1348,32 @@ class Orchestrator:
             raise RuntimeError(
                 f"orchestrator.typesense: the TypeSense stack holds no 'typesense' "
                 f"container to bridge onto the runner network — the shape a start that "
-                f"was rolled back leaves behind. Aborting the run: trials would keep "
-                f"{host_side}, which inside the runner container is the runner itself. "
-                f"Check `docker ps` and the TypeSense container logs."
+                f"was rolled back leaves behind. Aborting the run: the runner asks for "
+                f"{injected} and no container would answer it, while the host side "
+                f"expects a server at {host_side}. Check `docker ps` and the TypeSense "
+                f"container logs."
             )
 
         runner_net = service_stack._networks.get("runner-net")
         if runner_net is None:
             raise RuntimeError(
                 f"orchestrator.typesense: the core stack exposes no 'runner-net' network, "
-                f"so the TypeSense container at {host_side} cannot be reached as "
-                f"typesense:8108 from the runner. Aborting the run: trials would keep the "
-                f"host-side address and every search_policy call would fail. Check that "
-                f"the core stack started before the bridge ran."
-            )
-
-        if self.adapter is None or not hasattr(self.adapter, "params"):
-            missing = "no adapter was created for this run"
-            if self.adapter is not None:
-                missing = f"{type(self.adapter).__name__} exposes no 'params' mapping"
-            raise RuntimeError(
-                f"orchestrator.typesense: the Docker-reachable address typesense:8108 "
-                f"cannot be propagated into task descriptions — {missing}. Aborting the "
-                f"run: every trial would be described with the host-side {host_side} "
-                f"instead (#925)."
+                f"so the TypeSense container at {host_side} cannot be joined to the one "
+                f"the runner resolves {injected} on. Aborting the run: every "
+                f"search_policy call would fail. Check that the core stack started "
+                f"before the bridge ran."
             )
 
         client = docker_lib.from_env()
         ts_container = client.containers.get(ts_container_obj.container_id)
         docker_network = client.networks.get(runner_net.network_id)
 
-        # Connect TypeSense to runner-net with the alias the runner container
-        # was created with.
         docker_network.connect(ts_container, aliases=[_TYPESENSE_NETWORK_ALIAS])
         self.logger.info(
             "Connected TypeSense to runner network",
             network=runner_net.name,
             container=ts_container.name,
-        )
-
-        # Update TypeSense config to use Docker DNS name for Runner access.
-        # Inside Docker networks, containers use the container port (8108)
-        # directly — not the host-mapped port.
-        resolved_config = typesense_config.model_dump()
-        resolved_config["host"] = "typesense"
-        resolved_config["port"] = 8108
-        self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
-        self.logger.info(
-            "Updated TypeSense config for Docker networking",
-            host="typesense",
-            port=8108,
-        )
-
-        # Propagate Docker-internal connection details to the adapter
-        # so that to_task_description() puts Docker-reachable values
-        # (typesense:8108) into SearchConfig rather than host-side ones.
-        self.adapter.params["typesense"] = resolved_config
-        # Descriptions resolved before this rewrite — the pre-run grading gate
-        # resolves every selected task — carry the host-side address, which
-        # inside the runner container is the runner itself (#925). Drop them so
-        # trials rebuild against the rewritten params.
-        self._task_desc_cache.clear()
-        self.logger.debug(
-            "Propagated TypeSense Docker config to adapter",
-            host="typesense",
-            port=8108,
+            alias=injected,
         )
 
     def load_tasks(self) -> None:
@@ -1873,11 +1816,11 @@ class Orchestrator:
                             "TypeSense KB is enabled but the run uses a task-declared "
                             "compose stack (either --runtime per_trial or a run whose tasks "
                             "declare environment_manifest under --runtime shared). The "
-                            "TypeSense bridge connects TypeSense to the shared 'runner-net' "
-                            "and rewrites the TypeSense config to 'typesense:8108' Docker "
-                            "DNS — task-declared runners live on task-side networks and "
-                            "cannot reach that host. Either drop the TypeSense KB block or "
-                            "drop the task-declared environment_manifest."
+                            "TypeSense bridge joins TypeSense to the shared 'runner-net', "
+                            "which is the only network 'typesense:8108' resolves on — "
+                            "task-declared runners live on task-side networks and never "
+                            "see that alias. Either drop the TypeSense KB block or drop "
+                            "the task-declared environment_manifest."
                         )
                     self._connect_typesense_to_runner_network(service_stack)
             except Exception as e:

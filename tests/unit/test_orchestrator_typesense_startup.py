@@ -11,8 +11,8 @@ runner container that host-side address is the runner itself, so every
 
 The orchestrator is real here; only ``create_typesense_server`` — the factory
 the method imports the Docker boundary through — is a stand-in.
-``test_orchestrator_typesense_cache_invalidation.py`` covers the next step of
-the same chain and substitutes further down, at the ``docker`` module and an
+``test_orchestrator_typesense_bridge.py`` covers the next step of the same
+chain and substitutes further down, at the ``docker`` module and an
 already-assigned server handle.
 """
 

@@ -7,8 +7,10 @@ never described by it: the runner is told the network alias and the container
 port, which are static by construction.
 
 The same enablement question decides whether the adapter is handed connection
-details and whether the runner container is told an address. They are one
-predicate, so a run can never end up with a plane for one and not the other.
+details, whether the runner container is told an address, and what a dry run
+previews of both. They are one predicate, so a run can never end up with a plane
+for one and not the others, and ``--dry-run`` can never preview a plane the run
+would not have.
 """
 
 from __future__ import annotations
@@ -20,6 +22,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.dry_run import _build_dry_run_adapter_params
 from tolokaforge.core.models import (
     EvaluationConfig,
     ModelConfig,
@@ -133,23 +136,31 @@ def test_an_unresolved_port_refuses_to_build_the_stack(tmp_path: Path, mode: str
     ],
 )
 @patch("tolokaforge.core.orchestrator.get_adapter")
-def test_the_stack_address_and_the_adapter_answer_the_same_enablement_question(
+def test_every_consumer_answers_the_same_enablement_question(
     mock_get_adapter: MagicMock, tmp_path: Path, row: str, enabled: bool, mode: str, has_plane: bool
 ) -> None:
-    """One predicate decides both, so the two can never disagree.
+    """One predicate decides all three, so they can never disagree.
 
     A second spelling of "is the plane on" would let a run hand the adapter
-    connection details while creating a runner that was told no address, or
-    the reverse — the split-brain this stage exists to close.
+    connection details while creating a runner that was told no address, or the
+    reverse — the split-brain this stage exists to close. ``--dry-run`` is the
+    third reader: it builds the adapter the same way, so an operator inspecting
+    a config sees the connection details the real run would emit, and only
+    those. The payload is the same one either way — dry-run previews it
+    unresolved because nothing started, not because it was trimmed.
     """
     mock_get_adapter.return_value = MagicMock()
-    orchestrator = _orchestrator(
-        tmp_path,
-        TypeSenseConfig(enabled=enabled, mode=mode, host="ts.example", port=8108),
-    )
+    typesense = TypeSenseConfig(enabled=enabled, mode=mode, host="ts.example", port=8108)
+    orchestrator = _orchestrator(tmp_path, typesense)
 
     orchestrator._create_adapter()
     kwargs = orchestrator._typesense_stack_kwargs()
+    _, dry_run_params = _build_dry_run_adapter_params(orchestrator.config, None)
 
-    assert ("typesense" in mock_get_adapter.call_args[0][1]) is has_plane
+    adapter_params = mock_get_adapter.call_args[0][1]
+    assert ("typesense" in adapter_params) is has_plane
     assert ("typesense_address" in kwargs) is has_plane
+    assert ("typesense" in dry_run_params) is has_plane
+    if has_plane:
+        assert adapter_params["typesense"] == typesense.model_dump()
+        assert dry_run_params["typesense"] == typesense.model_dump()
