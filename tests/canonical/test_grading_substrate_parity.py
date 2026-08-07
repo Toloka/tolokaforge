@@ -95,6 +95,7 @@ from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
+from tolokaforge.core.grading.golden_replay import resolve_initial_state
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -106,7 +107,7 @@ from tolokaforge.core.grading.key_manifest import (
     entry,
     family_author_keys,
 )
-from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state
+from tolokaforge.core.grading.state_checks import StateChecker, extract_db_state, state_digest
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import TrialTimeline, build_trial_timeline
 from tolokaforge.core.grading.transcript import evaluate_transcript_rules
@@ -129,7 +130,6 @@ from tolokaforge.runner.grading import (
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
-    CORE_ONLY_HASH_SKIP,
     LEDGER_KEYS,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
@@ -176,8 +176,8 @@ _COMPOSITION_KEY = "state_checks.hash.weight"
 # from every rule that agrees with it at 0 and 1.
 _COMPOSITION_JSONPATH_SCORE = 0.5
 
-# Case name -> the hash verdict it produces against the pack's committed
-# expected_state_hash. Lock 7 asserts core's evaluator really returns these.
+# Case name -> the hash verdict it produces against the hash of the state the pack's
+# task declares it starts in. Lock 7 asserts core's evaluator really returns these.
 _COMPOSITION_HASH_CASES: tuple[tuple[str, float], ...] = (
     ("hash_matching", 1.0),
     ("hash_diverging", 0.0),
@@ -198,7 +198,22 @@ _METHOD_CASE = "split_components"
 _HASH_SCORE_NAME = "hash_score"
 _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
 
+_UNSCORED_COMPONENT = -1.0
+"""What ``GradeComponents`` carries for a component the runner did not score.
+
+Every component evaluator in ``tolokaforge/runner/grading.py`` returns it when
+handed nothing to evaluate, so a slot holding it means no evaluation happened
+whatever the ledger recorded for the keys that feed it.
+"""
+
 _HASH_FAMILY_ROOT = "state_checks.hash"
+_EXPECT_INITIAL_STATE_KEY = "state_checks.hash.expect_initial_state"
+_GOLDEN_ACTIONS_KEY = "state_checks.hash.golden_actions"
+
+# The one in-repo pack that both declares golden actions and gives them a world to be
+# replayed in — a JSON initial-state file and an ``mcp_server`` whose tools they call.
+# It sits under ``tests/data/tasks/`` for the reason :data:`_PROBE_PACK` does.
+_GOLDEN_REPLAY_PACK = "shop_orders_02"
 
 # Every function that can hand a hash verdict to the shared composer, as
 # (repo-relative module, function name). Asserted as set equality against the
@@ -228,7 +243,7 @@ _ARCHITECTURAL_EXEMPTIONS = frozenset(
 )
 
 # Non-BOTH keys that should be both and are not yet. tracking_issue is required.
-_DRIFT_EXEMPTIONS = frozenset({"state_checks.hash.expected_state_hash"})
+_DRIFT_EXEMPTIONS: frozenset[str] = frozenset()
 
 # Scored keys that claim both substrates but are not differentially proven
 # in-process. A key added here is a key whose parity claim rests on field
@@ -639,22 +654,33 @@ _CONSTRAINT_KIND_KEYS = frozenset(
 )
 
 
+_BLOCK_SWITCH = "enabled"
+
+
 def _authoring_the_same_key(declared_key: str, author_key: str) -> bool:
     """Whether ``declared_key`` is part of writing ``author_key`` down.
 
-    Three structural cases, none of them a second check. The ancestors a leaf
+    Four structural cases, none of them a second check. The ancestors a leaf
     lives under: a constraint kind needs the block and the list around it. The
     leaves of a key standing for a list: writing something in the list is what
     authoring the list looks like. And another kind beside a kind — a composite
     is an expression over other kinds and cannot be written without them, which
     is why the sharper assertion on what a pack authors at *top level* is the one
     that keeps a kind's pack about that kind.
+
+    The fourth is the switch that turns a block on. A source inside a block cannot
+    be written without it — ``state_checks.hash.expect_initial_state`` under an
+    ``enabled: false`` block is read by nothing — and the switch carries no verdict
+    of its own: with it off there is no component to discriminate the two trials by,
+    so it cannot be what discriminated them.
     """
+    block, _, leaf = author_key.rpartition(".")
     return (
         declared_key == author_key
         or author_key.startswith(f"{declared_key}.")
         or declared_key.startswith(f"{author_key}.")
         or {declared_key, author_key} <= _CONSTRAINT_KIND_KEYS
+        or (leaf != _BLOCK_SWITCH and declared_key == f"{block}.{_BLOCK_SWITCH}")
     )
 
 
@@ -780,12 +806,23 @@ class _FixtureStateDBClient:
 
 
 def _core_verdict(
-    family: str, grading_config: core_models.GradingConfig, case: _TrialCase, task_dir: Path
+    family: str,
+    grading_config: core_models.GradingConfig,
+    case: _TrialCase,
+    task_dir: Path,
+    *,
+    task_initial_state: core_models.InitialStateConfig | None,
 ) -> tuple[float, float]:
-    """(component score, combined score) from the core engine's real combine."""
-    grade = GradingEngine(grading_config, task_dir=task_dir).grade_trajectory(
-        case.core_trajectory, case.state
-    )
+    """(component score, combined score) from the core engine's real combine.
+
+    The engine is built the way ``adapters/base.py`` builds it for a real trial, so a
+    pack whose grading reads a task-level fact — the state it starts in, which the
+    hash block's ``expect_initial_state`` source compares against — is graded here
+    against the same fact production would hand it rather than against nothing.
+    """
+    grade = GradingEngine(
+        grading_config, task_dir=task_dir, task_initial_state=task_initial_state
+    ).grade_trajectory(case.core_trajectory, case.state)
     component = getattr(grade.components, family, None)
     assert component is not None, (
         f"the core engine produced no {family!r} component — either that family has no "
@@ -817,15 +854,89 @@ def _runner_custom_checks_score(
         servicer.shutdown()
 
 
-def _runner_verdict(
-    family: str, task_description: runner_models.TaskDescription, case: _TrialCase
+def _write_case_state_into_the_trial_database(
+    servicer: RunnerServiceImpl, trial_id: str, tables: Mapping[str, list[dict[str, Any]]]
+) -> None:
+    """Move the trial's database to ``tables``, one upsert per record.
+
+    Generic over the fixture: every record of every table is written under the
+    upsert's own key resolution, so a pack's authored state reaches db-service
+    without this helper knowing which tables it holds. Upsert rather than a wholesale
+    replace because that is the mutation db-service offers for a record that may or
+    may not already be there — a case that expects a record *removed* would need a
+    delete this does not write, and the verdict would then disagree with the fixture
+    rather than quietly agree with it.
+    """
+    for table, records in tables.items():
+        servicer._run_async(
+            servicer.db_client.mutate(
+                trial_id, table, [{"op": "upsert", "record": record} for record in records]
+            )
+        )
+
+
+def _runner_state_checks_hash_verdict(
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    *,
+    trial_id: str,
 ) -> tuple[float, float]:
-    """(component score, combined score) from the runner's real evaluators."""
+    """(state_checks component, trial score) from the runner's own ``GradeTrial``.
+
+    The hash evaluator reads the trial's database rather than the case's ``state``
+    mapping, so the case has to *be* the database: ``RegisterTrial`` provisions it
+    from the pack's ``initial_state`` — which is the expected side of the comparison —
+    and the trial's own records are written over it before grading.
+
+    The combined score is the runner's own fold off the same response, so both halves
+    of the return come from one real trial rather than from a second computation here.
+    """
+    _register_pack(servicer, context, task_description, trial_id)
+    _replay_authored_calls(servicer, context, trial_id, case)
+    _write_case_state_into_the_trial_database(servicer, trial_id, case.state["db"])
+
+    response = _grade_registered_trial(
+        servicer, context, trial_id, json.dumps(case.runner_messages)
+    )
+    assert response.success is True, response.error
+
+    component = response.grade.components.state_checks
+    assert component != _UNSCORED_COMPONENT, (
+        "the runner graded the pack without scoring state_checks, so this cell carries "
+        "the unscored sentinel rather than a hash verdict — two of them read as "
+        f"agreement between the substrates and prove nothing: {response.grade.reasons!r}"
+    )
+    return component, response.grade.score
+
+
+def _runner_verdict(
+    family: str,
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    *,
+    servicer: RunnerServiceImpl,
+    context: Any,
+    trial_id: str,
+) -> tuple[float, float]:
+    """(component score, combined score) from the runner's real evaluators.
+
+    ``state_checks`` splits on what the pack declares rather than on the key under
+    test: a hash block naming a state the trial is compared against is scored by an
+    evaluator that resets and hashes a real database, which is reachable only through
+    a registered trial. A pack declaring no hash source keeps the in-process JSONPath
+    path, so no cell that passed before this arm existed is driven differently now.
+    """
     grading = task_description.grading
     if family == "state_checks":
-        component, _ = evaluate_jsonpath_checks(
-            grading.state_checks.jsonpath_checks, state=case.state
-        )
+        state_checks = grading.state_checks
+        undeclared = runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE
+        if state_checks.hash_enabled and state_checks.hash_comparison_basis() is not undeclared:
+            return _runner_state_checks_hash_verdict(
+                task_description, case, servicer, context, trial_id=trial_id
+            )
+        component, _ = evaluate_jsonpath_checks(state_checks.jsonpath_checks, state=case.state)
         components = {"jsonpath_score": component}
     elif family == "transcript_rules":
         result = evaluate_transcript_rules(case.runner_timeline, grading.transcript_rules)
@@ -1036,14 +1147,25 @@ class _SubstrateDifferential:
 
 
 def _drive_both_substrates(
-    author_key: str, test_data_dir: Path, tmp_path: Path
+    author_key: str,
+    test_data_dir: Path,
+    tmp_path: Path,
+    servicer: RunnerServiceImpl,
+    context: Any,
 ) -> _SubstrateDifferential:
-    """Grade a key's satisfying and violating trials through each substrate's own path."""
+    """Grade a key's satisfying and violating trials through each substrate's own path.
+
+    The two cases take a trial id apiece: a runner arm that registers a trial mutates
+    its database, so grading both cases under one id would compare the second against
+    what the first left behind.
+    """
     family = author_key.split(".")[0]
+    task_id = _task_id_for(author_key)
     pack = _pack_dir(test_data_dir, author_key)
     adapter = _parity_adapter(test_data_dir)
-    core_config = adapter.get_grading_config(_task_id_for(author_key))
-    task_description = adapter.to_task_description(_task_id_for(author_key))
+    core_config = adapter.get_grading_config(task_id)
+    task_description = adapter.to_task_description(task_id)
+    initial_state = adapter.get_task(task_id).initial_state
     satisfying = _load_case(pack, "satisfying")
     violating = _load_case(pack, "violating")
     # The core engine imports the pack's ``checks.py`` from its task dir, which
@@ -1052,10 +1174,28 @@ def _drive_both_substrates(
     core_task_dir = tmp_path / "core_task_dir"
     shutil.copytree(pack, core_task_dir)
 
-    core_ok, core_ok_total = _core_verdict(family, core_config, satisfying, core_task_dir)
-    core_bad, core_bad_total = _core_verdict(family, core_config, violating, core_task_dir)
-    runner_ok, runner_ok_total = _runner_verdict(family, task_description, satisfying)
-    runner_bad, runner_bad_total = _runner_verdict(family, task_description, violating)
+    core_ok, core_ok_total = _core_verdict(
+        family, core_config, satisfying, core_task_dir, task_initial_state=initial_state
+    )
+    core_bad, core_bad_total = _core_verdict(
+        family, core_config, violating, core_task_dir, task_initial_state=initial_state
+    )
+    runner_ok, runner_ok_total = _runner_verdict(
+        family,
+        task_description,
+        satisfying,
+        servicer=servicer,
+        context=context,
+        trial_id=f"differential_{task_id}_satisfying:0",
+    )
+    runner_bad, runner_bad_total = _runner_verdict(
+        family,
+        task_description,
+        violating,
+        servicer=servicer,
+        context=context,
+        trial_id=f"differential_{task_id}_violating:0",
+    )
     return _SubstrateDifferential(
         core_ok=core_ok,
         core_bad=core_bad,
@@ -1089,7 +1229,9 @@ def _assert_the_substrates_agree(author_key: str, verdict: _SubstrateDifferentia
 
 
 @pytest.mark.parametrize("author_key", [item.author_key for item in _differential_entries()])
-def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_data_dir, tmp_path):
+def test_both_substrates_discriminate_each_shared_scored_key(
+    author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
     item = entry(author_key)
     pack = _pack_dir(test_data_dir, author_key)
 
@@ -1116,7 +1258,9 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
             "belong inside its own expression rather than next to it"
         )
 
-    verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
+    verdict = _drive_both_substrates(
+        author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+    )
     _assert_both_substrates_discriminate(author_key, verdict)
 
     assert verdict.core_ok_total > verdict.core_bad_total
@@ -1131,26 +1275,46 @@ def test_both_substrates_discriminate_each_shared_scored_key(author_key, test_da
 # --------------------------------------------------------------------------
 
 
+_EXPECT_INITIAL_STATE_PACK = _task_id_for(_EXPECT_INITIAL_STATE_KEY)
+
 _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
-    {_ALL_KEYS_TASK: _PARITY_GLOB, _PROBE_PACK: _TASKS_GLOB}
+    {
+        _ALL_KEYS_TASK: _PARITY_GLOB,
+        _PROBE_PACK: _TASKS_GLOB,
+        _GOLDEN_REPLAY_PACK: _TASKS_GLOB,
+        _EXPECT_INITIAL_STATE_PACK: _PARITY_GLOB,
+    }
 )
 """The packs whose declared keys together carry the manifest, and the glob loading each.
 
-Two packs rather than one because ``state_checks.db_probes`` is exclusive with the other
-state sources: a pack declaring the probes cannot declare beside them the hash block and
-the JSONPath assertions ``all_keys`` carries. So the manifest's totality is a union over
-packs each of which is authorable on its own, and the two live under different roots —
-hence a glob apiece.
+More than one pack because a key ``all_keys`` may not declare beside the rest still has
+to be translated by something. ``state_checks.db_probes`` is exclusive with the hash
+block and the JSONPath assertions ``all_keys`` carries; the two hash sources name
+different expected states, so at most one of them lives there; and ``golden_actions``
+needs a task supplying a JSON initial-state file and an ``mcp_server`` to replay
+against, which ``all_keys`` supplies neither of. So the manifest's totality is a union
+over packs each of which is authorable on its own, and they do not all live under one
+root — hence a glob apiece.
 """
 
-_TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType({_PROBES_KEY: _PROBE_PACK})
+_TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType(
+    {
+        _PROBES_KEY: _PROBE_PACK,
+        _GOLDEN_ACTIONS_KEY: _GOLDEN_REPLAY_PACK,
+        _EXPECT_INITIAL_STATE_KEY: _EXPECT_INITIAL_STATE_PACK,
+    }
+)
 """The pack that must carry a key to the runner as something other than the field default.
 
-``all_keys`` owns every key this map does not name, so a key added to the manifest has an
-owner from the start and fails the lock until that pack declares it. Ownership is per key
-rather than per pack because declaring a key is not translating it: ``db_probe_grading``
-writes ``combine.method: weighted`` and ``llm_judge: null``, both of which reach the runner
-as exactly the field default, so a per-pack claim over it would assert nothing about
+Two reasons put a key here. The first is legality: a key ``all_keys`` cannot declare
+beside the rest needs a pack that can. The second is attribution — ``expect_initial_state``
+is legal there, but the pack named for it declares that key alone, so nothing else in the
+pack could be what put the field off its default. ``all_keys`` owns every key neither
+reason claims, so a key added to the manifest has an owner from the start and fails the
+lock until some pack declares it. Ownership is per key rather than per pack because
+declaring a key is not translating it: ``db_probe_grading`` writes
+``combine.method: weighted`` and ``llm_judge: null``, both of which reach the runner as
+exactly the field default, so a per-pack claim over it would assert nothing about
 translation and be red besides.
 """
 
@@ -1328,12 +1492,13 @@ def _composition_verdict(
     The pack is copied and its ``state_checks.hash.weight`` rewritten per cell, so
     every cell crosses the whole load path — YAML, the shared load gate, and
     ``NativeAdapter.to_task_description`` — rather than a config mutated after
-    validation. Core's hash verdict is the real one: the pack commits the
-    ``expected_state_hash`` of its ``hash_matching`` state, so ``check_hash``
-    produces the verdict in process. The runner's is handed in, because its hash
-    evaluator drives db-service over HTTP — honest only because that verdict is
-    binary, which lock 7 holds, and because the runner producing it for itself is
-    proven at the integration tier by the hash family's ``enforcing_test``.
+    validation. Core's hash verdict is the real one: the pack declares its initial
+    state as the expected one and its ``hash_matching`` case reproduces it, so
+    ``check_hash`` produces the verdict in process. The runner's is handed in,
+    because its hash evaluator drives db-service over HTTP — honest only because
+    that verdict is binary, which lock 7 holds, and because the runner producing it
+    for itself is proven at the integration tier by the hash family's
+    ``enforcing_test``.
     """
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
     root = tmp_path / f"weight_{weight}_{case}"
@@ -1350,7 +1515,13 @@ def _composition_verdict(
     runner_grading = adapter.to_task_description(task_id).grading
     trial = _load_case(pack, case)
 
-    core_component, core_total = _core_verdict("state_checks", core_config, trial, task_dir)
+    core_component, core_total = _core_verdict(
+        "state_checks",
+        core_config,
+        trial,
+        task_dir,
+        task_initial_state=adapter.get_task(task_id).initial_state,
+    )
     core_jsonpath, _ = StateChecker().check_jsonpaths(
         trial.state, core_config.state_checks.jsonpaths
     )
@@ -1576,9 +1747,11 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
 
     The runner's hash evaluator drives db-service over HTTP and core's golden-replay
     producer needs a task's MCP server, so a canonical-tier call reaches neither.
-    What is callable is core's ``expected_state_hash`` branch, and the composition
-    fixture's two cases are graded through it — which pins the two values lock 6
-    hands the runner as the ones core's own evaluator returns for the same states.
+    What is callable is ``check_hash``, which core's ``expect_initial_state`` branch
+    reaches by hashing the pack's declared initial state; the composition fixture's
+    two cases are graded through it against a digest computed here the way that
+    branch computes it — which pins the two values lock 6 hands the runner as the
+    ones core's own evaluator returns for the same states.
     """
     producers = _declared_hash_verdict_producers()
     assert producers == _HASH_VERDICT_PRODUCERS, (
@@ -1594,15 +1767,20 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
         )
 
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
-    expected_hash = yaml.safe_load((pack / "grading.yaml").read_text())["state_checks"]["hash"][
-        "expected_state_hash"
-    ]
+    task_id = _task_id_for(_COMPOSITION_KEY)
+    adapter = _parity_adapter(test_data_dir)
+    expected_hash = state_digest(
+        resolve_initial_state(
+            task_dir=adapter.get_task_dir(task_id),
+            initial_state_json_db=adapter.get_task(task_id).initial_state.json_db,
+        )
+    )
     for case, hash_score in _COMPOSITION_HASH_CASES:
         db_state = extract_db_state(_load_case(pack, case).state)
         actual, _ = StateChecker().check_hash(db_state, expected_hash)
         assert actual == hash_score, (
-            f"the composition fixture's {case!r} case scores {actual} against the pack's "
-            f"committed expected_state_hash, not the {hash_score} lock 6 assumes"
+            f"the composition fixture's {case!r} case scores {actual} against the hash of "
+            f"the state its task declares it starts in, not the {hash_score} lock 6 assumes"
         )
 
 
@@ -1942,8 +2120,13 @@ def test_both_substrates_score_trace_checks_through_their_own_grading_path(
     satisfying = _load_case(pack, "satisfying")
     violating = _load_case(pack, "violating")
 
-    core_ok, _ = _core_verdict("trace_checks", core_config, satisfying, tmp_path)
-    core_bad, _ = _core_verdict("trace_checks", core_config, violating, tmp_path)
+    initial_state = adapter.get_task(_TRACE_CHECKS_TASK).initial_state
+    core_ok, _ = _core_verdict(
+        "trace_checks", core_config, satisfying, tmp_path, task_initial_state=initial_state
+    )
+    core_bad, _ = _core_verdict(
+        "trace_checks", core_config, violating, tmp_path, task_initial_state=initial_state
+    )
     runner_ok = _runner_trace_checks_grade(
         runner_service, task_description, satisfying, "trace_ok:0", mock_grpc_context
     )
@@ -2321,7 +2504,9 @@ def test_a_state_reading_pack_grades_through_the_runners_own_registration(
 
 
 @pytest.mark.parametrize("author_key", _TRACE_CONFIG_INPUT_KEYS)
-def test_both_substrates_read_each_per_constraint_config_input(author_key, test_data_dir, tmp_path):
+def test_both_substrates_read_each_per_constraint_config_input(
+    author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
     """A field that shapes how a kind scores, driven the way lock 3 drives a scored key.
 
     Lock 3 selects ``SCORED_CHECK``, so these five escape it — they carry no
@@ -2332,7 +2517,9 @@ def test_both_substrates_read_each_per_constraint_config_input(author_key, test_
     or the argument the two matchers correlate on is. Discrimination here is
     therefore the field being read, not the constraint around it working.
     """
-    verdict = _drive_both_substrates(author_key, test_data_dir, tmp_path)
+    verdict = _drive_both_substrates(
+        author_key, test_data_dir, tmp_path, runner_service, mock_grpc_context
+    )
     _assert_both_substrates_discriminate(author_key, verdict)
     _assert_the_substrates_agree(author_key, verdict)
 
@@ -2754,6 +2941,7 @@ class _Driver(str, Enum):
 
     PARITY_PACK = "parity_pack"
     HASH_FAMILY = "hash_family"
+    EXPECT_INITIAL_STATE = "expect_initial_state"
     DB_PROBES = "db_probes"
     LLM_JUDGE = "llm_judge"
 
@@ -2783,7 +2971,7 @@ _LEDGER_KEY_DRIVERS: Mapping[str, _Driver] = MappingProxyType(
         "trace_checks.constraints.negate": _Driver.PARITY_PACK,
         "state_checks.hash.enabled": _Driver.HASH_FAMILY,
         "state_checks.hash.golden_actions": _Driver.HASH_FAMILY,
-        "state_checks.hash.expected_state_hash": _Driver.HASH_FAMILY,
+        "state_checks.hash.expect_initial_state": _Driver.EXPECT_INITIAL_STATE,
         "state_checks.db_probes": _Driver.DB_PROBES,
         "llm_judge": _Driver.LLM_JUDGE,
     }
@@ -2797,14 +2985,6 @@ that silently proves nothing.
 """
 
 _LEDGER_SITE_KEYS = tuple(item.author_key for item in LEDGER_KEYS if item.runner_field is not None)
-
-_UNSCORED_COMPONENT = -1.0
-"""What ``GradeComponents`` carries for a component the runner did not score.
-
-Every component evaluator in ``tolokaforge/runner/grading.py`` returns it when
-handed nothing to evaluate, so a slot holding it means no evaluation happened
-whatever the ledger recorded for the keys that feed it.
-"""
 
 
 def test_every_ledger_key_names_a_driver_that_can_populate_it():
@@ -2846,23 +3026,10 @@ def _assert_the_site_reported(
         f"recording site filed the key — {response.error}"
     )
 
-    if item.coverage is SubstrateCoverage.CORE_ONLY:
-        assert author_key in family_author_keys(_HASH_FAMILY_ROOT), (
-            f"{author_key} is CORE_ONLY but outside the hash family, and "
-            "CORE_ONLY_HASH_SKIP is the only standing-skip record this helper "
-            "knows. Map coverage to the record its site files, per key"
-        )
-        expected = skip_note(author_key, CORE_ONLY_HASH_SKIP)
-        assert expected in response.grade.reasons, (
-            f"{author_key} is CORE_ONLY, so its recording site must file the standing "
-            f"skip and the grade must say so. Expected {expected!r} in "
-            f"{response.grade.reasons!r}"
-        )
-        return
-
     assert item.runner_evaluator is not None, (
-        f"{author_key}: the manifest gives it neither a runner evaluator nor CORE_ONLY "
-        "coverage, so this lock cannot say what its recording site should have filed"
+        f"{author_key}: the manifest gives it no runner evaluator, so this lock cannot "
+        "say what its recording site should have filed — a ledger key the runner never "
+        "evaluates needs a standing-skip record and a site that files it"
     )
     assert skip_note_prefix(author_key) not in response.grade.reasons, (
         f"{author_key} declares the runner evaluator {item.runner_evaluator}, so its "
@@ -2933,9 +3100,57 @@ _HASH_DRIVER_TASK: dict[str, Any] = {
         "state_checks": {
             "hash_enabled": True,
             "golden_actions": [{"tool_name": _HASH_DRIVER_TOOL, "arguments": {"order_id": "O1"}}],
-            "expected_hash": "deadbeef",
         },
     },
+}
+
+_INITIAL_ORDERS = {"orders": [{"order_id": "O1", "status": "pending"}]}
+
+#: The trial's own database, one record away from the state it started in. Both
+#: substrates read their two sides from these two mappings — the runner by seeding
+#: db-service with the first and mutating it into the second, core by hashing the
+#: first as the task's declared initial state and the second as the trial's — so a
+#: verdict that differs between them is the grading path's doing.
+_ORDERS_AFTER_A_CHANGE = {"orders": [{"order_id": "O1", "status": "shipped"}]}
+
+_EXPECT_INITIAL_STATE_TASK: dict[str, Any] = {
+    "task_id": "ledger_expect_initial_state",
+    "name": "Ledger expect_initial_state",
+    "category": "test",
+    "description": "A refusal-shaped trial whose expected final state is its initial state",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {
+        "tables": _INITIAL_ORDERS,
+        "schemas": [
+            {
+                "table_name": "orders",
+                "fields": {"order_id": "string", "status": "string"},
+                "primary_key": "order_id",
+            }
+        ],
+    },
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.5,
+        "state_checks": {"hash_enabled": True, "expect_initial_state": True},
+    },
+}
+"""A second hash-driver task, because ``_HASH_DRIVER_TASK`` cannot carry this key.
+
+That one declares ``golden_actions``, and the authored block refuses
+``expect_initial_state`` beside it — so a driver sharing it would fail lock 15's
+first claim, the key never being populated on the config the runner graded.
+"""
+
+#: What the same pack declares to the core engine, which takes the authored block and
+#: the task's own initial state rather than the runner's flattened naming.
+_EXPECT_INITIAL_STATE_GRADING: dict[str, Any] = {
+    "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+    "state_checks": {"hash": {"enabled": True, "expect_initial_state": True}},
 }
 
 _JUDGE_DRIVER_TASK: dict[str, Any] = {
@@ -3005,9 +3220,9 @@ def _drive_hash_family(
 ) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
     """Grade a hash-enabled trial whose one golden action names a registered tool.
 
-    Asserts the replay ran whole. ``hash_family_accounting(EVALUATED)`` is recorded
-    whenever ``_execute_hash_grading`` returns — including when every golden action
-    failed to take effect, which still grades ``success=True`` with
+    Asserts the replay ran whole. The family is accounted for from the basis the
+    evaluator returns, and it returns one whenever it completes — including when every
+    golden action failed to take effect, which still grades ``success=True`` with
     ``state_checks == 1.0``. All four of lock 15's claims hold on that hollow
     evaluation, so without this guard claim 4 would mean nothing for the hash family.
     """
@@ -3022,6 +3237,36 @@ def _drive_hash_family(
         f"against a partial golden world and evaluating it proves nothing: "
         f"{response.grade.reasons!r}"
     )
+    return servicer.trials[trial_id].grading_config, response
+
+
+def _drive_expect_initial_state(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str, changed: bool = False
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a trial whose declared hash source is the state its task starts in.
+
+    ``changed`` moves the trial's database away from that state through the same
+    db-service the evaluator resets and hashes, so the two cells differ in what the
+    trial left behind rather than in what the pack declared.
+    """
+    task_description = runner_models.TaskDescription.model_validate(_EXPECT_INITIAL_STATE_TASK)
+    _register_pack(servicer, context, task_description, trial_id)
+    if changed:
+        servicer._run_async(
+            servicer.db_client.mutate(
+                trial_id,
+                "orders",
+                [
+                    {
+                        "op": "upsert",
+                        "record": _ORDERS_AFTER_A_CHANGE["orders"][0],
+                        "key": "order_id",
+                    }
+                ],
+            )
+        )
+
+    response = _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
     return servicer.trials[trial_id].grading_config, response
 
 
@@ -3095,6 +3340,8 @@ def _drive_the_key(
         return _drive_parity_pack(author_key, test_data_dir, servicer, context, trial_id=trial_id)
     if driver is _Driver.HASH_FAMILY:
         return _drive_hash_family(servicer, context, trial_id=trial_id)
+    if driver is _Driver.EXPECT_INITIAL_STATE:
+        return _drive_expect_initial_state(servicer, context, trial_id=trial_id)
     if driver is _Driver.DB_PROBES:
         return _drive_db_probes(test_data_dir, servicer, context, monkeypatch, trial_id=trial_id)
     if driver is _Driver.LLM_JUDGE:
@@ -3275,7 +3522,7 @@ def test_the_site_lock_rejects_hash_accounting_that_files_nothing(
     tests elsewhere, and a lock that relied on those going red would not be reading
     its own claim.
     """
-    monkeypatch.setattr(runner_service_module, "hash_family_accounting", lambda outcome: {})
+    monkeypatch.setattr(runner_service_module, "hash_family_accounting", lambda basis: {})
 
     grading_config, response = _drive_hash_family(
         runner_service,
@@ -3286,6 +3533,59 @@ def test_the_site_lock_rejects_hash_accounting_that_files_nothing(
     assert response.success is False, "the audit was meant to fail the RPC"
     with pytest.raises(AssertionError, match="GradeTrial failed"):
         _assert_the_site_reported("state_checks.hash.enabled", grading_config, response)
+
+
+# --------------------------------------------------------------------------
+# 16. Both substrates score a comparison against the initial state alike
+# --------------------------------------------------------------------------
+
+
+def _core_expect_initial_state_verdict(final_db: dict[str, Any]) -> float:
+    """The core engine's ``state_checks`` for a trial ending in ``final_db``.
+
+    Hashes the task's declared initial state in core's own algebra and compares the
+    trial's state against it, which is the whole of what the runner does in its
+    algebra — so the two verdicts agreeing is a portability claim about the
+    proposition rather than about a digest neither substrate could share (#915).
+    """
+    grade = GradingEngine(
+        core_models.GradingConfig(**_EXPECT_INITIAL_STATE_GRADING),
+        task_initial_state=core_models.InitialStateConfig(json_db=_INITIAL_ORDERS),
+    ).grade_trajectory(_messageless_trajectory("expect_initial_state"), {"db": final_db})
+    return grade.components.state_checks
+
+
+@pytest.mark.parametrize(
+    ("changed", "final_db", "expected"),
+    [
+        pytest.param(False, _INITIAL_ORDERS, 1.0, id="the_trial_left_the_state_as_it_found_it"),
+        pytest.param(True, _ORDERS_AFTER_A_CHANGE, 0.0, id="the_trial_changed_a_record"),
+    ],
+)
+def test_both_substrates_score_a_comparison_against_the_initial_state_alike(
+    changed, final_db, expected, runner_service, mock_grpc_context
+):
+    """``state_checks.hash.expect_initial_state``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The runner arm is its whole production path — ``RegisterTrial``, the trial's own
+    db-service state, ``GradeTrial`` — so what is compared is the state the evaluator
+    reset to rather than a state this module handed it. Neither cell can be the
+    unscored sentinel, both being asserted against a verdict of their own.
+
+    One row carries both arms' inputs, because each substrate reaches the trial's
+    final state its own way: ``changed`` is the mutation the runner's db-service
+    takes, ``final_db`` the same state as core receives it.
+    """
+    _, response = _drive_expect_initial_state(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id(f"differential_{changed}", _EXPECT_INITIAL_STATE_KEY),
+        changed=changed,
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(expected)
+    assert _core_expect_initial_state_verdict(final_db) == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------

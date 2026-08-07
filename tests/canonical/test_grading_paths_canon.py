@@ -35,6 +35,7 @@ from tolokaforge.core.grading.trace_event_kind import TraceEventKind
 from tolokaforge.core.grading.trace_timeline import build_trial_timeline
 from tolokaforge.core.models import (
     GradingConfig,
+    InitialStateConfig,
     Message,
     MessageRole,
     RecordedToolCall,
@@ -200,12 +201,12 @@ def _scenario_weighted_combine():
 
 
 def _scenario_fail_hash_mismatch():
-    """Wrong expected_state_hash -> state_checks 0.0 -> binary_pass False."""
+    """A trial that left the state its task started in -> state_checks 0.0 -> no pass."""
     config = {
         "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 1.0},
         "state_checks": {
             "jsonpaths": [],
-            "hash": {"enabled": True, "weight": 1.0, "expected_state_hash": "0" * 64},
+            "hash": {"enabled": True, "weight": 1.0, "expect_initial_state": True},
         },
     }
     traj = _trajectory([Message(role=MessageRole.USER, content="go")])
@@ -261,6 +262,13 @@ _RECORDS_PRESENT = {
     "jsonpath_unknown_operator_fails_loud": False,
 }
 
+# The state each scenario's task declares it starts in, where its grading path compares
+# against one. A scenario absent from here declares none, which is what every path but
+# the hash one reads.
+_INITIAL_STATES = {
+    "fail_hash_mismatch": InitialStateConfig(json_db={"counter": 5, "status": "pending"}),
+}
+
 
 def _verdict(grade) -> dict:
     """Deterministic, snapshot-safe slice of a Grade (no volatile reasons strings)."""
@@ -288,14 +296,15 @@ def test_grading_path_verdict_is_pinned(name, canon_snapshot):
     grading_config = GradingConfig(**config_dict)
 
     # No judge_model, no task_dir => no LLM judge, no custom checks.
-    grade = GradingEngine(grading_config=grading_config).grade_trajectory(
-        trajectory, final_env_state
-    )
+    def graded():
+        return GradingEngine(
+            grading_config=grading_config, task_initial_state=_INITIAL_STATES.get(name)
+        ).grade_trajectory(trajectory, final_env_state)
+
+    grade = graded()
 
     # Determinism: a second fresh engine yields an identical verdict.
-    grade2 = GradingEngine(grading_config=grading_config).grade_trajectory(
-        trajectory, final_env_state
-    )
+    grade2 = graded()
     assert _verdict(grade2) == _verdict(grade)
 
     snap = canon_snapshot("grading_paths")

@@ -116,6 +116,7 @@ from tolokaforge.runner.grading_ledger import (
     NO_TIMELINE_EVENTS_SKIP,
     audit_accounted_keys,
     hash_family_accounting,
+    hash_family_skip_accounting,
     transcript_rules_author_keys,
 )
 from tolokaforge.runner.id_resolution import (
@@ -123,11 +124,12 @@ from tolokaforge.runner.id_resolution import (
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
-    GoldenAction,
+    HashComparisonBasis,
     HashGradingResult,
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerGradeComponents,
+    RunnerStateChecksConfig,
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
@@ -1518,30 +1520,25 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Trial {trial_id!r} is not gradeable: {type(exc).__name__}: {exc}",
             )
 
-        # Get state_checks config (may contain golden_actions)
+        # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
-        golden_actions: list[GoldenAction] = []
-        if state_checks_config:
-            golden_actions = state_checks_config.golden_actions
 
         # A) HASH-BASED GRADING
-        # Run hash grading when hash_enabled is set (even with empty golden_actions,
-        # which represents refusal tasks where the expected state == initial state).
+        # Run hash grading when hash_enabled is set (even with no source, which
+        # represents refusal tasks where the expected state == initial state).
         if state_checks_config and state_checks_config.hash_enabled:
             logger.info(
-                f"GradeTrial: {trial_id} - Executing hash-based grading with {len(golden_actions)} golden actions"
+                f"GradeTrial: {trial_id} - Executing hash-based grading against "
+                f"{state_checks_config.hash_comparison_basis().value}"
             )
             try:
                 hash_result = await self._execute_hash_grading(
-                    trial_id,
-                    trial_context,
-                    golden_actions,
-                    numeric_string_fields=state_checks_config.numeric_string_fields,
+                    trial_id, trial_context, state_checks_config
                 )
                 components.hash_match = hash_result.hash_match
                 components.hash_score = hash_result.hash_score
                 state_diff = hash_result.state_diff
-                accounted_keys.update(hash_family_accounting(EVALUATED))
+                accounted_keys.update(hash_family_accounting(hash_result.basis))
             except Exception as e:
                 logger.error(f"GradeTrial: Hash grading failed: {e}")
                 logger.error(traceback.format_exc())
@@ -1554,7 +1551,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # `hash:` keys still arrive populated with no evaluator to consume
             # them — the adapter fills golden_actions whether or not
             # `enabled: true` is set.
-            accounted_keys.update(hash_family_accounting(HASH_DISABLED_SKIP))
+            accounted_keys.update(hash_family_skip_accounting(HASH_DISABLED_SKIP))
 
         # A.2) JSONPATH ASSERTIONS (if jsonpath_checks exist)
         if state_checks_config and state_checks_config.jsonpath_checks:
@@ -2314,15 +2311,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         trial_context: TrialContextRuntime,
-        golden_actions: list[GoldenAction],
-        *,
-        numeric_string_fields: list[str] | None = None,
+        state_checks: RunnerStateChecksConfig,
     ) -> HashGradingResult:
         """
         Execute hash-based grading algorithm.
 
         Steps:
-        0. Resolve every golden-action name
+        0. Select the comparison basis and resolve every golden-action name
         1. Get current trial stable hash
         2. Snapshot current state
         3. Reset to initial state
@@ -2333,14 +2328,22 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         8. Compare hashes
         9. If mismatch, compute state diff
 
+        The basis is selected from ``state_checks`` once and returned on the result:
+        only :attr:`HashComparisonBasis.GOLDEN_REPLAY` replays anything, so the other
+        two compare the trial against the state step 3 restored — identically, since
+        what separates them is which declaration asked for it, which is the runtime
+        ledger's question rather than the verdict's.
+
         Args:
             trial_id: Trial identifier
             trial_context: Trial context with tools
-            golden_actions: List of golden path actions to execute
+            state_checks: The trial's state-check config, which names the source to
+                compare against and the fields whose numeric-looking strings fold
 
         Returns:
-            HashGradingResult with hash_match, hash_score, an optional state_diff, and
-            the record of how much of the golden path ran
+            HashGradingResult with hash_match, hash_score, the basis the comparison was
+            run against, an optional state_diff, and the record of how much of the
+            golden path ran
 
         Raises:
             UnresolvableGoldenAction: an action names no tool registered for the trial,
@@ -2348,7 +2351,12 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 is untouched — steps 1-4 mutate it, and a trial whose grading failed on
                 a pack defect must not be left holding the initial state.
         """
-        # 0. Resolve every authored name
+        # 0. Select the basis, then resolve every authored name
+        basis = state_checks.hash_comparison_basis()
+        golden_actions = (
+            state_checks.golden_actions if basis is HashComparisonBasis.GOLDEN_REPLAY else []
+        )
+        numeric_string_fields = state_checks.numeric_string_fields
         resolved_tool_names = resolve_golden_action_names(
             [action.tool_name for action in golden_actions],
             candidates=trial_context.agent_tools.keys(),
@@ -2507,6 +2515,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         return HashGradingResult(
             hash_match=hash_match,
             hash_score=hash_score,
+            basis=basis,
             state_diff=state_diff,
             golden_replay=GoldenReplayRecord(
                 authored=len(golden_actions), failures=tuple(replay_failures)
