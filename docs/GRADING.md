@@ -184,28 +184,35 @@ Every other row is drift and names the issue that closes it. The exemption sets
 live in the test module, not beside the manifest, so widening one is an edit a
 reviewer sees in the same commit.
 
-The `state_checks.hash` family sits at `DIFFERENTIAL_INTEGRATION`, and **its three
-members do not all claim the same coverage**, because which hash *source* a pack
-declares decides whether the two substrates compare the trial against the same
-expected state:
+The `state_checks.hash` family's members **do not all claim the same coverage**, because
+which hash *source* a pack declares decides whether the two substrates compare the trial
+against the same expected state:
 
-| Member | coverage | Tracked |
-|---|---|---|
-| `state_checks.hash.golden_actions` | `BOTH_SCORE_PARITY` | — |
-| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | — |
-| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | — |
+| Member | coverage | enforcement | Tracked |
+|---|---|---|---|
+| `state_checks.hash.golden_actions` | `BOTH_SCORE_PARITY` | integration differential | — |
+| `state_checks.hash.expect_initial_state` | `BOTH_SCORE_PARITY` | canonical differential | — |
+| `state_checks.hash` | `BOTH_SIGNAL_PARITY` | integration differential | — |
+| `state_checks.hash.enabled` | `BOTH_SIGNAL_PARITY` | integration differential | — |
 
-Neither carries a tracking issue of its own: the one shape still unproven is
+None carries a tracking issue of its own: the one shape still unproven is
 `expected_state_hash`, tracked on its own row above as **#693**.
 
 The fold rule is shared on every shape — both substrates call
-`compose_state_checks_score` — but the *inputs* to it still differ for one of the two
+`compose_state_checks_score` — but the *inputs* to it still differ for one of the three
 authorable source shapes, and for the two the authoring gate refuses:
 
 - **`golden_actions`** — proven, whenever the task supplies the world the replay needs.
   Both substrates replay the actions and hash the resulting state, so the same trial
   yields the same verdict and therefore the same component. This is the shape the
   `enforcing_test` drives.
+- **`expect_initial_state`** — proven, and the shape a refusal task declares. Both
+  substrates score one proposition — the trial's final state is the state its task
+  started in — each computing *both* sides of the comparison in its own hash algebra:
+  core hashes the task's declared `initial_state.json_db`, the runner resets db-service
+  and hashes what it restored. That is what a stored digest can never be, the two
+  algebras labelling the same state differently, and it is why this shape is proven
+  where `expected_state_hash` is not.
 - **`expected_state_hash` alone** — not proven. The adapter translates it onto the
   runner's `expected_hash` field and **no runner path reads it** (#693), so the
   runner falls back on refusal semantics and compares the trial against the
@@ -1079,13 +1086,17 @@ see the unchecked row in
   by nobody and a golden path there replays on neither substrate. The refusal is
   addressed at the source the pack wrote, and where it wrote both, at
   `expected_state_hash`: one flag to fix, so one finding.
-- **`enabled` with neither `expected_state_hash` nor `golden_actions`** is hash
-  grading with nothing to compare against, and the two substrates answer it
-  differently: core produces no hash verdict at all while the runner compares the
-  trial against its initial state, so the same trial takes two different
-  `state_checks` components. A refusal task — one whose expected final state *is* the
-  initial state — declares that state's `expected_state_hash` rather than an enabled
-  flag with no source.
+- **`enabled` with none of the three sources** is hash grading with nothing to compare
+  against, and the two substrates answer it differently: core produces no hash verdict
+  at all while the runner compares the trial against its initial state, so the same
+  trial takes two different `state_checks` components. A refusal task — one whose
+  expected final state *is* the initial state — declares `expect_initial_state: true`,
+  which is that comparison asked for rather than fallen into.
+- **`expect_initial_state` beside either other source** names two expected states with
+  no precedence between them, so the block is refused wherever it is constructed: the
+  core config, the authoring gate, both of the adapter's reads, and the runner's
+  translation of its own flattened fields. The message names both keys, either being
+  the author's to drop.
 
 Both halves read for truth rather than for `true`/absence: core branches on the
 flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, and an
@@ -1097,8 +1108,8 @@ one. The rules' class and the rest of the pre-run gate are in
 `hash` does not declare requests *nothing* — a misspelled `enalbed` or
 `expected_state_hsah` leaves the hash unscored while the trial grades on whatever else
 the pack declared, which scores *higher* than the same block spelled correctly. So the
-accepted set is exactly `enabled`, `expected_state_hash`, `golden_actions`, `weight` and
-`description`, and anything else is a load error
+accepted set is exactly `enabled`, `expected_state_hash`, `golden_actions`,
+`expect_initial_state`, `weight` and `description`, and anything else is a load error
 ([§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses)).
 `NativeAdapter` reads a `grading.yaml` on two errands — `get_grading_config` builds the
 host-side config, `to_task_description` lowers the block onto the runner's flattened
@@ -1114,10 +1125,11 @@ read a trial there passes through, and a key dropped at that read reaches
 | `enabled` | whether the hash is compared at all. A source under a falsy flag, or a truthy flag with no source, is refused rather than graded |
 | `expected_state_hash` | the literal to compare the final state against. Read first, so it returns before `golden_actions` is looked at |
 | `golden_actions` | the actions to replay for an expected state, where no literal is declared |
+| `expect_initial_state` | that the expected final state *is* the state the task starts in — the refusal-task shape, read from `initial_state.json_db` in either shape a task writes it. Refused beside either other source, which name a different expected state |
 | `weight` | the hash's share of the `state_checks` component where `jsonpaths` is non-empty too. No default — the shape that needs one and declares none is refused |
 | `description` | what the hash asserts, in the author's words. A non-empty value is appended in parentheses to the hash verdict's reason in `grade.reasons`, the way an assertion's `description` reads into its own |
 
-`description` is the one key of the five the runner's flattened block does not declare, so
+`description` is the one key of the six the runner's flattened block does not declare, so
 a trial the runner graded reports the hash verdict without it.
 
 **`golden_actions` is the list of actions to replay, or there is no replay.** A **falsy**
@@ -1193,8 +1205,8 @@ substrates the same verdict, and therefore the same component — see
 [Substrate Parity](#substrate-parity) for the manifest rows and the test that proves
 it.
 
-**Core-side**, a hash block declaring no source at all — `hash.enabled` with neither
-`expected_state_hash` nor `golden_actions` — yields **no** hash verdict and names the
+**Core-side**, a hash block declaring no source at all — `hash.enabled` with none of the
+three sources — yields **no** hash verdict and names the
 skipped check in `grade.reasons`, rather than a `0.0` that reads as a state the agent got
 wrong. Beside an empty `jsonpaths` list there is then no verdict at all, so the whole
 component is unevaluated and no score sits next to the reason contradicting it.
@@ -2499,8 +2511,9 @@ Findings come in three classes:
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| either hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — where the task's declared `adapter_type` is `native` | error, one for the block | `state_checks.hash.<the declared source>`, and `expected_state_hash` where both are declared |
-| a truthy `state_checks.hash.enabled` with neither `expected_state_hash` nor a non-empty `golden_actions`, where the task's declared `adapter_type` is `native` | error | `state_checks.hash.enabled` |
+| any hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — where the task's declared `adapter_type` is `native` | error, one for the block | `state_checks.hash.<the declared source>`, and the first the vocabulary names where several are declared |
+| a truthy `state_checks.hash.enabled` with no source — no `expected_state_hash`, no non-empty `golden_actions`, no truthy `expect_initial_state` — where the task's declared `adapter_type` is `native` | error | `state_checks.hash.enabled` |
+| a truthy `expect_initial_state` beside another hash source — raised as a config load error wherever the block is constructed, so it is reported alone | error | `state_checks.hash.expect_initial_state` |
 | either flag/source mismatch above, where the task declares any other `adapter_type` — an external adapter may compute the source it compares against from its own fixtures, the way the frozen-core family replays a golden-actions fixture the block never names | unchecked | the address the error would have carried |
 | a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
 | a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
@@ -2571,8 +2584,8 @@ requires nothing.
 
 **Two state sources, one of them a probe, is refused as well** — the mirror of the
 no-source rule above, and the two divide the block between them. `db_probes` beside a
-non-empty `jsonpaths`, or beside a `hash` block that is enabled and names
-`expected_state_hash` or `golden_actions`, hands one component two candidate scores with
+non-empty `jsonpaths`, or beside a `hash` block that is enabled and names any of its
+three sources, hands one component two candidate scores with
 no share to fold them by, and the substrates would not even discard the same one: only
 the runner evaluates a probe, while core folds the hash with the assertions. Neither
 config model loads the block, so core raises where the grading config is built and the
@@ -2781,7 +2794,8 @@ element's accepted set (`action_id`, `requestor`, `name`, `arguments`, `compare_
 for one; `info`, `required` for the other). A block a field holds whole —
 `state_checks.hash` and `transcript_rules.tool_expectations` — is named by its dotted
 path and answered the same way: `state_checks.hash accepts: enabled,
-expected_state_hash, golden_actions, weight, description`. Every field at this tier has
+expected_state_hash, expect_initial_state, golden_actions, weight, description`. Every
+field at this tier has
 a default a dropped key would substitute silently: `compare_args` resolving to `None`
 compares **every** declared argument, so a `compare_arg` typo makes the check strictly
 harder than its author wrote it and fails trials that satisfy what they wrote, and a key

@@ -847,8 +847,8 @@ def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(t
     assert "unknown key 'enalbed'" in message, message
     assert "did you mean 'enabled'?" in message, message
     assert (
-        "state_checks.hash accepts: enabled, expected_state_hash, golden_actions, weight, "
-        "description." in message
+        "state_checks.hash accepts: enabled, expected_state_hash, expect_initial_state, "
+        "golden_actions, weight, description." in message
     ), message
 
 

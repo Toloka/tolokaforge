@@ -312,7 +312,7 @@ _RULES: tuple[_Rule, ...] = (
         grading={"state_checks": {"hash": {"enabled": True}}},
         checker="_check_hash_source_declared",
         channel="errors",
-        message="Declare expected_state_hash or golden_actions",
+        message="Declare expected_state_hash or golden_actions or expect_initial_state",
     ),
     _Rule(
         label="enabled_hash_whose_source_an_adapter_may_supply",
@@ -1084,6 +1084,7 @@ def test_a_golden_action_under_a_disabled_flag_is_refused_at_the_source(
 _A_TRUTHY_HASH_SOURCE: dict[str, Any] = {
     "expected_state_hash": "aaaa",
     "golden_actions": [{"name": "write_file"}],
+    "expect_initial_state": True,
 }
 
 
@@ -1162,6 +1163,21 @@ _HASH_BLOCK_STATE_SOURCE_VERDICTS = (
         True,
         False,
         id="replay_under_a_false_flag",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True}, True, True, id="flag_and_an_initial_state"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": False},
+        True,
+        False,
+        id="an_initial_state_written_off",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "golden_actions": [{"name": "write_file"}]},
+        False,
+        False,
+        id="two_expected_states",
     ),
     pytest.param(
         {"enabled": "false", "expected_state_hash": "aaaa"},

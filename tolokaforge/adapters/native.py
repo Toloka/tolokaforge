@@ -634,6 +634,7 @@ class NativeAdapter(BaseAdapter):
                 state_checks = RunnerStateChecksConfig(
                     hash_enabled=hash_config.enabled,
                     expected_hash=hash_config.expected_state_hash,
+                    expect_initial_state=hash_config.expect_initial_state,
                     golden_actions=golden_actions,
                     hash_weight=hash_config.weight,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),

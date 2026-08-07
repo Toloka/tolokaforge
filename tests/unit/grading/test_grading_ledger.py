@@ -48,6 +48,7 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     audit_accounted_keys,
     hash_family_accounting,
+    hash_family_skip_accounting,
     populated_ledger_keys,
     reject_hash_members_read_by_another_evaluator,
     runner_dump_path,
@@ -56,6 +57,7 @@ from tolokaforge.runner.grading_ledger import (
 )
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
+    HashComparisonBasis,
     KeyAccounting,
     KeyAccountingRecord,
     RunnerGradingConfig,
@@ -233,20 +235,60 @@ def test_a_skipped_record_must_say_why():
         KeyAccountingRecord(outcome=KeyAccounting.SKIPPED)
 
 
-@pytest.mark.parametrize(
-    "runner_outcome", [EVALUATED, HASH_DISABLED_SKIP], ids=["hash_ran", "hash_disabled"]
-)
-def test_the_core_only_hash_key_is_a_skip_whichever_way_hash_grading_went(runner_outcome):
+def test_the_core_only_hash_key_is_a_skip_whichever_way_hash_grading_went():
     """`expected_state_hash` has no runner reader, so hash grading running is irrelevant.
 
     Sharing the family's outcome would report a populated, silently dead scored
     key as fully evaluated in `grade.reasons`.
     """
-    records = hash_family_accounting(runner_outcome)
+    ran = [hash_family_accounting(basis) for basis in HashComparisonBasis]
+    did_not_run = hash_family_skip_accounting(HASH_DISABLED_SKIP)
 
-    assert records["state_checks.hash.expected_state_hash"] == CORE_ONLY_HASH_SKIP
-    assert records["state_checks.hash.enabled"] == runner_outcome
-    assert records["state_checks.hash.golden_actions"] == runner_outcome
+    for records in (*ran, did_not_run):
+        assert records["state_checks.hash.expected_state_hash"] == CORE_ONLY_HASH_SKIP
+    assert did_not_run["state_checks.hash.enabled"] == HASH_DISABLED_SKIP
+    assert did_not_run["state_checks.hash.golden_actions"] == HASH_DISABLED_SKIP
+    assert did_not_run["state_checks.hash.expect_initial_state"] == HASH_DISABLED_SKIP
+
+
+@pytest.mark.parametrize(
+    ("basis", "source_read"),
+    [
+        pytest.param(
+            HashComparisonBasis.DECLARED_INITIAL_STATE,
+            "state_checks.hash.expect_initial_state",
+            id="declared_initial_state",
+        ),
+        pytest.param(
+            HashComparisonBasis.GOLDEN_REPLAY,
+            "state_checks.hash.golden_actions",
+            id="golden_replay",
+        ),
+        pytest.param(
+            HashComparisonBasis.UNDECLARED_INITIAL_STATE, None, id="undeclared_initial_state"
+        ),
+    ],
+)
+def test_only_the_source_that_selected_the_basis_is_accounted_as_evaluated(basis, source_read):
+    """The reason the evaluator returns its basis rather than the site re-reading the config.
+
+    A second read at the accounting site would file ``EVALUATED`` for whichever source
+    the config populated, so an evaluator that stopped consulting the key would keep
+    its ledger row and the read would be unobservable. Fed from the basis instead, a
+    source it did not select is absent — and a populated key nothing filed fails the
+    RPC, which is what makes the read falsifiable.
+
+    Asserted as the whole mapping, so the *other* source being absent is part of the
+    claim rather than something the row happens not to look at.
+    """
+    records = hash_family_accounting(basis)
+
+    assert records == {
+        "state_checks.hash": EVALUATED,
+        "state_checks.hash.enabled": EVALUATED,
+        "state_checks.hash.expected_state_hash": CORE_ONLY_HASH_SKIP,
+        **({source_read: EVALUATED} if source_read is not None else {}),
+    }
 
 
 def test_an_evaluated_key_is_fully_accounted():

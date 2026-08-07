@@ -23,7 +23,11 @@ from tests.utils.golden_source_shapes import sources_no_replay_can_iterate
 from tests.utils.runner_requests import register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
-from tolokaforge.core.grading.golden_replay import GoldenReplayError, UnreplayableGoldenSource
+from tolokaforge.core.grading.golden_replay import (
+    GoldenReplayError,
+    UnreplayableGoldenSource,
+    UnresolvableInitialState,
+)
 from tolokaforge.core.grading.state_checks import (
     consistent_hash,
     to_hashable,
@@ -34,6 +38,7 @@ from tolokaforge.core.grading.state_composition import (
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
     WEIGHT_DOMAIN_MESSAGE,
+    StateHashConfig,
 )
 from tolokaforge.core.models import (
     GradingConfig,
@@ -579,9 +584,177 @@ class TestUnevaluatedHashIsReported:
 
     def test_hash_enabled_with_no_source_names_the_skipped_check(self):
         grade = _grade({"jsonpaths": _HALF_SATISFIED_JSONPATHS, "hash": {"enabled": True}})
-        assert "neither expected_state_hash nor golden_actions" in grade.reasons
+        for source in HASH_SOURCE_KEYS:
+            assert source in grade.reasons, grade.reasons
         assert "state hash was not checked" in grade.reasons
         assert grade.components.state_checks == pytest.approx(0.5)
+
+
+#: The trial's own state, one record away from the state its task starts in — so a
+#: comparison against the initial state discriminates while every other reading of
+#: ``_DB_STATE`` in this module keeps its meaning.
+_A_TRIAL_THAT_CHANGED_A_RECORD = {
+    "widgets": [{"id": "W1", "status": "closed"}, {"id": "W2", "status": "closed"}]
+}
+
+#: The one shape the author writes for a refusal task, on each substrate's own naming.
+_A_SECOND_EXPECTED_STATE = (
+    pytest.param(
+        StateHashConfig,
+        {"enabled": True, "golden_actions": _A_GOLDEN_SOURCE},
+        "golden_actions",
+        id="authored-golden_actions",
+    ),
+    pytest.param(
+        StateHashConfig,
+        {"enabled": True, "expected_state_hash": _MATCHING_HASH},
+        "expected_state_hash",
+        id="authored-expected_state_hash",
+    ),
+    pytest.param(
+        RunnerStateChecksConfig,
+        {"hash_enabled": True, "golden_actions": [{"tool_name": "close_widget"}]},
+        "golden_actions",
+        id="flattened-golden_actions",
+    ),
+    pytest.param(
+        RunnerStateChecksConfig,
+        {"hash_enabled": True, "expected_hash": _MATCHING_HASH},
+        "expected_state_hash",
+        id="flattened-expected_state_hash",
+    ),
+)
+
+
+class TestExpectInitialStateComparesAgainstTheStateTheTaskStartsIn:
+    """The refusal-task source, on the substrate that computes both sides in process.
+
+    Core hashes the task's declared initial state by the rule it hashes the trial's
+    own state by, so both sides of the comparison are produced in one algebra — which
+    is what a stored digest cannot be (#915) and what makes the verdict the same one
+    the runner reaches by resetting its database and hashing that.
+    """
+
+    _HASH_BLOCK = {"enabled": True, "expect_initial_state": True}
+
+    @staticmethod
+    def _grade_against(initial_state_json_db, final_db: dict, **engine_kwargs):
+        return _grade(
+            {"hash": TestExpectInitialStateComparesAgainstTheStateTheTaskStartsIn._HASH_BLOCK},
+            final_env_state={"agent": {}, "user": {}, "db": final_db},
+            task_initial_state=InitialStateConfig(json_db=initial_state_json_db),
+            **engine_kwargs,
+        )
+
+    @pytest.mark.parametrize(
+        ("final_db", "expected"),
+        [
+            pytest.param(_DB_STATE, 1.0, id="the_trial_left_the_state_as_it_found_it"),
+            pytest.param(_A_TRIAL_THAT_CHANGED_A_RECORD, 0.0, id="the_trial_changed_a_record"),
+        ],
+    )
+    def test_the_trial_is_scored_against_the_state_it_started_in(self, final_db, expected):
+        grade = self._grade_against(_DB_STATE, final_db)
+
+        assert grade.components.state_checks == pytest.approx(expected)
+
+    @pytest.mark.parametrize(
+        "final_db",
+        [
+            pytest.param(_DB_STATE, id="the_trial_left_the_state_as_it_found_it"),
+            pytest.param(_A_TRIAL_THAT_CHANGED_A_RECORD, id="the_trial_changed_a_record"),
+        ],
+    )
+    def test_a_path_and_the_mapping_it_holds_reach_one_verdict(self, final_db, tmp_path):
+        """Both shapes a task may write ``initial_state.json_db`` in grade identically.
+
+        A replay needs the file and reads an inline mapping as no world at all; this
+        source needs the state, which either shape supplies. The reasons are compared
+        as well as the scores because the mismatching one carries both digests, so an
+        implementation that resolved the file into some other structure would agree on
+        the verdict and disagree here.
+        """
+        (tmp_path / "initial_state.json").write_text(json.dumps(_DB_STATE))
+
+        inline = self._grade_against(_DB_STATE, final_db)
+        from_file = self._grade_against("initial_state.json", final_db, task_dir=tmp_path)
+
+        assert inline.components.state_checks == pytest.approx(from_file.components.state_checks)
+        assert inline.reasons == from_file.reasons
+
+    @pytest.mark.parametrize(
+        "world",
+        [
+            pytest.param({"task_initial_state": None}, id="no_initial_state_block"),
+            pytest.param({"task_initial_state": InitialStateConfig()}, id="no_json_db"),
+            pytest.param(
+                {"task_initial_state": InitialStateConfig(json_db="initial_state.json")},
+                id="a_file_and_no_task_directory_to_resolve_it_under",
+            ),
+        ],
+    )
+    def test_a_task_declaring_no_initial_state_leaves_the_trial_ungraded(self, world):
+        """There is no expected state, so there is no verdict — not a failing one.
+
+        The half-satisfied assertions ride along for the reason they ride along in
+        every replay-world case: an implementation that fell through to them would
+        score ``0.5`` for a pack whose only hash source never ran, which is the number
+        a genuinely half-satisfied trial earns.
+        """
+        with pytest.raises(UnresolvableInitialState) as excinfo:
+            _grade(
+                {
+                    "jsonpaths": _HALF_SATISFIED_JSONPATHS,
+                    "hash": {**self._HASH_BLOCK, "weight": 0.6},
+                },
+                **world,
+            )
+
+        assert "initial_state.json_db" in str(excinfo.value)
+
+    @pytest.mark.parametrize(
+        ("written", "named"),
+        [
+            pytest.param(None, "FileNotFoundError", id="a_file_the_task_does_not_carry"),
+            pytest.param("[]", "list", id="a_file_holding_no_json_object"),
+        ],
+    )
+    def test_a_file_that_holds_no_state_is_named_rather_than_read_as_empty(
+        self, written, named, tmp_path
+    ):
+        """An empty state would hash to a digest no trial can match, and grade as 0.0."""
+        if written is not None:
+            (tmp_path / "initial_state.json").write_text(written)
+
+        with pytest.raises(UnresolvableInitialState) as excinfo:
+            self._grade_against("initial_state.json", _DB_STATE, task_dir=tmp_path)
+
+        assert named in str(excinfo.value)
+
+    @pytest.mark.parametrize(("model", "block", "other"), _A_SECOND_EXPECTED_STATE)
+    def test_a_second_expected_state_is_refused_wherever_the_block_is_built(
+        self, model, block, other
+    ):
+        """Two sources naming two expected states, with no precedence between them.
+
+        Refused on both substrates because the runner translates its flattened fields
+        into the authored block before any shared rule reads them: a pack core refuses
+        would otherwise register and grade against whichever source the runner reached
+        first. Both keys are named, since either one is the author's to drop.
+        """
+        with pytest.raises(ValidationError) as excinfo:
+            model(expect_initial_state=True, **block)
+
+        message = str(excinfo.value)
+        assert "state_checks.hash.expect_initial_state" in message
+        assert f"state_checks.hash.{other}" in message
+
+    def test_the_source_alone_loads_on_both_substrates(self):
+        """The control: what the refusal above rejects is the pair, not the key."""
+        assert StateHashConfig(enabled=True, expect_initial_state=True).expect_initial_state
+        assert RunnerStateChecksConfig(
+            hash_enabled=True, expect_initial_state=True
+        ).expect_initial_state
 
 
 class TestAGoldenReplayWithNoWorldRefusesToGrade:
@@ -828,7 +1001,8 @@ class TestAGoldenSourceNoReplayCanIterateRefusesToGrade:
         )
 
         assert grade.components.state_checks == pytest.approx(0.5)
-        assert "neither expected_state_hash nor golden_actions" in grade.reasons
+        for source in HASH_SOURCE_KEYS:
+            assert source in grade.reasons, grade.reasons
 
 
 class TestFailedGoldenReplayIsNotAScore:
@@ -955,6 +1129,7 @@ class TestRunnerRejectsTheUndecidableConfig:
     _SOURCES = {
         "expected_state_hash": {"expected_hash": _MATCHING_HASH},
         "golden_actions": {"golden_actions": [{"tool_name": "close_widget", "arguments": {}}]},
+        "expect_initial_state": {"expect_initial_state": True},
     }
 
     def test_every_hash_source_is_driven_through_registration(self):

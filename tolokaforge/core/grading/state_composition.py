@@ -17,7 +17,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 from typing import Any
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 MISSING_HASH_WEIGHT_MESSAGE = (
     "state_checks.hash.weight is required when a hash source and a non-empty "
@@ -39,12 +39,27 @@ INERT_HASH_WEIGHT_REASON = (
     "only when a hash verdict and a non-empty state_checks.jsonpaths are both scored"
 )
 
+CONFLICTING_HASH_SOURCES_MESSAGE = (
+    "state_checks.hash.expect_initial_state names the state the trial started in as the "
+    "expected final state, and state_checks.hash.{other} names another one: the comparison "
+    "has two candidates and nothing says which it runs against. Choose one — "
+    "expect_initial_state for a refusal task whose expected final state is the initial "
+    "state, or {other} for a task that changes state."
+)
+
 WEIGHT_DOMAIN_MESSAGE = "state_checks.hash.weight must be a real number within [0.0, 1.0]"
 
 AUTHORED_HASH_WEIGHT_CONTEXT = "grading.yaml state_checks.hash.weight"
 """Where an author reads a rejected weight from, named once for every rule that reports one."""
 
-HASH_SOURCE_KEYS: tuple[str, ...] = ("expected_state_hash", "golden_actions")
+EXPECT_INITIAL_STATE_KEY = "expect_initial_state"
+"""The source naming the state the trial started in, which the two others exclude."""
+
+HASH_SOURCE_KEYS: tuple[str, ...] = (
+    "expected_state_hash",
+    "golden_actions",
+    EXPECT_INITIAL_STATE_KEY,
+)
 """The ``state_checks.hash`` members that give the hash something to compare against.
 
 Author-facing key names, so a substrate flattening the ``hash`` block onto its own
@@ -76,6 +91,7 @@ class StateHashConfig(BaseModel):
 
     enabled: bool = False
     expected_state_hash: str | None = None
+    expect_initial_state: bool = False
     # Unclaimed on both axes, each for its own reason. The element shape, because two
     # live here — the author's ``{name, kwargs}`` mappings and the ``GoldenAction``
     # instances the runner hands the same field — and unifying them is #907. The
@@ -105,6 +121,32 @@ class StateHashConfig(BaseModel):
         if value is None:
             return None
         return validate_hash_weight(value, context=AUTHORED_HASH_WEIGHT_CONTEXT)
+
+    @model_validator(mode="after")
+    def _refuse_a_second_expected_state(self) -> StateHashConfig:
+        """Reject ``expect_initial_state`` declared beside another source.
+
+        The sources name different expected states and the block declares no
+        precedence between them, so the trial would be compared against whichever one
+        the substrate reading it happens to consult first. Refused here rather than at
+        each reader, so every path that constructs the block — the core config, the
+        authoring gate, both adapter reads, and the runner's translation of its own
+        flattened fields — refuses the same pack.
+
+        One message for a block declaring two others, addressed at the first the
+        vocabulary names: both are the same defect and take the same edit.
+        """
+        declared = next(
+            (
+                key
+                for key in HASH_SOURCE_KEYS
+                if key != EXPECT_INITIAL_STATE_KEY and getattr(self, key)
+            ),
+            None,
+        )
+        if not self.expect_initial_state or declared is None:
+            return self
+        raise ValueError(CONFLICTING_HASH_SOURCES_MESSAGE.format(other=declared))
 
 
 def hash_block_is_a_state_source(hash_config: StateHashConfig | None) -> bool:

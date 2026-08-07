@@ -14,6 +14,7 @@
     "hash": {
       "description": "",
       "enabled": true,
+      "expect_initial_state": false,
       "expected_state_hash": null,
       "golden_actions": [
         {

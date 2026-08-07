@@ -199,6 +199,7 @@ _HASH_SCORE_NAME = "hash_score"
 _BINARY_HASH_VERDICT = frozenset({0.0, 1.0})
 
 _HASH_FAMILY_ROOT = "state_checks.hash"
+_EXPECT_INITIAL_STATE_KEY = "state_checks.hash.expect_initial_state"
 
 # Every function that can hand a hash verdict to the shared composer, as
 # (repo-relative module, function name). Asserted as set equality against the
@@ -2754,6 +2755,7 @@ class _Driver(str, Enum):
 
     PARITY_PACK = "parity_pack"
     HASH_FAMILY = "hash_family"
+    EXPECT_INITIAL_STATE = "expect_initial_state"
     DB_PROBES = "db_probes"
     LLM_JUDGE = "llm_judge"
 
@@ -2784,6 +2786,7 @@ _LEDGER_KEY_DRIVERS: Mapping[str, _Driver] = MappingProxyType(
         "state_checks.hash.enabled": _Driver.HASH_FAMILY,
         "state_checks.hash.golden_actions": _Driver.HASH_FAMILY,
         "state_checks.hash.expected_state_hash": _Driver.HASH_FAMILY,
+        "state_checks.hash.expect_initial_state": _Driver.EXPECT_INITIAL_STATE,
         "state_checks.db_probes": _Driver.DB_PROBES,
         "llm_judge": _Driver.LLM_JUDGE,
     }
@@ -2938,6 +2941,55 @@ _HASH_DRIVER_TASK: dict[str, Any] = {
     },
 }
 
+_INITIAL_ORDERS = {"orders": [{"order_id": "O1", "status": "pending"}]}
+
+#: The trial's own database, one record away from the state it started in. Both
+#: substrates read their two sides from these two mappings — the runner by seeding
+#: db-service with the first and mutating it into the second, core by hashing the
+#: first as the task's declared initial state and the second as the trial's — so a
+#: verdict that differs between them is the grading path's doing.
+_ORDERS_AFTER_A_CHANGE = {"orders": [{"order_id": "O1", "status": "shipped"}]}
+
+_EXPECT_INITIAL_STATE_TASK: dict[str, Any] = {
+    "task_id": "ledger_expect_initial_state",
+    "name": "Ledger expect_initial_state",
+    "category": "test",
+    "description": "A refusal-shaped trial whose expected final state is its initial state",
+    "adapter_type": "native",
+    "system_prompt": "You are a test assistant.",
+    "initial_state": {
+        "tables": _INITIAL_ORDERS,
+        "schemas": [
+            {
+                "table_name": "orders",
+                "fields": {"order_id": "string", "status": "string"},
+                "primary_key": "order_id",
+            }
+        ],
+    },
+    "agent_tools": [],
+    "user_tools": [],
+    "grading": {
+        "combine_method": "weighted",
+        "weights": {"state_checks": 1.0},
+        "pass_threshold": 0.5,
+        "state_checks": {"hash_enabled": True, "expect_initial_state": True},
+    },
+}
+"""A second hash-driver task, because ``_HASH_DRIVER_TASK`` cannot carry this key.
+
+That one declares ``golden_actions`` and a literal, and the authored block refuses
+``expect_initial_state`` beside either — so a driver sharing it would fail lock 15's
+first claim, the key never being populated on the config the runner graded.
+"""
+
+#: What the same pack declares to the core engine, which takes the authored block and
+#: the task's own initial state rather than the runner's flattened naming.
+_EXPECT_INITIAL_STATE_GRADING: dict[str, Any] = {
+    "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+    "state_checks": {"hash": {"enabled": True, "expect_initial_state": True}},
+}
+
 _JUDGE_DRIVER_TASK: dict[str, Any] = {
     "task_id": "ledger_llm_judge",
     "name": "Ledger llm judge",
@@ -3025,6 +3077,36 @@ def _drive_hash_family(
     return servicer.trials[trial_id].grading_config, response
 
 
+def _drive_expect_initial_state(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str, changed: bool = False
+) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
+    """Grade a trial whose declared hash source is the state its task starts in.
+
+    ``changed`` moves the trial's database away from that state through the same
+    db-service the evaluator resets and hashes, so the two cells differ in what the
+    trial left behind rather than in what the pack declared.
+    """
+    task_description = runner_models.TaskDescription.model_validate(_EXPECT_INITIAL_STATE_TASK)
+    _register_pack(servicer, context, task_description, trial_id)
+    if changed:
+        servicer._run_async(
+            servicer.db_client.mutate(
+                trial_id,
+                "orders",
+                [
+                    {
+                        "op": "upsert",
+                        "record": _ORDERS_AFTER_A_CHANGE["orders"][0],
+                        "key": "order_id",
+                    }
+                ],
+            )
+        )
+
+    response = _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
+    return servicer.trials[trial_id].grading_config, response
+
+
 def _drive_db_probes(
     test_data_dir: Path,
     servicer: RunnerServiceImpl,
@@ -3095,6 +3177,8 @@ def _drive_the_key(
         return _drive_parity_pack(author_key, test_data_dir, servicer, context, trial_id=trial_id)
     if driver is _Driver.HASH_FAMILY:
         return _drive_hash_family(servicer, context, trial_id=trial_id)
+    if driver is _Driver.EXPECT_INITIAL_STATE:
+        return _drive_expect_initial_state(servicer, context, trial_id=trial_id)
     if driver is _Driver.DB_PROBES:
         return _drive_db_probes(test_data_dir, servicer, context, monkeypatch, trial_id=trial_id)
     if driver is _Driver.LLM_JUDGE:
@@ -3286,6 +3370,59 @@ def test_the_site_lock_rejects_hash_accounting_that_files_nothing(
     assert response.success is False, "the audit was meant to fail the RPC"
     with pytest.raises(AssertionError, match="GradeTrial failed"):
         _assert_the_site_reported("state_checks.hash.enabled", grading_config, response)
+
+
+# --------------------------------------------------------------------------
+# 16. Both substrates score a comparison against the initial state alike
+# --------------------------------------------------------------------------
+
+
+def _core_expect_initial_state_verdict(final_db: dict[str, Any]) -> float:
+    """The core engine's ``state_checks`` for a trial ending in ``final_db``.
+
+    Hashes the task's declared initial state in core's own algebra and compares the
+    trial's state against it, which is the whole of what the runner does in its
+    algebra — so the two verdicts agreeing is a portability claim about the
+    proposition rather than about a digest neither substrate could share (#915).
+    """
+    grade = GradingEngine(
+        core_models.GradingConfig(**_EXPECT_INITIAL_STATE_GRADING),
+        task_initial_state=core_models.InitialStateConfig(json_db=_INITIAL_ORDERS),
+    ).grade_trajectory(_messageless_trajectory("expect_initial_state"), {"db": final_db})
+    return grade.components.state_checks
+
+
+@pytest.mark.parametrize(
+    ("changed", "final_db", "expected"),
+    [
+        pytest.param(False, _INITIAL_ORDERS, 1.0, id="the_trial_left_the_state_as_it_found_it"),
+        pytest.param(True, _ORDERS_AFTER_A_CHANGE, 0.0, id="the_trial_changed_a_record"),
+    ],
+)
+def test_both_substrates_score_a_comparison_against_the_initial_state_alike(
+    changed, final_db, expected, runner_service, mock_grpc_context
+):
+    """``state_checks.hash.expect_initial_state``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The runner arm is its whole production path — ``RegisterTrial``, the trial's own
+    db-service state, ``GradeTrial`` — so what is compared is the state the evaluator
+    reset to rather than a state this module handed it. Neither cell can be the
+    unscored sentinel, both being asserted against a verdict of their own.
+
+    One row carries both arms' inputs, because each substrate reaches the trial's
+    final state its own way: ``changed`` is the mutation the runner's db-service
+    takes, ``final_db`` the same state as core receives it.
+    """
+    _, response = _drive_expect_initial_state(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id(f"differential_{changed}", _EXPECT_INITIAL_STATE_KEY),
+        changed=changed,
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(expected)
+    assert _core_expect_initial_state_verdict(final_db) == pytest.approx(expected)
 
 
 # --------------------------------------------------------------------------

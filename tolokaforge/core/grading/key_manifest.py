@@ -198,6 +198,19 @@ _HASH_SOURCE_SHAPE_REASON = (
     "moves refusal-task verdicts, which needs its own corpus measurement"
 )
 
+_EXPECT_INITIAL_STATE_READ_REASON = (
+    "both substrates score the same proposition — the trial's final state is the state the "
+    "task started in — each in its own hash algebra, so the verdict is portable where a "
+    "stored digest is not (#915): core hashes the task's declared initial state and the "
+    "runner resets its database and hashes that. No *config* discriminates the runner's read "
+    "on the score, because this source's semantics coincide with an enabled block declaring "
+    "no source at all and the block refuses it beside either other source. What the read is "
+    "enforced by is the recording site: the evaluator selects its comparison basis once, "
+    "returns it, and the runtime ledger accounts for this key from that returned basis — so "
+    "an evaluator that stopped reading the key files nothing for it and the audit fails "
+    "GradeTrial"
+)
+
 _COMBINE_METHOD_PARITY_REASON = (
     "both substrates read combine.method and both discriminate on it, but their final "
     "scores agree only when the two build the same component set. What prevents that is "
@@ -390,6 +403,17 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         ),
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
+    ),
+    GradingKey(
+        author_key="state_checks.hash.expect_initial_state",
+        kind=KeyKind.SCORED_CHECK,
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="StateHashConfig.expect_initial_state",
+        runner_field="RunnerStateChecksConfig.expect_initial_state",
+        core_evaluator=_CORE_HASH_EVALUATOR,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
+        reason=_EXPECT_INITIAL_STATE_READ_REASON,
     ),
     GradingKey(
         author_key="state_checks.hash.expected_state_hash",
