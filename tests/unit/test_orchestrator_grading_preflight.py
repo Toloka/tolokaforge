@@ -734,7 +734,7 @@ def _an_adapter_supplying(state: SuppliedSourceState) -> type[NativeAdapter]:
 def test_a_hash_source_the_adapter_has_lost_refuses_the_run_before_any_trial(
     tmp_path: Path,
 ) -> None:
-    """The blind spot #940 was filed for, closed at the gate that spends the tokens.
+    """The lost-fixture blind spot is closed at the gate that spends the tokens.
 
     The same bare block as the pass above, but the adapter now says the fixture it
     grades against is gone. Nothing downstream can recover: every trial would be paid

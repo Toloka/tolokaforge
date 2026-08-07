@@ -31,7 +31,7 @@ _NATIVE = AdapterType.NATIVE.value
 # ---------------------------------------------------------------------------
 
 # Registry of available adapters — written by register_adapter() and by discovery
-_ADAPTERS: dict[str, type] = {}
+_ADAPTERS: dict[str, type[BaseAdapter]] = {}
 
 # Whether entry-point discovery has run. A separate flag rather than the registry's
 # own emptiness: register_adapter() writes into the registry too, so reading it as
@@ -42,7 +42,7 @@ _DISCOVERED = False
 _FAILED_ADAPTERS: dict[str, Exception] = {}
 
 
-def _discover_adapters() -> dict[str, type]:
+def _discover_adapters() -> dict[str, type[BaseAdapter]]:
     """Discover adapter plugins via importlib.metadata entry-points.
 
     NativeAdapter is the only built-in adapter; all others are entry-point
@@ -50,7 +50,7 @@ def _discover_adapters() -> dict[str, type]:
     """
     from tolokaforge.adapters.native import NativeAdapter
 
-    adapters: dict[str, type] = {_NATIVE: NativeAdapter}
+    adapters: dict[str, type[BaseAdapter]] = {_NATIVE: NativeAdapter}
 
     for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
         try:
@@ -90,7 +90,7 @@ def available_adapters() -> list[str]:
     return sorted(_ADAPTERS.keys())
 
 
-def register_adapter(name: str, adapter_cls: type) -> None:
+def register_adapter(name: str, adapter_cls: type[BaseAdapter]) -> None:
     """Manually register an adapter class (useful for testing)."""
     _ADAPTERS[name] = adapter_cls
 

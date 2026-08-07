@@ -8,7 +8,7 @@ the authored block never names.
 
 The point of the four rows is that the same pack, byte for byte, is passed, refused or
 reported purely on what the adapter answers — and that an adapter this environment has
-never heard of still answers nothing, which is the compatibility promise #940 makes.
+never heard of still answers nothing.
 """
 
 from __future__ import annotations
@@ -186,7 +186,7 @@ def test_a_supplied_source_that_replays_nothing_refuses_the_pack_as_empty(
 def test_the_same_pack_under_an_uninstalled_adapter_is_reported_rather_than_refused(
     tmp_path: Path, a_registered_adapter: None
 ) -> None:
-    """Criterion 3: an adapter this environment has no class for still answers nothing.
+    """An adapter this environment has no class for still answers nothing.
 
     Deliberately run under the same fixture that registers the fake, and against an
     adapter type it never registered: together with the unregistered-by-omission lock

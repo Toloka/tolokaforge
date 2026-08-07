@@ -25,6 +25,8 @@ from tolokaforge.adapters.base import BaseAdapter
 from tolokaforge.core.grading.config_validation import HashSourceLayer
 from tolokaforge.core.models import TaskConfig
 
+pytestmark = pytest.mark.unit
+
 _A_REAL_TASK = (
     Path(__file__).resolve().parents[3]
     / "examples/native/multi_service_helpdesk_workflow/dataset/tasks/helpdesk_01/task.yaml"
