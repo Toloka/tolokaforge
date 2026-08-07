@@ -36,6 +36,31 @@ class FakeMutatingDBClient:
         return SimpleNamespace(success=True)
 
 
+@pytest.fixture
+def isolated_secret_manager():
+    """A fresh default SecretManager and a cold redaction cache, restored after.
+
+    ``register_runtime_secret`` replaces the process-wide singleton, and the
+    log redactor caches its scrub set keyed by that manager's identity. Any
+    test that registers a runtime credential has to hand both back, or it
+    leaks a credential into every test that runs after it — and a second
+    registration of the same name with a different value raises.
+    """
+    from tolokaforge.secrets import log_filter as log_filter_module
+    from tolokaforge.secrets import manager as manager_module
+
+    saved_manager = manager_module._default_manager
+    saved_cached_manager = log_filter_module._cached_manager
+    saved_cached_values = log_filter_module._cached_values
+    manager_module._default_manager = None
+    log_filter_module._cached_manager = None
+    log_filter_module._cached_values = frozenset()
+    yield
+    manager_module._default_manager = saved_manager
+    log_filter_module._cached_manager = saved_cached_manager
+    log_filter_module._cached_values = saved_cached_values
+
+
 @pytest.fixture(autouse=True)
 def _mock_wheel_resolver(tmp_path: Path):
     """Auto-mock resolve_wheel for every unit test.

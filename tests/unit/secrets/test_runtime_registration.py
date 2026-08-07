@@ -25,7 +25,6 @@ from tolokaforge.secrets import (
     register_runtime_secret,
 )
 from tolokaforge.secrets import log_filter as log_filter_module
-from tolokaforge.secrets import manager as manager_module
 from tolokaforge.secrets.log_filter import PLACEHOLDER, install_global_redactor
 
 pytestmark = pytest.mark.unit
@@ -34,18 +33,8 @@ GENERATED = "GENERATEDKEY0123456789"
 
 
 @pytest.fixture(autouse=True)
-def _reset_singleton():
+def _reset_singleton(isolated_secret_manager):
     """Each test gets a fresh singleton and a cold redaction cache."""
-    saved_manager = manager_module._default_manager
-    saved_cached_manager = log_filter_module._cached_manager
-    saved_cached_values = log_filter_module._cached_values
-    manager_module._default_manager = None
-    log_filter_module._cached_manager = None
-    log_filter_module._cached_values = frozenset()
-    yield
-    manager_module._default_manager = saved_manager
-    log_filter_module._cached_manager = saved_cached_manager
-    log_filter_module._cached_values = saved_cached_values
 
 
 @pytest.fixture

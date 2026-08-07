@@ -33,6 +33,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.secrets import get_default
 
 pytestmark = pytest.mark.unit
 
@@ -150,3 +151,43 @@ def test_a_started_server_resolves_its_port_and_api_key_into_the_config(
 
     assert orchestrator.config.orchestrator.typesense.port == 8199
     assert orchestrator.config.orchestrator.typesense.api_key == "resolved-api-key"
+
+
+def test_the_resolved_api_key_enters_the_secret_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_secret_manager
+) -> None:
+    """A key this process generated is a secret like any other from here on.
+
+    Registration is what carries it to the runner — ``core_stack`` serialises
+    the manager into ``TOLOKAFORGE_SECRETS_JSON`` and nothing else transports
+    it — and it is what puts the value in the redaction set before the
+    "Creating adapter" params line renders it.
+    """
+    orchestrator = _with_manager(tmp_path, monkeypatch, started=True)
+
+    orchestrator._ensure_typesense_started()
+
+    manager = get_default()
+    assert manager.get_secret("TYPESENSE_API_KEY") == "resolved-api-key"
+    assert manager.serialize()["TYPESENSE_API_KEY"] == "resolved-api-key"
+
+
+def test_a_plane_with_no_key_of_its_own_registers_nothing(
+    tmp_path: Path, isolated_secret_manager
+) -> None:
+    """``mode: remote`` without a key leaves the installed manager untouched.
+
+    Registration replaces the singleton, so an unchanged manager is the
+    observable "nothing was registered". Registering an absent credential
+    would raise on the empty value, and registering a placeholder would
+    shadow a configured ``TYPESENSE_API_KEY`` with nothing.
+    """
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.config.orchestrator.typesense = TypeSenseConfig(
+        enabled=True, mode="remote", host="ts.example", port=8108, api_key=None
+    )
+    installed = get_default()
+
+    orchestrator._ensure_typesense_started()
+
+    assert get_default() is installed

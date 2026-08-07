@@ -15,28 +15,49 @@ The engine's role is narrow: reach a TypeSense server, make it reachable from in
 
 ## Architecture
 
+The address is a property of the stack, not of a task: the runner container is
+created already knowing it, so nothing has to correct a task's connection
+details after the fact.
+
 ```
  host                                    runner container
-┌──────────────────────────┐            ┌───────────────────────────┐
-│ Orchestrator             │            │ RunnerServiceImpl         │
-│                          │            │                           │
-│ TypeSenseServerManager   │            │ RegisterTrial             │
-│  - resolve port, api key │            │  └ _init_typesense_for_   │
-│  - start, wait_ready     │            │      trial                │
-│                          │            │    - reads docindex/*.md  │
-│ bridge to runner-net     │            │    - registers a client in│
-│  - alias "typesense"     │            │      mcp_core's registry  │
-│  - rewrite to :8108      │            │                           │
-│                          │            │ search_policy tool        │
-│ Adapter (indexes the     │            │  └ get_typesense_for_     │
-│ corpus before the run)   │            │      domain(domain)       │
-└────────────┬─────────────┘            └─────────────┬─────────────┘
-             │                                        │
-             │        ┌────────────────────┐          │
-             └───────►│ TypeSense server   │◄─────────┘
-     127.0.0.1:<port> │ local or remote    │  typesense:8108
-                      └────────────────────┘
+┌─────────────────────────────┐            ┌────────────────────────────┐
+│ Orchestrator                │            │ RunnerServiceImpl          │
+│                             │            │                            │
+│ TypeSenseServerManager      │            │ RegisterTrial              │
+│  - resolve port, api key    │            │  └ _init_typesense_for_    │
+│  - start, wait_ready        │            │      trial                 │
+│                             │            │    - reads docindex/*.md   │
+│ service stack               │            │    - registers a client in │
+│  - TYPESENSE_HOST/PORT      │            │      mcp_core's registry   │
+│    on the runner            │            │                            │
+│  - api key inside           │            │ search_policy tool         │
+│    TOLOKAFORGE_SECRETS_JSON │            │  └ get_typesense_for_      │
+│                             │            │      domain(domain)        │
+│ bridge to runner-net        │            │                            │
+│  - alias "typesense"        │            │                            │
+│                             │            │                            │
+│ Adapter (indexes the        │            │                            │
+│ corpus before the run)      │            │                            │
+└──────────────┬──────────────┘            └─────────────┬──────────────┘
+               │                                         │
+               │          ┌────────────────────┐         │
+               └─────────►│ TypeSense server   │◄────────┘
+    127.0.0.1:<port>      │ local or remote    │  TYPESENSE_HOST:PORT
+                          └────────────────────┘
 ```
+
+A server this process starts is bridged onto `runner-net` under the alias
+`typesense`, and the runner is given `typesense:8108` — the container port,
+which is fixed by the image. A `mode: remote` server is not ours to bridge, so
+the runner is given the address the run config names. Either way the host-side
+address the orchestrator and the adapter index against never reaches the
+container: inside `runner-net` it resolves to the runner itself.
+
+The API key never becomes an environment variable of its own. It is registered
+with the `SecretManager` as soon as it is resolved, which puts it in the
+`TOLOKAFORGE_SECRETS_JSON` payload the runner container is built with and, in
+the same move, in the log-redaction set.
 
 ## Implementation
 
