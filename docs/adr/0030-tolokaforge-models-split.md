@@ -1,7 +1,7 @@
 # 0030. Model data as a second PyPI wheel — `tolokaforge-models` from the same monorepo
 
 - **Status:** Proposed
-- **Date:** 2026-08-06 (widened 2026-08-07 per [issue-#645 comment](https://github.com/Toloka/tolokaforge/issues/645#issuecomment-5213977204))
+- **Date:** 2026-08-06 (widened 2026-08-07 per [issue-#645 comment](https://github.com/Toloka/tolokaforge/issues/645#issuecomment-5213977204); further revised 2026-08-07 per second review pass on PR #908)
 - **Deciders:** @CiroGamboa
 - **Supersedes:** —
 - **Superseded by:** —
@@ -29,6 +29,7 @@ The first draft of this ADR framed the fix as "move the *data* out, keep the *cl
 | 2026-07-31 | thinkingmachines/inkling (#719) | yes | `prompt_policy.py` |
 | 2026-08-04 | deepseek/deepseek-v4-flash-0731 (#846) | yes | `reasoning_codec.py` |
 | 2026-08-04 | qwen/qwen3.8-max (#845) | no | — |
+| 2026-08-01 (in flight) | cohere/command-a-plus-05-2026 (#929) | yes | needs a new lifecycle stage — assistant-text hook does not yet exist |
 
 Of the 5 auto-integrations the pipeline resolved end-to-end, **3 needed new engine classes**. Since the OSS cleanup (#6, 2026-05-28), the policy / codec / sanitizer modules have changed **five times, every one driven by onboarding a specific model, none by engine-internal work**: `response_policy.py` (2), `prompt_policy.py` (1), `schema_sanitizer.py` (1), `reasoning_codec.py` (1). `content_policy.py`, `cache_policy.py`, and `params_policy.py` have not changed on `main` at all in that window.
 
@@ -37,8 +38,8 @@ ADR-0002 § Considered Options deferred its Option 4 on an explicit, measurable 
 "Just move the subclasses out" is also insufficient. Three concrete failure modes recur in the tree:
 
 1. **A per-model subclass requires editing its parent to add a hook.** `#560` added `VALUE_FIELD` and `carry_scalar_dict_map_value: bool = False` to `StrictSchema` itself (`schema_sanitizer.py`) plus the branch that honours it; `GeminiRecursiveSchema` sets the flag. Moving the subclass leaves 16 dependent lines in the base.
-2. **A per-model class reaches into module-private helpers.** `MiniMaxM3StrictSchema` consumes `_coerce_json_strings` / `_coerce_empty_containers`; `RefResolvingDictMapHints` imports a symbol deliberately excluded from `_dict_maps.__all__` and overrides a private `_build_hints`. Out-of-tree code cannot depend on any of that.
-3. **Some adaptations have nowhere to attach.** `_POLICY_REGISTRIES` has six slots; there is no `params` slot (so a new knob is a `GenerationParams` signature change) and no `assistant_text` slot (Cohere's `<|START_TEXT|>` markers around assistant text land in `client.py` as an `if target == "anthropic"` branch instead).
+2. **A per-model class reaches into module-private helpers.** `MinimaxM3TagRecoveryResponse` (`response_policy.py:474`) is a composite — not a subclass — reusing `_coerce_json_strings` / `_coerce_empty_containers`; `RefResolvingDictMapHints` (`prompt_policy.py:107`) imports a symbol deliberately excluded from `_dict_maps.__all__` and overrides a `@staticmethod` `_build_hints` with an instance method carrying `# type: ignore[override]`. Out-of-tree code cannot depend on any of that, and turning `_build_hints` into a proper extension point is a change to the base's *shape*, not a pure rename.
+3. **Some adaptations have nowhere to attach.** `_POLICY_REGISTRIES` has six slots; there is no `params` slot (so a new knob is a `GenerationParams` signature change), no `assistant_text` slot (this is what blocks the open Cohere integration #929 — the model wraps response text in `<|START_TEXT|>…<|END_TEXT|>` markers observed 2026-08-01, and `ResponsePolicy` cannot reach it because that hook only post-processes tool-call arguments, so the markers land in `trajectory.yaml` and depress LLM-judge scores; recorded at `registry.py:2487`), and no message-assembly slot either (how the conversation is assembled before it goes on the wire — ordering, merging, filler injection — has no extension point; `ToolContentPolicy.inject_empty_assistant_filler` is a per-preset *flag*, but the string it injects is hardcoded at `client.py:1213`, tuned once for one model, and caused a Gemini regression on 2026-04-30 when applied more broadly).
 
 And the *original* draft of this ADR made three things *worse* rather than neutral:
 
@@ -60,6 +61,12 @@ This widened ADR states the properties the seam must satisfy — verbatim from b
 - **Provider and transport binding is data, not a client branch.** Endpoint URL, credential env-var name, rate-limit classification, rotation env-var name, and routability all belong on a provider record in the models wheel — not in `client.py` or `proxy.py`.
 - **Forward-compat toward a repo split.** The `tolokaforge_models/` tree is chosen to be a drop-in future repo: one `git filter-repo --subdirectory-filter tolokaforge_models` and it is a standalone project.
 - **Fail-loud version compat, at import time.** `__api_version__` integer on the models package + `minimum_engine_version` on the models package + class-name-existence check at engine import. All three fail before any run starts, not at `LLMClient` construction after an evaluation has begun spending.
+
+## What "success" looks like
+
+The measurable target is sharper than *"fewer engine releases"* — it is **"one engine version absorbs any number of model integrations"** (added 2026-08-07 per follow-up review). A lineup refresh onboarding twenty new models onto engine 0.16 should still leave you on engine 0.16 when it is done. That is what makes § Context's comparability argument actually hold (*"which engine version did this run on"* stops being a per-model question), and it is what lets the auto-integration pipeline take a model end-to-end with no human in the release path. Read that way, the useful question is not what fraction of individual integrations need an engine release, but whether the engine version can stay put across a whole lineup refresh.
+
+This target is not fully bought by the widened design — the § Consequences → Known ceiling section names the specific shape (bases as single traversals with flags bolted on) that keeps it out of reach. The acceptance-test follow-up is the artefact that will report progress against this target continuously as each PR lands.
 
 ## Considered Options
 
@@ -134,10 +141,13 @@ Every function does `from tolokaforge_models import ...` internally today. If a 
 
 ## Extension-point surface (new — widening)
 
-Today `_POLICY_REGISTRIES` has six slots (`schema_sanitizer`, `prompt_policy`, `content_policy`, `response_policy`, `reasoning_codec`, `cache_policy`). Two more land:
+Today `_POLICY_REGISTRIES` has six slots (`schema_sanitizer`, `prompt_policy`, `content_policy`, `response_policy`, `reasoning_codec`, `cache_policy`). Three more land:
 
-- **`assistant_text_policy` (NEW).** Base class `AssistantTextPolicy` with signature `parse_assistant_text(text: str, *, model_config: ModelConfig) -> str`. Cohere's `<|START_TEXT|>…<|END_TEXT|>` marker handling — today an `if target == "anthropic"`-adjacent branch in `client.py` — becomes a `CohereMarkerAssistantText` subclass in `tolokaforge_models/policies/`.
+- **`assistant_text_policy` (NEW).** Base class `AssistantTextPolicy` with signature `parse_assistant_text(text: str, *, model_config: ModelConfig) -> str`. This slot is not a refactor of shipped code — it is invented because a model showed up that no existing slot fits. The open Cohere integration (#929) is blocked on this exact gap: response text arrives wrapped in `<|START_TEXT|>…<|END_TEXT|>` markers, `ResponsePolicy` only post-processes tool-call arguments, and there is no hook that reaches assistant text. Under the widened ADR, a `CohereMarkerAssistantText` subclass in `tolokaforge_models/policies/` unblocks the integration without any engine release beyond the one landing the slot itself.
 - **`params_policy` (NEW).** Base class `ParamsPolicy` with signature `build_params(overrides: dict[str, Any]) -> GenerationParams`. Replaces the hard-coded `_VALID_PARAMS_KEYS = inspect.signature(GenerationParams.__init__)` mechanism. `_RECOGNISED_OVERRIDE_KEYS` at `presets.py` goes away.
+- **`message_assembly_policy` (NEW — narrow first, general later).** The conversation the engine assembles before dispatch has no extension point today (see § Evidence widening the scope, failure mode 3). Two versions are worth distinguishing:
+  - **Narrow version (this ADR).** The `inject_empty_assistant_filler` flag stays, but the *filler string* — hard-coded at `client.py:1213` — becomes policy data alongside the flag. Removes a model-specific string from the engine, needs no new slot type, and directly closes the Gemini regression recorded on 2026-04-30.
+  - **General version (deferred, gated on a real second use case).** A slot receiving the assembled message list before send. Powerful — a bad rewrite produces wrong evaluation results rather than an error — so it lands paired with a mandatory invariant check on the way out (roles valid, tool-call ids still paired, nothing dropped), and the narrow version's filler is its first user. Deferred because it is only worth the risk once a second lifecycle case appears that the narrow shape cannot cover.
 
 **Slot values become `{name, params}`.** `_POLICY_REGISTRIES` slot values today are bare `name` strings. Widened shape: `{name: str, params: dict[str, Any]}` — the dict is passed to the class constructor. Overlay validator extends to fail-loud on unknown keys nested inside a preset block (today only top-level unknowns fail). The Gemini `gemini_drop_placeholder_signature` special case at `presets.py:609-620` becomes ordinary params flow.
 
@@ -170,12 +180,19 @@ nova:
   api_keys_env: null
   unroutable: true                           # replaces UNROUTABLE_PROVIDERS
   rate_limit_patterns: [...]
-  slug_rewrite: "openai/{name}"              # Nova's bare→openai-prefixed rewrite
+  slug_rewrite:                              # two-step, not a single template
+    strip_prefix: "nova/"                    # strip if present  (client.py:1914)
+    ensure_prefix: "openai/"                 # then ensure       (client.py:1917)
+  custom_llm_provider: "openai"              # kwargs override   (client.py:1912)
+  base_url_configure_hook: "nova"            # opts-in to legacy _configure_nova_base_url path
 ```
 
-Consumed at `LLMClient` construction. Concrete moves:
+Consumed at `LLMClient` construction. Concrete moves (Nova is three sites, not one; the ADR schema needs to name each explicitly):
 
-- Nova hardcode at `client.py:1901` (resolves `NOVA_API_KEY` via `SecretManager` and rewrites the model slug) becomes a lookup: read `providers[provider].slug_rewrite`, apply if non-null.
+- `_configure_nova_base_url` at `client.py:688` becomes a lookup: any provider with `base_url_configure_hook: nova` gets the same treatment; the branch itself moves to a generic helper indexed by that hook name.
+- `_format_model_name` at `client.py:938` (returns the bare name for Nova) becomes a lookup on `providers[provider].slug_rewrite`.
+- The `LLMClient._prepare_request` kwargs block that hardcodes Nova at `client.py:1901-1917` (strip `nova/`, ensure `openai/`, set `custom_llm_provider="openai"`) becomes: `providers[provider].slug_rewrite` applied per the two-step recipe, `custom_llm_provider` set from the record if non-null.
+- The generic default at `client.py:1734` (`self.provider.split("/")[0]`) stays engine code — it's the fallback when the record has no override.
 - `UNROUTABLE_PROVIDERS = frozenset({"mock", "nova"})` at `proxy.py:145` becomes a lookup: `providers[provider].unroutable`.
 - `_is_rate_limit_exception`'s hard-coded regexes become data: `providers[provider].rate_limit_patterns`.
 - Multi-key rotation at `client.py:731` reads `providers[provider].api_keys_env` instead of the hardcoded `OPENROUTER_API_KEYS`. A second provider needing rotation is now a data change, not a client edit.
@@ -188,15 +205,15 @@ The engine ships default bindings that reproduce today's behaviour for the shipp
 
 `tolokaforge.testing.certify` becomes a first-class engine surface:
 
-- `Capability` enum + `ModelCertificate` dataclass — sourced from `tolokaforge_models.certificates`, re-exported from the seam for callers that want the types without depending on the models package directly. `ModelCertificate` gains three new fields (widening):
+- `Capability` enum stays **engine-authoritative** and lives in `tolokaforge/testing/certify/`. Rationale (revised 2026-08-07 per follow-up review): the shared suite references enum members by attribute (`Capability.BASIC_COMPLETION`), so a rename or drop from the models side would break engine code silently through attribute access — and attribute access has no registry the class-name-existence guard could check against. Keeping the enum engine-owned costs an engine release when a genuinely new *category* is coined (rare — the same event a new lifecycle stage or new probe pattern would trigger), and buys silent-break protection for the common case. Requirement 8's decoupling is delivered instead via a certificate-borne `capability_extras` field (below).
+- `ModelCertificate` dataclass lives in `tolokaforge_models.certificates`; gains four new fields (widening):
   - `excluded_capabilities: frozenset[Capability]` — replaces engine-side sets like `_UNRELIABLE_COLD_CACHE_REPORT_NAMES`. Shared test bodies check `cert.excluded_capabilities` instead of a hardcoded name set.
   - `known_unsupported_reasons: dict[Capability, str]` — human-readable explanation surfaced in reports.
   - `probe_params: dict[Capability, dict[str, Any]]` — per-model tuning for probe bodies (e.g. reduced token budgets, alternate prompts).
+  - `capability_extras: dict[str, str]` (NEW — revised 2026-08-07) — free-form capability names the models wheel declares without adding to the engine's `Capability` enum. Used when a per-model quirk needs to be surfaced in the certificate but does not correspond to a shipped shared probe. Read by consumers (report generation, dashboards) as opaque strings; no enum-attribute access, so no silent-break class.
 - `live_client`, `skip_unless_capability_declared` pytest fixtures — moved from `tests/integration/llm/conftest.py`. The `TF_PRESETS_FILE` env-var overlay hook (`conftest.py:47-66`) is preserved.
 - `tolokaforge.testing.certify.suite` — the ~30 `test_*.py` bodies, parametrised on `ALL_MODELS` supplied via fixture. Test bodies read exclusion data from certificates and probe params from `cert.probe_params`; no more hardcoded per-model sets.
-- `tolokaforge.testing.certify.probes` (NEW) — `@register_probe(Capability.X)` decorator collects per-capability probe bodies from `tolokaforge_models/tests/`. Engine's shared suite dispatches to the registered probe. Adding a new `Capability` value is a models-wheel edit that carries its probe body with it.
-
-**Capability enum authority moves to the models package.** Trade-off: weaker engine authority over "what supported means"; stronger decoupling. Aligns with bberkes's requirement 8. Engine's `certify.suite` reads enum members via `bundled_certificates()`.
+- `tolokaforge.testing.certify.probes` (NEW) — `@register_probe(Capability.X)` decorator collects per-capability probe bodies from `tolokaforge_models/tests/`. Engine's shared suite dispatches to the registered probe. A genuinely new `Capability` value (rare) is Bucket B and lands in the same engine release that adds the probe pattern; per-model *tuning* of an existing capability's probe travels through `cert.probe_params` on the models cadence.
 
 Per-model test bodies (`test_nova_api.py`, `test_gemini_placeholder_signature_replay.py`, `#846`'s codec unit test) → `tolokaforge_models/tests/`. Collected via `pytest --pyargs tolokaforge_models.tests` from the models CI. Same fixtures, same overlay hooks.
 
@@ -206,19 +223,26 @@ The in-tree suite under `tests/integration/llm/` becomes a thin wrapper (or is d
 
 Three checks all fail before any run starts:
 
-- **`minimum_engine_version` on the models wheel.** Engine reads `tolokaforge_models.minimum_engine_version` and refuses to load a models wheel that names a floor higher than the installed engine. Message: `tolokaforge-models X.Y.Z requires tolokaforge >= A.B; installed A'.B'. Upgrade the engine or downgrade the models wheel.`
+- **`minimum_engine_version` on the models wheel — deliberately a runtime check, not `Requires-Dist`.** Engine reads `tolokaforge_models.minimum_engine_version` and refuses to load a models wheel that names a floor higher than the installed engine. Message: `tolokaforge-models X.Y.Z requires tolokaforge >= A.B; installed A'.B'. Upgrade the engine or downgrade the models wheel.` **Kept off PEP 440 metadata by design.** A pair like *"engine 0.16 needs models ≥ 1.0"* + *"models 1.4 needs engine ≥ 0.17"* declared as `Requires-Dist` on both sides is mutually referential and unsolvable for the pip resolver — the user sees an opaque backtracking failure instead of a clear "upgrade the engine" message. Runtime keeps the message legible and the resolver unconstrained. This is intentional; do not "tidy" it into a real dependency later.
 - **`__api_version__` integer.** Unchanged semantics from the original draft — the loader-contract compat guardrail.
-- **Class-name-existence at engine import.** A models wheel referencing a policy class (e.g. `GeminiRecursiveSchema`) that the engine's merged `_POLICY_REGISTRIES` (engine defaults + models registrations) does not know: fail loud at import time, not at `LLMClient` construction after an evaluation has begun spending.
+- **Class-name-existence, at the earliest point that does not invert the safe import order.** A models wheel referencing a policy class (e.g. `GeminiRecursiveSchema`) that the merged `_POLICY_REGISTRIES` (engine defaults + models registrations) does not know must fail loud, before an evaluation has begun spending. Placement: **not** in `tolokaforge/__init__.py` — that file is a 67-line lazy `__getattr__` shim and the LLM layer + models package are not yet loaded from there, so the check would either force premature imports or itself no-op. Correct placement is **immediately after `presets.py`'s top-of-module imports (lines 21-63)**, once the base classes are resolvable from `sys.modules`, OR in `prepare` alongside `write_engine_run_state` for a run-start gate. Both are early enough to catch a bad models-wheel install before any spending starts, without breaking the import order.
 
-**Overlay validator extension.** `_validate_overlay` today rejects unknown top-level keys but accepts unknown keys nested *inside* a preset block — a `totally_unknown_future_knob: 42` inside a preset silently no-ops. Widening: nested unknown keys fail loud with the offending file, key, and closest schema match. Symmetric with today's top-level check.
+**Overlay validator extension — allow-list is engine keys ∪ models-declared keys.** `_check_block` at `presets.py:302` today validates slot names against the registries and `params:` keys against `_VALID_PARAMS_KEYS`; anything else inside a preset block silently no-ops. Widening: nested unknown keys fail loud with the offending file, key, and closest schema match. **Symmetric with today's top-level check, but scoped carefully:** the legal key set is engine-known keys (`_POLICY_REGISTRIES` slot names + `{name, params}` + capability fields on `ModelCertificate`) **union** the keys the installed models wheel declares in its own registration manifest (e.g. `models_extra_keys: [gemini_drop_placeholder_signature, api_call_timeout_s]`). This lands strictness on typos, not on version skew — a models-wheel-declared knob that the installed engine happens not to consume yet stays silent (as today), but a genuine typo (`gemini_drop_placeholder_signaure` — missing `t`) fails loud.
 
-## Downstream data-resource consumers (new — widening)
+## Downstream data-resource consumers (new — widening, revised 2026-08-07)
 
-Known consumer: `benchmark-results-collector` reads `importlib.resources.files("tolokaforge") / "core/data/pricing.json"` and returns an empty table on failure — a silent cost-zero regression when the resource moves.
+The original widening draft proposed a build-time forwarding stub in `tolokaforge/core/data/` for one release cycle plus a `DeprecationWarning` on access. The follow-up review found both halves of that broken and it is dropped:
 
-**Forwarding stub for one release cycle.** Engine wheel keeps `tolokaforge/core/data/pricing.json` and `model_presets.yaml` as thin re-emit stubs that mirror the `tolokaforge_models` content, plus log a `DeprecationWarning` naming the reader and pointing to `tolokaforge.core.model_data.*`. Stub is deleted on the release after next.
+- **The `DeprecationWarning` has no delivery path.** The known consumer (`benchmark-results-collector`) reads bytes via `importlib.resources.files("tolokaforge").joinpath("core/data/pricing.json")`. That does run `tolokaforge/__init__.py`, but nothing under `core/` is imported (`core/data/` is not even a package), so the read is indistinguishable from any other engine import. A warning at package init fires for everyone and names no one.
+- **A build-time stub goes stale silently.** It is generated when the engine is released; `tolokaforge-models` then ships on its own cadence. From the first independent models release onward the stub serves prices that are internally consistent and *wrong* — worse than today's failure mode, which is loud (`load_pricing_table` logs `engine_pricing_missing` and returns `{}`, so costs read as zero and are noticeable). Plausible-but-stale prices in a leaderboard cost column are not.
 
-Migration note in [`docs/RELEASING.md`](../RELEASING.md) + release notes on the first models-wheel-cutover engine release enumerating known downstream consumers.
+**Selected path instead — fix the consumer first, then move with no stub:**
+
+1. **Pre-move (before the cutover PR).** `benchmark-results-collector` and any other resource-path reader migrates to `tolokaforge.core.model_data.bundled_pricing_path()` (and the sibling accessors for the other data files). Consumer fails loud on an empty table instead of returning `{}` — a silent cost-zero regression should surface as an obvious error, not a silent leaderboard artefact.
+2. **Prerequisite sweep.** Before the cutover, grep for `importlib.resources.files("tolokaforge")` and `importlib.resources.files\("tolokaforge/core/data"` across public callers. `tolokaforge/core/_runner_subset.py` documents `importlib.resources.files("tolokaforge")` as a supported lookup across both wheel variants, so the contract is broader than one consumer — the sweep is not optional.
+3. **Move (cutover PR).** The two data files move to `tolokaforge_models/data/` with no forwarding stub. Any resource-path reader that missed migration in step 1 fails loud on first access (the file is not there), which is the right failure mode.
+
+Migration note in [`docs/RELEASING.md`](../RELEASING.md) + release notes on the first models-wheel-cutover engine release. @bberkes-toloka has committed to landing the collector-side migration ahead of the cutover.
 
 ## Fingerprinting for auditability
 
@@ -300,6 +324,8 @@ public-tolokaforge/
 
 If a future ADR chooses to split `tolokaforge_models/` into its own repo, the cost is bounded: one `git filter-repo --subdirectory-filter tolokaforge_models`, move the hatch custom builder to the new repo (converting to a standard hatch wheel target), move the two publish workflows, remove the models hatch target block from the engine `pyproject.toml`. Zero changes to any caller of `tolokaforge.core.model_data.*` or `tolokaforge.testing.certify.*`. Zero changes to `presets.py`, `pricing.py`, `client.py`, `proxy.py`.
 
+**Caveat — moving per-model subclasses out is a public-API deletion.** Every class-adding integration to date also added the new subclass to `tolokaforge/core/llm/__init__.py`'s `__all__` — #560 added 6 names, #719 added 2, #846 added 2. Callers doing `from tolokaforge.core.llm import GeminiRecursiveSchema` will break when those classes move to `tolokaforge_models.policies`. The cutover PR must (a) enumerate every currently-exported per-model class name, (b) either re-export the moved subclasses from `tolokaforge.core.llm.__init__` for one release with a `DeprecationWarning` (analogous to the `_capability.py`/`ModelCertificate` re-export in the certification seam), or (c) document the break in release notes with the exact import-path change. The "zero changes to any caller" claim above holds for callers of the seam surfaces (`model_data.*`, `testing.certify.*`); it does *not* hold for callers who import per-model policy classes directly by name.
+
 ## Runner-subset interaction
 
 The runner-subset wheel today explicitly includes `pricing.json` and `model_presets.yaml` via [`tolokaforge/core/_runner_subset.py:97,102`](../../tolokaforge/core/_runner_subset.py) (the [GH #830](https://github.com/Toloka/tolokaforge/issues/830) fix). After this ADR:
@@ -357,26 +383,27 @@ The classification step inspects the resolved policy graph: if every needed poli
 - **Central-publisher governance concentrates on Toloka.** External contributors PR against `Toloka/tolokaforge` targeting `tolokaforge_models/`. Cycle-time improvement over today is real; still no path for a third-party publisher.
 - **PyPI trusted-publisher setup required** for `tolokaforge-models`.
 - **`__api_version__` still depends on discipline.** Catches loader-contract breakage but not e.g. a policy-class rename that leaves the loader contract intact yet drops presets. Mitigation: the certification suite runs against every registered model on every `tolokaforge-models` release. Silent-preset-drop surfaces as a failed certificate before publish.
-- **Capability enum authority moves to the models package.** Weaker engine authority; stronger decoupling. Conscious trade-off. Reviewer question: is this the right call, or should the enum stay engine-authoritative?
+- **Capability enum stays engine-authoritative** (revised from the initial widening draft). A genuinely new *category* still requires an engine release; per-model quirks that need to be surfaced but do not map to a shipped shared probe travel through `cert.capability_extras` as opaque strings. Trade-off: an engine release for the rare "new category" event, in exchange for silent-break protection on the common attribute-access path.
 - **Base-class hooks land across two wheels in one PR.** The engine PR + models PR sequence is a small workflow discipline cost. Reviewer question: workable, or two-release protocol needed?
+- **Known ceiling — bases as single traversals with flags bolted on.** Applied to the § Evidence table, the widened ADR still routes 1 in 7 integrations to engine (specifically gemini-3.5-flash / #560, which needed `StrictSchema.carry_scalar_dict_map_value` — one boolean at `schema_sanitizer.py:214` consulted at exactly one site inside a 630-line class). That is well below today's 3-in-5, but above the 1-in-20 target. The reason bounds this ADR: bases expressed as ordered named steps, with sequence and parameters coming from data, would turn most "new hook" cases into rearrangements. That refactor is bigger than this ADR should absorb and is called out here as the ceiling this design shape reaches, not this design's failure. A future ADR can revisit the base-class shape independently; the acceptance test (§ Follow-ups) is the artefact that will report when the ceiling starts to bind.
 
 ### Follow-ups
 
-**Sub-issues under the umbrella tracked at [GH #645](https://github.com/Toloka/tolokaforge/issues/645)** — decompose via `/writing-development-tickets` after this ADR merges. Landing order chosen so each unblocks the next. Realistic PR count 8–9 (numbered arcs below are consolidatable).
+**Sub-issues under the umbrella tracked at [GH #645](https://github.com/Toloka/tolokaforge/issues/645)** — decompose via `/writing-development-tickets` after this ADR merges. Landing order chosen so each unblocks the next; **the acceptance test is deliberately built early so it reports at every step, and the workflow retarget lands right after the first manual Bucket A succeeds rather than at the end** (both revised 2026-08-07 per follow-up review — see § What "success" looks like and § Consequences → known ceiling). Realistic PR count 9–10 (numbered arcs below are consolidatable).
 
 1. **Fail-loud entry-point registry semantics** — fix the [GH #544](https://github.com/Toloka/tolokaforge/issues/544) pattern on `tolokaforge.adapters` preventatively; apply the same discipline to the new policy-class entry-point mechanism.
-2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing. Move `_capability.py`, `registry.py`, fixtures, ~30 test bodies. Add `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` fields. Add probe-registration decorator API.
-3. **Fingerprint** — widened `models_fingerprint` on `engine_run_state.json`.
-4. **New extension slots — `assistant_text_policy` + `params_policy`.** Base classes, registry entries, wire-in points in `client.py`. Cohere marker handling moves out of the client branch.
-5. **Policy configuration — slot values become `{name, params}`.** Overlay validator extended (nested unknown-key rejection). `_RECOGNISED_OVERRIDE_KEYS` removed.
-6. **Provider bindings as data.** `providers.yaml` schema. Nova hardcode, `UNROUTABLE_PROVIDERS`, rate-limit regex, `OPENROUTER_API_KEYS` rotation all read from data. Engine ships defaults matching today; models wheel supplies overrides once it lands.
-7. **Public helper promotion.** `_coerce_*`, private `_dict_maps` symbols, `_build_hints` — all public with docstrings + compat guarantee.
-8. **Base-class hooks landing.** Sweep every per-model subclass requiring a base-class hook today. Add the hooks (the engine half of "add-hook-then-move-subclass").
-9. **Create `tolokaforge-models` package + cut over.** THE main structural PR. Bundles all moved-out data + subclasses + tests. Adds `model_data.py` widened accessor, hatch custom builder, models-subset target, partition file. Extends engine `pyproject.toml`. Registers PyPI project. Updates runner-subset. Adds install-time validation + `minimum_engine_version` check.
-10. **Downstream forwarding stub + deprecation notice.**
-11. **Docs flip.** Invert `docs/ADD_NEW_MODEL.md` per the widened Bucket A / B.
-12. **Auto-integration workflow retarget.** Repoint `integrate-model.yml`. Classification step distinguishes Bucket A vs. Bucket B.
-13. **Acceptance test.** New canonical `tests/canonical/test_models_wheel_replay.py` — replays the last N integrations, asserts each Bucket A candidate could have shipped without an engine commit. Locks the ~5% engine, ~95% models target.
+2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing — the acceptance test in (3) depends on this seam. Move `_capability.py`, `registry.py`, fixtures, ~30 test bodies. Add `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields. Add probe-registration decorator API.
+3. **Acceptance-test scaffolding** — `tests/canonical/test_models_wheel_replay.py`. Replays the last N integrations against the engine tree **as it stood on each integration's date** (git checkout per-integration, not against post-follow-up-8 `main` — otherwise the retroactive hook masks the measurement). Reports the "engine releases avoided" number at every subsequent PR. Initial run reports the status-quo baseline (3-in-5 or whatever the tree of the day yields); each PR (4)–(11) should move the number. Landing this before (4) means every subsequent change is measured against the target.
+4. **Fingerprint** — widened `models_fingerprint` on `engine_run_state.json`.
+5. **New extension slots — `assistant_text_policy` + `params_policy` + narrow `message_assembly_policy`.** Base classes, registry entries, wire-in points in `client.py`. The Cohere text-marker slot unblocks integration #929; the narrow message-assembly version turns the `client.py:1213` filler string into policy data (no new slot type, just data extraction of an existing string).
+6. **Policy configuration — slot values become `{name, params}`.** Overlay validator extended with the engine ∪ models-declared allow-list. `_RECOGNISED_OVERRIDE_KEYS` removed.
+7. **Provider bindings as data.** `providers.yaml` schema including the three Nova sites (`_configure_nova_base_url`, `_format_model_name`, kwargs block with `custom_llm_provider`) and the two-step slug handling. `UNROUTABLE_PROVIDERS`, rate-limit regex, `OPENROUTER_API_KEYS` rotation all read from data. Engine ships defaults matching today; models wheel supplies overrides once it lands.
+8. **Public helper promotion.** `_coerce_json_strings`, `_coerce_empty_containers`, `_find_additional_properties` (from `_dict_maps`) — all public with docstrings + compat guarantee. **Scope note:** promoting `_build_hints` on `RefResolvingDictMapHints` is *not* a pure rename — the parent method is a `@staticmethod` at `prompt_policy.py:64` and the child is an instance method with `# type: ignore[override]`. Turning it into a proper extension point is a base-class *shape* change, which is Bucket B by our own definition. This follow-up covers the promotion; the `_build_hints` shape change lands as a companion Bucket-B PR (or is scoped explicitly out and `RefResolvingDictMapHints` stays engine).
+9. **Base-class hooks landing.** Sweep every per-model subclass requiring a base-class hook today (`StrictSchema.carry_scalar_dict_map_value` from #560 is the concrete case). Add the hooks; each defaults to current behaviour. Engine half of "add-hook-then-move-subclass".
+10. **`benchmark-results-collector` consumer migration + `importlib.resources` reader sweep.** Pre-move: consumers migrate to `tolokaforge.core.model_data.bundled_pricing_path()` and fail loud on empty. Sweep the codebase for any other `importlib.resources.files("tolokaforge")` reader touching data paths. Blocks (11) until every known reader is migrated.
+11. **Create `tolokaforge-models` package + cut over.** THE main structural PR. Bundles all moved-out data + subclasses + tests. Adds `model_data.py` widened accessor, hatch custom builder, models-subset target, partition file. Extends engine `pyproject.toml`. Registers PyPI project. Updates runner-subset. Adds install-time validation + `minimum_engine_version` runtime check. Includes the `tolokaforge/core/llm/__init__.py` re-export shim for moved subclasses (one-release deprecation window on the by-name imports).
+12. **Auto-integration workflow retarget** — lands right after the first manual Bucket A succeeds (i.e. right after (11)), not deferred to the end. Rationale: until the pipeline commits to `tolokaforge_models/`, every real integration still goes down the engine path and the "engine version stays put across a lineup refresh" property is untested in production. Repoint `integrate-model.yml`. Classification step distinguishes Bucket A vs. Bucket B.
+13. **Docs flip.** Invert `docs/ADD_NEW_MODEL.md` per the widened Bucket A / B.
 
 **Documentation to update** — [`docs/ADD_NEW_MODEL.md`](../ADD_NEW_MODEL.md), [`docs/LLM_LAYER.md`](../LLM_LAYER.md), [`docs/RELEASING.md`](../RELEASING.md) (downstream migration note), [`docs/ROADMAP.md`](../ROADMAP.md) on next release event.
 
@@ -389,12 +416,18 @@ The classification step inspects the resolved policy graph: if every needed poli
 
 ## Colleague review focus points
 
+Points settled by the 2026-08-07 follow-up review are marked ✅ with the resolution; open questions remain unmarked.
+
 1. **Is the § Requirements list complete?** Any known integration pain missed?
-2. **Capability enum ownership — models-package-authoritative.** Weaker engine authority over "what supported means" vs. cleaner decoupling. Right call?
+2. ✅ **Capability enum ownership.** Resolved: stays **engine-authoritative**. Certificate-borne `capability_extras: dict[str, str]` covers per-model quirks that need surfacing but do not correspond to a shipped shared probe. Silent-break protection via attribute access preserved; the engine release for a genuinely new *category* is accepted as rare.
 3. **Base-class hook policy — "add hook + subclass in same PR" across two wheels.** Workable? Or two-release protocol needed?
-4. **Downstream forwarding stub — one-release deprecation window.** Long enough? Consumers to notify beyond `benchmark-results-collector`?
-5. **Any policy classes today that do NOT fit "inherit from stable base, use only public API"?** Those stay Bucket B; would like the current list surfaced.
+4. ✅ **Forwarding stub.** Resolved: **no stub.** Consumers migrate to `tolokaforge.core.model_data.bundled_pricing_path()` and fail loud on empty ahead of the cutover; a codebase-wide `importlib.resources` sweep is a prerequisite (follow-up 10). @bberkes-toloka has committed to landing the `benchmark-results-collector` migration.
+5. ✅ **Classes that do not fit "inherit from stable base, use only public API".** Enumerated by the review: `GeminiRecursiveSchema` (fits after follow-up 9), `MinimaxM3TagRecoveryResponse` (composite, fits after follow-up 8), `RefResolvingDictMapHints` (deepest — base-class shape change; see follow-up 8 scope note). Confirm nothing has been added since #929.
 6. **ADR-0002 Option 4 selective adoption criterion.** YES for subclasses of stable bases + public API only; NO for new bases / new lifecycle stages. Right cut?
+7. **Landing-order change.** Acceptance test at position 3 (not last), so it reports progress at every subsequent PR; workflow retarget at 12 (right after cutover, not last), so the property is tested in production. Workable, or does the retarget need more slack for the manual path to settle?
+8. **Provider bindings schema — Nova capture.** Three-site mapping (`_configure_nova_base_url`, `_format_model_name`, kwargs block with `custom_llm_provider`) and two-step slug handling. Any provider besides Nova with equivalent hidden hooks the schema needs to name up front?
+9. **`RefResolvingDictMapHints` — accept it stays engine** (base-class shape change routed to Bucket B), or land the shape change as a companion Bucket-B PR alongside follow-up 8's promotion sweep?
+10. **Message-assembly slot cut.** Narrow version (filler string as policy data) in this ADR; general version (assembled-message-list slot with invariant checks) deferred until a second use case appears. Right cut?
 
 ## Links
 
@@ -411,7 +444,8 @@ The classification step inspects the resolved policy graph: if every needed poli
   - [`tests/integration/llm/`](../../tests/integration/llm/) — the certification harness that becomes `tolokaforge.testing.certify`.
   - [`scripts/hatch/hatch_runner_subset_builder.py`](../../scripts/hatch/hatch_runner_subset_builder.py) — pattern the new `hatch_models_subset_builder.py` mirrors.
 - Related issues:
-  - [GH #645](https://github.com/Toloka/tolokaforge/issues/645) — the public issue that catalysed this ADR, and its [2026-08-07 review comment](https://github.com/Toloka/tolokaforge/issues/645#issuecomment-5213977204) that catalysed the widening.
+  - [GH #645](https://github.com/Toloka/tolokaforge/issues/645) — the public issue that catalysed this ADR, and its [2026-08-07 review comment](https://github.com/Toloka/tolokaforge/issues/645#issuecomment-5213977204) that catalysed the widening. The follow-up review on this PR (2026-08-07 later that day) drove the revisions marked *"revised 2026-08-07"* throughout — capability-enum flip, no-stub plan, Nova three-site record, class-name-check placement, `minimum_engine_version` runtime rationale, nested-unknown-key allow-list scoping, `__all__` deletion caveat, ninth-slot Cohere correction, and the § What "success" looks like framing note.
+  - [GH #929](https://github.com/Toloka/tolokaforge/issues/929) — open Cohere integration blocked on the `assistant_text_policy` slot this ADR introduces. First real test that the widened design unblocks something today rather than moves faster tomorrow.
   - [GH #544](https://github.com/Toloka/tolokaforge/issues/544) — the fail-loud registry-collision pattern that follow-up (1) fixes.
   - [GH #353](https://github.com/Toloka/tolokaforge/issues/353) — pricing table location alignment; overlaps with follow-up (9).
   - [GH #830](https://github.com/Toloka/tolokaforge/issues/830) — the runner-subset data-file omission fix; its lesson applies to the models-subset custom builder.
