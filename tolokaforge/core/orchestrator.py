@@ -15,7 +15,6 @@ from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_ada
 from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     grading_source_under_adapter,
-    hash_source_layer_under_adapter,
     replay_world_under_adapter,
     tool_inventory_under_adapter,
     validate_grading_yaml,
@@ -1679,7 +1678,7 @@ class Orchestrator:
                 source.path,
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
                 replay_world=replay_world_under_adapter(task, adapter_type),
-                hash_sources=hash_source_layer_under_adapter(adapter_type),
+                hash_sources=self.adapter.grading_hash_source_layer(task, task_dir),
                 combine_layer=self.adapter.grading_combine_layer(),
                 fail_on=fail_on,
             )
