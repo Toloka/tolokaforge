@@ -11,19 +11,22 @@ runner container that host-side address is the runner itself, so every
 
 The orchestrator is real here; only ``create_typesense_server`` — the factory
 the method imports the Docker boundary through — is a stand-in.
-``test_orchestrator_typesense_cache_invalidation.py`` covers the next step of
-the same chain and substitutes further down, at the ``docker`` module and an
+``test_orchestrator_typesense_bridge.py`` covers the next step of the same
+chain and substitutes further down, at the ``docker`` module and an
 already-assigned server handle.
 """
 
 from __future__ import annotations
 
+import io
+import logging
 from pathlib import Path
 
 import pytest
 
 import tolokaforge.core.search.typesense_server as typesense_server_module
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.logging import LogFormat, StructuredFormatter
 from tolokaforge.core.models import (
     EvaluationConfig,
     ModelConfig,
@@ -33,6 +36,8 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.secrets import get_default
+from tolokaforge.secrets.log_filter import PLACEHOLDER, install_global_redactor
 
 pytestmark = pytest.mark.unit
 
@@ -44,19 +49,21 @@ class _Manager:
 
     ``port`` defaults to the sentinel the real manager carries until ``start()``
     resolves one, so a row that wants a resolved address must say so.
+    ``api_key`` defaults to a generated-looking value; the real manager keeps a
+    pinned key verbatim, so a pinned-key row passes its own through.
     """
 
-    def __init__(self, *, started: bool, port: int = -1) -> None:
+    def __init__(self, *, started: bool, port: int = -1, api_key: str = "resolved-api-key") -> None:
         self.host = "127.0.0.1"
         self.port = port
-        self.api_key = "resolved-api-key"
+        self.api_key = api_key
         self._started = started
 
     def start(self) -> bool:
         return self._started
 
 
-def _orchestrator(tmp_path: Path) -> Orchestrator:
+def _orchestrator(tmp_path: Path, api_key: str | None = None) -> Orchestrator:
     return Orchestrator(
         RunConfig(
             models={"agent": ModelConfig(provider="openai", name="gpt-4")},
@@ -68,7 +75,7 @@ def _orchestrator(tmp_path: Path) -> Orchestrator:
                     enabled=True,
                     mode="local",
                     port="auto",
-                    api_key=None,
+                    api_key=api_key,
                     timeout=CONFIGURED_TIMEOUT,
                 ),
             ),
@@ -150,3 +157,137 @@ def test_a_started_server_resolves_its_port_and_api_key_into_the_config(
 
     assert orchestrator.config.orchestrator.typesense.port == 8199
     assert orchestrator.config.orchestrator.typesense.api_key == "resolved-api-key"
+
+
+def test_the_resolved_api_key_enters_the_secret_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_secret_manager
+) -> None:
+    """A key this process generated is a secret like any other from here on.
+
+    Registration is what carries it to the runner — ``core_stack`` serialises
+    the manager into ``TOLOKAFORGE_SECRETS_JSON`` and nothing else transports
+    it — and it is what puts the value in the redaction set that scrubs
+    message text. That set never reaches the extras channel, so params dumps
+    like "Creating adapter" keep the key out by construction instead
+    (``test_a_pinned_key_never_renders_in_the_creating_adapter_params_dump``).
+    """
+    orchestrator = _with_manager(tmp_path, monkeypatch, started=True)
+
+    orchestrator._ensure_typesense_started()
+
+    manager = get_default()
+    assert manager.get_secret("TYPESENSE_API_KEY") == "resolved-api-key"
+    assert manager.serialize()["TYPESENSE_API_KEY"] == "resolved-api-key"
+
+
+def test_a_pinned_key_never_renders_in_the_start_blocks_log_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_secret_manager
+) -> None:
+    """``port: "auto"`` with a pinned key enters the start block with the key known.
+
+    The key exists at config-parse time, so it is registered — and therefore in
+    the redaction set — before the start block emits its first record. Two
+    channels are held shut: the start block's own config dump does not carry
+    the key at all (the record factory scrubs message text, not extras, so an
+    extras dump would render it regardless of the redaction set), and a start-
+    path record that embeds the key in its message text renders the
+    placeholder.
+    """
+    original_factory = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(logging.LogRecord)
+    stdlib_logger = logging.getLogger("orchestrator")
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(StructuredFormatter(LogFormat.PLAIN))
+    pinned = "PINNEDTSKEY0123456789"
+
+    def _factory(**kwargs) -> _Manager:
+        # A start-path record carrying the key in its message text — the shape
+        # the redaction set must already cover when the start block runs.
+        stdlib_logger.info("probing TypeSense with api key %s", kwargs["api_key"])
+        return _Manager(started=True, port=8199, api_key=kwargs["api_key"])
+
+    monkeypatch.setattr(typesense_server_module, "create_typesense_server", _factory)
+    # Constructed before the capture handler attaches: the first
+    # ``StructuredLogger("orchestrator")`` of the session clears the stdlib
+    # logger's handlers.
+    orchestrator = _orchestrator(tmp_path, api_key=pinned)
+    install_global_redactor()
+    stdlib_logger.addHandler(handler)
+    try:
+        orchestrator._ensure_typesense_started()
+        handler.flush()
+    finally:
+        stdlib_logger.removeHandler(handler)
+        logging.setLogRecordFactory(original_factory)
+
+    output = buf.getvalue()
+    assert "Starting local TypeSense server" in output
+    assert PLACEHOLDER in output
+    assert pinned not in output
+
+
+def test_a_pinned_key_never_renders_in_the_creating_adapter_params_dump(
+    tmp_path: Path, isolated_secret_manager
+) -> None:
+    """The adapter params are logged without the key the adapter itself receives.
+
+    ``_create_adapter`` logs its params through the extras channel, which the
+    redaction record factory never sees — stdlib ``makeRecord`` applies
+    ``extra=`` onto the record after the factory returns, and
+    ``StructuredFormatter`` renders straight from ``record.__dict__``.
+    Registration therefore cannot hold this channel shut; the logged copy must
+    simply not carry the key. The functional payload is a different copy: the
+    adapter needs the key, so the params handed to ``get_adapter`` keep it.
+    """
+    original_factory = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(logging.LogRecord)
+    stdlib_logger = logging.getLogger("orchestrator")
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(StructuredFormatter(LogFormat.PLAIN))
+    pinned = "PINNEDTSKEY0123456789"
+
+    orchestrator = _orchestrator(tmp_path, api_key=pinned)
+    orchestrator.config.orchestrator.typesense = TypeSenseConfig(
+        enabled=True, mode="remote", host="ts.example", port=8108, api_key=pinned
+    )
+    install_global_redactor()
+    orchestrator._ensure_typesense_started()
+    # Positive control: the redaction set does hold the key when the params
+    # line renders, so a key-free dump is the mask's doing, not the set's.
+    assert get_default().get_secret("TYPESENSE_API_KEY") == pinned
+    stdlib_logger.addHandler(handler)
+    try:
+        adapter = orchestrator._create_adapter()
+        handler.flush()
+    finally:
+        stdlib_logger.removeHandler(handler)
+        logging.setLogRecordFactory(original_factory)
+
+    output = buf.getvalue()
+    assert "Creating adapter" in output
+    assert "ts.example" in output
+    assert pinned not in output
+    assert adapter.params["typesense"]["api_key"] == pinned
+
+
+def test_a_plane_with_no_key_of_its_own_registers_nothing(
+    tmp_path: Path, isolated_secret_manager
+) -> None:
+    """``mode: remote`` without a key leaves the installed manager untouched.
+
+    Registration replaces the singleton, so an unchanged manager is the
+    observable "nothing was registered". Registering an absent credential
+    would raise on the empty value, and registering a placeholder would
+    shadow a configured ``TYPESENSE_API_KEY`` with nothing.
+    """
+    orchestrator = _orchestrator(tmp_path)
+    orchestrator.config.orchestrator.typesense = TypeSenseConfig(
+        enabled=True, mode="remote", host="ts.example", port=8108, api_key=None
+    )
+    installed = get_default()
+
+    orchestrator._ensure_typesense_started()
+
+    assert get_default() is installed

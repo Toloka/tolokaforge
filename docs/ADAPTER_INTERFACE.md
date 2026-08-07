@@ -53,7 +53,7 @@ Each adapter must subclass `BaseAdapter` and implement:
 ## Runtime Capabilities (declarative, opt-in)
 
 The runner selects per-trial behaviour from **data on the `TaskDescription`**,
-never from the adapter's identity. Three capabilities matter to adapter authors:
+never from the adapter's identity. Four capabilities matter to adapter authors:
 
 ### `GradingConfig.grading_method`
 
@@ -73,6 +73,29 @@ A declarative selector on the grading config that tells the runner *how* to grad
 
 Typos in this value are caught at validation by the `Literal[...]` field type;
 an "unknown grading method" cannot reach the runner silently.
+
+### `SearchConfig.plane`
+
+Which plane serves the task's `documents_path`:
+
+- **`"typesense"`** — the runner registers a search client for the domain, and
+  `search_policy` tools reach the collection the host-side indexer built.
+- **`"rag_service"`** — rag-service indexes the corpus bundled in
+  `tool_artifacts`, per trial. Set `enabled: true` alongside it; that flag is
+  what gates the indexing.
+- **`None`** *(default)* — the adapter did not declare one, and the runner
+  derives `typesense` from a task that carries `host` / `port` / `api_key`.
+
+The address is the stack's, not the task's: the runner container is created
+knowing `TYPESENSE_HOST` / `TYPESENSE_PORT`, so an adapter has no Docker
+networking to reason about and should emit no connection details at all.
+
+**Migrate in this order: declare `plane` first, drop the connection details
+second.** Reversed, an adapter emits a task with a `documents_path`, no address
+to derive a plane from, and no declaration — which the runner refuses at
+`RegisterTrial` naming `search.plane`, because registering it would leave
+`search_policy` with nothing behind it. Emitting both during the transition is
+fine: a declared plane outranks anything derivable from an address.
 
 ### `ToolWrapper.has_lifecycle`
 

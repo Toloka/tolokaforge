@@ -322,7 +322,7 @@ Stdout stays strictly empty — dry-run produces no artifact, so `emit_artifact_
 
 ### Typesense / Docker side effects
 
-`load_tasks_for_dry_run` builds the adapter directly and enumerates tasks without the TypeSense preflight `Orchestrator.load_tasks()` runs. A run config that declares `orchestrator.typesense.enabled=true` renders panels showing the search config as authored — `port="auto"` / `api_key=null` fields stay unresolved because no container starts. Operators wanting resolved TypeSense values run a real trial or `tolokaforge prepare`.
+`load_tasks_for_dry_run` builds the adapter directly and enumerates tasks without the TypeSense preflight `Orchestrator.load_tasks()` runs. The adapter is handed the connection details a real run would hand it, under the same condition: `orchestrator.typesense` reaches it when the block is `enabled` and its `mode` is not `disabled`, and never otherwise — so a dry run cannot preview a search plane the run would not have. The values are the authored ones, so panels render `port="auto"` / `api_key=null` unresolved because no container starts. Operators wanting resolved TypeSense values run a real trial or `tolokaforge prepare`.
 
 ## Resume
 

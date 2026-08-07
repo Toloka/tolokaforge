@@ -258,10 +258,27 @@ class RunnerUserSimulatorConfig(BaseModel):
 # =============================================================================
 
 
+class SearchPlane(str, Enum):
+    """Which plane serves a task's ``documents_path``."""
+
+    TYPESENSE = "typesense"
+    """The TypeSense collection the runner registers a search client against."""
+
+    RAG_SERVICE = "rag_service"
+    """The rag-service index built per trial from the bundled corpus."""
+
+
 class SearchConfig(BaseModel):
-    """Configuration for knowledge base search (TypeSense)."""
+    """Configuration for knowledge base search (TypeSense).
+
+    ``plane`` is a fact about the task — which plane serves its corpus — and is
+    the only thing that decides it. A task that declares none leaves the runner
+    to derive one from the connection details it carries, which is what an
+    adapter emits until it declares the plane instead.
+    """
 
     enabled: bool = False
+    plane: SearchPlane | None = None
     domain_name: str | None = None  # "external_retail_v3"
     documents_path: str | None = None  # Path to docindex/ directory
 
