@@ -1306,8 +1306,11 @@ _TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType(
 )
 """The pack that must carry a key to the runner as something other than the field default.
 
-A key ``all_keys`` cannot legally declare is owned by a pack named here; ``all_keys`` owns
-every other one, so a key added to the manifest has an owner from the start and fails the
+Two reasons put a key here. The first is legality: a key ``all_keys`` cannot declare
+beside the rest needs a pack that can. The second is attribution — ``expect_initial_state``
+is legal there, but the pack named for it declares that key alone, so nothing else in the
+pack could be what put the field off its default. ``all_keys`` owns every key neither
+reason claims, so a key added to the manifest has an owner from the start and fails the
 lock until some pack declares it. Ownership is per key rather than per pack because
 declaring a key is not translating it: ``db_probe_grading`` writes
 ``combine.method: weighted`` and ``llm_judge: null``, both of which reach the runner as
@@ -3217,9 +3220,9 @@ def _drive_hash_family(
 ) -> tuple[runner_models.RunnerGradingConfig, pb2.GradeTrialResponse]:
     """Grade a hash-enabled trial whose one golden action names a registered tool.
 
-    Asserts the replay ran whole. ``hash_family_accounting(EVALUATED)`` is recorded
-    whenever ``_execute_hash_grading`` returns — including when every golden action
-    failed to take effect, which still grades ``success=True`` with
+    Asserts the replay ran whole. The family is accounted for from the basis the
+    evaluator returns, and it returns one whenever it completes — including when every
+    golden action failed to take effect, which still grades ``success=True`` with
     ``state_checks == 1.0``. All four of lock 15's claims hold on that hollow
     evaluation, so without this guard claim 4 would mean nothing for the hash family.
     """
@@ -3519,7 +3522,7 @@ def test_the_site_lock_rejects_hash_accounting_that_files_nothing(
     tests elsewhere, and a lock that relied on those going red would not be reading
     its own claim.
     """
-    monkeypatch.setattr(runner_service_module, "hash_family_accounting", lambda outcome: {})
+    monkeypatch.setattr(runner_service_module, "hash_family_accounting", lambda basis: {})
 
     grading_config, response = _drive_hash_family(
         runner_service,

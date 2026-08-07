@@ -41,11 +41,10 @@ INERT_HASH_WEIGHT_REASON = (
 )
 
 CONFLICTING_HASH_SOURCES_MESSAGE = (
-    "state_checks.hash.expect_initial_state names the state the trial started in as the "
-    "expected final state, and state_checks.hash.{other} names another one: the comparison "
-    "has two candidates and nothing says which it runs against. Choose one — "
-    "expect_initial_state for a refusal task whose expected final state is the initial "
-    "state, or {other} for a task that changes state."
+    "state_checks.hash.{first} and state_checks.hash.{second} each name an expected final "
+    "state: the comparison has two candidates and nothing says which it runs against. "
+    "Declare one — expect_initial_state for a refusal task whose expected final state is "
+    "the initial state, golden_actions for a task that changes state."
 )
 
 WEIGHT_DOMAIN_MESSAGE = "state_checks.hash.weight must be a real number within [0.0, 1.0]"
@@ -54,7 +53,7 @@ AUTHORED_HASH_WEIGHT_CONTEXT = "grading.yaml state_checks.hash.weight"
 """Where an author reads a rejected weight from, named once for every rule that reports one."""
 
 EXPECT_INITIAL_STATE_KEY = "expect_initial_state"
-"""The source naming the state the trial started in, which the other one excludes."""
+"""The source naming the state the trial started in, rather than one the trial reaches."""
 
 RETIRED_HASH_KEYS: Mapping[str, str] = MappingProxyType(
     {
@@ -192,7 +191,7 @@ class StateHashConfig(BaseModel):
 
     @model_validator(mode="after")
     def _refuse_a_second_expected_state(self) -> StateHashConfig:
-        """Reject ``expect_initial_state`` declared beside another source.
+        """Reject a block declaring more than one hash source.
 
         The sources name different expected states and the block declares no
         precedence between them, so the trial would be compared against whichever one
@@ -201,21 +200,16 @@ class StateHashConfig(BaseModel):
         authoring gate, both adapter reads, and the runner's translation of its own
         flattened fields — refuses the same pack.
 
-        Read off :data:`HASH_SOURCE_KEYS` rather than off the one other source the
-        vocabulary currently holds, so a source added to that tuple is excluded by the
-        same rule instead of by a second one nobody remembers to write.
+        Pairwise over :data:`HASH_SOURCE_KEYS` rather than anchored on one member of it,
+        so a source added to that tuple is excluded against every other one by this rule
+        instead of by a second one nobody remembers to write.
         """
-        declared = next(
-            (
-                key
-                for key in HASH_SOURCE_KEYS
-                if key != EXPECT_INITIAL_STATE_KEY and getattr(self, key)
-            ),
-            None,
-        )
-        if not self.expect_initial_state or declared is None:
+        declared = [key for key in HASH_SOURCE_KEYS if getattr(self, key)]
+        if len(declared) < 2:
             return self
-        raise ValueError(CONFLICTING_HASH_SOURCES_MESSAGE.format(other=declared))
+        raise ValueError(
+            CONFLICTING_HASH_SOURCES_MESSAGE.format(first=declared[0], second=declared[1])
+        )
 
 
 def hash_block_is_a_state_source(hash_config: StateHashConfig | None) -> bool:

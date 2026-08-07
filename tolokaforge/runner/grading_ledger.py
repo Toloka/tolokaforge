@@ -47,6 +47,7 @@ from tolokaforge.core.grading.key_manifest import (
 from tolokaforge.core.grading.key_manifest import (
     UNBOUND_BINDING_SKIP as UNBOUND_BINDING_SKIP,
 )
+from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
     HashComparisonBasis,
@@ -118,8 +119,9 @@ _HASH_SOURCE_READ_BY_BASIS: Mapping[HashComparisonBasis, str | None] = {
 
 # The family members that are not a source: the flag and the family root, which the
 # evaluator running accounts for whichever state it compared against. Subtracted from
-# the family rather than listed, so a source key added to the manifest moves here only
-# by being given a basis above.
+# the family rather than listed, so a member the map above names is removed by being
+# named there. A source the map does not name is not subtracted and lands here, reported
+# evaluated on every hash grading — which reject_hash_sources_no_basis_reports refuses.
 _HASH_NON_SOURCE_KEYS = tuple(
     author_key
     for author_key in _HASH_FAMILY_AUTHOR_KEYS
@@ -148,7 +150,28 @@ def reject_hash_members_the_hash_evaluator_does_not_read(items: Iterable[Grading
             )
 
 
+def reject_hash_sources_no_basis_reports(source_keys: Iterable[str]) -> None:
+    """Raise unless every hash source is the key some comparison basis reports reading.
+
+    A source with no basis naming it survives the subtraction above and joins the keys
+    reported evaluated on *every* hash grading — including the runs that compared against
+    a different source's state, which never read it. The failure is silent otherwise:
+    nothing else in this module distinguishes a source from the flag it hangs under.
+    """
+    reported = set(_HASH_SOURCE_READ_BY_BASIS.values())
+    for key in source_keys:
+        author_key = f"state_checks.hash.{key}"
+        if author_key not in reported:
+            raise ValueError(
+                f"{author_key}: hash source that no HashComparisonBasis reports reading, "
+                "so it would be reported evaluated on every hash grading rather than on "
+                "the ones that compared against its state. It needs its own recording "
+                "site, not the family's always-evaluated set"
+            )
+
+
 reject_hash_members_the_hash_evaluator_does_not_read(_HASH_FAMILY)
+reject_hash_sources_no_basis_reports(HASH_SOURCE_KEYS)
 
 
 @dataclass(frozen=True)

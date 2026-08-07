@@ -927,7 +927,7 @@ from this release onward refuses a key it does not declare instead of ignoring i
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Seven keys carry the lock:
+being dropped. Eight keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -935,6 +935,14 @@ being dropped. Seven keys carry the lock:
 - `state_checks.hash_weight`, which a runner image older than this release does not
   declare: the current engine emits it (as `null` when the pack declares no weight),
   so a **new engine against an old runner image** is rejected the same way.
+- `state_checks.expect_initial_state`, the field carrying the hash source that names the
+  state a refusal task expects. A **new engine** emits `expect_initial_state`, which a
+  runner image older than this release does not declare, and an **old engine** emits
+  `expected_hash` — the field a stored digest crossed on, deleted here — which a current
+  one does not. So this key is rejected in *both* directions rather than one. The
+  authored `grading.yaml` key is `state_checks.hash.expect_initial_state`, and the
+  digest it replaces is retired: a pack declaring `expected_state_hash` migrates, per
+  [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 - `transcript_rules.min_assistant_turns`, which a runner image older than this release
   does not declare: the current engine emits it (as `null` when the pack declares no
   floor), so a **new engine against an old runner image** is rejected the same way.
@@ -960,10 +968,10 @@ being dropped. Seven keys carry the lock:
   naming `id_fields` — the correct fail-loud outcome, since that image cannot
   resolve a composite key.
 
-The first two bite on **every** pack carrying a non-empty `state_checks:` block,
+The first three bite on **every** pack carrying a non-empty `state_checks:` block,
 `min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
 `trace_checks` on **every** pack at all — whether or not the pack declares the key,
-because the adapter emits all four unconditionally. `required_actions[*].name` bites
+because the adapter emits all five unconditionally. `required_actions[*].name` bites
 only on a pack that declares `required_actions`, since an empty list carries no element
 to spell either way. `combine_method` bites only on a
 pack declaring an affected value — `weighted` and `all` cross in either direction —
@@ -1276,8 +1284,8 @@ output mentions the word (#855).
 ### Best Practices
 
 - Filter non-deterministic fields (timestamps, UUIDs) before hashing
-- Prefer golden-action replay over storing a hash literal; if you must store one,
-  recompute it whenever the hashing algorithm changes (see the callout above)
+- Every hash source names a state, not a digest — `golden_actions` for a task that
+  changes state, `expect_initial_state` for a refusal task
 - Fold numeric strings per-field (`numeric_string_fields`), never as a global switch
 - Declare non-`id` primary keys per table (`id_fields`); leave `id`-keyed tables unset
 - Use `relaxed_validation` only as a short-lived escape hatch for legacy tasks
@@ -2485,7 +2493,7 @@ Findings come in three classes:
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| any hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — where the task's declared `adapter_type` is `native` | error, one for the block | `state_checks.hash.<the declared source>`, and the first the vocabulary names where several are declared |
+| any hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — where the task's declared `adapter_type` is `native` | error, one for the block | `state_checks.hash.<the declared source>` |
 | a truthy `state_checks.hash.enabled` with no source — no non-empty `golden_actions`, no truthy `expect_initial_state` — where the task's declared `adapter_type` is `native` | error | `state_checks.hash.enabled` |
 | a truthy `expect_initial_state` beside another hash source — raised as a config load error wherever the block is constructed, so it is reported alone | error | `state_checks.hash.expect_initial_state` |
 | either flag/source mismatch above, where the task declares any other `adapter_type` — an external adapter may compute the source it compares against from its own fixtures, the way the frozen-core family replays a golden-actions fixture the block never names | unchecked | the address the error would have carried |
@@ -2558,8 +2566,8 @@ requires nothing.
 
 **Two state sources, one of them a probe, is refused as well** — the mirror of the
 no-source rule above, and the two divide the block between them. `db_probes` beside a
-non-empty `jsonpaths`, or beside a `hash` block that is enabled and names any of its
-three sources, hands one component two candidate scores with
+non-empty `jsonpaths`, or beside a `hash` block that is enabled and names either of its
+two sources, hands one component two candidate scores with
 no share to fold them by, and the substrates would not even discard the same one: only
 the runner evaluates a probe, while core folds the hash with the assertions. Neither
 config model loads the block, so core raises where the grading config is built and the

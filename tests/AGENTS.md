@@ -64,7 +64,8 @@ tests/
 5. **Integration tests**: real services, Docker, API keys. Auto-skipped when prerequisites missing.
 6. **Import `MockAsyncClient`** from `tests.utils.mock_clients` — do not create local copies.
 7. **Use shared fixtures** from `conftest.py` — do not duplicate.
-8. **Zero `xfail`**, zero bare `@skip`. Use conditional markers (`requires_api`, `requires_docker`).
+8. **No accepted failures**: every test passes, is deleted, or carries `xfail(strict=True, raises=…)` — a marker that records a measured defect and fails the suite the moment the defect is fixed. A bare or non-strict `xfail` absorbs real breakage silently and is never correct.
+9. **Zero bare `@skip`**. Use conditional markers (`requires_api`, `requires_docker`).
 
 ## Golden Snapshots
 

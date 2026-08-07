@@ -239,7 +239,9 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
     "state_checks": _TypedGradingBlock(
         model=StateChecksConfig,
         retired_keys=RETIRED_STATE_CHECK_KEYS,
-        nested_block_models=(_NestedBlock("hash", StateHashConfig, frozenset(RETIRED_HASH_KEYS)),),
+        nested_block_models=(
+            _NestedBlock("hash", StateHashConfig, retired_keys=frozenset(RETIRED_HASH_KEYS)),
+        ),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,
     # so the component is 0.0 however the agent behaves. Constructing the block rather

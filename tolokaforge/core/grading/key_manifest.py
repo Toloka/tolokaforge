@@ -183,9 +183,10 @@ _HASH_COMPOSITION_WIRE_TEST = (
 )
 """Drives the runner's own golden-replay hash verdict into the shared composer.
 
-A matching and a diverging final state, at two weights strictly inside ``(0, 1)``,
-over real gRPC and a real db-service. The hash family's differential cannot run
-in-process: the evaluator replays golden actions against db-service over HTTP.
+A matching and a diverging final state, at two weights strictly inside ``(0, 1)``. What
+it alone covers is the transport the verdict crosses: a real ``GradeTrial`` over gRPC
+against a real db-service, where the canonical differentials drive the servicer and its
+db-service in process.
 """
 
 _HASH_SOURCE_SHAPE_REASON = (

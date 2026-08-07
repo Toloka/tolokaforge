@@ -298,7 +298,7 @@ def test_a_falsy_golden_source_loads_as_no_actions_to_replay(
     is not coerced off, because the author did ask for hash grading. This is a load-tier
     lock and asserts nothing about the verdict that description later earns: the runner
     grades an empty replay against the trial's initial state where core takes no verdict at
-    all, which is #693's asymmetry and untouched here.
+    all, an asymmetry no gate admits and this lock does not reach.
 
     The rows that are not the empty list are the ones a truthiness-mirroring read gets
     wrong: ``golden_actions: null`` is what an author reaches by commenting their actions

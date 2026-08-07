@@ -214,13 +214,14 @@ def _loaded_initial_state(path: Path, declared: Any) -> dict[str, Any]:
                 )
             )
         ) from error
-    if not isinstance(loaded, dict):
+    if not isinstance(loaded, dict) or not loaded:
+        problem = (
+            "it holds an empty JSON object"
+            if isinstance(loaded, dict)
+            else f"it holds a {type(loaded).__name__}"
+        )
         raise UnresolvableInitialState(
-            _no_initial_state(
-                _UNREADABLE_INITIAL_STATE.format(
-                    path=declared, problem=f"it holds a {type(loaded).__name__}"
-                )
-            )
+            _no_initial_state(_UNREADABLE_INITIAL_STATE.format(path=declared, problem=problem))
         )
     return loaded
 

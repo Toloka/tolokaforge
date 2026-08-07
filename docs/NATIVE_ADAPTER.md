@@ -397,12 +397,10 @@ orchestrator directly via the MCP server path from `task.yaml`.  This is a
 known architectural gap — future work would move MCP server loading fully into
 the adapter (noted in the `NativeAdapter.get_registry_tools` docstring).
 
-#### `compute_golden_hash` delegates to grading engine
+#### `compute_golden_hash` computes nothing
 
-When `grading.yaml` contains `golden_actions`, `compute_golden_hash()` returns
-`None` and leaves hash computation to the `GradingEngine`.  The method does
-not execute golden actions itself because that requires MCP server access that
-is not available at adapter init time.
+The method returns `None` for every shape and the substrate grading the trial
+evaluates both hash sources itself; #836 owns deleting it.
 
 #### User tools not supported
 

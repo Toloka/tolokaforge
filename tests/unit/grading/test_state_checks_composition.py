@@ -710,6 +710,7 @@ class TestExpectInitialStateComparesAgainstTheStateTheTaskStartsIn:
         [
             pytest.param(None, "FileNotFoundError", id="a_file_the_task_does_not_carry"),
             pytest.param("[]", "list", id="a_file_holding_no_json_object"),
+            pytest.param("{}", "empty JSON object", id="a_file_holding_an_empty_json_object"),
         ],
     )
     def test_a_file_that_holds_no_state_is_named_rather_than_read_as_empty(
@@ -979,10 +980,9 @@ class TestAGoldenSourceNoReplayCanIterateRefusesToGrade:
         """The boundary the refusal sits below: no source, so nothing to refuse.
 
         Core reads all six spellings as nothing to replay and reports the absent source
-        rather than raising, which is the answer this stage may not move — the assertions
-        alone score the component at ``0.5`` and the hash contributes nothing. What the
-        *runner* grades for a replay of no actions is its own answer (#693) and no
-        assertion here reaches it.
+        rather than raising — the assertions alone score the component at ``0.5`` and the
+        hash contributes nothing. What the *runner* grades for a replay of no actions is
+        its own answer and no assertion here reaches it.
         """
         grade = self._grade_over_the_pack(
             test_data_dir / "tasks" / "shop_orders_02", golden_actions
