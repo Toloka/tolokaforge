@@ -4,10 +4,11 @@ Covers the two halves of the feature:
 
 * :mod:`tolokaforge.core.llm.proxy` — resolving and validating the env
   contract.
-* :class:`~tolokaforge.core.llm.client.LLMClient` — applying it as a *transport
-  swap only*, which is the load-bearing invariant: the litellm model string
-  must keep its ``<provider>/<name>`` shape so preset resolution and pricing
-  normalisation stay untouched.
+* :class:`~tolokaforge.core.llm.client.LLMClient` — applying it, on the branch
+  where the gateway catalog is unreadable so the model string is left alone. The
+  route-resolving branches live in test_gateway_routing_applied.py. What preset
+  resolution and pricing key off either way is ``ModelConfig``, never the wire
+  name.
 """
 
 from __future__ import annotations
@@ -336,7 +337,11 @@ class TestHeaderSecretRefs:
 
 
 class TestClientAppliesProxy:
-    """``LLMClient`` treats the gateway as a transport swap and nothing more."""
+    """``LLMClient`` applying the gateway, with the catalog unreadable.
+
+    The autouse fixture in conftest.py stubs the catalog fetch to ``None``, so these
+    pin the degraded branch rather than a general invariant.
+    """
 
     def test_kwargs_carry_base_url_and_key(self, install_secrets) -> None:
         install_secrets(
@@ -349,12 +354,19 @@ class TestClientAppliesProxy:
         assert kwargs["api_base"] == "https://gateway.example.com"
         assert kwargs["api_key"] == "sk-gateway"
 
-    def test_model_string_is_unchanged(self, install_secrets) -> None:
-        """The invariant that keeps presets and pricing working."""
+    def test_an_unreadable_catalog_leaves_the_model_string_alone(self, install_secrets) -> None:
+        """Pins the unreadable-catalog branch, not a general invariant.
+
+        A readable catalog naming the model DOES rewrite this to the gateway's route
+        name; that path is covered in test_gateway_routing_applied.py. What presets and
+        pricing actually key off is ``ModelConfig``, asserted below.
+        """
         install_secrets({"LLM_PROXY_BASE_URL": "https://gateway.example.com"})
         config = ModelConfig(provider="openrouter", name="anthropic/claude-opus-4.7")
         kwargs = _build_kwargs(config)
         assert kwargs["model"] == "openrouter/anthropic/claude-opus-4.7"
+        assert config.provider == "openrouter"
+        assert config.name == "anthropic/claude-opus-4.7"
 
     def test_configured_headers_reach_the_request(self, install_secrets) -> None:
         install_secrets(

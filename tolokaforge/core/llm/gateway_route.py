@@ -25,10 +25,17 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: Successful reads only, cached per base URL: a catalog changes when an operator
-#: edits the gateway, not within a run, while a failure is transient and caching it
-#: would keep a whole run on the degraded path after one blip.
-_CATALOG_CACHE: dict[str, frozenset[str] | None] = {}
+#: Successful, non-empty reads only, keyed by base URL: a catalog changes when an
+#: operator edits the gateway, not within a run, while a failure is transient and
+#: caching it would keep a whole run degraded after one blip.
+_CATALOG_CACHE: dict[str, frozenset[str]] = {}
+
+#: Consecutive failures per base URL, so a gateway that HANGS costs the timeout a
+#: bounded number of times instead of once per client construction for a whole run.
+_FAILURES: dict[str, int] = {}
+
+#: Give up for the process after this many consecutive failures.
+MAX_CATALOG_ATTEMPTS = 3
 
 
 class GatewayRouteError(Exception):
@@ -36,19 +43,25 @@ class GatewayRouteError(Exception):
 
 
 def clear_catalog_cache() -> None:
-    """Drop the cached catalogs. For tests and long-lived processes."""
+    """Drop the cached catalogs and the failure counters. For tests."""
     _CATALOG_CACHE.clear()
+    _FAILURES.clear()
 
 
 def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[str] | None:
     """Route ids the gateway serves, or ``None`` when the catalog cannot be read.
 
-    ``None`` is "no information", never an error to propagate: an unreadable catalog
-    must leave routing exactly as it was rather than fail a run.
+    ``None`` is "no information", never an error to propagate: the caller keeps the
+    gateway and skips rewriting rather than failing a run. An **empty** answer counts
+    as unreadable, since a gateway that serves nothing is broken rather than
+    authoritative.
     """
     key = proxy.base_url
-    if key in _CATALOG_CACHE:
-        return _CATALOG_CACHE[key]
+    cached = _CATALOG_CACHE.get(key)
+    if cached is not None:
+        return cached
+    if _FAILURES.get(key, 0) >= MAX_CATALOG_ATTEMPTS:
+        return None
 
     url = proxy.base_url.rstrip("/") + "/models"
     headers = {"Accept": "application/json", **proxy.request_headers()}
@@ -65,7 +78,8 @@ def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[st
         # An empty catalog is a broken answer, not an authoritative "serves nothing":
         # treating it as authoritative would take the run off the gateway.
         served = frozenset(str(e["id"]) for e in entries if isinstance(e, dict) and e.get("id"))
-        catalog: frozenset[str] | None = served if served else None
+        if not served:
+            raise ValueError("the catalog is empty")
     except (
         urllib.error.URLError,
         http.client.HTTPException,
@@ -73,11 +87,13 @@ def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[st
         ValueError,
         OSError,
     ) as exc:
+        _FAILURES[key] = _FAILURES.get(key, 0) + 1
         logger.warning("Gateway catalog unreadable at %s: %s", url, exc)
         return None
 
-    _CATALOG_CACHE[key] = catalog
-    return catalog
+    _FAILURES.pop(key, None)
+    _CATALOG_CACHE[key] = served
+    return served
 
 
 def _candidates(model_string: str) -> list[str]:
@@ -87,7 +103,7 @@ def _candidates(model_string: str) -> list[str]:
     proxies that provider) or the bare ``<name>`` (the gateway serves the upstream
     itself under the name's own namespace).
     """
-    head, _, tail = model_string.partition("/")
+    _, _, tail = model_string.partition("/")
     return [model_string] if not tail else [model_string, tail]
 
 
@@ -100,7 +116,9 @@ def resolve_gateway_route(
 
     Args:
         model_string: The engine's litellm model string, ``<provider>/<name>``.
-        catalog: Route ids from :func:`fetch_gateway_catalog`; ``None`` disables routing.
+        catalog: Route ids from :func:`fetch_gateway_catalog`. ``None`` means the
+            catalog could not be read, which the caller treats as "keep the gateway,
+            skip rewriting" rather than as "not served".
         preferred_prefix: Namespace that wins when the gateway serves the model under
             more than one name.
 

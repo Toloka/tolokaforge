@@ -1774,6 +1774,13 @@ class LLMClient:
             if route is not None:
                 kwargs["model"] = route
                 kwargs["custom_llm_provider"] = "openai"
+                # Same class as the usage extension the dialect switch removes: an
+                # OpenRouter-only body field a non-OpenRouter upstream rejects.
+                extra_body = kwargs.get("extra_body")
+                if isinstance(extra_body, dict):
+                    extra_body.pop("provider", None)
+                    if not extra_body:
+                        kwargs.pop("extra_body")
             kwargs["api_base"] = self._proxy.base_url
             if self._proxy.api_key:
                 kwargs["api_key"] = self._proxy.api_key

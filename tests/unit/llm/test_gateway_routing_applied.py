@@ -141,3 +141,50 @@ class TestModelConfigIsUntouched:
         assert client.model_name == FULL
         assert client.config.name == MODEL
         assert client.config.provider == "openrouter"
+
+
+class TestOpenRouterOnlyBodyFieldsAreDropped:
+    def test_the_provider_pin_does_not_ride_to_the_gateway(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """Same class as the usage extension: a non-OpenRouter upstream rejects it."""
+        from tolokaforge.core.models import OpenRouterConfig
+
+        secrets_manager._default_manager = SecretManager(
+            [
+                DictProvider(
+                    {
+                        "OPENROUTER_API_KEY": "sk-or",
+                        "LLM_PROXY_BASE_URL": GATEWAY,
+                        "LLM_PROXY_API_KEY": "sk-gw",
+                    }
+                )
+            ]
+        )
+        monkeypatch.setattr(
+            "tolokaforge.core.llm.client.fetch_gateway_catalog", lambda *_a, **_k: frozenset({FULL})
+        )
+        config = ModelConfig(
+            provider="openrouter",
+            name=MODEL,
+            openrouter=OpenRouterConfig(provider_order=["anthropic"]),
+        )
+        kwargs = _kwargs(LLMClient(config))
+        assert "provider" not in kwargs.get("extra_body", {})
+        assert kwargs["custom_llm_provider"] == "openai"
+
+    def test_it_still_rides_when_the_call_is_not_routed(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        from tolokaforge.core.models import OpenRouterConfig
+
+        secrets_manager._default_manager = SecretManager(
+            [DictProvider({"OPENROUTER_API_KEY": "sk"})]
+        )
+        config = ModelConfig(
+            provider="openrouter",
+            name=MODEL,
+            openrouter=OpenRouterConfig(provider_order=["anthropic"]),
+        )
+        kwargs = _kwargs(LLMClient(config))
+        assert kwargs["extra_body"]["provider"]["order"] == ["anthropic"]
