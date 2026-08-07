@@ -450,8 +450,9 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
+| `LLM_PROXY_PREFERRED_ROUTE` | Namespace that wins when the gateway serves one model under several names, e.g. `openrouter/`. Without it an ambiguous lookup raises rather than guessing a serving path. |
 
-All five resolve through `SecretManager`, so `.env`, the process environment,
+All six resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
@@ -522,6 +523,49 @@ host→container boundary if it is enumerable, which for the environment means i
 every `.env` key unconditionally, so putting referenced names in `.env` is the way
 to make in-container resolution work if that is ever needed.
 
+
+### Speaking to the gateway
+
+A gateway is an OpenAI-compatible endpoint, so routed calls speak that dialect
+(`custom_llm_provider="openai"`) and address the gateway by **its** route name,
+resolved from `GET {base}/models` at client construction and cached per base URL.
+
+Both halves are load-bearing, and each replaces a measured failure.
+
+**The dialect.** litellm's OpenRouter transformation unconditionally adds
+`usage: {"include": true}` to the body to get cost data back. That field is an
+OpenRouter extension. Forwarded by the gateway to any other upstream it is rejected
+(`usage: Extra inputs are not permitted` from both Anthropic and Bedrock), so every
+call to a non-OpenRouter-backed route failed. The dialect also decides prefix
+handling: the OpenRouter transport strips one leading `openrouter/`, the OpenAI one
+does not.
+
+**The name.** Those two effects are coupled, so the name that arrives depends on the
+dialect, and the gateway's name for a model is not derivable from the engine's model
+string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
+
+| engine model string | gateway route |
+|---|---|
+| `openrouter/azure_ai/cohere-command-a-plus-05-2026` | `azure_ai/cohere-command-a-plus-05-2026` |
+| `openrouter/anthropic/claude-sonnet-4.6` | `openrouter/anthropic/claude-sonnet-4.6` |
+
+Three outcomes, deliberately different:
+
+* **Catalog names the model** → route through the gateway under that name.
+* **Catalog answers and omits it** → the gateway does not serve this model, so the
+  call goes to the provider directly. This is what lets one run mix a gateway-only
+  candidate with a simulator the gateway does not carry.
+* **Catalog unreadable** (or empty) → keep the gateway and send the untranslated
+  name. Unreadable is not absence: silently leaving the gateway is the
+  unattributed-spend outcome this transport exists to prevent.
+
+When the catalog serves a model under several names, they can be backed by
+different upstreams, which is a serving-path choice rather than a transport detail.
+`LLM_PROXY_PREFERRED_ROUTE` names the namespace that wins; without it the resolver
+raises rather than guessing.
+
+Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
+`.name`, not off the wire name.
 
 ### Which providers can be routed
 

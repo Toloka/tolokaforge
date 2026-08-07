@@ -119,6 +119,7 @@ ENV_API_KEY = "LLM_PROXY_API_KEY"
 ENV_HEADERS = "LLM_PROXY_HEADERS"
 ENV_REQUEST_ID_HEADER = "LLM_PROXY_REQUEST_ID_HEADER"
 ENV_PROVIDERS = "LLM_PROXY_PROVIDERS"
+ENV_PREFERRED_ROUTE = "LLM_PROXY_PREFERRED_ROUTE"
 
 #: Providers routed when ``LLM_PROXY_PROVIDERS`` is unset.
 #:
@@ -179,6 +180,7 @@ class ProxyConfig:
     headers: dict[str, str] = field(default_factory=dict)
     request_id_header: str | None = None
     providers: frozenset[str] | None = None
+    preferred_route: str | None = None
 
     def applies_to(self, provider: str) -> bool:
         """Return whether ``provider`` should be routed through the gateway.
@@ -300,7 +302,13 @@ def resolve_proxy_config() -> ProxyConfig | None:
         # direct provider access.
         orphans = sorted(
             name
-            for name in (ENV_API_KEY, ENV_HEADERS, ENV_REQUEST_ID_HEADER, ENV_PROVIDERS)
+            for name in (
+                ENV_API_KEY,
+                ENV_HEADERS,
+                ENV_REQUEST_ID_HEADER,
+                ENV_PROVIDERS,
+                ENV_PREFERRED_ROUTE,
+            )
             if (secrets.get_secret(name) or "").strip()
         )
         if orphans:
@@ -317,4 +325,5 @@ def resolve_proxy_config() -> ProxyConfig | None:
         headers=_parse_headers(secrets.get_secret(ENV_HEADERS), secrets),
         request_id_header=(secrets.get_secret(ENV_REQUEST_ID_HEADER) or "").strip() or None,
         providers=_parse_providers(secrets.get_secret(ENV_PROVIDERS)),
+        preferred_route=(secrets.get_secret(ENV_PREFERRED_ROUTE) or "").strip() or None,
     )

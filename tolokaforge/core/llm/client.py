@@ -41,6 +41,7 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
+from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.proxy import UNROUTABLE_PROVIDERS, resolve_proxy_config
@@ -664,6 +665,32 @@ class LLMClient:
                     provider=self.provider,
                 )
             self._proxy = None
+
+        # A gateway that does not serve this model must not intercept it: fall back
+        # to the direct provider rather than post a name it cannot route.
+        # docs/LLM_LAYER.md § Speaking to the gateway.
+        self._gateway_route: str | None = None
+        if self._proxy is not None:
+            catalog = fetch_gateway_catalog(self._proxy)
+            if catalog is None:
+                # Unreadable is NOT "absent": silently leaving the gateway would be
+                # the unattributed-spend outcome this transport exists to prevent.
+                self.logger.warning(
+                    "Gateway catalog unreadable; routing on the untranslated name",
+                    base_url=self._proxy.base_url,
+                    model=self.model_name,
+                )
+            else:
+                self._gateway_route = resolve_gateway_route(
+                    self.model_name, catalog, self._proxy.preferred_route
+                )
+                if self._gateway_route is None:
+                    self.logger.warning(
+                        "Gateway does not serve this model; calling the provider directly",
+                        base_url=self._proxy.base_url,
+                        model=self.model_name,
+                    )
+                    self._proxy = None
 
         self._openrouter_headers = (
             self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
@@ -1740,9 +1767,13 @@ class LLMClient:
                 }
 
         if self._proxy is not None:
-            # Transport swap only. ``model`` keeps its ``<provider>/<name>``
-            # shape so preset resolution and pricing normalisation are
-            # untouched — see the module docstring in ``llm/proxy.py``.
+            # The gateway is an OpenAI-compatible endpoint, so speak that dialect
+            # and address it by ITS route name. docs/LLM_LAYER.md § Speaking to the
+            # gateway has the failure modes this replaces.
+            route = self._gateway_route
+            if route is not None:
+                kwargs["model"] = route
+                kwargs["custom_llm_provider"] = "openai"
             kwargs["api_base"] = self._proxy.base_url
             if self._proxy.api_key:
                 kwargs["api_key"] = self._proxy.api_key
