@@ -30,8 +30,13 @@ _NATIVE = AdapterType.NATIVE.value
 # Adapter registry
 # ---------------------------------------------------------------------------
 
-# Registry of available adapters — populated by _discover_adapters()
+# Registry of available adapters — written by register_adapter() and by discovery
 _ADAPTERS: dict[str, type] = {}
+
+# Whether entry-point discovery has run. A separate flag rather than the registry's
+# own emptiness: register_adapter() writes into the registry too, so reading it as
+# "discovery happened" lets one early registration suppress discovery for good.
+_DISCOVERED = False
 
 # Track entry-point load failures so get_adapter() can report them
 _FAILED_ADAPTERS: dict[str, Exception] = {}
@@ -59,13 +64,20 @@ def _discover_adapters() -> dict[str, type]:
 
 
 def _ensure_adapters_discovered() -> None:
-    """Discover external adapter plugins lazily on first use."""
-    global _ADAPTERS
+    """Discover external adapter plugins lazily on first use.
 
-    if _ADAPTERS:
+    Discovery merges into the registry and never replaces it: an explicit
+    :func:`register_adapter` outranks an entry-point of the same name, and one written
+    before the first discovery has to survive it.
+    """
+    global _DISCOVERED
+
+    if _DISCOVERED:
         return
 
-    _ADAPTERS = _discover_adapters()
+    for name, adapter_cls in _discover_adapters().items():
+        _ADAPTERS.setdefault(name, adapter_cls)
+    _DISCOVERED = True
 
 
 def available_adapters() -> list[str]:
@@ -81,6 +93,18 @@ def available_adapters() -> list[str]:
 def register_adapter(name: str, adapter_cls: type) -> None:
     """Manually register an adapter class (useful for testing)."""
     _ADAPTERS[name] = adapter_cls
+
+
+def adapter_class(adapter_type: str) -> type[BaseAdapter] | None:
+    """The class registered for *adapter_type*, or ``None`` where none resolves.
+
+    Never raises, unlike :func:`get_adapter`. The static gates ask this about packs
+    whose adapter package may not be installed at all, and "nothing to ask" is an
+    answer they act on rather than an error: an unknown name and an entry-point that
+    failed to load are both ``None`` here.
+    """
+    _ensure_adapters_discovered()
+    return _ADAPTERS.get(adapter_type)
 
 
 def ensure_registered_adapter(adapter_type: str) -> None:
@@ -148,6 +172,7 @@ __all__ = [
     "DockerStackRequirements",
     "NativeAdapter",
     "NativeTaskBundle",
+    "adapter_class",
     "available_adapters",
     "get_adapter",
     "register_adapter",

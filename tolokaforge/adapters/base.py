@@ -8,7 +8,7 @@ from itertools import product
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-from tolokaforge.core.grading.config_validation import CombineLayer
+from tolokaforge.core.grading.config_validation import CombineLayer, HashSourceLayer
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import Grade, GradingConfig, TaskConfig, Trajectory
 
@@ -275,6 +275,25 @@ class BaseAdapter(ABC):
         whose weights are inherited.
         """
         return CombineLayer.unresolvable()
+
+    @classmethod
+    def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+        """What this adapter supplies beneath a task's authored ``state_checks.hash`` block.
+
+        Facts, not verdicts: report the source you compute the comparison from and
+        whether it is usable, missing or empty, and the pre-run gates decide what is
+        fatal — the same division :meth:`grading_combine_layer` draws. An adapter whose
+        source lives in a fixture the authored block never names reports it here, and a
+        block enabling the hash with nothing declared then passes on a usable source and
+        is refused before any trial is paid for on a lost one. ``unresolvable`` is the
+        honest default and the only answer that keeps the shape uncheckable.
+
+        A classmethod, unlike :meth:`grading_combine_layer`: ``tolokaforge validate``
+        is a static gate that holds no adapter instance and must keep validating packs
+        whose adapter package is not installed, so every fact reported here has to be a
+        function of the task and its directory alone.
+        """
+        return HashSourceLayer.unresolvable()
 
     @abstractmethod
     def get_task_ids(self) -> list[str]:
