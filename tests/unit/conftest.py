@@ -62,6 +62,20 @@ def isolated_secret_manager():
 
 
 @pytest.fixture(autouse=True)
+def _no_ambient_typesense_stack(monkeypatch: pytest.MonkeyPatch):
+    """Strip a developer machine's TYPESENSE_HOST / TYPESENSE_PORT from every test.
+
+    The runner resolves its TypeSense address from these variables with
+    precedence over the task's own connection details, so an exported host on
+    the machine running the suite would flip precedence under every test that
+    does not set them itself. Tests that want a stack address set the variables
+    in their own body, which always runs after fixture setup.
+    """
+    monkeypatch.delenv("TYPESENSE_HOST", raising=False)
+    monkeypatch.delenv("TYPESENSE_PORT", raising=False)
+
+
+@pytest.fixture(autouse=True)
 def _mock_wheel_resolver(tmp_path: Path):
     """Auto-mock resolve_wheel for every unit test.
 

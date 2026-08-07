@@ -18,12 +18,15 @@ already-assigned server handle.
 
 from __future__ import annotations
 
+import io
+import logging
 from pathlib import Path
 
 import pytest
 
 import tolokaforge.core.search.typesense_server as typesense_server_module
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.logging import LogFormat, StructuredFormatter
 from tolokaforge.core.models import (
     EvaluationConfig,
     ModelConfig,
@@ -34,6 +37,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.secrets import get_default
+from tolokaforge.secrets.log_filter import PLACEHOLDER, install_global_redactor
 
 pytestmark = pytest.mark.unit
 
@@ -45,19 +49,21 @@ class _Manager:
 
     ``port`` defaults to the sentinel the real manager carries until ``start()``
     resolves one, so a row that wants a resolved address must say so.
+    ``api_key`` defaults to a generated-looking value; the real manager keeps a
+    pinned key verbatim, so a pinned-key row passes its own through.
     """
 
-    def __init__(self, *, started: bool, port: int = -1) -> None:
+    def __init__(self, *, started: bool, port: int = -1, api_key: str = "resolved-api-key") -> None:
         self.host = "127.0.0.1"
         self.port = port
-        self.api_key = "resolved-api-key"
+        self.api_key = api_key
         self._started = started
 
     def start(self) -> bool:
         return self._started
 
 
-def _orchestrator(tmp_path: Path) -> Orchestrator:
+def _orchestrator(tmp_path: Path, api_key: str | None = None) -> Orchestrator:
     return Orchestrator(
         RunConfig(
             models={"agent": ModelConfig(provider="openai", name="gpt-4")},
@@ -69,7 +75,7 @@ def _orchestrator(tmp_path: Path) -> Orchestrator:
                     enabled=True,
                     mode="local",
                     port="auto",
-                    api_key=None,
+                    api_key=api_key,
                     timeout=CONFIGURED_TIMEOUT,
                 ),
             ),
@@ -170,6 +176,53 @@ def test_the_resolved_api_key_enters_the_secret_manager(
     manager = get_default()
     assert manager.get_secret("TYPESENSE_API_KEY") == "resolved-api-key"
     assert manager.serialize()["TYPESENSE_API_KEY"] == "resolved-api-key"
+
+
+def test_a_pinned_key_never_renders_in_the_start_blocks_log_output(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_secret_manager
+) -> None:
+    """``port: "auto"`` with a pinned key enters the start block with the key known.
+
+    The key exists at config-parse time, so it is registered — and therefore in
+    the redaction set — before the start block emits its first record. Two
+    channels are held shut: the start block's own config dump does not carry
+    the key at all (the record factory scrubs message text, not extras, so an
+    extras dump would render it regardless of the redaction set), and a start-
+    path record that embeds the key in its message text renders the
+    placeholder.
+    """
+    original_factory = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(logging.LogRecord)
+    stdlib_logger = logging.getLogger("orchestrator")
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(StructuredFormatter(LogFormat.PLAIN))
+    pinned = "PINNEDTSKEY0123456789"
+
+    def _factory(**kwargs) -> _Manager:
+        # A start-path record carrying the key in its message text — the shape
+        # the redaction set must already cover when the start block runs.
+        stdlib_logger.info("probing TypeSense with api key %s", kwargs["api_key"])
+        return _Manager(started=True, port=8199, api_key=kwargs["api_key"])
+
+    monkeypatch.setattr(typesense_server_module, "create_typesense_server", _factory)
+    # Constructed before the capture handler attaches: the first
+    # ``StructuredLogger("orchestrator")`` of the session clears the stdlib
+    # logger's handlers.
+    orchestrator = _orchestrator(tmp_path, api_key=pinned)
+    install_global_redactor()
+    stdlib_logger.addHandler(handler)
+    try:
+        orchestrator._ensure_typesense_started()
+        handler.flush()
+    finally:
+        stdlib_logger.removeHandler(handler)
+        logging.setLogRecordFactory(original_factory)
+
+    output = buf.getvalue()
+    assert "Starting local TypeSense server" in output
+    assert PLACEHOLDER in output
+    assert pinned not in output
 
 
 def test_a_plane_with_no_key_of_its_own_registers_nothing(

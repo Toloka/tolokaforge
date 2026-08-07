@@ -19,37 +19,35 @@ the import site the runner reads.
 
 from __future__ import annotations
 
-import base64
-import sys
-import types
 from dataclasses import dataclass
 from typing import Any
 
 import pytest
 
-from tests.utils.runner_requests import register_request, trial_spec_json
+from tests.utils.search_plane_harness import (
+    DOMAIN,
+    STACK_HOST,
+    STACK_KEY,
+    STACK_PORT,
+    TASK_HOST,
+    TASK_KEY,
+    TASK_PORT,
+    UsableClient,
+    core_stack_runner,
+    declare_stack_address,
+    install_search_registry,
+    register_kb_task,
+)
 from tolokaforge.runner.models import SearchConfig
 from tolokaforge.runner.search_plane import (
     PartialTypeSenseAddressError,
     TypeSenseAddressBasis,
     resolve_typesense_binding,
 )
-from tolokaforge.runner.service import RunnerServiceImpl
-from tolokaforge.secrets import SecretManager, init_default_from
 
 pytestmark = pytest.mark.unit
 
-DOMAIN = "retail_v3"
-CORPUS = {"docindex/returns_policy.md": b"# Returns\nRefunds within 30 days.\n"}
-
-STACK_HOST = "stack-typesense"
-STACK_PORT = "9108"
-STACK_KEY = "KEY-THE-STACK-REGISTERED"
 STACK_ADDRESS = f"{STACK_HOST}:{STACK_PORT}"
-
-TASK_HOST = "typesense"
-TASK_PORT = 8108
-TASK_KEY = "KEY-THE-TASK-CARRIES"
 TASK_ADDRESS = f"{TASK_HOST}:{TASK_PORT}"
 
 # A knowledge-base task that names an address of its own in every scenario below.
@@ -63,86 +61,10 @@ KB_SEARCH = {
 }
 
 
-class _Registry:
-    """A stand-in ``initialize_typesense_for_domain`` recording the connection it got."""
-
-    def __init__(self, *, client: Any) -> None:
-        self._client = client
-        self.connections: list[tuple[str, int, str | None]] = []
-
-    def __call__(
-        self,
-        *,
-        domain: str,
-        snippets: list[str],
-        host: str,
-        port: int,
-        api_key: str | None,
-    ) -> Any:
-        self.connections.append((host, port, api_key))
-        return self._client
-
-
-class _UsableClient:
-    is_available = True
-
-
-def _install_registry(monkeypatch: pytest.MonkeyPatch, registry: _Registry) -> _Registry:
-    """Put the stand-in where ``_init_typesense_for_trial`` imports it from."""
-    module = types.ModuleType("mcp_core.search.typesense_registry")
-    module.initialize_typesense_for_domain = registry
-    monkeypatch.setitem(sys.modules, "mcp_core", types.ModuleType("mcp_core"))
-    monkeypatch.setitem(sys.modules, "mcp_core.search", types.ModuleType("mcp_core.search"))
-    monkeypatch.setitem(sys.modules, "mcp_core.search.typesense_registry", module)
-    return registry
-
-
-def _declare_stack_address(
-    monkeypatch: pytest.MonkeyPatch, host: str | None, port: str | None, api_key: str | None
-) -> None:
-    """Put the runner in the container a stack built: address in env, key in the manager."""
-    for name, value in (("TYPESENSE_HOST", host), ("TYPESENSE_PORT", port)):
-        if value is None:
-            monkeypatch.delenv(name, raising=False)
-        else:
-            monkeypatch.setenv(name, value)
-    payload = {} if api_key is None else {"TYPESENSE_API_KEY": api_key}
-    init_default_from(SecretManager.from_dict(payload))
-
-
-def _task(search: dict[str, Any]) -> dict:
-    return {
-        "task_id": "kb_task",
-        "name": "Knowledge Base Task",
-        "category": "test",
-        "description": "Declares a knowledge base the search plane must serve",
-        "adapter_type": "tlk_mcp_core",
-        "system_prompt": "You are a test assistant.",
-        "initial_state": {"tables": {}, "schemas": []},
-        "agent_tools": [],
-        "user_tools": [],
-        "search": search,
-        "tool_artifacts": {
-            path: base64.b64encode(content).decode() for path, content in CORPUS.items()
-        },
-    }
-
-
 @pytest.fixture
 def service(db_client, isolated_secret_manager) -> Any:
-    """A runner with no rag_client — the core-stack shape."""
-    impl = RunnerServiceImpl(db_client)
-    try:
+    with core_stack_runner(db_client) as impl:
         yield impl
-    finally:
-        impl.shutdown()
-
-
-def _register(service: Any, context: Any, trial_id: str, search: dict[str, Any]) -> Any:
-    return service.RegisterTrial(
-        register_request(trial_spec_json(_task(search), trial_id=trial_id), trial_id=trial_id),
-        context,
-    )
 
 
 @dataclass(frozen=True)
@@ -186,10 +108,10 @@ def test_the_resolved_address_is_the_one_the_client_is_initialised_against(
     service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch, source: _Source
 ) -> None:
     """The stack outranks the task, and the whole connection travels — key included."""
-    _declare_stack_address(monkeypatch, *source.stack)
-    registry = _install_registry(monkeypatch, _Registry(client=_UsableClient()))
+    declare_stack_address(monkeypatch, *source.stack)
+    registry = install_search_registry(monkeypatch, client=UsableClient())
 
-    response = _register(service, mock_grpc_context, "resolved_address:0", KB_SEARCH)
+    response = register_kb_task(service, mock_grpc_context, "resolved_address:0", KB_SEARCH)
 
     assert response.success is True, response.error
     assert registry.connections == [source.connection]
@@ -208,10 +130,10 @@ def test_a_refusal_names_the_resolved_address_and_the_source_it_came_from(
     The trial id names neither source. The message opens with it, so an id built
     from the basis would satisfy the basis assertion on its own.
     """
-    _declare_stack_address(monkeypatch, *source.stack)
-    _install_registry(monkeypatch, _Registry(client=None))
+    declare_stack_address(monkeypatch, *source.stack)
+    install_search_registry(monkeypatch, client=None)
 
-    response = _register(service, mock_grpc_context, "refused_plane:0", KB_SEARCH)
+    response = register_kb_task(service, mock_grpc_context, "refused_plane:0", KB_SEARCH)
 
     assert response.success is False
     assert "unreachable or refused the collection" in response.error
@@ -242,10 +164,10 @@ def test_a_half_declared_stack_address_refuses_the_trial_and_does_not_fall_back(
     configured to replace — reachable from the host, and inside ``runner-net``
     the runner itself — so the plane is never touched.
     """
-    _declare_stack_address(monkeypatch, host, port, STACK_KEY)
-    registry = _install_registry(monkeypatch, _Registry(client=_UsableClient()))
+    declare_stack_address(monkeypatch, host, port, STACK_KEY)
+    registry = install_search_registry(monkeypatch, client=UsableClient())
 
-    response = _register(service, mock_grpc_context, f"partial_{row}:0", KB_SEARCH)
+    response = register_kb_task(service, mock_grpc_context, f"partial_{row}:0", KB_SEARCH)
 
     assert response.success is False
     assert "TYPESENSE_HOST" in response.error
@@ -262,10 +184,10 @@ def test_an_address_with_no_api_key_reaches_client_initialisation(
     binding carries ``api_key=None`` and lands on the loud client-init refusal
     rather than on a refusal the resolver invented.
     """
-    _declare_stack_address(monkeypatch, STACK_HOST, STACK_PORT, None)
-    registry = _install_registry(monkeypatch, _Registry(client=None))
+    declare_stack_address(monkeypatch, STACK_HOST, STACK_PORT, None)
+    registry = install_search_registry(monkeypatch, client=None)
 
-    response = _register(service, mock_grpc_context, "no_key:0", KB_SEARCH)
+    response = register_kb_task(service, mock_grpc_context, "no_key:0", KB_SEARCH)
 
     assert registry.connections == [(STACK_HOST, int(STACK_PORT), None)]
     assert response.success is False
@@ -281,7 +203,7 @@ def test_neither_source_resolves_no_address_at_all(
     ``test_a_task_without_both_halves_does_no_typesense_work`` in
     ``tests/unit/test_runner_search_plane_refusal.py``.
     """
-    _declare_stack_address(monkeypatch, None, None, None)
+    declare_stack_address(monkeypatch, None, None, None)
 
     assert resolve_typesense_binding(SearchConfig(documents_path="docindex")) is None
 
@@ -290,7 +212,7 @@ def test_the_resolver_raises_rather_than_returning_a_half_declared_address(
     monkeypatch: pytest.MonkeyPatch, isolated_secret_manager: None
 ) -> None:
     """The contract callers depend on: a partial declaration is an error, not a ``None``."""
-    _declare_stack_address(monkeypatch, STACK_HOST, None, None)
+    declare_stack_address(monkeypatch, STACK_HOST, None, None)
 
     with pytest.raises(PartialTypeSenseAddressError, match="TYPESENSE_PORT"):
         resolve_typesense_binding(SearchConfig(host=TASK_HOST, port=TASK_PORT))

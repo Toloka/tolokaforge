@@ -32,6 +32,7 @@ from tolokaforge.core.models import (
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
+from tolokaforge.secrets import get_default
 
 pytestmark = pytest.mark.unit
 
@@ -61,7 +62,7 @@ def _orchestrator(tmp_path: Path, typesense: TypeSenseConfig) -> Orchestrator:
 
 
 def test_a_bridged_server_is_injected_as_its_alias_not_as_the_configured_address(
-    tmp_path: Path,
+    tmp_path: Path, isolated_secret_manager: None
 ) -> None:
     """The alias wins while the run config still says ``127.0.0.1:61234``.
 
@@ -125,7 +126,7 @@ def test_an_unresolved_port_refuses_to_build_the_stack(tmp_path: Path, mode: str
 
 
 def test_a_pinned_local_config_that_skipped_the_start_refuses_its_loopback_address(
-    tmp_path: Path,
+    tmp_path: Path, isolated_secret_manager: None
 ) -> None:
     """``mode: local`` with both port and api_key pinned starts nothing.
 
@@ -194,6 +195,32 @@ def test_the_common_auto_port_local_run_is_bridged_and_never_meets_the_refusal(
     address = orchestrator._typesense_stack_kwargs()["typesense_address"]
 
     assert (address.host, address.port) == ("typesense", 8108)
+
+
+def test_a_stack_build_registers_a_pinned_api_key_with_the_secret_manager(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, isolated_secret_manager: None
+) -> None:
+    """The pre-loaded-tasks path has no other registration site.
+
+    ``run()`` with ``self.tasks`` already populated skips ``load_tasks()``, so
+    ``_ensure_typesense_started`` never runs and the stack build is the last
+    stop before ``core_stack`` serializes the manager into
+    ``TOLOKAFORGE_SECRETS_JSON``. A pinned key left unregistered here would
+    build a runner whose every trial dies on the client-init refusal, with a
+    message pointing at the server rather than at the missing key.
+    """
+    monkeypatch.delenv("TYPESENSE_API_KEY", raising=False)
+    orchestrator = _orchestrator(
+        tmp_path,
+        TypeSenseConfig(
+            enabled=True, mode="remote", host="ts.example", port=8108, api_key="pinned-remote-key"
+        ),
+    )
+
+    orchestrator._typesense_stack_kwargs()
+
+    assert get_default().get_secret("TYPESENSE_API_KEY") == "pinned-remote-key"
+    assert get_default().serialize()["TYPESENSE_API_KEY"] == "pinned-remote-key"
 
 
 @pytest.mark.parametrize(

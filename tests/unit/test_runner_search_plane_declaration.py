@@ -20,104 +20,34 @@ the import site the runner reads.
 
 from __future__ import annotations
 
-import base64
-import sys
-import types
 from typing import Any
 
 import pytest
 
-from tests.utils.runner_requests import register_request, trial_spec_json
-from tolokaforge.runner.service import RunnerServiceImpl
-from tolokaforge.secrets import SecretManager, init_default_from
+from tests.utils.search_plane_harness import (
+    DOMAIN,
+    STACK_HOST,
+    STACK_KEY,
+    STACK_PORT,
+    TASK_CONNECTION,
+    UsableClient,
+    core_stack_runner,
+    declare_stack_address,
+    install_search_registry,
+    register_kb_task,
+)
 
 pytestmark = pytest.mark.unit
 
-DOMAIN = "retail_v3"
-CORPUS = {"docindex/returns_policy.md": b"# Returns\nRefunds within 30 days.\n"}
-
-STACK_HOST = "stack-typesense"
-STACK_PORT = "9108"
-STACK_KEY = "KEY-THE-STACK-REGISTERED"
-
-TASK_HOST = "typesense"
-TASK_PORT = 8108
-TASK_KEY = "KEY-THE-TASK-CARRIES"
-TASK_CONNECTION = {"host": TASK_HOST, "port": TASK_PORT, "api_key": TASK_KEY}
-
-
-class _Registry:
-    """A stand-in ``initialize_typesense_for_domain`` recording the connection it got."""
-
-    def __init__(self, *, client: Any) -> None:
-        self._client = client
-        self.connections: list[tuple[str, int, str | None]] = []
-
-    def __call__(
-        self, *, domain: str, snippets: list[str], host: str, port: int, api_key: str | None
-    ) -> Any:
-        self.connections.append((host, port, api_key))
-        return self._client
-
-
-class _UsableClient:
-    """What the registry hands back — the runner only reads ``is_available``."""
-
-    is_available = True
-
-
-def _install_registry(monkeypatch: pytest.MonkeyPatch, client: Any = _UsableClient) -> _Registry:
-    """Put the stand-in where ``_init_typesense_for_trial`` imports it from."""
-    registry = _Registry(client=client)
-    module = types.ModuleType("mcp_core.search.typesense_registry")
-    module.initialize_typesense_for_domain = registry
-    monkeypatch.setitem(sys.modules, "mcp_core", types.ModuleType("mcp_core"))
-    monkeypatch.setitem(sys.modules, "mcp_core.search", types.ModuleType("mcp_core.search"))
-    monkeypatch.setitem(sys.modules, "mcp_core.search.typesense_registry", module)
-    return registry
-
 
 def _stack_offers_typesense(monkeypatch: pytest.MonkeyPatch) -> None:
-    """Put the runner in the container a stack built: address in env, key in the manager."""
-    monkeypatch.setenv("TYPESENSE_HOST", STACK_HOST)
-    monkeypatch.setenv("TYPESENSE_PORT", STACK_PORT)
-    init_default_from(SecretManager.from_dict({"TYPESENSE_API_KEY": STACK_KEY}))
-
-
-def _task(search: dict[str, Any]) -> dict:
-    return {
-        "task_id": "kb_task",
-        "name": "Knowledge Base Task",
-        "category": "test",
-        "description": "Declares a knowledge base some plane must serve",
-        "adapter_type": "tlk_mcp_core",
-        "system_prompt": "You are a test assistant.",
-        "initial_state": {"tables": {}, "schemas": []},
-        "agent_tools": [],
-        "user_tools": [],
-        "search": search,
-        "tool_artifacts": {
-            path: base64.b64encode(content).decode() for path, content in CORPUS.items()
-        },
-    }
+    declare_stack_address(monkeypatch, STACK_HOST, STACK_PORT, STACK_KEY)
 
 
 @pytest.fixture
 def service(db_client, isolated_secret_manager) -> Any:
-    """A runner with no rag_client — the core-stack shape."""
-    impl = RunnerServiceImpl(db_client)
-    assert impl.rag_client is None
-    try:
+    with core_stack_runner(db_client) as impl:
         yield impl
-    finally:
-        impl.shutdown()
-
-
-def _register(service: Any, context: Any, trial_id: str, search: dict[str, Any]) -> Any:
-    return service.RegisterTrial(
-        register_request(trial_spec_json(_task(search), trial_id=trial_id), trial_id=trial_id),
-        context,
-    )
 
 
 def test_a_task_declaring_typesense_registers_against_the_stack_address(
@@ -130,9 +60,9 @@ def test_a_task_declaring_typesense_registers_against_the_stack_address(
     stack — which is the whole point of moving it there.
     """
     _stack_offers_typesense(monkeypatch)
-    registry = _install_registry(monkeypatch)
+    registry = install_search_registry(monkeypatch, client=UsableClient())
 
-    response = _register(
+    response = register_kb_task(
         service,
         mock_grpc_context,
         "declared_typesense:0",
@@ -141,6 +71,32 @@ def test_a_task_declaring_typesense_registers_against_the_stack_address(
 
     assert response.success is True, response.error
     assert registry.connections == [(STACK_HOST, int(STACK_PORT), STACK_KEY)]
+
+
+def test_a_declared_typesense_corpus_in_a_run_with_no_plane_registers_no_client(
+    service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """The run-level half governs: a run with no TypeSense plane does no TypeSense work.
+
+    Neither the stack nor the task names an address here, so no address resolves
+    and the gate's third condition holds the client back — the declared variant
+    of the kb-task-in-a-typesense-disabled-run shape, which succeeds for the
+    same reason. The declaration answers the *task-level* question (which plane
+    serves this corpus); whether the run has that plane at all is the stack's
+    answer, and a run that answers "no plane" registers the trial without a
+    search client rather than refusing a task that is correctly declared.
+    """
+    registry = install_search_registry(monkeypatch, client=UsableClient())
+
+    response = register_kb_task(
+        service,
+        mock_grpc_context,
+        "declared_no_run_plane:0",
+        {"plane": "typesense", "domain_name": DOMAIN, "documents_path": "docindex"},
+    )
+
+    assert response.success is True, response.error
+    assert registry.connections == []
 
 
 @pytest.mark.parametrize(
@@ -170,9 +126,9 @@ def test_a_task_declaring_the_rag_plane_does_no_typesense_work(
     and a branch that fired here would say otherwise.
     """
     _stack_offers_typesense(monkeypatch)
-    registry = _install_registry(monkeypatch)
+    registry = install_search_registry(monkeypatch, client=UsableClient())
 
-    response = _register(
+    response = register_kb_task(
         service,
         mock_grpc_context,
         f"declared_rag_{row}:0",
@@ -190,6 +146,35 @@ def test_a_task_declaring_the_rag_plane_does_no_typesense_work(
     assert "RAG service not configured" in response.error
     assert "disagree" not in response.error
     assert "documents_path is unset" not in response.error
+
+
+def test_a_rag_corpus_that_disabled_its_own_indexing_registers_no_client(
+    service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """``enabled: false`` on a declared rag corpus switches its indexing off.
+
+    The declaration keeps the corpus off the TypeSense plane, and ``enabled``
+    is the rag plane's own gate — false means the task asked for no rag
+    indexing, so registration has nothing to build and succeeds with no search
+    client of either kind.
+    """
+    _stack_offers_typesense(monkeypatch)
+    registry = install_search_registry(monkeypatch, client=UsableClient())
+
+    response = register_kb_task(
+        service,
+        mock_grpc_context,
+        "declared_rag_indexing_off:0",
+        {
+            "enabled": False,
+            "plane": "rag_service",
+            "domain_name": DOMAIN,
+            "documents_path": "docindex",
+        },
+    )
+
+    assert response.success is True, response.error
+    assert registry.connections == []
 
 
 @pytest.mark.parametrize(
@@ -224,9 +209,9 @@ def test_a_refusal_names_the_plane_and_whether_the_task_declared_it(
     cannot be satisfied by the prefix the message opens with.
     """
     _stack_offers_typesense(monkeypatch)
-    _install_registry(monkeypatch, client=None)
+    install_search_registry(monkeypatch, client=None)
 
-    response = _register(service, mock_grpc_context, f"plane_basis_{row}:0", search)
+    response = register_kb_task(service, mock_grpc_context, f"plane_basis_{row}:0", search)
 
     assert response.success is False
     assert "unreachable or refused the collection" in response.error
@@ -262,9 +247,9 @@ def test_a_corpus_with_no_plane_and_no_address_of_its_own(
     TypeSense.
     """
     _stack_offers_typesense(monkeypatch)
-    registry = _install_registry(monkeypatch)
+    registry = install_search_registry(monkeypatch, client=UsableClient())
 
-    response = _register(
+    response = register_kb_task(
         service,
         mock_grpc_context,
         f"plane_less_{row}:0",

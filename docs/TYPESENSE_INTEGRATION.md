@@ -111,7 +111,7 @@ The state machine is `PENDING → INITIALIZING → READY` on success, `→ FAILE
 Two sources can name the address, and the runner resolves them once per
 registration — in [`tolokaforge/runner/search_plane.py`](../tolokaforge/runner/search_plane.py):
 
-1. **The stack** — `TYPESENSE_HOST` and `TYPESENSE_PORT` on the runner container, with the API key in the `SecretManager` (from `TOLOKAFORGE_SECRETS_JSON`), documented in the runner container's environment contract in [`STANDALONE_RUNNER.md`](STANDALONE_RUNNER.md#published-images).
+1. **The stack** — `TYPESENSE_HOST` and `TYPESENSE_PORT` on the runner container, with the API key in the `SecretManager` (from `TOLOKAFORGE_SECRETS_JSON`), documented in the runner container's environment contract in [`STANDALONE_RUNNER.md`](STANDALONE_RUNNER.md#command-surface-of-the-published-runner-image).
 2. **The task description** — the `host` / `port` / `api_key` of its `search` block.
 
 The stack wins. A task's own details serve the runs where no stack set the

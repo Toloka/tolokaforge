@@ -1193,13 +1193,18 @@ class Orchestrator:
 
         This must be called before adapter creation to ensure the adapter
         gets resolved port/api_key values, and before any log record that
-        could carry the API key: registering the key here is what puts it in
-        the redaction set and in the ``TOLOKAFORGE_SECRETS_JSON`` payload the
-        runner container is built with.
+        could carry the API key: registering the key is what puts it in the
+        redaction set and in the ``TOLOKAFORGE_SECRETS_JSON`` payload the
+        runner container is built with. A key pinned in the run config is
+        registered before the start block, so the start path's own records
+        are already redacted; a generated key exists only after the server
+        resolves it, so it is registered on the way out.
         """
         typesense_config = self.config.orchestrator.effective_typesense()
         if typesense_config is None:
             return
+        if typesense_config.api_key is not None:
+            register_runtime_secret("TYPESENSE_API_KEY", typesense_config.api_key)
         needs_start = typesense_config.mode == "local" and (
             typesense_config.port == "auto" or typesense_config.api_key is None
         )
@@ -1218,8 +1223,11 @@ class Orchestrator:
         try:
             from tolokaforge.core.search.typesense_server import create_typesense_server
 
+            # The record factory scrubs message text, not extras, so a key in
+            # this dump would render verbatim regardless of the redaction set.
             self.logger.info(
-                "Starting local TypeSense server", config=typesense_config.model_dump()
+                "Starting local TypeSense server",
+                config=typesense_config.model_dump(exclude={"api_key"}),
             )
             self._typesense_server = create_typesense_server(
                 port=typesense_config.port,
@@ -1352,10 +1360,18 @@ class Orchestrator:
         Empty when the run has no plane, so the runner container is created
         without the variables and "variable present" == "a plane was
         configured".
+
+        A pinned API key is registered here as well as at server start:
+        ``run()`` skips ``load_tasks()`` when handed pre-loaded tasks, so this
+        method — which runs on every stack build, before the factory
+        serializes the manager into ``TOLOKAFORGE_SECRETS_JSON`` — is the only
+        registration site on that path.
         """
         typesense_config = self.config.orchestrator.effective_typesense()
         if typesense_config is None:
             return {}
+        if typesense_config.api_key is not None:
+            register_runtime_secret("TYPESENSE_API_KEY", typesense_config.api_key)
         return {"typesense_address": self._injected_typesense_address(typesense_config)}
 
     def _connect_typesense_to_runner_network(self, service_stack: Any) -> None:
