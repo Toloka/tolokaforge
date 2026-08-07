@@ -71,10 +71,15 @@ from tolokaforge.core.grading.config_validation import (
     ReplayWorld,
     Skip,
     ToolInventory,
+    authored_hash_block,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import classify_initial_state
-from tolokaforge.core.grading.state_composition import StateHashConfig
+from tolokaforge.core.grading.state_composition import (
+    RETIRED_HASH_KEYS,
+    StateHashConfig,
+    refuse_retired_hash_keys,
+)
 from tolokaforge.core.grading.unknown_keys import refuse_unknown_grading_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import (
@@ -166,6 +171,17 @@ reaches a read site, so the registry's key set is locked against
 
 
 @dataclass(frozen=True)
+class _NestedBlock:
+    """One block a typed block nests, and what its own model answers for itself."""
+
+    field_name: str
+    model: type[BaseModel]
+
+    retired_keys: frozenset[str] = frozenset()
+    """Keys the nested model answers in its own words — see ``answered_elsewhere``."""
+
+
+@dataclass(frozen=True)
 class _TypedGradingBlock:
     """One typed block a ``grading.yaml`` may declare, and how this gate reads it.
 
@@ -198,7 +214,7 @@ class _TypedGradingBlock:
     block gets, naming the element by index.
     """
 
-    nested_block_models: tuple[tuple[str, type[BaseModel]], ...] = ()
+    nested_block_models: tuple[_NestedBlock, ...] = ()
     """Fields holding one block of their own, which draws the addressed refusal too.
 
     The same tier as :attr:`element_models` and the other shape a block reaches it in:
@@ -223,7 +239,7 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
     "state_checks": _TypedGradingBlock(
         model=StateChecksConfig,
         retired_keys=RETIRED_STATE_CHECK_KEYS,
-        nested_block_models=(("hash", StateHashConfig),),
+        nested_block_models=(_NestedBlock("hash", StateHashConfig, frozenset(RETIRED_HASH_KEYS)),),
     ),
     # A turn window whose floor sits above its ceiling admits no assistant-turn count,
     # so the component is 0.0 however the agent behaves. Constructing the block rather
@@ -236,7 +252,7 @@ _TYPED_GRADING_BLOCKS: dict[str, _TypedGradingBlock] = {
             ("required_actions", RequiredAction),
             ("communicate_info", CommunicateInfo),
         ),
-        nested_block_models=(("tool_expectations", ToolExpectations),),
+        nested_block_models=(_NestedBlock("tool_expectations", ToolExpectations),),
     ),
     # Every rejection the matcher vocabulary makes — an unmatchable field for the kind,
     # a predicate asserting nothing, two constraint kinds under one require — is a check
@@ -280,9 +296,10 @@ def validate_grading_yaml(
     a key the block does not declare is refused here naming the
     file, the closest declared field and the accepted set, which the models' own
     ``extra="forbid"`` refuses on every other path in one line without an address;
-    ``trace_checks`` and ``llm_judge`` draw that bare refusal here too. ``state_checks``'s two retired keys are not the addressed
-    refusal's business: populated, each draws the migration message naming its
-    replacement; inert, each is dropped so a recorded bundle still loads.
+    ``trace_checks`` and ``llm_judge`` draw that bare refusal here too. The retired keys
+    of ``state_checks`` and of its ``hash`` block are not the addressed refusal's
+    business: populated, each draws the migration message naming its replacement;
+    inert, each is dropped so a recorded bundle still loads.
 
     Validate is the earliest gate a task pack meets: the engine's own
     :class:`StateChecksConfig` is not constructed until artifacts are written, by
@@ -336,6 +353,9 @@ def validate_grading_yaml(
 
     refuse_malformed_grading_shapes(raw_grading_data, grading_path=grading_path)
     grading_data = raw_grading_data or {}
+    refuse_retired_hash_keys(
+        authored_hash_block(grading_data), context=f"Grading file {grading_path}"
+    )
 
     for block_name, typed in _TYPED_GRADING_BLOCKS.items():
         _construct_declared_block(
@@ -460,16 +480,17 @@ def _construct_declared_block(
                         block_name=f"{block_name}.{field_name}[{index}]",
                         grading_path=grading_path,
                     )
-        for field_name, nested_model in typed.nested_block_models:
-            nested = block.get(field_name)
+        for nested_block in typed.nested_block_models:
+            nested = block.get(nested_block.field_name)
             # A field carrying nothing is the absent block, and one carrying a
             # non-mapping has no keys to name — the construction below answers both.
             if isinstance(nested, Mapping):
                 refuse_unknown_grading_keys(
-                    nested_model,
+                    nested_block.model,
                     nested,
-                    block_name=f"{block_name}.{field_name}",
+                    block_name=f"{block_name}.{nested_block.field_name}",
                     grading_path=grading_path,
+                    answered_elsewhere=nested_block.retired_keys,
                 )
     typed.model(**block)
 

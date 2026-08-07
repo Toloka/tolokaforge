@@ -14,8 +14,8 @@ network, and no Docker. The expected result is read from the committed golden
 the pinned verdict from what it declares.
 
 The second guard reads recorded bundles for a different property: a grading config that
-serializes a ``state_checks`` key the model has since retired still reconstructs, so
-re-reading a trial nobody will record again stays possible.
+serializes a ``state_checks`` key — or a ``state_checks.hash`` key — the model has since
+retired still reconstructs, so re-reading a trial nobody will record again stays possible.
 """
 
 from pathlib import Path
@@ -25,7 +25,10 @@ import yaml
 
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
-from tolokaforge.core.grading.state_composition import hash_block_is_a_state_source
+from tolokaforge.core.grading.state_composition import (
+    RETIRED_HASH_KEYS,
+    hash_block_is_a_state_source,
+)
 from tolokaforge.core.models import (
     RETIRED_STATE_CHECK_KEYS,
     GradingConfig,
@@ -93,23 +96,53 @@ def _recorded_state_checks(bundle: Path) -> dict:
     return (_load_yaml(bundle).get("grading_config") or {}).get("state_checks") or {}
 
 
-def test_every_recorded_bundle_serializing_a_retired_state_check_key_still_loads(test_data_dir):
-    """``state_checks`` refuses a key it does not declare, and these are not that.
+def _recorded_hash_block(bundle: Path) -> dict:
+    """The ``state_checks.hash`` block a recorded bundle serialized, empty where it wrote none."""
+    return _recorded_state_checks(bundle).get("hash") or {}
+
+
+_RETIRED_KEY_TIERS = (
+    pytest.param(
+        RETIRED_STATE_CHECK_KEYS,
+        _recorded_state_checks,
+        lambda config: config.state_checks,
+        id="state_checks",
+    ),
+    pytest.param(
+        frozenset(RETIRED_HASH_KEYS),
+        _recorded_hash_block,
+        lambda config: config.state_checks.hash,
+        id="state_checks.hash",
+    ),
+)
+
+
+@pytest.mark.parametrize(("retired", "recorded_block", "loaded_block"), _RETIRED_KEY_TIERS)
+def test_every_recorded_bundle_serializing_a_retired_state_check_key_still_loads(
+    test_data_dir, retired, recorded_block, loaded_block
+):
+    """A block refuses a key it does not declare, and these are not that.
 
     A recorded bundle serializes the whole grading config as the schema stood when the
-    trial ran, so ``env_assertions: []`` / ``db_hash_check: false`` are on disk in
-    trials nobody will re-record. They are dropped rather than refused, which is what
-    keeps re-reading such a bundle possible — and dropped rather than kept, so nothing
-    downstream reads a key the model retired.
+    trial ran, so ``env_assertions: []`` / ``db_hash_check: false`` and a stored
+    ``expected_state_hash`` are on disk in trials nobody will re-record. They are
+    dropped rather than refused, which is what keeps re-reading such a bundle possible —
+    and dropped rather than kept, so nothing downstream reads a key the model retired.
+
+    The hash tier's corpus carries *populated* values, which is where this parts company
+    with the tier above it: the substrate that graded those bundles never read the
+    literal, so dropping it changes nothing they replay, and an author who can act meets
+    the refusal at every read a pack passes through instead.
+
+    Bundles are selected by walking the corpus rather than named, so a tier whose corpus
+    is gone fails here rather than passing over nothing.
     """
     bundles = sorted(
-        path
-        for path in test_data_dir.rglob("task.yaml")
-        if RETIRED_STATE_CHECK_KEYS & set(_recorded_state_checks(path))
+        path for path in test_data_dir.rglob("task.yaml") if retired & set(recorded_block(path))
     )
 
     assert bundles, "no recorded bundle carries a retired state-check key: nothing proven"
     for bundle in bundles:
-        state_checks = GradingConfig(**_load_yaml(bundle)["grading_config"]).state_checks
-        for key in RETIRED_STATE_CHECK_KEYS:
-            assert not hasattr(state_checks, key), f"{bundle}: {key} survived the load"
+        block = loaded_block(GradingConfig(**_load_yaml(bundle)["grading_config"]))
+        for key in retired:
+            assert not hasattr(block, key), f"{bundle}: {key} survived the load"

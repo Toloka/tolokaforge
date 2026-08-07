@@ -878,14 +878,9 @@ def _check_hash_source_declared(
     compares the trial against the initial state, so the same trial takes two different
     ``state_checks`` components.
 
-    A block declaring two inert sources is one defect taking one edit, so it draws one
-    finding, addressed at the first source the tuple names. That order is **core's** read
-    order and no more: ``_check_state_hash`` compares a truthy ``expected_state_hash`` in
-    process and returns before ``golden_actions``, where no runner path reads the
-    translated ``expected_hash`` at all —
-    :data:`~tolokaforge.core.grading.key_manifest._HASH_SOURCE_SHAPE_REASON` records that
-    asymmetry under #693. What the message claims of both substrates is only what holds
-    of both: the flag is read before any source.
+    A block declaring an inert source draws one finding, addressed at the source the
+    tuple names first. What the message claims of both substrates is only what holds of
+    both: the flag is read before any source.
 
     Both halves read the flag for truth rather than for ``True``, because that is
     what decides the grade: core branches on its truthiness and the runner coerces
@@ -904,7 +899,7 @@ def _check_hash_source_declared(
     grade fine. A block this rule finds nothing wrong with reports nothing on either
     layer, so the skip names only the shape a native pack would have been refused for.
     """
-    hash_block = _hash_block(grading)
+    hash_block = authored_hash_block(grading)
     if hash_block is None:
         return AuthoringReport()
     enabled = hash_block.get("enabled")
@@ -943,11 +938,13 @@ def _check_hash_source_declared(
     )
 
 
-def _hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
+def authored_hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
     """The authored ``state_checks.hash`` block, or ``None`` where the pack wrote none.
 
-    Every hash rule reads it through here, so a scalar written at either level is left
-    to the block's own shape validation rather than read as an authoring defect.
+    Every hash rule reads it through here, as does every pack read reaching for
+    :func:`~tolokaforge.core.grading.state_composition.refuse_retired_hash_keys`, so a
+    scalar written at either level is left to the block's own shape validation rather
+    than read as an authoring defect.
     """
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
@@ -971,7 +968,7 @@ def _authored_hash_is_a_state_source(grading: Mapping[str, Any]) -> bool:
     reports, so it declares no source here rather than drawing a second finding over a
     pack that cannot load at all.
     """
-    hash_block = _hash_block(grading)
+    hash_block = authored_hash_block(grading)
     if hash_block is None:
         return False
     try:
@@ -990,11 +987,10 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     skipped with the rules that do need them.
 
     Read under a truthy ``hash.enabled`` and then **whatever else the block declares**,
-    unlike :func:`_check_golden_replay_world` beside it. A truthy ``expected_state_hash``
-    is the source core reads, so core never reaches the actions — but
-    ``NativeAdapter.to_task_description`` iterates the authored value with no such
-    short-circuit, so a pack declaring both cannot be registered at all. Skipping the
-    literal here would accept it.
+    unlike :func:`_check_golden_replay_world` beside it, which reads the source the
+    replay needs a world for: ``NativeAdapter.to_task_description`` iterates the authored
+    value whatever else the block says, so a shape no replay can iterate leaves the pack
+    unregisterable however it would have graded.
 
     Independent of the replay-world rule for the reason that rule reports every withheld
     fact at once: a truthy non-list under an incomplete world draws two findings at this
@@ -1008,7 +1004,7 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     reading — so such a block is :func:`_check_sections_declare_something`'s where it
     declares no other source, and nothing at all where it declares one.
     """
-    hash_block = _hash_block(grading)
+    hash_block = authored_hash_block(grading)
     if hash_block is None or not hash_block.get("enabled"):
         return AuthoringReport()
     reason = unreplayable_golden_source(hash_block.get("golden_actions"))
@@ -1061,15 +1057,10 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:
     """A pack replaying golden actions is authored against a task that gives them a world.
 
-    The block is read in the order core reads it — the flag, then ``expected_state_hash``,
-    then ``golden_actions`` — the runner having no literal-first order to share, since no
-    path there reads the translated ``expected_hash`` (#693). A falsy ``hash.enabled`` is
-    a source nobody resolves, for the reason :func:`_check_hash_source_declared` gives at
-    length. A truthy ``expected_state_hash`` is the *effective* source whatever else the
-    block declares — core compares the trial against the author's literal and returns
-    before ``golden_actions`` is read — so such a pack needs no world, and refusing it
-    would send its author to declare facts nothing consults. Only then are the golden
-    actions read, for truthiness and never for shape: a truthy non-list value is refused
+    The block is read the way core reads it — the flag, then ``golden_actions``, the one
+    source needing a world at all. A falsy ``hash.enabled`` is a source nobody resolves,
+    for the reason :func:`_check_hash_source_declared` gives at length. The actions are
+    then read for truthiness and never for shape: a truthy non-list value is refused
     here for the world it lacks and by :func:`_check_golden_actions_are_a_list` for being
     no list of actions, so under an incomplete world it draws both findings at this one
     address, while :func:`_check_golden_action_names` reports nothing about it at all,
@@ -1085,10 +1076,10 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
     unresolvable tool set — and only there, so a pack that replays nothing reports no
     skip for a rule that had nothing to check.
     """
-    hash_block = _hash_block(grading)
+    hash_block = authored_hash_block(grading)
     if hash_block is None or not hash_block.get("enabled"):
         return AuthoringReport()
-    if hash_block.get("expected_state_hash") or not hash_block.get("golden_actions"):
+    if not hash_block.get("golden_actions"):
         return AuthoringReport()
     if not world.known:
         return AuthoringReport(
@@ -1159,7 +1150,7 @@ def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
     is no load error to defer to, and the index of the offending action is what an author
     acts on.
     """
-    hash_block = _hash_block(grading)
+    hash_block = authored_hash_block(grading)
     if hash_block is None or not hash_block.get("enabled"):
         return
     actions = hash_block.get("golden_actions")

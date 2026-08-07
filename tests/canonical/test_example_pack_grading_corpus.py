@@ -81,8 +81,7 @@ Fifteen claims over the packs an author reads as the reference:
     ``task.yaml`` facts, unreadable from ``grading.yaml``, and without them core hashes
     nothing and refuses to grade the trial at all. Each of the 107 packs is checked
     against its own resolved world, and again with that world's server module withheld
-    and any ``expected_state_hash`` removed — the removal being what makes the control
-    fire on the one pack that ships both hash sources.
+    and a golden action injected, which every pack has to be refused for.
 """
 
 from __future__ import annotations
@@ -782,21 +781,16 @@ def _replay_world_findings(report: AuthoringReport) -> list[str]:
 
 
 def _a_golden_replay_with_no_world(grading: Mapping[str, Any]) -> dict[str, Any]:
-    """*grading* with a golden path to replay and no literal hash to answer in its place.
+    """*grading* with a golden path to replay, whatever else it declares.
 
     Injected into every pack rather than one, because only 4 of the 107 declare a golden
-    action at all. Any ``expected_state_hash`` is removed first, and that step is what
-    makes the control fire on ``tests/data/grading_parity/all_keys``: it ships both hash
-    sources, core answers from the literal before the replay is reached, and the rule
-    steps around exactly that pack — so a control that left the literal in place would
-    silently not fire on the one pack in the corpus whose world cannot be built.
+    action at all. ``golden_actions`` is the only hash source needing a world, and it is
+    the source the rule reads, so a pack reaches the rule on this block alone — including
+    ``tests/data/grading_parity/all_keys``, the one pack in the corpus whose world cannot
+    be built.
     """
     state_checks = {**(grading.get("state_checks") or {})}
-    hash_block = {
-        key: value
-        for key, value in (state_checks.get("hash") or {}).items()
-        if key != "expected_state_hash"
-    }
+    hash_block = {**(state_checks.get("hash") or {})}
     state_checks["hash"] = {
         **hash_block,
         "enabled": True,
@@ -814,10 +808,10 @@ def test_no_authored_pack_gives_its_golden_replay_no_world_to_be_built_in() -> N
     reads no tool, and the packs outside the two task roots name tools no actor is given
     on purpose.
 
-    Every pack is checked a second time with its MCP server module withheld, a golden
-    action injected and any ``expected_state_hash`` removed, which has to be refused —
-    without that control a rule that stopped firing would read as a corpus with no
-    defects in it, since 103 of the 107 replay nothing.
+    Every pack is checked a second time with its MCP server module withheld and a golden
+    action injected, which has to be refused — without that control a rule that stopped
+    firing would read as a corpus with no defects in it, since 103 of the 107 replay
+    nothing.
 
     The unresolvable-world arm is **not** exercised here and cannot be: every authored
     pack in the repository is native, so every world resolved below is ``known``. That

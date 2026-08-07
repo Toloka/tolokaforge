@@ -5,7 +5,7 @@ absent one — so it is refused at load rather than dropped. Two authored shapes
 that, both internally consistent enough that every rule the authoring gate carries
 passes them:
 
-- the author's own keys misspelled (``enalbed`` / ``expected_state_hsah``);
+- the author's own keys misspelled (``enalbed`` / ``expect_inital_state``);
 - the **runner's** flattened field names (``hash_enabled`` / ``expected_hash`` /
   ``hash_weight``) written into ``grading.yaml`` — the names an author meets in
   ``docs/GRADING.md``'s substrate tables, which the core block does not declare.
@@ -56,6 +56,7 @@ from tolokaforge.core.grading.config_validation import ReplayWorld, ToolInventor
 from tolokaforge.core.models import (
     Grade,
     GradingConfig,
+    InitialStateConfig,
     Message,
     MessageRole,
     Trajectory,
@@ -84,9 +85,13 @@ _PASSING_ASSERTION: dict[str, Any] = {
     "description": "the order was placed",
 }
 
+# The state the task starts in, one status away from the one the trial ends in — so a
+# correctly spelled block scores its half of the fold at 0.0 and the fold at 0.5, while
+# a dropped key scores the assertion alone at 1.0.
+_INITIAL_STATE: dict[str, Any] = {"orders": [{"id": 1, "status": "pending"}]}
+
 # Well-formed and unreachable: the hash of any state is a sha256 digest, and no state
-# hashes to all zeroes — so a correctly spelled block scores its half of the fold at
-# 0.0 and the fold at 0.5, while a dropped key scores the assertion alone at 1.0.
+# hashes to all zeroes, so the runner-named row below never matches either.
 _NEVER_MATCHING_HASH = "0" * 64
 
 # The model's own default. A threshold at the correct cell's score (0.5) passes both
@@ -95,13 +100,13 @@ _PASS_THRESHOLD = 0.8
 
 _CORRECTLY_SPELLED: dict[str, Any] = {
     "enabled": True,
-    "expected_state_hash": _NEVER_MATCHING_HASH,
+    "expect_initial_state": True,
     "weight": 0.5,
 }
 
 _MISSPELLED_AUTHOR_KEYS: dict[str, Any] = {
     "enalbed": True,
-    "expected_state_hsah": _NEVER_MATCHING_HASH,
+    "expect_inital_state": True,
     "weight": 0.5,
 }
 
@@ -118,10 +123,10 @@ _GRADE_SCORE = 0.5
 # Written out rather than composed from _DESCRIPTION: an expected string built by the
 # rule under test agrees with that rule whatever it does.
 _UNDESCRIBED_REASONS = (
-    "State: State hash mismatch: expected 0000000000000000..., got 20bf272dadce184d..."
+    "State: State hash mismatch: expected e9ecfa526cf4f0ee..., got 20bf272dadce184d..."
 )
 _DESCRIBED_REASONS = (
-    "State: State hash mismatch: expected 0000000000000000..., got 20bf272dadce184d... "
+    "State: State hash mismatch: expected e9ecfa526cf4f0ee..., got 20bf272dadce184d... "
     "(the duplicate charge is reversed)"
 )
 
@@ -197,8 +202,15 @@ def _measure(config: dict[str, Any], grading_path: Path) -> _Cell:
     except ValueError as refusal:
         return _Cell(gate_refusal=gate_refusal, load_refusal=str(refusal), grade=None)
 
-    grade = GradingEngine(grading_config=grading_config).grade_trajectory(_TRAJECTORY, _FINAL_STATE)
-    return _Cell(gate_refusal=gate_refusal, load_refusal=None, grade=grade)
+    engine = GradingEngine(
+        grading_config=grading_config,
+        task_initial_state=InitialStateConfig(json_db=_INITIAL_STATE),
+    )
+    return _Cell(
+        gate_refusal=gate_refusal,
+        load_refusal=None,
+        grade=engine.grade_trajectory(_TRAJECTORY, _FINAL_STATE),
+    )
 
 
 def _observables(cell: _Cell) -> dict[str, Any]:

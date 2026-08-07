@@ -341,12 +341,10 @@ class GradingEngine:
         failed hash check. The replay record is ``None`` for every source but
         ``golden_actions``, the only one that replays anything.
 
-        The sources are read in order, and the order bounds what the replay world has to
-        hold: a truthy ``expected_state_hash`` is compared in process and returns before
-        ``golden_actions`` is read at all, so a pack declaring both never replays and
-        needs no world. ``expect_initial_state`` needs no order of its own — the block
-        refuses it beside either other source — and it compares in process too, hashing
-        the state the task starts in by the rule the trial's own state is hashed by.
+        The two sources need no read order between them, the block refusing either
+        beside the other. ``expect_initial_state`` compares in process, hashing the state
+        the task starts in by the rule the trial's own state is hashed by;
+        ``golden_actions`` is the only source needing a world to replay in.
 
         A ``description`` the block declares is appended to every reason the verdict
         carries, in the parenthesised shape ``state_checks.jsonpaths[*].description``
@@ -356,14 +354,14 @@ class GradingEngine:
             UnresolvableInitialState: ``expect_initial_state`` is the source and the task
                 declares no initial state to compare against, so there is no expected
                 state and the trial is left unscored.
-            UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
-                truthy without being a list at all, so no reader can iterate it. Refused
-                at this read, above the world the actions would otherwise need. An element
+            UnreplayableGoldenSource: ``golden_actions`` is the source and is truthy
+                without being a list at all, so no reader can iterate it. Refused at this
+                read, above the world the actions would otherwise need. An element
                 *inside* a list that is no mapping is a different shape, answered by the
                 replay's own name resolution.
-            UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
-                the task declares no world to replay them against, so there is no
-                expected state and the trial is left unscored.
+            UnbuildableGoldenReplayWorld: ``golden_actions`` is the source and the task
+                declares no world to replay them against, so there is no expected state
+                and the trial is left unscored.
         """
         checks = self.config.state_checks
         hash_config = checks.hash
@@ -371,17 +369,11 @@ class GradingEngine:
             return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
-        expected_hash = hash_config.expected_state_hash
         score: float | None
         diff_result: dict[str, Any] | None = None
         replay: GoldenReplayRecord | None = None
 
-        if expected_hash:
-            score, reason = self.state_checker.check_hash(
-                db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
-            )
-            reasons = [reason]
-        elif hash_config.expect_initial_state:
+        if hash_config.expect_initial_state:
             initial_state = resolve_initial_state(
                 task_dir=self.task_dir,
                 initial_state_json_db=(

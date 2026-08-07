@@ -1138,8 +1138,9 @@ The harness owns grading **mechanics**; adapters own grading
   `golden_actions` through the real agent tools, hash-compare
   against the trial's final state. No stored expected hash is
   consumed — the seed and the golden actions are the ground
-  truth. (Dead `expected_hash`/`precomputed_expected_hash`
-  schema fields still exist today; #217 removes them.)
+  truth. The one schema field still declaring a stored hash is
+  the proto's `GradeTrialRequest.precomputed_expected_hash`,
+  which no host populates and no service reads.
 - **The rubric judge** — behind backend-neutral protocols
   (`DBReader`, `KnowledgeSearch`); backend-specific KB wiring
   (rag-service, TypeSense) stays in the runner, injected as

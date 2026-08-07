@@ -358,7 +358,6 @@ class RunnerStateChecksConfig(BaseModel):
 
     # Hash comparison
     hash_enabled: bool = False
-    expected_hash: str | None = None  # Pre-computed (if available)
     expect_initial_state: bool = False
     golden_actions: list[GoldenAction] = Field(default_factory=list)
     # None means the author declared no weight — never "fall back to a default".
@@ -417,7 +416,6 @@ class RunnerStateChecksConfig(BaseModel):
         """
         return StateHashConfig(
             enabled=self.hash_enabled,
-            expected_state_hash=self.expected_hash,
             expect_initial_state=self.expect_initial_state,
             golden_actions=self.golden_actions,
             weight=self.hash_weight,

@@ -8,11 +8,11 @@ exactly one of the two algebras, and the other substrate cannot compare against 
 
 The three groups here are one argument. The first pins the split itself: same partition,
 different digests, asserted separately so unifying one without the other fails
-distinguishably. The second pins what the split costs — a pack may declare a hash literal
-that no substrate grading it will consult, and nothing says so. The third pins why the
-obvious repair is not one: the literal the recorded ``tau_retail_mini`` bundles carry is a
-core-algebra digest, so routing it to the runner's evaluator would score ``0.0`` on the
-state core scores ``1.0``.
+distinguishably. The second pins what a pack may no longer do — declare a hash literal
+that no substrate grading it will consult, measured over the very literals the recorded
+``tau_retail_mini`` bundles still carry. The third pins why the obvious repair is not one:
+that literal is a core-algebra digest, so routing it to the runner's evaluator would score
+``0.0`` on the state core scores ``1.0``.
 
 See #915 for unifying the two hash functions, which is not in reach here:
 ``compute_stable_hash`` also backs db-service ETags, snapshot hashes and
@@ -47,8 +47,8 @@ _RECORDED_BUNDLES = ("0f3b1ff7", "test_001", "test_002")
 class _RecordedBundleDefect(Exception):
     """A bundle stopped carrying what these tests read from it.
 
-    Raised rather than asserted so it escapes the ``raises=AssertionError`` xfail below
-    instead of being absorbed as the divergence that marker records.
+    Raised rather than asserted so a fixture that no longer supplies the literal reads as
+    a broken corpus rather than as the property under test holding.
     """
 
 
@@ -186,11 +186,6 @@ def _a_declared_literal_survives_a_pack_load(literal: str) -> bool:
 
 
 @pytest.mark.parametrize("bundle", _RECORDED_BUNDLES)
-@pytest.mark.xfail(
-    strict=True,
-    raises=AssertionError,
-    reason="a pack may declare a hash literal no substrate grading it will consult",
-)
 def test_a_pack_cannot_declare_a_hash_literal_no_substrate_will_consult(
     bundle: str, canonical_project_dir
 ) -> None:
@@ -198,7 +193,7 @@ def test_a_pack_cannot_declare_a_hash_literal_no_substrate_will_consult(
 
     Each bundle records ``score: 1.0`` against a hash that is neither the declared literal
     nor either substrate's hash of the recorded state, so the literal was not what graded
-    them — and a pack declaring the same thing loads with nothing said.
+    them — and a pack declaring the same thing reaches no loaded config carrying it.
     """
     trial_dir = _trial_dir(canonical_project_dir, bundle)
     literal = _declared_literal(trial_dir)

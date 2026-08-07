@@ -454,10 +454,10 @@ def _write_grading(tmp_path: Path, state_checks: dict) -> Path:
 @pytest.mark.parametrize(
     "hash_block",
     [
-        {"enabled": True, "expected_state_hash": "aaaa"},
+        {"enabled": True, "expect_initial_state": True},
         {"enabled": True, "golden_actions": _GOLDEN_ACTIONS},
     ],
-    ids=["expected_state_hash", "golden_actions"],
+    ids=["expect_initial_state", "golden_actions"],
 )
 def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_block: dict):
     """Validate is where an author hears this: the engine's own model is not
@@ -473,14 +473,14 @@ def test_validate_rejects_a_two_source_pack_with_no_weight(tmp_path: Path, hash_
     [
         {
             "jsonpaths": _ASSERTIONS,
-            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 0.6},
+            "hash": {"enabled": True, "expect_initial_state": True, "weight": 0.6},
         },
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False}},
         {"jsonpaths": _ASSERTIONS, "hash": {"enabled": False, "weight": 0.6}},
         {"jsonpaths": [], "hash": {"enabled": True, "golden_actions": _GOLDEN_ACTIONS}},
         {
             "jsonpaths": [],
-            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": 1.0},
+            "hash": {"enabled": True, "expect_initial_state": True, "weight": 1.0},
         },
     ],
     ids=[
@@ -501,9 +501,9 @@ def test_validate_accepts_every_shape_the_weight_cannot_decide(tmp_path: Path, s
 @pytest.mark.parametrize(
     "hash_block",
     [
-        {"enabled": False, "expected_state_hash": "aaaa"},
-        {"enabled": False, "expected_state_hash": "aaaa", "weight": 0.6},
-        {"expected_state_hash": "aaaa"},
+        {"enabled": False, "expect_initial_state": True},
+        {"enabled": False, "expect_initial_state": True, "weight": 0.6},
+        {"expect_initial_state": True},
     ],
     ids=["flag_off", "flag_off_with_an_inert_weight", "flag_absent"],
 )
@@ -539,7 +539,7 @@ def test_validate_rejects_a_flag_with_nothing_to_compare_against(tmp_path: Path)
     StateChecksConfig(jsonpaths=_ASSERTIONS, hash=hash_block)
 
     grading = _write_grading(tmp_path, {"jsonpaths": _ASSERTIONS, "hash": hash_block})
-    with pytest.raises(ValueError, match="declares no expected_state_hash or golden_actions"):
+    with pytest.raises(ValueError, match="declares no golden_actions or expect_initial_state"):
         validate_grading_yaml(grading, inventory=_UNRESOLVED, hash_sources=HashSourceLayer())
 
 
@@ -610,7 +610,7 @@ def test_validate_refuses_a_native_packs_sourceless_hash_through_the_resolver(tm
 
     out = result.stderr
     assert "0 valid, 1 invalid" in out
-    assert "declares no expected_state_hash or golden_actions" in out
+    assert "declares no golden_actions or expect_initial_state" in out
     assert result.exit_code != 0
 
 
@@ -620,7 +620,7 @@ def test_validate_rejects_a_weight_outside_the_unit_interval(tmp_path: Path, wei
         tmp_path,
         {
             "jsonpaths": _ASSERTIONS,
-            "hash": {"enabled": True, "expected_state_hash": "aaaa", "weight": weight},
+            "hash": {"enabled": True, "expect_initial_state": True, "weight": weight},
         },
     )
     with pytest.raises(ValueError, match=r"state_checks.hash.weight must be a real number"):
@@ -822,11 +822,32 @@ def test_a_populated_retired_key_draws_its_migration_and_not_the_unknown_key_ref
     assert "unknown key" not in message, message
 
 
+def test_validate_refuses_a_populated_retired_hash_key_naming_both_replacements(tmp_path: Path):
+    """The third read a pack passes through, and the only one an author runs on purpose.
+
+    A stored hash is written in one substrate's algebra and the other cannot compare
+    against it, so the gate refuses it here rather than letting a trial be paid for and
+    graded differently depending on where it ran. Both replacements are asserted
+    separately: a migration naming only ``golden_actions`` would send a refusal task —
+    which by definition replays nothing — to write actions it does not have.
+    """
+    grading = _write_grading(tmp_path, {"hash": {"enabled": True, "expected_state_hash": "a" * 64}})
+
+    with pytest.raises(ValueError) as excinfo:
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+    message = str(excinfo.value)
+    assert str(grading) in message, message
+    assert "state_checks.hash.expected_state_hash has been retired" in message, message
+    assert "golden_actions" in message, message
+    assert "expect_initial_state" in message, message
+
+
 def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(tmp_path: Path):
     """The block this refusal exists for, addressed one tier below the block that holds it.
 
     Every key ``hash`` drops requests *nothing*: ``enalbed`` beside a real
-    ``expected_state_hash`` leaves the hash unscored while the trial grades on whatever
+    ``expect_initial_state`` leaves the hash unscored while the trial grades on whatever
     else the pack declared, which scores higher than the same block spelled correctly.
     The parent's construction refuses the key either way; what is locked here is the
     sentence, because the bare ``extra_forbidden`` names neither the file, the accepted
@@ -835,7 +856,7 @@ def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(t
     """
     grading = _write_grading(
         tmp_path,
-        {"jsonpaths": _ASSERTIONS, "hash": {"enalbed": True, "expected_state_hash": "aaaa"}},
+        {"jsonpaths": _ASSERTIONS, "hash": {"enalbed": True, "expect_initial_state": True}},
     )
 
     with pytest.raises(ValueError) as excinfo:
@@ -847,7 +868,7 @@ def test_validate_names_a_misspelled_hash_key_and_the_hash_blocks_accepted_set(t
     assert "unknown key 'enalbed'" in message, message
     assert "did you mean 'enabled'?" in message, message
     assert (
-        "state_checks.hash accepts: enabled, expected_state_hash, expect_initial_state, "
+        "state_checks.hash accepts: enabled, expect_initial_state, "
         "golden_actions, weight, description." in message
     ), message
 
@@ -1634,9 +1655,9 @@ def test_every_block_that_addresses_its_refusal_names_each_list_of_models_it_dec
 
 
 _NESTED_ENTRIES = tuple(
-    pytest.param(name, field, model, id=f"{name}.{field}")
+    pytest.param(name, nested.field_name, nested.model, id=f"{name}.{nested.field_name}")
     for name, block in _TYPED_GRADING_BLOCKS.items()
-    for field, model in block.nested_block_models
+    for nested in block.nested_block_models
 )
 
 
@@ -1686,7 +1707,7 @@ def test_every_block_that_addresses_its_refusal_names_each_block_it_nests(block_
         for field, info in block.model.model_fields.items()
         if _nested_model_of(info.annotation) is not None
     }
-    named = {field for field, _ in block.nested_block_models}
+    named = {nested.field_name for nested in block.nested_block_models}
 
     assert named == (declared if block.gate_names_unknown_keys else set()), (
         f"{block_name} declares {sorted(declared)} as blocks of its own but names "

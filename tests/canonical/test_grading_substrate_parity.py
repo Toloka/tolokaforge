@@ -209,6 +209,12 @@ whatever the ledger recorded for the keys that feed it.
 
 _HASH_FAMILY_ROOT = "state_checks.hash"
 _EXPECT_INITIAL_STATE_KEY = "state_checks.hash.expect_initial_state"
+_GOLDEN_ACTIONS_KEY = "state_checks.hash.golden_actions"
+
+# The one in-repo pack that both declares golden actions and gives them a world to be
+# replayed in — a JSON initial-state file and an ``mcp_server`` whose tools they call.
+# It sits under ``tests/data/tasks/`` for the reason :data:`_PROBE_PACK` does.
+_GOLDEN_REPLAY_PACK = "shop_orders_02"
 
 # Every function that can hand a hash verdict to the shared composer, as
 # (repo-relative module, function name). Asserted as set equality against the
@@ -238,7 +244,7 @@ _ARCHITECTURAL_EXEMPTIONS = frozenset(
 )
 
 # Non-BOTH keys that should be both and are not yet. tracking_issue is required.
-_DRIFT_EXEMPTIONS = frozenset({"state_checks.hash.expected_state_hash"})
+_DRIFT_EXEMPTIONS: frozenset[str] = frozenset()
 
 # Scored keys that claim both substrates but are not differentially proven
 # in-process. A key added here is a key whose parity claim rests on field
@@ -1276,21 +1282,28 @@ _TRANSLATION_PACK_GLOBS: Mapping[str, str] = MappingProxyType(
     {
         _ALL_KEYS_TASK: _PARITY_GLOB,
         _PROBE_PACK: _TASKS_GLOB,
+        _GOLDEN_REPLAY_PACK: _TASKS_GLOB,
         _EXPECT_INITIAL_STATE_PACK: _PARITY_GLOB,
     }
 )
 """The packs whose declared keys together carry the manifest, and the glob loading each.
 
-More than one pack because the state sources exclude each other, each in its own way:
-``state_checks.db_probes`` may not be declared beside the hash block and the JSONPath
-assertions ``all_keys`` carries, and ``state_checks.hash.expect_initial_state`` names a
-different expected state from the ``golden_actions`` ``all_keys`` declares. So the
-manifest's totality is a union over packs each of which is authorable on its own, and
-they do not all live under one root — hence a glob apiece.
+More than one pack because a key ``all_keys`` may not declare beside the rest still has
+to be translated by something. ``state_checks.db_probes`` is exclusive with the hash
+block and the JSONPath assertions ``all_keys`` carries; the two hash sources name
+different expected states, so at most one of them lives there; and ``golden_actions``
+needs a task supplying a JSON initial-state file and an ``mcp_server`` to replay
+against, which ``all_keys`` supplies neither of. So the manifest's totality is a union
+over packs each of which is authorable on its own, and they do not all live under one
+root — hence a glob apiece.
 """
 
 _TRANSLATION_OWNERS: Mapping[str, str] = MappingProxyType(
-    {_PROBES_KEY: _PROBE_PACK, _EXPECT_INITIAL_STATE_KEY: _EXPECT_INITIAL_STATE_PACK}
+    {
+        _PROBES_KEY: _PROBE_PACK,
+        _GOLDEN_ACTIONS_KEY: _GOLDEN_REPLAY_PACK,
+        _EXPECT_INITIAL_STATE_KEY: _EXPECT_INITIAL_STATE_PACK,
+    }
 )
 """The pack that must carry a key to the runner as something other than the field default.
 
@@ -2956,7 +2969,6 @@ _LEDGER_KEY_DRIVERS: Mapping[str, _Driver] = MappingProxyType(
         "trace_checks.constraints.negate": _Driver.PARITY_PACK,
         "state_checks.hash.enabled": _Driver.HASH_FAMILY,
         "state_checks.hash.golden_actions": _Driver.HASH_FAMILY,
-        "state_checks.hash.expected_state_hash": _Driver.HASH_FAMILY,
         "state_checks.hash.expect_initial_state": _Driver.EXPECT_INITIAL_STATE,
         "state_checks.db_probes": _Driver.DB_PROBES,
         "llm_judge": _Driver.LLM_JUDGE,
@@ -3099,7 +3111,6 @@ _HASH_DRIVER_TASK: dict[str, Any] = {
         "state_checks": {
             "hash_enabled": True,
             "golden_actions": [{"tool_name": _HASH_DRIVER_TOOL, "arguments": {"order_id": "O1"}}],
-            "expected_hash": "deadbeef",
         },
     },
 }
@@ -3141,8 +3152,8 @@ _EXPECT_INITIAL_STATE_TASK: dict[str, Any] = {
 }
 """A second hash-driver task, because ``_HASH_DRIVER_TASK`` cannot carry this key.
 
-That one declares ``golden_actions`` and a literal, and the authored block refuses
-``expect_initial_state`` beside either — so a driver sharing it would fail lock 15's
+That one declares ``golden_actions``, and the authored block refuses
+``expect_initial_state`` beside it — so a driver sharing it would fail lock 15's
 first claim, the key never being populated on the config the runner graded.
 """
 

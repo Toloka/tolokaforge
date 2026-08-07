@@ -33,7 +33,6 @@ from tolokaforge.core.grading.trace_timeline import TrialTimeline
 from tolokaforge.core.models import ToolCall
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
-    CORE_ONLY_HASH_SKIP,
     CUSTOM_CHECKS_DISABLED_SKIP,
     DB_PROBES_KEY,
     EVALUATED,
@@ -170,17 +169,6 @@ def test_populated_scored_key_with_no_record_names_the_expected_evaluator():
     assert entry("state_checks.jsonpaths").runner_evaluator in audit.error
 
 
-def test_core_only_key_arriving_populated_quotes_its_manifest_reason():
-    item = entry("state_checks.hash.expected_state_hash")
-    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
-
-    audit = audit_accounted_keys(config, {})
-
-    assert audit.error is not None
-    assert item.author_key in audit.error
-    assert item.reason in audit.error
-
-
 def test_an_explicitly_empty_check_is_not_populated():
     """``disallowed_tools: []`` written out is indistinguishable from unset."""
     config = RunnerGradingConfig(
@@ -214,18 +202,18 @@ def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
     is what stops the two spellings from drifting apart while the first keeps the
     text itself pinned.
     """
-    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
+    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expect_initial_state=True))
 
     audit = audit_accounted_keys(
-        config, {"state_checks.hash.expected_state_hash": HASH_DISABLED_SKIP}
+        config, {"state_checks.hash.expect_initial_state": HASH_DISABLED_SKIP}
     )
 
     assert audit.error is None
     assert audit.skip_notes == (
-        "state_checks.hash.expected_state_hash skipped: hash grading not enabled",
+        "state_checks.hash.expect_initial_state skipped: hash grading not enabled",
     )
     assert audit.skip_notes == (
-        skip_note("state_checks.hash.expected_state_hash", HASH_DISABLED_SKIP),
+        skip_note("state_checks.hash.expect_initial_state", HASH_DISABLED_SKIP),
     )
 
 
@@ -235,20 +223,18 @@ def test_a_skipped_record_must_say_why():
         KeyAccountingRecord(outcome=KeyAccounting.SKIPPED)
 
 
-def test_the_core_only_hash_key_is_a_skip_whichever_way_hash_grading_went():
-    """`expected_state_hash` has no runner reader, so hash grading running is irrelevant.
+def test_the_whole_family_carries_one_skip_when_hash_grading_did_not_run():
+    """A member left out would fail the RPC for a key the disabled flag never reached.
 
-    Sharing the family's outcome would report a populated, silently dead scored
-    key as fully evaluated in `grade.reasons`.
+    Asserted as the whole mapping rather than member by member, so a family that grew a
+    member the skip does not answer for is caught here rather than at the audit.
     """
-    ran = [hash_family_accounting(basis) for basis in HashComparisonBasis]
-    did_not_run = hash_family_skip_accounting(HASH_DISABLED_SKIP)
-
-    for records in (*ran, did_not_run):
-        assert records["state_checks.hash.expected_state_hash"] == CORE_ONLY_HASH_SKIP
-    assert did_not_run["state_checks.hash.enabled"] == HASH_DISABLED_SKIP
-    assert did_not_run["state_checks.hash.golden_actions"] == HASH_DISABLED_SKIP
-    assert did_not_run["state_checks.hash.expect_initial_state"] == HASH_DISABLED_SKIP
+    assert hash_family_skip_accounting(HASH_DISABLED_SKIP) == {
+        "state_checks.hash": HASH_DISABLED_SKIP,
+        "state_checks.hash.enabled": HASH_DISABLED_SKIP,
+        "state_checks.hash.golden_actions": HASH_DISABLED_SKIP,
+        "state_checks.hash.expect_initial_state": HASH_DISABLED_SKIP,
+    }
 
 
 @pytest.mark.parametrize(
@@ -286,7 +272,6 @@ def test_only_the_source_that_selected_the_basis_is_accounted_as_evaluated(basis
     assert records == {
         "state_checks.hash": EVALUATED,
         "state_checks.hash.enabled": EVALUATED,
-        "state_checks.hash.expected_state_hash": CORE_ONLY_HASH_SKIP,
         **({source_read: EVALUATED} if source_read is not None else {}),
     }
 
@@ -736,7 +721,6 @@ def test_an_evaluated_record_has_no_skip_note_to_render():
 _PARTIALLY_POPULATED_KEYS = frozenset(
     {
         "custom_checks",
-        "state_checks.hash.expected_state_hash",
         "state_checks.jsonpaths",
         "trace_checks.constraints",
         "trace_checks.constraints.all_of",
@@ -750,9 +734,7 @@ _PARTIALLY_POPULATED_KEYS = frozenset(
 def _partially_populated_config() -> RunnerGradingConfig:
     """A config populating :data:`_PARTIALLY_POPULATED_KEYS` and no other ledger key."""
     return RunnerGradingConfig(
-        state_checks=RunnerStateChecksConfig(
-            jsonpath_checks=[_JSONPATH_CHECK], expected_hash="deadbeef"
-        ),
+        state_checks=RunnerStateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK]),
         transcript_rules=TranscriptRulesConfig(must_contain=["shipped"]),
         trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK),
         custom_checks={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
@@ -994,36 +976,6 @@ def test_golden_actions_without_hash_enabled_records_the_hash_skip(
     assert (
         "state_checks.hash.golden_actions skipped: hash grading not enabled"
         in response.grade.reasons
-    )
-
-
-def test_expected_hash_is_reported_as_read_by_nothing_on_the_runner(
-    runner_service, mock_grpc_context
-):
-    """A populated key the manifest declares core-only never reads as evaluated.
-
-    The adapter fills `expected_hash` from `hash.expected_state_hash` and no runner
-    path reads it, so the author is told that in `grade.reasons` rather than being
-    shown a key that looks scored.
-    """
-    grading = {
-        "combine_method": "weighted",
-        "weights": {"state_checks": 1.0},
-        "pass_threshold": 0.7,
-        "state_checks": {
-            "hash_enabled": False,
-            "expected_hash": "deadbeef",
-            "jsonpath_checks": [_JSONPATH_CHECK],
-        },
-    }
-
-    response = _grade(runner_service, mock_grpc_context, "ledger_core_only_hash:0", grading)
-
-    assert response.success is True, response.error
-    assert response.grade.score == pytest.approx(1.0)
-    assert (
-        "state_checks.hash.expected_state_hash skipped: core-only — no runner path "
-        "reads it (#693)" in response.grade.reasons
     )
 
 

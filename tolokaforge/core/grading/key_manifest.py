@@ -182,20 +182,18 @@ in-process: the evaluator replays golden actions against db-service over HTTP.
 """
 
 _HASH_SOURCE_SHAPE_REASON = (
-    "both substrates fold the hash verdict by one shared rule, and of the two authorable "
-    "hash-source shapes only one is proven to hand them the same verdict. Proven: "
-    "golden_actions, by the enforcing_test — both replay the actions and compare against the "
-    "resulting state. Not proven: expected_state_hash alone, because no runner path reads the "
-    "translated expected_hash (#693), so the runner compares the trial against the *initial* "
-    "state where core compares it against the author's literal. An enabled hash with no "
-    "declared source is refused at the authoring gate, so the third shape is unauthorable — it "
-    "survives only in a bundle recorded before that rule, where core produces no verdict at "
-    "all while the runner's refusal semantics produce a binary one, and retrace replays it "
-    "unchanged. Golden actions with no world to replay them in is a fourth shape, unauthorable "
-    "the same way: core raises and leaves the trial unscored where the runner replays against "
-    "the live trial — the tools RegisterTrial registered, over db-service's state — and grades "
-    "it, so that divergence too survives only in a config no gate saw. Moving #693's shape "
-    "moves refusal-task verdicts, which needs its own corpus measurement"
+    "both substrates fold the hash verdict by one shared rule, and both authorable "
+    "hash-source shapes are proven to hand them the same verdict: golden_actions by the "
+    "enforcing_test, both replaying the actions and comparing against the resulting state, "
+    "and expect_initial_state by its own canonical differential. What is not proven is the "
+    "shapes no gate admits. An enabled hash with no declared source is refused at the "
+    "authoring gate, so it survives only in a bundle recorded before that rule, where core "
+    "produces no verdict at all while the runner's refusal semantics produce a binary one, "
+    "and retrace replays it unchanged. Golden actions with no world to replay them in is the "
+    "second, unauthorable the same way: core raises and leaves the trial unscored where the "
+    "runner replays against the live trial — the tools RegisterTrial registered, over "
+    "db-service's state — and grades it, so that divergence too survives only in a config no "
+    "gate saw"
 )
 
 _EXPECT_INITIAL_STATE_READ_REASON = (
@@ -414,22 +412,6 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         reason=_EXPECT_INITIAL_STATE_READ_REASON,
-    ),
-    GradingKey(
-        author_key="state_checks.hash.expected_state_hash",
-        kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateHashConfig.expected_state_hash",
-        runner_field="RunnerStateChecksConfig.expected_hash",
-        core_evaluator=_CORE_HASH_EVALUATOR,
-        reason=(
-            "the adapter translates it onto the runner's expected_hash field and no "
-            "runner code path reads it: hash grading always recomputes a golden hash "
-            "from golden_actions, and the proto's precomputed_expected_hash is never "
-            "populated by the host"
-        ),
-        tracking_issue=693,
     ),
     GradingKey(
         author_key="state_checks.hash.weight",

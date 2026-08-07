@@ -28,10 +28,6 @@ from tolokaforge.core.grading.golden_replay import (
     UnreplayableGoldenSource,
     UnresolvableInitialState,
 )
-from tolokaforge.core.grading.state_checks import (
-    consistent_hash,
-    to_hashable,
-)
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
@@ -64,8 +60,18 @@ _HALF_SATISFIED_JSONPATHS = [
     {"path": "$.db.widgets[1].status", "equals": "closed", "description": "W2 closed"},
 ]
 
-_MATCHING_HASH = consistent_hash(to_hashable(_DB_STATE))
-_MISMATCHING_HASH = "0" * 64
+#: The trial's own state, one record away from the state its task starts in — so a
+#: comparison against the initial state discriminates while every other reading of
+#: ``_DB_STATE`` in this module keeps its meaning.
+_A_TRIAL_THAT_CHANGED_A_RECORD = {
+    "widgets": [{"id": "W1", "status": "closed"}, {"id": "W2", "status": "closed"}]
+}
+
+#: The state a task declares it starts in, in the two shapes a hash verdict tells apart:
+#: ``_DB_STATE`` is what ``_FINAL_ENV_STATE`` carries, so a trial compared against it
+#: matches, and the state one record away from it does not.
+_A_MATCHING_INITIAL_STATE = InitialStateConfig(json_db=_DB_STATE)
+_A_MISMATCHING_INITIAL_STATE = InitialStateConfig(json_db=_A_TRIAL_THAT_CHANGED_A_RECORD)
 
 #: A declared hash source, for the cases that only read whether one is declared.
 _A_GOLDEN_SOURCE = [{"name": "close_widget"}]
@@ -155,16 +161,17 @@ class TestJsonpathStateRoot:
         ("hash_weight", "expected"),
         [(0.0, 0.5), (0.25, 0.625), (0.6, 0.8)],
     )
-    def test_expected_hash_branch_reads_both_roots(self, hash_weight, expected):
+    def test_the_hash_branch_reads_both_roots(self, hash_weight, expected):
         grade = _grade(
             {
                 "jsonpaths": _HALF_SATISFIED_JSONPATHS,
                 "hash": {
                     "enabled": True,
-                    "expected_state_hash": _MATCHING_HASH,
+                    "expect_initial_state": True,
                     "weight": hash_weight,
                 },
-            }
+            },
+            task_initial_state=_A_MATCHING_INITIAL_STATE,
         )
         assert grade.components.state_checks == pytest.approx(expected)
         assert "Path not found" not in grade.reasons
@@ -188,15 +195,18 @@ class TestTauStylePackScoresItsHashVerdict:
 
     @pytest.mark.parametrize("hash_weight", [0.0, 0.25, 0.5, 0.75, 1.0, None])
     @pytest.mark.parametrize(
-        ("expected_state_hash", "expected"),
-        [(_MATCHING_HASH, 1.0), (_MISMATCHING_HASH, 0.0)],
+        ("task_initial_state", "expected"),
+        [(_A_MATCHING_INITIAL_STATE, 1.0), (_A_MISMATCHING_INITIAL_STATE, 0.0)],
+        ids=["hash_matches", "hash_diverges"],
     )
-    def test_empty_jsonpaths_contribute_nothing(self, hash_weight, expected_state_hash, expected):
-        hash_config = {"enabled": True, "expected_state_hash": expected_state_hash}
+    def test_empty_jsonpaths_contribute_nothing(self, hash_weight, task_initial_state, expected):
+        hash_config = {"enabled": True, "expect_initial_state": True}
         if hash_weight is not None:
             hash_config["weight"] = hash_weight
 
-        grade = _grade({"jsonpaths": [], "hash": hash_config})
+        grade = _grade(
+            {"jsonpaths": [], "hash": hash_config}, task_initial_state=task_initial_state
+        )
         assert grade.components.state_checks == pytest.approx(expected)
 
 
@@ -212,7 +222,7 @@ class TestHashWeightIsRequiredAndBounded:
         with pytest.raises(ValidationError) as excinfo:
             StateChecksConfig(
                 jsonpaths=_HALF_SATISFIED_JSONPATHS,
-                hash={"enabled": True, "expected_state_hash": _MATCHING_HASH},
+                hash={"enabled": True, "expect_initial_state": True},
             )
         assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
 
@@ -221,7 +231,7 @@ class TestHashWeightIsRequiredAndBounded:
             _engine(
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                    "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH},
+                    "hash": {"enabled": True, "expect_initial_state": True},
                 }
             )
         assert MISSING_HASH_WEIGHT_MESSAGE in str(excinfo.value)
@@ -234,7 +244,7 @@ class TestHashWeightIsRequiredAndBounded:
                 jsonpaths=jsonpaths,
                 hash={
                     "enabled": True,
-                    "expected_state_hash": _MISMATCHING_HASH,
+                    "expect_initial_state": True,
                     "weight": weight,
                 },
             )
@@ -255,22 +265,22 @@ class TestHashWeightIsRequiredAndBounded:
             StateChecksConfig(
                 hash={
                     "enabled": True,
-                    "expected_state_hash": _MATCHING_HASH,
+                    "expect_initial_state": True,
                     "weight": declared,
                 }
             )
         with pytest.raises(ValidationError, match=re.escape(WEIGHT_DOMAIN_MESSAGE)):
             RunnerStateChecksConfig(
-                hash_enabled=True, expected_hash=_MATCHING_HASH, hash_weight=declared
+                hash_enabled=True, expect_initial_state=True, hash_weight=declared
             )
 
     @pytest.mark.parametrize(("declared", "expected"), [(0.0, 0.0), (0.5, 0.5), (1, 1.0)])
     def test_both_substrates_accept_a_real_weight(self, declared, expected):
         core = StateChecksConfig(
-            hash={"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": declared}
+            hash={"enabled": True, "expect_initial_state": True, "weight": declared}
         )
         runner = RunnerStateChecksConfig(
-            hash_enabled=True, expected_hash=_MATCHING_HASH, hash_weight=declared
+            hash_enabled=True, expect_initial_state=True, hash_weight=declared
         )
 
         assert core.hash.weight == declared
@@ -299,10 +309,10 @@ class TestLoadTimePredicateDiscriminates:
                 True,
             ),
             (
-                "expected_state_hash and assertions, no weight",
+                "expect_initial_state and assertions, no weight",
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                    "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH},
+                    "hash": {"enabled": True, "expect_initial_state": True},
                 },
                 True,
             ),
@@ -315,12 +325,12 @@ class TestLoadTimePredicateDiscriminates:
                 False,
             ),
             (
-                "expected_state_hash and assertions, with a weight",
+                "expect_initial_state and assertions, with a weight",
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
                     "hash": {
                         "enabled": True,
-                        "expected_state_hash": _MATCHING_HASH,
+                        "expect_initial_state": True,
                         "weight": 0.6,
                     },
                 },
@@ -335,7 +345,7 @@ class TestLoadTimePredicateDiscriminates:
                 "hash off with a source and assertions, no weight",
                 {
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                    "hash": {"enabled": False, "expected_state_hash": _MATCHING_HASH},
+                    "hash": {"enabled": False, "expect_initial_state": True},
                 },
                 False,
             ),
@@ -345,7 +355,7 @@ class TestLoadTimePredicateDiscriminates:
                     "jsonpaths": _HALF_SATISFIED_JSONPATHS,
                     "hash": {
                         "enabled": False,
-                        "expected_state_hash": _MATCHING_HASH,
+                        "expect_initial_state": True,
                         "weight": 0.6,
                     },
                 },
@@ -362,7 +372,7 @@ class TestLoadTimePredicateDiscriminates:
                     "jsonpaths": [],
                     "hash": {
                         "enabled": True,
-                        "expected_state_hash": _MATCHING_HASH,
+                        "expect_initial_state": True,
                         "weight": 1.0,
                     },
                 },
@@ -401,7 +411,7 @@ class TestNeitherSubstrateLoadsProbesBesideAnotherSource:
         return RunnerStateChecksConfig(
             jsonpath_checks=jsonpaths,
             hash_enabled=hash_block.get("enabled", False),
-            expected_hash=hash_block.get("expected_state_hash"),
+            expect_initial_state=hash_block.get("expect_initial_state", False),
             golden_actions=[
                 {"tool_name": action["name"]} for action in hash_block.get("golden_actions", [])
             ],
@@ -420,10 +430,10 @@ class TestNeitherSubstrateLoadsProbesBesideAnotherSource:
                 True,
             ),
             (
-                "probes beside an expected_state_hash",
+                "probes beside an expect_initial_state",
                 _DB_PROBES,
                 [],
-                {"enabled": True, "expected_state_hash": _MATCHING_HASH},
+                {"enabled": True, "expect_initial_state": True},
                 True,
             ),
             (
@@ -438,7 +448,7 @@ class TestNeitherSubstrateLoadsProbesBesideAnotherSource:
                 "probes beside a disabled hash carrying a source",
                 _DB_PROBES,
                 [],
-                {"enabled": False, "expected_state_hash": _MATCHING_HASH},
+                {"enabled": False, "expect_initial_state": True},
                 False,
             ),
             (
@@ -452,7 +462,7 @@ class TestNeitherSubstrateLoadsProbesBesideAnotherSource:
                 "both other sources and no probes, folded by their weight",
                 [],
                 _HALF_SATISFIED_JSONPATHS,
-                {"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": 0.6},
+                {"enabled": True, "expect_initial_state": True, "weight": 0.6},
                 False,
             ),
         ],
@@ -484,7 +494,7 @@ class TestNeitherSubstrateLoadsProbesBesideAnotherSource:
         the author to declare a ``hash.weight`` for a block refused outright, whose weight
         nothing would ever consult.
         """
-        hash_block = {"enabled": True, "expected_state_hash": _MATCHING_HASH}
+        hash_block = {"enabled": True, "expect_initial_state": True}
         with pytest.raises(ValidationError) as excinfo:
             if substrate == "core":
                 StateChecksConfig(
@@ -523,7 +533,7 @@ class TestProbesCannotShareTheComponent:
 
     def test_a_hash_source_added_after_load_refuses_to_fold(self):
         engine = _engine({"db_probes": _DB_PROBES, "hash": {"enabled": True}})
-        engine.config.state_checks.hash.expected_state_hash = _MATCHING_HASH
+        engine.config.state_checks.hash.expect_initial_state = True
 
         with pytest.raises(ValueError) as excinfo:
             engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
@@ -543,8 +553,9 @@ class TestInertWeightIsReportedNotDropped:
         grade = _grade(
             {
                 "jsonpaths": [],
-                "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": 1.0},
-            }
+                "hash": {"enabled": True, "expect_initial_state": True, "weight": 1.0},
+            },
+            task_initial_state=_A_MATCHING_INITIAL_STATE,
         )
         assert INERT_HASH_WEIGHT_REASON in grade.reasons
         assert grade.components.state_checks == pytest.approx(1.0)
@@ -555,7 +566,7 @@ class TestInertWeightIsReportedNotDropped:
                 "jsonpaths": _HALF_SATISFIED_JSONPATHS,
                 "hash": {
                     "enabled": False,
-                    "expected_state_hash": _MATCHING_HASH,
+                    "expect_initial_state": True,
                     "weight": 0.6,
                 },
             }
@@ -567,8 +578,9 @@ class TestInertWeightIsReportedNotDropped:
         grade = _grade(
             {
                 "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                "hash": {"enabled": True, "expected_state_hash": _MATCHING_HASH, "weight": 0.6},
-            }
+                "hash": {"enabled": True, "expect_initial_state": True, "weight": 0.6},
+            },
+            task_initial_state=_A_MATCHING_INITIAL_STATE,
         )
         assert INERT_HASH_WEIGHT_REASON not in grade.reasons
         assert grade.components.state_checks == pytest.approx(0.8)
@@ -590,13 +602,6 @@ class TestUnevaluatedHashIsReported:
         assert grade.components.state_checks == pytest.approx(0.5)
 
 
-#: The trial's own state, one record away from the state its task starts in — so a
-#: comparison against the initial state discriminates while every other reading of
-#: ``_DB_STATE`` in this module keeps its meaning.
-_A_TRIAL_THAT_CHANGED_A_RECORD = {
-    "widgets": [{"id": "W1", "status": "closed"}, {"id": "W2", "status": "closed"}]
-}
-
 #: The one shape the author writes for a refusal task, on each substrate's own naming.
 _A_SECOND_EXPECTED_STATE = (
     pytest.param(
@@ -606,22 +611,10 @@ _A_SECOND_EXPECTED_STATE = (
         id="authored-golden_actions",
     ),
     pytest.param(
-        StateHashConfig,
-        {"enabled": True, "expected_state_hash": _MATCHING_HASH},
-        "expected_state_hash",
-        id="authored-expected_state_hash",
-    ),
-    pytest.param(
         RunnerStateChecksConfig,
         {"hash_enabled": True, "golden_actions": [{"tool_name": "close_widget"}]},
         "golden_actions",
         id="flattened-golden_actions",
-    ),
-    pytest.param(
-        RunnerStateChecksConfig,
-        {"hash_enabled": True, "expected_hash": _MATCHING_HASH},
-        "expected_state_hash",
-        id="flattened-expected_state_hash",
     ),
 )
 
@@ -854,24 +847,19 @@ class TestAGoldenReplayWithNoWorldRefusesToGrade:
 
         assert grade.components.state_checks == pytest.approx(0.2)
 
-    def test_a_declared_expected_state_hash_needs_no_world(self):
-        """The ``grading_parity/all_keys`` shape, graded with an empty world.
+    def test_the_other_source_needs_no_world(self):
+        """A refusal task replays nothing, so the world every replay needs is not its own.
 
-        Core returns the in-process comparison against the author's literal before it
-        reads ``golden_actions`` at all, so this pack needs nothing to replay against
-        and ``0.8`` is the blend of that matching hash with the assertions. A predicate
-        hoisted above that early return would refuse a pack core grades correctly.
+        ``0.8`` is the blend of that matching hash with the assertions. A predicate
+        hoisted above the branch that reads the source would refuse a pack core grades
+        correctly, having nothing to replay in the first place.
         """
         grade = _grade(
             {
                 "jsonpaths": _HALF_SATISFIED_JSONPATHS,
-                "hash": {
-                    "enabled": True,
-                    "expected_state_hash": _MATCHING_HASH,
-                    "golden_actions": self._UNREPLAYABLE_HASH["golden_actions"],
-                    "weight": 0.6,
-                },
-            }
+                "hash": {"enabled": True, "expect_initial_state": True, "weight": 0.6},
+            },
+            task_initial_state=InitialStateConfig(json_db=_DB_STATE),
         )
 
         assert grade.components.state_checks == pytest.approx(0.8)
@@ -1127,7 +1115,6 @@ class TestRunnerRejectsTheUndecidableConfig:
 
     # Author-facing hash-source key -> the runner fields the adapter flattens it onto.
     _SOURCES = {
-        "expected_state_hash": {"expected_hash": _MATCHING_HASH},
         "golden_actions": {"golden_actions": [{"tool_name": "close_widget", "arguments": {}}]},
         "expect_initial_state": {"expect_initial_state": True},
     }

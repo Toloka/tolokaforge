@@ -234,7 +234,6 @@ class StateChecksConfig(BaseModel):
     """State-based grading configuration."""
     # Hash comparison
     hash_enabled: bool = False
-    expected_hash: Optional[str] = None           # Pre-computed (if available)
     expect_initial_state: bool = False            # the expected final state is the initial one
     golden_actions: List[GoldenAction] = Field(default_factory=list)
     hash_weight: Optional[float] = None           # fold weight; None = author declared none
