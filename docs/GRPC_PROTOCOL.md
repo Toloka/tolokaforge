@@ -282,9 +282,9 @@ message GradeTrialRequest {
   // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
-  // Optional: Skip golden path execution if expected hash is pre-computed
-  // If provided, Runner compares trial state hash directly
-  string precomputed_expected_hash = 3;
+  // An engine older than this schema may still put a string on field 3, and a
+  // new field inheriting that number would silently parse those bytes.
+  reserved 3;
 
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading
@@ -889,7 +889,6 @@ than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:
 | `skipped: the trial's timeline carries no events` | The trial left neither a conversational turn nor a tool call, so the rule would score 0.0 against evidence that does not exist | every `transcript_rules.*` key **except** `min_assistant_turns`, which is evaluated there because absence is that key's answer |
 | `skipped: no transcript messages` | `llm_messages_json` is empty | `llm_judge` |
 | `skipped: hash grading not enabled` | `state_checks.hash_enabled` is false | the `state_checks.hash` members the hash evaluator reads, including `golden_actions`, which the adapter fills regardless of `hash.enabled` |
-| `skipped: core-only — no runner path reads it (#693)` | always | `state_checks.hash.expected_state_hash` — the adapter translates it onto `expected_hash` and no runner path reads it, so hash grading having run does not make it evaluated |
 | `skipped: custom checks not enabled` | The pack wrote a `custom_checks` block but left `enabled` false, so the executor never runs | `custom_checks` |
 | `skipped: the binding yielded no assignment` | A `trace_checks` constraint declaring a `bind` whose binder selected no event, or selected events carrying no value to bind, so its `require` tree was never entered | the `trace_checks.constraints.<kind>` keys **nested inside** that `require` tree. The tree's own top-level kind is `evaluated`: the constraint takes a verdict under it either way, decided by `on_unbound`. A kind any other constraint in the block did score stays `evaluated` too |
 

@@ -2,14 +2,24 @@ task_id: state_checks_hash_weight
 name: "Substrate differential: state_checks_hash_weight"
 category: test
 description: |
-  Substrate-parity composition fixture. Both state sources are configured — a
-  precomputed expected_state_hash and two JSONPath assertions of which exactly one
-  holds — so the state_checks component is a fold of two real scores rather than a
-  pass-through of one. The two trial cases differ only in a table no assertion
-  reads, so the hash verdict flips while the JSONPath score stays at 0.5.
+  Substrate-parity composition fixture. Both state sources are configured — the
+  initial state as the expected final one and two JSONPath assertions of which
+  exactly one holds — so the state_checks component is a fold of two real scores
+  rather than a pass-through of one. The two trial cases differ only in a table no
+  assertion reads, so the hash verdict flips while the JSONPath score stays at 0.5.
 
+# The state the hash compares against, and byte-for-byte the hash_matching case's
+# state.db: that case matches the initial state and hash_diverging differs from it
+# in audit[0].actor.
 initial_state:
-  json_db: null
+  json_db:
+    orders:
+      - id: O1
+        status: shipped
+        carrier: slowship
+    audit:
+      - id: A1
+        actor: agent
 
 tools:
   agent:

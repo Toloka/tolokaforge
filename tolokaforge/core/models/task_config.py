@@ -465,7 +465,7 @@ class StateChecksConfig(BaseModel):
                 "  state_checks:\n"
                 "    hash:\n"
                 "      enabled: true\n"
-                "      golden_actions: [...]        # or expected_state_hash\n"
+                "      golden_actions: [...]        # or expect_initial_state: true\n"
                 "  — or —\n"
                 "  # state_checks.db_probes — substrate SQL assertions\n"
                 "  state_checks:\n"
@@ -485,7 +485,7 @@ class StateChecksConfig(BaseModel):
                 "  state_checks:\n"
                 "    hash:\n"
                 "      enabled: true\n"
-                "      golden_actions: [...]        # or expected_state_hash"
+                "      golden_actions: [...]        # or expect_initial_state: true"
             )
         return {key: value for key, value in data.items() if key not in RETIRED_STATE_CHECK_KEYS}
 

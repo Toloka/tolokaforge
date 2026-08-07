@@ -63,7 +63,12 @@ from tolokaforge.core.grading.golden_replay import (
 )
 from tolokaforge.core.grading.state_checks import StateChecker
 from tolokaforge.runner.grading import build_grade_reasons
-from tolokaforge.runner.models import GoldenAction, HashGradingResult, TaskDescription
+from tolokaforge.runner.models import (
+    GoldenAction,
+    HashGradingResult,
+    RunnerStateChecksConfig,
+    TaskDescription,
+)
 from tolokaforge.runner.service import (
     RunnerServiceImpl,
     TrialContextRuntime,
@@ -503,6 +508,15 @@ def test_the_runner_refuses_a_name_naming_the_index_and_the_registered_set() -> 
         assert name in message, message
 
 
+def _replaying(*golden_actions: GoldenAction) -> RunnerStateChecksConfig:
+    """The state-checks config a pack declaring a golden replay hands the evaluator.
+
+    The evaluator selects its comparison basis from the config, so the actions reach
+    it inside one — and a replay is the only basis under which it reads them.
+    """
+    return RunnerStateChecksConfig(hash_enabled=True, golden_actions=list(golden_actions))
+
+
 class _RefusingDBClient:
     """Every db-service call refused, whichever it is.
 
@@ -549,7 +563,7 @@ async def test_an_unresolvable_name_fails_the_grade_before_the_trial_state_moves
 
     with pytest.raises(UnresolvableGoldenAction, match="place_ordr"):
         await service._execute_hash_grading(
-            context.trial_id, context, [GoldenAction(tool_name="place_ordr")]
+            context.trial_id, context, _replaying(GoldenAction(tool_name="place_ordr"))
         )
 
 
@@ -563,7 +577,7 @@ async def test_a_resolvable_name_reaches_the_db_client_the_refusal_guards() -> N
 
     with pytest.raises(AssertionError, match="ran before golden actions resolved"):
         await service._execute_hash_grading(
-            context.trial_id, context, [GoldenAction(tool_name="place_order")]
+            context.trial_id, context, _replaying(GoldenAction(tool_name="place_order"))
         )
 
 
@@ -748,7 +762,7 @@ async def _replay_as_the_runner_does(
     return await service._execute_hash_grading(
         context.trial_id,
         context,
-        [GoldenAction(tool_name="confirm_payment", arguments={"order_id": "O-999"})],
+        _replaying(GoldenAction(tool_name="confirm_payment", arguments={"order_id": "O-999"})),
     )
 
 

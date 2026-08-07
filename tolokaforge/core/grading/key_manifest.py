@@ -17,6 +17,13 @@ way to name a position below one. A key living inside a field whose contents no
 model declares therefore has no address here: give that field a model, or add an
 addressing mechanism the parity suite can walk. A hand-declared address the suite
 cannot introspect is the invisibility this manifest exists to prevent.
+
+A :attr:`SubstrateCoverage.CORE_ONLY` :attr:`KeyKind.SCORED_CHECK` that still names
+a ``runner_field`` needs a standing-skip record and a recording site filing it. Such
+a key arrives populated on a real ``GradeTrial`` request, and
+``tolokaforge.runner.grading_ledger`` fails the RPC for a populated scored key with
+neither an evaluator result nor a recorded skip. Coverage that only one substrate
+reads is not a reason to leave the wire silent about it.
 """
 
 from collections.abc import Mapping
@@ -176,26 +183,38 @@ _HASH_COMPOSITION_WIRE_TEST = (
 )
 """Drives the runner's own golden-replay hash verdict into the shared composer.
 
-A matching and a diverging final state, at two weights strictly inside ``(0, 1)``,
-over real gRPC and a real db-service. The hash family's differential cannot run
-in-process: the evaluator replays golden actions against db-service over HTTP.
+A matching and a diverging final state, at two weights strictly inside ``(0, 1)``. What
+it alone covers is the transport the verdict crosses: a real ``GradeTrial`` over gRPC
+against a real db-service, where the canonical differentials drive the servicer and its
+db-service in process.
 """
 
 _HASH_SOURCE_SHAPE_REASON = (
-    "both substrates fold the hash verdict by one shared rule, and of the two authorable "
-    "hash-source shapes only one is proven to hand them the same verdict. Proven: "
-    "golden_actions, by the enforcing_test — both replay the actions and compare against the "
-    "resulting state. Not proven: expected_state_hash alone, because no runner path reads the "
-    "translated expected_hash (#693), so the runner compares the trial against the *initial* "
-    "state where core compares it against the author's literal. An enabled hash with no "
-    "declared source is refused at the authoring gate, so the third shape is unauthorable — it "
-    "survives only in a bundle recorded before that rule, where core produces no verdict at "
-    "all while the runner's refusal semantics produce a binary one, and retrace replays it "
-    "unchanged. Golden actions with no world to replay them in is a fourth shape, unauthorable "
-    "the same way: core raises and leaves the trial unscored where the runner replays against "
-    "the live trial — the tools RegisterTrial registered, over db-service's state — and grades "
-    "it, so that divergence too survives only in a config no gate saw. Moving #693's shape "
-    "moves refusal-task verdicts, which needs its own corpus measurement"
+    "both substrates fold the hash verdict by one shared rule, and both authorable "
+    "hash-source shapes are proven to hand them the same verdict: golden_actions by the "
+    "enforcing_test, both replaying the actions and comparing against the resulting state, "
+    "and expect_initial_state by its own canonical differential. What is not proven is the "
+    "shapes no gate admits. An enabled hash with no declared source is refused at the "
+    "authoring gate, so it survives only in a bundle recorded before that rule, where core "
+    "produces no verdict at all while the runner's refusal semantics produce a binary one, "
+    "and retrace replays it unchanged. Golden actions with no world to replay them in is the "
+    "second, unauthorable the same way: core raises and leaves the trial unscored where the "
+    "runner replays against the live trial — the tools RegisterTrial registered, over "
+    "db-service's state — and grades it, so that divergence too survives only in a config no "
+    "gate saw"
+)
+
+_EXPECT_INITIAL_STATE_READ_REASON = (
+    "both substrates score the same proposition — the trial's final state is the state the "
+    "task started in — each in its own hash algebra, so the verdict is portable where a "
+    "stored digest is not (#915): core hashes the task's declared initial state and the "
+    "runner resets its database and hashes that. No *config* discriminates the runner's read "
+    "on the score, because this source's semantics coincide with an enabled block declaring "
+    "no source at all and the block refuses it beside either other source. What the read is "
+    "enforced by is the recording site: the evaluator selects its comparison basis once, "
+    "returns it, and the runtime ledger accounts for this key from that returned basis — so "
+    "an evaluator that stopped reading the key files nothing for it and the audit fails "
+    "GradeTrial"
 )
 
 _COMBINE_METHOD_PARITY_REASON = (
@@ -392,20 +411,15 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
     ),
     GradingKey(
-        author_key="state_checks.hash.expected_state_hash",
+        author_key="state_checks.hash.expect_initial_state",
         kind=KeyKind.SCORED_CHECK,
-        coverage=SubstrateCoverage.CORE_ONLY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateHashConfig.expected_state_hash",
-        runner_field="RunnerStateChecksConfig.expected_hash",
+        coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
+        core_field="StateHashConfig.expect_initial_state",
+        runner_field="RunnerStateChecksConfig.expect_initial_state",
         core_evaluator=_CORE_HASH_EVALUATOR,
-        reason=(
-            "the adapter translates it onto the runner's expected_hash field and no "
-            "runner code path reads it: hash grading always recomputes a golden hash "
-            "from golden_actions, and the proto's precomputed_expected_hash is never "
-            "populated by the host"
-        ),
-        tracking_issue=693,
+        runner_evaluator=RUNNER_HASH_EVALUATOR,
+        reason=_EXPECT_INITIAL_STATE_READ_REASON,
     ),
     GradingKey(
         author_key="state_checks.hash.weight",

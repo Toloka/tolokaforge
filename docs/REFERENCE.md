@@ -131,12 +131,15 @@ state_checks:
       equals: true
     - path: "$.orders[-1].status"
       equals: "completed"
-  hash:                               # CLOSED: enabled, expected_state_hash,
+  hash:                               # CLOSED: enabled, expect_initial_state,
                                       # golden_actions, weight, description — any
                                       # other key is a load error
     enabled: true
-    expected_state_hash: "abc123..."  # SHA256 of normalized final state
-    golden_actions: []                # replay these instead, to derive the hash
+    golden_actions: []                # replay these to derive the expected state
+    expect_initial_state: false       # or this: the expected final state is the
+                                      # state the task starts in, which is what a
+                                      # refusal task asserts. Refused beside the
+                                      # source above
     weight: 0.5                       # REQUIRED in exactly this shape: hash source
                                       # + non-empty jsonpaths. No default; rejected
                                       # at load without it. See docs/GRADING.md.
@@ -447,9 +450,11 @@ the `task.yaml` key that supplies them, `task_dir` as the caller's own omission 
 component is scored. `task_initial_state.json_db` has to be a path to a JSON file
 under `task_dir`; an inline mapping is no world to replay in. A `golden_actions` that is
 truthy without being a list is refused ahead of all three, with `UnreplayableGoldenSource`
-out of the same module: there is nothing to replay whatever world is supplied. A truthy
-`expected_state_hash` is compared in process and returns before `golden_actions` is read,
-so a pack declaring both needs none of the three. `BaseAdapter.grade` resolves all three
+out of the same module: there is nothing to replay whatever world is supplied. The other
+source, `expect_initial_state`, needs the initial state and nothing else — it admits the
+inline mapping a replay cannot use, and raises
+`UnresolvableInitialState` naming `initial_state.json_db` where a task declares none.
+`BaseAdapter.grade` resolves all three
 from the task it grades — see
 [GRADING.md § Hash-Based Grading](GRADING.md#hash-based-grading-tau-bench-compatible).
 

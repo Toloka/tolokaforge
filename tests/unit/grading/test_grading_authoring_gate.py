@@ -301,7 +301,7 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="hash_source_without_the_flag",
         task=_HELPDESK,
-        grading={"state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}}},
+        grading={"state_checks": {"hash": {"enabled": False, "expect_initial_state": True}}},
         checker="_check_hash_source_declared",
         channel="errors",
         message="the comparison never runs",
@@ -312,7 +312,7 @@ _RULES: tuple[_Rule, ...] = (
         grading={"state_checks": {"hash": {"enabled": True}}},
         checker="_check_hash_source_declared",
         channel="errors",
-        message="Declare expected_state_hash or golden_actions",
+        message="Declare golden_actions or expect_initial_state",
     ),
     _Rule(
         label="enabled_hash_whose_source_an_adapter_may_supply",
@@ -326,7 +326,7 @@ _RULES: tuple[_Rule, ...] = (
     _Rule(
         label="hash_source_without_the_flag_under_an_unresolved_layer",
         task=_HELPDESK,
-        grading={"state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}}},
+        grading={"state_checks": {"hash": {"enabled": False, "expect_initial_state": True}}},
         checker="_check_hash_source_declared",
         channel="unchecked",
         message="an external adapter may compute the source",
@@ -578,7 +578,7 @@ _A_PATTERN_THAT_DOES_NOT_COMPILE = {"transcript_rules": {"disallow_regex": ["unt
     "beside",
     [
         {"jsonpaths": [_A_JSONPATH_ASSERTION]},
-        {"hash": {"enabled": True, "expected_state_hash": "aaaa"}},
+        {"hash": {"enabled": True, "expect_initial_state": True}},
     ],
     ids=["jsonpaths", "hash"],
 )
@@ -695,7 +695,7 @@ def test_an_unresolvable_inventory_still_runs_the_rules_that_need_no_tools(
     """
     grading = {
         **_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
-        "state_checks": {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
+        "state_checks": {"hash": {"enabled": False, "expect_initial_state": True}},
     }
 
     with pytest.raises(ValueError) as excinfo:
@@ -867,7 +867,7 @@ def test_a_truthy_hash_flag_is_not_a_finding(enabled: Any) -> None:
     pack that works — the opposite failure to the one the rule exists to catch,
     and one no sweep over shipped packs finds because they all write ``true``.
     """
-    grading = {"state_checks": {"hash": {"enabled": enabled, "expected_state_hash": "aaaa"}}}
+    grading = {"state_checks": {"hash": {"enabled": enabled, "expect_initial_state": True}}}
 
     assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
 
@@ -956,7 +956,7 @@ def test_a_block_the_hash_rule_accepts_reports_nothing_on_an_unresolved_layer() 
     means something under one per healthy pack: the rule found nothing to refuse, so
     there is nothing it failed to check.
     """
-    grading = {"state_checks": {"hash": {"enabled": True, "expected_state_hash": "aaaa"}}}
+    grading = {"state_checks": {"hash": {"enabled": True, "expect_initial_state": True}}}
 
     report = inspect_grading_authoring(
         grading, _inventory(_HELPDESK), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
@@ -969,8 +969,8 @@ def test_golden_actions_alone_are_a_hash_source() -> None:
     """Standing single case: the source shape both substrates are proven to share.
 
     The replay is what every shipped golden-action pack grades by, so a rule reading
-    only ``expected_state_hash`` as a source would refuse the one hash shape whose
-    verdict is the same on both substrates. The action names a tool the task declares
+    only its sibling source would refuse the hash shape most in-tree packs are
+    authored in. The action names a tool the task declares
     and the task gives the replay a world to be built in, which are the other two
     things a replayable source needs.
     """
@@ -1082,8 +1082,8 @@ def test_a_golden_action_under_a_disabled_flag_is_refused_at_the_source(
 #: key the table names. A source added to ``HASH_SOURCE_KEYS`` with no value here fails
 #: that lock with a ``KeyError`` naming it.
 _A_TRUTHY_HASH_SOURCE: dict[str, Any] = {
-    "expected_state_hash": "aaaa",
     "golden_actions": [{"name": "write_file"}],
+    "expect_initial_state": True,
 }
 
 
@@ -1155,24 +1155,34 @@ _HASH_BLOCK_STATE_SOURCE_VERDICTS = (
     pytest.param({"enabled": True}, True, False, id="flag_with_no_source"),
     pytest.param({"enabled": True, "golden_actions": []}, True, False, id="empty_replay"),
     pytest.param(
-        {"enabled": True, "expected_state_hash": "aaaa"}, True, True, id="flag_and_a_hash"
-    ),
-    pytest.param(
         {"enabled": False, "golden_actions": [{"name": "write_file"}]},
         True,
         False,
         id="replay_under_a_false_flag",
     ),
     pytest.param(
-        {"enabled": "false", "expected_state_hash": "aaaa"},
+        {"enabled": True, "expect_initial_state": True}, True, True, id="flag_and_an_initial_state"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": False},
+        True,
+        False,
+        id="an_initial_state_written_off",
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "golden_actions": [{"name": "write_file"}]},
+        False,
+        False,
+        id="two_expected_states",
+    ),
+    pytest.param(
+        {"enabled": "false", "expect_initial_state": True},
         True,
         False,
         id="yaml_string_false",
     ),
     pytest.param({"enabled": "no"}, True, False, id="yaml_string_no_alone"),
-    pytest.param(
-        {"enabled": "no", "expected_state_hash": "aaaa"}, True, False, id="yaml_string_no"
-    ),
+    pytest.param({"enabled": "no", "expect_initial_state": True}, True, False, id="yaml_string_no"),
     pytest.param(
         {"enabled": "off", "golden_actions": [{"name": "write_file"}]},
         True,
@@ -1180,19 +1190,23 @@ _HASH_BLOCK_STATE_SOURCE_VERDICTS = (
         id="yaml_string_off",
     ),
     pytest.param({"enabled": 1}, True, False, id="one_with_no_source"),
-    pytest.param({"enabled": 1, "expected_state_hash": "aaaa"}, True, True, id="one_and_a_hash"),
     pytest.param(
-        {"enabled": "maybe", "expected_state_hash": "aaaa"}, False, False, id="unparsable_flag"
+        {"enabled": 1, "expect_initial_state": True}, True, True, id="one_and_an_initial_state"
     ),
-    pytest.param({"enabled": True, "expected_state_hash": 123}, False, False, id="hash_not_a_str"),
     pytest.param(
-        {"enabled": True, "expected_state_hash": "aaaa", "weight": 2.0},
+        {"enabled": "maybe", "expect_initial_state": True}, False, False, id="unparsable_flag"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": 123}, False, False, id="source_not_a_bool"
+    ),
+    pytest.param(
+        {"enabled": True, "expect_initial_state": True, "weight": 2.0},
         False,
         False,
         id="weight_out_of_domain",
     ),
     pytest.param(
-        {"enabled": True, "expected_state_hash": "aaaa", "enalbed": True},
+        {"enabled": True, "expect_initial_state": True, "enalbed": True},
         False,
         False,
         id="undeclared_key",
@@ -1348,26 +1362,6 @@ def test_both_withheld_world_vocabularies_name_the_same_task_yaml_keys(
     assert named == _THE_KEYS_A_WITHHELD_WORLD_NAMES
 
 
-def test_a_literal_expected_hash_beside_golden_actions_needs_no_world() -> None:
-    """The shape ``tests/data/grading_parity/all_keys`` ships, and the rule's exclusion.
-
-    Core reads the two hash sources in order: a truthy ``expected_state_hash`` is
-    compared in process and returned before ``golden_actions`` is read at all, so the
-    replay world is consulted by nobody and the golden actions are never replayed.
-    Refusing this pack would send its author to declare an initial-state file and an MCP
-    server module that nothing then reads, and would refuse a fixture both substrates
-    grade today. Whether declaring two sources is itself a defect is a rule of its own.
-    """
-    grading = _golden_actions({"name": "write_file"})
-    grading["state_checks"]["hash"]["expected_state_hash"] = "aaaa"
-
-    report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_TASK_SUPPLYING_NEITHER
-    )
-
-    assert report == AuthoringReport()
-
-
 def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None:
     """The unresolvable arm, which no corpus walk can reach.
 
@@ -1490,33 +1484,6 @@ def test_a_golden_source_no_replay_can_iterate_is_refused_at_the_source(
     assert "state_checks.hash.golden_actions" not in [skip.where for skip in report.unchecked]
 
 
-def test_a_golden_source_no_replay_can_iterate_is_refused_beside_a_literal() -> None:
-    """The rule reads the source the runner reads, not the one core reads.
-
-    ``NativeAdapter.to_task_description`` iterates the authored ``golden_actions`` with no
-    literal short-circuit, so a pack declaring both sources cannot be registered at all —
-    where core compares the trial against the author's literal and never reads them. A rule
-    that copied the world rule's exclusion of a literal-declaring pack would accept a pack
-    no trial can be started for.
-    """
-    grading = {
-        "state_checks": {
-            "hash": {
-                "enabled": True,
-                "expected_state_hash": "aaaa",
-                "golden_actions": {"name": "write_file"},
-            }
-        }
-    }
-
-    report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
-    )
-
-    assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
-    assert "the list of actions a golden replay executes" in report.errors[0].message
-
-
 def test_a_golden_source_no_replay_can_iterate_under_a_falsy_flag_is_the_flags_finding() -> None:
     """The two hash rules partition the flag, so the pack draws one finding either way.
 
@@ -1540,19 +1507,19 @@ def test_a_golden_source_no_replay_can_iterate_under_a_falsy_flag_is_the_flags_f
 
 
 @pytest.mark.parametrize("golden_actions", _GOLDEN_SOURCES_THAT_REPLAY_NOTHING)
-def test_a_falsy_golden_source_beside_a_literal_is_no_finding_at_all(golden_actions: Any) -> None:
+def test_a_falsy_golden_source_beside_the_other_source_is_no_finding(golden_actions: Any) -> None:
     """The domain's edge: a falsy source is no replay, not a malformed one.
 
     Every read site loads a falsy value as no actions to replay, which is what the
     no-source rule and every other rule in this family already read it as — so the shape
-    rule may not widen from *truthy* to *declared*. The literal beside it is what keeps
-    the no-source rule out of the way, leaving an empty report the only answer left.
+    rule may not widen from *truthy* to *declared*. The sibling source beside it is what
+    keeps the no-source rule out of the way, leaving an empty report the only answer left.
     """
     grading = {
         "state_checks": {
             "hash": {
                 "enabled": True,
-                "expected_state_hash": "aaaa",
+                "expect_initial_state": True,
                 "golden_actions": golden_actions,
             }
         }
@@ -1687,25 +1654,14 @@ _SOURCELESS_STATE_CHECKS = (
         id="the_flag_off_over_an_empty_replay",
     ),
     pytest.param(
-        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
-        "state_checks.hash.expected_state_hash",
-        id="a_literal_the_flag_never_reads",
+        {"hash": {"enabled": False, "expect_initial_state": True}},
+        "state_checks.hash.expect_initial_state",
+        id="an_initial_state_the_flag_never_reads",
     ),
     pytest.param(
         {"hash": {"enabled": False, "golden_actions": [{"name": "write_file"}]}},
         "state_checks.hash.golden_actions",
         id="a_replay_the_flag_never_runs",
-    ),
-    pytest.param(
-        {
-            "hash": {
-                "enabled": False,
-                "expected_state_hash": "aaaa",
-                "golden_actions": [{"name": "write_file"}],
-            }
-        },
-        "state_checks.hash.expected_state_hash",
-        id="both_sources_the_flag_never_reads",
     ),
 )
 
@@ -1722,10 +1678,6 @@ def test_every_state_block_that_evaluates_nothing_draws_exactly_one_finding(
     rule's. Asserting the *whole* list rather than membership is what holds the
     partition — a rule widened to cover a shape the other already owns shows up here
     as two findings for one defect, and one narrowed shows up as none.
-
-    A block declaring *both* sources under a falsy flag is one defect fixed by one edit,
-    so it draws one finding rather than one per source, addressed at the literal — the
-    source core reads first.
     """
     report = inspect_grading_authoring(
         {"state_checks": state_checks},
@@ -1749,9 +1701,9 @@ _A_PROBE_BESIDE = (
         {"jsonpaths": [_A_JSONPATH_ASSERTION]}, ["state_checks.db_probes"], id="one_assertion"
     ),
     pytest.param(
-        {"hash": {"enabled": True, "expected_state_hash": "aaaa"}},
+        {"hash": {"enabled": True, "expect_initial_state": True}},
         ["state_checks.db_probes"],
-        id="an_enabled_hash_over_a_literal",
+        id="an_enabled_hash_over_an_initial_state",
     ),
     pytest.param(
         {"hash": {"enabled": True, "golden_actions": [{"name": "write_file"}]}},
@@ -1759,7 +1711,7 @@ _A_PROBE_BESIDE = (
         id="an_enabled_hash_over_a_replay",
     ),
     pytest.param(
-        {"hash": {"enabled": 1, "expected_state_hash": "aaaa"}},
+        {"hash": {"enabled": 1, "expect_initial_state": True}},
         ["state_checks.db_probes"],
         id="a_flag_written_one_rather_than_true",
     ),
@@ -1774,8 +1726,8 @@ _A_PROBE_BESIDE = (
         id="an_enabled_hash_over_an_empty_replay",
     ),
     pytest.param(
-        {"hash": {"enabled": False, "expected_state_hash": "aaaa"}},
-        ["state_checks.hash.expected_state_hash"],
+        {"hash": {"enabled": False, "expect_initial_state": True}},
+        ["state_checks.hash.expect_initial_state"],
         id="a_source_the_flag_never_reads",
     ),
 )
