@@ -1,19 +1,19 @@
 # Releasing Tolokaforge
 
-A tolokaforge release has two independent axes, each cut by its own tag push and
-each with its own GitHub Actions workflow:
+A tolokaforge release has two axes, each with its own GitHub Actions workflow:
 
 - **The PyPI package** — `vX.Y.Z` tags, cut automatically by the "Release (cz
   bump)" workflow.
 - **The Docker images** — the `image-vX.Y.Z-rc.1` release-candidate tag is cut
-  automatically by the same "Release (cz bump)" workflow; the stable
-  `image-vX.Y.Z` tag is pushed by hand once the rc is verified.
+  automatically by the same "Release (cz bump)" workflow; the stable images
+  are promoted automatically once the keyless rc-smoke passes. No manual tag
+  push is required for the routine release path.
 
 Both axes are locked to a single version number. The PyPI release sets that
 number (it owns `[project].version` in `pyproject.toml`); the image workflow
 refuses to publish unless the image tag agrees with it. Cutting the package
-release also cuts the rc image tag; the stable image tag is pushed by hand
-afterwards.
+release cuts the rc image tag; the auto-promote job flips the rc images to
+stable in the same run once the smoke gate is green.
 
 ## PyPI package — `vX.Y.Z` (automated)
 
@@ -52,16 +52,16 @@ Pushing the `vX.Y.Z` tag then triggers two tag-driven workflows automatically:
 If `auto` finds no releasable commits since the last tag, the workflow exits
 cleanly without cutting a release.
 
-## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
+## Docker images — `image-vX.Y.Z-rc.1` (auto) → auto-promoted to stable
 
 The four first-party images —
 `tolokasoft1/tolokaforge-{runner,db-service,rag-service,mock-web}` — are published
 by [`publish-images.yml`](../.github/workflows/publish-images.yml), which fires on
 any pushed `image-v*` tag. The release workflow cuts the release-candidate tag
-`image-vX.Y.Z-rc.1` for you; the stable tag `image-vX.Y.Z` is pushed by hand once
-the rc is verified. The workflow builds the wheel once; only the images that ship
-it — `runner` and `rag-service` — are layered from that artifact, while
-`db-service` and `mock-web` build without it.
+`image-vX.Y.Z-rc.1` for you; the stable images are promoted from the rc digests
+automatically once the keyless rc-smoke gate passes. The workflow builds the wheel
+once; only the images that ship it — `runner` and `rag-service` — are layered from
+that artifact, while `db-service` and `mock-web` build without it.
 
 Images are `linux/amd64` only. The standalone compose recipe pins
 `platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}`, so Apple-Silicon hosts run the
@@ -74,29 +74,42 @@ Before building, the workflow asserts that `image-v<base>` equals the
 first. The image tag must therefore match the package version cut by the PyPI
 release. The two axes share one version number but are separate tag pushes.
 
-### Release-candidate, then stable
+### Release-candidate, then automatic promotion to stable
 
-Every image release goes through a release candidate first.
+Every image release goes through a release candidate first, then auto-promotes
+to stable when the smoke gate is green. The whole sequence runs in one
+`publish-images.yml` invocation off the single rc tag push.
 
 1. **The rc tag is cut for you.** When "Release (cz bump)" cuts `vX.Y.Z`, it also
    pushes `image-vX.Y.Z-rc.1`. That routes through the `pre-stable` deployment
-   environment, pushes the immutable `:X.Y.Z-rc.1` tags, and runs a keyless
-   rc-smoke against the freshly-pushed images. It does **not** move `:latest` or
-   `:X.Y`.
+   environment and pushes the immutable `:X.Y.Z-rc.1` tags.
 
-2. **Verify the rc** — pull the `:X.Y.Z-rc.1` images and smoke them yourself.
+2. **rc-smoke runs against the freshly-pushed images.** The `smoke` job pulls
+   each `:X.Y.Z-rc.1` image and asserts entrypoint + healthcheck + the documented
+   exec surface (see the "keyless rc-smoke" section below). It is keyless: the
+   run-trial check accepts a well-formed `error` wire line as a pass, so this
+   gate costs zero tokens and needs no provider key.
 
-3. **Push the stable tag.**
+3. **Auto-promote fires only on a green smoke.** The `auto-promote-rc-to-stable`
+   job runs in the `release` deployment environment, mints its own Docker Hub
+   OIDC token, and uses `docker buildx imagetools create` to copy the immutable
+   rc digest onto the `:X.Y.Z` stable tag, then onto the moving `:latest` and
+   `:X.Y` tags. Same digest, three additional tag references — no rebuild. It
+   finally publishes a GitHub Release listing each image's digest.
 
-   ```bash
-   git tag image-vX.Y.Z
-   git push origin image-vX.Y.Z
-   ```
+A red rc-smoke blocks the promote step: `:latest` stays on the previous stable
+version, and the operator investigates the rc images before anything moves.
 
-   This routes through the `release` environment and pushes the immutable
-   `:X.Y.Z` tags. Only **after** the smoke gate passes does the workflow move the
-   `:latest` and `:X.Y` moving tags onto that digest, then publish a GitHub
-   Release listing each image's digest.
+### Override — manual `image-vX.Y.Z` push
+
+The manual path stays available for rare cases the automated path cannot cover
+(promoting an older rc after a hotfix, re-publishing after a Docker Hub incident,
+etc.). Pushing an `image-vX.Y.Z` tag (no `-rc.` suffix) triggers the same
+`publish-images.yml` workflow through the `move-tags` job, which mints the
+`release`-environment OIDC token and moves `:latest` / `:X.Y` onto the
+already-published immutable `:X.Y.Z` digest. Use this only when the automated
+promote is not the right fit; for a routine release it does nothing beyond what
+auto-promote already did.
 
 ### Dry run
 
@@ -106,11 +119,14 @@ Dockerfiles and wheel still build.
 
 ## Typical order
 
-1. Run "Release (cz bump)" to cut `vX.Y.Z` — this sets the version, publishes the
-   package, and pushes `image-vX.Y.Z-rc.1` to build the rc images.
-2. Verify the rc images.
-3. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the stable
-   images and move `:latest`.
+1. Run "Release (cz bump)" from the Actions tab. This cuts `vX.Y.Z` (PyPI
+   publishes automatically) and pushes `image-vX.Y.Z-rc.1` (rc images build,
+   rc-smoke gates the promote).
+2. Watch the `publish-images.yml` run. When `smoke` passes, the
+   `auto-promote-rc-to-stable` job flips the rc digests to stable, moves
+   `:latest` and `:X.Y`, and publishes the GitHub Release.
+
+That is the entire routine. There is no manual tag push for the happy path.
 
 ## See also
 
