@@ -858,17 +858,23 @@ refused when the config loads, naming the table.
 The adapter cross-checks the whole `id_fields` map against the seeded
 `initial_state.tables` at task-description build time — at the orchestrator's
 pre-run gradeability gate and again at `RegisterTrial`, so a bad declaration
-costs a build error, never a trial. One gate, two findings, reported together
+costs a build error, never a trial. One gate, three findings, reported together
 in a single message: a map key naming no seeded table ("unknown table" — a
-typo, or a table missing from `initial_state`), and a declared key component —
+typo, or a table missing from `initial_state`); a declared key component —
 single field and composite components alike — absent from every seeded record
-of its table. Each finding carries its exact remediation (fix the typo, add the
-table or seed the field, or opt in below). A component present in *some* seeded
-record passes the gate; a record actually missing it still fails loud at write
-or diff time, per component. `tolokaforge validate` does not run this
-cross-check — it never builds a task description (#923); the shape rules on the
-declaration itself (empty list, blank or duplicate component) do fire there.
-Legacy tasks that pre-date the check can downgrade both findings to one warning:
+of its table; and a declared key — single or composite — that does not
+uniquely identify the table's seeded records, named by the colliding key
+value. A key that cannot tell two seeded rows apart cannot address either row
+for an update or a delete, so the non-unique finding is what refuses a
+single-field declaration over rows only a composite key distinguishes. Each
+finding carries its exact remediation (fix the typo, add the table, seed the
+field, widen the key to a composite list, or opt in below). A component
+present in *some* seeded record passes the component finding; a record
+actually missing it still fails loud at write or diff time, per component.
+`tolokaforge validate` does not run this cross-check — it never builds a task
+description (#923); the shape rules on the declaration itself (empty list,
+blank or duplicate component) do fire there. Legacy tasks that pre-date the
+check can downgrade every finding to one warning:
 
 ```yaml
 state_checks:
@@ -878,8 +884,9 @@ state_checks:
 ```
 
 `relaxed_validation` defaults to `false`; new tasks should fix typos rather than
-enable it — it downgrades **both** findings, the unknown table and the absent
-component. The runner also runs the same check as belt-and-suspenders for engines
+enable it — it downgrades **all three** findings, the unknown table, the absent
+component and the non-unique key. The runner also runs the same check as
+belt-and-suspenders for engines
 that bypass `NativeAdapter.to_task_description`. Both keys are consumed at load
 time / `RegisterTrial` on both substrates rather than in the grade-time component
 phase — see [Substrate Parity](#substrate-parity).
@@ -890,8 +897,9 @@ table that first appears only via an `initialization_action` won't be visible to
 the check — an `id_fields` entry for such a table needs `relaxed_validation:
 true` today. Add the table to `initial_state.json_db` (even with an empty list)
 if you want the strict check to accept it: a table seeded empty passes the
-unknown-table finding and is skipped by the component finding, because there is
-no record to hold the declared fields against.
+unknown-table finding and is skipped by the record-level findings (absent
+component and non-unique key), because there is no record to hold the declared
+key against.
 
 **Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
 on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting

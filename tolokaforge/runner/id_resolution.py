@@ -179,6 +179,24 @@ def _index_by_key(
     return indexed
 
 
+def _first_duplicate_key_value(
+    records: list[dict[str, Any]],
+    key: TableKey,
+) -> dict[str, Any] | None:
+    """Return the first key value two of ``records`` share, or ``None``.
+
+    Equality scan rather than a hash index, so an unhashable seeded component
+    value cannot crash the gate before it reports.
+    """
+    seen: list[tuple[Any, ...]] = []
+    for record in records:
+        value = tuple(record.get(field) for field in key.fields)
+        if value in seen:
+            return dict(zip(key.fields, value, strict=True))
+        seen.append(value)
+    return None
+
+
 def check_id_fields_reference_known_tables(
     id_fields: Mapping[str, str | list[str]],
     tables: Mapping[str, list[dict[str, Any]]],
@@ -188,11 +206,14 @@ def check_id_fields_reference_known_tables(
 ) -> str | None:
     """Validate every ``id_fields`` entry against the seeded tables.
 
-    One gate, two findings, reported together in a single message: a declared
-    table absent from ``tables``, and a declared key component absent from the
-    union of the table's seeded records' keys. The component check is skipped
-    for a table seeded empty — its rows may arrive via
-    ``initialization_actions``, which this gate cannot see.
+    One gate, three findings, reported together in a single message: a
+    declared table absent from ``tables``, a declared key component absent
+    from the union of the table's seeded records' keys, and a declared key —
+    single or composite — that does not uniquely identify the table's seeded
+    records. The record-level checks are skipped for a table seeded empty —
+    its rows may arrive via ``initialization_actions``, which this gate cannot
+    see — and the uniqueness check is skipped when a component is absent,
+    because the component finding already owns that defect.
 
     Returns ``None`` when the checks pass or the findings are downgraded via
     ``relaxed=True`` (one warning is logged in that case). Returns the message
@@ -215,14 +236,27 @@ def check_id_fields_reference_known_tables(
         records = tables[table]
         if not records:
             continue
+        key = table_key(table, id_fields)
         seeded_fields = set().union(*(record.keys() for record in records))
-        absent = [f for f in table_key(table, id_fields).fields if f not in seeded_fields]
+        absent = [f for f in key.fields if f not in seeded_fields]
         if absent:
             findings.append(
                 f"state_checks.id_fields[{table!r}] declares key component(s) "
                 f"{absent} absent from every seeded record of table {table!r} "
                 f"(seeded record fields: {sorted(seeded_fields)}). "
                 f"Fix a typo, seed a record carrying the field(s), or set "
+                f"state_checks.relaxed_validation: true."
+            )
+            continue
+        colliding = _first_duplicate_key_value(records, key)
+        if colliding is not None:
+            findings.append(
+                f"state_checks.id_fields[{table!r}] declares key "
+                f"{list(key.fields)!r}, which does not uniquely identify "
+                f"table {table!r}'s seeded records: key value {colliding!r} "
+                f"appears on more than one record. Declare a key that "
+                f"distinguishes the rows (a composite list widens it), fix "
+                f"the seeded data, or set "
                 f"state_checks.relaxed_validation: true."
             )
     if not findings:

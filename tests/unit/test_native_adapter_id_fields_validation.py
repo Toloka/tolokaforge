@@ -4,10 +4,12 @@ Runs inside :meth:`NativeAdapter.to_task_description` — the entry point the
 orchestrator's pre-run gradeability pass resolves every selected task through,
 so a refusal here lands before the first trial is paid for. Fail loud on typos
 so a bad task doesn't reach the runner and hard-fail (or silently corrupt
-state) at trial time on a message the author never sees. One gate, two
-findings: a declared table absent from ``initial_state``, and a declared key
-component absent from every seeded record of its table (skipped for a table
-seeded empty, whose rows may arrive via ``initialization_actions``).
+state) at trial time on a message the author never sees. One gate, three
+findings: a declared table absent from ``initial_state``, a declared key
+component absent from every seeded record of its table, and a declared key
+that does not uniquely identify the table's seeded records (the record-level
+findings are skipped for a table seeded empty, whose rows may arrive via
+``initialization_actions``).
 
 ``state_checks.relaxed_validation: true`` downgrades the raise to a warning
 for legacy tasks that pre-date the check.
@@ -88,7 +90,7 @@ def _adapter(root: Path) -> NativeAdapter:
 def test_matching_tables_passes(tmp_path: Path) -> None:
     _write_task_pack(
         tmp_path,
-        initial_state={"widgets": [{"widget_id": "W1"}]},
+        initial_state={"widgets": [{"widget_id": "W1"}, {"widget_id": "W2"}]},
         id_fields={"widgets": "widget_id"},
     )
     adapter = _adapter(tmp_path)
@@ -130,15 +132,17 @@ def test_unknown_table_with_relaxed_warns(tmp_path: Path, caplog) -> None:
     assert td.grading.state_checks.relaxed_validation is True
 
 
+# Each component alone repeats (A1 twice, AAPL twice); only the pair is unique.
 _SEEDED_POSITIONS = {
     "positions": [
         {"account_id": "A1", "symbol": "AAPL", "qty": 5},
         {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+        {"account_id": "A2", "symbol": "AAPL", "qty": 3},
     ]
 }
 
 
-def test_composite_key_over_seeded_table_builds(tmp_path: Path) -> None:
+def test_composite_key_unique_where_components_alone_are_not_builds(tmp_path: Path) -> None:
     _write_task_pack(
         tmp_path,
         initial_state=_SEEDED_POSITIONS,
@@ -146,6 +150,37 @@ def test_composite_key_over_seeded_table_builds(tmp_path: Path) -> None:
     )
     td = _adapter(tmp_path).to_task_description("widgets")
     assert td.grading.state_checks.id_fields == {"positions": ["account_id", "symbol"]}
+
+
+def test_non_unique_single_key_raises(tmp_path: Path) -> None:
+    _write_task_pack(
+        tmp_path,
+        initial_state=_SEEDED_POSITIONS,
+        id_fields={"positions": "account_id"},
+    )
+    with pytest.raises(ValueError) as ei:
+        _adapter(tmp_path).to_task_description("widgets")
+    msg = str(ei.value)
+    assert "positions" in msg  # names the table
+    assert "account_id" in msg  # names the declared key
+    assert "A1" in msg  # names the colliding value
+    assert "A2" not in msg  # the unique value is not blamed
+    assert "relaxed_validation" in msg  # hints at the escape hatch
+
+
+def test_non_unique_key_with_relaxed_warns(tmp_path: Path, caplog) -> None:
+    _write_task_pack(
+        tmp_path,
+        initial_state=_SEEDED_POSITIONS,
+        id_fields={"positions": "account_id"},
+        relaxed=True,
+    )
+    with caplog.at_level(logging.WARNING):
+        td = _adapter(tmp_path).to_task_description("widgets")
+
+    warns = [rec.getMessage() for rec in caplog.records if rec.levelno >= logging.WARNING]
+    assert any("account_id" in m and "A1" in m for m in warns)
+    assert td.grading.state_checks.id_fields == {"positions": "account_id"}
 
 
 def test_absent_composite_component_raises(tmp_path: Path) -> None:
