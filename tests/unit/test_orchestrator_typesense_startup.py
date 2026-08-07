@@ -166,8 +166,10 @@ def test_the_resolved_api_key_enters_the_secret_manager(
 
     Registration is what carries it to the runner — ``core_stack`` serialises
     the manager into ``TOLOKAFORGE_SECRETS_JSON`` and nothing else transports
-    it — and it is what puts the value in the redaction set before the
-    "Creating adapter" params line renders it.
+    it — and it is what puts the value in the redaction set that scrubs
+    message text. That set never reaches the extras channel, so params dumps
+    like "Creating adapter" keep the key out by construction instead
+    (``test_a_pinned_key_never_renders_in_the_creating_adapter_params_dump``).
     """
     orchestrator = _with_manager(tmp_path, monkeypatch, started=True)
 
@@ -223,6 +225,51 @@ def test_a_pinned_key_never_renders_in_the_start_blocks_log_output(
     assert "Starting local TypeSense server" in output
     assert PLACEHOLDER in output
     assert pinned not in output
+
+
+def test_a_pinned_key_never_renders_in_the_creating_adapter_params_dump(
+    tmp_path: Path, isolated_secret_manager
+) -> None:
+    """The adapter params are logged without the key the adapter itself receives.
+
+    ``_create_adapter`` logs its params through the extras channel, which the
+    redaction record factory never sees — stdlib ``makeRecord`` applies
+    ``extra=`` onto the record after the factory returns, and
+    ``StructuredFormatter`` renders straight from ``record.__dict__``.
+    Registration therefore cannot hold this channel shut; the logged copy must
+    simply not carry the key. The functional payload is a different copy: the
+    adapter needs the key, so the params handed to ``get_adapter`` keep it.
+    """
+    original_factory = logging.getLogRecordFactory()
+    logging.setLogRecordFactory(logging.LogRecord)
+    stdlib_logger = logging.getLogger("orchestrator")
+    buf = io.StringIO()
+    handler = logging.StreamHandler(buf)
+    handler.setFormatter(StructuredFormatter(LogFormat.PLAIN))
+    pinned = "PINNEDTSKEY0123456789"
+
+    orchestrator = _orchestrator(tmp_path, api_key=pinned)
+    orchestrator.config.orchestrator.typesense = TypeSenseConfig(
+        enabled=True, mode="remote", host="ts.example", port=8108, api_key=pinned
+    )
+    install_global_redactor()
+    orchestrator._ensure_typesense_started()
+    # Positive control: the redaction set does hold the key when the params
+    # line renders, so a key-free dump is the mask's doing, not the set's.
+    assert get_default().get_secret("TYPESENSE_API_KEY") == pinned
+    stdlib_logger.addHandler(handler)
+    try:
+        adapter = orchestrator._create_adapter()
+        handler.flush()
+    finally:
+        stdlib_logger.removeHandler(handler)
+        logging.setLogRecordFactory(original_factory)
+
+    output = buf.getvalue()
+    assert "Creating adapter" in output
+    assert "ts.example" in output
+    assert pinned not in output
+    assert adapter.params["typesense"]["api_key"] == pinned
 
 
 def test_a_plane_with_no_key_of_its_own_registers_nothing(

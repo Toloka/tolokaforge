@@ -114,6 +114,7 @@ tests/
 └── utils/                   # Shared test utilities
     ├── fixtures.py           # Common fixtures (mock_env_state, test_task_path, etc.)
     ├── validators.py         # Output validation helpers
+    ├── doc_anchors.py        # GitHub-style anchor + section extraction for the canonical doc locks
     ├── mock_clients.py       # MockAsyncClient — canonical source
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
@@ -121,12 +122,14 @@ tests/
     ├── recorded_calls.py     # RecordedToolCall builders
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
+    ├── search_plane_harness.py  # RegisterTrial through the search plane: registry stand-in, kb task, both address sources
     ├── timelines.py          # Coherent TrialTimeline fixtures (message view + records)
     ├── trace_constraints.py  # One trace constraint evaluated, for single-verdict assertions
     ├── trace_checks_configs.py  # One authored trace_checks block spanning the whole vocabulary
     ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
     ├── migration_packs.py    # A task directory a migration declaration is read out of
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
+    ├── golden_source_shapes.py  # Non-list golden_actions shapes every reading surface must refuse
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering
     └── project_fixtures.py   # food_delivery_2 project data loaders
 ```

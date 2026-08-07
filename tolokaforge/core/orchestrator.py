@@ -521,7 +521,12 @@ class Orchestrator:
             if self.project.default_environment is not None:
                 params["project_default_environment"] = self.project.default_environment
 
-        self.logger.info("Creating adapter", type=adapter_type, params=params)
+        # The record factory scrubs message text, not extras, so a key in
+        # this dump would render verbatim regardless of the redaction set.
+        log_params = params
+        if typesense_config is not None:
+            log_params = {**params, "typesense": typesense_config.model_dump(exclude={"api_key"})}
+        self.logger.info("Creating adapter", type=adapter_type, params=log_params)
         return get_adapter(adapter_type, params)
 
     def _resolve_budget(self, *, initial_cost_usd: float) -> CompositeBudget | None:
