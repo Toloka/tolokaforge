@@ -334,7 +334,13 @@ class TypeSenseConfig(BaseModel):
     Supports three modes:
     - local: Orchestrator manages a local Docker container (auto start/stop)
     - remote: Connect to an external TypeSense server
-    - disabled: TypeSense is disabled, search_policy returns empty results
+    - disabled: no server is started
+
+    ``enabled: false`` and ``mode: disabled`` are equally final: the orchestrator
+    hands the adapter connection details only when the block is enabled AND the
+    mode is not ``disabled``, so under either spelling no task's ``search.host``
+    is set and no trial reaches the TypeSense plane. ``remote`` still emits —
+    nothing is started for it, but the address is a real one.
     """
 
     model_config = {"extra": "ignore"}
