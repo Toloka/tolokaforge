@@ -130,6 +130,7 @@ from tolokaforge.runner.models import (
     RecordedToolCall,
     RunnerGradeComponents,
     RunnerStateChecksConfig,
+    SearchConfig,
     StateDiff,
     TaskDescription,
     ToolExecutorIdentity,
@@ -328,6 +329,13 @@ def _readable_outcome(answer: object) -> ToolCallOutcome:
         f"A replayed golden action answered {type(answer).__name__!r} where the replay reads a "
         "str, so what the call did cannot be read from it."
     )
+
+
+def _search_plane_context(trial_id: str, search_config: SearchConfig) -> str:
+    """The prefix every search-plane refusal opens with: trial, domain, address tried."""
+    domain = search_config.domain_name or "default"
+    port = search_config.port or 8108
+    return f"Trial {trial_id}: domain '{domain}', TypeSense at {search_config.host}:{port}"
 
 
 # =============================================================================
@@ -829,19 +837,35 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # a rag_client. This gate runs BEFORE the RAG one deliberately — a task
         # declaring both reports its TypeSense failure, which is the nearer one.
         search_config = task_description.search
-        # Run-level: this run configured a TypeSense plane. #927 moves the
-        # connection details to stack-level config and replaces this half.
-        run_configures_typesense = search_config is not None and search_config.host is not None
-        # Task-level: this task declares a knowledge base. #927 keeps this half.
-        task_declares_kb = search_config is not None and search_config.documents_path is not None
+        # Run-level: this run configured a TypeSense plane.
+        run_configures_typesense = search_config.host is not None
+        # Task-level: this task declares a knowledge base.
+        task_declares_kb = search_config.documents_path is not None
         if run_configures_typesense and task_declares_kb:
             typesense_error = self._init_typesense_for_trial(trial_id, search_config, artifacts_dir)
             if typesense_error is not None:
                 # Extraction ran before this gate, so a refusal leaves the tmp dir
                 # on disk and on ``sys.path`` — drop it as the custom-checks gate does.
                 self._cleanup_trial_artifacts(trial_id)
-                logger.error(f"RegisterTrial: {trial_id} - {typesense_error}")
+                logger.error(f"RegisterTrial: {typesense_error}")
                 return pb2.RegisterTrialResponse(success=False, error=typesense_error)
+        elif (
+            run_configures_typesense
+            and artifacts_dir is not None
+            and (artifacts_dir / "docindex").is_dir()
+        ):
+            # A corpus arrived for a task declaring none: the gate above skipped
+            # the plane, so registering would succeed with no search client.
+            error = (
+                f"{_search_plane_context(trial_id, search_config)} — the search declaration "
+                f"and the artifact bundle disagree: a 'docindex/' corpus arrived in the "
+                f"trial's artifacts, but search.documents_path is unset, so no search client "
+                f"is registered and every search_policy call would fail. Declare "
+                f"search.documents_path for this task, or stop bundling the corpus."
+            )
+            self._cleanup_trial_artifacts(trial_id)
+            logger.error(f"RegisterTrial: {error}")
+            return pb2.RegisterTrialResponse(success=False, error=error)
 
         # Create trial context with validated TaskDescription
         trial_context = TrialContextRuntime(
@@ -2966,8 +2990,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         """Read the trial's ``docindex/*.md`` corpus.
 
         Returns the snippets, or the reason the declared knowledge base cannot
-        be used. The collection name is derived from the whole corpus, so a
-        corpus read that skipped a file would address a collection the
+        be used. The collection name is derived from every non-empty document,
+        so a corpus read that skipped one would address a collection the
         host-side indexer never created.
         """
         docindex_dir = artifacts_dir / "docindex" if artifacts_dir else None
@@ -2979,9 +3003,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 except (OSError, UnicodeDecodeError) as e:
                     return [], (
                         f"{context} — the knowledge base is unusable: cannot read "
-                        f"{md_file} ({e}). Every document feeds the collection name, so "
-                        f"skipping it would address a collection the host-side index "
-                        f"never created."
+                        f"{md_file} ({e}). Every non-empty document feeds the collection "
+                        f"name, so skipping it would address a collection the host-side "
+                        f"index never created."
                     )
                 if content.strip():
                     snippets.append(content)
@@ -2998,7 +3022,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     def _init_typesense_for_trial(
         self,
         trial_id: str,
-        search_config: Any,  # SearchConfig from models
+        search_config: SearchConfig,
         artifacts_dir: Path | None,
     ) -> str | None:
         """Initialise mcp_core TypeSense registry for search_policy tools.
@@ -3024,7 +3048,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         host = search_config.host
         port = search_config.port or 8108
         api_key = search_config.api_key
-        context = f"Trial {trial_id}: domain '{domain}', TypeSense at {host}:{port}"
+        context = _search_plane_context(trial_id, search_config)
 
         try:
             from mcp_core.search.typesense_registry import initialize_typesense_for_domain
@@ -3072,7 +3096,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
     async def _index_documents_for_trial(
         self,
         trial_id: str,
-        search_config: Any,  # SearchConfig from models
+        search_config: SearchConfig,
         artifacts_dir: Path | None,
     ) -> None:
         """

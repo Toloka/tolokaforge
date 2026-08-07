@@ -43,7 +43,7 @@ The engine's role is narrow: reach a TypeSense server, make it reachable from in
 ### Core Components
 
 1. **`tolokaforge/core/search/typesense_server.py`** — `TypeSenseServerManager` and `create_typesense_server`: Docker lifecycle for `mode: local`
-2. **`tolokaforge/core/search/typesense.py`** — `TypeSenseClient` (abstract) and `TypeSenseStub`: the search-backend interface
+2. **`tolokaforge/core/search/typesense.py`** — `TypeSenseClient` (abstract), `TypeSenseStub` (every search returns empty) and the `create_typesense_client` factory that hands it out: the search-backend interface. `TypeSenseStub` belongs to that adapter-facing surface — an adapter reaches it by asking for it. It is not a harness fallback: nothing on the runner's own path constructs one, and a trial whose real client cannot be registered is refused rather than served a stub
 3. **`tolokaforge/core/search/domain_state.py`** — `DomainStateManager`: per-domain initialisation coordination, so concurrent tasks in one domain index once
 4. **`tolokaforge/core/search/__init__.py`** — module exports
 
@@ -91,6 +91,8 @@ The state machine is `PENDING → INITIALIZING → READY` on success, `→ FAILE
 2. **Task-level** — the task declares a knowledge base: `search.documents_path` is set.
 
 Neither half is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate RAG indexing block; a TypeSense-only domain sets `enabled: false` and still registers. Both halves are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, and a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base.
+
+One shape that skips the plane is refused rather than registered: a run configured a plane, the task declares no `documents_path`, and a `docindex/` corpus nonetheless arrived in its artifacts. The declaration and the bundle disagree, and registering would hand the task a `search_policy` tool with nothing behind it.
 
 The TypeSense gate runs before the RAG gate. A task that declares both and whose TypeSense plane is broken reports the TypeSense failure.
 
@@ -140,7 +142,7 @@ The two tiers are deliberately different.
 
 **Per-trial (runner) — a broken plane for one task refuses that trial's registration.**
 
-`RegisterTrial` returns `success=false` with an error naming the trial, the domain and the address tried. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Six paths, in two classes:
+`RegisterTrial` returns `success=false` with an error naming the trial, the domain and the address tried. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Seven paths, in three classes:
 
 | # | path | class |
 |---|---|---|
@@ -150,8 +152,11 @@ The two tiers are deliberately different.
 | 4 | the registry returns a client that reports the server as unavailable | plane broken |
 | 5 | a `docindex/*.md` file cannot be read, so the collection name would not match the host-side index | corpus broken |
 | 6 | the task declares a knowledge base but no readable `*.md` arrived in the trial's artifacts | corpus broken |
+| 7 | a `docindex/` corpus arrived for a task declaring no `documents_path`, in a run that configured a plane | declaration and bundle disagree |
 
-Row 6 is narrow by construction: reaching the gate already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists. It fires when a declared corpus failed to survive bundling and extraction — an adapter bug worth refusing loudly.
+Rows 1–6 are reached only when both halves of the registration gate hold: the run configured a plane (`search.host`) and the task declares a knowledge base (`search.documents_path`). Row 6 is narrow by construction — reaching it already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists, so it fires when a declared corpus failed to survive bundling and extraction.
+
+Row 7 is the shape the gate would otherwise pass over in silence. The bundle carries a corpus the declaration never asks for, so no client is registered and every `search_policy` call fails — with registration reporting success. Both spellings are adapter bugs: either declare `documents_path` for the task, or stop bundling the corpus.
 
 ## Testing
 
@@ -159,7 +164,7 @@ Row 6 is narrow by construction: reaching the gate already required `documents_p
 |---|---|---|
 | unit | `tests/unit/test_orchestrator_typesense_startup.py` | a server that never became ready aborts the run, and does not leave its would-be address in the config |
 | unit | `tests/unit/test_orchestrator_typesense_cache_invalidation.py` | the Docker bridge either completes or aborts, and a description cached before the rewrite never reaches a trial |
-| unit | `tests/unit/test_runner_search_plane_refusal.py` | the six refusal paths, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
+| unit | `tests/unit/test_runner_search_plane_refusal.py` | the seven refusal paths, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
 | unit | `tests/unit/test_runner_pipeline.py::TestRegisterTrialSearchPlanes` | the TypeSense and RAG planes stay decoupled |
 
 ## Server Configuration
@@ -186,8 +191,10 @@ orchestrator:
 ### Mode Options
 
 - **`local`**: Orchestrator manages a Docker container (auto start/stop)
-- **`remote`**: Connect to an external TypeSense server
-- **`disabled`**: no server is started and no client is registered; adapters emit no connection details, so no task reaches the TypeSense plane
+- **`remote`**: Connect to an external TypeSense server. Nothing is started, but the address is real, so the connection details still reach the adapter
+- **`disabled`**: no server is started and the orchestrator hands the adapter no connection details, so no task's `search.host` is set and none reaches the TypeSense plane
+
+`enabled: false` and `mode: disabled` are equally final: either one stops the connection details, and a knowledge-base task in such a run registers normally with no search client.
 
 ### Example Configurations
 
@@ -213,6 +220,8 @@ orchestrator:
 ```
 
 #### Disabled Mode
+
+Either spelling stops the connection details reaching the adapter:
 
 ```yaml
 orchestrator:
@@ -280,12 +289,7 @@ For production, configure TypeSense server with:
 The `TypeSenseServerManager` class provides programmatic control:
 
 ```python
-from tolokaforge.core.search.typesense_server import (
-    TypeSenseServerManager,
-    create_typesense_server,
-    find_free_port,
-    generate_api_key,
-)
+from tolokaforge.core.search.typesense_server import create_typesense_server
 
 # Create server manager
 server = create_typesense_server(
@@ -316,9 +320,10 @@ with create_typesense_server() as server:
 
 ### Common Issues
 
-1. **"Connection refused" errors**:
-   - Ensure TypeSense server is running on 127.0.0.1:8108
-   - Check Docker container status: `docker ps`
+1. **The run aborts with `orchestrator.typesense: the local TypeSense server … never became ready`**:
+   - Check Docker container status and the container's logs: `docker ps`, `docker logs tolokaforge-typesense`
+   - Raise `orchestrator.typesense.timeout` if the container is slow to answer its probes
+   - "no port was ever resolved" in place of an address means the failure came before port selection — the Docker foundation layer was unimportable
 
 2. **"Forbidden" API key errors**:
    - Set TYPESENSE_API_KEY environment variable
@@ -328,13 +333,13 @@ with create_typesense_server() as server:
    - Ensure adapter sets `db.domain` attribute
    - Check that domain name is properly inferred
 
-4. **Empty search results**:
-   - Verify documents exist in `docindex/` directory
-   - Check TypeSense initialization logs
-   - Confirm documents are .md files with content
+4. **A trial is refused with `the knowledge base is unusable` or `the search declaration and the artifact bundle disagree`**:
+   - Verify the adapter bundles `docindex/*.md` into the task's artifacts, and that every one of them is readable UTF-8
+   - "did not survive bundling" means the task declared `documents_path` and no readable `*.md` arrived — an adapter-side bundling bug
+   - "disagree" means the opposite: a corpus arrived for a task declaring no `documents_path`. Declare it, or stop bundling the corpus
 
 5. **Docker not available**:
-   - Docker SDK error: Install with `pip install docker` or `uv add docker`
+   - Docker SDK error: Install with `uv add docker`
    - Docker daemon not running: Start Docker service
    - Permission issues: Ensure user has Docker access
 

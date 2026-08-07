@@ -485,9 +485,12 @@ class Orchestrator:
             task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
         params["task_packs"] = task_packs
 
-        # Pass TypeSense config to adapter if configured
+        # Pass TypeSense config to adapter if configured. ``mode: disabled`` is
+        # as final as ``enabled: false``: no server is started for either, so
+        # emitting connection details would hand every knowledge-base task an
+        # address nothing answers on — which registration now refuses.
         typesense_config = self.config.orchestrator.typesense
-        if typesense_config and typesense_config.enabled:
+        if typesense_config and typesense_config.enabled and typesense_config.mode != "disabled":
             params["typesense"] = typesense_config.model_dump()
 
         # Layer project.task_defaults under every task the adapter loads.
@@ -1213,9 +1216,16 @@ class Orchestrator:
         # Outside the try on purpose: raised inside, this message would reach the
         # operator wrapped in the "Failed to start TypeSense server" prefix above.
         if not started:
+            # ``port`` is resolved inside ``start()``, so a failure before that
+            # point — an unimportable Docker foundation layer — leaves the
+            # manager's sentinel, which reads as a real address if rendered.
+            where = (
+                f"at {self._typesense_server.host}:{self._typesense_server.port}"
+                if self._typesense_server.port > 0
+                else f"on {self._typesense_server.host} (no port was ever resolved)"
+            )
             raise RuntimeError(
-                f"orchestrator.typesense: the local TypeSense server at "
-                f"{self._typesense_server.host}:{self._typesense_server.port} never became "
+                f"orchestrator.typesense: the local TypeSense server {where} never became "
                 f"ready — either the Docker foundation layer is unavailable, or the "
                 f"container did not answer its health and collections probes within "
                 f"timeout={typesense_config.timeout}s. Aborting the run: every "

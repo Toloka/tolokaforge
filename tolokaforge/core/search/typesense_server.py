@@ -72,7 +72,7 @@ class TypeSenseServerManager:
         ```python
         with TypeSenseServerManager(port="auto") as server:
             # Server is running; hand its address to a search client
-            params = server.get_connection_params()
+            params = server.get_connection_info()
         # Server automatically stopped
         ```
 

@@ -9,9 +9,11 @@ runner container that host-side address is the runner itself, so every
 ``search_policy`` call fails and its trials still grade as agent behaviour (#925,
 #926).
 
-The orchestrator is real here; only the server-manager factory — the Docker
-boundary — is a stand-in, the same seam
-``test_orchestrator_typesense_cache_invalidation.py`` substitutes at.
+The orchestrator is real here; only ``create_typesense_server`` — the factory
+the method imports the Docker boundary through — is a stand-in.
+``test_orchestrator_typesense_cache_invalidation.py`` covers the next step of
+the same chain and substitutes further down, at the ``docker`` module and an
+already-assigned server handle.
 """
 
 from __future__ import annotations
@@ -38,11 +40,15 @@ CONFIGURED_TIMEOUT = 17.5
 
 
 class _Manager:
-    """The started-server handle, answering ``start()`` with a fixed verdict."""
+    """The started-server handle, answering ``start()`` with a fixed verdict.
 
-    def __init__(self, *, started: bool) -> None:
+    ``port`` defaults to the sentinel the real manager carries until ``start()``
+    resolves one, so a row that wants a resolved address must say so.
+    """
+
+    def __init__(self, *, started: bool, port: int = -1) -> None:
         self.host = "127.0.0.1"
-        self.port = 8199
+        self.port = port
         self.api_key = "resolved-api-key"
         self._started = started
 
@@ -78,12 +84,12 @@ def _orchestrator(tmp_path: Path) -> Orchestrator:
 
 
 def _with_manager(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, started: bool
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, *, started: bool, port: int = 8199
 ) -> Orchestrator:
     monkeypatch.setattr(
         typesense_server_module,
         "create_typesense_server",
-        lambda **_kwargs: _Manager(started=started),
+        lambda **_kwargs: _Manager(started=started, port=port),
     )
     orchestrator = _orchestrator(tmp_path)
     orchestrator._typesense_server = None
@@ -103,11 +109,21 @@ def test_a_server_that_never_became_ready_aborts_before_the_config_is_rewritten(
     assert orchestrator.config.orchestrator.typesense.api_key is None
 
 
-def test_the_abort_names_the_component_the_address_tried_and_the_timeout(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+@pytest.mark.parametrize(
+    ("row", "port", "present", "absent"),
+    [
+        ("port-resolved", 8199, "127.0.0.1:8199", "no port was ever resolved"),
+        # The manager resolves its port inside ``start()``, so the path that
+        # fails first — an unimportable Docker foundation layer — still carries
+        # the ``-1`` sentinel here.
+        ("port-never-resolved", -1, "no port was ever resolved", "127.0.0.1:-1"),
+    ],
+)
+def test_the_abort_names_the_component_what_was_tried_and_the_timeout(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, row: str, port: int, present: str, absent: str
 ) -> None:
     """The operator must read the failure once, not wrapped in the start handler's prefix."""
-    orchestrator = _with_manager(tmp_path, monkeypatch, started=False)
+    orchestrator = _with_manager(tmp_path, monkeypatch, started=False, port=port)
 
     with pytest.raises(RuntimeError) as raised:
         orchestrator._ensure_typesense_started()
@@ -118,7 +134,9 @@ def test_the_abort_names_the_component_the_address_tried_and_the_timeout(
     # Leads with the component: "orchestrator.typesense" also appears in the remedy,
     # so containment alone would pass on a message that never names the component.
     assert message.startswith("orchestrator.typesense:")
-    assert "127.0.0.1:8199" in message
+    assert present in message
+    assert absent not in message
+    assert "127.0.0.1" in message
     assert str(CONFIGURED_TIMEOUT) in message
 
 

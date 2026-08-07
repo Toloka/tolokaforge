@@ -1,22 +1,22 @@
 """A trial whose declared search plane cannot work is refused, not run.
 
-``RegisterTrial`` used to warn and register anyway on every search-plane
-failure, so a task with a knowledge base spent its paid turns on
-``search_policy`` calls that could never succeed — and the run graded the result
-as measured agent behaviour (#926). Registration now refuses, and the refusal
-costs zero turns because ``Conductor._setup_trial`` turns it into a trial
-failure before the agent loop.
+A task with a knowledge base whose ``search_policy`` calls cannot succeed would
+spend its paid turns on them, and the run would grade the result as measured
+agent behaviour (#926). ``RegisterTrial`` refuses instead, and the refusal costs
+zero turns because ``Conductor._setup_trial`` turns it into a trial failure
+before the agent loop.
 
-Two classes of failure are locked here: the plane is broken (no client, no
-server, an unusable client) and the corpus is broken (a declared knowledge base
-that did not survive bundling). Both name the trial, the domain and the address
-tried.
+Three classes of failure are locked here: the plane is broken (no client, no
+server, an unusable client), the corpus is broken (a declared knowledge base
+that did not survive bundling), and the declaration and the bundle disagree (a
+``docindex/`` corpus arrived for a task declaring no ``documents_path``, so the
+registration gate would skip the plane and the trial would run without one).
+Every message names the trial, the domain and the address tried.
 
 Equally locked is what must NOT happen: a task with no knowledge base does no
-TypeSense work at all, on all three shapes that reach registration. The gate is
-a conjunction of a run-level and a task-level half, and the half that is easy to
-lose is the task-level one — a knowledge-base task in a TypeSense-disabled run
-must still register.
+TypeSense work at all. The gate is a conjunction of a run-level and a task-level
+half, and the half that is easy to lose is the task-level one — a knowledge-base
+task in a TypeSense-disabled run must still register.
 
 ``RunnerServiceImpl`` is real and drives its real ``RegisterTrial``; only the
 mcp_core search registry — absent from this repo — is a stand-in, installed at
@@ -28,6 +28,7 @@ from __future__ import annotations
 import base64
 import sys
 import types
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -41,6 +42,7 @@ pytestmark = pytest.mark.unit
 DOMAIN = "retail_v3"
 ADDRESS = "typesense:8108"
 GOOD_CORPUS = {"docindex/returns_policy.md": b"# Returns\nRefunds within 30 days.\n"}
+NO_CORPUS = {"tools/placeholder.py": b"# artifacts arrived, but no docindex/\n"}
 
 # A knowledge-base task in a TypeSense-enabled run: both halves of the gate hold.
 KB_SEARCH = {
@@ -49,6 +51,14 @@ KB_SEARCH = {
     "port": 8108,
     "domain_name": DOMAIN,
     "documents_path": "docindex",
+}
+
+# The run-level half alone: a TypeSense plane configured, no knowledge base declared.
+CONNECTION_ONLY_SEARCH = {
+    "enabled": False,
+    "host": "typesense",
+    "port": 8108,
+    "domain_name": DOMAIN,
 }
 
 
@@ -127,17 +137,25 @@ def _register(service: Any, context: Any, trial_id: str, task: dict) -> Any:
 
 
 # ---------------------------------------------------------------------------
-# The plane is broken — the six rows, part one
+# The plane is broken — rows 1 to 4
 # ---------------------------------------------------------------------------
 
 
 @pytest.mark.parametrize(
-    ("row", "registry", "fragment"),
+    ("row", "make_registry", "fragment"),
     [
         ("no-client", None, "cannot provide a search client"),
-        ("no-server", _Registry(result=None), "unreachable or refused the collection"),
-        ("init-raises", _Registry(raises=RuntimeError("connection refused")), "connection refused"),
-        ("unusable-client", _Registry(result=_Client(available=False)), "reports the server as"),
+        ("no-server", lambda: _Registry(result=None), "unreachable or refused the collection"),
+        (
+            "init-raises",
+            lambda: _Registry(raises=RuntimeError("connection refused")),
+            "connection refused",
+        ),
+        (
+            "unusable-client",
+            lambda: _Registry(result=_Client(available=False)),
+            "reports the server as",
+        ),
     ],
 )
 def test_a_broken_search_plane_refuses_registration(
@@ -145,12 +163,12 @@ def test_a_broken_search_plane_refuses_registration(
     mock_grpc_context: Any,
     monkeypatch: pytest.MonkeyPatch,
     row: str,
-    registry: _Registry | None,
+    make_registry: Callable[[], _Registry] | None,
     fragment: str,
 ) -> None:
     """Every way the client can fail to arrive costs the trial nothing."""
-    if registry is not None:
-        _install_registry(monkeypatch, registry)
+    if make_registry is not None:
+        _install_registry(monkeypatch, make_registry())
     else:
         monkeypatch.delitem(sys.modules, "mcp_core", raising=False)
 
@@ -165,7 +183,7 @@ def test_a_broken_search_plane_refuses_registration(
 
 
 # ---------------------------------------------------------------------------
-# The corpus is broken — the six rows, part two
+# The corpus is broken — rows 5 and 6
 # ---------------------------------------------------------------------------
 
 
@@ -177,11 +195,7 @@ def test_a_broken_search_plane_refuses_registration(
             {"docindex/broken.md": b"\xff\xfe not utf-8"},
             "cannot read",
         ),
-        (
-            "corpus-did-not-arrive",
-            {"tools/placeholder.py": b"# no docindex/ shipped\n"},
-            "did not survive bundling",
-        ),
+        ("corpus-did-not-arrive", NO_CORPUS, "did not survive bundling"),
     ],
 )
 def test_a_broken_corpus_refuses_registration(
@@ -201,6 +215,34 @@ def test_a_broken_corpus_refuses_registration(
     assert fragment in response.error
     assert ADDRESS in response.error
     assert DOMAIN in response.error
+
+
+# ---------------------------------------------------------------------------
+# The declaration and the bundle disagree
+# ---------------------------------------------------------------------------
+
+
+def test_a_bundled_corpus_the_task_never_declared_refuses_registration(
+    service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``docindex/`` corpus arrived, but nothing declared it, so nothing would serve it.
+
+    Both halves of the gate would have to hold for a client to be registered.
+    Only the run-level one does, so registration would otherwise succeed with a
+    dead plane — the exact shape refusing exists to stop.
+    """
+    registry = _install_registry(monkeypatch, _Registry())
+
+    response = _register(
+        service, mock_grpc_context, "bundle_mismatch:0", _task(CONNECTION_ONLY_SEARCH, GOOD_CORPUS)
+    )
+
+    assert response.success is False
+    assert "disagree" in response.error
+    assert "documents_path" in response.error
+    assert ADDRESS in response.error
+    assert DOMAIN in response.error
+    assert registry.calls == []
 
 
 def test_the_unreadable_document_is_named(
@@ -238,16 +280,14 @@ def test_a_usable_client_registers_the_trial(
 
 
 @pytest.mark.parametrize(
-    ("shape", "search"),
+    ("shape", "search", "artifacts"),
     [
-        ("no-search-block", None),
-        (
-            "connection-configured-but-no-kb",
-            {"enabled": False, "host": "typesense", "port": 8108, "domain_name": DOMAIN},
-        ),
+        ("no-search-block", None, GOOD_CORPUS),
+        ("connection-configured-and-no-corpus-arrived", CONNECTION_ONLY_SEARCH, NO_CORPUS),
         (
             "kb-task-in-a-typesense-disabled-run",
             {"enabled": False, "domain_name": DOMAIN, "documents_path": "docindex"},
+            GOOD_CORPUS,
         ),
     ],
 )
@@ -257,15 +297,20 @@ def test_a_task_without_both_halves_does_no_typesense_work(
     monkeypatch: pytest.MonkeyPatch,
     shape: str,
     search: dict[str, Any] | None,
+    artifacts: dict[str, bytes],
 ) -> None:
     """The gate is a conjunction: neither half alone reaches the search plane.
 
-    The third shape is the one both rejected gate formulations got wrong — a
-    knowledge-base task in a run that configured no TypeSense plane.
+    The first shape carries a corpus with no search declaration at all, which is
+    not the disagreement class — no plane was configured for it to contradict.
+    The third is the one both rejected gate formulations got wrong: a
+    knowledge-base task in a run that configured no TypeSense plane, which is
+    also what a ``mode: disabled`` run produces (the orchestrator emits no
+    connection details for it — ``tests/unit/test_orchestrator_logic.py``).
     """
     registry = _install_registry(monkeypatch, _Registry())
 
-    response = _register(service, mock_grpc_context, f"nokb_{shape}:0", _task(search, GOOD_CORPUS))
+    response = _register(service, mock_grpc_context, f"nokb_{shape}:0", _task(search, artifacts))
 
     assert response.success is True, response.error
     assert registry.calls == []
@@ -285,8 +330,39 @@ def test_a_rag_corpus_task_reaches_the_rag_plane_not_the_typesense_one(
     assert registry.calls == []
 
 
-def test_a_refused_registration_drops_the_extracted_artifacts(
+def test_a_broken_typesense_plane_is_reported_before_the_missing_rag_service(
     service: Any, mock_grpc_context: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Gate ordering: a task declaring both planes reports the TypeSense failure.
+
+    ``enabled: true`` on this rag_client-less runner would fail on its own. The
+    TypeSense gate runs first, so the operator reads the nearer failure — the
+    search client that never arrived — rather than a RAG error that is true but
+    downstream.
+    """
+    _install_registry(monkeypatch, _Registry(result=None))
+    search = {**KB_SEARCH, "enabled": True}
+
+    response = _register(service, mock_grpc_context, "both_planes:0", _task(search, GOOD_CORPUS))
+
+    assert response.success is False
+    assert "unreachable or refused the collection" in response.error
+    assert "RAG service not configured" not in response.error
+
+
+@pytest.mark.parametrize(
+    ("row", "search"),
+    [
+        ("plane-broken", KB_SEARCH),
+        ("bundle-disagreement", CONNECTION_ONLY_SEARCH),
+    ],
+)
+def test_a_refused_registration_drops_the_extracted_artifacts(
+    service: Any,
+    mock_grpc_context: Any,
+    monkeypatch: pytest.MonkeyPatch,
+    row: str,
+    search: dict[str, Any],
 ) -> None:
     """Extraction ran before the gate, so a refusal must not leak the tmp dir."""
     _install_registry(monkeypatch, _Registry(result=None))
@@ -300,7 +376,7 @@ def test_a_refused_registration_drops_the_extracted_artifacts(
 
     monkeypatch.setattr(service, "_extract_tool_artifacts", _record)
 
-    response = _register(service, mock_grpc_context, "cleanup:0", _task(KB_SEARCH, GOOD_CORPUS))
+    response = _register(service, mock_grpc_context, f"cleanup_{row}:0", _task(search, GOOD_CORPUS))
 
     assert response.success is False
     assert len(extracted) == 1
