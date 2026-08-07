@@ -33,7 +33,6 @@ from tolokaforge.core.grading.trace_timeline import TrialTimeline
 from tolokaforge.core.models import ToolCall
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner.grading_ledger import (
-    CORE_ONLY_HASH_SKIP,
     CUSTOM_CHECKS_DISABLED_SKIP,
     DB_PROBES_KEY,
     EVALUATED,
@@ -48,14 +47,16 @@ from tolokaforge.runner.grading_ledger import (
     accountable_author_keys,
     audit_accounted_keys,
     hash_family_accounting,
+    hash_family_skip_accounting,
     populated_ledger_keys,
-    reject_hash_members_read_by_another_evaluator,
+    reject_hash_members_the_hash_evaluator_does_not_read,
     runner_dump_path,
     skip_note,
     skip_note_prefix,
 )
 from tolokaforge.runner.models import (
     TRACE_CONSTRAINT_KINDS,
+    HashComparisonBasis,
     KeyAccounting,
     KeyAccountingRecord,
     RunnerGradingConfig,
@@ -168,17 +169,6 @@ def test_populated_scored_key_with_no_record_names_the_expected_evaluator():
     assert entry("state_checks.jsonpaths").runner_evaluator in audit.error
 
 
-def test_core_only_key_arriving_populated_quotes_its_manifest_reason():
-    item = entry("state_checks.hash.expected_state_hash")
-    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
-
-    audit = audit_accounted_keys(config, {})
-
-    assert audit.error is not None
-    assert item.author_key in audit.error
-    assert item.reason in audit.error
-
-
 def test_an_explicitly_empty_check_is_not_populated():
     """``disallowed_tools: []`` written out is indistinguishable from unset."""
     config = RunnerGradingConfig(
@@ -212,18 +202,18 @@ def test_a_recorded_skip_becomes_a_visible_note_not_an_error():
     is what stops the two spellings from drifting apart while the first keeps the
     text itself pinned.
     """
-    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expected_hash="deadbeef"))
+    config = RunnerGradingConfig(state_checks=RunnerStateChecksConfig(expect_initial_state=True))
 
     audit = audit_accounted_keys(
-        config, {"state_checks.hash.expected_state_hash": HASH_DISABLED_SKIP}
+        config, {"state_checks.hash.expect_initial_state": HASH_DISABLED_SKIP}
     )
 
     assert audit.error is None
     assert audit.skip_notes == (
-        "state_checks.hash.expected_state_hash skipped: hash grading not enabled",
+        "state_checks.hash.expect_initial_state skipped: hash grading not enabled",
     )
     assert audit.skip_notes == (
-        skip_note("state_checks.hash.expected_state_hash", HASH_DISABLED_SKIP),
+        skip_note("state_checks.hash.expect_initial_state", HASH_DISABLED_SKIP),
     )
 
 
@@ -233,20 +223,57 @@ def test_a_skipped_record_must_say_why():
         KeyAccountingRecord(outcome=KeyAccounting.SKIPPED)
 
 
-@pytest.mark.parametrize(
-    "runner_outcome", [EVALUATED, HASH_DISABLED_SKIP], ids=["hash_ran", "hash_disabled"]
-)
-def test_the_core_only_hash_key_is_a_skip_whichever_way_hash_grading_went(runner_outcome):
-    """`expected_state_hash` has no runner reader, so hash grading running is irrelevant.
+def test_the_whole_family_carries_one_skip_when_hash_grading_did_not_run():
+    """A member left out would fail the RPC for a key the disabled flag never reached.
 
-    Sharing the family's outcome would report a populated, silently dead scored
-    key as fully evaluated in `grade.reasons`.
+    Asserted as the whole mapping rather than member by member, so a family that grew a
+    member the skip does not answer for is caught here rather than at the audit.
     """
-    records = hash_family_accounting(runner_outcome)
+    assert hash_family_skip_accounting(HASH_DISABLED_SKIP) == {
+        "state_checks.hash": HASH_DISABLED_SKIP,
+        "state_checks.hash.enabled": HASH_DISABLED_SKIP,
+        "state_checks.hash.golden_actions": HASH_DISABLED_SKIP,
+        "state_checks.hash.expect_initial_state": HASH_DISABLED_SKIP,
+    }
 
-    assert records["state_checks.hash.expected_state_hash"] == CORE_ONLY_HASH_SKIP
-    assert records["state_checks.hash.enabled"] == runner_outcome
-    assert records["state_checks.hash.golden_actions"] == runner_outcome
+
+@pytest.mark.parametrize(
+    ("basis", "source_read"),
+    [
+        pytest.param(
+            HashComparisonBasis.DECLARED_INITIAL_STATE,
+            "state_checks.hash.expect_initial_state",
+            id="declared_initial_state",
+        ),
+        pytest.param(
+            HashComparisonBasis.GOLDEN_REPLAY,
+            "state_checks.hash.golden_actions",
+            id="golden_replay",
+        ),
+        pytest.param(
+            HashComparisonBasis.UNDECLARED_INITIAL_STATE, None, id="undeclared_initial_state"
+        ),
+    ],
+)
+def test_only_the_source_that_selected_the_basis_is_accounted_as_evaluated(basis, source_read):
+    """The reason the evaluator returns its basis rather than the site re-reading the config.
+
+    A second read at the accounting site would file ``EVALUATED`` for whichever source
+    the config populated, so an evaluator that stopped consulting the key would keep
+    its ledger row and the read would be unobservable. Fed from the basis instead, a
+    source it did not select is absent — and a populated key nothing filed fails the
+    RPC, which is what makes the read falsifiable.
+
+    Asserted as the whole mapping, so the *other* source being absent is part of the
+    claim rather than something the row happens not to look at.
+    """
+    records = hash_family_accounting(basis)
+
+    assert records == {
+        "state_checks.hash": EVALUATED,
+        "state_checks.hash.enabled": EVALUATED,
+        **({source_read: EVALUATED} if source_read is not None else {}),
+    }
 
 
 def test_an_evaluated_key_is_fully_accounted():
@@ -694,7 +721,6 @@ def test_an_evaluated_record_has_no_skip_note_to_render():
 _PARTIALLY_POPULATED_KEYS = frozenset(
     {
         "custom_checks",
-        "state_checks.hash.expected_state_hash",
         "state_checks.jsonpaths",
         "trace_checks.constraints",
         "trace_checks.constraints.all_of",
@@ -708,9 +734,7 @@ _PARTIALLY_POPULATED_KEYS = frozenset(
 def _partially_populated_config() -> RunnerGradingConfig:
     """A config populating :data:`_PARTIALLY_POPULATED_KEYS` and no other ledger key."""
     return RunnerGradingConfig(
-        state_checks=RunnerStateChecksConfig(
-            jsonpath_checks=[_JSONPATH_CHECK], expected_hash="deadbeef"
-        ),
+        state_checks=RunnerStateChecksConfig(jsonpath_checks=[_JSONPATH_CHECK]),
         transcript_rules=TranscriptRulesConfig(must_contain=["shipped"]),
         trace_checks=TraceChecksConfig(**_NESTED_TRACE_BLOCK),
         custom_checks={"enabled": True, "file": "checks.py", "interface_version": "1.0"},
@@ -773,15 +797,25 @@ def test_runner_field_naming_an_unknown_field_fails_loud():
         runner_dump_path(_probe_key("RunnerStateChecksConfig.jsonpath_chekcs"))
 
 
-def test_a_hash_family_member_another_evaluator_reads_fails_loud():
-    """The family shares one outcome, so a second reader needs its own recording site."""
-    foreign = _probe_key(
-        "RunnerStateChecksConfig.golden_actions",
-        runner_evaluator="tolokaforge.runner.grading.evaluate_golden_action_traces",
-    )
+@pytest.mark.parametrize(
+    "runner_evaluator",
+    [
+        "tolokaforge.runner.grading.evaluate_golden_action_traces",
+        None,
+    ],
+    ids=["another_evaluator_reads_it", "nothing_on_this_substrate_reads_it"],
+)
+def test_a_hash_family_member_the_hash_evaluator_does_not_read_fails_loud(runner_evaluator):
+    """The family is reported from one returned basis, so any other member needs its own site.
+
+    The ``None`` row is the core-only shape: a scored key the manifest gives no runner
+    evaluator while a runner field still carries it across the wire. Reporting it from the
+    hash evaluator's basis would call it evaluated on a substrate that never read it.
+    """
+    member = _probe_key("RunnerStateChecksConfig.golden_actions", runner_evaluator)
 
     with pytest.raises(ValueError, match="needs its own recording site"):
-        reject_hash_members_read_by_another_evaluator([foreign])
+        reject_hash_members_the_hash_evaluator_does_not_read([member])
 
 
 # --------------------------------------------------------------------------
@@ -952,36 +986,6 @@ def test_golden_actions_without_hash_enabled_records_the_hash_skip(
     assert (
         "state_checks.hash.golden_actions skipped: hash grading not enabled"
         in response.grade.reasons
-    )
-
-
-def test_expected_hash_is_reported_as_read_by_nothing_on_the_runner(
-    runner_service, mock_grpc_context
-):
-    """A populated key the manifest declares core-only never reads as evaluated.
-
-    The adapter fills `expected_hash` from `hash.expected_state_hash` and no runner
-    path reads it, so the author is told that in `grade.reasons` rather than being
-    shown a key that looks scored.
-    """
-    grading = {
-        "combine_method": "weighted",
-        "weights": {"state_checks": 1.0},
-        "pass_threshold": 0.7,
-        "state_checks": {
-            "hash_enabled": False,
-            "expected_hash": "deadbeef",
-            "jsonpath_checks": [_JSONPATH_CHECK],
-        },
-    }
-
-    response = _grade(runner_service, mock_grpc_context, "ledger_core_only_hash:0", grading)
-
-    assert response.success is True, response.error
-    assert response.grade.score == pytest.approx(1.0)
-    assert (
-        "state_checks.hash.expected_state_hash skipped: core-only — no runner path "
-        "reads it (#693)" in response.grade.reasons
     )
 
 

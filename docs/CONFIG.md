@@ -618,7 +618,7 @@ llm_judge:                                 # the judge MODEL is set once per run
 ```
 
 A whole-state hash is read only where the flag turns it on: `state_checks.hash`
-carrying an `expected_state_hash` or `golden_actions` under an `enabled` that is not
+carrying a `golden_actions` or `expect_initial_state` under an `enabled` that is not
 truthy is rejected at load where the task declares `adapter_type: native`, because
 both substrates test the flag before reading any source and the pack would otherwise
 grade its state without the comparison the author wrote. The refusal is addressed at

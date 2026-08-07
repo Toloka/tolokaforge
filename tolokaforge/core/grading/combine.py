@@ -30,14 +30,17 @@ from tolokaforge.core.grading.golden_replay import (
     incomplete_replay_reason,
     refuse_unreplayable_golden_source,
     require_golden_replay_world,
+    resolve_initial_state,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS, component_requested
 from tolokaforge.core.grading.state_checks import (
     StateChecker,
     extract_db_state,
+    state_digest,
 )
 from tolokaforge.core.grading.state_composition import (
     AUTHORED_HASH_WEIGHT_CONTEXT,
+    HASH_SOURCE_KEYS,
     compose_state_checks_score,
     inert_hash_weight_reason,
     refuse_probes_beside_another_state_source,
@@ -63,8 +66,8 @@ from tolokaforge.core.models import (
 logger = logging.getLogger(__name__)
 
 _HASH_NOT_CHECKED_NO_SOURCE = (
-    "state_checks.hash is enabled but declares neither expected_state_hash nor "
-    "golden_actions, so the state hash was not checked"
+    f"state_checks.hash is enabled but declares none of {' or '.join(HASH_SOURCE_KEYS)}, "
+    "so the state hash was not checked"
 )
 
 
@@ -338,24 +341,27 @@ class GradingEngine:
         failed hash check. The replay record is ``None`` for every source but
         ``golden_actions``, the only one that replays anything.
 
-        The two sources are read in order, and the order bounds what the replay world
-        has to hold: a truthy ``expected_state_hash`` is compared in process and returns
-        before ``golden_actions`` is read at all, so a pack declaring both never replays
-        and needs no world.
+        The two sources need no read order between them, the block refusing either
+        beside the other. ``expect_initial_state`` compares in process, hashing the state
+        the task starts in by the rule the trial's own state is hashed by;
+        ``golden_actions`` is the only source needing a world to replay in.
 
         A ``description`` the block declares is appended to every reason the verdict
         carries, in the parenthesised shape ``state_checks.jsonpaths[*].description``
         already reads into an assertion's reason.
 
         Raises:
-            UnreplayableGoldenSource: ``golden_actions`` is the effective source and is
-                truthy without being a list at all, so no reader can iterate it. Refused
-                at this read, above the world the actions would otherwise need. An element
+            UnresolvableInitialState: ``expect_initial_state`` is the source and the task
+                declares no initial state to compare against, so there is no expected
+                state and the trial is left unscored.
+            UnreplayableGoldenSource: ``golden_actions`` is the source and is truthy
+                without being a list at all, so no reader can iterate it. Refused at this
+                read, above the world the actions would otherwise need. An element
                 *inside* a list that is no mapping is a different shape, answered by the
                 replay's own name resolution.
-            UnbuildableGoldenReplayWorld: ``golden_actions`` is the effective source and
-                the task declares no world to replay them against, so there is no
-                expected state and the trial is left unscored.
+            UnbuildableGoldenReplayWorld: ``golden_actions`` is the source and the task
+                declares no world to replay them against, so there is no expected state
+                and the trial is left unscored.
         """
         checks = self.config.state_checks
         hash_config = checks.hash
@@ -363,14 +369,21 @@ class GradingEngine:
             return None, [], None, None
 
         db_state = extract_db_state(final_env_state)
-        expected_hash = hash_config.expected_state_hash
         score: float | None
         diff_result: dict[str, Any] | None = None
         replay: GoldenReplayRecord | None = None
 
-        if expected_hash:
+        if hash_config.expect_initial_state:
+            initial_state = resolve_initial_state(
+                task_dir=self.task_dir,
+                initial_state_json_db=(
+                    self.task_initial_state.json_db if self.task_initial_state else None
+                ),
+            )
             score, reason = self.state_checker.check_hash(
-                db_state, expected_hash, numeric_string_fields=checks.numeric_string_fields
+                db_state,
+                state_digest(initial_state, numeric_string_fields=checks.numeric_string_fields),
+                numeric_string_fields=checks.numeric_string_fields,
             )
             reasons = [reason]
         elif not hash_config.golden_actions:

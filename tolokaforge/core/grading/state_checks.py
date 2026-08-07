@@ -85,6 +85,19 @@ def consistent_hash(value: Hashable) -> str:
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
+def state_digest(state: dict[str, Any], *, numeric_string_fields: list[str] | None = None) -> str:
+    """The digest core writes a state in, for either side of one comparison.
+
+    Both sides of a hash verdict go through here, so a caller holding the expected state
+    rather than a stored digest — the ``expect_initial_state`` source — hashes it by the
+    same rule :meth:`StateChecker.check_hash` hashes the trial's state by. Two spellings
+    of this expression would let one side fold a numeric-looking string the other did
+    not, and the verdict would read as an agent failure.
+    """
+    string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
+    return consistent_hash(to_hashable(state, string_fields))
+
+
 def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
     """Core resolves a golden-action name against the pack's ``TOOLS`` map, exactly.
 
@@ -321,9 +334,7 @@ class StateChecker:
             (score 0 or 1, reason)
         """
         try:
-            # Use tau-bench compatible hashing
-            string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
-            actual_hash = consistent_hash(to_hashable(state, string_fields))
+            actual_hash = state_digest(state, numeric_string_fields=numeric_string_fields)
 
             if actual_hash == expected_hash:
                 return 1.0, "State hash matches (tau-bench algorithm)"
@@ -485,9 +496,8 @@ class StateChecker:
             raise GoldenReplayError(f"Error executing golden actions: {e}") from e
 
         # Compute hashes
-        string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
-        expected_hash = consistent_hash(to_hashable(expected_state, string_fields))
-        actual_hash = consistent_hash(to_hashable(db_state, string_fields))
+        expected_hash = state_digest(expected_state, numeric_string_fields=numeric_string_fields)
+        actual_hash = state_digest(db_state, numeric_string_fields=numeric_string_fields)
 
         # Calculate diff if states don't match
         diff_result = None

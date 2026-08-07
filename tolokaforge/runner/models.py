@@ -333,12 +333,32 @@ class DbProbe(BaseModel):
 _HASH_WEIGHT_CONTEXT = "task_description grading.state_checks.hash_weight"
 
 
+class HashComparisonBasis(str, Enum):
+    """The state a hash comparison was run against, and what selected it.
+
+    The two initial-state members grade identically by construction — the evaluator
+    resets the trial's database and hashes it either way — and are separate members
+    because the ledger accounts for a *declared* source and has nothing to file for a
+    block that declared none. Collapsing them would leave ``expect_initial_state``
+    accounted for without being read.
+    """
+
+    DECLARED_INITIAL_STATE = "declared_initial_state"
+    """``expect_initial_state``: the author asked for the state the task starts in."""
+
+    GOLDEN_REPLAY = "golden_replay"
+    """``golden_actions``: the state replaying them from the initial state produces."""
+
+    UNDECLARED_INITIAL_STATE = "undeclared_initial_state"
+    """No source at all: the same initial state, reached by falling through."""
+
+
 class RunnerStateChecksConfig(BaseModel):
     """State-based grading configuration."""
 
     # Hash comparison
     hash_enabled: bool = False
-    expected_hash: str | None = None  # Pre-computed (if available)
+    expect_initial_state: bool = False
     golden_actions: list[GoldenAction] = Field(default_factory=list)
     # None means the author declared no weight — never "fall back to a default".
     hash_weight: float | None = None
@@ -396,10 +416,25 @@ class RunnerStateChecksConfig(BaseModel):
         """
         return StateHashConfig(
             enabled=self.hash_enabled,
-            expected_state_hash=self.expected_hash,
+            expect_initial_state=self.expect_initial_state,
             golden_actions=self.golden_actions,
             weight=self.hash_weight,
         )
+
+    def hash_comparison_basis(self) -> HashComparisonBasis:
+        """Which state a hash comparison over this config compares the trial against.
+
+        The read that makes ``expect_initial_state`` a key the runner consumes: the
+        evaluator selects its basis here, returns it, and the ledger accounts for the
+        source that selected it. A block declaring nothing reaches the same state by
+        :attr:`HashComparisonBasis.UNDECLARED_INITIAL_STATE`, which is the shape that
+        grades byte-identically and accounts for no source.
+        """
+        if self.expect_initial_state:
+            return HashComparisonBasis.DECLARED_INITIAL_STATE
+        if self.golden_actions:
+            return HashComparisonBasis.GOLDEN_REPLAY
+        return HashComparisonBasis.UNDECLARED_INITIAL_STATE
 
     @model_validator(mode="after")
     def _refuse_probes_beside_another_state_source(self) -> RunnerStateChecksConfig:
@@ -3226,6 +3261,14 @@ class HashGradingResult(BaseModel):
 
     hash_match: bool
     hash_score: float
+    basis: HashComparisonBasis
+    """Which state the verdict was reached against, and which declaration selected it.
+
+    Carried out of the evaluator rather than re-derived from the config by whoever
+    needs it: the runtime ledger accounts for the source key this names, so a config
+    read a second time at the accounting site would report a key as evaluated whether
+    or not the evaluator ever looked at it.
+    """
     state_diff: StateDiff | None = None
     golden_replay: GoldenReplayRecord
     """How much of the golden path ran, in the shape both substrates report from.
