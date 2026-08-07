@@ -436,7 +436,7 @@ def unreplayable_golden_source(golden_actions: object) -> str | None:
     no replay rather than a malformed source, so every read site loads it as no actions
     to replay and the block is refused only where it declares no other source. What each
     substrate then *grades* for a replay of no actions is its own answer and still
-    differs (#693); no read of this source decides it.
+    differs; no read of this source decides it.
 
     A truthy value that is not a list has no reading at all: core hands it to the replay
     loop and the runner iterates it onto the wire, so each fails on the authored value

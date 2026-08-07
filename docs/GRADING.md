@@ -234,12 +234,9 @@ takes a different component.
 
 The golden-actions differential runs over real gRPC and a real db-service, in
 [`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
-the runner's evaluator replays golden actions against db-service over HTTP, so no
-service-free differential can reach it, and mocking the DB client to make a canonical
-guard pass would defeat the guard. A matching and a diverging final state against the
-same golden replay, at two weights strictly inside `(0, 1)`, with the wire's
-`state_checks` component pinned to the blend and required to differ between the two
-weights.
+a matching and a diverging final state against the same golden replay, at two weights
+strictly inside `(0, 1)`, with the wire's `state_checks` component pinned to the blend
+and required to differ between the two weights.
 
 **What that proves and what it does not.** The runner's own golden-replay verdict
 reaches the shared composer, and the author's `weight` reaches the fold — measured
@@ -250,6 +247,16 @@ the folding pair is claimed to be honored identically on both substrates and no 
 drives it through the runner's hash evaluator. Nor does the canonical suite prove
 this test *passes*: it resolves the nodeid and stops there, and `test-gate` does not
 fire on a pull request (#700), so this tier is run locally and its output quoted.
+
+**A service-free differential reaches that evaluator.** `_drive_hash_family`
+([`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py))
+grades a hash-enabled trial whose one golden action names a registered tool, replaying
+it through an in-process `json_db_service`, and asserts the replay ran whole — so the
+runner's evaluator runs against a real database with no service to stand up. Nothing
+load-bearing is mocked there: the db-service app is the real one and only the HTTP
+transport is a `TestClient`. The hash family's `DIFFERENTIAL_INTEGRATION` rows therefore
+name the tier each entry was measured at rather than the strongest tier reachable for
+it, and #687 owns re-measuring them against that path.
 
 **Coverage and enforcement are orthogonal on purpose**, which is what lets a true
 coverage claim carry weak enforcement. `state_checks.hash.golden_actions` is the
@@ -1110,9 +1117,9 @@ value — `[]`, `{}`, `""`, `0`, `false`, or the key written bare, which is what
 reaches by commenting the actions out — is no replay at every read site on either
 substrate: the description a pack builds carries no actions and core reports the source as
 absent. What each substrate then *grades* for a replay of no actions is where they part
-company, and that difference is #693's rather than this rule's: core takes no hash verdict
-at all, while the runner's refusal-task semantics reset the environment, hash the initial
-state as the golden one and hand the fold a binary verdict.
+company, and that difference belongs to the sourceless shape rather than to this rule: core
+takes no hash verdict at all, while the runner's refusal-task semantics reset the
+environment, hash the initial state as the golden one and hand the fold a binary verdict.
 
 A **truthy** value that is not a list can be replayed by neither substrate, so each of the
 three surfaces that has to act on it refuses it in one sentence naming the key, the type
@@ -2864,7 +2871,7 @@ gate and again at each substrate's own read of the block — core reaching that 
 passing through this loader at all.
 [§ Hash-Based Grading](#hash-based-grading-tau-bench-compatible) carries the shape, the
 element rule beside it, and what a falsy source then *grades* as, which the two substrates
-answer differently (#693).
+answer differently.
 
 One shape is still answered differently per surface: an **empty** `grading.yaml`. A file
 with no content is not content of the wrong type, so `validate` accepts it while
