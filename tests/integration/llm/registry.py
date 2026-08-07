@@ -2442,6 +2442,157 @@ _ALL: list[MC] = [
             }
         ),
     ),
+    # Cohere Command A+ reached through a LiteLLM gateway's ``azure_ai`` route.
+    # The model is not on OpenRouter at all (verified against the public
+    # catalogue, which carries only ``cohere/command-a`` and ``command-r*``).
+    # Measured 2026-08-01 under the ``cohere_command_a_plus`` preset:
+    # 21 pass / 10 fail / 6 skip over the full probe suite.
+    #
+    # Two quirks shape that result, and both live in the preset rather than here,
+    # because neither is a capability of the model:
+    #
+    #   * ``tool_choice``: Cohere's Chat API has no ``AUTO``, only ``REQUIRED``
+    #     and ``NONE``, and omission is its documented equivalent of ``auto``. The
+    #     preset omits that one value (``supports_tool_choice_auto: false``), which
+    #     is correct rather than a workaround; REQUIRED/NONE still go through.
+    #     Evidenced by a live A/B on 2026-08-01: identical client, prompt and
+    #     tools, WITHOUT the parameter the model returns a correct
+    #     ``get_weather({'city': 'Budapest', 'unit': 'c'})``, WITH
+    #     ``tool_choice="auto"`` the call is rejected by litellm before it leaves
+    #     the process. An earlier, partially converged run of the suite read
+    #     14/17/6. Do NOT read that as "the rejection killed every tool-calling
+    #     probe": most probes send ``auto``, so a blanket rejection could not have
+    #     left 14 of them passing. That intermediate reading is not
+    #     reconstructible and carries no weight beyond "worse before".
+    #   * ``$ref``/``$defs``: the Azure serving stack's schema converter cannot
+    #     resolve them and 500s, so the preset inlines them via ``strict``.
+    #
+    # Pricing provenance, which ``pricing.json`` itself cannot carry (JSON permits
+    # no comment, and ``pricing-updater`` rewrites the ``_meta`` block wholesale in
+    # ``fetcher.py``): $0.80/M in, $3.20/M out is Azure GlobalStandard retail, read
+    # from the public retail-prices API on 2026-08-01 and confirmed against a live
+    # billed call ($0.000336 for 124 in / 74 out). It is deliberately NOT an
+    # OpenRouter number, unlike every other key in that file.
+    #
+    # SERVING-PATH ASYMMETRY, and it is a board-level comparability decision rather
+    # than a transport detail. Every other certificate in this file is measured on
+    # OpenRouter, which docs/AUTO_INTEGRATION.md calls the calibrated path and keeps
+    # as the default precisely so numbers stay comparable. This model has no
+    # OpenRouter route at all, so its numbers come off Azure serverless through a
+    # private gateway, with a content filter that could only be set to its lowest
+    # blocking level rather than disabled. A human has to accept that before the
+    # number goes on the board; the mechanics below do not settle it.
+    #
+    # NOT fixed here, and it has to be fixed before this model goes on the board:
+    # response text arrives wrapped in ``<|START_TEXT|>...<|END_TEXT|>`` (observed
+    # 2026-08-01). ``ResponsePolicy`` cannot reach it, because that hook only
+    # post-processes tool-call arguments, so the markers land in ``trajectory.yaml``
+    # and in front of any transcript grader or LLM judge, depressing scores for a
+    # reason that is not capability. It needs an engine-side text hook.
+    # ``BASIC_COMPLETION`` is still ``required`` and honestly so: the probe asserts
+    # non-empty text, and wrapped text is non-empty. That gap between the synthetic
+    # probe and production is exactly the asymmetry docs/ADD_NEW_MODEL.md section 4
+    # says to record on the certificate.
+    MC(
+        model_id="openrouter__azure_ai_cohere-command-a-plus-05-2026",
+        provider="openrouter",
+        name="azure_ai/cohere-command-a-plus-05-2026",
+        # A DEDICATED opt-in, and deliberately neither of the two obvious choices.
+        #
+        # NOT ``OPENROUTER_API_KEY``: this model is gateway-only, so an OpenRouter
+        # key is not what makes these probes runnable, and gating on it would fire
+        # the whole live suite at a model OpenRouter does not serve.
+        #
+        # NOT ``LLM_PROXY_BASE_URL`` either, which is the subtler trap. That
+        # variable is a generic public feature (see .env.example), so it says "this
+        # checkout has SOME gateway", not "this checkout has THE gateway that serves
+        # this route". A contributor with their own LiteLLM proxy would open the gate
+        # and get model-not-found, and the RE2 ratchet accepts "400" / "bad request"
+        # as proof its quirk is intact, so it would report green having tested
+        # nothing.
+        #
+        # So this names the one deployment that actually serves the route. Same
+        # contract as ``LLM_PROXY_INT_TEST_API_KEY`` in test_gateway_live.py: absent
+        # means skip, which is the state of every checkout that cannot reach it.
+        env_key="TF_COHERE_A_PLUS_GATEWAY_LIVE",
+        required=frozenset(
+            {
+                C.BASIC_COMPLETION,
+                C.SIMPLE_TOOL_CALL,
+                C.MULTI_TURN_TOOL_USE,
+                C.MULTI_TURN_ERROR_RECOVERY,
+                C.DICT_MAP_TOOL_CALL,
+                C.ENUM_SLASH_TOLERANCE,
+                C.DISCRIMINATED_UNION_TOOL_CALL,
+                C.DECIMAL_FIELD_TOOL_CALL,
+                C.HETEROGENEOUS_ARRAY_TOOL_CALL,
+                C.ALLOF_MERGE_TOOL_CALL,
+                C.USAGE_METRICS_POPULATED,
+                C.COST_USD_POPULATED,
+                C.TOOL_NAME_DISCIPLINE,
+                C.LEXICAL_TOOL_INVENTION,
+                C.REQUIRED_FIELDS_COMPLETE,
+                C.PROGRESS_AFTER_SUCCESS,
+            }
+        ),
+        known_unsupported=frozenset(
+            {
+                # Cyclic ``$defs`` (``TreeNode.children: list[TreeNode]``) cannot be
+                # inlined, and the Azure schema converter 500s on the ``$ref`` it is
+                # left with: 0/4 shapes, verified 2026-08-01. NOT permanent, since the
+                # cycle-breaking mechanism exists in ``GeminiRecursiveSchema`` but is
+                # coupled to Gemini-specific transforms, so lifting it into a
+                # provider-neutral sanitiser would very likely turn this green.
+                C.RECURSIVE_REF_TOOL_CALL,
+                # Probed with the sanitiser deliberately bypassed (the test swaps in
+                # ``PassthroughSchema``), so this measures the Azure converter's own
+                # validator: it rejects a lookahead-bearing ``pattern``, verified
+                # 2026-08-01. Production is NOT exposed to that, because ``strict``
+                # strips RE2-incompatible patterns before the wire
+                # (``strip_re2_incompatible_patterns`` defaults to True). So this
+                # entry records an upstream quirk rather than an eval risk, and the
+                # paired ratchet trips if Azure ever relaxes it.
+                C.RE2_PATTERN_TOLERANCE,
+                # Azure serverless Cohere exposes no ephemeral cache-control, and the
+                # response carries no cached-token counters, verified 2026-08-01.
+                C.PROMPT_CACHING,
+                C.IMPLICIT_PROMPT_CACHING,
+                # Measured under ``reasoning_codec: none``, where these three cannot
+                # pass by construction: ``NoReasoningCodec.extract`` returns ``None``
+                # unconditionally. So the honest claim is the narrow one, that no
+                # structured reasoning reached the client on this route, NOT that the
+                # model has none. The Azure catalog does advertise "reasoning" for it.
+                #
+                # The preset therefore now runs ``reasoning_codec: openai``, which is a
+                # strict superset of ``none``: ``OpenAIReasoningCodec.extract`` also
+                # returns ``None`` when the message carries no ``reasoning_content``,
+                # and its ``encode_for_replay`` is a no-op either way, so it cannot
+                # have changed any of the 21 passes or the other 7 failures. The one
+                # probe outside these three that touches ``result.reasoning`` is
+                # multi_turn_tool_use, and it only threads it into the next turn
+                # rather than asserting on it; since both codecs replay ``{}``, the
+                # request payload there is byte-identical.
+                #
+                # What it does NOT do is turn these three into a measurement. Be
+                # precise about that: there is no thinking ratchet (only
+                # enum_slash_tolerance, implicit_prompt_caching and re2_pattern have
+                # one), and ``known_unsupported`` makes the capability gate in
+                # conftest.py skip the probe outright, so the next allowlisted run
+                # yields three skips rather than a verdict. The codec is set for the
+                # EVAL path, where ``none`` would silently discard any reasoning the
+                # gateway surfaces. Promoting these to ``required`` needs a deliberate
+                # live re-probe with the gate temporarily lifted.
+                #
+                # One consequence worth knowing when comparing runs: the codec name
+                # goes into the per-trial ``resolved.*`` fingerprint via
+                # ``resolve_policy_names``, so the shipped fingerprint says ``openai``
+                # while 21/10/6 was measured under ``none``.
+                C.THINKING_EMITS_BLOCKS,
+                C.THINKING_REPLAY_ROUNDTRIP,
+                C.UNSIGNED_THINKING_REPLAY,
+            }
+        ),
+    ),
 ]
 
 

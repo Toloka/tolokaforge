@@ -1690,7 +1690,9 @@ class LLMClient:
 
         Composes four independent parameter sources: ``params_policy.adapt``
         (temperature / seed / reasoning routing), explicit per-call overrides
-        (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
+        (``top_p`` / ``max_tokens`` / ``tools``, plus ``tool_choice``, which is an
+        override the params policy can still veto per value, see
+        ``supports_tool_choice_auto``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
         Nova's special-casing is deferred to :meth:`_call_with_key_rotation`
@@ -1719,7 +1721,13 @@ class LLMClient:
 
         if tools:
             kwargs["tools"] = tools
-            if tool_choice:
+            # Suppress only the value the provider has no word for; an explicit
+            # REQUIRED/NONE still goes through (see GenerationParams).
+            suppressed = (
+                tool_choice == "auto"
+                and not self.capabilities.params_policy.supports_tool_choice_auto
+            )
+            if tool_choice and not suppressed:
                 kwargs["tool_choice"] = tool_choice
 
         kwargs["messages"] = self._convert_messages(system, messages)
