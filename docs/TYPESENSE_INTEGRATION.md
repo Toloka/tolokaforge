@@ -4,171 +4,97 @@ TolokaForge provides full TypeSense support for semantic search over knowledge b
 
 ## Overview
 
-The TypeSense integration bridges TolokaForge adapters with the `mcp_core` TypeSense infrastructure:
+The engine's role is narrow: reach a TypeSense server, make it reachable from inside the runner container, and register a client there so a task's `search_policy` tools resolve. Indexing the documents is the job of the adapter that owns the corpus, host-side, before any trial runs.
 
-- **Standalone Feature**: Can be used by any adapter (Native, internal MCP JSON, Tau)
-- **Automatic Indexing**: Documents in `docindex/` directories are automatically indexed
-- **Semantic Search**: Supports both vector and text-based search
-- **Graceful Degradation**: Falls back to stub behavior when TypeSense server is unavailable
-- **Orchestrator-Managed Server**: Automatic Docker container lifecycle management
-- **Configurable**: Via run config with auto port selection and API key generation
+- **Standalone Feature**: available to any adapter that declares a knowledge base
+- **Automatic Indexing**: `docindex/*.md` documents are indexed host-side by the adapter that ships them; the runner recomputes the collection name from the same documents and attaches to the existing collection
+- **Semantic Search**: vector and text-based search
+- **Orchestrator-Managed Server**: automatic Docker container lifecycle management. A server that does not become ready within `timeout` aborts the run — the orchestrator raises with the address it tried and the reason, rather than continuing against an address nothing is listening on
+- **Configurable**: via run config with auto port selection and API key generation
+- **Fail loud**: a declared search plane that cannot be made to work stops the run or the trial rather than degrading to empty results. See [Failure semantics](#failure-semantics)
 
 ## Architecture
 
 ```
-┌─────────────────┐    ┌──────────────────────┐    ┌─────────────────────┐
-│   Adapter       │    │  TypeSenseProvider   │    │   mcp_core          │
-│                 │    │                      │    │                     │
-│ _init_typesense │────┤ ensure_domain_init   ├────┤ TypesenseIndex     │
-│ (cached)        │    │ (coordinated)        │    │ universal_search_*  │
-│                 │    │ search               │    │                     │
-└─────────────────┘    └──────────────────────┘    └─────────────────────┘
-         │                      │
-         │                      ▼
-         │             ┌──────────────────────┐
-         │             │  DomainStateManager  │
-         │             │  - Per-domain state  │
-         │             │  - Thread-safe       │
-         │             │  - Wait coordination │
-         │             └──────────────────────┘
-         │                      │
-         ▼                      ▼
-       ┌────────────────────────────────────────────────┐
-       │           TypeSense Server                      │
-       │                                                │
-       │  ┌──────────────────────────────────────────┐  │
-       │  │ TypeSenseServerManager (local mode)       │  │
-       │  │ - Auto port selection                    │  │
-       │  │ - Docker foundation layer (ServiceStack) │  │
-       │  │ - Auto API key generation                │  │
-       │  └──────────────────────────────────────────┘  │
-       │                    OR                          │
-       │  ┌──────────────────────────────────────────┐  │
-       │  │ External TypeSense (remote mode)         │  │
-       │  │ - Pre-configured server                  │  │
-       │  └──────────────────────────────────────────┘  │
-       └────────────────────────────────────────────────┘
+ host                                    runner container
+┌──────────────────────────┐            ┌───────────────────────────┐
+│ Orchestrator             │            │ RunnerServiceImpl         │
+│                          │            │                           │
+│ TypeSenseServerManager   │            │ RegisterTrial             │
+│  - resolve port, api key │            │  └ _init_typesense_for_   │
+│  - start, wait_ready     │            │      trial                │
+│                          │            │    - reads docindex/*.md  │
+│ bridge to runner-net     │            │    - registers a client in│
+│  - alias "typesense"     │            │      mcp_core's registry  │
+│  - rewrite to :8108      │            │                           │
+│                          │            │ search_policy tool        │
+│ Adapter (indexes the     │            │  └ get_typesense_for_     │
+│ corpus before the run)   │            │      domain(domain)       │
+└────────────┬─────────────┘            └─────────────┬─────────────┘
+             │                                        │
+             │        ┌────────────────────┐          │
+             └───────►│ TypeSense server   │◄─────────┘
+     127.0.0.1:<port> │ local or remote    │  typesense:8108
+                      └────────────────────┘
 ```
 
 ## Implementation
 
 ### Core Components
 
-1. **`tolokaforge/core/search/typesense_provider.py`** - Main TypeSense provider with domain-level caching
-2. **`tolokaforge/core/search/domain_state.py`** - Domain state management for coordinated initialization
-3. **`tolokaforge/core/search/typesense.py`** - Stub interface (backward compatibility)
-4. **`tolokaforge/core/search/__init__.py`** - Module exports
+1. **`tolokaforge/core/search/typesense_server.py`** — `TypeSenseServerManager` and `create_typesense_server`: Docker lifecycle for `mode: local`
+2. **`tolokaforge/core/search/typesense.py`** — `TypeSenseClient` (abstract), `TypeSenseStub` (every search returns empty) and the `create_typesense_client` factory that hands it out: the search-backend interface. `TypeSenseStub` belongs to that adapter-facing surface — an adapter reaches it by asking for it. It is not a harness fallback: nothing on the runner's own path constructs one, and a trial whose real client cannot be registered is refused rather than served a stub
+3. **`tolokaforge/core/search/domain_state.py`** — `DomainStateManager`: per-domain initialisation coordination, so concurrent tasks in one domain index once
+4. **`tolokaforge/core/search/__init__.py`** — module exports
 
-### Provider Configuration
-
-```python
-from tolokaforge.core.search.typesense_provider import create_typesense_provider
-
-provider = create_typesense_provider(
-    enabled=True,              # Enable/disable TypeSense
-    host="127.0.0.1",         # TypeSense server host
-    port=8108,                # TypeSense server port
-    api_key=None,             # API key (uses TYPESENSE_API_KEY env var if None)
-    timeout=30.0,             # Connection timeout
-    use_stub=False            # Force stub implementation
-)
-```
+`typesense.py` and `domain_state.py` have no in-tree consumers. They are a supported interface for adapters maintained outside this repository — do not delete them on a grep ([#26](https://github.com/Toloka/tolokaforge/issues/26)).
 
 ### Document Loading
 
-Documents are automatically loaded from `docindex/` directories:
+Documents live in a `docindex/` directory beside the domain's task cases:
 
 ```
 domain/
 ├── docindex/
-│   ├── order_management.md    # ← Indexed automatically  
-│   ├── shipping_returns.md    # ← Indexed automatically
-│   └── customer_service.md    # ← Indexed automatically
+│   ├── order_management.md
+│   ├── shipping_returns.md
+│   └── customer_service.md
 └── testcases/
     └── *.json
 ```
 
-### Search Interface
+The adapter bundles `docindex/*.md` into the task's artifacts. The runner extracts them per trial and reads them back to compute the deterministic collection name (`<domain>_<sha256[:8]>`) — which is why every document must be readable: a corpus read that skipped one would address a collection the host-side indexer never created.
+
+### Domain State Coordination
+
+`DomainStateManager` gives one domain a single initialisation across concurrent tasks:
 
 ```python
-# Initialize for domain
-success = provider.initialize_for_domain("retail_domain", documents)
+from tolokaforge.core.search import DomainStateManager
 
-# Search documents  
-response = provider.search(
-    domain="retail_domain",
-    query="how to return a product", 
-    max_results=5
-)
-
-# Response format
-{
-    "hits": [
-        {
-            "document_id": "returns_policy",
-            "score": 0.95,
-            "content": {
-                "source": "returns_policy.md",
-                "text": "To return a product...",
-                "vector_distance": 0.12
-            }
-        }
-    ],
-    "total_hits": 3,
-    "query": "how to return a product",
-    "search_time_ms": 15.0
-}
+manager = DomainStateManager()
+state, created = manager.get_or_create("retail_domain")
+if state.claim_initialization():
+    # This caller owns indexing; others block in wait_ready().
+    state.set_ready(document_count=12)
+else:
+    state.wait_ready(timeout=30.0)
 ```
 
-## Internal MCP Integration
+The state machine is `PENDING → INITIALIZING → READY` on success, `→ FAILED` on error, and a failure is propagated to every waiter rather than retried silently.
 
-The internal MCP adapter automatically initializes TypeSense during environment creation with **domain-level caching**:
+## Runner-Side Client Registration
 
-### Domain-Level Caching
+`RegisterTrial` registers a TypeSense client inside the runner container when **both** halves of a two-part predicate hold:
 
-TypeSense initialization is cached per domain to avoid redundant document indexing when running multiple tasks from the same domain:
+1. **Run-level** — the run configured a TypeSense plane: `search.host` is set.
+2. **Task-level** — the task declares a knowledge base: `search.documents_path` is set.
 
-- **Provider Caching**: A single `TypeSenseProvider` instance is cached per adapter
-- **Domain State Coordination**: Uses `DomainStateManager` to ensure only one initialization per domain
-- **Thread-Safe**: Multiple concurrent task executions safely share the cached state
+Neither half is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate RAG indexing block; a TypeSense-only domain sets `enabled: false` and still registers. Both halves are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, and a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base.
 
-```python
-# In the internal MCP adapter
-def _get_typesense_provider(self) -> Optional[TypeSenseProvider]:
-    """Get or create TypeSense provider (cached at adapter level)."""
-    with self._provider_lock:
-        if self._typesense_provider is None:
-            self._typesense_provider = create_typesense_provider()
-        return self._typesense_provider
+One shape that skips the plane is refused rather than registered: a run configured a plane, the task declares no `documents_path`, and a `docindex/` corpus nonetheless arrived in its artifacts. The declaration and the bundle disagree, and registering would hand the task a `search_policy` tool with nothing behind it.
 
-def _init_typesense(self, task_id: str) -> None:
-    """Initialize TypeSense for knowledge base search (domain-level caching)."""
-    provider = self._get_typesense_provider()
-    if provider is None:
-        return
-    
-    # ensure_domain_initialized handles coordination:
-    # - Only the first caller does actual initialization
-    # - Subsequent callers wait for completion and reuse the result
-    provider.ensure_domain_initialized(
-        domain=self._domain_name,
-        docindex_path=self._domain_path / "docindex",
-    )
-```
-
-### Domain State Lifecycle
-
-The domain initialization follows a state machine:
-
-```
-PENDING → INITIALIZING → READY (success)
-                      → FAILED (error)
-```
-
-- **PENDING**: Initial state, domain not yet initialized
-- **INITIALIZING**: First task is indexing documents
-- **READY**: Documents indexed, subsequent tasks skip re-indexing
-- **FAILED**: Initialization failed, error is propagated
+The TypeSense gate runs before the RAG gate. A task that declares both and whose TypeSense plane is broken reports the TypeSense failure.
 
 ### Database Domain Assignment
 
@@ -197,46 +123,49 @@ class SearchPolicyTool(Tool):
     
     async def run(self, db: InMemoryDatabase, request: SearchPolicyInput):
         client = self._get_typesense_client(db)
-        if client:
-            results = client.universal_search_with_full_text(request.query, [])
-            return SearchPolicyOutput(snippets=results[:request.max_results])
-        else:
-            return SearchPolicyOutput(snippets=[])  # Fallback
+        results = client.universal_search_with_full_text(request.query, [])
+        return SearchPolicyOutput(snippets=results[:request.max_results])
 ```
+
+A tool reached by a registered trial can rely on the client being there: registration refuses when it is not, so the trial never starts. A tool that returns empty results instead of failing hides a dead search plane behind plausible-looking scores — the failure this document's [Failure semantics](#failure-semantics) exist to prevent.
+
+## Failure semantics
+
+A declared search plane that cannot be made to work stops the run or the trial. There is no stub fallback and no degraded mode: an agent that queries a dead knowledge base produces scores that read as measured behaviour.
+
+The two tiers are deliberately different.
+
+**Run-level (orchestrator) — a broken plane aborts the whole run, before any trial.**
+
+- The local server does not become ready within `timeout`, or the Docker foundation layer is unavailable.
+- The bridge onto `runner-net` cannot be built: no TypeSense container, no `runner-net`, an adapter that cannot carry the rewritten address, or any Docker SDK failure.
+
+**Per-trial (runner) — a broken plane for one task refuses that trial's registration.**
+
+`RegisterTrial` returns `success=false` with an error naming the trial, the domain and the address tried. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Seven paths, in three classes:
+
+| # | path | class |
+|---|---|---|
+| 1 | the runner image cannot provide a search client (the mcp_core search registry is not importable) | plane broken |
+| 2 | the registry returns no client — the server is unreachable or refused the collection | plane broken |
+| 3 | the registry raises; the underlying error is carried in the message | plane broken |
+| 4 | the registry returns a client that reports the server as unavailable | plane broken |
+| 5 | a `docindex/*.md` file cannot be read, so the collection name would not match the host-side index | corpus broken |
+| 6 | the task declares a knowledge base but no readable `*.md` arrived in the trial's artifacts | corpus broken |
+| 7 | a `docindex/` corpus arrived for a task declaring no `documents_path`, in a run that configured a plane | declaration and bundle disagree |
+
+Rows 1–6 are reached only when both halves of the registration gate hold: the run configured a plane (`search.host`) and the task declares a knowledge base (`search.documents_path`). Row 6 is narrow by construction — reaching it already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists, so it fires when a declared corpus failed to survive bundling and extraction.
+
+Row 7 is the shape the gate would otherwise pass over in silence. The bundle carries a corpus the declaration never asks for, so no client is registered and every `search_policy` call fails — with registration reporting success. Both spellings are adapter bugs: either declare `documents_path` for the task, or stop bundling the corpus.
 
 ## Testing
 
-### Unit Tests
-
-```python
-# tests/unit/test_typesense_provider.py
-def test_document_loading():
-    provider = create_typesense_provider(use_stub=True)
-    documents = provider.load_documents_from_directory(docs_dir)
-    assert len(documents) > 0
-
-def test_search_functionality():
-    provider = create_typesense_provider(use_stub=True) 
-    provider.initialize_for_domain("test", ["sample document"])
-    response = provider.search("test", "sample query")
-    assert response.total_hits >= 0
-```
-
-### Functional Tests
-
-```python
-# tests/functional/test_internal_mcp_typesense.py
-def test_internal_mcp_typesense_integration():
-    adapter = InternalMcpAdapter(params)
-    task_config = adapter.get_task("TC-001")
-    env = adapter.create_environment("TC-001")
-    
-    # Verify TypeSense tools work
-    tools = adapter.get_registry_tools("TC-001", env)
-    search_tool = next(t for t in tools if "search_policy" in t.name)
-    result = search_tool.execute(query="test query")
-    assert result.success
-```
+| Lane | File | Locks |
+|---|---|---|
+| unit | `tests/unit/test_orchestrator_typesense_startup.py` | a server that never became ready aborts the run, and does not leave its would-be address in the config |
+| unit | `tests/unit/test_orchestrator_typesense_cache_invalidation.py` | the Docker bridge either completes or aborts, and a description cached before the rewrite never reaches a trial |
+| unit | `tests/unit/test_runner_search_plane_refusal.py` | the seven refusal paths, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
+| unit | `tests/unit/test_runner_pipeline.py::TestRegisterTrialSearchPlanes` | the TypeSense and RAG planes stay decoupled |
 
 ## Server Configuration
 
@@ -262,8 +191,10 @@ orchestrator:
 ### Mode Options
 
 - **`local`**: Orchestrator manages a Docker container (auto start/stop)
-- **`remote`**: Connect to an external TypeSense server
-- **`disabled`**: TypeSense is disabled, search_policy returns empty results
+- **`remote`**: Connect to an external TypeSense server. Nothing is started, but the address is real, so the connection details still reach the adapter
+- **`disabled`**: no server is started and the orchestrator hands the adapter no connection details, so no task's `search.host` is set and none reaches the TypeSense plane
+
+`enabled: false` and `mode: disabled` are equally final: either one stops the connection details, and a knowledge-base task in such a run registers normally with no search client.
 
 ### Example Configurations
 
@@ -289,6 +220,8 @@ orchestrator:
 ```
 
 #### Disabled Mode
+
+Either spelling stops the connection details reaching the adapter:
 
 ```yaml
 orchestrator:
@@ -328,8 +261,20 @@ If not using orchestrator-managed server:
 With `mode: local`, the orchestrator handles everything automatically:
 
 1. **Configure** `.cache/typesense` data directory (added to `.gitignore`)
-2. **Start run** - TypeSense container starts automatically
+2. **Start run** - TypeSense container starts automatically; if it never becomes ready, the run aborts before any trial
 3. **Run completes** - Container is cleaned up (if `cleanup_on_exit: true`)
+
+### Docker Networking
+
+When the orchestrator manages the server (`mode: local`) and the run uses the engine's built-in stack, the TypeSense container is bridged onto the runner's network once that stack has started:
+
+- TypeSense joins `runner-net` under the alias `typesense`
+- `orchestrator.typesense` is rewritten to `typesense:8108` — inside a Docker network containers reach each other on the container port, never the host-mapped one
+- the rewritten address is propagated to the adapter, and task descriptions resolved before the rewrite are dropped so trials rebuild against it
+
+A bridge that cannot be completed aborts the run. A missing TypeSense container, a missing `runner-net`, an adapter that cannot carry the rewritten address, or any Docker SDK failure raises with the address trials would otherwise have kept. There is no partial bridge: the alternative is trials configured with the host-side address, which inside the runner container resolves to the runner itself.
+
+A run whose tasks declare their own compose stack cannot be bridged at all — the TypeSense KB and a task-declared `environment_manifest` are mutually exclusive, and the orchestrator refuses that combination up front.
 
 ### Production Setup
 
@@ -344,12 +289,7 @@ For production, configure TypeSense server with:
 The `TypeSenseServerManager` class provides programmatic control:
 
 ```python
-from tolokaforge.core.search.typesense_server import (
-    TypeSenseServerManager,
-    create_typesense_server,
-    find_free_port,
-    generate_api_key,
-)
+from tolokaforge.core.search.typesense_server import create_typesense_server
 
 # Create server manager
 server = create_typesense_server(
@@ -380,9 +320,10 @@ with create_typesense_server() as server:
 
 ### Common Issues
 
-1. **"Connection refused" errors**:
-   - Ensure TypeSense server is running on 127.0.0.1:8108
-   - Check Docker container status: `docker ps`
+1. **The run aborts with `orchestrator.typesense: the local TypeSense server … never became ready`**:
+   - Check Docker container status and the container's logs: `docker ps`, `docker logs tolokaforge-typesense`
+   - Raise `orchestrator.typesense.timeout` if the container is slow to answer its probes
+   - "no port was ever resolved" in place of an address means the failure came before port selection — the Docker foundation layer was unimportable
 
 2. **"Forbidden" API key errors**:
    - Set TYPESENSE_API_KEY environment variable
@@ -392,13 +333,13 @@ with create_typesense_server() as server:
    - Ensure adapter sets `db.domain` attribute
    - Check that domain name is properly inferred
 
-4. **Empty search results**:
-   - Verify documents exist in `docindex/` directory
-   - Check TypeSense initialization logs
-   - Confirm documents are .md files with content
+4. **A trial is refused with `the knowledge base is unusable` or `the search declaration and the artifact bundle disagree`**:
+   - Verify the adapter bundles `docindex/*.md` into the task's artifacts, and that every one of them is readable UTF-8
+   - "did not survive bundling" means the task declared `documents_path` and no readable `*.md` arrived — an adapter-side bundling bug
+   - "disagree" means the opposite: a corpus arrived for a task declaring no `documents_path`. Declare it, or stop bundling the corpus
 
 5. **Docker not available**:
-   - Docker SDK error: Install with `pip install docker` or `uv add docker`
+   - Docker SDK error: Install with `uv add docker`
    - Docker daemon not running: Start Docker service
    - Permission issues: Ensure user has Docker access
 
@@ -415,7 +356,7 @@ Enable debug logging to troubleshoot issues:
 
 ```python
 import logging
-logging.getLogger("tolokaforge.core.search.typesense_provider").setLevel(logging.DEBUG)
 logging.getLogger("tolokaforge.core.search.typesense_server").setLevel(logging.DEBUG)
+logging.getLogger("tolokaforge.core.search.domain_state").setLevel(logging.DEBUG)
 logging.getLogger("mcp_core.search").setLevel(logging.DEBUG)
 ```

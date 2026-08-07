@@ -344,18 +344,19 @@ class TestRunnerPipeline:
 class TestRegisterTrialSearchPlanes:
     """RegisterTrial decouples the two search planes.
 
-    ``search.enabled`` and ``search.host`` are independent:
+    ``search.enabled`` and the TypeSense connection details are independent:
 
-    - ``host`` set  ⇒ TypeSense init runs (the search_policy registry), gated on
-      ``host`` ALONE — independent of ``enabled``.
+    - ``host`` AND ``documents_path`` set ⇒ TypeSense init runs (the
+      search_policy registry) — independent of ``enabled``. No task here sets
+      ``documents_path``, so none of them reaches that init.
     - ``enabled`` set ⇒ the task declares it needs rag-service; the RAG indexing
       block requires a configured ``rag_client`` and fails loud otherwise.
 
     Regression context (PR #102): once the core stack stopped setting
     ``RAG_SERVICE_URL`` (rag-env-honesty), ``rag_client is None`` on that stack.
     A TypeSense-only domain used to flip ``enabled=True`` only to get TypeSense
-    init, which then hard-failed on the RAG requirement. The fix gates TypeSense
-    init on ``host`` alone so such a domain sets ``enabled=False`` and registers.
+    init, which then hard-failed on the RAG requirement. TypeSense init is not
+    gated on ``enabled``, so such a domain sets ``enabled=False`` and registers.
     """
 
     @staticmethod
@@ -377,9 +378,6 @@ class TestRegisterTrialSearchPlanes:
     def test_typesense_only_registers_without_rag_client(self, mock_grpc_context, db_client):
         """REGRESSION: a TypeSense-only domain (enabled=False, host set) with NO
         rag_client registers successfully — it must NOT hit the RAG fail-loud.
-
-        mcp_core is absent in this repo, so ``_init_typesense_for_trial`` warns
-        and skips; the contract under test is only that registration succeeds.
         """
         from tolokaforge.runner.service import RunnerServiceImpl
 
