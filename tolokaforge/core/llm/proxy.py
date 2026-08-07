@@ -82,24 +82,20 @@ serves this provider's native route" — true for a LiteLLM proxy's
 :data:`UNROUTABLE_PROVIDERS` cannot be opted in at all and are rejected
 loudly, because no gateway can serve them (see that constant).
 
-Widening the default to *every* provider would need this module to force the
-OpenAI envelope (``custom_llm_provider="openai"`` on routed calls, as the Nova
-path already does) rather than only swapping the base URL. That is a larger
-change than a transport swap — it collides with the ``custom_llm_provider`` the
-OpenRouter branch sets — and is deliberately not attempted here.
+Routed calls now DO force the OpenAI envelope, because that is the gateway's own
+protocol; see ``docs/LLM_LAYER.md`` § "Speaking to the gateway". Widening
+``LLM_PROXY_PROVIDERS`` to a provider whose gateway route is a native passthrough
+rather than an OpenAI-compatible one is therefore still not supported.
 
-Why the model name is left alone
---------------------------------
+The model name on the wire
+--------------------------
 
-:meth:`LLMClient._build_kwargs` applies this transport by setting ``api_base``
-and ``api_key`` only. The litellm model string keeps its original
-``<provider>/<name>`` shape. Only one thing depends on that string:
-:func:`tolokaforge.core.pricing.normalize_model_name` keys off it, and it
-returns any second-prefixed name verbatim, guaranteeing a pricing-table miss
-that degrades ``cost_source`` to ``"unknown"``. Presets are *not* coupled to it
-— ``build_capabilities`` resolves off ``ModelConfig.name`` / ``.provider``
-directly — but renaming *those* to gateway-specific values does drop the
-matched preset and the ``providers:`` overlay. See ``docs/LLM_LAYER.md`` § proxy.
+Routed calls are addressed by the gateway's route name, resolved from its catalog
+(:mod:`tolokaforge.core.llm.gateway_route`). ``ModelConfig.provider`` / ``.name`` are
+untouched, so preset resolution and
+:func:`tolokaforge.core.pricing.normalize_model_name` are unaffected: both key off
+the config, not off the wire name. See ``docs/LLM_LAYER.md`` § "Speaking to the
+gateway" for the three catalog outcomes.
 """
 
 from __future__ import annotations

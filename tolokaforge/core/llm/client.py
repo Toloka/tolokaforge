@@ -1948,7 +1948,9 @@ class LLMClient:
                     if not kwargs["model"].startswith("openai/"):
                         kwargs["model"] = f"openai/{kwargs['model']}"
 
-                elif "/" in self.config.provider:
+                elif self._gateway_route is None and "/" in self.config.provider:
+                    # Not when routed: _build_kwargs already set the gateway's dialect
+                    # and overwriting it here reverts the name AND the body shape.
                     base_provider = self.config.provider.split("/")[0]
                     kwargs["custom_llm_provider"] = base_provider
 

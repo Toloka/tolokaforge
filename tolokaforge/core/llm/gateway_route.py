@@ -6,6 +6,7 @@ own model name and its own dialect, and what goes wrong without them.
 
 from __future__ import annotations
 
+import http.client
 import json
 import logging
 import urllib.error
@@ -24,8 +25,9 @@ __all__ = [
 
 logger = logging.getLogger(__name__)
 
-#: Cached per base URL. A catalog changes when an operator edits the gateway, not
-#: within a run, and a run builds one client per role per trial.
+#: Successful reads only, cached per base URL: a catalog changes when an operator
+#: edits the gateway, not within a run, while a failure is transient and caching it
+#: would keep a whole run on the degraded path after one blip.
 _CATALOG_CACHE: dict[str, frozenset[str] | None] = {}
 
 
@@ -60,12 +62,19 @@ def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[st
         entries = payload.get("data")
         if not isinstance(entries, list):
             raise ValueError(f"expected a data list, got {type(entries).__name__}")
-        catalog: frozenset[str] | None = frozenset(
-            str(e["id"]) for e in entries if isinstance(e, dict) and e.get("id")
-        )
-    except (urllib.error.URLError, TimeoutError, ValueError, json.JSONDecodeError, OSError) as exc:
+        # An empty catalog is a broken answer, not an authoritative "serves nothing":
+        # treating it as authoritative would take the run off the gateway.
+        served = frozenset(str(e["id"]) for e in entries if isinstance(e, dict) and e.get("id"))
+        catalog: frozenset[str] | None = served if served else None
+    except (
+        urllib.error.URLError,
+        http.client.HTTPException,
+        TimeoutError,
+        ValueError,
+        OSError,
+    ) as exc:
         logger.warning("Gateway catalog unreadable at %s: %s", url, exc)
-        catalog = None
+        return None
 
     _CATALOG_CACHE[key] = catalog
     return catalog

@@ -637,7 +637,7 @@ couplings described below:
   `extra_body.reasoning`. That is correct for an OpenAI-shaped gateway endpoint,
   but verify it for reasoning models before trusting a run.
 
-**This is a transport swap and nothing else.** `_build_kwargs` sets `api_base`,
+**This was a transport swap and nothing else until the gateway route resolution above; routed calls now also carry the gateway's dialect and its route name.** `_build_kwargs` sets `api_base`,
 `api_key`, and `extra_headers`; the litellm model string keeps its original
 `<provider>/<name>` shape. Two distinct couplings hang off model naming, and
 only the second is to that formatted string:
