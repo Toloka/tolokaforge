@@ -1274,7 +1274,7 @@ def test_a_literal_expected_hash_beside_golden_actions_needs_no_world() -> None:
 def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None:
     """The unresolvable arm, which no corpus walk can reach.
 
-    Every one of the 93 authored packs in the repository is native, so every world the
+    Every one of the 94 authored packs in the repository is native, so every world the
     canonical corpus guard resolves is ``known`` — this case carries the branch alone.
     A caller holding no ``task.yaml`` — the trace-replay batch and the rubric migration
     both check a ``trace_checks`` fragment against a bundle's recorded tools — must not
@@ -1301,7 +1301,7 @@ def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None
 def test_a_pack_that_replays_nothing_draws_no_skip_for_a_world() -> None:
     """A skip is emitted where the rule would have run, and nowhere else.
 
-    89 of the repository's 93 authored packs replay no golden path, and the block below is
+    90 of the repository's 94 authored packs replay no golden path, and the block below is
     what they look like. A skip reported for every unresolvable world would put an entry
     beside each of them for a rule that had nothing to check — noise in ``validate``'s
     output, and a corpus guard whose ``unchecked`` assertion can no longer say which

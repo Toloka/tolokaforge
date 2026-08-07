@@ -1,0 +1,7 @@
+{
+  "widgets": [
+    {"line": "L1", "slot": "S1", "status": "pending"},
+    {"line": "L1", "slot": "S2", "status": "active"},
+    {"line": "L2", "slot": "S2", "status": "pending"}
+  ]
+}
