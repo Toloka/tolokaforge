@@ -1279,6 +1279,12 @@ class Orchestrator:
                 # (typesense:8108) into SearchConfig rather than host-side ones.
                 if self.adapter and hasattr(self.adapter, "params"):
                     self.adapter.params["typesense"] = resolved_config
+                    # Descriptions resolved before this rewrite — the pre-run
+                    # grading gate resolves every selected task — carry the
+                    # host-side address, which inside the runner container is
+                    # the runner itself (#925). Drop them so trials rebuild
+                    # against the rewritten params.
+                    self._task_desc_cache.clear()
                     self.logger.debug(
                         "Propagated TypeSense Docker config to adapter",
                         host="typesense",
