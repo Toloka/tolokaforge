@@ -11,6 +11,12 @@ load-bearing: a key added to either substrate's config model without an entry
 here fails that suite, and every entry claiming both substrates at
 :attr:`Enforcement.DIFFERENTIAL_CANONICAL` must demonstrably move both
 substrates' component scores.
+
+Every entry addresses a *declared model field*, and ``*_element_path`` is the one
+way to name a position below one. A key living inside a field whose contents no
+model declares therefore has no address here: give that field a model, or add an
+addressing mechanism the parity suite can walk. A hand-declared address the suite
+cannot introspect is the invisibility this manifest exists to prevent.
 """
 
 from collections.abc import Mapping
@@ -31,7 +37,8 @@ class KeyKind(str, Enum):
     """Produces a component score from a trajectory or a final state."""
 
     CONFIG_INPUT = "CONFIG_INPUT"
-    """Shapes how another check behaves; carries no score of its own."""
+    """Shapes how another check behaves or how its verdict is reported; carries no
+    score of its own."""
 
     AGGREGATION = "AGGREGATION"
     """Combines component scores into the final score."""
@@ -74,9 +81,7 @@ class GradingKey:
 
     ``core_field`` / ``runner_field`` are dotted *model attribute* paths
     (``"StateChecksConfig.jsonpaths"``), ``None`` when that substrate does not
-    declare the key at all. When the author key lives inside an untyped dict
-    field, ``*_field`` names the dict field and ``*_dict_key`` the key inside it
-    — the dict half is declared data, not introspection-verified.
+    declare the key at all.
 
     When the author key lives *inside the elements* of a ``list[BaseModel]``
     field, ``*_field`` names the list and ``*_element_path`` is a dotted path
@@ -103,8 +108,6 @@ class GradingKey:
     enforcement: Enforcement
     core_field: str | None
     runner_field: str | None
-    core_dict_key: str | None = None
-    runner_dict_key: str | None = None
     core_element_path: str | None = None
     runner_element_path: str | None = None
     core_evaluator: str | None = None
@@ -131,19 +134,12 @@ class GradingKey:
                 "pytest nodeid. Name the test function that runs the differential: "
                 "<module path>::<test function>"
             )
-        for substrate, field, dict_key, element_path in (
-            ("core", self.core_field, self.core_dict_key, self.core_element_path),
-            ("runner", self.runner_field, self.runner_dict_key, self.runner_element_path),
+        for substrate, field, element_path in (
+            ("core", self.core_field, self.core_element_path),
+            ("runner", self.runner_field, self.runner_element_path),
         ):
             if element_path is None:
                 continue
-            if dict_key is not None:
-                raise ValueError(
-                    f"{self.author_key}: {substrate}_element_path {element_path!r} and "
-                    f"{substrate}_dict_key {dict_key!r} address the same field two ways. A "
-                    "dict key is declared data inside an untyped field; an element path is "
-                    "walked against the element model. Keep one"
-                )
             if field is None:
                 raise ValueError(
                     f"{self.author_key}: {substrate}_element_path {element_path!r} is walked "
@@ -362,7 +358,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field=None,
         runner_field=None,
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
@@ -375,9 +371,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SIGNAL_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.enabled",
         runner_field="RunnerStateChecksConfig.hash_enabled",
-        core_dict_key="enabled",
         core_evaluator=_CORE_HASH_EVALUATOR,
         runner_evaluator=RUNNER_HASH_EVALUATOR,
         enforcing_test=_HASH_COMPOSITION_WIRE_TEST,
@@ -388,9 +383,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_INTEGRATION,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.golden_actions",
         runner_field="RunnerStateChecksConfig.golden_actions",
-        core_dict_key="golden_actions",
         core_evaluator=(
             "tolokaforge.core.grading.state_checks.StateChecker.check_hash_against_golden_replay"
         ),
@@ -402,9 +396,8 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.SCORED_CHECK,
         coverage=SubstrateCoverage.CORE_ONLY,
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.expected_state_hash",
         runner_field="RunnerStateChecksConfig.expected_hash",
-        core_dict_key="expected_state_hash",
         core_evaluator=_CORE_HASH_EVALUATOR,
         reason=(
             "the adapter translates it onto the runner's expected_hash field and no "
@@ -419,11 +412,24 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
         enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
-        core_field="StateChecksConfig.hash",
+        core_field="StateHashConfig.weight",
         runner_field="RunnerStateChecksConfig.hash_weight",
-        core_dict_key="weight",
         core_evaluator="tolokaforge.core.grading.state_composition.compose_state_checks_score",
         runner_evaluator="tolokaforge.runner.grading.resolve_state_checks_component",
+    ),
+    GradingKey(
+        author_key="state_checks.hash.description",
+        kind=KeyKind.CONFIG_INPUT,
+        coverage=SubstrateCoverage.CORE_ONLY,
+        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        core_field="StateHashConfig.description",
+        runner_field=None,
+        core_evaluator="tolokaforge.core.grading.combine.GradingEngine._check_state_hash",
+        reason=(
+            "the runner's flattened hash block declares no description field, so there is "
+            "nothing on that substrate for the key to resolve against: the wire carries the "
+            "runner's hash verdict, not the reason text an author writes beside it"
+        ),
     ),
     GradingKey(
         author_key="state_checks.jsonpaths",

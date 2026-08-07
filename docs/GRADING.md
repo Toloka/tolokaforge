@@ -174,6 +174,7 @@ declared `reason`.
 | Key | kind | coverage | enforcement | Why only one substrate | Tracked |
 |---|---|---|---|---|---|
 | `state_checks.hash.expected_state_hash` | `SCORED_CHECK` | `CORE_ONLY` | field resolution | translated onto the runner's `expected_hash` field, which no runner code path reads — runner hash grading always recomputes a golden hash from `golden_actions` | #693 |
+| `state_checks.hash.description` | `CONFIG_INPUT` | `CORE_ONLY` | field resolution | the runner's flattened hash block declares no description field, so there is nothing on that substrate for the key to resolve against — the wire carries the runner's hash verdict, not the reason text an author writes beside it | architectural |
 | `state_checks.db_probes` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the probe DSN resolves only inside the task's docker network, which the runner joins and the host-side core engine does not | architectural |
 | `llm_judge` | `SCORED_CHECK` | `RUNNER_ONLY` | integration differential | the rubric judge runs runner-side on the shared `ToolCallingLoop`; the core engine deliberately leaves the component unset | architectural |
 | `grading_method` | `AGGREGATION` | `RUNNER_ONLY` | field resolution | a runner-side dispatch selector with no `grading.yaml` counterpart; the dispatch returns before the component phase | architectural |
@@ -378,12 +379,11 @@ it, so the component drops out of the combine on both substrates or on neither.
 ### What the guard cannot see
 
 `model_fields` introspection enumerates typed config fields, and the contents of a
-**dict-typed** field are values rather than fields. So `state_checks.hash.*`, the
-`state_checks.jsonpaths[*]` operator vocabulary, and `custom_checks.*` internals
-are structurally outside the enumeration whatever their parent model does with an
-unknown key — the manifest records nested dict keys as **declared data**, verified
-only to live inside a dict-typed field. And a green parity suite proves each key
-*discriminates*, not that its discrimination is *correct*.
+**dict-typed** field are values rather than fields. So the
+`state_checks.jsonpaths[*]` operator vocabulary and `custom_checks.*` internals are
+structurally outside the enumeration whatever their parent model does with an
+unknown key. And a green parity suite proves each key *discriminates*, not that its
+discrimination is *correct*.
 
 An author key living inside the **elements** of a `list[SomeModel]` field is the
 one nested position that is *not* declared data. The field walker treats such a
@@ -1107,6 +1107,33 @@ flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, a
 empty `golden_actions` list replays nothing, so it is no more a source than an absent
 one. The rules' class and the rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
+
+**The block is closed, and both of the adapter's reads of it refuse the same key.** A key
+`hash` does not declare requests *nothing* — a misspelled `enalbed` or
+`expected_state_hsah` leaves the hash unscored while the trial grades on whatever else
+the pack declared, which scores *higher* than the same block spelled correctly. So the
+accepted set is exactly `enabled`, `expected_state_hash`, `golden_actions`, `weight` and
+`description`, and anything else is a load error
+([§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses)).
+`NativeAdapter` reads a `grading.yaml` on two errands — `get_grading_config` builds the
+host-side config, `to_task_description` lowers the block onto the runner's flattened
+`hash_enabled` / `expected_hash` / `hash_weight` fields — and **both construct the block
+rather than reading it key by key**, so neither lowers a key the other refuses. The two
+share a file and not an object, which is what makes the second read load-bearing:
+`tolokaforge run-trial` runs no grading pre-flight, so the description build is the only
+read a trial there passes through, and a key dropped at that read reaches
+`RegisterTrial` as an absent hash and is paid for.
+
+| key | what it declares |
+|---|---|
+| `enabled` | whether the hash is compared at all. A source under a falsy flag, or a truthy flag with no source, is refused rather than graded |
+| `expected_state_hash` | the literal to compare the final state against. Read first, so it returns before `golden_actions` is looked at |
+| `golden_actions` | the actions to replay for an expected state, where no literal is declared |
+| `weight` | the hash's share of the `state_checks` component where `jsonpaths` is non-empty too. No default — the shape that needs one and declares none is refused |
+| `description` | what the hash asserts, in the author's words. A non-empty value is appended in parentheses to the hash verdict's reason in `grade.reasons`, the way an assertion's `description` reads into its own |
+
+`description` is the one key of the five the runner's flattened block does not declare, so
+a trial the runner graded reports the hash verdict without it.
 
 **`golden_actions` is the list of actions to replay, or there is no replay.** A **falsy**
 value — `[]`, `{}`, `""`, `0`, `false`, or the key written bare, which is what an author
@@ -2581,8 +2608,9 @@ nothing costs the whole trial: both substrates resolve the authored names before
 first action runs and refuse the replay outright, so the tokens are spent and no
 state-hash verdict comes back at all (see
 [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)). An action with no
-`name` key, `name: ""`, `name: null`, or — the `hash` block being untyped — a `name`
-written as anything but a string resolves to nothing the same way and draws the same
+`name` key, `name: ""`, `name: null`, or — `golden_actions` claiming nothing about its
+elements (#907) — a `name` written as anything but a string resolves to nothing the same
+way and draws the same
 error, and each offending action is addressed by its own index — a name may repeat, and a
 nameless action carries nothing else to tell it apart by.
 
@@ -2760,15 +2788,20 @@ declared field and the whole accepted set. `trace_checks` draws that bare refusa
 `llm_judge` draws it only on the `rubric` / `model_ref` shapes its own migration names,
 which are the shapes `validate` constructs it for at all.
 
-**One tier further down, `transcript_rules`' two element lists get the same message.**
-A `required_actions` or `communicate_info` element refuses a key it does not declare,
-and `validate` names it with the element's index —
+**One tier further down, the positions those blocks nest get the same message.** Two
+shapes reach it. A `required_actions` or `communicate_info` element refuses a key it
+does not declare, and `validate` names it with the element's index —
 `transcript_rules.required_actions[0]` — beside the closest declared field and that
 element's accepted set (`action_id`, `requestor`, `name`, `arguments`, `compare_args`
-for one; `info`, `required` for the other). Every field there has a default a dropped
-key substituted silently: `compare_args` resolving to `None` compares **every**
-declared argument, so a `compare_arg` typo made the check strictly harder than its
-author wrote it and failed trials that satisfied what they wrote.
+for one; `info`, `required` for the other). A block a field holds whole —
+`state_checks.hash` and `transcript_rules.tool_expectations` — is named by its dotted
+path and answered the same way: `state_checks.hash accepts: enabled,
+expected_state_hash, golden_actions, weight, description`. Every field at this tier has
+a default a dropped key would substitute silently: `compare_args` resolving to `None`
+compares **every** declared argument, so a `compare_arg` typo makes the check strictly
+harder than its author wrote it and fails trials that satisfy what they wrote, and a key
+`hash` does not declare requests *nothing*, leaving the hash unscored while the trial
+grades on whatever survives beside it.
 
 `state_checks` has two exceptions, and they are not leniency. A **populated**
 `env_assertions` or `db_hash_check` draws the migration message naming the check that
@@ -2797,10 +2830,8 @@ in the grading engine, runner-side at grade time — so the author hears it afte
 trial is paid for. #873 owns closing that gap.
 
 **A dict-typed field's contents are values, not keys**, so no `extra` setting reaches
-them: `state_checks.hash.*` and the `state_checks.jsonpaths[*]` operators are policed
-by their own rules instead (see
-[§ The `jsonpaths` assertion vocabulary](#the-jsonpaths-assertion-vocabulary) and the
-`hash` rules in the findings table above).
+them: the `state_checks.jsonpaths[*]` operators are policed by their own rules instead
+(see [§ The `jsonpaths` assertion vocabulary](#the-jsonpaths-assertion-vocabulary)).
 
 **What this means for a pack read by an engine of another release.** An engine from
 this release onward **refuses** a grading key its own model does not declare, so a pack
@@ -2851,9 +2882,10 @@ The migration for either is the same: indent the block's own keys one level unde
 key rather than writing its contents beside it.
 
 **One value below the key names carries its own shape rule.**
-`state_checks.hash.golden_actions` is neither a grading key nor a block — it is a value
-inside `hash`, which is an untyped mapping (#730) — so the refusal above says nothing about
-it. It is the list of actions to replay, or there is no replay: a falsy value loads at
+`state_checks.hash.golden_actions` is neither a grading key nor a block — it is a declared
+field of the `hash` block, annotated to claim nothing about the value it holds or the
+elements inside it (#907) — so the refusal above says nothing about it. It is the list of
+actions to replay, or there is no replay: a falsy value loads at
 every read site as nothing to replay, and a truthy value that is not a list can be replayed
 by neither substrate and is refused by the golden-replay precondition, at the authoring
 gate and again at each substrate's own read of the block — core reaching that read without

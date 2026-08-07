@@ -15,6 +15,8 @@ from tolokaforge.core.deprecations import canonicalize_actor_config
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
+    AUTHORED_HASH_WEIGHT_CONTEXT,
+    StateHashConfig,
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
 )
@@ -408,7 +410,7 @@ class StateChecksConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
     jsonpaths: list[dict[str, Any]] = Field(default_factory=list)
-    hash: dict[str, Any] | None = None
+    hash: StateHashConfig | None = None
     db_probes: list[dict[str, Any]] = Field(default_factory=list)
     # Opt-in, per-field: record field names whose numeric-looking STRING values
     # fold ("130.00" == "130.0") when hashing state. Mirrors the runner-side
@@ -514,7 +516,7 @@ class StateChecksConfig(BaseModel):
         resolve_hash_weight(
             self.hash,
             jsonpaths=self.jsonpaths,
-            context="grading.yaml state_checks.hash.weight",
+            context=AUTHORED_HASH_WEIGHT_CONTEXT,
         )
         return self
 

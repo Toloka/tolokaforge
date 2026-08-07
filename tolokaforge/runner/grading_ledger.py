@@ -257,11 +257,6 @@ def runner_dump_path(item: GradingKey) -> tuple[str, ...]:
     """
     if item.runner_field is None:
         raise ValueError(f"{item.author_key}: has no runner_field to resolve")
-    if item.runner_dict_key is not None:
-        raise ValueError(
-            f"{item.author_key}: runner_dict_key {item.runner_dict_key!r} is not "
-            "resolvable — the ledger reads typed runner fields only"
-        )
     model_name, _, field_name = item.runner_field.partition(".")
     declared = _RUNNER_CONFIG_MODELS.get(model_name)
     if declared is None:
