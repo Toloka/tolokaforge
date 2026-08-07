@@ -14,6 +14,13 @@ The lock sits on the two private seams the regression lives between —
 (the rewrite) — because the end-to-end surface needs a Docker daemon the unit
 lane does not have. The orchestrator is real; only the Docker SDK boundary and
 the adapter are stand-ins.
+
+One contract this file assumes rather than proves: the mcp_core adapters read
+``params["typesense"]`` at ``to_task_description`` time, not at construction
+time (their construction-time snapshot serves host-side indexing only). No
+in-repo adapter exercises that read, so an adapter that started snapshotting
+would regress to #925 with these tests still green — that end of the contract
+belongs to the external adapters' own suites.
 """
 
 from __future__ import annotations
