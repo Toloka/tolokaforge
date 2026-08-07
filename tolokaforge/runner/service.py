@@ -2502,7 +2502,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
                 )
 
-    def _id_fields_for_trial(self, trial_id: str) -> dict[str, str]:
+    def _id_fields_for_trial(self, trial_id: str) -> dict[str, str | list[str]]:
         """Return the id_fields map declared by the trial's grading config, or ``{}``.
 
         Callers of ``_sync_mcp_state_to_db`` (GradeTrial, GetState) always guard

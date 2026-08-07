@@ -34,13 +34,14 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from tolokaforge.runner.db_client import DBServiceClient
-from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_field_for_table
+from tolokaforge.runner.id_resolution import IdFieldResolutionError, table_key
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +74,7 @@ class DBServiceProxy:
         trial_id: str,
         model_registry: dict[str, type[BaseModel]] | None = None,
         db_table_names: list[str] | None = None,
-        id_fields: dict[str, str] | None = None,
+        id_fields: Mapping[str, str | list[str]] | None = None,
     ):
         """
         Initialize the DB Service proxy.
@@ -86,16 +87,18 @@ class DBServiceProxy:
             db_table_names: Optional list of actual table names from initial_state.
                            Used for fallback table name resolution when model is not registered.
             id_fields: Optional per-table primary-key overrides (table_name -> key
-                           field), from grading config state_checks.id_fields. A table
-                           absent from the map resolves to the literal "id".
+                           field or ordered component list), from grading config
+                           state_checks.id_fields. A table absent from the map
+                           resolves to the literal "id".
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.db_table_names = db_table_names or []
-        # Per-table primary-key field (table_name -> key field). Data-driven so
-        # upsert/delete/lookup key resolution never depends on reading model source
-        # at runtime; a table absent here resolves to "id".
-        self._id_fields: dict[str, str] = dict(id_fields or {})
+        # Per-table primary-key override (table_name -> key field or ordered
+        # component list). Data-driven so upsert/delete/lookup key resolution
+        # never depends on reading model source at runtime; a table absent here
+        # resolves to "id".
+        self._id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         # Domain name for TypeSense search (used by search_policy tools
         # that call getattr(db, "domain") to look up the registry).
         self.domain: str | None = None
@@ -290,7 +293,7 @@ class DBServiceProxy:
         """
         table_name = self._get_table_name(model_cls)
         if self._id_fields.get(table_name):
-            return id_field_for_table(table_name, self._id_fields)
+            return self._single_key_field(table_name)
         if "id" in getattr(model_cls, "model_fields", {}):
             return "id"
         raise IdFieldResolutionError(
@@ -299,6 +302,22 @@ class DBServiceProxy:
             f"state_checks.id_fields entry. Add to the task's grading.yaml:\n"
             f"  state_checks:\n    id_fields:\n      {table_name}: <key_field>"
         )
+
+    def _single_key_field(self, table_name: str) -> str:
+        """The table's declared key as one field name; a composite key is refused.
+
+        Every proxy operation addresses records by a single key field, so a
+        composite declaration raises loudly here instead of degrading (a list
+        interpolated into a JSONPath falls through to the full scan; an upsert
+        would carry a list ``key`` the db-service rejects).
+        """
+        key = table_key(table_name, self._id_fields)
+        if len(key.fields) > 1:
+            raise IdFieldResolutionError(
+                f"Table {table_name!r} declares composite key {list(key.fields)!r}; "
+                f"DBServiceProxy operations address records by a single key field."
+            )
+        return key.fields[0]
 
     # =========================================================================
     # InMemoryDatabase-compatible interface (async versions)
@@ -353,7 +372,7 @@ class DBServiceProxy:
             Model instance or None if not found
         """
         table_name = self._get_table_name(model_cls)
-        id_field = id_field_for_table(table_name, self._id_fields)
+        id_field = self._single_key_field(table_name)
 
         jsonpath = f"$.{table_name}[?(@.{id_field}=='{value}')]"
         try:

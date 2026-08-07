@@ -30,6 +30,7 @@ import subprocess
 import sys
 import time
 from abc import ABC, abstractmethod
+from collections.abc import Mapping
 from dataclasses import dataclass
 from typing import Any
 
@@ -234,12 +235,12 @@ class TauSyncToolWrapper(ToolWrapper):
         tool_schema: ToolSchemaModel,
         tool_class: type,
         db_proxy: SyncDBServiceProxy,
-        id_fields: dict[str, str] | None = None,
+        id_fields: Mapping[str, str | list[str]] | None = None,
     ):
         super().__init__(tool_schema)
         self.tool_class = tool_class
         self.db_proxy = db_proxy
-        self._id_fields: dict[str, str] = dict(id_fields or {})
+        self._id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._tool_instance = None
 
     async def execute(self, arguments: dict[str, Any]) -> str:
@@ -1409,7 +1410,7 @@ class ToolFactory:
         rag_client: RAGServiceClient | None = None,
         db_table_names: list[str] | None = None,
         initial_state_data: dict[str, list[dict]] | None = None,
-        id_fields: dict[str, str] | None = None,
+        id_fields: Mapping[str, str | list[str]] | None = None,
     ):
         """
         Initialize the tool factory.
@@ -1423,16 +1424,17 @@ class ToolFactory:
             initial_state_data: Optional dict mapping table names to their records.
                                Used for ID field matching during model registration.
             id_fields: Optional per-table primary-key overrides (table_name -> key
-                       field), from grading config state_checks.id_fields. Forwarded
-                       to the DB proxy and to TauSyncToolWrapper diff-sync so key
-                       resolution is data-driven; a table absent resolves to ``"id"``.
+                       field or ordered component list), from grading config
+                       state_checks.id_fields. Forwarded to the DB proxy and to
+                       TauSyncToolWrapper diff-sync so key resolution is
+                       data-driven; a table absent resolves to ``"id"``.
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.rag_client = rag_client
         self.db_table_names = db_table_names or []
         self._initial_state_data = initial_state_data or {}
-        self.id_fields = dict(id_fields or {})
+        self.id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         self._claimed_tables: set[str] = set()
 
         # Create DB proxies for tools

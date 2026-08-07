@@ -230,3 +230,24 @@ def test_state_checks_config_rejects_blank_id_field():
     assert RunnerStateChecksConfig(id_fields={"widgets": "widget_id"}).id_fields == {
         "widgets": "widget_id"
     }
+
+
+async def test_composite_declaration_is_refused_loudly():
+    """A composite key on the proxy's single-field write/read paths raises the
+    contract error instead of degrading (a list interpolated into the JSONPath
+    silently falls through to the full scan; an upsert would carry a list key
+    the db-service rejects)."""
+    proxy, client = _proxy(
+        "widgets",
+        WidgetLike,
+        id_fields={"widgets": ["widget_id", "status"]},
+        state={"widgets": [{"widget_id": "W1", "status": "new"}]},
+    )
+    with pytest.raises(IdFieldResolutionError) as ei:
+        await proxy.update(WidgetLike(widget_id="W1", status="ready"))
+    msg = str(ei.value)
+    assert "widgets" in msg
+    assert "widget_id" in msg and "status" in msg
+    with pytest.raises(IdFieldResolutionError):
+        await proxy.get_by_id(WidgetLike, "W1")
+    assert client.mutations == []  # nothing was written
