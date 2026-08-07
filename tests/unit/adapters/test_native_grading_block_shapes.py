@@ -13,11 +13,18 @@ a truthiness test, so a gate mirroring that would answer ``[{enabled: true}]`` a
 absent block, so the pack builds a description that grades that component as nothing
 and the trial is paid for before anything notices.
 
-**One tier below those keys, and one errand refuses it.** ``state_checks.hash.golden_actions``
+**One tier below those keys, and both errands refuse it.** ``state_checks.hash`` is a block
+inside ``state_checks`` rather than a grading key, so the shape gate above never walks it —
+and each errand constructs it for itself, ``to_task_description`` reading the file without
+``get_grading_config`` ever having run. A key the block does not declare requests nothing, so
+dropping it silently at either read grades the component as absent and scores the pack
+*higher* than the same block spelled correctly.
+
+**One tier below those keys again, and one errand refuses it.** ``state_checks.hash.golden_actions``
 is the list of actions a golden replay executes, and :meth:`to_task_description` is the read
 that lowers each action onto the wire — so it is the one that refuses a shape it cannot
-lower. :meth:`get_grading_config` hands the untyped block on to the core engine, which
-refuses the same shape at its own read
+lower. :meth:`get_grading_config` hands the block's unclaimed ``golden_actions`` on to the
+core engine, which refuses the same shape at its own read
 (``tests/unit/grading/test_state_checks_composition.py``), and :meth:`compute_golden_hash`
 reads the source for truth alone and returns no hash for any other shape (#836). So the rows
 below are not parametrised over the errands. A *falsy* source is no replay rather than a
@@ -299,6 +306,106 @@ def test_an_action_that_is_no_mapping_is_refused_before_anything_is_built(
 
     assert "[1]" in str(excinfo.value)
     assert f"{type(element).__name__} ({element!r})" in str(excinfo.value)
+
+
+_KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE = (
+    pytest.param({"enalbed": True, "expected_state_hash": "aaaa"}, ["enalbed"], id="a_typod_flag"),
+    pytest.param(
+        {"enabled": True, "expected_state_hsah": "aaaa"},
+        ["expected_state_hsah"],
+        id="a_typod_source",
+    ),
+    pytest.param(
+        {"hash_enabled": True, "expected_hash": "aaaa", "hash_weight": 0.5},
+        ["expected_hash", "hash_enabled", "hash_weight"],
+        id="the_runners_own_flattened_names",
+    ),
+    pytest.param(
+        {"enabled": True, "expected_state_hash": "aaaa", "weigth": 0.6},
+        ["weigth"],
+        id="a_typod_weight",
+    ),
+)
+"""Blocks that request *nothing* the author asked for, each with every key that does it.
+
+The flattened row is the sharpest: those are the names the *runner* declares for this
+block and the ones an author meets in this repo's own substrate tables, so the block
+reads as configured hash grading and lowers as none. All three are named in one raise,
+which is what lets an author fix the block in a single pass.
+"""
+
+
+@pytest.mark.parametrize(("block", "offending_keys"), _KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE)
+def test_a_hash_key_the_block_does_not_declare_is_refused_at_the_wire_read(
+    tmp_path: Path, block: dict[str, Any], offending_keys: list[str]
+) -> None:
+    """The description build reads the block on its own, so it has to refuse on its own.
+
+    ``get_grading_config`` constructs ``StateHashConfig`` through ``GradingConfig`` and has
+    refused these since the block was typed — but it is never called here, and that is the
+    assertion: the two errands share a *file*, not an object, and a description built by
+    reading the file a second time reaches ``RegisterTrial`` without the first read ever
+    having happened (``run-trial`` runs no grading pre-flight at all). A block dropping the
+    key silently here lowers ``hash_enabled=False`` onto the wire, so the trial is paid for
+    and grades the component it configured as absent — scoring *higher* than the same block
+    spelled correctly.
+    """
+    adapter = _pack(tmp_path, grading_yaml=yaml.safe_dump({"state_checks": {"hash": block}}))
+
+    with pytest.raises(ValidationError) as excinfo:
+        adapter.to_task_description(_TASK_ID)
+
+    errors = excinfo.value.errors()
+    assert sorted(error["loc"] for error in errors) == [(key,) for key in offending_keys]
+    assert {error["type"] for error in errors} == {"extra_forbidden"}
+
+
+@pytest.mark.parametrize(
+    "hash_block",
+    [
+        pytest.param(None, id="the_key_carrying_nothing"),
+        pytest.param({}, id="an_empty_mapping"),
+    ],
+)
+def test_a_hash_block_declaring_nothing_reaches_the_wire_as_an_absent_one(
+    tmp_path: Path, hash_block: Any
+) -> None:
+    """The positive control for the rows above, and the one shape that must not refuse.
+
+    ``hash:`` written bare, an empty mapping and no ``hash`` key at all are one block on
+    the wire. Reading the raw value for *truthiness* rather than for ``None`` would keep
+    them equal by swallowing ``hash: 0`` beside them, which the grading config refuses.
+    """
+    declared = _pack(
+        tmp_path / "declared",
+        grading_yaml=yaml.safe_dump({"state_checks": {"hash": hash_block, "jsonpaths": []}}),
+    )
+    absent = _pack(
+        tmp_path / "absent", grading_yaml=yaml.safe_dump({"state_checks": {"jsonpaths": []}})
+    )
+
+    assert _wire_grading(declared).state_checks == _wire_grading(absent).state_checks
+
+
+@pytest.mark.parametrize("shape", _TRUTHY_SHAPES + _FALSY_SHAPES)
+def test_a_hash_block_that_is_not_a_mapping_is_refused_at_the_wire_read(
+    tmp_path: Path, shape: Any
+) -> None:
+    """One tier below the keys ``refuse_malformed_grading_shapes`` walks, and unwalked by it.
+
+    That gate answers the six top-level grading keys; ``hash`` sits inside ``state_checks``
+    and reaches this read whatever its shape. The falsy half is the expensive one — it is
+    read as a block requesting no hash at all, so the trial is paid for before anything
+    notices — and it is the half a truthiness test cannot answer.
+    """
+    adapter = _pack(tmp_path, grading_yaml=yaml.safe_dump({"state_checks": {"hash": shape}}))
+
+    with pytest.raises(ValidationError) as excinfo:
+        adapter.to_task_description(_TASK_ID)
+
+    assert [(error["loc"], error["type"], error["input"]) for error in excinfo.value.errors()] == [
+        ((), "model_type", shape)
+    ]
 
 
 def test_the_run_trial_path_refuses_a_falsy_grading_shape(tmp_path: Path) -> None:

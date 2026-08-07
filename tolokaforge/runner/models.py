@@ -52,6 +52,7 @@ from tolokaforge.core.grading.combine_method import CombineMethod, validate_comb
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
 from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
+    StateHashConfig,
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
     validate_hash_weight,
@@ -384,18 +385,21 @@ class RunnerStateChecksConfig(BaseModel):
             return None
         return validate_hash_weight(value, context=_HASH_WEIGHT_CONTEXT)
 
-    def _authored_hash_block(self) -> dict[str, Any]:
-        """The author-facing ``state_checks.hash`` block these flattened fields carry.
+    def _authored_hash_block(self) -> StateHashConfig:
+        """The ``state_checks.hash`` block these flattened fields carry.
 
         Every rule shared with core reads the author's key names, so this model
-        translates into them once rather than once per rule.
+        translates into them once rather than once per rule. ``golden_actions``
+        crosses untranslated: the block admits either element shape and every shared
+        rule reads the list for truthiness, so the author's ``{name, kwargs}`` and
+        these ``GoldenAction`` instances answer the same rules.
         """
-        return {
-            "enabled": self.hash_enabled,
-            "expected_state_hash": self.expected_hash,
-            "golden_actions": self.golden_actions,
-            "weight": self.hash_weight,
-        }
+        return StateHashConfig(
+            enabled=self.hash_enabled,
+            expected_state_hash=self.expected_hash,
+            golden_actions=self.golden_actions,
+            weight=self.hash_weight,
+        )
 
     @model_validator(mode="after")
     def _refuse_probes_beside_another_state_source(self) -> RunnerStateChecksConfig:

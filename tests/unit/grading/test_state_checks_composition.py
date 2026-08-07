@@ -11,6 +11,7 @@ reach one shared predicate when they decide a config is ungradeable.
 from __future__ import annotations
 
 import json
+import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
@@ -32,6 +33,7 @@ from tolokaforge.core.grading.state_composition import (
     HASH_SOURCE_KEYS,
     INERT_HASH_WEIGHT_REASON,
     MISSING_HASH_WEIGHT_MESSAGE,
+    WEIGHT_DOMAIN_MESSAGE,
 )
 from tolokaforge.core.models import (
     GradingConfig,
@@ -236,15 +238,15 @@ class TestHashWeightIsRequiredAndBounded:
     def test_neither_substrate_accepts_a_non_weight(self, declared):
         """Driven through both config models, because coercion hides two of these.
 
-        Core reads its ``hash`` block as an untyped dict, so its validator sees what
-        the author wrote. The runner declares ``hash_weight`` as a typed field, and
-        Pydantic's lax coercion turns ``True`` into ``1.0`` and ``"0.5"`` into ``0.5``
-        before any after-validator or ``ge``/``le`` bound could object — so
-        ``hash_weight: true`` on the wire would silently mean "the hash decides
-        outright" on an ``extra="forbid"`` model whose job is rejecting malformed
-        input. Testing the shared validator alone would not have seen it.
+        Both substrates declare the weight as a typed float field, and Pydantic's lax
+        coercion turns ``True`` into ``1.0`` and ``"0.5"`` into ``0.5`` before any
+        after-validator or ``ge``/``le`` bound could object — so ``weight: true`` would
+        silently mean "the hash decides outright" on an ``extra="forbid"`` model whose
+        job is rejecting malformed input. Only a ``mode="before"`` validator sees what
+        the author wrote, and each model carries one; testing the shared validator alone
+        would not have shown that either model routes through it.
         """
-        with pytest.raises(ValidationError, match="state_checks.hash.weight"):
+        with pytest.raises(ValidationError, match=re.escape(WEIGHT_DOMAIN_MESSAGE)):
             StateChecksConfig(
                 hash={
                     "enabled": True,
@@ -252,7 +254,7 @@ class TestHashWeightIsRequiredAndBounded:
                     "weight": declared,
                 }
             )
-        with pytest.raises(ValidationError, match="state_checks.hash.weight"):
+        with pytest.raises(ValidationError, match=re.escape(WEIGHT_DOMAIN_MESSAGE)):
             RunnerStateChecksConfig(
                 hash_enabled=True, expected_hash=_MATCHING_HASH, hash_weight=declared
             )
@@ -266,7 +268,7 @@ class TestHashWeightIsRequiredAndBounded:
             hash_enabled=True, expected_hash=_MATCHING_HASH, hash_weight=declared
         )
 
-        assert core.hash["weight"] == declared
+        assert core.hash.weight == declared
         assert isinstance(runner.hash_weight, float)
         assert runner.hash_weight == pytest.approx(expected)
 
@@ -503,7 +505,7 @@ class TestProbesCannotShareTheComponent:
 
     Each case declares the probes, loads, and only then adds the second source, because
     the claim is about grade time: the block is re-resolved there rather than trusted
-    from load, ``hash`` being an untyped dict nothing stops a caller mutating.
+    from load, the config being mutable after validation.
     """
 
     def test_assertions_added_after_load_refuse_to_fold(self):
@@ -516,7 +518,7 @@ class TestProbesCannotShareTheComponent:
 
     def test_a_hash_source_added_after_load_refuses_to_fold(self):
         engine = _engine({"db_probes": _DB_PROBES, "hash": {"enabled": True}})
-        engine.config.state_checks.hash["expected_state_hash"] = _MATCHING_HASH
+        engine.config.state_checks.hash.expected_state_hash = _MATCHING_HASH
 
         with pytest.raises(ValueError) as excinfo:
             engine.grade_trajectory(_trajectory(), _FINAL_ENV_STATE)
