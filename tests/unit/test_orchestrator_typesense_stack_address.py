@@ -124,6 +124,78 @@ def test_an_unresolved_port_refuses_to_build_the_stack(tmp_path: Path, mode: str
     assert mode in message
 
 
+def test_a_pinned_local_config_that_skipped_the_start_refuses_its_loopback_address(
+    tmp_path: Path,
+) -> None:
+    """``mode: local`` with both port and api_key pinned starts nothing.
+
+    ``_ensure_typesense_started`` skips the whole start block for this shape,
+    so no server handle exists, no bridge is built, and the ``host`` default —
+    a loopback — is what would be injected verbatim. Inside the runner
+    container that address is the runner itself, so the run aborts instead of
+    completing with a dead search plane.
+    """
+    orchestrator = _orchestrator(
+        tmp_path,
+        TypeSenseConfig(enabled=True, mode="local", port=61234, api_key="pinned-key"),
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        orchestrator._typesense_stack_kwargs()
+
+    message = str(raised.value)
+    assert message.startswith("orchestrator.typesense:")
+    assert "127.0.0.1:61234" in message
+    assert "'local'" in message
+
+
+@pytest.mark.parametrize("loopback", ["127.0.0.1", "localhost", "::1"])
+def test_a_remote_plane_on_a_loopback_host_refuses(tmp_path: Path, loopback: str) -> None:
+    """Nothing is started for ``remote``, so a loopback host names no server.
+
+    ``127.0.0.1`` is the field's default — the shape of a config that pinned
+    ``mode: remote`` and never said where the server is.
+    """
+    orchestrator = _orchestrator(
+        tmp_path, TypeSenseConfig(enabled=True, mode="remote", host=loopback, port=7701)
+    )
+
+    with pytest.raises(RuntimeError) as raised:
+        orchestrator._typesense_stack_kwargs()
+
+    message = str(raised.value)
+    assert message.startswith("orchestrator.typesense:")
+    assert f"{loopback}:7701" in message
+    assert "'remote'" in message
+
+
+def test_a_remote_plane_left_at_the_default_host_refuses(tmp_path: Path) -> None:
+    """The default itself is refused, not just an explicitly written loopback."""
+    orchestrator = _orchestrator(tmp_path, TypeSenseConfig(enabled=True, mode="remote", port=7701))
+
+    with pytest.raises(RuntimeError, match="loopback"):
+        orchestrator._typesense_stack_kwargs()
+
+
+def test_the_common_auto_port_local_run_is_bridged_and_never_meets_the_refusal(
+    tmp_path: Path,
+) -> None:
+    """Auto-port ``local`` — every external run config — injects the alias.
+
+    The config host stays at its loopback default the whole time; the refusal
+    must not fire, because the bridged server is injected as the alias and the
+    loopback address never reaches the runner.
+    """
+    orchestrator = _orchestrator(tmp_path, TypeSenseConfig(enabled=True, mode="local", port="auto"))
+    orchestrator._typesense_server = SimpleNamespace(
+        host=HOST_SIDE_HOST, port=HOST_SIDE_PORT, api_key="resolved-api-key"
+    )
+
+    address = orchestrator._typesense_stack_kwargs()["typesense_address"]
+
+    assert (address.host, address.port) == ("typesense", 8108)
+
+
 @pytest.mark.parametrize(
     ("row", "enabled", "mode", "has_plane"),
     [

@@ -9,7 +9,7 @@ from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, NoReturn
 
 from tolokaforge.adapters import BaseAdapter, ensure_registered_adapter, get_adapter
 from tolokaforge.adapters._task_loader import (
@@ -133,6 +133,7 @@ _FULL_STACK_TOOL_NAMES: frozenset[str] = frozenset({"browser", "mobile", "search
 # varies, and that one is unreachable from the runner container.
 _TYPESENSE_NETWORK_ALIAS = "typesense"
 _TYPESENSE_CONTAINER_PORT = 8108
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
 
 
 def _tasks_need_playwright(tasks: list[Any]) -> bool:
@@ -1287,6 +1288,12 @@ class Orchestrator:
                 is still ``"auto"``, so there is no address to inject. Reached
                 when ``run()`` is handed pre-loaded tasks and therefore never
                 calls ``load_tasks()``.
+            RuntimeError: the address that would be injected verbatim is a
+                loopback host, which inside the runner container is the runner
+                itself. Reached by ``mode: local`` with both a pinned port and
+                a pinned api_key (the managed start is skipped, so nothing is
+                bridged) and by ``mode: remote`` with ``host`` left at its
+                loopback default.
         """
         from tolokaforge.docker.stacks import TypeSenseAddress
 
@@ -1302,7 +1309,42 @@ class Orchestrator:
                 f"orchestrator.typesense.port to the port the server answers on, or set "
                 f"orchestrator.typesense.enabled to false to run without a knowledge base."
             )
+        if typesense_config.host in _LOOPBACK_HOSTS:
+            self._refuse_loopback_injection(typesense_config)
         return TypeSenseAddress(host=typesense_config.host, port=typesense_config.port)
+
+    def _refuse_loopback_injection(self, typesense_config: TypeSenseConfig) -> NoReturn:
+        """Abort the run: the address about to be injected is a loopback host.
+
+        Inside the runner container a loopback address is the runner itself
+        (#925), so no TypeSense server answers there and every
+        ``search_policy`` call in every trial would fail against a plane the
+        run claims to have. A bridged server never reaches this refusal — it
+        is injected as the network alias before the loopback check runs.
+        """
+        if typesense_config.mode == "local":
+            remedy = (
+                "Fix: set orchestrator.typesense.port to 'auto' (or leave api_key unset) "
+                "so this process starts and bridges its own server — a bridged server is "
+                "injected as the network alias, never as a loopback address — or point "
+                "orchestrator.typesense.host at an address reachable from inside the "
+                "runner container."
+            )
+        else:
+            remedy = (
+                "Fix: set orchestrator.typesense.host to the external server's address "
+                "as the runner container reaches it — a loopback host names no external "
+                "server — or set orchestrator.typesense.enabled to false to run "
+                "without a knowledge base."
+            )
+        raise RuntimeError(
+            f"orchestrator.typesense: the address that would be injected into the "
+            f"runner container is '{typesense_config.host}:{typesense_config.port}', a "
+            f"loopback address. Inside the runner container a loopback address is the "
+            f"runner itself, so no TypeSense server answers there and every "
+            f"search_policy call would fail. Aborting the run before any trial "
+            f"(mode '{typesense_config.mode}'). {remedy}"
+        )
 
     def _typesense_stack_kwargs(self) -> dict[str, "TypeSenseAddress"]:
         """Stack-factory kwargs carrying this run's TypeSense address.

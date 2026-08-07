@@ -50,7 +50,9 @@ details after the fact.
 A server this process starts is bridged onto `runner-net` under the alias
 `typesense`, and the runner is given `typesense:8108` — the container port,
 which is fixed by the image. A `mode: remote` server is not ours to bridge, so
-the runner is given the address the run config names. Either way the host-side
+the runner is given the address the run config names — provided the runner can
+reach it: a loopback host is refused at stack build (see
+[Failure semantics](#failure-semantics)). Either way the host-side
 address the orchestrator and the adapter index against never reaches the
 container: inside `runner-net` it resolves to the runner itself.
 
@@ -200,6 +202,8 @@ The two tiers are deliberately different.
 
 - The local server does not become ready within `timeout`, or the Docker foundation layer is unavailable.
 - The bridge onto `runner-net` cannot be built: no TypeSense container, no `runner-net`, no `orchestrator.typesense` block, or any Docker SDK failure.
+- No server was started for this run and the configured `port` is still `"auto"` when the stack is built — `auto` is not an address, and nothing exists to resolve it.
+- The address that would be injected into the runner container is a loopback host (`127.0.0.1`, `localhost`, `::1`) that no bridge replaces — inside the runner container a loopback address is the runner itself. Two configurations reach it: `mode: local` with both a pinned `port` and a pinned `api_key` (that shape skips the managed start, so nothing is bridged and the loopback `host` default would be injected verbatim), and `mode: remote` with `host` left at — or set to — a loopback. The message names the address and the remedy for the mode. A bridged local server never meets this refusal: it is injected as the network alias `typesense:8108`.
 
 **Per-trial (runner) — a broken plane for one task refuses that trial's registration.**
 
@@ -229,6 +233,7 @@ Rows 7 and 8 are the shapes the gate would otherwise pass over in silence, and e
 |---|---|---|
 | unit | `tests/unit/test_orchestrator_typesense_startup.py` | a server that never became ready aborts the run, and does not leave its would-be address in the config |
 | unit | `tests/unit/test_orchestrator_typesense_bridge.py` | the Docker bridge either completes or aborts, and a completed bridge leaves the run config, the adapter and the description cache untouched |
+| unit | `tests/unit/test_orchestrator_typesense_stack_address.py` | the injected address — the bridged alias, a verbatim remote address, one enablement predicate for every consumer, and the refusals of an unresolved `auto` port and of a loopback host the runner cannot reach |
 | unit | `tests/unit/test_runner_search_plane_refusal.py` | the refusal paths reached through the gate, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
 | unit | `tests/unit/test_runner_typesense_address.py` | which source names the address, the basis reaching the message, and the half-declared stack refusal |
 | unit | `tests/unit/test_runner_search_plane_declaration.py` | which plane serves a corpus, the derivation and its basis, and the refusal of a corpus no plane serves |
@@ -255,10 +260,12 @@ orchestrator:
     cleanup_on_exit: true  # Remove container on exit (local mode)
 ```
 
+`host` must be reachable **from inside the runner container**, because that is where the address is injected. A loopback host (`127.0.0.1`, `localhost`, `::1`) is refused at stack build whenever it would be injected verbatim: `mode: remote`, or `mode: local` with both `port` and `api_key` pinned — that shape skips the managed start, so no server exists and nothing is bridged. A managed `local` server (`port: "auto"`, or an auto-generated key) is bridged onto the runner's network and injected as the alias `typesense:8108`, so its loopback default never reaches the runner.
+
 ### Mode Options
 
 - **`local`**: Orchestrator manages a Docker container (auto start/stop)
-- **`remote`**: Connect to an external TypeSense server. Nothing is started, but the address is real, so the connection details still reach the adapter
+- **`remote`**: Connect to an external TypeSense server. Nothing is started, but the address is real, so the connection details still reach the adapter. Requires a `host` the runner container can reach — the loopback default names no server and is refused
 - **`disabled`**: no server is started, the stack is given no address and the orchestrator hands the adapter no connection details, so neither source names one and no task reaches the TypeSense plane
 
 `enabled: false` and `mode: disabled` are equally final: either one stops the connection details, and a knowledge-base task in such a run registers normally with no search client.
