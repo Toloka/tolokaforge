@@ -1,10 +1,11 @@
 # 0002. External model registry — operator-overridable preset data
 
-- **Status:** Proposed
+- **Status:** Accepted
 - **Date:** 2026-06-17
 - **Deciders:** @cirogam22
 - **Supersedes:** —
 - **Superseded by:** —
+- **Advanced by:** [ADR-0030](0030-tolokaforge-models-split.md) — completes the seam via a packaged, versioned model-data wheel and the certification-harness relocation this ADR deferred.
 
 ## Context and Problem Statement
 
@@ -152,7 +153,9 @@ the operator threading the flag manually.
 
 ## Links
 
-- Related ADRs: [0001 — Record architecture decisions in ADRs](0001-record-architecture-decisions.md).
+- Related ADRs:
+  - [0001 — Record architecture decisions in ADRs](0001-record-architecture-decisions.md).
+  - [0030 — Model data as a second PyPI wheel](0030-tolokaforge-models-split.md) — lands the packaged model-data artifact this ADR's § Context anticipated, plus the certification-harness relocation this ADR flagged as required to make the seam usable. Deliberately narrower than Option 3: single Toloka-published wheel, not a multi-publisher plugin registry.
 - Related code:
   - `tolokaforge/core/llm/presets.py` (loader, registries, validator).
   - `tolokaforge/adapters/__init__.py:86` (`ensure_registered_adapter`, the
