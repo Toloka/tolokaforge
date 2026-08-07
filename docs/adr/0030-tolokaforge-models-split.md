@@ -60,7 +60,7 @@ This widened ADR states the properties the seam must satisfy — verbatim from b
 - **Public API for helpers.** Everything a per-model class needs is documented public API with a compat guarantee, not module-private symbols.
 - **Provider and transport binding is data, not a client branch.** Endpoint URL, credential env-var name, rate-limit classification, rotation env-var name, and routability all belong on a provider record in the models wheel — not in `client.py` or `proxy.py`.
 - **Forward-compat toward a repo split.** The `tolokaforge_models/` tree is chosen to be a drop-in future repo: one `git filter-repo --subdirectory-filter tolokaforge_models` and it is a standalone project.
-- **Fail-loud version compat, at import time.** `__api_version__` integer on the models package + `minimum_engine_version` on the models package + class-name-existence check at engine import. All three fail before any run starts, not at `LLMClient` construction after an evaluation has begun spending.
+- **Fail-loud version compat, before any run starts.** `__api_version__` integer on the models package + `minimum_engine_version` on the models package + class-name-existence check at the earliest safe point (see § Install-time validation for the precise placement — after `presets.py`'s top-of-module imports or in `prepare`, deliberately not `tolokaforge/__init__.py`). All three fail before an evaluation has begun spending, not at `LLMClient` construction.
 
 ## What "success" looks like
 
@@ -101,7 +101,7 @@ Adopt **Wheel-shape Option 6**, **Certification-harness Option 3**, and **Policy
 The published PyPI surface becomes two independently-versioned wheels, both built from `Toloka/tolokaforge`:
 
 - `tolokaforge` — the engine wheel. Contains everything it does today *except* the `tolokaforge/core/data/` payload, per-model policy subclasses, per-model certification bodies, and the vendor-inference table. Declares `tolokaforge-models >= 1.0.0` as a runtime dependency.
-- `tolokaforge-models` — the new model-data wheel. Contains preset routing (`model_presets.yaml`), pricing (`pricing.json`), provider bindings (`providers.yaml`, new), vendor-inference table (`vendor_prefixes.yaml`, new), the capability-certificate registry (`Capability` enum, `ModelCertificate` dataclass with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` fields, and `ALL_MODELS`), per-model policy subclasses (`tolokaforge_models/policies/`), and per-model certification test bodies (`tolokaforge_models/tests/`). Declares `__api_version__: int = 1` and `minimum_engine_version: str` (PEP 440 spec) at module level.
+- `tolokaforge-models` — the new model-data wheel. Contains preset routing (`model_presets.yaml`), pricing (`pricing.json`), provider bindings (`providers.yaml`, new), vendor-inference table (`vendor_prefixes.yaml`, new), the certificate registry (`ModelCertificate` dataclass with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields, and `ALL_MODELS`), per-model policy subclasses (`tolokaforge_models/policies/`), and per-model certification test bodies (`tolokaforge_models/tests/`). Declares `__api_version__: int = 1` and `minimum_engine_version: str` (PEP 440 spec) at module level. The `Capability` enum itself stays engine-authoritative (see § Certification as a public engine seam).
 
 This ADR reaffirms [ADR-0025 § Decision Drivers](0025-runner-wheel-split.md#decision-drivers) *"one PyPI wheel"* clause **for engine code**. The runner-subset (`tolokaforge-runner-subset`) remains Docker-only.
 
@@ -116,7 +116,7 @@ Adopted verbatim from the [2026-08-07 review comment](https://github.com/Toloka/
 5. **Existing recovery behaviour is reusable without inheriting engine-internal classes.** Inherit-and-delegate stays the pattern; from-scratch reimplementation is forbidden.
 6. **Generation parameters are extensible without an engine signature change.** `_VALID_PARAMS_KEYS` derived from `inspect.signature(GenerationParams.__init__)` goes away; params flow through a `ParamsPolicy` slot with an `extras` bag.
 7. **Per-model certification exclusions are certificate data, not code in a shared test body.**
-8. **A new capability and its probe body can be declared out-of-tree.** The `Capability` enum lives in the models wheel; probe bodies register via a decorator.
+8. **A new capability and its probe body can be declared out-of-tree.** The `Capability` enum itself stays engine-authoritative (a genuinely new *category* is rare and matches an engine release that adds the shared probe pattern); per-model capability names that need surfacing without a shared probe travel through `ModelCertificate.capability_extras` on the models cadence. Probe bodies register via a decorator (see § Certification as a public engine seam).
 9. **Provider and transport binding is data, not a client branch.** Endpoint, credential name, routability, rate-limit patterns, rotation env-var — all declarable per provider.
 10. **A policy can be configured, not only selected.** Slot values are `{name, params}`, not bare `name`.
 11. **Per-model certification bodies can live out-of-tree.**
@@ -313,7 +313,7 @@ public-tolokaforge/
 │   │   └── ...
 │   ├── certificates/
 │   │   ├── __init__.py                    # exposes ALL_MODELS
-│   │   ├── _capability.py                 # Capability enum + widened ModelCertificate
+│   │   ├── _capability.py                 # widened ModelCertificate only (Capability enum stays under tolokaforge/testing/certify/)
 │   │   └── registry.py                    # ALL_MODELS with excluded_capabilities + probe_params
 │   └── tests/                             # per-model bodies (pytest-pyargs collection)
 │       ├── test_nova_api.py
@@ -392,7 +392,7 @@ The classification step inspects the resolved policy graph: if every needed poli
 **Sub-issues under the umbrella tracked at [GH #645](https://github.com/Toloka/tolokaforge/issues/645)** — decompose via `/writing-development-tickets` after this ADR merges. Landing order chosen so each unblocks the next; **the acceptance test is deliberately built early so it reports at every step, and the workflow retarget lands right after the first manual Bucket A succeeds rather than at the end** (both revised 2026-08-07 per follow-up review — see § What "success" looks like and § Consequences → known ceiling). Realistic PR count 9–10 (numbered arcs below are consolidatable).
 
 1. **Fail-loud entry-point registry semantics** — fix the [GH #544](https://github.com/Toloka/tolokaforge/issues/544) pattern on `tolokaforge.adapters` preventatively; apply the same discipline to the new policy-class entry-point mechanism.
-2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing — the acceptance test in (3) depends on this seam. Move `_capability.py`, `registry.py`, fixtures, ~30 test bodies. Add `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields. Add probe-registration decorator API.
+2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing — the acceptance test in (3) depends on this seam. Splits with two destinations per the enum-authority decision: the **`Capability` enum stays engine-side**, moving from `tests/integration/llm/_capability.py` to `tolokaforge/testing/certify/`; the **`ModelCertificate` dataclass** (widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields) and **`ALL_MODELS` registry** move to `tolokaforge_models/certificates/`. Fixtures and ~30 test bodies move to `tolokaforge/testing/certify/` (they import engine code). Add the probe-registration decorator API. Splitting the move explicitly matters — the file currently holds two things with different destinations.
 3. **Acceptance-test scaffolding** — `tests/canonical/test_models_wheel_replay.py`. Replays the last N integrations against the engine tree **as it stood on each integration's date** (git checkout per-integration, not against post-follow-up-8 `main` — otherwise the retroactive hook masks the measurement). Reports the "engine releases avoided" number at every subsequent PR. Initial run reports the status-quo baseline (3-in-5 or whatever the tree of the day yields); each PR (4)–(11) should move the number. Landing this before (4) means every subsequent change is measured against the target.
 4. **Fingerprint** — widened `models_fingerprint` on `engine_run_state.json`.
 5. **New extension slots — `assistant_text_policy` + `params_policy` + narrow `message_assembly_policy`.** Base classes, registry entries, wire-in points in `client.py`. The Cohere text-marker slot unblocks integration #929; the narrow message-assembly version turns the `client.py:1213` filler string into policy data (no new slot type, just data extraction of an existing string).
