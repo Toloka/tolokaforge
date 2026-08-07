@@ -529,9 +529,12 @@ class Orchestrator:
             task_packs = [part.strip() for part in env_task_packs.split(",") if part.strip()]
         params["task_packs"] = task_packs
 
-        # Pass TypeSense config to adapter if configured
+        # Pass TypeSense config to adapter if configured. ``mode: disabled`` is
+        # as final as ``enabled: false``: no server is started for either, so
+        # emitting connection details would hand every knowledge-base task an
+        # address nothing answers on — which registration now refuses.
         typesense_config = self.config.orchestrator.typesense
-        if typesense_config and typesense_config.enabled:
+        if typesense_config and typesense_config.enabled and typesense_config.mode != "disabled":
             params["typesense"] = typesense_config.model_dump()
 
         # Layer project.task_defaults under every task the adapter loads.
@@ -1270,48 +1273,69 @@ class Orchestrator:
         gets resolved port/api_key values.
         """
         typesense_config = self.config.orchestrator.typesense
-        if typesense_config and typesense_config.enabled and typesense_config.mode == "local":
-            # Check if already resolved (port is int, not "auto")
-            if typesense_config.port == "auto" or typesense_config.api_key is None:
-                try:
-                    from tolokaforge.core.search.typesense_server import create_typesense_server
+        if not typesense_config or not typesense_config.enabled:
+            return
+        if typesense_config.mode != "local":
+            return
+        # Already resolved (port is an int, not "auto") — nothing left to start.
+        if typesense_config.port != "auto" and typesense_config.api_key is not None:
+            return
 
-                    self.logger.info(
-                        "Starting local TypeSense server", config=typesense_config.model_dump()
-                    )
-                    # Create server with individual params from config
-                    self._typesense_server = create_typesense_server(
-                        port=typesense_config.port,
-                        api_key=typesense_config.api_key,
-                        data_dir=typesense_config.data_dir,
-                        image=typesense_config.image,
-                        container_name=typesense_config.container_name,
-                        timeout=typesense_config.timeout,
-                        cleanup_on_exit=typesense_config.cleanup_on_exit,
-                    )
-                    if self._typesense_server:
-                        self._typesense_server.start()
-                        # Update config object with resolved port/api_key for adapter use
-                        resolved_config = typesense_config.model_dump()
-                        resolved_config["port"] = self._typesense_server.port
-                        resolved_config["api_key"] = self._typesense_server.api_key
-                        self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
-                        self.logger.info(
-                            "TypeSense server started",
-                            host=self._typesense_server.host,
-                            port=self._typesense_server.port,
-                        )
-                    else:
-                        raise RuntimeError(
-                            "TypeSense server could not be created (Docker not available?). "
-                            "TypeSense is configured as enabled; aborting to avoid silent failures."
-                        )
-                except ImportError as e:
-                    raise RuntimeError(
-                        f"TypeSense is configured but the server module is not available: {e}"
-                    ) from e
-                except Exception as e:
-                    raise RuntimeError(f"Failed to start TypeSense server: {e}") from e
+        try:
+            from tolokaforge.core.search.typesense_server import create_typesense_server
+
+            self.logger.info(
+                "Starting local TypeSense server", config=typesense_config.model_dump()
+            )
+            self._typesense_server = create_typesense_server(
+                port=typesense_config.port,
+                api_key=typesense_config.api_key,
+                data_dir=typesense_config.data_dir,
+                image=typesense_config.image,
+                container_name=typesense_config.container_name,
+                timeout=typesense_config.timeout,
+                cleanup_on_exit=typesense_config.cleanup_on_exit,
+            )
+            started = self._typesense_server.start()
+        except ImportError as e:
+            raise RuntimeError(
+                f"TypeSense is configured but the server module is not available: {e}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to start TypeSense server: {e}") from e
+
+        # Outside the try on purpose: raised inside, this message would reach the
+        # operator wrapped in the "Failed to start TypeSense server" prefix above.
+        if not started:
+            # ``port`` is resolved inside ``start()``, so a failure before that
+            # point — an unimportable Docker foundation layer — leaves the
+            # manager's sentinel, which reads as a real address if rendered.
+            where = (
+                f"at {self._typesense_server.host}:{self._typesense_server.port}"
+                if self._typesense_server.port > 0
+                else f"on {self._typesense_server.host} (no port was ever resolved)"
+            )
+            raise RuntimeError(
+                f"orchestrator.typesense: the local TypeSense server {where} never became "
+                f"ready — either the Docker foundation layer is unavailable, or the "
+                f"container did not answer its health and collections probes within "
+                f"timeout={typesense_config.timeout}s. Aborting the run: every "
+                f"search_policy call would run against a search plane that is not there. "
+                f"Check `docker ps` and the TypeSense container logs, raise "
+                f"orchestrator.typesense.timeout, or set orchestrator.typesense.enabled to "
+                f"false to run without a knowledge base."
+            )
+
+        # Update config object with resolved port/api_key for adapter use
+        resolved_config = typesense_config.model_dump()
+        resolved_config["port"] = self._typesense_server.port
+        resolved_config["api_key"] = self._typesense_server.api_key
+        self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
+        self.logger.info(
+            "TypeSense server started",
+            host=self._typesense_server.host,
+            port=self._typesense_server.port,
+        )
 
     def _connect_typesense_to_runner_network(self, service_stack: Any) -> None:
         """Connect TypeSense container to the core stack's Docker network.
@@ -1323,74 +1347,94 @@ class Orchestrator:
         The container port is ALWAYS 8108 inside Docker networks — only the
         host-mapped port differs, and that is irrelevant for inter-container
         communication.
+
+        Every failure aborts the run. A bridge that is only half-built leaves
+        the host-side address in the trial-facing config, and inside the runner
+        container that address is the runner itself (#925).
         """
-        try:
-            import docker as docker_lib
+        import docker as docker_lib
 
-            client = docker_lib.from_env()
+        typesense_config = self.config.orchestrator.typesense
+        if typesense_config is None:
+            raise RuntimeError(
+                "orchestrator.typesense: the TypeSense bridge ran with no TypeSense "
+                "configuration to rewrite. A server was started for this run, so the "
+                "run config must still carry an orchestrator.typesense block here."
+            )
+        host_side = f"{typesense_config.host}:{typesense_config.port}"
 
-            # Get TypeSense container from its stack
-            ts_stack = self._typesense_server._stack
-            ts_container_obj = ts_stack._containers.get("typesense") if ts_stack else None
-
-            if ts_container_obj is None:
-                self.logger.warning("TypeSense container not found for network bridging")
-                return
-
-            ts_container_id = ts_container_obj.container_id
-            ts_container = client.containers.get(ts_container_id)
-
-            # Get the runner-net network from the core stack
-            runner_net = service_stack._networks.get("runner-net")
-            if runner_net is None:
-                self.logger.warning("Runner network not found for TypeSense bridging")
-                return
-
-            docker_network = client.networks.get(runner_net.network_id)
-
-            # Connect TypeSense to runner-net with an alias so it is reachable
-            # as "typesense:8108" inside the network.
-            docker_network.connect(ts_container, aliases=["typesense"])
-            self.logger.info(
-                "Connected TypeSense to runner network",
-                network=runner_net.name,
-                container=ts_container.name,
+        ts_stack = self._typesense_server._stack
+        ts_container_obj = ts_stack._containers.get("typesense") if ts_stack else None
+        if ts_container_obj is None:
+            raise RuntimeError(
+                f"orchestrator.typesense: the TypeSense stack holds no 'typesense' "
+                f"container to bridge onto the runner network — the shape a start that "
+                f"was rolled back leaves behind. Aborting the run: trials would keep "
+                f"{host_side}, which inside the runner container is the runner itself. "
+                f"Check `docker ps` and the TypeSense container logs."
             )
 
-            # Update TypeSense config to use Docker DNS name for Runner access.
-            # Inside Docker networks, containers use the container port (8108)
-            # directly — not the host-mapped port.
-            typesense_config = self.config.orchestrator.typesense
-            if typesense_config:
-                resolved_config = typesense_config.model_dump()
-                resolved_config["host"] = "typesense"
-                resolved_config["port"] = 8108
-                self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
-                self.logger.info(
-                    "Updated TypeSense config for Docker networking",
-                    host="typesense",
-                    port=8108,
-                )
+        runner_net = service_stack._networks.get("runner-net")
+        if runner_net is None:
+            raise RuntimeError(
+                f"orchestrator.typesense: the core stack exposes no 'runner-net' network, "
+                f"so the TypeSense container at {host_side} cannot be reached as "
+                f"typesense:8108 from the runner. Aborting the run: trials would keep the "
+                f"host-side address and every search_policy call would fail. Check that "
+                f"the core stack started before the bridge ran."
+            )
 
-                # Propagate Docker-internal connection details to the adapter
-                # so that to_task_description() puts Docker-reachable values
-                # (typesense:8108) into SearchConfig rather than host-side ones.
-                if self.adapter and hasattr(self.adapter, "params"):
-                    self.adapter.params["typesense"] = resolved_config
-                    # Descriptions resolved before this rewrite — the pre-run
-                    # grading gate resolves every selected task — carry the
-                    # host-side address, which inside the runner container is
-                    # the runner itself (#925). Drop them so trials rebuild
-                    # against the rewritten params.
-                    self._task_desc_cache.clear()
-                    self.logger.debug(
-                        "Propagated TypeSense Docker config to adapter",
-                        host="typesense",
-                        port=8108,
-                    )
+        if self.adapter is None or not hasattr(self.adapter, "params"):
+            missing = "no adapter was created for this run"
+            if self.adapter is not None:
+                missing = f"{type(self.adapter).__name__} exposes no 'params' mapping"
+            raise RuntimeError(
+                f"orchestrator.typesense: the Docker-reachable address typesense:8108 "
+                f"cannot be propagated into task descriptions — {missing}. Aborting the "
+                f"run: every trial would be described with the host-side {host_side} "
+                f"instead (#925)."
+            )
 
-        except Exception as e:
-            self.logger.warning("Failed to connect TypeSense to runner network", error=str(e))
+        client = docker_lib.from_env()
+        ts_container = client.containers.get(ts_container_obj.container_id)
+        docker_network = client.networks.get(runner_net.network_id)
+
+        # Connect TypeSense to runner-net with an alias so it is reachable
+        # as "typesense:8108" inside the network.
+        docker_network.connect(ts_container, aliases=["typesense"])
+        self.logger.info(
+            "Connected TypeSense to runner network",
+            network=runner_net.name,
+            container=ts_container.name,
+        )
+
+        # Update TypeSense config to use Docker DNS name for Runner access.
+        # Inside Docker networks, containers use the container port (8108)
+        # directly — not the host-mapped port.
+        resolved_config = typesense_config.model_dump()
+        resolved_config["host"] = "typesense"
+        resolved_config["port"] = 8108
+        self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
+        self.logger.info(
+            "Updated TypeSense config for Docker networking",
+            host="typesense",
+            port=8108,
+        )
+
+        # Propagate Docker-internal connection details to the adapter
+        # so that to_task_description() puts Docker-reachable values
+        # (typesense:8108) into SearchConfig rather than host-side ones.
+        self.adapter.params["typesense"] = resolved_config
+        # Descriptions resolved before this rewrite — the pre-run grading gate
+        # resolves every selected task — carry the host-side address, which
+        # inside the runner container is the runner itself (#925). Drop them so
+        # trials rebuild against the rewritten params.
+        self._task_desc_cache.clear()
+        self.logger.debug(
+            "Propagated TypeSense Docker config to adapter",
+            host="typesense",
+            port=8108,
+        )
 
     def load_tasks(self) -> None:
         """Load tasks using configured adapter"""
