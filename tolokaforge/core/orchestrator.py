@@ -439,7 +439,10 @@ class Orchestrator:
         # task_id. ``adapter.to_task_description()`` reads the system
         # prompt, tool schemas, fixtures, and base64-bundles the task_dir
         # — repeating that K times for ``repeats=K`` trials of the same
-        # task is wasted work. Populated lazily by ``_build_trial_spec``.
+        # task is wasted work. Populated by whichever resolver runs first
+        # (the pre-run grading gate, backend selection, or trial-spec
+        # building) and dropped when the TypeSense Docker rewrite makes
+        # every cached SearchConfig address stale (#925).
         self._task_desc_cache: dict[str, TaskDescription] = {}
         # Run-wide trial ordering: ``(task_id, trial_index) → total_index``
         # (0..total-1). Populated by :meth:`_build_pending_trials` and
@@ -679,11 +682,15 @@ class Orchestrator:
         return conductor
 
     def _task_description(self, task_id: str) -> TaskDescription:
-        """The task's wire-format description, resolved once per run.
+        """The task's wire-format description, resolved once per adapter configuration.
 
         The registration check runs on the build, so every description in the
         cache has had its declared backend verified against the host registry —
         writing the cache around this method would skip it.
+
+        "Once per adapter configuration", not "once per run": the TypeSense
+        Docker rewrite invalidates the cache, so descriptions resolved before
+        the stack starts are rebuilt against the rewritten params (#925).
         """
         if self.adapter is None:
             raise RuntimeError("Task descriptions cannot be resolved before the adapter is loaded.")
@@ -1279,6 +1286,12 @@ class Orchestrator:
                 # (typesense:8108) into SearchConfig rather than host-side ones.
                 if self.adapter and hasattr(self.adapter, "params"):
                     self.adapter.params["typesense"] = resolved_config
+                    # Descriptions resolved before this rewrite — the pre-run
+                    # grading gate resolves every selected task — carry the
+                    # host-side address, which inside the runner container is
+                    # the runner itself (#925). Drop them so trials rebuild
+                    # against the rewritten params.
+                    self._task_desc_cache.clear()
                     self.logger.debug(
                         "Propagated TypeSense Docker config to adapter",
                         host="typesense",
