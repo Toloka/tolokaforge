@@ -931,7 +931,7 @@ registration before any key is read — see
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Eight keys carry the lock:
+being dropped. Nine keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field. Such an
@@ -969,6 +969,11 @@ being dropped. Eight keys carry the lock:
   **old engine** emits `tool_name`, which a current one does not — so this key is
   rejected in *both* directions rather than one. The authored `grading.yaml` key is
   `name:` and is unchanged; nothing in a task pack migrates.
+- `search.plane`, the field naming which plane serves a task's knowledge base. A
+  runner image older than this release does not declare it; the current engine
+  emits it (as `null` when the task declares no plane) on **every** task, since
+  `TaskDescription.search` is always emitted, so a **new engine against an old
+  runner image** is rejected the same way.
 - `state_checks.id_fields`, whose declared **value** shape admits a composite
   (list-valued) key. A runner image that predates the list form declares the value
   as a plain string, so a **new engine against an old runner image** emitting a
@@ -978,9 +983,10 @@ being dropped. Eight keys carry the lock:
 
 The first three bite on **every** pack carrying a non-empty `state_checks:` block,
 `min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
-`trace_checks` on **every** pack at all — whether or not the pack declares the key,
-because the adapter emits all five unconditionally. `required_actions[*].name` bites
-only on a pack that declares `required_actions`, since an empty list carries no element
+`trace_checks` and `search.plane` on **every** pack at all — whether or not the pack
+declares the key, because the adapter emits all six unconditionally.
+`required_actions[*].name` bites only on a pack that declares `required_actions`,
+since an empty list carries no element
 to spell either way. `combine_method` bites only on a
 pack declaring an affected value — `weighted` and `all` cross in either direction —
 and `id_fields` only on a pack declaring a composite key: a single-field declaration

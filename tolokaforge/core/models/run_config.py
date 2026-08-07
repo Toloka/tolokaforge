@@ -562,6 +562,23 @@ class OrchestratorConfig(BaseModel):
 
     typesense: TypeSenseConfig | None = None  # TypeSense server configuration
 
+    def effective_typesense(self) -> TypeSenseConfig | None:
+        """Return the run's TypeSense plane, or ``None`` when it has none.
+
+        ``mode: disabled`` is as final as ``enabled: false``: no server is
+        started for either, so a plane exists only when the block is enabled
+        AND the mode is not ``disabled``. Every consumer that has to answer
+        "does this run have a TypeSense plane" — the connection details handed
+        to the adapter, the address injected into the runner container, the
+        dry-run preview of both — reads this one answer, so they cannot drift
+        apart.
+        """
+        if self.typesense is None or not self.typesense.enabled:
+            return None
+        if self.typesense.mode == "disabled":
+            return None
+        return self.typesense
+
 
 class HarnessAdapterConfig(BaseModel):
     """Configuration for external harness adapters (e.g., Tau-bench)"""

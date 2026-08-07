@@ -40,12 +40,13 @@ and no tokens are spent.
 
 **The engine is newer than the image.** The error is a Pydantic validation failure —
 `extra_forbidden` — naming a field the older image's config models do not declare.
-Four fields carry it: `state_checks.hash_weight` and
+Five fields carry it: `state_checks.hash_weight` and
 `state_checks.expect_initial_state`, which both appear for **every** pack carrying a
 non-empty `state_checks:` block, `transcript_rules.min_assistant_turns`, which appears
-for **every** pack carrying a `transcript_rules:` block, and `trace_checks`, which
-appears for **every** pack. The engine emits all four whether or not the pack declares
-them, so any pack at all reproduces this against an image older than the engine.
+for **every** pack carrying a `transcript_rules:` block, and `trace_checks` and
+`search.plane`, which appear for **every** pack. The engine emits all five whether or
+not the pack declares them, so any pack at all reproduces this against an image older
+than the engine.
 A field's declared value shape locks the same way: a pack declaring a composite
 (list-valued) `state_checks.id_fields` key against an image that predates the list
 form is rejected with a `string_type` error naming `id_fields`, and a

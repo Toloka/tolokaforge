@@ -1212,7 +1212,8 @@ Highest priority to lowest:
 
 1. **CLI flag** (e.g. `--runtime`, `--user-model`, `--judge-model`).
 2. **Environment variable** — infrastructure fields only
-   (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `EXECUTOR_ADDRESS`,
+   (`DB_SERVICE_URL`, `RAG_SERVICE_URL`, `TYPESENSE_HOST`,
+   `TYPESENSE_PORT`, `EXECUTOR_ADDRESS`,
    `TASK_PACKS_DIRS`, provider API keys). Today the CLI also
    honours `USER_MODEL`/`JUDGE_MODEL` in this slot; this design
    retires them — model choices belong in version-controlled run
