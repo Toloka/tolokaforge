@@ -149,6 +149,11 @@ from tolokaforge.runner.rag_client import (
     RAGServiceError,
     load_documents_from_directory,
 )
+from tolokaforge.runner.search_plane import (
+    PartialTypeSenseAddressError,
+    ResolvedTypeSenseBinding,
+    resolve_typesense_binding,
+)
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     MCPServerToolWrapper,
@@ -331,11 +336,19 @@ def _readable_outcome(answer: object) -> ToolCallOutcome:
     )
 
 
-def _search_plane_context(trial_id: str, search_config: SearchConfig) -> str:
-    """The prefix every search-plane refusal opens with: trial, domain, address tried."""
+def _search_plane_context(
+    trial_id: str, search_config: SearchConfig, binding: ResolvedTypeSenseBinding
+) -> str:
+    """The prefix every search-plane refusal opens with: trial, domain, address, source.
+
+    The source is the basis the resolver returned. Re-deriving it here would let
+    a message name an address the client was not built from.
+    """
     domain = search_config.domain_name or "default"
-    port = search_config.port or 8108
-    return f"Trial {trial_id}: domain '{domain}', TypeSense at {search_config.host}:{port}"
+    return (
+        f"Trial {trial_id}: domain '{domain}', TypeSense at {binding.host}:{binding.port} "
+        f"(from {binding.basis.value})"
+    )
 
 
 # =============================================================================
@@ -833,16 +846,23 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         #
         # Neither half is ``enabled``: that flag means only "this task needs
         # rag-service" and gates the RAG indexing block below. A TypeSense-only
-        # domain sets ``enabled=False`` + ``host=…`` and registers here without
-        # a rag_client. This gate runs BEFORE the RAG one deliberately — a task
-        # declaring both reports its TypeSense failure, which is the nearer one.
+        # domain sets ``enabled=False`` and registers here without a rag_client.
+        # This gate runs BEFORE the RAG one deliberately — a task declaring both
+        # reports its TypeSense failure, which is the nearer one.
         search_config = task_description.search
-        # Run-level: this run configured a TypeSense plane.
-        run_configures_typesense = search_config.host is not None
+        try:
+            binding = resolve_typesense_binding(search_config)
+        except PartialTypeSenseAddressError as e:
+            self._cleanup_trial_artifacts(trial_id)
+            logger.error(f"RegisterTrial: {trial_id} - {e}")
+            return pb2.RegisterTrialResponse(success=False, error=str(e))
+        # Run-level: an address resolved, so this run has a TypeSense plane.
         # Task-level: this task declares a knowledge base.
         task_declares_kb = search_config.documents_path is not None
-        if run_configures_typesense and task_declares_kb:
-            typesense_error = self._init_typesense_for_trial(trial_id, search_config, artifacts_dir)
+        if binding is not None and task_declares_kb:
+            typesense_error = self._init_typesense_for_trial(
+                trial_id, search_config, binding, artifacts_dir
+            )
             if typesense_error is not None:
                 # Extraction ran before this gate, so a refusal leaves the tmp dir
                 # on disk and on ``sys.path`` — drop it as the custom-checks gate does.
@@ -850,17 +870,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 logger.error(f"RegisterTrial: {typesense_error}")
                 return pb2.RegisterTrialResponse(success=False, error=typesense_error)
         elif (
-            run_configures_typesense
+            binding is not None
             and artifacts_dir is not None
             and (artifacts_dir / "docindex").is_dir()
         ):
             # A corpus arrived for a task declaring none: the gate above skipped
             # the plane, so registering would succeed with no search client.
             error = (
-                f"{_search_plane_context(trial_id, search_config)} — the search declaration "
-                f"and the artifact bundle disagree: a 'docindex/' corpus arrived in the "
-                f"trial's artifacts, but search.documents_path is unset, so no search client "
-                f"is registered and every search_policy call would fail. Declare "
+                f"{_search_plane_context(trial_id, search_config, binding)} — the search "
+                f"declaration and the artifact bundle disagree: a 'docindex/' corpus arrived "
+                f"in the trial's artifacts, but search.documents_path is unset, so no search "
+                f"client is registered and every search_policy call would fail. Declare "
                 f"search.documents_path for this task, or stop bundling the corpus."
             )
             self._cleanup_trial_artifacts(trial_id)
@@ -3023,6 +3043,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         self,
         trial_id: str,
         search_config: SearchConfig,
+        binding: ResolvedTypeSenseBinding,
         artifacts_dir: Path | None,
     ) -> str | None:
         """Initialise mcp_core TypeSense registry for search_policy tools.
@@ -3045,10 +3066,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         result as agent behaviour.
         """
         domain = search_config.domain_name or "default"
-        host = search_config.host
-        port = search_config.port or 8108
-        api_key = search_config.api_key
-        context = _search_plane_context(trial_id, search_config)
+        context = _search_plane_context(trial_id, search_config, binding)
 
         try:
             from mcp_core.search.typesense_registry import initialize_typesense_for_domain
@@ -3064,16 +3082,17 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         logger.info(
             f"Initialising TypeSense client for domain '{domain}': "
-            f"host={host}, port={port}, snippets={len(snippets)}"
+            f"host={binding.host}, port={binding.port}, basis={binding.basis.value}, "
+            f"snippets={len(snippets)}"
         )
 
         try:
             client = initialize_typesense_for_domain(
                 domain=domain,
                 snippets=snippets,
-                host=host,
-                port=port,
-                api_key=api_key,
+                host=binding.host,
+                port=binding.port,
+                api_key=binding.api_key,
             )
         except Exception as e:
             return f"{context} — registering the search client failed: {e}"

@@ -104,11 +104,41 @@ else:
 
 The state machine is `PENDING → INITIALIZING → READY` on success, `→ FAILED` on error, and a failure is propagated to every waiter rather than retried silently.
 
+## Where the runner reaches TypeSense
+
+Two sources can name the address, and the runner resolves them once per
+registration — in [`tolokaforge/runner/search_plane.py`](../tolokaforge/runner/search_plane.py):
+
+1. **The stack** — `TYPESENSE_HOST` and `TYPESENSE_PORT` on the runner container, with the API key in the `SecretManager` (from `TOLOKAFORGE_SECRETS_JSON`), documented in the runner container's environment contract in [`STANDALONE_RUNNER.md`](STANDALONE_RUNNER.md#published-images).
+2. **The task description** — the `host` / `port` / `api_key` of its `search` block.
+
+The stack wins. A task's own details serve the runs where no stack set the
+variables: a runner nobody started for this run (`auto_start_services: false`,
+worker mode), and adapters that still emit an address of their own. If neither
+source names a host, the run has no TypeSense plane.
+
+**The runner reports which source answered.** Every log line and refusal that
+names an address also names its basis — `stack_env` or `task_search_config` —
+and that basis is the one the resolver returned, not a second reading taken at
+the message site. An operator debugging a knowledge-base run reads the address
+the client was actually built from, never a guess between two sources of truth.
+
+**A half-declared stack address stops the trial.** `TYPESENSE_HOST` without
+`TYPESENSE_PORT` (or either without the other, or a port that is not a number)
+refuses registration naming both variables. Falling back to the task's details
+would hand the trial the very address the stack was configured to replace —
+host-side, and inside `runner-net` the runner itself.
+
+An address with no API key is not an error. A `mode: remote` run registers no
+key, and a server that does not require one is the server's own answer to give:
+the binding carries `api_key=None` and client initialisation reports what the
+server says.
+
 ## Runner-Side Client Registration
 
 `RegisterTrial` registers a TypeSense client inside the runner container when **both** halves of a two-part predicate hold:
 
-1. **Run-level** — the run configured a TypeSense plane: `search.host` is set.
+1. **Run-level** — an address resolved, so the run has a TypeSense plane.
 2. **Task-level** — the task declares a knowledge base: `search.documents_path` is set.
 
 Neither half is `search.enabled`. That flag means only "this task needs rag-service" and gates the separate RAG indexing block; a TypeSense-only domain sets `enabled: false` and still registers. Both halves are required, so a knowledge-base task in a TypeSense-disabled run does no TypeSense work and registers normally, and a run with TypeSense configured does no TypeSense work for tasks that declare no knowledge base.
@@ -163,7 +193,7 @@ The two tiers are deliberately different.
 
 **Per-trial (runner) — a broken plane for one task refuses that trial's registration.**
 
-`RegisterTrial` returns `success=false` with an error naming the trial, the domain and the address tried. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Seven paths, in three classes:
+`RegisterTrial` returns `success=false` with an error naming the trial, the domain, the address tried and the source that named it. `Conductor._setup_trial` turns that into a trial failure before the agent loop, so a refused trial costs zero paid turns. Eight paths, in four classes:
 
 | # | path | class |
 |---|---|---|
@@ -174,8 +204,11 @@ The two tiers are deliberately different.
 | 5 | a `docindex/*.md` file cannot be read, so the collection name would not match the host-side index | corpus broken |
 | 6 | the task declares a knowledge base but no readable `*.md` arrived in the trial's artifacts | corpus broken |
 | 7 | a `docindex/` corpus arrived for a task declaring no `documents_path`, in a run that configured a plane | declaration and bundle disagree |
+| 8 | the stack set `TYPESENSE_HOST` without `TYPESENSE_PORT`, or either without the other, or a port that is not a number | the stack's address is half-declared |
 
-Rows 1–6 are reached only when both halves of the registration gate hold: the run configured a plane (`search.host`) and the task declares a knowledge base (`search.documents_path`). Row 6 is narrow by construction — reaching it already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists, so it fires when a declared corpus failed to survive bundling and extraction.
+Row 8 is resolved before the gate and refuses whatever the task declares — a half-configured stack is an operator error, and the task's own connection details are not a repair for it.
+
+Rows 1–6 are reached only when both halves of the registration gate hold: an address resolved and the task declares a knowledge base (`search.documents_path`). Row 6 is narrow by construction — reaching it already required `documents_path`, which an adapter sets only when a host-side `docindex/` exists, so it fires when a declared corpus failed to survive bundling and extraction.
 
 Row 7 is the shape the gate would otherwise pass over in silence. The bundle carries a corpus the declaration never asks for, so no client is registered and every `search_policy` call fails — with registration reporting success. Both spellings are adapter bugs: either declare `documents_path` for the task, or stop bundling the corpus.
 
@@ -185,7 +218,8 @@ Row 7 is the shape the gate would otherwise pass over in silence. The bundle car
 |---|---|---|
 | unit | `tests/unit/test_orchestrator_typesense_startup.py` | a server that never became ready aborts the run, and does not leave its would-be address in the config |
 | unit | `tests/unit/test_orchestrator_typesense_cache_invalidation.py` | the Docker bridge either completes or aborts, and a description cached before the rewrite never reaches a trial |
-| unit | `tests/unit/test_runner_search_plane_refusal.py` | the seven refusal paths, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
+| unit | `tests/unit/test_runner_search_plane_refusal.py` | the refusal paths reached through the gate, the gate ordering, the three shapes that must do no TypeSense work, and artifact cleanup on refusal |
+| unit | `tests/unit/test_runner_typesense_address.py` | which source names the address, the basis reaching the message, and the half-declared stack refusal |
 | unit | `tests/unit/test_runner_pipeline.py::TestRegisterTrialSearchPlanes` | the TypeSense and RAG planes stay decoupled |
 
 ## Server Configuration
@@ -213,7 +247,7 @@ orchestrator:
 
 - **`local`**: Orchestrator manages a Docker container (auto start/stop)
 - **`remote`**: Connect to an external TypeSense server. Nothing is started, but the address is real, so the connection details still reach the adapter
-- **`disabled`**: no server is started and the orchestrator hands the adapter no connection details, so no task's `search.host` is set and none reaches the TypeSense plane
+- **`disabled`**: no server is started, the stack is given no address and the orchestrator hands the adapter no connection details, so neither source names one and no task reaches the TypeSense plane
 
 `enabled: false` and `mode: disabled` are equally final: either one stops the connection details, and a knowledge-base task in such a run registers normally with no search client.
 
