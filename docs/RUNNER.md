@@ -161,10 +161,10 @@ parsed by `extra="forbid"` Pydantic models, so a field the older image does not
 declare is a validation error rather than a dropped byte — and the engine emits
 `state_checks.hash_weight` and `state_checks.expect_initial_state` on every pack with
 a non-empty `state_checks:` block, `transcript_rules.min_assistant_turns` on every
-pack with a `transcript_rules:` block, and the whole `trace_checks` section on
-**every** pack. A newer engine against an older image is therefore rejected at
-`RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden` error naming
-the field. See
+pack with a `transcript_rules:` block, and the whole `trace_checks` section plus
+`search.plane` on **every** pack. A newer engine against an older image is therefore
+rejected at `RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden`
+error naming the field. See
 [`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible) § "Runner-engine
 version lock (both directions)" for the full list of keys that bite and in which
 direction.

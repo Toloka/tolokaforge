@@ -837,7 +837,9 @@ class NativeAdapter(BaseAdapter):
         per-trial RAG indexing: the corpus files travel in ``tool_artifacts``
         and the runner indexes them so ``search_kb`` returns the corpus's
         documents. ``documents_path`` is the declared ``corpus_dir`` verbatim,
-        resolved runner-side against the extracted artifacts dir. Tasks that
+        resolved runner-side against the extracted artifacts dir, and the plane
+        serving it is declared ``rag_service`` so a run that also configures
+        TypeSense does not pull the corpus onto the other plane. Tasks that
         declare no corpus keep search disabled.
 
         Raises:
@@ -845,7 +847,7 @@ class NativeAdapter(BaseAdapter):
                 agent tools (the corpus could never be searched), or the
                 declared ``corpus_dir`` does not resolve to a directory.
         """
-        from tolokaforge.runner.models import SearchConfig
+        from tolokaforge.runner.models import SearchConfig, SearchPlane
 
         rag = task.initial_state.rag
         corpus_dir = rag.get("corpus_dir") if rag else None
@@ -874,6 +876,7 @@ class NativeAdapter(BaseAdapter):
 
         return SearchConfig(
             enabled=True,
+            plane=SearchPlane.RAG_SERVICE,
             domain_name=task.category or task_id,
             documents_path=corpus_dir,
         )

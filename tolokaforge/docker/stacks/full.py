@@ -22,7 +22,7 @@ from tolokaforge.docker.health import HealthProbe
 from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
-from tolokaforge.docker.stacks.core import core_stack
+from tolokaforge.docker.stacks.core import TypeSenseAddress, core_stack
 from tolokaforge.docker.wheel_resolver import resolve_wheel
 
 
@@ -38,6 +38,7 @@ def full_stack(
     task_pack_mounts: list[Path] | None = None,
     extra_runner_binds: list[tuple[Path, str]] | None = None,
     mount_docker_socket: bool = False,
+    typesense_address: TypeSenseAddress | None = None,
 ) -> EngineStack:
     """Create a full service stack with all services.
 
@@ -63,6 +64,7 @@ def full_stack(
         task_pack_mounts: Forwarded to ``core_stack``.
         extra_runner_binds: Forwarded to ``core_stack``.
         mount_docker_socket: Forwarded to ``core_stack``.
+        typesense_address: Forwarded to ``core_stack``.
 
     Returns:
         EngineStack configured with all services.
@@ -77,6 +79,7 @@ def full_stack(
         task_pack_mounts=task_pack_mounts,
         extra_runner_binds=extra_runner_binds,
         mount_docker_socket=mount_docker_socket,
+        typesense_address=typesense_address,
         # The full stack provisions a rag-service below, so the runner's
         # RAG_SERVICE_URL points at a service that actually runs. Both the
         # container name and the ``rag-service`` alias resolve on runner-net;

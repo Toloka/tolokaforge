@@ -11,18 +11,22 @@ Available stacks:
 Individual service definitions:
     - typesense_service: TypeSense search server
 
+Stack-level configuration values:
+    - TypeSenseAddress: where the runner reaches the run's TypeSense server
+
 Example:
     >>> from tolokaforge.docker.stacks import core_stack
     >>> stack = core_stack()
     >>> stack.start_all()
 """
 
-from tolokaforge.docker.stacks.core import core_stack
+from tolokaforge.docker.stacks.core import TypeSenseAddress, core_stack
 from tolokaforge.docker.stacks.full import full_stack
 from tolokaforge.docker.stacks.test import test_stack
 from tolokaforge.docker.stacks.typesense import typesense_service
 
 __all__ = [
+    "TypeSenseAddress",
     "core_stack",
     "full_stack",
     "test_stack",

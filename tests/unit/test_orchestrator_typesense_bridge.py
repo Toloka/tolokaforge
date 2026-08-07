@@ -1,32 +1,22 @@
 """The TypeSense Docker bridge either completes or aborts the run.
 
-The pre-run grading gate resolves every selected task through the run-scoped
-description cache before the Docker stack exists, so each cached ``SearchConfig``
-carries the host-side TypeSense address. After the stack starts,
-``_connect_typesense_to_runner_network`` rewrites the adapter's TypeSense params
-to the Docker-network alias — and inside the runner container the host-side
-address points at the runner itself, so a trial served the stale description has
-every ``search_policy`` call die with "Search service is not available" (#925).
-The rewrite therefore drops the cache, and this file locks that.
+The runner container is created knowing the alias and the container port, and
+that address resolves only while TypeSense is a member of ``runner-net``.
+Building that membership is the whole job: the run config keeps the host-side
+address the orchestrator and the adapter index against, the adapter keeps the
+connection details it was created with, and descriptions resolved before the
+stack existed stay cached. Every one of those is a thing the bridge used to
+rewrite, and the rewrite is what #925 regressed on.
 
-It also locks the other half of the same contract: a bridge that cannot be built
-raises rather than leaving that host-side address in place. There is no partial
-outcome — no container, no ``runner-net``, an adapter that cannot carry the
-rewritten params, or anything the Docker SDK raises all abort the run before the
-config is touched (#926).
+The other half of the same contract: a bridge that cannot be built raises
+rather than letting the run reach a trial. There is no partial outcome — no
+container, no ``runner-net``, a missing ``orchestrator.typesense`` block, or
+anything the Docker SDK raises all abort before any container joins a network.
 
-The lock sits on the two private seams the regression lives between —
-``_task_description`` (the cache) and ``_connect_typesense_to_runner_network``
-(the rewrite) — because the end-to-end surface needs a Docker daemon the unit
-lane does not have. The orchestrator is real; only the Docker SDK boundary and
-the adapter are stand-ins.
-
-One contract this file assumes rather than proves: the mcp_core adapters read
-``params["typesense"]`` at ``to_task_description`` time, not at construction
-time (their construction-time snapshot serves host-side indexing only). No
-in-repo adapter exercises that read, so an adapter that started snapshotting
-would regress to #925 with these tests still green — that end of the contract
-belongs to the external adapters' own suites.
+The lock sits on ``_connect_typesense_to_runner_network`` and on
+``_task_description`` (the cache it no longer drops), because the end-to-end
+surface needs a Docker daemon the unit lane does not have. The orchestrator is
+real; only the Docker SDK boundary and the adapter are stand-ins.
 """
 
 from __future__ import annotations
@@ -53,9 +43,11 @@ from tolokaforge.runner.models import SearchConfig, TaskDescription
 pytestmark = pytest.mark.unit
 
 # The host-mapped port is deliberately not 8108: inside a Docker network the
-# container port is always 8108, so a fixture that agrees with it cannot tell a
-# rewritten address from an un-rewritten one.
+# container port is always 8108, so a fixture that agrees with it cannot tell an
+# untouched address from one the bridge overwrote with the alias.
 HOST_SIDE = {"enabled": True, "mode": "local", "host": "127.0.0.1", "port": 8199, "api_key": "k"}
+HOST_SIDE_ADDRESS = "127.0.0.1:8199"
+INJECTED_ADDRESS = "typesense:8108"
 
 
 class _DockerSdkError(Exception):
@@ -95,12 +87,8 @@ class _KbAdapter:
         )
 
 
-class _ParamlessAdapter:
-    """An adapter with no ``params`` — nothing the rewrite could propagate into."""
-
-
 class _TypesenseServer:
-    """The started-server handle the rewrite reads the container from."""
+    """The started-server handle the bridge reads the container from."""
 
     def __init__(self, *, containers: dict[str, Any] | None = None) -> None:
         container = types.SimpleNamespace(container_id="ts-container-id")
@@ -110,7 +98,7 @@ class _TypesenseServer:
 
 
 class _ServiceStack:
-    """The core stack handle the rewrite reads the runner network from."""
+    """The core stack handle the bridge reads the runner network from."""
 
     def __init__(self, *, with_runner_net: bool = True) -> None:
         net = types.SimpleNamespace(network_id="net-id", name="runner-net")
@@ -162,52 +150,6 @@ def _orchestrator(tmp_path: Path) -> Orchestrator:
     )
 
 
-def test_a_pre_stack_description_is_rebuilt_with_the_docker_address(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The gate's cache warm-up must not pin the host-side address on the trial."""
-    network = _DockerNetwork()
-    monkeypatch.setitem(sys.modules, "docker", _docker_module(network))
-
-    orchestrator = _orchestrator(tmp_path)
-    orchestrator.adapter = _KbAdapter({"typesense": dict(HOST_SIDE)})
-    orchestrator._typesense_server = _TypesenseServer()
-
-    # The pre-run grading gate resolves the task first — stack not started yet.
-    before = orchestrator._task_description("TASK-KB")
-    assert before.search.host == "127.0.0.1"
-
-    orchestrator._connect_typesense_to_runner_network(_ServiceStack())
-
-    # The rewrite really ran, against the real method's docker calls...
-    assert network.connected == [("tolokaforge-typesense", ("typesense",))]
-
-    # ...and the trial-facing resolve now rebuilds with the Docker alias
-    # instead of serving the stale host-side copy back.
-    after = orchestrator._task_description("TASK-KB")
-    assert after.search.host == "typesense"
-    assert after.search.port == 8108
-
-
-def test_descriptions_cache_again_once_rebuilt(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """One rewrite costs one rebuild per task — the cache is dropped, not disabled."""
-    monkeypatch.setitem(sys.modules, "docker", _docker_module(_DockerNetwork()))
-
-    orchestrator = _orchestrator(tmp_path)
-    adapter = _KbAdapter({"typesense": dict(HOST_SIDE)})
-    orchestrator.adapter = adapter
-    orchestrator._typesense_server = _TypesenseServer()
-
-    orchestrator._task_description("TASK-KB")
-    orchestrator._connect_typesense_to_runner_network(_ServiceStack())
-    orchestrator._task_description("TASK-KB")
-    orchestrator._task_description("TASK-KB")
-
-    assert adapter.builds == 2
-
-
 def _bridge_inputs(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -226,86 +168,117 @@ def _bridge_inputs(
     return orchestrator, network
 
 
+def test_a_completed_bridge_leaves_the_run_config_the_adapter_and_the_cache_alone(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Joining the network is the whole job — the address travels a different way.
+
+    The runner already holds the alias, injected at container creation. The
+    host-side address is what the orchestrator and the adapter index against, so
+    a bridge that rewrote it into the adapter's params would leave host-side
+    indexing pointed at a name only the Docker network resolves.
+    """
+    orchestrator, network = _bridge_inputs(tmp_path, monkeypatch)
+    adapter = orchestrator.adapter
+    before = orchestrator._task_description("TASK-KB")
+
+    orchestrator._connect_typesense_to_runner_network(_ServiceStack())
+
+    # The bridge really ran, against the real method's Docker calls.
+    assert network.connected == [("tolokaforge-typesense", ("typesense",))]
+
+    assert adapter.params["typesense"] == HOST_SIDE
+    configured = orchestrator.config.orchestrator.typesense
+    assert (configured.host, configured.port) == ("127.0.0.1", 8199)
+
+    # The cached description is served back, not rebuilt: one build, one object.
+    assert orchestrator._task_description("TASK-KB") is before
+    assert adapter.builds == 1
+    assert before.search.host == "127.0.0.1"
+
+
 def test_a_missing_typesense_container_aborts_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """A start that was rolled back leaves an empty stack — the run cannot continue on it."""
-    orchestrator, _ = _bridge_inputs(tmp_path, monkeypatch, server=_TypesenseServer(containers={}))
+    orchestrator, network = _bridge_inputs(
+        tmp_path, monkeypatch, server=_TypesenseServer(containers={})
+    )
 
     with pytest.raises(RuntimeError, match=r"no 'typesense' container"):
         orchestrator._connect_typesense_to_runner_network(_ServiceStack())
 
-    assert orchestrator.config.orchestrator.typesense.host == "127.0.0.1"
+    assert network.connected == []
 
 
-def test_a_bridge_with_no_typesense_config_to_rewrite_aborts_the_run(
+def test_a_bridge_with_no_typesense_configuration_aborts_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """The bridge only runs after a server started, so the config block must still be there."""
-    orchestrator, _ = _bridge_inputs(tmp_path, monkeypatch)
+    """The bridge only runs after a server started, so the config block must still be there.
+
+    Without it the two aborts below have no host-side address to name, and an
+    operator reading them cannot tell which server failed to be bridged.
+    """
+    orchestrator, network = _bridge_inputs(tmp_path, monkeypatch)
     orchestrator.config.orchestrator.typesense = None
 
-    with pytest.raises(RuntimeError, match="no TypeSense configuration to rewrite"):
+    with pytest.raises(RuntimeError, match="ran with no TypeSense configuration"):
         orchestrator._connect_typesense_to_runner_network(_ServiceStack())
+
+    assert network.connected == []
 
 
 def test_a_missing_runner_network_aborts_the_run(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Without runner-net there is no network to make typesense:8108 resolve on."""
-    orchestrator, _ = _bridge_inputs(tmp_path, monkeypatch)
+    """Without runner-net there is no network for the runner's alias to resolve on."""
+    orchestrator, network = _bridge_inputs(tmp_path, monkeypatch)
 
     with pytest.raises(RuntimeError, match=r"no 'runner-net' network"):
         orchestrator._connect_typesense_to_runner_network(_ServiceStack(with_runner_net=False))
 
-    assert orchestrator.config.orchestrator.typesense.host == "127.0.0.1"
+    assert network.connected == []
 
 
 def test_a_docker_sdk_failure_reaches_the_caller_as_itself(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """No blanket handler stands between the Docker SDK and the run."""
-    orchestrator, _ = _bridge_inputs(
+    orchestrator, network = _bridge_inputs(
         tmp_path, monkeypatch, docker_error=_DockerSdkError("daemon went away")
     )
 
     with pytest.raises(_DockerSdkError, match="daemon went away"):
         orchestrator._connect_typesense_to_runner_network(_ServiceStack())
 
-    assert orchestrator.config.orchestrator.typesense.host == "127.0.0.1"
+    assert network.connected == []
 
 
 @pytest.mark.parametrize(
-    ("adapter", "reason"),
+    ("spoiled", "server", "service_stack"),
     [
-        (None, r"no adapter was created"),
-        (_ParamlessAdapter(), r"exposes no 'params'"),
+        ("no-typesense-container", _TypesenseServer(containers={}), _ServiceStack()),
+        ("no-runner-net", None, _ServiceStack(with_runner_net=False)),
     ],
-    ids=["no-adapter", "adapter-without-params"],
 )
-def test_an_adapter_that_cannot_carry_the_rewrite_aborts_the_run(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch, adapter: Any, reason: str
+def test_a_failed_bridge_names_both_addresses(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    spoiled: str,
+    server: _TypesenseServer | None,
+    service_stack: _ServiceStack,
 ) -> None:
-    """The #925 corruption used to happen here with no log line at all."""
-    orchestrator, network = _bridge_inputs(tmp_path, monkeypatch)
-    orchestrator.adapter = adapter
+    """The operator reads the alias the runner was handed and where the server is.
 
-    with pytest.raises(RuntimeError, match=reason):
-        orchestrator._connect_typesense_to_runner_network(_ServiceStack())
-
-    # Refused before any of it happened: no container joined the network and the
-    # config still describes the host side.
-    assert network.connected == []
-    assert orchestrator.config.orchestrator.typesense.host == "127.0.0.1"
-
-
-def test_every_abort_names_the_host_side_address_trials_would_have_kept(
-    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
-) -> None:
-    """The operator reads which address the run was about to ship to the trials."""
-    orchestrator, _ = _bridge_inputs(tmp_path, monkeypatch, server=_TypesenseServer(containers={}))
+    Neither address alone identifies the fault: the trials are configured with
+    the alias whatever happens here, and the alias resolving to nothing is
+    indistinguishable from a wrong host-side address until both are on the page.
+    """
+    orchestrator, _ = _bridge_inputs(tmp_path, monkeypatch, server=server)
 
     with pytest.raises(RuntimeError) as raised:
-        orchestrator._connect_typesense_to_runner_network(_ServiceStack())
+        orchestrator._connect_typesense_to_runner_network(service_stack)
 
-    assert "127.0.0.1:8199" in str(raised.value)
+    message = str(raised.value)
+    assert INJECTED_ADDRESS in message
+    assert HOST_SIDE_ADDRESS in message

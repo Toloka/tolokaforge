@@ -185,11 +185,26 @@ class UserSimulatorConfig(BaseModel):
 # Search / TypeSense
 # =============================================================================
 
+class SearchPlane(str, Enum):
+    """Which plane serves a task's ``documents_path``."""
+    TYPESENSE = "typesense"                       # The runner registers a search client
+    RAG_SERVICE = "rag_service"                   # rag-service indexes the bundled corpus
+
+
 class SearchConfig(BaseModel):
     """Configuration for knowledge base search (TypeSense)."""
-    enabled: bool = False
+    enabled: bool = False                         # This task needs rag-service
+    plane: Optional[SearchPlane] = None           # Which plane serves documents_path
     domain_name: Optional[str] = None             # "external_retail_v3"
     documents_path: Optional[str] = None          # Path to docindex/ directory
+
+    # TypeSense connection details, for a runner no stack told where TypeSense is.
+    # The stack's TYPESENSE_HOST / TYPESENSE_PORT outrank them where both exist;
+    # an adapter that emits them and no `plane` has its plane derived as
+    # `typesense`. See docs/TYPESENSE_INTEGRATION.md.
+    host: Optional[str] = None                    # "typesense" (Docker DNS alias)
+    port: Optional[int] = None                    # 8108 (container port)
+    api_key: Optional[str] = None                 # TypeSense API key
 
 
 # =============================================================================
@@ -461,6 +476,7 @@ class TaskDescription(BaseModel):
 
   "search": {
     "enabled": true,
+    "plane": "typesense",
     "domain_name": "external_retail_v3",
     "documents_path": "tasks/tlk_mcp_core/external_retail_server_v3/src/domains/external_retail_v3/docindex"
   },
