@@ -1179,48 +1179,62 @@ class Orchestrator:
         gets resolved port/api_key values.
         """
         typesense_config = self.config.orchestrator.typesense
-        if typesense_config and typesense_config.enabled and typesense_config.mode == "local":
-            # Check if already resolved (port is int, not "auto")
-            if typesense_config.port == "auto" or typesense_config.api_key is None:
-                try:
-                    from tolokaforge.core.search.typesense_server import create_typesense_server
+        if not typesense_config or not typesense_config.enabled:
+            return
+        if typesense_config.mode != "local":
+            return
+        # Already resolved (port is an int, not "auto") — nothing left to start.
+        if typesense_config.port != "auto" and typesense_config.api_key is not None:
+            return
 
-                    self.logger.info(
-                        "Starting local TypeSense server", config=typesense_config.model_dump()
-                    )
-                    # Create server with individual params from config
-                    self._typesense_server = create_typesense_server(
-                        port=typesense_config.port,
-                        api_key=typesense_config.api_key,
-                        data_dir=typesense_config.data_dir,
-                        image=typesense_config.image,
-                        container_name=typesense_config.container_name,
-                        timeout=typesense_config.timeout,
-                        cleanup_on_exit=typesense_config.cleanup_on_exit,
-                    )
-                    if self._typesense_server:
-                        self._typesense_server.start()
-                        # Update config object with resolved port/api_key for adapter use
-                        resolved_config = typesense_config.model_dump()
-                        resolved_config["port"] = self._typesense_server.port
-                        resolved_config["api_key"] = self._typesense_server.api_key
-                        self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
-                        self.logger.info(
-                            "TypeSense server started",
-                            host=self._typesense_server.host,
-                            port=self._typesense_server.port,
-                        )
-                    else:
-                        raise RuntimeError(
-                            "TypeSense server could not be created (Docker not available?). "
-                            "TypeSense is configured as enabled; aborting to avoid silent failures."
-                        )
-                except ImportError as e:
-                    raise RuntimeError(
-                        f"TypeSense is configured but the server module is not available: {e}"
-                    ) from e
-                except Exception as e:
-                    raise RuntimeError(f"Failed to start TypeSense server: {e}") from e
+        try:
+            from tolokaforge.core.search.typesense_server import create_typesense_server
+
+            self.logger.info(
+                "Starting local TypeSense server", config=typesense_config.model_dump()
+            )
+            self._typesense_server = create_typesense_server(
+                port=typesense_config.port,
+                api_key=typesense_config.api_key,
+                data_dir=typesense_config.data_dir,
+                image=typesense_config.image,
+                container_name=typesense_config.container_name,
+                timeout=typesense_config.timeout,
+                cleanup_on_exit=typesense_config.cleanup_on_exit,
+            )
+            started = self._typesense_server.start()
+        except ImportError as e:
+            raise RuntimeError(
+                f"TypeSense is configured but the server module is not available: {e}"
+            ) from e
+        except Exception as e:
+            raise RuntimeError(f"Failed to start TypeSense server: {e}") from e
+
+        # Outside the try on purpose: raised inside, this message would reach the
+        # operator wrapped in the "Failed to start TypeSense server" prefix above.
+        if not started:
+            raise RuntimeError(
+                f"orchestrator.typesense: the local TypeSense server at "
+                f"{self._typesense_server.host}:{self._typesense_server.port} never became "
+                f"ready — either the Docker foundation layer is unavailable, or the "
+                f"container did not answer its health and collections probes within "
+                f"timeout={typesense_config.timeout}s. Aborting the run: every "
+                f"search_policy call would run against a search plane that is not there. "
+                f"Check `docker ps` and the TypeSense container logs, raise "
+                f"orchestrator.typesense.timeout, or set orchestrator.typesense.enabled to "
+                f"false to run without a knowledge base."
+            )
+
+        # Update config object with resolved port/api_key for adapter use
+        resolved_config = typesense_config.model_dump()
+        resolved_config["port"] = self._typesense_server.port
+        resolved_config["api_key"] = self._typesense_server.api_key
+        self.config.orchestrator.typesense = TypeSenseConfig(**resolved_config)
+        self.logger.info(
+            "TypeSense server started",
+            host=self._typesense_server.host,
+            port=self._typesense_server.port,
+        )
 
     def _connect_typesense_to_runner_network(self, service_stack: Any) -> None:
         """Connect TypeSense container to the core stack's Docker network.

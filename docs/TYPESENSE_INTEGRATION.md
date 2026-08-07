@@ -10,7 +10,7 @@ The TypeSense integration bridges TolokaForge adapters with the `mcp_core` TypeS
 - **Automatic Indexing**: Documents in `docindex/` directories are automatically indexed
 - **Semantic Search**: Supports both vector and text-based search
 - **Graceful Degradation**: Falls back to stub behavior when TypeSense server is unavailable
-- **Orchestrator-Managed Server**: Automatic Docker container lifecycle management
+- **Orchestrator-Managed Server**: Automatic Docker container lifecycle management. A server that does not become ready within `timeout` aborts the run — the orchestrator raises with the address it tried and the reason, rather than continuing against an address nothing is listening on
 - **Configurable**: Via run config with auto port selection and API key generation
 
 ## Architecture
@@ -328,7 +328,7 @@ If not using orchestrator-managed server:
 With `mode: local`, the orchestrator handles everything automatically:
 
 1. **Configure** `.cache/typesense` data directory (added to `.gitignore`)
-2. **Start run** - TypeSense container starts automatically
+2. **Start run** - TypeSense container starts automatically; if it never becomes ready, the run aborts before any trial
 3. **Run completes** - Container is cleaned up (if `cleanup_on_exit: true`)
 
 ### Production Setup
