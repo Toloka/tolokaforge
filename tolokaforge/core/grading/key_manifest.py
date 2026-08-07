@@ -473,7 +473,7 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         core_field="StateChecksConfig.id_fields",
         runner_field="RunnerStateChecksConfig.id_fields",
         core_evaluator=_ID_FIELDS_LOAD_CHECK,
-        runner_evaluator="tolokaforge.runner.db_proxy.DBServiceProxy._resolve_id_field",
+        runner_evaluator="tolokaforge.runner.db_proxy.DBServiceProxy._resolve_table_key",
     ),
     GradingKey(
         author_key="state_checks.relaxed_validation",

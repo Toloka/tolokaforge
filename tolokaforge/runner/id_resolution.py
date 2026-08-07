@@ -3,7 +3,7 @@
 Central home for the "given a table, which ordered fields form the primary
 key, and what diff mutations does before→after produce?" question. Callers
 with a Pydantic model class (:class:`DBServiceProxy`) resolve keys via
-``_resolve_id_field``; callers with raw record dicts (MCP subprocess sync in
+``_resolve_table_key``; callers with raw record dicts (MCP subprocess sync in
 :mod:`tolokaforge.runner.service`, Tau in-memory sync in
 :mod:`tolokaforge.runner.tool_factory`) use :func:`compute_diff_ops`.
 
@@ -46,7 +46,7 @@ def table_key(table: str, id_fields: Mapping[str, str | list[str]]) -> TableKey:
 
     A configured ``state_checks.id_fields`` entry wins: a string names one
     field, a list names the ordered components. Match
-    :meth:`DBServiceProxy._resolve_id_field`'s truthiness semantics (``or``,
+    :meth:`DBServiceProxy._resolve_table_key`'s truthiness semantics (``or``,
     not ``.get(..., default)``) so an absent table, a blank string, and an
     empty list all fall through to the ``("id",)`` default rather than
     diverging.

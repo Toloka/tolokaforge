@@ -827,11 +827,22 @@ Map keys are the table names as they appear in `initial_state`. This is config
 data that travels with the task, so key resolution never depends on reading model
 source at runtime (the previous `inspect.getsource`-based guess broke whenever the
 domain source was not on disk). A table keyed by neither `"id"` nor a declared
-field fails loud at write time with the exact `id_fields` entry to add. The
-MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
+field fails loud at write time with the exact `id_fields` entry to add, and a
+record missing any declared key component fails loud naming the table, the
+missing component and the full declared key — per component, not just for the
+whole key. The MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
 `TauSyncToolWrapper._sync_state_changes`) consult the same map, so records with
 their key omitted also fail loud instead of collapsing to a single `None` bucket
 and silently corrupting the state diff.
+
+Pack tool code addresses a composite-keyed record with a **mapping of component
+values**: `db.get_by_id(Position, {"account_id": "A1", "symbol": "MSFT"})`, and
+the same shape on `delete_by_id`. A scalar is refused naming the table and its
+declared components — the engine cannot interpret whatever concatenation the
+model's `get_id()` produces — and a bare sequence is refused too, because
+`["a", "b"]` is ambiguous between two components and one list-valued component.
+`update(obj)` and `delete(obj)` need no addressing at all: the key value is
+taken component-wise from the record itself.
 
 Every path that indexes records by a composite key compares **component-wise**:
 two records carry the same key only when they agree on every declared field.

@@ -344,7 +344,7 @@ class RunnerStateChecksConfig(BaseModel):
     # (e.g. {"widgets": "widget_id", "positions": ["account_id", "symbol"]}).
     # Absent table => "id". Consumed by the DB proxy (via ToolFactory) so key
     # resolution is data-driven instead of derived from model source.
-    # See runner/db_proxy.py _resolve_id_field.
+    # See runner/db_proxy.py _resolve_table_key.
     id_fields: dict[str, str | list[str]] = Field(default_factory=dict)
     # Escape hatch for legacy tasks: downgrade the id_fields cross-check
     # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
