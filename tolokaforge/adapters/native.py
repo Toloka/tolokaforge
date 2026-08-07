@@ -17,7 +17,11 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
-from tolokaforge.core.grading.config_validation import CombineLayer, authored_hash_block
+from tolokaforge.core.grading.config_validation import (
+    CombineLayer,
+    HashSourceLayer,
+    authored_hash_block,
+)
 from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
 from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_retired_hash_keys
 from tolokaforge.core.logging import get_logger
@@ -347,6 +351,15 @@ class NativeAdapter(BaseAdapter):
 
     def grading_combine_layer(self) -> CombineLayer:
         return CombineLayer(self._project_combine_defaults())
+
+    @classmethod
+    def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+        """Nothing beneath the block: a native pack's authored keys are the whole layer.
+
+        An answer rather than an inability to answer, which is what makes an enabled
+        hash declaring no source the authoring defect the gates refuse.
+        """
+        return HashSourceLayer()
 
     def _project_combine_defaults(self) -> dict[str, Any] | None:
         return project_grading_combine(self._project_task_defaults)

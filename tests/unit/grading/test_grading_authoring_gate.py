@@ -44,11 +44,13 @@ from tolokaforge.core.grading.config_validation import (
     _TRANSCRIPT_RULE_KEYS,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
+    AdapterHashSource,
     AuthoringReport,
     CombineLayer,
     Finding,
     HashSourceLayer,
     ReplayWorld,
+    SuppliedSourceState,
     ToolInventory,
     _authored_hash_is_a_state_source,
     inspect_grading_authoring,
@@ -186,13 +188,25 @@ _NO_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_ser
 _AN_INLINE_INITIAL_STATE = ReplayWorld(initial_state=InitialStateSource.INLINE, mcp_server=True)
 _A_TASK_SUPPLYING_NEITHER = ReplayWorld(initial_state=InitialStateSource.ABSENT, mcp_server=False)
 
-# The two answers a caller can give the hash-source rule. The resolved layer is what both
+# The answers a caller can give the hash-source rule. The resolved layer is what both
 # pack gates report for a native task — the authored block is the only place a source can
 # come from — and what every row here means by grading natively. The unresolvable one is
 # the answer for a task an external adapter grades, whose source may live in fixtures the
-# block never names.
+# block never names. The last three are that adapter naming the fixture it reads and the
+# state it found it in, which is the only thing that separates its convention from a pack
+# that costs a trial and grades nothing.
+_A_FIXTURE_AN_ADAPTER_READS = "fixtures/golden_actions.json"
 _THE_BLOCK_IS_THE_WHOLE_LAYER = HashSourceLayer()
 _AN_ADAPTER_MAY_SUPPLY_THE_SOURCE = HashSourceLayer.unresolvable()
+_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE = HashSourceLayer(
+    supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.USABLE)
+)
+_AN_ADAPTER_SUPPLIES_A_MISSING_SOURCE = HashSourceLayer(
+    supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.MISSING)
+)
+_AN_ADAPTER_SUPPLIES_AN_EMPTY_SOURCE = HashSourceLayer(
+    supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.EMPTY)
+)
 
 
 def _quotes(operator: str, name: str) -> dict[str, Any]:
@@ -331,6 +345,35 @@ _RULES: tuple[_Rule, ...] = (
         channel="unchecked",
         message="an external adapter may compute the source",
         hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+    ),
+    _Rule(
+        label="enabled_hash_whose_supplied_source_is_missing",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        # The fixture and its state together: a refusal naming neither leaves the author
+        # with the generic "declare a source" fix, which is not the one that repairs this.
+        message=f"{_A_FIXTURE_AN_ADAPTER_READS}, which is missing",
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_MISSING_SOURCE,
+    ),
+    _Rule(
+        label="enabled_hash_whose_supplied_source_is_empty",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        message=f"{_A_FIXTURE_AN_ADAPTER_READS}, which is empty",
+        hash_sources=_AN_ADAPTER_SUPPLIES_AN_EMPTY_SOURCE,
+    ),
+    _Rule(
+        label="hash_source_without_the_flag_beside_a_supplied_source",
+        task=_HELPDESK,
+        grading={"state_checks": {"hash": {"enabled": False, "expect_initial_state": True}}},
+        checker="_check_hash_source_declared",
+        channel="errors",
+        message="the comparison never runs",
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE,
     ),
     _Rule(
         label="probes_beside_a_source_that_scores_the_same_component",
@@ -963,6 +1006,43 @@ def test_a_block_the_hash_rule_accepts_reports_nothing_on_an_unresolved_layer() 
     )
 
     assert report == AuthoringReport()
+
+
+def test_an_adapter_supplying_a_usable_source_leaves_the_bare_block_clean() -> None:
+    """An answered layer makes the frozen-core convention a plain pass.
+
+    The same bare block an unresolved layer leaves unchecked, under an adapter that says
+    which fixture it reads and that the fixture is usable: the pack is checked, not
+    merely unrefused, so it draws nothing on any channel. A skip here would report every
+    healthy external pack as something a caller failed to check, which is exactly what
+    an answer removes.
+    """
+    grading = {"state_checks": {"hash": {"enabled": True, "weight": 1.0}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_an_unresolvable_hash_source_layer_may_not_carry_a_supplied_source() -> None:
+    """The two states decide opposite things, so a hybrid decides neither.
+
+    ``known=False`` skips the rule that reads the layer, so a fixture reported beside it
+    is resolved and then ignored — a lost source read as merely unchecked, which is the
+    silence this rule exists to break. The same guard the tool inventory, the replay
+    world and the combine layer carry, for the same reason.
+    """
+    with pytest.raises(ValueError, match="unresolvable hash-source layer carries facts"):
+        HashSourceLayer(
+            known=False,
+            supplied=AdapterHashSource(
+                where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.MISSING
+            ),
+        )
+
+    assert HashSourceLayer.unresolvable().supplied is None
 
 
 def test_golden_actions_alone_are_a_hash_source() -> None:

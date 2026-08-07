@@ -26,12 +26,18 @@ import yaml
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import orchestrator as orchestrator_module
 from tolokaforge.core.conductor import InMemoryConductor
+from tolokaforge.core.grading.config_validation import (
+    AdapterHashSource,
+    HashSourceLayer,
+    SuppliedSourceState,
+)
 from tolokaforge.core.models import (
     EvaluationConfig,
     GradingFindingSeverity,
     ModelConfig,
     OrchestratorConfig,
     RunConfig,
+    TaskConfig,
 )
 from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
@@ -632,11 +638,20 @@ class _NativeAdapterResolvingToAnExternalType(NativeAdapter):
     loader reads can reach the non-native arm on its own. ``terminal_bench`` is a
     registered adapter, so the description still passes the registration guard the
     gate resolves through.
+
+    It models an external adapter that has not implemented the hash-source hook, so it
+    answers ``unresolvable`` rather than inheriting the native "nothing beneath": the
+    pre-run gate asks the adapter instance, and inheriting an answer this stand-in has
+    no business giving would turn both locks below into refusals.
     """
 
     def to_task_description(self, task_id: str) -> TaskDescription:
         description = super().to_task_description(task_id)
         return description.model_copy(update={"adapter_type": "terminal_bench"})
+
+    @classmethod
+    def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+        return HashSourceLayer.unresolvable()
 
 
 def test_a_gradeless_pack_an_adapter_answers_for_itself_reaches_its_trials(
@@ -697,6 +712,76 @@ def test_an_enabled_sourceless_hash_an_adapter_supplies_reaches_its_trials(
     }
     reason = warned[("TASK-ADAPTER-HASH", "state_checks.hash.enabled")]
     assert "an external adapter may compute the source" in reason
+    assert len(conductor.call_log.runs) == 1
+
+
+_A_FIXTURE_THE_ADAPTER_READS = "fixtures/golden_actions.json"
+
+
+def _an_adapter_supplying(state: SuppliedSourceState) -> type[NativeAdapter]:
+    """An adapter that answers the hash-source question with a fixture in *state*."""
+
+    class _AnAdapterSupplyingItsOwnHashSource(NativeAdapter):
+        @classmethod
+        def grading_hash_source_layer(cls, task: TaskConfig, task_dir: Path) -> HashSourceLayer:
+            return HashSourceLayer(
+                supplied=AdapterHashSource(where=_A_FIXTURE_THE_ADAPTER_READS, state=state)
+            )
+
+    return _AnAdapterSupplyingItsOwnHashSource
+
+
+def test_a_hash_source_the_adapter_has_lost_refuses_the_run_before_any_trial(
+    tmp_path: Path,
+) -> None:
+    """The lost-fixture blind spot is closed at the gate that spends the tokens.
+
+    The same bare block as the pass above, but the adapter now says the fixture it
+    grades against is gone. Nothing downstream can recover: every trial would be paid
+    for and then take no hash verdict. So the run is refused before the first one, and
+    the refusal names the fixture, because the adapter's vocabulary is the only place
+    an author can go and fix it.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-LOST-HASH", AN_ADAPTER_SUPPLIED_HASH)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.adapter = _an_adapter_supplying(SuppliedSourceState.MISSING)(
+        {"task_packs": [str(root)], "tasks_glob": "**/task.yaml"}
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert _A_FIXTURE_THE_ADAPTER_READS in str(excinfo.value)
+    assert "missing" in str(excinfo.value)
+    assert conductor.call_log.runs == []
+
+
+def test_the_same_pack_reaches_its_trials_when_the_adapter_supplies_the_source(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The other half: an answered layer is checked, so a healthy pack draws nothing.
+
+    Same pack, same gate, one fact different — the fixture is there. Without this the
+    refusal above would be satisfied by a gate that refuses every pack an adapter
+    answers for, and the hash block would draw no skip either, because the question
+    was answered rather than left open.
+    """
+    root = tmp_path / "pack"
+    _write_builtin_task(root, "TASK-SUPPLIED-HASH", AN_ADAPTER_SUPPLIED_HASH)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+    orchestrator.adapter = _an_adapter_supplying(SuppliedSourceState.USABLE)(
+        {"task_packs": [str(root)], "tasks_glob": "**/task.yaml"}
+    )
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    assert [
+        record.where
+        for record in caplog.records
+        if "could not check" in record.getMessage() and record.where == "state_checks.hash.enabled"
+    ] == []
     assert len(conductor.call_log.runs) == 1
 
 
