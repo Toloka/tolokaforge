@@ -34,13 +34,19 @@ import asyncio
 import concurrent.futures
 import logging
 import threading
+from collections.abc import Mapping
 from copy import deepcopy
 from typing import Any, TypeVar
 
 from pydantic import BaseModel
 
 from tolokaforge.runner.db_client import DBServiceClient
-from tolokaforge.runner.id_resolution import IdFieldResolutionError, id_field_for_table
+from tolokaforge.runner.id_resolution import (
+    IdFieldResolutionError,
+    TableKey,
+    resolve_record_id,
+    table_key,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -73,7 +79,7 @@ class DBServiceProxy:
         trial_id: str,
         model_registry: dict[str, type[BaseModel]] | None = None,
         db_table_names: list[str] | None = None,
-        id_fields: dict[str, str] | None = None,
+        id_fields: Mapping[str, str | list[str]] | None = None,
     ):
         """
         Initialize the DB Service proxy.
@@ -86,16 +92,18 @@ class DBServiceProxy:
             db_table_names: Optional list of actual table names from initial_state.
                            Used for fallback table name resolution when model is not registered.
             id_fields: Optional per-table primary-key overrides (table_name -> key
-                           field), from grading config state_checks.id_fields. A table
-                           absent from the map resolves to the literal "id".
+                           field or ordered component list), from grading config
+                           state_checks.id_fields. A table absent from the map
+                           resolves to the literal "id".
         """
         self.db_client = db_client
         self.trial_id = trial_id
         self.db_table_names = db_table_names or []
-        # Per-table primary-key field (table_name -> key field). Data-driven so
-        # upsert/delete/lookup key resolution never depends on reading model source
-        # at runtime; a table absent here resolves to "id".
-        self._id_fields: dict[str, str] = dict(id_fields or {})
+        # Per-table primary-key override (table_name -> key field or ordered
+        # component list). Data-driven so upsert/delete/lookup key resolution
+        # never depends on reading model source at runtime; a table absent here
+        # resolves to "id".
+        self._id_fields: dict[str, str | list[str]] = dict(id_fields or {})
         # Domain name for TypeSense search (used by search_policy tools
         # that call getattr(db, "domain") to look up the registry).
         self.domain: str | None = None
@@ -279,8 +287,8 @@ class DBServiceProxy:
         if hasattr(obj, "id"):
             return obj.id
 
-    def _resolve_id_field(self, model_cls: type[BaseModel]) -> str:
-        """Primary-key field name for a table's write/delete operations.
+    def _resolve_table_key(self, model_cls: type[BaseModel]) -> TableKey:
+        """Ordered primary-key fields for a table's write/delete operations.
 
         Config-first (``state_checks.id_fields``), literal-``"id"`` default, fail
         loud. When no config is provided, the default is validated against the
@@ -290,15 +298,54 @@ class DBServiceProxy:
         """
         table_name = self._get_table_name(model_cls)
         if self._id_fields.get(table_name):
-            return id_field_for_table(table_name, self._id_fields)
+            return table_key(table_name, self._id_fields)
         if "id" in getattr(model_cls, "model_fields", {}):
-            return "id"
+            return TableKey(("id",))
         raise IdFieldResolutionError(
             f"Cannot determine ID field for table '{table_name}' "
             f"(model {model_cls.__name__}): no 'id' field and no "
             f"state_checks.id_fields entry. Add to the task's grading.yaml:\n"
-            f"  state_checks:\n    id_fields:\n      {table_name}: <key_field>"
+            f"  state_checks:\n    id_fields:\n"
+            f"      {table_name}: <key_field>  # or [<field_1>, <field_2>] for a composite key"
         )
+
+    def _key_components_from_record(
+        self, table_name: str, key: TableKey, record: dict[str, Any]
+    ) -> dict[str, Any]:
+        """A composite-keyed record's key value as a component mapping.
+
+        Never derived from ``get_id()`` — how a pack's model concatenates its
+        components is invisible to the engine, so the record dict is the only
+        authority on the key value.
+        """
+        components = resolve_record_id(record, table_name, self._id_fields)
+        return dict(zip(key.fields, components, strict=True))
+
+    def _composite_lookup_components(
+        self, table_name: str, key: TableKey, value: Any
+    ) -> dict[str, Any]:
+        """Validate a caller-supplied lookup value against a composite key.
+
+        A mapping of component values is the only accepted shape: a scalar
+        cannot address a composite key, and a bare sequence is ambiguous
+        between "two components" and "one component whose value is a list".
+        """
+        if not isinstance(value, Mapping):
+            example = ", ".join(f'"{f}": ...' for f in key.fields)
+            raise IdFieldResolutionError(
+                f"Table {table_name!r} declares composite key {list(key.fields)!r}; "
+                f"address records with a mapping of component values "
+                f"({{{example}}}), got {value!r}."
+            )
+        missing = sorted(set(key.fields) - set(value))
+        unexpected = sorted(set(value) - set(key.fields))
+        if missing or unexpected:
+            raise IdFieldResolutionError(
+                f"Composite lookup for table {table_name!r} must supply exactly "
+                f"the declared key components {list(key.fields)!r}: "
+                f"missing={missing}, unexpected={unexpected}."
+            )
+        return {field: value[field] for field in key.fields}
 
     # =========================================================================
     # InMemoryDatabase-compatible interface (async versions)
@@ -340,21 +387,29 @@ class DBServiceProxy:
         """
         Get a single item by its ID from the database.
 
-        Resolves the table's key field from config (state_checks.id_fields,
-        default "id"), does one JSONPath lookup, and falls back to a value-based
-        full scan (comparing get_id()) if the lookup misses — so reads succeed for
-        any key shape even without config.
+        Resolves the table's key from config (state_checks.id_fields, default
+        "id"). A single-field table takes a scalar, does one JSONPath lookup,
+        and falls back to a value-based full scan (comparing get_id()) if the
+        lookup misses — so reads succeed for any key shape even without config.
+        A composite-keyed table takes a mapping of component values (a scalar
+        or bare sequence raises IdFieldResolutionError naming the components)
+        and both the JSONPath lookup and the fallback scan compare every
+        component against the record dict.
 
         Args:
             model_cls: Pydantic model class
-            value: ID value to search for
+            value: Key value — scalar for a single-field key, component
+                mapping for a composite key
 
         Returns:
             Model instance or None if not found
         """
         table_name = self._get_table_name(model_cls)
-        id_field = id_field_for_table(table_name, self._id_fields)
+        key = table_key(table_name, self._id_fields)
+        if len(key.fields) > 1:
+            return await self._get_by_composite_key(model_cls, table_name, key, value)
 
+        id_field = key.fields[0]
         jsonpath = f"$.{table_name}[?(@.{id_field}=='{value}')]"
         try:
             response = await self.db_client.query(self.trial_id, jsonpath)
@@ -370,6 +425,30 @@ class DBServiceProxy:
         logger.debug(f"JSONPath lookup missed, full scan for {model_cls.__name__}")
         for item in await self.get_all(model_cls):
             if self._get_id(item) == value:
+                return item
+        return None
+
+    async def _get_by_composite_key(
+        self, model_cls: type[T], table_name: str, key: TableKey, value: Any
+    ) -> T | None:
+        """Composite lookup: one JSONPath predicate per component, then a
+        component-wise full scan — never ``get_id()``, whose concatenation the
+        engine cannot interpret."""
+        components = self._composite_lookup_components(table_name, key, value)
+
+        predicate = " & ".join(f"@.{field}=='{components[field]}'" for field in key.fields)
+        jsonpath = f"$.{table_name}[?({predicate})]"
+        try:
+            response = await self.db_client.query(self.trial_id, jsonpath)
+            if response.results:
+                return self._to_model(model_cls, response.results[0])
+        except Exception as e:
+            logger.debug(f"Composite JSONPath lookup on {list(key.fields)!r} failed: {e}")
+
+        logger.debug(f"Composite lookup missed, full scan for {model_cls.__name__}")
+        for item in await self.get_all(model_cls):
+            record = self._to_dict(item)
+            if all(record.get(field) == components[field] for field in key.fields):
                 return item
         return None
 
@@ -452,21 +531,27 @@ class DBServiceProxy:
         """
         model_cls = obj.__class__
         table_name = self._get_table_name(model_cls)
-        obj_id = self._get_id(obj)
+        key = self._resolve_table_key(model_cls)
         record = self._to_dict(obj)
 
-        # Check if ID exists
-        existing = await self.get_by_id(model_cls, obj_id)
+        wire_key: str | list[str]
+        lookup: Any
+        if len(key.fields) == 1:
+            lookup = self._get_id(obj)
+            wire_key = key.fields[0]
+        else:
+            lookup = self._key_components_from_record(table_name, key, record)
+            wire_key = list(key.fields)
+
+        existing = await self.get_by_id(model_cls, lookup)
         if existing is None:
-            raise ValueError(f"Object with ID {obj_id} does not exist")
+            raise ValueError(f"Object with ID {lookup} does not exist")
 
         # Use upsert to replace the entire record
         await self.db_client.mutate(
             trial_id=self.trial_id,
             table_name=table_name,
-            operations=[
-                {"op": "upsert", "record": record, "key": self._resolve_id_field(model_cls)}
-            ],
+            operations=[{"op": "upsert", "record": record, "key": wire_key}],
         )
 
         return obj
@@ -485,17 +570,24 @@ class DBServiceProxy:
         """
         model_cls = obj.__class__
         table_name = self._get_table_name(model_cls)
-        obj_id = self._get_id(obj)
+        key = self._resolve_table_key(model_cls)
 
-        # Check if ID exists
-        existing = await self.get_by_id(model_cls, obj_id)
+        lookup: Any
+        if len(key.fields) == 1:
+            lookup = self._get_id(obj)
+            delete_filter = {key.fields[0]: lookup}
+        else:
+            delete_filter = self._key_components_from_record(table_name, key, self._to_dict(obj))
+            lookup = delete_filter
+
+        existing = await self.get_by_id(model_cls, lookup)
         if existing is None:
-            raise ValueError(f"Object with ID {obj_id} does not exist")
+            raise ValueError(f"Object with ID {lookup} does not exist")
 
         await self.db_client.mutate(
             trial_id=self.trial_id,
             table_name=table_name,
-            operations=[{"op": "delete", "filter": {self._resolve_id_field(model_cls): obj_id}}],
+            operations=[{"op": "delete", "filter": delete_filter}],
         )
 
     async def delete_by_id(self, model_cls: type[T], obj_id: Any) -> None:
@@ -504,22 +596,30 @@ class DBServiceProxy:
 
         Args:
             model_cls: Pydantic model class
-            obj_id: ID of the object to delete
+            obj_id: Key value of the object to delete — scalar for a
+                single-field key, component mapping for a composite key
 
         Raises:
             ValueError: If object with ID doesn't exist
         """
         table_name = self._get_table_name(model_cls)
+        key = self._resolve_table_key(model_cls)
 
-        # Check if ID exists
-        existing = await self.get_by_id(model_cls, obj_id)
+        if len(key.fields) == 1:
+            delete_filter = {key.fields[0]: obj_id}
+            lookup: Any = obj_id
+        else:
+            delete_filter = self._composite_lookup_components(table_name, key, obj_id)
+            lookup = delete_filter
+
+        existing = await self.get_by_id(model_cls, lookup)
         if existing is None:
             raise ValueError(f"Object with ID {obj_id} does not exist")
 
         await self.db_client.mutate(
             trial_id=self.trial_id,
             table_name=table_name,
-            operations=[{"op": "delete", "filter": {self._resolve_id_field(model_cls): obj_id}}],
+            operations=[{"op": "delete", "filter": delete_filter}],
         )
 
     async def bulk_delete(self, objects: list[BaseModel]) -> None:
@@ -534,15 +634,19 @@ class DBServiceProxy:
 
         model_cls = objects[0].__class__
         table_name = self._get_table_name(model_cls)
+        key = self._resolve_table_key(model_cls)
 
         operations = []
         for obj in objects:
             if obj.__class__ != model_cls:
                 raise ValueError("All objects must be of the same model class")
-            obj_id = self._get_id(obj)
-            operations.append(
-                {"op": "delete", "filter": {self._resolve_id_field(model_cls): obj_id}}
-            )
+            if len(key.fields) == 1:
+                delete_filter = {key.fields[0]: self._get_id(obj)}
+            else:
+                delete_filter = self._key_components_from_record(
+                    table_name, key, self._to_dict(obj)
+                )
+            operations.append({"op": "delete", "filter": delete_filter})
 
         await self.db_client.mutate(
             trial_id=self.trial_id, table_name=table_name, operations=operations

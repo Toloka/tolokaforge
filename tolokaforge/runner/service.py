@@ -116,7 +116,7 @@ from tolokaforge.runner.grading_ledger import (
     transcript_rules_author_keys,
 )
 from tolokaforge.runner.id_resolution import (
-    check_id_fields_reference_known_tables,
+    check_id_fields_against_seeded_tables,
     compute_diff_ops,
 )
 from tolokaforge.runner.models import (
@@ -954,8 +954,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         relaxed = bool(state_checks.relaxed_validation) if state_checks else False
         # Belt-and-suspenders: NativeAdapter runs this check at task-description build
         # time, but engines using other adapters (mcp_core, custom) bypass it.
-        err = check_id_fields_reference_known_tables(
-            id_fields, db_table_names, context=f"RegisterTrial: {trial_id}", relaxed=relaxed
+        err = check_id_fields_against_seeded_tables(
+            id_fields, initial_state_data, context=f"RegisterTrial: {trial_id}", relaxed=relaxed
         )
         if err:
             logger.error(err)
@@ -2118,8 +2118,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         this trial (e.g. non-DB tasks) — the judge then falls back to its
         read-only tools. Otherwise fetches the raw final state (the same shape
         ``get_db_state`` returns) and diffs it against the pre-run initial tables,
-        matching rows by declared primary key and dropping ``unstable_fields`` as
-        noise so the diff shows only meaningful edits.
+        matching rows on the trial's declared ``state_checks.id_fields`` key
+        (layered over the task schemas' primary keys) and dropping
+        ``unstable_fields`` as noise so the diff shows only meaningful edits.
         """
         db_client = self.db_client
         task_desc = trial_context.task_description
@@ -2127,7 +2128,10 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         if db_client is None or initial_state is None or not initial_state.tables:
             return None
         final_state = (await db_client.get_state(trial_id)).data
-        primary_keys = {s.table_name: s.primary_key for s in initial_state.schemas}
+        primary_keys: dict[str, str | list[str]] = {
+            s.table_name: s.primary_key for s in initial_state.schemas
+        }
+        primary_keys.update(self._id_fields_for_trial(trial_id))
         unstable_fields = {(u.table_name, u.field_name) for u in initial_state.unstable_fields}
         return render_state_diff(
             initial_state.tables,
@@ -2502,12 +2506,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                     f"_sync_mcp_state_to_db: {trial_id}/{table_name} — {len(operations)} op(s)"
                 )
 
-    def _id_fields_for_trial(self, trial_id: str) -> dict[str, str]:
+    def _id_fields_for_trial(self, trial_id: str) -> dict[str, str | list[str]]:
         """Return the id_fields map declared by the trial's grading config, or ``{}``.
 
-        Callers of ``_sync_mcp_state_to_db`` (GradeTrial, GetState) always guard
-        that the trial is registered before invoking, so indexed access here is
-        deliberate — a missing trial is a bug in the caller.
+        Callers always guard that the trial is registered before invoking, so
+        indexed access here is deliberate — a missing trial is a bug in the caller.
         """
         trial = self.trials[trial_id]
         if trial.task_description is None:

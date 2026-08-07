@@ -17,14 +17,16 @@ did, which is the thing most rubrics actually grade.
 
 The renderer is intentionally dependency-free — it takes plain dicts and returns
 a string — so it is trivially unit-testable and carries no coupling to the runner
-models. The caller (``runner/service.py``) extracts primary keys and unstable
-fields from the trial's ``InitialStateConfig`` and passes them in as plain data.
+models. The caller (``runner/service.py``) passes primary keys — the trial's
+declared ``state_checks.id_fields`` layered over the task schemas — and the
+unstable fields from ``InitialStateConfig``, all as plain data.
 """
 
 from __future__ import annotations
 
 import json
 from collections import Counter
+from collections.abc import Mapping, Sequence
 from typing import Any
 
 __all__ = ["render_state_diff"]
@@ -75,42 +77,51 @@ def _strip_unstable(
     return {k: v for k, v in record.items() if (table, k) not in unstable}
 
 
+def _row_key(record: dict[str, Any], fields: tuple[str, ...]) -> tuple[str, ...]:
+    """Hashable match key for one row: ``_pk_key`` per component, independently."""
+    return tuple(_pk_key(record[f]) for f in fields)
+
+
 def _resolve_pk(
     before: list[dict[str, Any]],
     after: list[dict[str, Any]],
-    declared_pk: str | None,
-) -> str | None:
-    """Pick a usable primary-key field for row matching, or ``None``.
+    declared_pk: str | Sequence[str] | None,
+) -> tuple[str, ...] | None:
+    """Pick a usable primary-key field tuple for row matching, or ``None``.
 
-    A field is usable when, on **each side independently**, every row carries it
-    non-null and uniquely. Uniqueness is checked per side (not on the combined
-    rows) — a key shared by a before-row and an after-row is exactly the match we
-    want, not a duplicate. Prefers the declared schema PK, then ``id``, then the
-    first ``*_id`` field. Returns ``None`` when no field reliably keys the rows —
-    the caller then degrades to whole-record set matching (added/removed only).
+    A key is usable when, on **each side independently**, every row carries all
+    of its components non-null and the component tuple is unique. Uniqueness is
+    checked per side (not on the combined rows) — a key shared by a before-row
+    and an after-row is exactly the match we want, not a duplicate. Prefers the
+    declared key (a single field, or an ordered component list for a composite
+    key), then ``id``, then the first ``*_id`` field; the heuristic only ever
+    tries single fields, so an undeclared composite-keyed table falls through.
+    Returns ``None`` when no key reliably identifies the rows — the caller then
+    degrades to whole-record set matching (added/removed only).
     """
 
-    def usable(field: str) -> bool:
+    def usable(fields: tuple[str, ...]) -> bool:
         for side in (before, after):
-            seen: set[str] = set()
+            seen: set[tuple[str, ...]] = set()
             for r in side:
-                if field not in r or r[field] is None:
+                if any(f not in r or r[f] is None for f in fields):
                     return False
-                key = _pk_key(r[field])
+                key = _row_key(r, fields)
                 if key in seen:
                     return False
                 seen.add(key)
         return True
 
-    if declared_pk and usable(declared_pk):
-        return declared_pk
+    declared = (declared_pk,) if isinstance(declared_pk, str) else tuple(declared_pk or ())
+    if declared and usable(declared):
+        return declared
     sample = before or after
     if not sample:
-        return declared_pk or None
+        return None
     candidates = ["id"] + sorted(f for f in sample[0] if f.endswith("_id") and f != "id")
     for field in candidates:
-        if usable(field):
-            return field
+        if usable((field,)):
+            return (field,)
     return None
 
 
@@ -129,7 +140,7 @@ def _diff_table(
     final_rows: list[dict[str, Any]],
     *,
     table: str,
-    declared_pk: str | None,
+    declared_pk: str | Sequence[str] | None,
     unstable: set[tuple[str, str]],
 ) -> tuple[list[str], list[str], list[tuple[str, list[str]]]]:
     """Return (added, removed, modified) for one table.
@@ -160,8 +171,8 @@ def _diff_table(
         removed = sorted((before_counts - after_counts).elements())
         return added, removed, []
 
-    before_by_pk = {_pk_key(r[pk]): r for r in initial_rows}
-    after_by_pk = {_pk_key(r[pk]): r for r in final_rows}
+    before_by_pk = {_row_key(r, pk): r for r in initial_rows}
+    after_by_pk = {_row_key(r, pk): r for r in final_rows}
 
     added = sorted(
         _fmt_record(strip(row)) for key, row in after_by_pk.items() if key not in before_by_pk
@@ -174,9 +185,10 @@ def _diff_table(
         before_row, after_row = before_by_pk[key], after_by_pk[key]
         frags = _field_diffs(strip(before_row), strip(after_row))
         if frags:
-            # Label from the actual PK value (not the internal match key), and
+            # Label from the actual PK values (not the internal match key), and
             # from the final row so it reflects the surviving entity.
-            modified.append((f"{pk}={_fmt_value(after_row[pk])}", frags))
+            label = ", ".join(f"{f}={_fmt_value(after_row[f])}" for f in pk)
+            modified.append((label, frags))
     modified.sort(key=lambda m: m[0])
 
     return added, removed, modified
@@ -186,7 +198,7 @@ def render_state_diff(
     initial: dict[str, list[dict[str, Any]]],
     final: dict[str, list[dict[str, Any]]],
     *,
-    primary_keys: dict[str, str] | None = None,
+    primary_keys: Mapping[str, str | Sequence[str]] | None = None,
     unstable_fields: set[tuple[str, str]] | None = None,
     max_chars: int = _MAX_OUTPUT_CHARS,
 ) -> str:
@@ -195,9 +207,11 @@ def render_state_diff(
     Args:
         initial: pre-run state, ``table -> [records]``.
         final: final state after the agent's run, ``table -> [records]``.
-        primary_keys: declared ``table -> pk field`` (from the task schemas);
-            used to match rows across the two states. Falls back to an
-            ``id`` / ``*_id`` heuristic, then to whole-record matching.
+        primary_keys: declared ``table -> key`` — a single field name or an
+            ordered list of component fields for a composite-keyed table; used
+            to match rows across the two states, comparing every component.
+            Falls back to an ``id`` / ``*_id`` heuristic, then to whole-record
+            matching.
         unstable_fields: ``(table, field)`` pairs to exclude as noise
             (auto-ids, timestamps, LLM-generated content) so the diff shows
             only meaningful edits — the same set used for stable-hash grading.

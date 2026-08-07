@@ -227,7 +227,7 @@ class StateChecksConfig(BaseModel):
     golden_actions: List[GoldenAction] = Field(default_factory=list)
     hash_weight: Optional[float] = None           # fold weight; None = author declared none
     numeric_string_fields: List[str] = Field(default_factory=list)  # per-field string folding
-    id_fields: Dict[str, str] = Field(default_factory=dict)         # per-table PK; absent => "id"
+    id_fields: Dict[str, Union[str, List[str]]] = Field(default_factory=dict)  # per-table PK: one field, or an ordered component list for a composite key; absent => "id"
     relaxed_validation: bool = False              # legacy escape hatch for the id_fields check
 
     # JSONPath assertions

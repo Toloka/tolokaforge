@@ -807,7 +807,9 @@ claim covers and how it is enforced.
 The grader finds and writes records by primary key and assumes the key column is
 literally `id`. Tables keyed by something else (e.g. a `<name>_id` column) must
 declare it, or upserts/deletes cannot resolve the key. Declare it per table under
-`state_checks.id_fields`; a table absent from the map defaults to `"id"`, so
+`state_checks.id_fields`. The value takes two forms of one shape: a single field
+name, or an ordered list of field names for a table where no single column is
+unique (a composite key). A table absent from the map defaults to `"id"`, so
 `id`-keyed domains need nothing:
 
 ```yaml
@@ -818,22 +820,69 @@ state_checks:
   id_fields:                          # per-table primary-key override; absent => "id"
     widgets: widget_id
     line_items: line_id
+    positions: [account_id, symbol]   # composite: no single column is unique
 ```
 
 Map keys are the table names as they appear in `initial_state`. This is config
 data that travels with the task, so key resolution never depends on reading model
-source at runtime (the previous `inspect.getsource`-based guess broke whenever the
-domain source was not on disk). A table keyed by neither `"id"` nor a declared
-field fails loud at write time with the exact `id_fields` entry to add. The
-MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
+source at runtime. A table keyed by neither `"id"` nor a declared
+field fails loud at write time with the exact `id_fields` entry to add, and a
+record missing any declared key component fails loud naming the table, the
+missing component and the full declared key — per component, not just for the
+whole key. The MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
 `TauSyncToolWrapper._sync_state_changes`) consult the same map, so records with
 their key omitted also fail loud instead of collapsing to a single `None` bucket
 and silently corrupting the state diff.
 
-The adapter cross-checks the `id_fields` keys against `initial_state.tables` at
-task-description build time — a typo names an "unknown table" and the pack fails
-loud with the exact remediation (fix the typo, add the table, or opt in below).
-Legacy tasks that pre-date the check can downgrade the raise to a warning:
+The rubric judge's `initial → final` state diff uses the same map as its key
+source: each table's rows are matched on the declared key, comparing every
+component (with numeric folding applied per component, so `1` and `1.0` key the
+same row), layered over the task schemas' primary keys. A table with no
+declaration falls back to the `id` / `*_id` single-field heuristic, then to
+whole-record matching. A composite-keyed edit therefore renders as one
+field-level modification labelled with all key components, not a remove/add
+pair.
+
+Pack tool code addresses a composite-keyed record with a **mapping of component
+values**: `db.get_by_id(Position, {"account_id": "A1", "symbol": "MSFT"})`, and
+the same shape on `delete_by_id`. A scalar is refused naming the table and its
+declared components — the engine cannot interpret whatever concatenation the
+model's `get_id()` produces — and a bare sequence is refused too, because
+`["a", "b"]` is ambiguous between two components and one list-valued component.
+`update(obj)` and `delete(obj)` need no addressing at all: the key value is
+taken component-wise from the record itself.
+
+Every path that indexes records by a composite key compares **component-wise**:
+two records carry the same key only when they agree on every declared field.
+The components are never concatenated into one synthetic value — concatenation
+collides (`("a_b", "c")` and `("a", "b_c")` join to the same string), which
+would reintroduce exactly the ambiguity a composite key exists to remove. A
+one-element list means the same thing as the bare string, and a record missing
+*any* declared component fails loud naming the table, the missing component and
+the full declared key. A declaration that cannot name a key at all — an empty
+list, a blank or non-string component, or a component repeated twice — is
+refused when the config loads, naming the table.
+
+The adapter cross-checks the whole `id_fields` map against the seeded
+`initial_state.tables` at task-description build time — at the orchestrator's
+pre-run gradeability gate and again at `RegisterTrial`, so a bad declaration
+costs a build error, never a trial. One gate, three findings, reported together
+in a single message: a map key naming no seeded table ("unknown table" — a
+typo, or a table missing from `initial_state`); a declared key component —
+single field and composite components alike — absent from every seeded record
+of its table; and a declared key — single or composite — that does not
+uniquely identify the table's seeded records, named by the colliding key
+value. A key that cannot tell two seeded rows apart cannot address either row
+for an update or a delete, so the non-unique finding is what refuses a
+single-field declaration over rows only a composite key distinguishes. Each
+finding carries its exact remediation (fix the typo, add the table, seed the
+field, widen the key to a composite list, or opt in below). A component
+present in *some* seeded record passes the component finding; a record
+actually missing it still fails loud at write or diff time, per component.
+`tolokaforge validate` does not run this cross-check — it never builds a task
+description (#923); the shape rules on the declaration itself (empty list,
+blank or duplicate component) do fire there. Legacy tasks that pre-date the
+check can downgrade every finding to one warning:
 
 ```yaml
 state_checks:
@@ -843,7 +892,9 @@ state_checks:
 ```
 
 `relaxed_validation` defaults to `false`; new tasks should fix typos rather than
-enable it. The runner also runs the same check as belt-and-suspenders for engines
+enable it — it downgrades **all three** findings, the unknown table, the absent
+component and the non-unique key. The runner also runs the same check as
+belt-and-suspenders for engines
 that bypass `NativeAdapter.to_task_description`. Both keys are consumed at load
 time / `RegisterTrial` on both substrates rather than in the grade-time component
 phase — see [Substrate Parity](#substrate-parity).
@@ -853,7 +904,10 @@ phase — see [Substrate Parity](#substrate-parity).
 table that first appears only via an `initialization_action` won't be visible to
 the check — an `id_fields` entry for such a table needs `relaxed_validation:
 true` today. Add the table to `initial_state.json_db` (even with an empty list)
-if you want the strict check to accept it.
+if you want the strict check to accept it: a table seeded empty passes the
+unknown-table finding and is skipped by the record-level findings (absent
+component and non-unique key), because there is no record to hold the declared
+key against.
 
 **Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
 on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
@@ -866,7 +920,7 @@ from this release onward refuses a key it does not declare instead of ignoring i
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Five keys carry the lock:
+being dropped. Six keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -886,12 +940,20 @@ being dropped. Five keys carry the lock:
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
   rejected by an older image, and an **old engine** translating a name the set no
   longer holds is rejected by a current one.
+- `state_checks.id_fields`, whose declared **value** shape admits a composite
+  (list-valued) key. A runner image that predates the list form declares the value
+  as a plain string, so a **new engine against an old runner image** emitting a
+  list value is rejected at `RegisterTrial` with a Pydantic `string_type` error
+  naming `id_fields` — the correct fail-loud outcome, since that image cannot
+  resolve a composite key.
 
 The first two bite on **every** pack carrying a non-empty `state_checks:` block,
 `min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
 `trace_checks` on **every** pack at all — whether or not the pack declares the key,
 because the adapter emits all four unconditionally. `combine_method` bites only on a
-pack declaring an affected value — `weighted` and `all` cross in either direction. So
+pack declaring an affected value — `weighted` and `all` cross in either direction —
+and `id_fields` only on a pack declaring a composite key: a single-field declaration
+crosses as the same plain string it always did. So
 a new engine requires a runner image from the same release for any pack, and
 `make docker-build-core` is part of every engine upgrade. (`db_hash_check` was never
 declared on the runner config at all, so no engine ever emitted it and it is not part

@@ -1,0 +1,28 @@
+task_id: widgets_composite_id_fields
+name: "Widgets (composite-keyed) canonical fixture"
+category: test
+description: |
+  Canonical fixture locking in the serialized list form of
+  state_checks.id_fields for a table keyed by an ordered pair of fields
+  (line, slot). Sibling of widgets_id_fields, which locks the single-field
+  string form.
+
+initial_state:
+  json_db: initial_state.json
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+user_simulator:
+  mode: scripted
+  scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

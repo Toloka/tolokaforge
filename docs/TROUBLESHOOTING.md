@@ -46,6 +46,11 @@ which appears for **every** pack carrying a `transcript_rules:` block, and
 `trace_checks`, which appears for **every** pack. The engine emits all three whether
 or not the pack declares them, so any pack at all reproduces this against an image
 older than the engine.
+A field's declared value shape locks the same way: a pack declaring a composite
+(list-valued) `state_checks.id_fields` key against an image that predates the list
+form is rejected with a `string_type` error naming `id_fields`, and a
+`combine_method` value the image's closed set does not hold is rejected at the
+value.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
 models, so an unknown key there is an error rather than a dropped field — unlike a
 proto message field, which an older runner ignores.

@@ -48,6 +48,7 @@ reddens every one of them. What a *resolvable* inventory rejects is locked in
 
 from __future__ import annotations
 
+import json
 import textwrap
 from pathlib import Path
 
@@ -72,6 +73,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.models import TranscriptRulesConfig as CoreTranscriptRules
 from tolokaforge.core.project_loader import resolve_effective_grading_combine
 from tolokaforge.dx.cli.main import cli
+from tolokaforge.runner.models import RunnerStateChecksConfig as RunnerStateChecks
 from tolokaforge.runner.models import RunnerTranscriptRulesConfig as RunnerTranscriptRules
 
 pytestmark = pytest.mark.unit
@@ -650,6 +652,117 @@ def test_validate_gates_a_state_checks_block_that_declares_no_hash(
     """
     with pytest.raises(ValueError, match=match):
         validate_grading_yaml(_write_grading(tmp_path, state_checks), inventory=_UNRESOLVED)
+
+
+@pytest.mark.parametrize(
+    "declared",
+    ["widget_id", ["widget_id"], ["account_id", "symbol"]],
+    ids=["a_single_field", "a_one_element_list", "a_composite_key"],
+)
+def test_both_substrate_models_accept_every_id_fields_value_form(declared):
+    """A table's key is one field name or an ordered list of them, on both substrates.
+
+    The one-element list is deliberately legal and means what the bare string means —
+    refusing it would make ``[a]`` a special case for no reason.
+    """
+    assert StateChecksConfig(id_fields={"widgets": declared}).id_fields == {"widgets": declared}
+    assert RunnerStateChecks(id_fields={"widgets": declared}).id_fields == {"widgets": declared}
+
+
+@pytest.mark.parametrize(
+    ("declared", "match"),
+    [
+        ([], r"state_checks\.id_fields\['positions'\] declares an empty key field list"),
+        (
+            ["account_id", ""],
+            r"state_checks\.id_fields\['positions'\] has a component that is not a "
+            r"non-empty key field: ''",
+        ),
+        (
+            ["account_id", "account_id"],
+            r"state_checks\.id_fields\['positions'\] declares component 'account_id' twice",
+        ),
+        ([1], r"(?s)id_fields\.positions.*Input should be a valid string"),
+    ],
+    ids=["an_empty_list", "a_blank_component", "a_duplicate_component", "a_non_string_component"],
+)
+def test_validate_rejects_an_id_fields_key_that_cannot_key_its_table(
+    tmp_path: Path, declared: list, match: str
+):
+    """Every unusable list shape is refused at validate, naming the table.
+
+    An empty list declares no key, a blank component can never match a record
+    field, and a duplicate component compares one field twice while pretending
+    to compare two — each would surface later as a wrong write or a wrong diff.
+    """
+    grading = _write_grading(
+        tmp_path, {"jsonpaths": _ASSERTIONS, "id_fields": {"positions": declared}}
+    )
+    with pytest.raises(ValueError, match=match):
+        validate_grading_yaml(grading, inventory=_UNRESOLVED)
+
+
+def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
+    """`positions: [account_id, symbol]` passes `tolokaforge validate` end to end.
+
+    Driven through the CLI rather than ``validate_grading_yaml`` so the list form
+    is accepted by the whole load path, not just the config model in isolation.
+    ``validate`` never builds a ``TaskDescription``, so the adapter's
+    id_fields-vs-initial_state cross-check is out of its reach (#923) — that gate
+    is locked at its own boundary in
+    ``tests/unit/test_native_adapter_id_fields_validation.py``.
+    """
+    task_dir = tmp_path / "composite_key"
+    task_dir.mkdir(parents=True)
+    (task_dir / "initial_state.json").write_text(
+        json.dumps(
+            {
+                "positions": [
+                    {"account_id": "A1", "symbol": "AAPL", "qty": 5},
+                    {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+                ]
+            }
+        )
+    )
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "composite_key_probe",
+                "name": "Composite key probe",
+                "category": "test",
+                "description": "Probe task for composite id_fields validation.",
+                "initial_state": {"json_db": "initial_state.json"},
+                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+                "user_simulator": {
+                    "mode": "scripted",
+                    "scripted_flow": [{"role": "user", "content": "hi"}],
+                },
+                "grading": "grading.yaml",
+            }
+        )
+    )
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {
+                    "method": "weighted",
+                    "weights": {"state_checks": 1.0},
+                    "pass_threshold": 1.0,
+                },
+                "state_checks": {
+                    "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+                    "id_fields": {"positions": ["account_id", "symbol"]},
+                },
+            }
+        )
+    )
+
+    result = CliRunner(mix_stderr=False).invoke(
+        cli, ["validate", "--tasks", str(task_dir / "task.yaml")]
+    )
+
+    assert "1 valid, 0 invalid" in result.stderr
+    assert result.exit_code == 0
 
 
 def test_validate_names_a_misspelled_state_checks_key_and_the_accepted_set(tmp_path: Path):

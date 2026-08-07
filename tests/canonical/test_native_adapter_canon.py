@@ -82,14 +82,21 @@ class TestNativeAdapterCanon:
 class TestWidgetsIdFieldsCanon:
     """Canonical coverage for a table keyed by a non-``id`` column.
 
-    The fixture declares ``id_fields: {widgets: widget_id}`` and asserts the
-    runner-side ``StateChecksConfig`` serializes both ``id_fields`` and
-    ``relaxed_validation`` in the emitted grading config.
+    ``widgets_id_fields`` declares the single-field string form
+    (``id_fields: {widgets: widget_id}``); ``widgets_composite_id_fields``
+    declares the ordered-list form (``id_fields: {widgets: [line, slot]}``).
+    Each snapshot pins the serialized shape that crosses to the runner —
+    a string must stay a bare string, a composite key a JSON array.
     """
 
     def test_grading_config(self, native_adapter, canon_snapshot):
         grading = native_adapter.get_grading_config("widgets_id_fields")
         snap = canon_snapshot("native_widgets_id_fields")
+        snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
+
+    def test_composite_grading_config(self, native_adapter, canon_snapshot):
+        grading = native_adapter.get_grading_config("widgets_composite_id_fields")
+        snap = canon_snapshot("native_widgets_composite_id_fields")
         snap.assert_match(grading.model_dump(mode="json"), "grading_config.json")
 
     def test_task_description_carries_id_fields(self, native_adapter):

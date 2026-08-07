@@ -144,6 +144,64 @@ def test_int_and_float_pk_are_the_same_row() -> None:
     assert "added" not in out and "removed" not in out
 
 
+def test_composite_declared_key_matches_modified_row() -> None:
+    initial = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 5},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2},
+        ]
+    }
+    final = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2},
+        ]
+    }
+    out = render_state_diff(initial, final, primary_keys={"positions": ["account_id", "symbol"]})
+    assert "positions: 1 modified" in out
+    assert '~ account_id="A1", symbol="MSFT": qty: 5 → 7' in out
+    assert "added" not in out and "removed" not in out
+
+
+def test_composite_table_without_declaration_degrades_to_add_remove() -> None:
+    # Same edit as above, no declaration: account_id repeats per side so the
+    # single-field heuristic finds nothing usable and whole-record matching
+    # renders the qty change as a remove + add pair. Locked so the composite
+    # declaration's improvement stays visible, not assumed.
+    initial = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 5},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2},
+        ]
+    }
+    final = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2},
+        ]
+    }
+    out = render_state_diff(initial, final)
+    assert "positions: 1 added, 1 removed" in out
+    assert "modified" not in out
+
+
+def test_composite_component_int_and_float_are_the_same_row() -> None:
+    initial = {"lines": [{"order_id": 1, "line_no": 2, "qty": 1}]}
+    final = {"lines": [{"order_id": 1.0, "line_no": 2, "qty": 3}]}
+    out = render_state_diff(initial, final, primary_keys={"lines": ["order_id", "line_no"]})
+    assert "lines: 1 modified" in out
+    assert "qty: 1 → 3" in out
+    assert "added" not in out and "removed" not in out
+
+
+def test_one_element_list_key_matches_like_the_bare_string() -> None:
+    initial = {"orders": [{"id": 1, "status": "open"}]}
+    final = {"orders": [{"id": 1, "status": "shipped"}]}
+    out = render_state_diff(initial, final, primary_keys={"orders": ["id"]})
+    assert "orders: 1 modified" in out
+    assert 'id=1: status: "open" → "shipped"' in out
+
+
 def test_tiny_max_chars_never_exceeds_budget_grossly() -> None:
     # Pathological max_chars must not crash or wildly overshoot (budget guard).
     initial = {"t": []}

@@ -1,0 +1,26 @@
+combine:
+  method: weighted
+  weights:
+    state_checks: 1.0
+    transcript_rules: 0.0
+  pass_threshold: 0.7
+
+state_checks:
+  # The seeded rows share each key component individually (L1 twice, S2 twice)
+  # while every (line, slot) pair is unique — the shape a single-field or
+  # concatenated matcher gets wrong. The (L1, S1) widget is seeded `pending`,
+  # so satisfying this takes a trial that moved the row.
+  jsonpaths:
+    - path: "$.db.widgets[0].status"
+      equals: active
+      description: widget at line L1 slot S1 is no longer pending
+  id_fields:
+    widgets:
+      - line
+      - slot
+
+transcript_rules:
+  max_turns: 5
+  disallow_regex: []
+
+llm_judge: null
