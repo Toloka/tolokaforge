@@ -2,6 +2,12 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **env**: **the db-service upsert `key` accepts an ordered list of field names as a composite key.** The matcher updates the first row that agrees with the incoming record on **every** named component — never a concatenation of them, which collides (`("a_b", "c")` vs `("a", "b_c")`) — and a composite upsert whose `key` list is empty or whose `record` omits a component is refused with HTTP 400 naming the table, the missing component(s), and the record's keys. The string form (and the omitted-`key` default `"id"`) is unchanged. Skew is one-sided and fail-loud: a runner sending a list to an older db-service image gets its existing 422, and `make docker-build-core` is already part of every engine upgrade; a current db-service serves an older runner unchanged, because a single-field pack still sends a string. Part of #919.
+
 ## v0.16.0 (2026-08-06)
 
 ### Feat

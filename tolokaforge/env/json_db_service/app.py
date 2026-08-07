@@ -229,7 +229,7 @@ class MutationOperation(BaseModel):
     record: dict[str, Any] | None = None  # for insert/upsert
     filter: dict[str, Any] | None = None  # for update/delete
     set: dict[str, Any] | None = None  # for update
-    key: str | None = None  # for upsert
+    key: str | list[str] | None = None  # for upsert; a list is an ordered composite key
 
 
 class MutationRequest(BaseModel):
@@ -612,6 +612,46 @@ def error_response(error_type: str, message: str, details: dict[str, Any]) -> di
     return {"error": error_type, "message": message, "details": details}
 
 
+def upsert_key_fields(
+    key: str | list[str] | None, record: dict[str, Any], table_name: str
+) -> list[str]:
+    """Resolve an upsert's ``key`` to the field names the matcher compares.
+
+    A string (or omitted) key resolves to that single field with no record
+    check — the single-field hole where a record missing its key field matches
+    another keyless record is #920's scope. A composite key must name at least
+    one field, and every component must be present in the record.
+    """
+    if not isinstance(key, list):
+        return [key or "id"]
+    if not key:
+        raise HTTPException(
+            status_code=400,
+            detail=error_response(
+                "InvalidOperation",
+                f"Upsert 'key' list for table '{table_name}' must name at least one field",
+                {"table_name": table_name},
+            ),
+        )
+    missing = [field for field in key if field not in record]
+    if missing:
+        record_keys = sorted(record)
+        raise HTTPException(
+            status_code=400,
+            detail=error_response(
+                "InvalidOperation",
+                f"Upsert record for table '{table_name}' is missing key "
+                f"component(s) {missing}; record keys: {record_keys}",
+                {
+                    "table_name": table_name,
+                    "missing_components": missing,
+                    "record_keys": record_keys,
+                },
+            ),
+        )
+    return key
+
+
 def handle_trial_not_found(e: TrialNotFoundError):
     """Handle TrialNotFoundError."""
     raise HTTPException(
@@ -904,11 +944,10 @@ async def mutate_state(trial_id: str, table_name: str, req: MutationRequest) -> 
                             "InvalidOperation", "Upsert requires 'record'", {"op": op.op}
                         ),
                     )
-                key_field = op.key or "id"
-                key_value = op.record.get(key_field)
+                key_fields = upsert_key_fields(op.key, op.record, table_name)
                 found = False
                 for record in table_data:
-                    if record.get(key_field) == key_value:
+                    if all(record.get(f) == op.record.get(f) for f in key_fields):
                         record.update(op.record)
                         found = True
                         affected_rows += 1

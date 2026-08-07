@@ -300,7 +300,17 @@ Apply mutations to a specific table. Used by tools to modify state.
 **Upsert:**
 ```json
 {"op": "upsert", "record": {"id": "RES-001", "status": "modified"}, "key": "id"}
+{"op": "upsert", "record": {"account_id": "A1", "symbol": "MSFT", "qty": 99}, "key": ["account_id", "symbol"]}
 ```
+
+`key` names the record's identity: a single field name (default `"id"` when
+omitted) or an ordered list of component names for a composite key. The first
+row that agrees with `record` on **every** named field is updated in place;
+when no row matches, `record` is appended. Components are compared
+individually, never as a concatenation — `("a_b", "c")` and `("a", "b_c")` are
+distinct keys. A composite upsert is refused with HTTP 400 when the `key` list
+is empty or when `record` omits any component; the error names the table, the
+missing component(s), and the record's keys.
 
 #### Response
 
