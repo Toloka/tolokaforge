@@ -64,9 +64,6 @@ HASH_DISABLED_SKIP = KeyAccountingRecord(
 NO_JUDGE_MESSAGES_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="no transcript messages"
 )
-CORE_ONLY_HASH_SKIP = KeyAccountingRecord(
-    outcome=KeyAccounting.SKIPPED, detail="core-only — no runner path reads it (#693)"
-)
 CUSTOM_CHECKS_DISABLED_SKIP = KeyAccountingRecord(
     outcome=KeyAccounting.SKIPPED, detail="custom checks not enabled"
 )
@@ -104,15 +101,7 @@ LEDGER_KEYS: tuple[GradingKey, ...] = (
 
 _HASH_FAMILY_KEYS = frozenset(family_author_keys("state_checks.hash"))
 _HASH_FAMILY = tuple(item for item in LEDGER_KEYS if item.author_key in _HASH_FAMILY_KEYS)
-# The hash family splits by who consumes each member: the runner's hash evaluator
-# shares one outcome across the members it reads, while a member the manifest
-# gives no runner evaluator is dead on this substrate however hash grading went.
-_RUNNER_HASH_FAMILY = tuple(
-    item.author_key for item in _HASH_FAMILY if item.runner_evaluator is not None
-)
-_CORE_ONLY_HASH_FAMILY = tuple(
-    item.author_key for item in _HASH_FAMILY if item.runner_evaluator is None
-)
+_HASH_FAMILY_AUTHOR_KEYS = tuple(item.author_key for item in _HASH_FAMILY)
 
 # Which hash source the evaluator read, per basis it reported comparing against. Written
 # out per member rather than derived from the config, because reading the config again
@@ -131,33 +120,35 @@ _HASH_SOURCE_READ_BY_BASIS: Mapping[HashComparisonBasis, str | None] = {
 # evaluator running accounts for whichever state it compared against. Subtracted from
 # the family rather than listed, so a source key added to the manifest moves here only
 # by being given a basis above.
-_RUNNER_HASH_NON_SOURCES = tuple(
+_HASH_NON_SOURCE_KEYS = tuple(
     author_key
-    for author_key in _RUNNER_HASH_FAMILY
+    for author_key in _HASH_FAMILY_AUTHOR_KEYS
     if author_key not in set(_HASH_SOURCE_READ_BY_BASIS.values())
 )
 
 
-def reject_hash_members_read_by_another_evaluator(items: Iterable[GradingKey]) -> None:
-    """Raise unless every hash-family member is read by the one hash evaluator.
+def reject_hash_members_the_hash_evaluator_does_not_read(items: Iterable[GradingKey]) -> None:
+    """Raise unless every hash-family ledger member names the one hash evaluator.
 
-    The accounting splits the family on ``runner_evaluator is not None``, and every
-    member on the runner side of that split is reported from one evaluator's outcome —
-    the hash evaluator's. A member some other runner evaluator reads would silently be
-    reported with the hash evaluator's verdict, and the accounting-site lock would not
-    notice because the key is accountable either way.
+    The whole family is accounted for from that evaluator's single returned basis, so a
+    member it does not read gets a verdict nobody produced for it. Another evaluator's
+    member would take the hash outcome. A member with no runner evaluator at all — a
+    scored key the manifest calls core-only while a runner field still carries it across
+    the wire — would be reported as evaluated on a substrate that never looked at it.
+    Either needs its own recording site, and the core-only shape a standing-skip record.
     """
     for item in items:
-        if item.runner_evaluator not in (None, RUNNER_HASH_EVALUATOR):
+        if item.runner_evaluator != RUNNER_HASH_EVALUATOR:
             raise ValueError(
                 f"{item.author_key}: hash-family member declares runner evaluator "
-                f"{item.runner_evaluator!r}, but hash_family_accounting() hands every "
-                f"member the outcome of {RUNNER_HASH_EVALUATOR}. A member another "
-                "evaluator reads needs its own recording site, not this family's outcome"
+                f"{item.runner_evaluator!r}, but hash_family_accounting() reports every "
+                f"member from the outcome of {RUNNER_HASH_EVALUATOR}. A member that "
+                "evaluator does not read needs its own recording site, not this "
+                "family's outcome"
             )
 
 
-reject_hash_members_read_by_another_evaluator(_HASH_FAMILY)
+reject_hash_members_the_hash_evaluator_does_not_read(_HASH_FAMILY)
 
 
 @dataclass(frozen=True)
@@ -206,9 +197,7 @@ def hash_family_accounting(basis: HashComparisonBasis) -> dict[str, KeyAccountin
     Fed from the basis the evaluator returned, never from the config a second time: a
     source is reported as evaluated only where it selected the comparison, so deleting
     the evaluator's read of a source leaves that key unaccounted and the audit fails the
-    RPC. The flag and the family root are evaluated whichever state was compared
-    against, and a member the manifest declares core-only is a skip either way —
-    recording it as evaluated would report a silently dead key as scored.
+    RPC. The flag and the family root are evaluated whichever state was compared against.
 
     A source the config populated without selecting the basis has no reachable shape:
     the block refuses ``expect_initial_state`` beside another source, so the two cannot
@@ -217,9 +206,8 @@ def hash_family_accounting(basis: HashComparisonBasis) -> dict[str, KeyAccountin
     read = _HASH_SOURCE_READ_BY_BASIS[basis]
     sources = {} if read is None else {read: EVALUATED}
     return {
-        **dict.fromkeys(_RUNNER_HASH_NON_SOURCES, EVALUATED),
+        **dict.fromkeys(_HASH_NON_SOURCE_KEYS, EVALUATED),
         **sources,
-        **dict.fromkeys(_CORE_ONLY_HASH_FAMILY, CORE_ONLY_HASH_SKIP),
     }
 
 
@@ -228,14 +216,11 @@ def hash_family_skip_accounting(
 ) -> dict[str, KeyAccountingRecord]:
     """The same family's accounting for a phase in which the evaluator did not run.
 
-    Every member the runner reads shares the one outcome, because no basis was
-    selected and the adapter populates the sources regardless of ``hash.enabled`` —
-    accounting leaf by leaf off the config would leave a populated leaf out.
+    Every member shares the one outcome, because no basis was selected and the adapter
+    populates the sources regardless of ``hash.enabled`` — accounting leaf by leaf off
+    the config would leave a populated leaf out.
     """
-    return {
-        **dict.fromkeys(_RUNNER_HASH_FAMILY, runner_outcome),
-        **dict.fromkeys(_CORE_ONLY_HASH_FAMILY, CORE_ONLY_HASH_SKIP),
-    }
+    return dict.fromkeys(_HASH_FAMILY_AUTHOR_KEYS, runner_outcome)
 
 
 def transcript_rules_author_keys() -> tuple[str, ...]:
@@ -266,7 +251,7 @@ def accountable_author_keys() -> frozenset[str]:
 
     No runtime path calls it: its only callers are that canonical lock and the
     ledger's own unit tests. Every member is named per site, or derived from a
-    hand-written mapping that same site is handed — the two hash-family tuples,
+    hand-written mapping that same site is handed — the hash family's author keys,
     and the per-kind trace-constraint keys. Comprehending any member from
     :data:`LEDGER_KEYS` would make lock 5 compare that set against itself: a
     tautological assertion is worse than a missing one, because the next reader
@@ -274,8 +259,7 @@ def accountable_author_keys() -> frozenset[str]:
     """
     return frozenset(
         {
-            *_RUNNER_HASH_FAMILY,
-            *_CORE_ONLY_HASH_FAMILY,
+            *_HASH_FAMILY_AUTHOR_KEYS,
             *TRACE_CONSTRAINT_KEY_BY_KIND.values(),
             TRACE_CONSTRAINTS_KEY,
             TRACE_ALTERNATIVES_KEY,

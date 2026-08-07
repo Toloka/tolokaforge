@@ -340,8 +340,8 @@ _KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE = (
         id="a_typod_source",
     ),
     pytest.param(
-        {"hash_enabled": True, "expected_hash": "aaaa", "hash_weight": 0.5},
-        ["expected_hash", "hash_enabled", "hash_weight"],
+        {"hash_enabled": True, "hash_weight": 0.5},
+        ["hash_enabled", "hash_weight"],
         id="the_runners_own_flattened_names",
     ),
     pytest.param(
@@ -354,8 +354,8 @@ _KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE = (
 
 The flattened row is the sharpest: those are the names the *runner* declares for this
 block and the ones an author meets in this repo's own substrate tables, so the block
-reads as configured hash grading and lowers as none. All three are named in one raise,
-which is what lets an author fix the block in a single pass.
+reads as configured hash grading and lowers as none. Every offending key is named in
+one raise, which is what lets an author fix the block in a single pass.
 """
 
 

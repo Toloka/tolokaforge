@@ -17,6 +17,13 @@ way to name a position below one. A key living inside a field whose contents no
 model declares therefore has no address here: give that field a model, or add an
 addressing mechanism the parity suite can walk. A hand-declared address the suite
 cannot introspect is the invisibility this manifest exists to prevent.
+
+A :attr:`SubstrateCoverage.CORE_ONLY` :attr:`KeyKind.SCORED_CHECK` that still names
+a ``runner_field`` needs a standing-skip record and a recording site filing it. Such
+a key arrives populated on a real ``GradeTrial`` request, and
+``tolokaforge.runner.grading_ledger`` fails the RPC for a populated scored key with
+neither an evaluator result nor a recorded skip. Coverage that only one substrate
+reads is not a reason to leave the wire silent about it.
 """
 
 from collections.abc import Mapping

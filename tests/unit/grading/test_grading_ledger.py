@@ -49,7 +49,7 @@ from tolokaforge.runner.grading_ledger import (
     hash_family_accounting,
     hash_family_skip_accounting,
     populated_ledger_keys,
-    reject_hash_members_read_by_another_evaluator,
+    reject_hash_members_the_hash_evaluator_does_not_read,
     runner_dump_path,
     skip_note,
     skip_note_prefix,
@@ -797,15 +797,25 @@ def test_runner_field_naming_an_unknown_field_fails_loud():
         runner_dump_path(_probe_key("RunnerStateChecksConfig.jsonpath_chekcs"))
 
 
-def test_a_hash_family_member_another_evaluator_reads_fails_loud():
-    """The family shares one outcome, so a second reader needs its own recording site."""
-    foreign = _probe_key(
-        "RunnerStateChecksConfig.golden_actions",
-        runner_evaluator="tolokaforge.runner.grading.evaluate_golden_action_traces",
-    )
+@pytest.mark.parametrize(
+    "runner_evaluator",
+    [
+        "tolokaforge.runner.grading.evaluate_golden_action_traces",
+        None,
+    ],
+    ids=["another_evaluator_reads_it", "nothing_on_this_substrate_reads_it"],
+)
+def test_a_hash_family_member_the_hash_evaluator_does_not_read_fails_loud(runner_evaluator):
+    """The family is reported from one returned basis, so any other member needs its own site.
+
+    The ``None`` row is the core-only shape: a scored key the manifest gives no runner
+    evaluator while a runner field still carries it across the wire. Reporting it from the
+    hash evaluator's basis would call it evaluated on a substrate that never read it.
+    """
+    member = _probe_key("RunnerStateChecksConfig.golden_actions", runner_evaluator)
 
     with pytest.raises(ValueError, match="needs its own recording site"):
-        reject_hash_members_read_by_another_evaluator([foreign])
+        reject_hash_members_the_hash_evaluator_does_not_read([member])
 
 
 # --------------------------------------------------------------------------

@@ -130,7 +130,6 @@ from tolokaforge.runner.grading import (
     resolve_state_checks_component,
 )
 from tolokaforge.runner.grading_ledger import (
-    CORE_ONLY_HASH_SKIP,
     LEDGER_KEYS,
     LLM_JUDGE_KEY,
     NO_JUDGE_MESSAGES_SKIP,
@@ -3024,23 +3023,10 @@ def _assert_the_site_reported(
         f"recording site filed the key — {response.error}"
     )
 
-    if item.coverage is SubstrateCoverage.CORE_ONLY:
-        assert author_key in family_author_keys(_HASH_FAMILY_ROOT), (
-            f"{author_key} is CORE_ONLY but outside the hash family, and "
-            "CORE_ONLY_HASH_SKIP is the only standing-skip record this helper "
-            "knows. Map coverage to the record its site files, per key"
-        )
-        expected = skip_note(author_key, CORE_ONLY_HASH_SKIP)
-        assert expected in response.grade.reasons, (
-            f"{author_key} is CORE_ONLY, so its recording site must file the standing "
-            f"skip and the grade must say so. Expected {expected!r} in "
-            f"{response.grade.reasons!r}"
-        )
-        return
-
     assert item.runner_evaluator is not None, (
-        f"{author_key}: the manifest gives it neither a runner evaluator nor CORE_ONLY "
-        "coverage, so this lock cannot say what its recording site should have filed"
+        f"{author_key}: the manifest gives it no runner evaluator, so this lock cannot "
+        "say what its recording site should have filed — a ledger key the runner never "
+        "evaluates needs a standing-skip record and a site that files it"
     )
     assert skip_note_prefix(author_key) not in response.grade.reasons, (
         f"{author_key} declares the runner evaluator {item.runner_evaluator}, so its "

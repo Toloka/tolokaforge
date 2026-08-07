@@ -6,9 +6,9 @@ that, both internally consistent enough that every rule the authoring gate carri
 passes them:
 
 - the author's own keys misspelled (``enalbed`` / ``expect_inital_state``);
-- the **runner's** flattened field names (``hash_enabled`` / ``expected_hash`` /
-  ``hash_weight``) written into ``grading.yaml`` — the names an author meets in
-  ``docs/GRADING.md``'s substrate tables, which the core block does not declare.
+- the **runner's** flattened field names (``hash_enabled`` / ``hash_weight``) written
+  into ``grading.yaml`` — the names an author meets in ``docs/GRADING.md``'s substrate
+  tables, which the core block does not declare.
 
 Each is measured beside the same block spelled correctly, through both entry points
 into it: ``validate_grading_yaml`` — the gate a pack meets before a trial is paid
@@ -90,10 +90,6 @@ _PASSING_ASSERTION: dict[str, Any] = {
 # a dropped key scores the assertion alone at 1.0.
 _INITIAL_STATE: dict[str, Any] = {"orders": [{"id": 1, "status": "pending"}]}
 
-# Well-formed and unreachable: the hash of any state is a sha256 digest, and no state
-# hashes to all zeroes, so the runner-named row below never matches either.
-_NEVER_MATCHING_HASH = "0" * 64
-
 # The model's own default. A threshold at the correct cell's score (0.5) passes both
 # cells, which leaves the binary_pass half of the predicate asserting nothing.
 _PASS_THRESHOLD = 0.8
@@ -112,7 +108,6 @@ _MISSPELLED_AUTHOR_KEYS: dict[str, Any] = {
 
 _RUNNER_FLATTENED_FIELD_NAMES: dict[str, Any] = {
     "hash_enabled": True,
-    "expected_hash": _NEVER_MATCHING_HASH,
     "hash_weight": 0.5,
 }
 

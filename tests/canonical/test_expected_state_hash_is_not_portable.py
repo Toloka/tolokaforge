@@ -6,13 +6,14 @@ hashes it with ``compute_stable_hash``. The two agree on *which states are equal
 label they give each equivalence class. A hash an author stores is therefore written in
 exactly one of the two algebras, and the other substrate cannot compare against it.
 
-The three groups here are one argument. The first pins the split itself: same partition,
+The four groups here are one argument. The first pins the split itself: same partition,
 different digests, asserted separately so unifying one without the other fails
 distinguishably. The second pins what a pack may no longer do — declare a hash literal
 that no substrate grading it will consult, measured over the very literals the recorded
 ``tau_retail_mini`` bundles still carry. The third pins why the obvious repair is not one:
 that literal is a core-algebra digest, so routing it to the runner's evaluator would score
-``0.0`` on the state core scores ``1.0``.
+``0.0`` on the state core scores ``1.0``. The fourth pins that there is no longer a wire
+field to route it through.
 
 See #915 for unifying the two hash functions, which is not in reach here:
 ``compute_stable_hash`` also backs db-service ETags, snapshot hashes and
@@ -27,6 +28,7 @@ from typing import Any
 
 import pytest
 import yaml
+from google.protobuf import descriptor_pb2
 from pydantic import ValidationError
 
 from tolokaforge.core.grading.state_checks import (
@@ -37,11 +39,13 @@ from tolokaforge.core.grading.state_checks import (
 )
 from tolokaforge.core.hash import compute_stable_hash
 from tolokaforge.core.models import GradingConfig
+from tolokaforge.runner import runner_pb2
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
 _PROJECT = "tau_retail_mini"
 _RECORDED_BUNDLES = ("0f3b1ff7", "test_001", "test_002")
+_RETIRED_WIRE_NUMBER = 3
 
 
 class _RecordedBundleDefect(Exception):
@@ -244,4 +248,39 @@ def test_routing_the_declared_literal_to_the_runner_would_score_zero(
     assert crossed == 0.0, (
         f"{trial_dir}: the runner's digest {runner_digest} now scores {crossed} through core's "
         "comparison, so the two algebras are interchangeable"
+    )
+
+
+def _grade_trial_request_schema() -> descriptor_pb2.DescriptorProto:
+    """``GradeTrialRequest`` as the *generated* module declares it, not as the ``.proto`` reads.
+
+    A ``runner_pb2`` built from an older schema keeps whatever that schema declared, so an
+    engine and a runner image compiled from different generations disagree about the wire
+    while both source files read correctly. Only the descriptor says which one shipped.
+    """
+    schema = descriptor_pb2.DescriptorProto()
+    runner_pb2.GradeTrialRequest.DESCRIPTOR.CopyToProto(schema)
+    return schema
+
+
+def test_grade_trial_carries_no_wire_field_for_a_stored_expected_hash() -> None:
+    """No route exists for handing the runner a hash it did not compute."""
+    declared = {field.name: field.number for field in _grade_trial_request_schema().field}
+
+    assert "precomputed_expected_hash" not in declared, (
+        "GradeTrialRequest declares precomputed_expected_hash again, on field "
+        f"{declared.get('precomputed_expected_hash')} — a stored digest is written in one "
+        "substrate's hash algebra and grades 0.0 through the other (#915)"
+    )
+
+
+def test_the_wire_number_that_carried_a_stored_expected_hash_is_reserved() -> None:
+    """A new field on that number would parse an old engine's bytes as its own."""
+    schema = _grade_trial_request_schema()
+    reserved = {number for span in schema.reserved_range for number in range(span.start, span.end)}
+
+    assert _RETIRED_WIRE_NUMBER in reserved, (
+        f"GradeTrialRequest reserves {sorted(reserved)}, which does not include field "
+        f"{_RETIRED_WIRE_NUMBER}: whatever is declared there next inherits the bytes an "
+        "engine predating this schema still writes"
     )
