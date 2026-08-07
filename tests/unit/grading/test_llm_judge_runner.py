@@ -153,12 +153,30 @@ def test_judge_model_rides_on_trial_spec():
 # ---------------------------------------------------------------------------
 
 
-def _trial_context(initial_state):
+def _trial_context(initial_state, id_fields=None):
     """A minimal stand-in exposing only what _build_judge_state_diff reads."""
     import types
 
-    task_desc = types.SimpleNamespace(initial_state=initial_state)
+    state_checks = types.SimpleNamespace(id_fields=id_fields) if id_fields else None
+    grading = types.SimpleNamespace(state_checks=state_checks)
+    task_desc = types.SimpleNamespace(initial_state=initial_state, grading=grading)
     return types.SimpleNamespace(task_description=task_desc)
+
+
+def _fake_service(db_client, trial_context):
+    """A registered-trial service stand-in binding the REAL id-fields lookup.
+
+    ``_build_judge_state_diff`` composes its key map through
+    ``_id_fields_for_trial``, so the fake carries the genuine method over a
+    ``trials`` registry rather than stubbing the lookup's answer.
+    """
+    import types
+
+    from tolokaforge.runner.service import RunnerServiceImpl
+
+    fake = types.SimpleNamespace(db_client=db_client, trials={"trial": trial_context})
+    fake._id_fields_for_trial = types.MethodType(RunnerServiceImpl._id_fields_for_trial, fake)
+    return fake
 
 
 class _FakeDBClient:
@@ -198,8 +216,6 @@ async def test_build_judge_state_diff_none_when_no_initial_tables():
 
 
 async def test_build_judge_state_diff_renders_modified_row():
-    import types
-
     from tolokaforge.runner.models import RunnerInitialStateConfig, TableSchema
     from tolokaforge.runner.service import RunnerServiceImpl
 
@@ -213,12 +229,50 @@ async def test_build_judge_state_diff_renders_modified_row():
             )
         ],
     )
-    fake_self = types.SimpleNamespace(
-        db_client=_FakeDBClient({"orders": [{"id": 1, "status": "shipped"}]})
-    )
-    out = await RunnerServiceImpl._build_judge_state_diff(
-        fake_self, "trial", _trial_context(initial)
-    )
+    tc = _trial_context(initial)
+    fake_self = _fake_service(_FakeDBClient({"orders": [{"id": 1, "status": "shipped"}]}), tc)
+    out = await RunnerServiceImpl._build_judge_state_diff(fake_self, "trial", tc)
     assert out is not None
     assert "orders: 1 modified" in out
     assert 'status: "open" → "shipped"' in out
+
+
+async def test_build_judge_state_diff_layers_declared_id_fields_over_schema_pk():
+    """The trial's ``state_checks.id_fields`` is the diff's key source.
+
+    The schema's single ``account_id`` PK repeats per side, so only the declared
+    composite key — layered over the schema entry — can match the edit as a
+    modification; dropping the layer (or reversing it) degrades to add/remove.
+    """
+    from tolokaforge.runner.models import RunnerInitialStateConfig, TableSchema
+    from tolokaforge.runner.service import RunnerServiceImpl
+
+    initial = RunnerInitialStateConfig(
+        tables={
+            "positions": [
+                {"account_id": "A1", "symbol": "MSFT", "qty": 5},
+                {"account_id": "A1", "symbol": "AAPL", "qty": 2},
+            ]
+        },
+        schemas=[
+            TableSchema(
+                table_name="positions",
+                fields={"account_id": "string", "symbol": "string", "qty": "integer"},
+                primary_key="account_id",
+            )
+        ],
+    )
+    final = {
+        "positions": [
+            {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+            {"account_id": "A1", "symbol": "AAPL", "qty": 2},
+        ]
+    }
+    tc = _trial_context(initial, id_fields={"positions": ["account_id", "symbol"]})
+    out = await RunnerServiceImpl._build_judge_state_diff(
+        _fake_service(_FakeDBClient(final), tc), "trial", tc
+    )
+    assert out is not None
+    assert "positions: 1 modified" in out
+    assert 'account_id="A1", symbol="MSFT"' in out
+    assert "added" not in out and "removed" not in out

@@ -835,6 +835,15 @@ whole key. The MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
 their key omitted also fail loud instead of collapsing to a single `None` bucket
 and silently corrupting the state diff.
 
+The rubric judge's `initial → final` state diff uses the same map as its key
+source: each table's rows are matched on the declared key, comparing every
+component (with numeric folding applied per component, so `1` and `1.0` key the
+same row), layered over the task schemas' primary keys. A table with no
+declaration falls back to the `id` / `*_id` single-field heuristic, then to
+whole-record matching. A composite-keyed edit therefore renders as one
+field-level modification labelled with all key components, not a remove/add
+pair.
+
 Pack tool code addresses a composite-keyed record with a **mapping of component
 values**: `db.get_by_id(Position, {"account_id": "A1", "symbol": "MSFT"})`, and
 the same shape on `delete_by_id`. A scalar is refused naming the table and its
