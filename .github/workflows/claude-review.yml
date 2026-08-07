@@ -90,9 +90,12 @@ jobs:
 
             3. TESTING: Every new test file has a `pytestmark` marker
                (`pytest.mark.unit`, `.canonical`, or `.integration`).
-               Zero `xfail`, zero bare `@skip` — use conditional markers
-               (`requires_api`, `requires_docker`). MockAsyncClient comes
-               from `tests.utils.mock_clients` only — no local copies.
+               An `xfail` is `strict=True` with a `raises=`, recording a
+               measured defect the fix then removes; a bare or non-strict
+               `xfail` is a finding. Zero bare `@skip` — use conditional
+               markers (`requires_api`, `requires_docker`).
+               MockAsyncClient comes from `tests.utils.mock_clients`
+               only — no local copies.
 
             4. ARCHITECTURE: Harness logic stays generic. Task-specific
                logic lives in task packs only. Clean abstraction

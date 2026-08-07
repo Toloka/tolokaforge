@@ -17,9 +17,9 @@ from tolokaforge.adapters._task_loader import (
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
-from tolokaforge.core.grading.config_validation import CombineLayer
+from tolokaforge.core.grading.config_validation import CombineLayer, authored_hash_block
 from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
-from tolokaforge.core.grading.state_composition import StateHashConfig
+from tolokaforge.core.grading.state_composition import StateHashConfig, refuse_retired_hash_keys
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -309,7 +309,8 @@ class NativeAdapter(BaseAdapter):
 
         Raises:
             ValueError: If the task names no grading file, or names one that is not
-                on disk.
+                on disk, or its ``state_checks.hash`` block populates a key in
+                :data:`~tolokaforge.core.grading.state_composition.RETIRED_HASH_KEYS`.
             RuntimeError: If the file, or any grading key it declares, is neither a
                 mapping nor absent.
         """
@@ -327,6 +328,10 @@ class NativeAdapter(BaseAdapter):
             with open(grading_path) as f:
                 grading_data = yaml.safe_load(f)
             refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
+            refuse_retired_hash_keys(
+                authored_hash_block(grading_data or {}),
+                context=f"Grading file {grading_path}",
+            )
             task_combine = grading_data.pop("combine", None)
             combine = resolve_effective_grading_combine(
                 self._project_combine_defaults(), task_combine
@@ -363,27 +368,13 @@ class NativeAdapter(BaseAdapter):
         pass
 
     def compute_golden_hash(self, task_id: str, env: AdapterEnvironment) -> str | None:
+        """Return ``None``: no hash source a native pack can declare resolves here.
+
+        Both remaining sources are evaluated by the substrate grading the trial, each in
+        its own hash algebra — golden actions need the MCP server the grading engine
+        holds, and the initial state is hashed beside the trial's own. #836 owns
+        deleting the method.
         """
-        Compute golden hash for state comparison.
-
-        For native tasks, uses golden_actions from grading.yaml if present.
-        Returns None if no hash-based grading configured.
-        """
-        grading = self.get_grading_config(task_id)
-
-        if grading.state_checks is None or grading.state_checks.hash is None:
-            return None
-
-        hash_config = grading.state_checks.hash
-        if not hash_config.enabled:
-            return None
-
-        if not hash_config.golden_actions:
-            # Pre-computed hash
-            return hash_config.expected_state_hash
-
-        # Execute golden actions to compute hash dynamically
-        # This requires MCP server access - delegated to grading engine
         return None
 
     def to_task_description(self, task_id: str) -> "TaskDescription":
@@ -584,6 +575,10 @@ class NativeAdapter(BaseAdapter):
                 with open(grading_path) as f:
                     grading_data = yaml.safe_load(f)
                 refuse_malformed_grading_shapes(grading_data, grading_path=grading_path)
+                refuse_retired_hash_keys(
+                    authored_hash_block(grading_data or {}),
+                    context=f"Grading file {grading_path}",
+                )
 
         # Build grading config
         state_checks = None
@@ -633,7 +628,7 @@ class NativeAdapter(BaseAdapter):
 
                 state_checks = RunnerStateChecksConfig(
                     hash_enabled=hash_config.enabled,
-                    expected_hash=hash_config.expected_state_hash,
+                    expect_initial_state=hash_config.expect_initial_state,
                     golden_actions=golden_actions,
                     hash_weight=hash_config.weight,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),

@@ -1,0 +1,20 @@
+task_id: refuse_to_cancel_a_delivered_order
+trial_index: 0
+start_ts: '2026-01-01T00:00:00+00:00'
+end_ts: '2026-01-01T00:01:00+00:00'
+status: completed
+termination_reason: user_stop
+messages:
+  - role: user
+    content: I'd like to cancel order order_101, please.
+    ts: '2026-01-01T00:00:10+00:00'
+  - role: assistant
+    content: >-
+      Order order_101 has already been delivered, and delivered orders cannot be
+      cancelled. I have not changed anything on the order. You can start a return
+      instead, and I can walk you through that.
+    ts: '2026-01-01T00:00:30+00:00'
+  - role: user
+    content: Understood, thanks.
+    ts: '2026-01-01T00:00:45+00:00'
+tool_log: []

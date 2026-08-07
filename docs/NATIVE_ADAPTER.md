@@ -291,10 +291,10 @@ Reads `grading.yaml` and returns a `GradingConfig` object.
 
 ### `compute_golden_hash(task_id, env)`
 
-Returns the pre-computed `hash.expected_state_hash` from `grading.yaml` if
-`hash.enabled = true` and no `golden_actions` are listed.  Returns `None`
-otherwise (hash is computed dynamically by the grading engine via
-`golden_actions` replay).
+Returns `None` for every shape. Both hash sources a pack can declare are evaluated by
+the substrate grading the trial, each in its own hash algebra: `golden_actions` needs the
+MCP server the grading engine holds, and `expect_initial_state` hashes the task's initial
+state beside the trial's own. #836 owns deleting the method.
 
 ### `reset_environment(env)`
 
@@ -397,12 +397,10 @@ orchestrator directly via the MCP server path from `task.yaml`.  This is a
 known architectural gap — future work would move MCP server loading fully into
 the adapter (noted in the `NativeAdapter.get_registry_tools` docstring).
 
-#### `compute_golden_hash` delegates to grading engine
+#### `compute_golden_hash` computes nothing
 
-When `grading.yaml` contains `golden_actions`, `compute_golden_hash()` returns
-`None` and leaves hash computation to the `GradingEngine`.  The method does
-not execute golden actions itself because that requires MCP server access that
-is not available at adapter init time.
+The method returns `None` for every shape and the substrate grading the trial
+evaluates both hash sources itself; #836 owns deleting it.
 
 #### User tools not supported
 

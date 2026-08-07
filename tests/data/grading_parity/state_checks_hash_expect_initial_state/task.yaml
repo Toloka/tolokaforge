@@ -1,0 +1,34 @@
+task_id: state_checks_hash_expect_initial_state
+name: "Substrate differential: state_checks_hash_expect_initial_state"
+category: test
+description: |
+  Substrate-parity differential fixture for a refusal task: the expected final
+  state is the state the task starts in, so the grading.yaml declares exactly one
+  author key and a violating trial can only be discriminated by that key.
+
+# Both substrates read their expected side from here — core hashes this mapping
+# directly, and RegisterTrial provisions the trial's DB service from it so the
+# runner's evaluator resets to it and hashes what it restored.
+initial_state:
+  json_db:
+    orders:
+      - id: O1
+        status: pending
+
+tools:
+  agent:
+    enabled:
+      - write_file
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml

@@ -14,7 +14,7 @@
     "hash": {
       "description": "",
       "enabled": true,
-      "expected_state_hash": null,
+      "expect_initial_state": false,
       "golden_actions": [
         {
           "kwargs": {

@@ -19,7 +19,7 @@ Design:
   rubric-derived ``submit_report``.
 * **Narrow input surface.** :meth:`Judge.run` receives only
   ``{agent_system_prompt, transcript, rubric (incl. reference/expected),
-  read-tools, state_diff}`` — never ``golden_actions`` / ``expected_hash`` /
+  read-tools, state_diff}`` — never ``golden_actions`` / ``expect_initial_state`` /
   ``jsonpath_checks``. The oracle fields cannot leak in by construction: they are
   not on the Protocol's ``run()`` surface.
 * **Fail loud.** On :class:`SubmitReportValidationError` the judge re-prompts a
@@ -640,7 +640,7 @@ class Judge(Protocol):
     injected client, logger — is a construction-time concern of the concrete impl,
     NOT part of this contract, so a variant that ignores live evidence (offline
     replay) need not accept a ``model_config``. Deliberately narrow: never the
-    deterministic-oracle fields (``golden_actions`` / ``expected_hash`` /
+    deterministic-oracle fields (``golden_actions`` / ``expect_initial_state`` /
     ``jsonpath_checks`` / ``grading_config``) — they cannot leak in because they
     are not on ``run()``.
     """

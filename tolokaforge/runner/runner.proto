@@ -197,9 +197,9 @@ message GradeTrialRequest {
   // (TlkMcpCore, Tau) it can be omitted — the Runner has its own tool-call record.
   string llm_messages_json = 2;
 
-  // Optional: Skip golden path execution if expected hash is pre-computed
-  // If provided, Runner compares trial state hash directly
-  string precomputed_expected_hash = 3;
+  // An engine older than this schema may still put a string on field 3, and a
+  // new field inheriting that number would silently parse those bytes.
+  reserved 3;
 
   // Which grading components to compute
   // If empty, computes all configured in TaskDescription.grading

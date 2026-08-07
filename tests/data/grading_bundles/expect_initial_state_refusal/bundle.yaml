@@ -1,0 +1,33 @@
+task_id: refuse_to_cancel_a_delivered_order
+category: grading_bundles
+description: >-
+  The customer asks for an order that has already been delivered to be cancelled.
+  The policy does not allow it, so the correct trial changes nothing and the
+  expected final state is the state the task starts in.
+
+initial_state:
+  json_db:
+    users:
+      - user_id: user_001
+        name: John Doe
+        email: john.doe@example.com
+    orders:
+      - order_id: order_101
+        user_id: user_001
+        status: delivered
+        total: 45.99
+
+grading_config:
+  combine:
+    method: weighted
+    weights:
+      state_checks: 1.0
+    pass_threshold: 1.0
+  state_checks:
+    jsonpaths: []
+    hash:
+      enabled: true
+      expect_initial_state: true
+  transcript_rules: null
+  llm_judge: null
+  custom_checks: null

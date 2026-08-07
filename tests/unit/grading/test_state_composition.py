@@ -42,7 +42,7 @@ _PROBES = [
 _DECLARATION_SPACE = tuple(
     product(
         (True, False),  # hash.enabled
-        ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
+        ({"expect_initial_state": True}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
         (_ASSERTIONS, []),  # state_checks.jsonpaths
         (0.5, None),  # hash.weight
     ),
@@ -55,7 +55,7 @@ _EXCLUSIVITY_SPACE = tuple(
     product(
         (_PROBES, []),  # state_checks.db_probes
         (True, False),  # hash.enabled
-        ({"expected_state_hash": "aaaa"}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
+        ({"expect_initial_state": True}, {"golden_actions": _GOLDEN_ACTIONS}, {}),
         (_ASSERTIONS, []),  # state_checks.jsonpaths
     ),
 )
@@ -179,7 +179,7 @@ class TestResolveHashWeight:
             assert returned == weight, shape
 
         assert rejected == {
-            (True, ("expected_state_hash",), True, None),
+            (True, ("expect_initial_state",), True, None),
             (True, ("golden_actions",), True, None),
         }, (
             "the rejected set is the whole predicate: hash grading on, a source to "
@@ -197,7 +197,7 @@ class TestResolveHashWeight:
         arrives: the block refuses each of these at construction, and this read is what
         answers a caller that reached past load and wrote one anyway.
         """
-        hash_config = StateHashConfig(enabled=True, expected_state_hash="aaaa", weight=0.5)
+        hash_config = StateHashConfig(enabled=True, expect_initial_state=True, weight=0.5)
         hash_config.weight = declared_weight
 
         with pytest.raises(ValueError, match="state_checks.hash.weight"):
@@ -239,12 +239,12 @@ class TestRefuseProbesBesideAnotherStateSource:
                 rejected.add(shape)
 
         assert rejected == {
-            (True, True, ("expected_state_hash",), True),
-            (True, True, ("expected_state_hash",), False),
+            (True, True, ("expect_initial_state",), True),
+            (True, True, ("expect_initial_state",), False),
             (True, True, ("golden_actions",), True),
             (True, True, ("golden_actions",), False),
             (True, True, (), True),
-            (True, False, ("expected_state_hash",), True),
+            (True, False, ("expect_initial_state",), True),
             (True, False, ("golden_actions",), True),
             (True, False, (), True),
         }, (

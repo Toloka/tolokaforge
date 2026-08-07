@@ -1,0 +1,22 @@
+# The task asks for nothing to change, so the satisfying trial leaves order O1 as it
+# started and the violating one ships it. No JSONPath assertion reads either state:
+# the hash source is the only thing that can tell the two apart on either substrate.
+satisfying:
+  messages:
+    - role: assistant
+      content: "Order O1 is not eligible for shipping, so I left it as it was."
+  state:
+    db:
+      orders:
+        - id: O1
+          status: pending
+
+violating:
+  messages:
+    - role: assistant
+      content: "Order O1 is not eligible for shipping, so I left it as it was."
+  state:
+    db:
+      orders:
+        - id: O1
+          status: shipped

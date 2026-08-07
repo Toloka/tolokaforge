@@ -26,7 +26,7 @@ that lowers each action onto the wire — so it is the one that refuses a shape 
 lower. :meth:`get_grading_config` hands the block's unclaimed ``golden_actions`` on to the
 core engine, which refuses the same shape at its own read
 (``tests/unit/grading/test_state_checks_composition.py``), and :meth:`compute_golden_hash`
-reads the source for truth alone and returns no hash for any other shape (#836). So the rows
+resolves no source at all and answers ``None`` for every shape (#836). So the rows
 below are not parametrised over the errands. A *falsy* source is no replay rather than a
 malformed one and loads as no actions to replay; only a truthy value that is not a list is
 refused.
@@ -201,6 +201,39 @@ def test_an_empty_grading_file_is_answered_by_each_read_site_as_it_was(
         _read(empty, "get_grading_config")
 
 
+@pytest.mark.parametrize("site", _READ_SITES)
+def test_a_populated_retired_hash_key_is_refused_at_each_read_site(
+    tmp_path: Path, site: str
+) -> None:
+    """A stored hash stops the pack at whichever read a run reaches first.
+
+    Parametrised over the errands rather than driven through one, because the two share
+    a file and not an object: ``tolokaforge run-trial`` runs no grading pre-flight, so
+    the description build is the only read a trial started there passes through, and a
+    refusal that lived on the other errand alone would let such a trial be paid for. Each
+    row builds its own adapter and calls one method, so what it measures is that read's
+    refusal and not a neighbour's.
+
+    Both replacements are asserted rather than the message as a whole: naming only the
+    shape a refusal task cannot use is the failure this retirement exists to avoid.
+    """
+    adapter = _pack(
+        tmp_path,
+        grading_yaml=yaml.safe_dump(
+            {"state_checks": {"hash": {"enabled": True, "expected_state_hash": "a" * 64}}}
+        ),
+    )
+
+    with pytest.raises(ValueError) as excinfo:
+        _read(adapter, site)
+
+    message = str(excinfo.value)
+    assert str(tmp_path / "tasks" / _TASK_ID / "grading.yaml") in message
+    assert "state_checks.hash.expected_state_hash has been retired" in message
+    assert "golden_actions" in message
+    assert "expect_initial_state" in message
+
+
 #: Both shape tables are shared with the gate's rows and core's, over a tool name this
 #: pack's grading file can carry.
 _GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE = sources_no_replay_can_iterate("place_order")
@@ -219,11 +252,6 @@ _GOLDEN_SOURCES_THAT_REPLAY_NOTHING = (
     pytest.param(False, id="false"),
 )
 
-_SOURCES_BESIDE_THE_GOLDEN_ONE = (
-    pytest.param({}, id="the_replay_as_the_only_source"),
-    pytest.param({"expected_state_hash": "aaaa"}, id="a_literal_declared_beside_it"),
-)
-
 
 def _replaying_pack(tmp_path: Path, golden_actions: Any, **hash_keys: Any) -> NativeAdapter:
     """A pack whose enabled ``hash`` block declares *golden_actions*, in any shape."""
@@ -239,21 +267,17 @@ def _replaying_pack(tmp_path: Path, golden_actions: Any, **hash_keys: Any) -> Na
     )
 
 
-@pytest.mark.parametrize("beside", _SOURCES_BESIDE_THE_GOLDEN_ONE)
 @pytest.mark.parametrize(("golden_actions", "kind"), _GOLDEN_SOURCES_NO_REPLAY_CAN_ITERATE)
 def test_a_golden_source_no_replay_can_iterate_is_refused_at_the_wire_read(
-    tmp_path: Path, golden_actions: Any, kind: str, beside: dict[str, Any]
+    tmp_path: Path, golden_actions: Any, kind: str
 ) -> None:
     """The last surface before a trial is registered, so it is the one that has to say so.
 
     Iterating the authored value lands a bare ``AttributeError`` / ``TypeError`` on
     whoever asked for a description — the run's pre-flight resolves it before the per-task
     catch (#880), so it aborts the whole run naming neither the pack, the key nor a fix.
-    The literal row is the load-bearing one: this read has no literal short-circuit, so a
-    pack declaring both sources is unregisterable where core would never read the actions
-    at all.
     """
-    adapter = _replaying_pack(tmp_path, golden_actions, **beside)
+    adapter = _replaying_pack(tmp_path, golden_actions)
 
     with pytest.raises(UnreplayableGoldenSource) as excinfo:
         _read(adapter, "to_task_description")
@@ -274,7 +298,7 @@ def test_a_falsy_golden_source_loads_as_no_actions_to_replay(
     is not coerced off, because the author did ask for hash grading. This is a load-tier
     lock and asserts nothing about the verdict that description later earns: the runner
     grades an empty replay against the trial's initial state where core takes no verdict at
-    all, which is #693's asymmetry and untouched here.
+    all, an asymmetry no gate admits and this lock does not reach.
 
     The rows that are not the empty list are the ones a truthiness-mirroring read gets
     wrong: ``golden_actions: null`` is what an author reaches by commenting their actions
@@ -309,19 +333,19 @@ def test_an_action_that_is_no_mapping_is_refused_before_anything_is_built(
 
 
 _KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE = (
-    pytest.param({"enalbed": True, "expected_state_hash": "aaaa"}, ["enalbed"], id="a_typod_flag"),
+    pytest.param({"enalbed": True, "expect_initial_state": True}, ["enalbed"], id="a_typod_flag"),
     pytest.param(
-        {"enabled": True, "expected_state_hsah": "aaaa"},
-        ["expected_state_hsah"],
+        {"enabled": True, "expect_inital_state": True},
+        ["expect_inital_state"],
         id="a_typod_source",
     ),
     pytest.param(
-        {"hash_enabled": True, "expected_hash": "aaaa", "hash_weight": 0.5},
-        ["expected_hash", "hash_enabled", "hash_weight"],
+        {"hash_enabled": True, "hash_weight": 0.5},
+        ["hash_enabled", "hash_weight"],
         id="the_runners_own_flattened_names",
     ),
     pytest.param(
-        {"enabled": True, "expected_state_hash": "aaaa", "weigth": 0.6},
+        {"enabled": True, "expect_initial_state": True, "weigth": 0.6},
         ["weigth"],
         id="a_typod_weight",
     ),
@@ -330,8 +354,8 @@ _KEYS_THE_HASH_BLOCK_DOES_NOT_DECLARE = (
 
 The flattened row is the sharpest: those are the names the *runner* declares for this
 block and the ones an author meets in this repo's own substrate tables, so the block
-reads as configured hash grading and lowers as none. All three are named in one raise,
-which is what lets an author fix the block in a single pass.
+reads as configured hash grading and lowers as none. Every offending key is named in
+one raise, which is what lets an author fix the block in a single pass.
 """
 
 
