@@ -19,6 +19,7 @@ from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
 from tolokaforge.core.grading.config_validation import CombineLayer
 from tolokaforge.core.grading.golden_replay import require_replayable_golden_actions
+from tolokaforge.core.grading.state_composition import StateHashConfig
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models import EnvironmentPatch, GradingConfig, TaskConfig
 from tolokaforge.core.project_loader import (
@@ -370,17 +371,16 @@ class NativeAdapter(BaseAdapter):
         """
         grading = self.get_grading_config(task_id)
 
-        if not grading.state_checks or not grading.state_checks.hash:
+        if grading.state_checks is None or grading.state_checks.hash is None:
             return None
 
         hash_config = grading.state_checks.hash
-        if not hash_config.get("enabled", False):
+        if not hash_config.enabled:
             return None
 
-        golden_actions = hash_config.get("golden_actions", [])
-        if not golden_actions:
+        if not hash_config.golden_actions:
             # Pre-computed hash
-            return hash_config.get("expected_state_hash")
+            return hash_config.expected_state_hash
 
         # Execute golden actions to compute hash dynamically
         # This requires MCP server access - delegated to grading engine
@@ -407,6 +407,10 @@ class NativeAdapter(BaseAdapter):
             ValueError: If task_id not found
             RuntimeError: If required files cannot be loaded, or if the grading file
                 or any grading key it declares is neither a mapping nor absent
+            pydantic.ValidationError: If a block the description is built from declares
+                a key its model does not, or a value its model refuses —
+                ``state_checks.hash`` included, which this errand constructs for itself
+                rather than reading key by key.
             GoldenReplayError: ``state_checks.hash.golden_actions`` is truthy and is not
                 the list of actions to replay, or an element of it is no mapping at all.
                 Refused here rather than lowered onto the wire, this being the last
@@ -591,10 +595,20 @@ class NativeAdapter(BaseAdapter):
             if state_checks_data:
                 # Extract golden actions
                 golden_actions: list[GoldenAction] = []
-                hash_config = state_checks_data.get("hash", {})
-                if hash_config and hash_config.get("enabled", False):
+                # This errand never runs ``get_grading_config``, so the block is
+                # constructed here too: a key it does not declare would otherwise reach
+                # the wire as an absent hash. Only ``None`` — the key written bare — is
+                # the empty block; every other value is the model's to answer, so
+                # ``hash: 0`` is refused on both errands rather than on only one.
+                raw_hash = state_checks_data.get("hash")
+                hash_config = (
+                    StateHashConfig()
+                    if raw_hash is None
+                    else StateHashConfig.model_validate(raw_hash)
+                )
+                if hash_config.enabled:
                     for golden_action in require_replayable_golden_actions(
-                        hash_config.get("golden_actions"),
+                        hash_config.golden_actions,
                         context=f"Grading file {grading_path}",
                     ):
                         golden_actions.append(
@@ -618,10 +632,10 @@ class NativeAdapter(BaseAdapter):
                     raise ValueError(err)
 
                 state_checks = RunnerStateChecksConfig(
-                    hash_enabled=bool(hash_config and hash_config.get("enabled", False)),
-                    expected_hash=hash_config.get("expected_state_hash") if hash_config else None,
+                    hash_enabled=hash_config.enabled,
+                    expected_hash=hash_config.expected_state_hash,
                     golden_actions=golden_actions,
-                    hash_weight=hash_config.get("weight") if hash_config else None,
+                    hash_weight=hash_config.weight,
                     jsonpath_checks=state_checks_data.get("jsonpaths", []),
                     db_probes=db_probes,
                     numeric_string_fields=list(state_checks_data.get("numeric_string_fields", [])),

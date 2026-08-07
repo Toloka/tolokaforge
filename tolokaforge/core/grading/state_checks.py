@@ -97,12 +97,12 @@ def _tool_in_pack(name: str, tools: Collection[str]) -> str | None:
 def _authored_action_name(action: object) -> str | None:
     """The name an action declares, or ``None`` where it declares no string at all.
 
-    The ``hash`` block is untyped (#730), so a name may arrive as a list or a mapping and
-    the action carrying it may be no mapping at all. Every one of those declares a name as
-    little as an absent key does, and each draws the same ``UnresolvableGoldenAction``
-    naming its index — where reading a name off a bare string raises an ``AttributeError``
-    attributable to nobody, and reaching the matcher with an unhashable name answers its
-    membership test with a ``TypeError``.
+    ``golden_actions`` claims nothing about its elements (#907), so a name may arrive as a
+    list or a mapping and the action carrying it may be no mapping at all. Every one of
+    those declares a name as little as an absent key does, and each draws the same
+    ``UnresolvableGoldenAction`` naming its index — where reading a name off a bare string
+    raises an ``AttributeError`` attributable to nobody, and reaching the matcher with an
+    unhashable name answers its membership test with a ``TypeError``.
     """
     name = action.get("name") if isinstance(action, Mapping) else None
     return name if isinstance(name, str) else None

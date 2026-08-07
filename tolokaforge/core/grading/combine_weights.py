@@ -64,9 +64,9 @@ def require_component_weight(name: str, weights: Mapping[str, float]) -> float:
     """The declared share of a scored component, or raise naming it and both fixes.
 
     Neither substrate may pick a value. This is the fold's own guard rather than a
-    consequence of the authoring gate refusing the shape: ``state_checks.hash`` is an
-    untyped dict nothing stops a caller mutating after validation, and every unit test and
-    the substrate differential construct a config directly rather than through YAML.
+    consequence of the authoring gate refusing the shape: the config is mutable after
+    validation, and every unit test and the substrate differential construct one directly
+    rather than through YAML.
     """
     if name not in weights:
         raise MissingComponentWeight(_NO_DEFENSIBLE_WEIGHT.format(name=name))
