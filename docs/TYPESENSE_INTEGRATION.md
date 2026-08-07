@@ -331,6 +331,18 @@ With `mode: local`, the orchestrator handles everything automatically:
 2. **Start run** - TypeSense container starts automatically; if it never becomes ready, the run aborts before any trial
 3. **Run completes** - Container is cleaned up (if `cleanup_on_exit: true`)
 
+### Docker Networking
+
+When the orchestrator manages the server (`mode: local`) and the run uses the engine's built-in stack, the TypeSense container is bridged onto the runner's network once that stack has started:
+
+- TypeSense joins `runner-net` under the alias `typesense`
+- `orchestrator.typesense` is rewritten to `typesense:8108` — inside a Docker network containers reach each other on the container port, never the host-mapped one
+- the rewritten address is propagated to the adapter, and task descriptions resolved before the rewrite are dropped so trials rebuild against it
+
+A bridge that cannot be completed aborts the run. A missing TypeSense container, a missing `runner-net`, an adapter that cannot carry the rewritten address, or any Docker SDK failure raises with the address trials would otherwise have kept. There is no partial bridge: the alternative is trials configured with the host-side address, which inside the runner container resolves to the runner itself.
+
+A run whose tasks declare their own compose stack cannot be bridged at all — the TypeSense KB and a task-declared `environment_manifest` are mutually exclusive, and the orchestrator refuses that combination up front.
+
 ### Production Setup
 
 For production, configure TypeSense server with:
