@@ -107,6 +107,7 @@ tests/
 │   ├── grading_parity/      # Substrate-parity packs; own glob, outside tasks/**
 │   ├── transcript_parity/   # transcript_rules differential packs; own glob, may author two keys
 │   ├── projects/            # Full project snapshots (food_delivery_2, tau_retail_mini)
+│   ├── grading_bundles/     # Authored grading bundles the verdict pins read; each README says it was not recorded
 │   ├── migration_corpora/   # Judge-labelled trial bundles reconcile reads (notes_duplicate_check)
 │   ├── migration_packs/     # Migration declarations reconcile resolves; shipped task_ids, never a default root
 │   └── configs/             # Config fixtures
