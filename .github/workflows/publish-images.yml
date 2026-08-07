@@ -10,6 +10,14 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
+# Single source of truth for the first-party image set. The matrix below
+# carries per-image metadata (Dockerfile path, whether the image bundles
+# the wheel) and must stay in sync with this list, but every bash loop that
+# only needs the names reads from here — kept in one place so adding a
+# fifth image is one env edit + one matrix row, not six sites.
+env:
+  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web"
+
 jobs:
   build-wheel:
     name: Build wheel
@@ -257,7 +265,7 @@ jobs:
           RC_VERSION: ${{ steps.meta.outputs.rc_version }}
           VERSION: ${{ steps.meta.outputs.version }}
         run: |
-          for image in runner db-service rag-service mock-web; do
+          for image in $FIRST_PARTY_IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:${VERSION}" "${repo}:${RC_VERSION}"
           done
@@ -271,7 +279,7 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
         run: |
-          for image in runner db-service rag-service mock-web; do
+          for image in $FIRST_PARTY_IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
             docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
@@ -293,7 +301,7 @@ jobs:
             echo ""
             echo "| Image | Tag | Digest |"
             echo "|---|---|---|"
-            for image in runner db-service rag-service mock-web; do
+            for image in $FIRST_PARTY_IMAGES; do
               repo="tolokasoft1/tolokaforge-${image}"
               digest="$(docker buildx imagetools inspect "${repo}:${VERSION}" --format '{{.Manifest.Digest}}')"
               echo "| \`${repo}\` | ${VERSION} | \`${digest}\` |"
@@ -305,7 +313,13 @@ jobs:
         with:
           name: Docker images v${{ steps.meta.outputs.version }}
           body_path: release-notes.md
-          append_body: true
+          # Do NOT append_body — the auto-promote job is idempotent for the
+          # image tags, and the release body must be idempotent too. A retry
+          # (rerun-failed-jobs, transient CI hiccup) with `append_body: true`
+          # would pile duplicate digest tables into the same Release. False
+          # (the default) replaces the body, so retries land on identical
+          # content whether they're the first run or the tenth.
+          append_body: false
           generate_release_notes: true
 
   move-tags:
@@ -350,7 +364,7 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
         run: |
-          for image in runner db-service rag-service mock-web; do
+          for image in $FIRST_PARTY_IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
             docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
@@ -372,7 +386,7 @@ jobs:
             echo ""
             echo "| Image | Tag | Digest |"
             echo "|---|---|---|"
-            for image in runner db-service rag-service mock-web; do
+            for image in $FIRST_PARTY_IMAGES; do
               repo="tolokasoft1/tolokaforge-${image}"
               digest="$(docker buildx imagetools inspect "${repo}:${version}" --format '{{.Manifest.Digest}}')"
               echo "| \`${repo}\` | ${version} | \`${digest}\` |"

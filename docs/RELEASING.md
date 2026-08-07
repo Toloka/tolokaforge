@@ -111,6 +111,36 @@ already-published immutable `:X.Y.Z` digest. Use this only when the automated
 promote is not the right fit; for a routine release it does nothing beyond what
 auto-promote already did.
 
+### Trade-offs of the automated flow
+
+Three properties of the auto-promote path that are worth knowing:
+
+- **The GitHub Release is attached to the rc tag** (`image-vX.Y.Z-rc.1`), not to
+  a new `image-vX.Y.Z` git tag. Creating a stable git tag from CI would fire
+  `publish-images.yml` again on that tag and duplicate the entire build for no
+  additional value. Consequence: `gh release view image-vX.Y.Z` returns 404 for
+  auto-promoted releases; use `gh release list` and the Release title (`Docker
+  images vX.Y.Z`) to find them, or `gh api repos/…/releases/tags/image-vX.Y.Z-rc.1`
+  for the rc tag. The manual override path (below) still attaches to the stable
+  git tag if that shape matters for downstream tooling.
+
+- **The stable `:X.Y.Z` manifest digest differs from the `:X.Y.Z-rc.N` digest.**
+  `docker buildx imagetools create` re-serializes the manifest list to produce
+  the new tag, so the top-level digest changes even though every referenced
+  layer is byte-identical. Supply-chain checks that pin by
+  `sha256:…` will see distinct digests across rc and stable — the manifest is
+  a new artifact, the content it references is not.
+
+- **rc-smoke is the only automatic gate.** It is deliberately keyless:
+  `test_published_images_rc_smoke.py` asserts entrypoint + healthcheck + wire
+  framing (a well-formed `error` line on garbage stdin counts as pass), so it
+  never spends provider tokens. This is the right coverage for the release
+  ceremony's scope but does not exercise real trials. For major releases with
+  broad behavior changes, consider running a full smoke against the rc images
+  before the auto-promote fires — you can pull `:X.Y.Z-rc.1` manually while
+  the workflow is between `smoke` and `auto-promote-rc-to-stable` and, if
+  something looks off, cancel the workflow before the promote step starts.
+
 ### Dry run
 
 Running `publish-images.yml` from the Actions tab as a `workflow_dispatch` builds
