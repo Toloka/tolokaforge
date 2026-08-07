@@ -365,7 +365,7 @@ All markers are enforced via `--strict-markers`.
 
 ## Test Philosophy
 
-- **Zero `xfail`**: every test either passes or gets deleted.
+- **No accepted failures**: every test passes, is deleted, or carries `xfail(strict=True, raises=…)` — a marker that records a measured defect and fails the suite the moment the defect is fixed, so the fix is what removes it. A bare or non-strict `xfail` absorbs real breakage silently and is never correct.
 - **Zero bare `@skip`**: use conditional markers (`requires_api`, `requires_docker`).
 - **Canonical golden data** for regression detection — diffs are reviewable in PRs.
 - **Auto-skip** for missing prerequisites instead of hard failures.
