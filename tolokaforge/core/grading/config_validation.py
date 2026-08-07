@@ -176,23 +176,58 @@ class CombineLayer:
         return cls(project_combine=None, known=False)
 
 
+class SuppliedSourceState(str, Enum):
+    """Whether a source an adapter supplies beneath the authored block grades anything."""
+
+    USABLE = "usable"
+    """Present and non-empty: the hash has something to compare the trial against."""
+
+    MISSING = "missing"
+    """Nothing is at the place the adapter reads its source from."""
+
+    EMPTY = "empty"
+    """The source is there and holds nothing, which compares against as little as none."""
+
+
+@dataclass(frozen=True)
+class AdapterHashSource:
+    """The source an adapter supplies beneath the authored block, in the adapter's words.
+
+    *where* is what a refusal names — a path in the adapter's own vocabulary, relative
+    to the task directory, because that is what an author has to go and fix.
+    """
+
+    where: str
+    state: SuppliedSourceState
+
+
 @dataclass(frozen=True)
 class HashSourceLayer:
     """What supplies a hash source beneath a task's authored ``state_checks.hash`` block.
 
-    The native reading has nothing beneath the block: the authored keys are the only
-    place a source can come from, so an enabled block declaring none grades nothing —
-    which is what the default construction reports. A caller that cannot say what the
-    grading adapter supplies reports :meth:`unresolvable` — distinct from resolving
-    "nothing beneath", because the two decide opposite things: the second makes the
-    sourceless shape the authoring defect :func:`_check_hash_source_declared` refuses,
-    while the first makes it uncheckable. An external adapter may compute the source it
+    Three answers, because they decide three different things. A caller that cannot say
+    what the grading adapter supplies reports :meth:`unresolvable`, which makes the
+    sourceless shape uncheckable. A caller resolving *nothing* beneath the block — the
+    native reading, where the authored keys are the only place a source can come from —
+    reports the default construction, which makes that same shape the authoring defect
+    :func:`_check_hash_source_declared` refuses. An adapter that computes the source it
     compares against from its own fixtures — the frozen-core family replays a
-    golden-actions fixture the authored block never names — so reading the block as
-    the whole layer there refuses packs that grade fine.
+    golden-actions fixture the authored block never names — reports it as *supplied*,
+    and then the block grades exactly as well as that source does: usable passes,
+    missing or empty is refused before the trial is paid for.
     """
 
     known: bool = True
+    supplied: AdapterHashSource | None = None
+
+    def __post_init__(self) -> None:
+        if not self.known and self.supplied is not None:
+            raise ValueError(
+                "an unresolvable hash-source layer carries facts: the rule that reads "
+                f"them is skipped, so {self.supplied.where} / {self.supplied.state.value} "
+                "would be resolved and then ignored. Report the facts with known=True, "
+                "or report nothing"
+            )
 
     @classmethod
     def unresolvable(cls) -> HashSourceLayer:
@@ -443,6 +478,13 @@ _A_HASH_SOURCE_NOTHING_READS = (
     "{key} is declared while hash.enabled is {enabled!r}: both substrates read the flag "
     "before any source, so the comparison never runs and the state is graded without it. "
     "Write enabled: true, or drop the source"
+)
+
+_A_SUPPLIED_HASH_SOURCE_THAT_GRADES_NOTHING = (
+    "hash grading is enabled and the adapter grading this task supplies its source from "
+    "{where}, which is {state}: there is nothing to compare the trial against, so the hash "
+    "verdict is lost at grade time, once the trial is already paid for. Restore or populate "
+    "{where}, or drop the hash block"
 )
 
 _GOLDEN_ACTION_NAME_ADDRESS = "state_checks.hash.golden_actions[{index}].name"
@@ -896,8 +938,13 @@ def _check_hash_source_declared(
     finding either half would have drawn moves to ``unchecked``, addressed where the
     finding would have been — for the reason the tool rules skip an unresolvable
     inventory, that refusing a reading the adapter does not use rejects packs that
-    grade fine. A block this rule finds nothing wrong with reports nothing on either
-    layer, so the skip names only the shape a native pack would have been refused for.
+    grade fine. Where the layer names the source an adapter supplies, the enabled half
+    is decided against that source instead, by
+    :func:`_an_enabled_block_declaring_no_source`. The disabled half ignores it: a source
+    the block declares and nothing reads is the author's defect whatever an adapter
+    supplies beside it. A block this rule finds
+    nothing wrong with reports nothing on any layer, so the skip names only the shape a
+    native pack would have been refused for.
     """
     hash_block = authored_hash_block(grading)
     if hash_block is None:
@@ -905,10 +952,39 @@ def _check_hash_source_declared(
     enabled = hash_block.get("enabled")
     declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
     if enabled and declared is None:
-        if not hash_sources.known:
-            return AuthoringReport(
-                unchecked=(Skip("state_checks.hash.enabled", _UNRESOLVED_HASH_SOURCE_REASON),)
-            )
+        return _an_enabled_block_declaring_no_source(hash_sources)
+    if enabled or declared is None:
+        return AuthoringReport()
+    if not hash_sources.known:
+        return AuthoringReport(
+            unchecked=(Skip(f"state_checks.hash.{declared}", _UNRESOLVED_HASH_SOURCE_REASON),)
+        )
+    return AuthoringReport(
+        errors=(
+            Finding(
+                f"state_checks.hash.{declared}",
+                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
+            ),
+        )
+    )
+
+
+def _an_enabled_block_declaring_no_source(hash_sources: HashSourceLayer) -> AuthoringReport:
+    """What an enabled hash block naming no source is, under each answer about the layer.
+
+    The shape means something different beneath each answer, and only the layer knows
+    which: a native pack has written a check that compares against nothing, an adapter
+    supplying a usable source has written that family's own convention, and an adapter
+    whose source has gone missing or empty has written a pack that costs a trial and
+    grades nothing — the one reading that is worth refusing here rather than at grade
+    time. A caller that cannot say leaves all three unchecked.
+    """
+    if not hash_sources.known:
+        return AuthoringReport(
+            unchecked=(Skip("state_checks.hash.enabled", _UNRESOLVED_HASH_SOURCE_REASON),)
+        )
+    supplied = hash_sources.supplied
+    if supplied is None:
         sources = " or ".join(HASH_SOURCE_KEYS)
         return AuthoringReport(
             errors=(
@@ -922,17 +998,15 @@ def _check_hash_source_declared(
                 ),
             )
         )
-    if enabled or declared is None:
+    if supplied.state is SuppliedSourceState.USABLE:
         return AuthoringReport()
-    if not hash_sources.known:
-        return AuthoringReport(
-            unchecked=(Skip(f"state_checks.hash.{declared}", _UNRESOLVED_HASH_SOURCE_REASON),)
-        )
     return AuthoringReport(
         errors=(
             Finding(
-                f"state_checks.hash.{declared}",
-                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
+                "state_checks.hash.enabled",
+                _A_SUPPLIED_HASH_SOURCE_THAT_GRADES_NOTHING.format(
+                    where=supplied.where, state=supplied.state.value
+                ),
             ),
         )
     )
