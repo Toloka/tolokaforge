@@ -39,6 +39,56 @@ Each adapter must subclass `BaseAdapter` and implement:
     raises `NotImplementedError`; only external adapters need to override.
     See [Conversion Layer](CONVERSION_LAYER.md) for details.
 
+12. `grading_combine_layer() -> CombineLayer`
+
+    What your projects supply beneath a task's own `combine` block.  The
+    pre-run authoring gate resolves a task's *effective* combine from this and
+    the task's own block, so an adapter that reads a project tree reports its
+    defaults here.  The default is `CombineLayer.unresolvable()`: an adapter
+    that synthesises grading config rather than reading a project tree cannot
+    say what a project supplies, and reporting "no defaults" instead would
+    refuse a task whose weights are inherited.
+
+13. `grading_hash_source_layer(task: TaskConfig, task_dir: Path) -> HashSourceLayer`
+    — a **classmethod**
+
+    What you supply beneath a task's authored `state_checks.hash` block.
+    Report facts, not verdicts: the source you compute the comparison from and
+    whether it is usable, missing or empty; the gates decide what is fatal.
+
+    ```python
+    @classmethod
+    def grading_hash_source_layer(cls, task, task_dir):
+        golden = task_dir / "fixtures" / "golden_actions.json"
+        if not golden.exists():
+            return HashSourceLayer(
+                supplied=AdapterHashSource(
+                    where="fixtures/golden_actions.json",
+                    state=SuppliedSourceState.MISSING,
+                )
+            )
+        ...
+    ```
+
+    Three answers, deciding three different things:
+
+    - `HashSourceLayer.unresolvable()` — you cannot say.  The default, and the
+      answer that leaves an enabled hash block declaring no source reported but
+      never refused.
+    - `HashSourceLayer()` — nothing beneath the block, so the authored keys are
+      the whole layer and a block enabling the hash with no source declared is
+      an authoring defect the gates refuse.
+    - `HashSourceLayer(supplied=AdapterHashSource(where=…, state=…))` — you
+      supply the source named by `where`, a path in your own vocabulary
+      relative to the task directory, since that is what a refusal shows the
+      author.  A `USABLE` source makes the bare block a clean pass; `MISSING`
+      or `EMPTY` is refused before any trial is paid for.
+
+    A classmethod, unlike `grading_combine_layer()`: `tolokaforge validate` is
+    a static gate that constructs no adapters and keeps validating packs whose
+    adapter package is not installed, so every fact reported here must be a
+    function of the task and its directory alone.
+
 ## Lifecycle Expectations
 
 1. Discovery: enumerate tasks deterministically.

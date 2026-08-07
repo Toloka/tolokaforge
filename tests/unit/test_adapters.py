@@ -51,6 +51,7 @@ class TestGetAdapter:
             lambda group: [BrokenEntryPoint()],
         )
         monkeypatch.setattr(adapters_module, "_ADAPTERS", {})
+        monkeypatch.setattr(adapters_module, "_DISCOVERED", False)
         monkeypatch.setattr(adapters_module, "_FAILED_ADAPTERS", {})
 
         caplog.set_level(logging.WARNING, logger="tolokaforge.adapters")
