@@ -698,15 +698,29 @@ def test_a_hash_family_member_another_evaluator_reads_fails_loud():
 # --------------------------------------------------------------------------
 
 
-def test_id_fields_shaped_config_grades_instead_of_erroring(runner_service, mock_grpc_context):
-    """The config-input false-positive class: every `id_fields` pack shipping today."""
+@pytest.mark.parametrize(
+    ("id_fields", "trial_id"),
+    [
+        ({"widgets": "widget_id"}, "ledger_id_fields:0"),
+        ({"widgets": ["widget_id", "status"]}, "ledger_id_fields_composite:0"),
+    ],
+    ids=["a_single_field", "a_composite_key"],
+)
+def test_id_fields_shaped_config_grades_instead_of_erroring(
+    runner_service, mock_grpc_context, id_fields, trial_id
+):
+    """The config-input false-positive class: every `id_fields` pack shipping today.
+
+    Both value forms are `CONFIG_INPUT` — the key shapes write resolution instead of
+    producing a component score, so it takes no ledger record in either form.
+    """
     grading = {
         "combine_method": "weighted",
         "weights": {"state_checks": 1.0, "transcript_rules": 1.0},
         "pass_threshold": 0.7,
         "state_checks": {
             "numeric_string_fields": ["amount"],
-            "id_fields": {"widgets": "widget_id"},
+            "id_fields": id_fields,
             "relaxed_validation": True,
             "jsonpath_checks": [_JSONPATH_CHECK],
         },
@@ -716,7 +730,7 @@ def test_id_fields_shaped_config_grades_instead_of_erroring(runner_service, mock
     response = _grade(
         runner_service,
         mock_grpc_context,
-        "ledger_id_fields:0",
+        trial_id,
         grading,
         llm_messages=[{"role": "assistant", "content": "All done"}],
     )

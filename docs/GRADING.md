@@ -807,7 +807,9 @@ claim covers and how it is enforced.
 The grader finds and writes records by primary key and assumes the key column is
 literally `id`. Tables keyed by something else (e.g. a `<name>_id` column) must
 declare it, or upserts/deletes cannot resolve the key. Declare it per table under
-`state_checks.id_fields`; a table absent from the map defaults to `"id"`, so
+`state_checks.id_fields`. The value takes two forms of one shape: a single field
+name, or an ordered list of field names for a table where no single column is
+unique (a composite key). A table absent from the map defaults to `"id"`, so
 `id`-keyed domains need nothing:
 
 ```yaml
@@ -818,6 +820,7 @@ state_checks:
   id_fields:                          # per-table primary-key override; absent => "id"
     widgets: widget_id
     line_items: line_id
+    positions: [account_id, symbol]   # composite: no single column is unique
 ```
 
 Map keys are the table names as they appear in `initial_state`. This is config
@@ -829,6 +832,17 @@ MCP-subprocess and Tau diff-sync paths (`_sync_mcp_state_to_db`,
 `TauSyncToolWrapper._sync_state_changes`) consult the same map, so records with
 their key omitted also fail loud instead of collapsing to a single `None` bucket
 and silently corrupting the state diff.
+
+Every path that indexes records by a composite key compares **component-wise**:
+two records carry the same key only when they agree on every declared field.
+The components are never concatenated into one synthetic value — concatenation
+collides (`("a_b", "c")` and `("a", "b_c")` join to the same string), which
+would reintroduce exactly the ambiguity a composite key exists to remove. A
+one-element list means the same thing as the bare string, and a record missing
+*any* declared component fails loud naming the table, the missing component and
+the full declared key. A declaration that cannot name a key at all — an empty
+list, a blank or non-string component, or a component repeated twice — is
+refused when the config loads, naming the table.
 
 The adapter cross-checks the `id_fields` keys against `initial_state.tables` at
 task-description build time — a typo names an "unknown table" and the pack fails
@@ -866,7 +880,7 @@ from this release onward refuses a key it does not declare instead of ignoring i
 **Runner-engine version lock (both directions)**: the trial spec crosses the wire as
 a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
 a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Five keys carry the lock:
+being dropped. Six keys carry the lock:
 
 - `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
   declare: an engine older than this release translates it onto that field, so an
@@ -886,12 +900,20 @@ being dropped. Five keys carry the lock:
   [§ Score Combination](#score-combination): a **new engine** translating `any` is
   rejected by an older image, and an **old engine** translating a name the set no
   longer holds is rejected by a current one.
+- `state_checks.id_fields`, whose declared **value** shape admits a composite
+  (list-valued) key. A runner image that predates the list form declares the value
+  as a plain string, so a **new engine against an old runner image** emitting a
+  list value is rejected at `RegisterTrial` with a Pydantic `string_type` error
+  naming `id_fields` — the correct fail-loud outcome, since that image cannot
+  resolve a composite key.
 
 The first two bite on **every** pack carrying a non-empty `state_checks:` block,
 `min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
 `trace_checks` on **every** pack at all — whether or not the pack declares the key,
 because the adapter emits all four unconditionally. `combine_method` bites only on a
-pack declaring an affected value — `weighted` and `all` cross in either direction. So
+pack declaring an affected value — `weighted` and `all` cross in either direction —
+and `id_fields` only on a pack declaring a composite key: a single-field declaration
+crosses as the same plain string it always did. So
 a new engine requires a runner image from the same release for any pack, and
 `make docker-build-core` is part of every engine upgrade. (`db_hash_check` was never
 declared on the runner config at all, so no engine ever emitted it and it is not part

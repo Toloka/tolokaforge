@@ -50,6 +50,7 @@ from tolokaforge.core.deprecations import (
 )
 from tolokaforge.core.grading.combine_method import CombineMethod, validate_combine_method
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord
+from tolokaforge.core.grading.id_fields_declaration import validate_id_fields_declaration
 from tolokaforge.core.grading.state_composition import (
     refuse_probes_beside_another_state_source,
     resolve_hash_weight,
@@ -338,11 +339,13 @@ class RunnerStateChecksConfig(BaseModel):
     # switch) because a numeric-looking string can carry meaning in its exact
     # representation (versions/codes) — see core/hash.py compute_stable_hash.
     numeric_string_fields: list[str] = Field(default_factory=list)
-    # Opt-in, PER-TABLE: primary-key field for tables not keyed by the literal "id"
-    # (e.g. {"widgets": "widget_id"}). Absent table => "id". Consumed by
-    # the DB proxy (via ToolFactory) so key resolution is data-driven instead of
-    # derived from model source. See runner/db_proxy.py _resolve_id_field.
-    id_fields: dict[str, str] = Field(default_factory=dict)
+    # Opt-in, PER-TABLE: primary key for tables not keyed by the literal "id" —
+    # one field name, or an ordered list of component names for a composite key
+    # (e.g. {"widgets": "widget_id", "positions": ["account_id", "symbol"]}).
+    # Absent table => "id". Consumed by the DB proxy (via ToolFactory) so key
+    # resolution is data-driven instead of derived from model source.
+    # See runner/db_proxy.py _resolve_id_field.
+    id_fields: dict[str, str | list[str]] = Field(default_factory=dict)
     # Escape hatch for legacy tasks: downgrade the id_fields cross-check
     # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
     # New tasks should fix typos or add the table, not enable this.
@@ -356,16 +359,8 @@ class RunnerStateChecksConfig(BaseModel):
 
     @field_validator("id_fields")
     @classmethod
-    def _validate_id_fields(cls, value: dict[str, str]) -> dict[str, str]:
-        for table, field in value.items():
-            if not (isinstance(table, str) and table.strip()):
-                raise ValueError(f"state_checks.id_fields has a blank table name: {table!r}")
-            if not (isinstance(field, str) and field.strip()):
-                raise ValueError(
-                    f"state_checks.id_fields[{table!r}] must be a non-empty key field, "
-                    f"got {field!r}"
-                )
-        return value
+    def _validate_id_fields(cls, value: dict[str, str | list[str]]) -> dict[str, str | list[str]]:
+        return validate_id_fields_declaration(value)
 
     @field_validator("hash_weight", mode="before")
     @classmethod
