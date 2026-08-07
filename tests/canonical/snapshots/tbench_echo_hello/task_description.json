@@ -105,6 +105,7 @@
     "domain_name": null,
     "enabled": false,
     "host": null,
+    "plane": null,
     "port": null
   },
   "source_files": {},
