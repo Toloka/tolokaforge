@@ -190,7 +190,7 @@ The name looked up is the one that actually reaches the gateway: litellm strips 
 provider prefix, so this run's `provider: openrouter` + `name: <slug>` config puts the **bare
 slug** on the wire. An `openrouter/<slug>` (or `openrouter/*`) catalog entry is therefore *not*
 evidence for this run — reaching a prefixed route needs the gateway-named config in
-[`docs/LLM_LAYER.md` § the model name must be the gateway's route name](LLM_LAYER.md#the-model-name-must-be-the-gateways-route-name),
+[`docs/LLM_LAYER.md` § naming a gateway route explicitly](LLM_LAYER.md#naming-a-gateway-route-explicitly),
 which this workflow does not use.
 
 The report distinguishes two strengths, because they are not equally trustworthy:

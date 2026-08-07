@@ -82,10 +82,10 @@ serves this provider's native route" — true for a LiteLLM proxy's
 :data:`UNROUTABLE_PROVIDERS` cannot be opted in at all and are rejected
 loudly, because no gateway can serve them (see that constant).
 
-Routed calls now DO force the OpenAI envelope, because that is the gateway's own
+Routed calls force the OpenAI envelope, because that is the gateway's own
 protocol; see ``docs/LLM_LAYER.md`` § "Speaking to the gateway". Widening
 ``LLM_PROXY_PROVIDERS`` to a provider whose gateway route is a native passthrough
-rather than an OpenAI-compatible one is therefore still not supported.
+rather than an OpenAI-compatible one is not supported.
 
 The model name on the wire
 --------------------------

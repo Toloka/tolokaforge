@@ -17,7 +17,6 @@ from typing import Any
 
 import pytest
 
-from tolokaforge.core.llm import gateway_route
 from tolokaforge.core.llm.client import LLMClient
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
 from tolokaforge.secrets import DictProvider, SecretManager
@@ -32,13 +31,13 @@ FULL = f"openrouter/{MODEL}"
 
 @pytest.fixture(autouse=True)
 def _isolate() -> Iterator[None]:
+    """The directory conftest already clears the catalog cache; this restores the
+    secrets singleton and os.environ, which client construction mutates."""
     original_manager = secrets_manager._default_manager
     original_env = dict(os.environ)
-    gateway_route.clear_catalog_cache()
     try:
         yield
     finally:
-        gateway_route.clear_catalog_cache()
         secrets_manager._default_manager = original_manager
         os.environ.clear()
         os.environ.update(original_env)
@@ -59,7 +58,7 @@ def _client(
             )
         ]
     )
-    monkeypatch.setattr(gateway_route, "fetch_gateway_catalog", lambda *_a, **_k: catalog)
+    # client.py imports the name, so only its binding is live.
     monkeypatch.setattr(
         "tolokaforge.core.llm.client.fetch_gateway_catalog", lambda *_a, **_k: catalog
     )

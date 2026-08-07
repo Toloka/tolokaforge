@@ -9,6 +9,7 @@ from __future__ import annotations
 import http.client
 import json
 import logging
+import time
 import urllib.error
 import urllib.request
 from typing import TYPE_CHECKING
@@ -30,12 +31,14 @@ logger = logging.getLogger(__name__)
 #: caching it would keep a whole run degraded after one blip.
 _CATALOG_CACHE: dict[str, frozenset[str]] = {}
 
-#: Consecutive failures per base URL, so a gateway that HANGS costs the timeout a
-#: bounded number of times instead of once per client construction for a whole run.
-_FAILURES: dict[str, int] = {}
+#: When a base URL may be retried again, so a gateway that HANGS costs the timeout
+#: occasionally rather than on every client construction. Time-based rather than a
+#: hard cap: constructions cluster at run start, so a cap would burn every attempt
+#: during warmup and pin a long run on the degraded path with no way back.
+_RETRY_AFTER: dict[str, float] = {}
 
-#: Give up for the process after this many consecutive failures.
-MAX_CATALOG_ATTEMPTS = 3
+#: How long to stop asking after a failure.
+CATALOG_RETRY_COOLDOWN_S = 60.0
 
 
 class GatewayRouteError(Exception):
@@ -45,7 +48,7 @@ class GatewayRouteError(Exception):
 def clear_catalog_cache() -> None:
     """Drop the cached catalogs and the failure counters. For tests."""
     _CATALOG_CACHE.clear()
-    _FAILURES.clear()
+    _RETRY_AFTER.clear()
 
 
 def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[str] | None:
@@ -60,7 +63,7 @@ def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[st
     cached = _CATALOG_CACHE.get(key)
     if cached is not None:
         return cached
-    if _FAILURES.get(key, 0) >= MAX_CATALOG_ATTEMPTS:
+    if time.monotonic() < _RETRY_AFTER.get(key, 0.0):
         return None
 
     url = proxy.base_url.rstrip("/") + "/models"
@@ -87,11 +90,11 @@ def fetch_gateway_catalog(proxy: ProxyConfig, timeout: int = 15) -> frozenset[st
         ValueError,
         OSError,
     ) as exc:
-        _FAILURES[key] = _FAILURES.get(key, 0) + 1
+        _RETRY_AFTER[key] = time.monotonic() + CATALOG_RETRY_COOLDOWN_S
         logger.warning("Gateway catalog unreadable at %s: %s", url, exc)
         return None
 
-    _FAILURES.pop(key, None)
+    _RETRY_AFTER.pop(key, None)
     _CATALOG_CACHE[key] = served
     return served
 

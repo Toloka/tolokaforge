@@ -681,6 +681,8 @@ class LLMClient:
                     model=self.model_name,
                 )
             else:
+                # A readable catalog is never empty here: the fetch maps an empty
+                # answer to None, so resolver-None below can only mean "omitted".
                 self._gateway_route = resolve_gateway_route(
                     self.model_name, catalog, self._proxy.preferred_route
                 )

@@ -191,6 +191,7 @@ class TestProxyConfigValidation:
             "LLM_PROXY_HEADERS",
             "LLM_PROXY_REQUEST_ID_HEADER",
             "LLM_PROXY_PROVIDERS",
+            "LLM_PROXY_PREFERRED_ROUTE",
         ],
     )
     def test_companion_without_base_url_raises(self, install_secrets, orphan: str) -> None:

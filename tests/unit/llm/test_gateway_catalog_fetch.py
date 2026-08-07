@@ -67,6 +67,7 @@ def gateway(_server: str) -> Iterator[str]:
 
 
 def _config(base: str, **kw: object) -> ProxyConfig:
+    # kwargs are per-test ProxyConfig fields; typing them precisely here buys nothing.
     return ProxyConfig(base_url=base, **kw)  # type: ignore[arg-type]
 
 
@@ -120,33 +121,47 @@ class TestCacheSemantics:
         assert fetch_gateway_catalog(_config(gateway)) == frozenset({"m"})
         assert len(HITS) == 1
 
-    def test_an_empty_answer_is_not_cached(self, gateway: str) -> None:
+    def test_an_empty_answer_is_not_cached(
+        self, gateway: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
         """The bug this file was written for: an empty answer is called transient in
         the design, so caching it pinned a whole process on the degraded path."""
+        monkeypatch.setattr(gateway_route, "CATALOG_RETRY_COOLDOWN_S", 0.0)
         RESPONSES.append((200, json.dumps({"data": []})))
         RESPONSES.append((200, json.dumps({"data": [{"id": "m"}]})))
         assert fetch_gateway_catalog(_config(gateway)) is None
         assert fetch_gateway_catalog(_config(gateway)) == frozenset({"m"})
 
-    def test_a_failure_is_not_cached(self, gateway: str) -> None:
+    def test_a_failure_is_not_cached(self, gateway: str, monkeypatch: pytest.MonkeyPatch) -> None:
+        """Not cached, only cooled down; with the cooldown at zero the next call retries."""
+        monkeypatch.setattr(gateway_route, "CATALOG_RETRY_COOLDOWN_S", 0.0)
         RESPONSES.append((500, "boom"))
         RESPONSES.append((200, json.dumps({"data": [{"id": "m"}]})))
         assert fetch_gateway_catalog(_config(gateway)) is None
         assert fetch_gateway_catalog(_config(gateway)) == frozenset({"m"})
 
-    def test_repeated_failure_stops_retrying(self, gateway: str) -> None:
+    def test_a_failure_starts_a_cooldown(self, gateway: str) -> None:
         """A gateway that HANGS would otherwise cost the timeout on every client
-        construction for the whole run."""
-        for _ in range(gateway_route.MAX_CATALOG_ATTEMPTS):
-            RESPONSES.append((500, "boom"))
-            assert fetch_gateway_catalog(_config(gateway)) is None
+        construction. Within the cooldown no request is made at all."""
+        RESPONSES.append((500, "boom"))
+        assert fetch_gateway_catalog(_config(gateway)) is None
         before = len(HITS)
         assert fetch_gateway_catalog(_config(gateway)) is None
-        assert len(HITS) == before, "gave up, so no further request"
+        assert len(HITS) == before, "inside the cooldown, so no further request"
 
-    def test_a_success_resets_the_failure_count(self, gateway: str) -> None:
+    def test_the_cooldown_expires_so_a_long_run_recovers(
+        self, gateway: str, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The reason this is a cooldown and not a hard attempt cap: constructions
+        cluster at run start, so a cap would burn out during warmup with no way back."""
         RESPONSES.append((500, "boom"))
         assert fetch_gateway_catalog(_config(gateway)) is None
+        monkeypatch.setattr(gateway_route, "CATALOG_RETRY_COOLDOWN_S", 0.0)
+        gateway_route._RETRY_AFTER.clear()
         RESPONSES.append((200, json.dumps({"data": [{"id": "m"}]})))
         assert fetch_gateway_catalog(_config(gateway)) == frozenset({"m"})
-        assert gateway_route._FAILURES.get(_config(gateway).base_url, 0) == 0
+
+    def test_a_success_clears_the_cooldown(self, gateway: str) -> None:
+        RESPONSES.append((200, json.dumps({"data": [{"id": "m"}]})))
+        assert fetch_gateway_catalog(_config(gateway)) == frozenset({"m"})
+        assert _config(gateway).base_url not in gateway_route._RETRY_AFTER
