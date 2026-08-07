@@ -103,6 +103,7 @@ Both the AGENT and the CANDIDATE run on the OpenRouter budget (`ARENA_AUTOMATION
 | `OBSERVE_WIRE_K` | 10 | observe wire-probe repeats |
 | `OBSERVE_WORKERS` | 10 | wire-probe orchestrator workers (trial-level) |
 | `OBSERVE_CAP_PARALLEL` | 10 | capability + variant flat (node x rep) pool width (raised from 4; the old per-rep pool was serial-within-rep and cost a slow reasoning model hours) |
+| `OBSERVE_CALIBRATE` | (unset = on) | set `false` to skip the pre-observe parallelism calibration. When on, a cheap 429 staircase (`automation calibrate-parallelism`: waves of concurrent 1-token completions at 2/4/6/8/10) measures the highest concurrency the candidate serves cleanly and LOWERS `CAP_PARALLEL` / `WORKERS` / `RESOLVE_CAP_PARALLEL` to it for this run (never raises them; floor 2). New / low-capacity models otherwise 429 or destabilize under the default 10-wide pools and land in needs-human for infra reasons. Advisory + fail-open: a failed probe keeps the defaults. Note: a heavily throttled model calibrates down to 2, which makes the observe proportionally slower - that is the trade for a clean observation. |
 | `RESOLVE_MAX_ITER` | 8 | resolve fix-loop iterations (the agent can also escalate early, see below) |
 | `RESOLVE_MAX_TURNS` | 80 | per-iteration agent turn budget (headroom for code-CREATE; exhausting it degrades to needs-human, never hard-fails) |
 | `RESOLVE_AGENT_MODEL` | claude-opus-4-8 | resolve agent model alias (shared by the Claude Code CLI and the gateway; keep it a full model id, not a CLI shorthand like `opus`) |

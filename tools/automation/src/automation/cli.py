@@ -10,6 +10,7 @@ import json
 import typer
 
 from automation import (
+    calibrate,
     cert,
     gateway_catalog,
     greencheck,
@@ -37,6 +38,9 @@ app.command("slack-poll")(poller.cli)
 
 # The needs-human "why it did not converge" report composer.
 app.command("resolve-report")(resolve_report.cli)
+
+# The candidate rate-limit staircase (parallelism recommendation for the observe/resolve pools).
+app.command("calibrate-parallelism")(calibrate.cli)
 
 
 @app.command("reconcile-cert")
