@@ -12,7 +12,9 @@
   "state_checks": {
     "db_probes": [],
     "hash": {
+      "description": "",
       "enabled": true,
+      "expected_state_hash": null,
       "golden_actions": [
         {
           "kwargs": {

@@ -749,7 +749,6 @@ def test_populated_ledger_keys_agrees_with_the_audit_on_what_is_populated():
 
 def _probe_key(
     runner_field: str,
-    runner_dict_key: str | None = None,
     runner_evaluator: str | None = None,
 ) -> GradingKey:
     return GradingKey(
@@ -759,7 +758,6 @@ def _probe_key(
         enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
         core_field=None,
         runner_field=runner_field,
-        runner_dict_key=runner_dict_key,
         runner_evaluator=runner_evaluator,
         reason="a probe entry built by this test",
     )
@@ -773,13 +771,6 @@ def test_runner_field_naming_an_unknown_model_fails_loud():
 def test_runner_field_naming_an_unknown_field_fails_loud():
     with pytest.raises(ValueError, match="has no field 'jsonpath_chekcs'"):
         runner_dump_path(_probe_key("RunnerStateChecksConfig.jsonpath_chekcs"))
-
-
-def test_runner_dict_key_is_not_resolvable():
-    with pytest.raises(ValueError, match="runner_dict_key"):
-        runner_dump_path(
-            _probe_key("RunnerStateChecksConfig.jsonpath_checks", runner_dict_key="enabled")
-        )
 
 
 def test_a_hash_family_member_another_evaluator_reads_fails_loud():

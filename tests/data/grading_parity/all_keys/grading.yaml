@@ -16,6 +16,7 @@ state_checks:
     enabled: true
     expected_state_hash: "0000000000000000000000000000000000000000000000000000000000000000"
     weight: 0.75
+    description: the widget table matches the golden replay
     golden_actions:
       - name: write_file
         kwargs:

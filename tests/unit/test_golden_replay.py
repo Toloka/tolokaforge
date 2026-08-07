@@ -224,12 +224,13 @@ def test_an_action_that_is_no_mapping_at_all_is_refused_by_its_index(
 ) -> None:
     """The class the replay's own ``Raises:`` block promises, over a list of anything.
 
-    The ``hash`` block is untyped (#730), so nothing stops an element being a bare string
-    where a mapping belongs. Reading a name off one raises an ``AttributeError`` the
-    wrapper flattens into the base ``GoldenReplayError`` — "Error executing golden actions:
-    'str' object has no attribute 'get'", which names neither the offending index nor a
-    fix. Resolution answers it instead: an element declaring no name resolves to nothing,
-    exactly as an action carrying no ``name`` key does, and the two take the same fix.
+    ``golden_actions`` claims nothing about its elements (#907), so nothing stops one being
+    a bare string where a mapping belongs. Reading a name off it raises an
+    ``AttributeError`` the wrapper flattens into the base ``GoldenReplayError`` — "Error
+    executing golden actions: 'str' object has no attribute 'get'", which names neither the
+    offending index nor a fix. Resolution answers it instead: an element declaring no name
+    resolves to nothing, exactly as an action carrying no ``name`` key does, and the two
+    take the same fix.
     """
     listed = [copy.deepcopy(golden_actions[0]), element]
 
