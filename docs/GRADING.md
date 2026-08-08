@@ -2572,7 +2572,8 @@ Findings come in three classes:
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
 | a weight naming a component the pack does not configure, or naming no component at all | error | `combine.weights.<key>` |
 | a task naming no grading source at all — no `grading:` field and no sibling `grading.yaml` — where its declared `adapter_type` is `native` | error | the task itself — this refusal carries no block address, because there is no block |
-| the same absence where the task declares any other `adapter_type` | unchecked | `grading` |
+| a task naming a grading file with nothing at the path it resolves to, where its declared `adapter_type` is `native` | error | as above |
+| either absence where the task declares any other `adapter_type` | unchecked | `grading` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
 | an `id_fields` declaration where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks.id_fields` |
@@ -2596,19 +2597,22 @@ commits no `fixtures/tools.json`, an `args` address below its first segment, a p
 whose schema writes no `type`, a replay world no caller resolved, an `id_fields`
 declaration whose seeded tables no caller resolved, a hash block whose flag and source
 disagree under an external adapter that may supply the source itself,
-and a task naming no grading source under an adapter that resolves its own all land
-here.
+and a task with no grading block on disk under an adapter that resolves its own all
+land here.
 
-**A missing grading source is answered by the adapter the task declares.**
+**Having no grading block on disk is answered by the adapter the task declares.**
 `get_grading_config` is abstract and the implementations disagree: the native adapter
 grades from the file the `grading:` field names, while an external adapter may
-synthesise a whole grading config without reading that field. So a task supplying no
-source is refused where it declares `native` — the run cannot grade it, and the refusal
-names the task and both ways to supply one — and reported unchecked where it declares
-anything else, since nothing here can say what that adapter would do with the absence.
-Both answers are decided before any block is read, which is why neither carries an
-address inside one. A task that *names* a grading file is gated on the file's contents
-whatever it declares.
+synthesise a whole grading config without reading that field. So a task with no block
+to read is refused where it declares `native` — the run cannot grade it — and reported
+unchecked where it declares anything else, since nothing here can say what that adapter
+would do with the absence. There are two ways to have no block, and they draw the same
+decision under the same sentence structure: a task naming no source at all is refused
+naming the task and both ways to supply one, and a task naming a path with no file at
+it is refused naming the task, the ref it wrote, the path that ref resolved to, and the
+two ways out — correct the path, or create the file. Both answers are decided before
+any block is read, which is why neither carries an address inside one. A task naming a
+grading file that *is* on disk is gated on that file's contents whatever it declares.
 
 **A section the author wrote declares something to evaluate.** An empty block asserts
 nothing and scores nothing, and it cannot survive translation either: the wire erases

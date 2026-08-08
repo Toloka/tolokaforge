@@ -314,14 +314,12 @@ def validate_grading_yaml(
     actors. Every finding is named in one raise rather than the first one found,
     because an author fixing a pack wants the list.
 
-    A grading path that is not on disk returns an empty report: this gate reads a
-    file, and whether a task may name none at all is a task-level question
-    :func:`grading_source_under_adapter` answers off the adapter the task declares —
-    the native adapter grades from the file, while another may synthesise its whole
-    config without one.
-
     Args:
-        grading_path: The task's grading file.
+        grading_path: The task's grading file, on disk. Whether a task has a block to
+            read at all is a task-level question :func:`grading_source_under_adapter`
+            answers off the adapter the task declares, and both gates resolve it before
+            calling here, so this one is handed a file rather than deciding what its
+            absence means.
         inventory: The task's tool set. A caller that cannot resolve one passes
             :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
             into the returned report's ``unchecked`` and fails nothing.
@@ -357,10 +355,10 @@ def validate_grading_yaml(
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
         RuntimeError: If the file or any grading key it declares is not a mapping.
+        FileNotFoundError: If *grading_path* is not on disk — the file vanished between
+            that resolution and this read. Both gates convert it to a named per-task
+            failure rather than letting a pack read as checked.
     """
-    if not grading_path.exists():
-        return AuthoringReport()
-
     with open(grading_path) as f:
         raw_grading_data = yaml.safe_load(f)
 
@@ -872,13 +870,15 @@ class GradingSourceKind(str, Enum):
     """Where a run of one task reads its grading block, or why it reads none."""
 
     ON_DISK = "on_disk"
-    """The task names a grading file, and the run reads its block from there."""
+    """The task names a grading file that is on disk, and the run reads its block from there."""
 
     WITHHELD = "withheld"
-    """The task names none, and the adapter it declares grades from one."""
+    """There is no block to read, and the adapter the task declares grades from one — so
+    the task cannot be graded and is refused before any trial."""
 
     UNINTERROGABLE = "uninterrogable"
-    """The task names none, and the adapter it declares answers for itself."""
+    """There is no block to read, and the adapter the task declares answers for itself — so
+    nothing here can pronounce on the absence."""
 
 
 @dataclass(frozen=True)
@@ -886,9 +886,10 @@ class GradingSource:
     """The grading file one task's run reads, or the sentence saying why there is none.
 
     An absence is two states, not one, because they decide opposite things: a task
-    whose declared adapter grades from a file and supplies none cannot be graded at
+    whose declared adapter grades from a file and has none to read cannot be graded at
     all, while a task whose declared adapter resolves its own is one nothing here
-    can pronounce on.
+    can pronounce on. Whether the file is unnamed or named and not on disk changes the
+    sentence each carries, not which of the two decisions it draws.
     """
 
     kind: GradingSourceKind
@@ -925,14 +926,19 @@ def grading_source_under_adapter(
 ) -> GradingSource:
     """Where *task*'s grading block is read from, under *adapter_type*.
 
-    A task naming a grading file is :attr:`GradingSourceKind.ON_DISK` whatever the
-    adapter — the path is joined, never stat'd, so a declared file that is not there
-    is the reading gate's question and not this one's.
+    A task naming a grading file that is on disk is :attr:`GradingSourceKind.ON_DISK`
+    whatever the adapter — that file is the block any adapter reading the field reads.
 
-    A task naming none is answered off *adapter_type*, because
-    :meth:`BaseAdapter.get_grading_config` is abstract and the implementations
-    disagree: :class:`NativeAdapter` refuses such a task, while an external adapter
-    may synthesise a whole config without reading the field.
+    Every other case is an absence, and which absence it is is answered off
+    *adapter_type*, because :meth:`BaseAdapter.get_grading_config` is abstract and the
+    implementations disagree: :class:`NativeAdapter` refuses a task it has no block to
+    read, while an external adapter may synthesise a whole config without reading the
+    field. So a task naming no file and a task naming one that is not there are both
+    :attr:`~GradingSourceKind.WITHHELD` under the native adapter and
+    :attr:`~GradingSourceKind.UNINTERROGABLE` under any other, differing in the sentence
+    they carry, which names the fix each needs. Under an adapter that answers for itself
+    a dangling ``grading:`` path is therefore reported unchecked rather than refused,
+    since nothing here can say whether that adapter reads the field at all.
 
     Which adapter that is, is the caller's to resolve, and the two gates resolve it
     differently on purpose. ``validate`` builds no description and reads the type the
@@ -944,9 +950,34 @@ def grading_source_under_adapter(
     """
     from tolokaforge.runner.models import AdapterType
 
+    grades_from_the_file = adapter_type == AdapterType.NATIVE.value
     if task.grading is not None:
-        return GradingSource(kind=GradingSourceKind.ON_DISK, path=task_dir / task.grading)
-    if adapter_type != AdapterType.NATIVE.value:
+        declared = task_dir / task.grading
+        if declared.exists():
+            return GradingSource(kind=GradingSourceKind.ON_DISK, path=declared)
+        if not grades_from_the_file:
+            return GradingSource(
+                kind=GradingSourceKind.UNINTERROGABLE,
+                path=None,
+                reason=(
+                    f"this task declares grading source {task.grading!r} and no file is at "
+                    f"{declared}, and adapter {adapter_type!r} decides for itself what a task "
+                    "grades by, so whether it would ever have read that path is not checkable "
+                    "here"
+                ),
+            )
+        return GradingSource(
+            kind=GradingSourceKind.WITHHELD,
+            path=None,
+            reason=(
+                f"task {task.task_id!r} declares grading source {task.grading!r} and no "
+                f"file is at {declared}. Adapter {adapter_type!r} grades from that file, so "
+                "this task cannot be graded and is refused before any trial is scheduled. "
+                "Correct the `grading:` path to the block this task grades by, or create "
+                "that file."
+            ),
+        )
+    if not grades_from_the_file:
         return GradingSource(
             kind=GradingSourceKind.UNINTERROGABLE,
             path=None,

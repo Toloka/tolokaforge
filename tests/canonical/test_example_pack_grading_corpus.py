@@ -335,18 +335,40 @@ def test_the_authored_walk_partitions_every_task_file_under_both_roots() -> None
     for task_yaml in _TASKS_OUTSIDE_THE_GRADED_CORPUS:
         assert task_yaml.exists(), f"{task_yaml} is excluded by name and does not exist"
         assert _loads_no_grading_config(task_yaml), (
-            f"{task_yaml} loads a grading config, so excluding it hides a pack from "
-            "every guard over this walk"
+            f"{task_yaml} names a grading source, so excluding it hides a pack from "
+            "every guard over this walk — including one whose source is not on disk, "
+            "which belongs here as a failure the guards catch"
         )
 
 
 def _loads_no_grading_config(task_yaml: Path) -> bool:
-    """Whether this task file reaches no grading block, for either of the two reasons."""
+    """Whether this task file reaches no grading block, for either of the two reasons.
+
+    It loads as no :class:`TaskConfig` at all, or it loads and names no grading source.
+    A file naming a source that is not on disk is neither: ``tolokaforge validate``
+    refuses such a pack under the native adapter, so it belongs in this walk as a
+    failure the guards catch and never in the exclusion list as a pack nothing grades.
+    """
     try:
-        task, task_dir = load_task_yaml(task_yaml)
+        task, _ = load_task_yaml(task_yaml)
     except ValidationError:
         return True
-    return task.grading is None or not (task_dir / task.grading).exists()
+    return task.grading is None
+
+
+def test_a_pack_naming_a_grading_file_that_is_absent_cannot_be_excluded(tmp_path: Path) -> None:
+    """The exclusion list may not become the place a refused pack is parked.
+
+    ``tolokaforge validate`` fails such a pack under the native adapter, so listing one
+    here would hide a hard failure behind a walk that reports nothing — the shape this
+    helper's two legitimate reasons must not be widened to cover.
+    """
+    dangling = tmp_path / "task.yaml"
+    dangling.write_text(
+        yaml.safe_dump({"task_id": "dangling", "description": "d", "grading": "grading.yaml"})
+    )
+
+    assert not _loads_no_grading_config(dangling)
 
 
 def test_every_authored_pack_and_its_weight_map_name_the_same_components() -> None:

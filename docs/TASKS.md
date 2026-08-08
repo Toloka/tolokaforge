@@ -74,7 +74,7 @@ grading: "grading.yaml"
 
 The only required fields are `task_id` and `description`. Everything above is
 optional and defaults to a sane value, with one exception: a native task owes a
-grading source, supplied either by its own `grading:` field or by a `grading.yaml`
+grading file on disk, named either by its own `grading:` field or by a `grading.yaml`
 beside its `task.yaml`. A Project cannot supply that source — `task_defaults`
 carries no `grading` field.
 
@@ -83,7 +83,7 @@ carries no `grading` field.
 | `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
 | `tools` | no tools enabled for agent or user |
 | `actors.user` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
-| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with neither is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
+| `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with no such file — naming none, or naming a path with nothing at it — is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
 
 So a task that inherits everything from its Project needs only:
 
