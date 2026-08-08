@@ -1366,9 +1366,10 @@ reached for — rather than the final state. Both substrates consume every key i
 the block, and both read it off the
 [trial event timeline](#trial-event-timeline).
 
-**What a rule can see.** A tool rule sees the calls that reached the substrate: a
-call the agent declared on a terminating turn never ran, so it satisfies no
-`required_tools` entry and violates no `disallowed_tools` entry. A phrase rule
+**What a rule can see.** A tool rule sees the **agent's** calls that reached the
+substrate: a call the agent declared on a terminating turn never ran, and a call the
+user simulator ran is another actor's, so neither satisfies a `required_tools` entry
+nor violates a `disallowed_tools` entry. A phrase rule
 (`must_contain`, `disallow_regex`, `communicate_info`) sees the agent's own text
 and nothing else: not the user's turns, so a phrase the user supplied cannot
 satisfy a rule about what the agent said, and not the text a tool returned, which
@@ -1476,6 +1477,19 @@ not do the work the author required, the same rule `required_actions` applies. A
 `disallowed_tools` entry fails on a call at **any** status, errors included:
 attempting a forbidden action is itself the violation, so a `delete_customer` call
 that happened to blow up still fails the check.
+
+**Both lists read the agent's own calls.** A user-simulator call satisfies no
+`required_tools` entry and violates no `disallowed_tools` entry, at any status —
+the posture the phrase rules already take towards the user's text. Where the actor
+is the point, [trace checks](#trace-checks) are the vocabulary: a matcher carries an
+explicit `executor` field, so "no actor may call `x`" and assertions about a
+user-side call are written there. `required_actions` names its actor too, through
+`requestor`.
+
+**Which actor ran a call is on the record.** A call the message view declares and
+the [trial event timeline](#trial-event-timeline) holds no record for therefore
+fails both lists, whichever message carried it: nothing says whether it ran, let
+alone who ran it, and a "did not run" reading would pass every forbidden call.
 
 `extra="forbid"` on the block means a misspelled key (`required_toolz`) fails at
 load rather than grading as an empty list.
