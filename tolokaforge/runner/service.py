@@ -2386,9 +2386,9 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 compare against and the fields whose numeric-looking strings fold
 
         Returns:
-            HashGradingResult with hash_match, hash_score, the basis the comparison was
-            run against, an optional state_diff, and the record of how much of the
-            golden path ran
+            HashGradingResult with hash_match (the model derives hash_score from it),
+            the basis the comparison was run against, an optional state_diff, and the
+            record of how much of the golden path ran
 
         Raises:
             UnresolvableGoldenAction: an action names no tool registered for the trial,
@@ -2535,7 +2535,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         # 8. Compare hashes
         hash_match = trial_hash == golden_hash
-        hash_score = 1.0 if hash_match else 0.0
 
         # 9. If mismatch, compute state diff
         state_diff: StateDiff | None = None
@@ -2559,7 +2558,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
 
         return HashGradingResult(
             hash_match=hash_match,
-            hash_score=hash_score,
             basis=basis,
             state_diff=state_diff,
             golden_replay=GoldenReplayRecord(

@@ -3301,7 +3301,6 @@ class HashGradingResult(BaseModel):
     """Result of hash-based grading."""
 
     hash_match: bool
-    hash_score: float
     basis: HashComparisonBasis
     """Which state the verdict was reached against, and which declaration selected it.
 
@@ -3319,3 +3318,8 @@ class HashGradingResult(BaseModel):
     """
 
     model_config = {"extra": "forbid"}
+
+    @property
+    def hash_score(self) -> float:
+        """Derived from ``hash_match``, so a non-binary or contradictory verdict cannot exist."""
+        return 1.0 if self.hash_match else 0.0
