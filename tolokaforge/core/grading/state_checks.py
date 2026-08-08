@@ -81,7 +81,16 @@ def to_hashable(
 
 
 def consistent_hash(value: Hashable) -> str:
-    """Compute consistent SHA256 hash (tau-bench compatible)"""
+    """Compute consistent SHA256 hash (tau-bench compatible).
+
+    This is the CORE substrate's digest algebra: SHA-256 over ``str`` of the
+    :func:`to_hashable` tuple tree. The runner's is
+    :func:`tolokaforge.core.hash.compute_stable_hash` — same equivalence
+    relation (both fold through ``canonical_number``), different label for
+    every state — so a digest this function produced is comparable only
+    against another one it produced, and never crosses to the runner
+    substrate (``tests/canonical/test_expected_state_hash_is_not_portable.py``).
+    """
     return hashlib.sha256(str(value).encode("utf-8")).hexdigest()
 
 
@@ -93,6 +102,12 @@ def state_digest(state: dict[str, Any], *, numeric_string_fields: list[str] | No
     same rule :meth:`StateChecker.check_hash` hashes the trial's state by. Two spellings
     of this expression would let one side fold a numeric-looking string the other did
     not, and the verdict would read as an agent failure.
+
+    The rule reaches across the substrate boundary too: this is core's algebra, the
+    runner's is :func:`tolokaforge.core.hash.compute_stable_hash`, and the two label
+    every state differently while agreeing on which states are equal — so a
+    comparison computes both sides on one substrate, and a digest never crosses to
+    the other.
     """
     string_fields = frozenset(numeric_string_fields) if numeric_string_fields else None
     return consistent_hash(to_hashable(state, string_fields))
