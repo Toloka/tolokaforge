@@ -156,6 +156,15 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Grading pipeline results
 - Custom checks with real project data (food_delivery_2)
 - Golden-set hash grading verification
+- Authoring-gate corpus (`test_example_pack_grading_corpus.py`) — every pack under
+  `examples/` and `tests/data/tasks/` faces the whole gate against its own tool
+  inventory and effective combine, and
+  `test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate` holds the 48
+  authored packs outside those roots — `grading_parity`, `transcript_parity`,
+  `tests/data/projects` and `tests/data/migration_packs` — to the same gate. A new
+  parity fixture whose grading names a tool its `task.yaml` never declares fails
+  there, before anyone runs `validate`. Every pack in that walk carries a positive
+  control, so the sweep cannot read clean by having stopped running.
 - Grading substrate parity (`test_grading_substrate_parity.py`) — a failure means a
   `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
   it, addresses a position below a claimed field by something other than an element
