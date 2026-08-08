@@ -288,14 +288,34 @@ Apply mutations to a specific table. Used by tools to modify state.
 ```
 
 `key` names the record's identity: a single field name (default `"id"` when
-omitted) or an ordered list of component names for a composite key. The first
-row that agrees with `record` on **every** named field is updated in place;
-when no row matches, `record` is appended. Components are compared
-individually, never as a concatenation — `("a_b", "c")` and `("a", "b_c")` are
-distinct keys. A composite upsert is refused with HTTP 400 when the `key` list
-is empty or when `record` omits any component or carries `null` for one (a
-`null` component would match rows via `null == null`); the error names the
-table, the missing component(s), and the record's keys.
+omitted) or an ordered list of component names for a composite key. A row
+matches when it **carries** every named field with a value equal to the
+record's — a row lacking a field never matches, so a single-field `null`
+value addresses only rows that store `null`. Components are compared
+individually, never as a concatenation — `("a_b", "c")` and `("a", "b_c")`
+are distinct keys. The first matching row is updated in place; when no row
+matches, `record` is appended.
+
+An upsert whose record omits any named key field is refused with HTTP 400
+naming the table, the field(s), the record's keys, and the zero-based
+operation index; a composite key additionally refuses a `null` component (a
+`null` component cannot address a row) and an empty `key` list. Every
+upsert in a batch — including one missing its `record` — is validated
+before any operation is applied, so a batch refused over an upsert mutates
+nothing: rows, version, and the SQL mirror are unchanged.
+
+```json
+{
+  "error": "InvalidOperation",
+  "message": "Upsert record for table 'positions' does not contain key field 'account_id' (operation 0); record keys: ['qty', 'symbol']",
+  "details": {
+    "table_name": "positions",
+    "missing_components": ["account_id"],
+    "record_keys": ["qty", "symbol"],
+    "op_index": 0
+  }
+}
+```
 
 #### Response
 

@@ -5,7 +5,7 @@ names. A composite match holds only when the candidate row agrees with the
 incoming record on **every** component — never on a concatenation, which
 collides (``"a_b" + "c"`` vs ``"a" + "b_c"``) — and a composite upsert whose
 record omits a component, or carries ``None`` for one, is refused before any
-row moves.
+operation in the batch is applied.
 """
 
 from __future__ import annotations
@@ -119,6 +119,7 @@ def test_composite_upsert_missing_component_is_refused(db_test_client):
     assert detail["details"]["table_name"] == "positions"
     assert detail["details"]["missing_components"] == ["symbol"]
     assert detail["details"]["record_keys"] == ["account_id", "qty"]
+    assert detail["details"]["op_index"] == 0
     assert _rows(db_test_client, "t_comp_missing", "positions") == POSITIONS
 
 
@@ -142,6 +143,7 @@ def test_composite_upsert_null_component_is_refused(db_test_client):
     assert detail["error"] == "InvalidOperation"
     assert detail["details"]["table_name"] == "positions"
     assert detail["details"]["missing_components"] == ["symbol"]
+    assert detail["details"]["op_index"] == 0
     assert _rows(db_test_client, "t_comp_null", "positions") == seeded
 
 
@@ -160,6 +162,7 @@ def test_empty_key_list_is_refused(db_test_client):
     detail = resp.json()["detail"]
     assert detail["error"] == "InvalidOperation"
     assert "positions" in detail["message"]
+    assert detail["details"]["op_index"] == 0
     assert _rows(db_test_client, "t_comp_empty", "positions") == POSITIONS
 
 
