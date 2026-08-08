@@ -16,6 +16,8 @@ from __future__ import annotations
 
 import importlib
 import inspect
+import logging
+import re
 import sys
 import textwrap
 from pathlib import Path
@@ -41,6 +43,15 @@ def _install_toolset(tmp_path: Path, monkeypatch: pytest.MonkeyPatch, name: str,
         monkeypatch.delitem(sys.modules, module, raising=False)
     importlib.invalidate_caches()
     return name
+
+
+def _messages(caplog: pytest.LogCaptureFixture, level: int) -> list[str]:
+    """Messages the runner logged at exactly ``level``, in order."""
+    return [
+        record.getMessage()
+        for record in caplog.records
+        if record.levelno == level and record.name.startswith("tolokaforge.runner")
+    ]
 
 
 def _register(
@@ -273,8 +284,8 @@ def test_declared_table_that_fails_validation_yields_to_the_default_table(tmp_pa
     assert registered == {"ts_validation_gate.models.Order": "orders"}
 
 
-def test_model_covering_no_declared_key_is_skipped_without_raising(tmp_path, monkeypatch):
-    """No candidate table: the pass warns and skips, and reconstruction continues."""
+def test_model_covering_no_declared_key_is_skipped_without_raising(tmp_path, monkeypatch, caplog):
+    """No candidate table and no name match: the pass warns the remediation and skips."""
     toolset = _install_toolset(
         tmp_path,
         monkeypatch,
@@ -291,14 +302,119 @@ def test_model_covering_no_declared_key_is_skipped_without_raising(tmp_path, mon
         """,
     )
 
-    registered = _register(
-        toolset,
-        db_table_names=["orders"],
-        initial_state_data={"orders": [{"id": "O1", "total": 9.5}]},
+    with caplog.at_level(logging.DEBUG):
+        registered = _register(
+            toolset,
+            db_table_names=["orders"],
+            initial_state_data={"orders": [{"id": "O1", "total": 9.5}]},
+            id_fields={},
+        )
+
+    assert registered == {}
+    (warning,) = _messages(caplog, logging.WARNING)
+    assert "Widget" in warning
+    assert "state_checks.id_fields" in warning  # the one-line fix, named at the failure
+    assert "orders" in warning  # the table the operator has to choose between
+
+
+def test_a_name_resolvable_model_is_reported_as_lazy_and_never_warned(
+    tmp_path, monkeypatch, caplog
+):
+    """A model the proxy's name fallback resolves is a working case, not a failure.
+
+    The registration pass names the table the proxy will reach on first use, and that
+    prediction is read back out of the log and held against what the proxy actually
+    resolves — the factory cannot report one table and the proxy reach another.
+    """
+    toolset = _install_toolset(
+        tmp_path,
+        monkeypatch,
+        "ts_lazy_resolve",
+        """
+        from pydantic import BaseModel
+
+        class Widget(BaseModel):
+            widget_id: str
+            label: str
+
+            def get_id(self) -> str:
+                return self.widget_id
+        """,
+    )
+    factory = ToolFactory(
+        db_client=MagicMock(),
+        trial_id="trial:0",
+        db_table_names=["shop_widgets"],
+        initial_state_data={"shop_widgets": [{"widget_id": "W1", "label": "Left"}]},
         id_fields={},
     )
 
-    assert registered == {}
+    with caplog.at_level(logging.DEBUG):
+        factory._register_toolset_models(toolset)
+
+    assert factory._async_proxy._model_name_to_table == {}  # not registered eagerly
+    assert _messages(caplog, logging.WARNING) == []
+    (lazy_line,) = [m for m in _messages(caplog, logging.INFO) if "Widget" in m]
+    (predicted,) = re.findall(r"'([^']+)'", lazy_line)
+
+    caplog.clear()
+    widget = importlib.import_module(f"{toolset}.models").Widget
+    with caplog.at_level(logging.DEBUG):
+        resolved = factory._async_proxy._get_table_name(widget)
+
+    assert resolved == "shop_widgets"
+    assert predicted == resolved
+    assert _messages(caplog, logging.WARNING) == []
+
+
+def test_a_class_name_the_proxy_cannot_resolve_is_warned_not_promised(
+    tmp_path, monkeypatch, caplog
+):
+    """`Box`/`shop_boxes` matches the factory's own plural dialect and not the proxy's.
+
+    The factory must report what the proxy will do, so this model draws the warning
+    branch — and the proxy's last-resort derived name keeps its warning, exactly one,
+    the pre-fallback dump having been demoted out of it.
+    """
+    toolset = _install_toolset(
+        tmp_path,
+        monkeypatch,
+        "ts_dialect_gap",
+        """
+        from pydantic import BaseModel
+
+        class Box(BaseModel):
+            box_id: str
+            size: int
+
+            def get_id(self) -> str:
+                return self.box_id
+        """,
+    )
+    factory = ToolFactory(
+        db_client=MagicMock(),
+        trial_id="trial:0",
+        db_table_names=["shop_boxes"],
+        initial_state_data={"shop_boxes": [{"box_id": "B1", "size": 2}]},
+        id_fields={},
+    )
+    assert factory._to_plural("box") == "boxes"  # the factory's dialect does match it
+
+    with caplog.at_level(logging.DEBUG):
+        factory._register_toolset_models(toolset)
+
+    assert [m for m in _messages(caplog, logging.INFO) if "shop_boxes" in m] == []
+    (warning,) = _messages(caplog, logging.WARNING)
+    assert "Box" in warning
+
+    caplog.clear()
+    box = importlib.import_module(f"{toolset}.models").Box
+    with caplog.at_level(logging.DEBUG):
+        resolved = factory._async_proxy._get_table_name(box)
+
+    assert resolved == "boxs"  # the derived name, matching no table (#969)
+    (last_resort,) = _messages(caplog, logging.WARNING)
+    assert "boxs" in last_resort
 
 
 def test_the_shipped_package_never_reads_model_source():

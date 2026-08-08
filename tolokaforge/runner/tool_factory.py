@@ -1659,6 +1659,40 @@ class ToolFactory:
             return table
         return None
 
+    def _report_unregistered(self, model_cls: type[BaseModel], claimed_tables: set[str]) -> None:
+        """
+        Report what becomes of a model the registration pass could not match.
+
+        The DB proxy's class-name fallback resolves many of them on first use,
+        which is a working case rather than a failure: that outcome is reported
+        at info, naming the table the proxy will reach, and only a model nothing
+        will resolve draws a warning — with the declaration that would fix it.
+
+        Args:
+            model_cls: The model class no strategy matched
+            claimed_tables: Table names already claimed by an earlier model
+        """
+        lazy_table = self._async_proxy.match_table_by_name(model_cls)
+        if lazy_table is not None:
+            logger.info(
+                f"Model {model_cls.__name__} is not registered eagerly; the DB proxy "
+                f"resolves it by class name to table '{lazy_table}' on first use"
+            )
+            return
+
+        unclaimed = {
+            t: list(table_key(t, self.id_fields).fields)
+            for t in self.db_table_names
+            if t not in claimed_tables
+        }
+        logger.warning(
+            f"Cannot match model {model_cls.__name__} "
+            f"(fields={sorted(model_cls.model_fields)}) to any table, and no table name "
+            f"matches its class name. Skipping registration. "
+            f"Unclaimed tables and their declared keys: {unclaimed}. "
+            f"Declare the intended table's key under state_checks.id_fields to register it."
+        )
+
     def _register_toolset_models(self, toolset: str) -> None:
         """
         Register Pydantic model classes from a toolset with actual DB table names.
@@ -1680,8 +1714,9 @@ class ToolFactory:
         3. Suffix matching (only for empty tables): Falls back to suffix matching
            only for tables with no records in initial_state.
 
-        4. WARN and skip: a model matching nothing is left unregistered; the DB
-           proxy's class-name fallback may still resolve it on first use.
+        4. Report and skip: a model matching nothing is left unregistered — at
+           info where the DB proxy's class-name fallback will resolve it on
+           first use, at warning where nothing will.
 
         Args:
             toolset: The toolset path (e.g., 'consulting.zendesk', 'external_retail_toolset.oms')
@@ -1765,19 +1800,10 @@ class ToolFactory:
                             )
                             break
 
-                # Strategy 4: WARN and skip (don't crash on missing optional tables)
+                # Strategy 4: report where the model lands, and skip (don't crash on
+                # missing optional tables)
                 if matched_table is None:
-                    unclaimed = {
-                        t: list(table_key(t, self.id_fields).fields)
-                        for t in self.db_table_names
-                        if t not in claimed_tables
-                    }
-                    logger.warning(
-                        f"Cannot match model {model_cls.__name__} "
-                        f"(fields={sorted(model_cls.model_fields)}) to any table. "
-                        f"Skipping registration. "
-                        f"Unclaimed tables and their declared keys: {unclaimed}"
-                    )
+                    self._report_unregistered(model_cls, claimed_tables)
                     continue  # Skip this model, don't register
 
                 # Register the model with the matched table
