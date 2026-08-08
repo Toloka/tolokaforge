@@ -112,10 +112,23 @@ The rules:
 
 | Field | Shape | Source |
 |---|---|---|
-| `initial_state` | `EnvironmentState(data=dict)` | Author-declared `initial_state.json_db` at task load. |
+| `initial_state` | `EnvironmentState(data=dict)` | Author-declared `initial_state.json_db`, in either shape a task writes it. |
 | `final_state` | `EnvironmentState(data=dict)` | Runner-side: `db_client.get_state(trial_id)` post-trial. |
 | `transcript` | `Transcript(messages=[Message])` | `llm_messages_json` decoded to `Message`/`ToolCall`. |
 | `task` | `TaskContext(task_id, name, description, domain, tags)` | `TaskDescription` metadata. |
+
+`ctx.initial_state.data` is the state the task declares it starts in, read
+from whichever shape its author wrote it in: a mapping written inline under
+`initial_state.json_db` is used as it stands, and a string there names a JSON
+file, resolved under the task directory and loaded. Both shapes hand a check
+the same mapping. A declared state holding nothing — an inline `{}`, or a file
+holding `{}` — reaches the check as `{}`, exactly as a task declaring no
+`initial_state.json_db` at all does; the empty state is refused only where
+`state_checks.hash.expect_initial_state` computes a digest no trial could match
+from it, which is not what a check reads it for. A declared path that does
+**not** resolve is a different fact and is not silently empty: it fails the
+`custom_checks` component with a reason naming `initial_state.json_db`, the
+path as the task wrote it, and the problem.
 
 `ctx.final_state.data` is shaped by the canonical transform in
 [`build_check_context`](../tolokaforge/core/grading/checks_helpers.py):

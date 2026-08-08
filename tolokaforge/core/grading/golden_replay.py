@@ -115,6 +115,8 @@ _UNREADABLE_INITIAL_STATE = (
     "object: {problem}"
 )
 
+_AN_EMPTY_JSON_OBJECT = "it holds an empty JSON object"
+
 _INCOMPLETE_REPLAY = (
     "GOLDEN REPLAY ERRORS: {failed} of {authored} golden actions did not take effect, so the "
     "state the trial was hashed against is a partial golden world: {failures}"
@@ -173,16 +175,48 @@ def classify_initial_state(json_db: str | Mapping[str, Any] | None) -> InitialSt
     return InitialStateSource.INLINE
 
 
+def read_declared_initial_state(
+    *, task_dir: Path | None, initial_state_json_db: str | Mapping[str, Any] | None
+) -> dict[str, Any] | None:
+    """The state a task declared it starts in, out of whichever shape it declared it in.
+
+    Both shapes are admitted, unlike :func:`require_golden_replay_world` beside it: a
+    replay needs a JSON *file* to load into the pack's own tools, while whoever reads
+    the state needs the state itself, which an inline mapping supplies as well as a
+    file does. A path is resolved under ``task_dir``, which is how an author writes one
+    in ``task.yaml``.
+
+    Neutral about what a missing state means, because that differs per reader: a task
+    declaring none answers ``None`` rather than raising, and every refusal names
+    ``initial_state.json_db``, the declared path and the problem without naming which
+    source wanted the state. The empty state is a state here — the reading that refuses
+    it belongs to whoever cannot use one, which is :func:`resolve_initial_state`.
+
+    Raises:
+        UnresolvableInitialState: the task declares a file and there is no ``task_dir``
+            to resolve it under, or the file cannot be read or holds no JSON object.
+    """
+    source = classify_initial_state(initial_state_json_db)
+    if source is InitialStateSource.ABSENT:
+        return None
+    if source is InitialStateSource.INLINE:
+        return dict(initial_state_json_db)  # type: ignore[arg-type]  # INLINE is a Mapping
+    if task_dir is None:
+        raise UnresolvableInitialState(
+            _NO_TASK_DIR_TO_RESOLVE_IT_UNDER.format(path=initial_state_json_db)
+        )
+    return _loaded_initial_state(task_dir / initial_state_json_db, initial_state_json_db)
+
+
 def resolve_initial_state(
     *, task_dir: Path | None, initial_state_json_db: str | Mapping[str, Any] | None
 ) -> dict[str, Any]:
-    """The state a task starts in, read from whichever shape it declared it in.
+    """The state a ``state_checks.hash`` comparison is computed against.
 
-    Both shapes are admitted, unlike :func:`require_golden_replay_world` beside it: a
-    replay needs a JSON *file* to load into the pack's own tools, while a comparison
-    against the initial state needs the state itself, which an inline mapping supplies
-    as well as a file does. A path is resolved under ``task_dir``, which is how an
-    author writes one in ``task.yaml``.
+    :func:`read_declared_initial_state` under the sentence a hash source is refused
+    with: this caller hashes what it gets back, so it admits neither an absent state nor
+    an empty one, and every refusal is addressed to the author of the source that wanted
+    it rather than to whoever else may hold the same task.
 
     Raises:
         UnresolvableInitialState: the task declares no initial state, or declares a file
@@ -190,16 +224,23 @@ def resolve_initial_state(
             which hashes to a digest no trial can match and would read as an agent
             failure.
     """
-    source = classify_initial_state(initial_state_json_db)
-    if source is InitialStateSource.ABSENT:
-        raise UnresolvableInitialState(_no_initial_state(_NO_INITIAL_STATE_DECLARED))
-    if source is InitialStateSource.INLINE:
-        return dict(initial_state_json_db)  # type: ignore[arg-type]  # INLINE is a Mapping
-    if task_dir is None:
-        raise UnresolvableInitialState(
-            _no_initial_state(_NO_TASK_DIR_TO_RESOLVE_IT_UNDER.format(path=initial_state_json_db))
+    try:
+        state = read_declared_initial_state(
+            task_dir=task_dir, initial_state_json_db=initial_state_json_db
         )
-    return _loaded_initial_state(task_dir / initial_state_json_db, initial_state_json_db)
+    except UnresolvableInitialState as error:
+        raise UnresolvableInitialState(_no_initial_state(str(error))) from error
+    if state is None:
+        raise UnresolvableInitialState(_no_initial_state(_NO_INITIAL_STATE_DECLARED))
+    if not state:
+        raise UnresolvableInitialState(
+            _no_initial_state(
+                _UNREADABLE_INITIAL_STATE.format(
+                    path=initial_state_json_db, problem=_AN_EMPTY_JSON_OBJECT
+                )
+            )
+        )
+    return state
 
 
 def _loaded_initial_state(path: Path, declared: Any) -> dict[str, Any]:
@@ -208,20 +249,15 @@ def _loaded_initial_state(path: Path, declared: Any) -> dict[str, Any]:
         loaded = json.loads(path.read_text())
     except (OSError, ValueError) as error:
         raise UnresolvableInitialState(
-            _no_initial_state(
-                _UNREADABLE_INITIAL_STATE.format(
-                    path=declared, problem=f"{type(error).__name__}: {error}"
-                )
+            _UNREADABLE_INITIAL_STATE.format(
+                path=declared, problem=f"{type(error).__name__}: {error}"
             )
         ) from error
-    if not isinstance(loaded, dict) or not loaded:
-        problem = (
-            "it holds an empty JSON object"
-            if isinstance(loaded, dict)
-            else f"it holds a {type(loaded).__name__}"
-        )
+    if not isinstance(loaded, dict):
         raise UnresolvableInitialState(
-            _no_initial_state(_UNREADABLE_INITIAL_STATE.format(path=declared, problem=problem))
+            _UNREADABLE_INITIAL_STATE.format(
+                path=declared, problem=f"it holds a {type(loaded).__name__}"
+            )
         )
     return loaded
 
