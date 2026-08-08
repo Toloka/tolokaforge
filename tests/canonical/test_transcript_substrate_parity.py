@@ -318,6 +318,9 @@ _ROWS: tuple[_Row, ...] = (
         expected=0.0,
         question=_ScoringQuestion.CALL_STATUS,
     ),
+    # Both CALL_EXECUTOR rows author USER-executor records: the grading path reads the
+    # executor off the record alone; the packs' `tools.user.enabled: []` inventory is
+    # deliberately not consulted (per-actor inventory validation is #974, dormant until #688).
     _Row(
         row_id="user_call_does_not_satisfy_required_tool",
         pack="required_tools_one",
