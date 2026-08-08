@@ -248,12 +248,9 @@ implementations kept in step, and the block crosses the adapter as the same clas
 """
 
 _TRACE_CHECKS_EVIDENCE_LIMITS = (
-    "three declared limits on the evidence a matcher may read, so none of them "
-    "surfaces as undeclared drift. #717: a failed call's recorded result text is not "
-    "identical on the two substrates, so a result predicate is admitted only beside a "
-    "status predicate reading exactly {equals: success}, and rejected at load "
-    "otherwise. #688: no timeline event carries executor: user, so an executor "
-    "predicate selecting it matches nothing on either substrate. #727: a "
+    "two declared limits on the evidence a matcher may read, so neither of them "
+    "surfaces as undeclared drift. #688: no timeline event carries executor: user, so "
+    "an executor predicate selecting it matches nothing on either substrate. #727: a "
     "TRIAL_NOT_FOUND harness fault is recorded as a tool error, so a status predicate "
     "reading error can select a call whose failure was not the agent's"
 )

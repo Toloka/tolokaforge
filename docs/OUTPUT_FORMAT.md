@@ -397,12 +397,11 @@ The trial's ordered tool-call record — one
 ```
 
 This is the **grader's** view of the trial, where `trajectory.yaml` carries the
-model's. Four of its fields are unreachable from a message trace: `status`
-(which each substrate words differently in prose — match on `status`, not on
-result text), `executor` (agent vs user simulator is invisible in a transcript),
+model's. Four of its fields are unreachable from a message trace: `status`,
+`executor` (agent vs user simulator is invisible in a transcript),
 `latency_seconds`, and `sequence` (trial-wide order *across* executors). `output`
-is the executing layer's own text, untruncated — on a failed call that differs
-from the `Error: …` wording the agent-facing `role: tool` message carries.
+is the tool's own text, untruncated — on a failed call, its own failure text,
+which the agent-facing `role: tool` message carries behind an `Error: ` prefix.
 
 A **sidecar** rather than a key on `trajectory.yaml`: the record repeats every
 tool's output, which on a tool-heavy trial is most of the bundle, so whoever

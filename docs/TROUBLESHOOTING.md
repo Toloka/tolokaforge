@@ -63,7 +63,7 @@ and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §
 ## Every Tool Call Fails: MCP server closed connection
 
 **Symptom.** Every tool call of every task declaring an `mcp_server.py` comes back
-`Tool error: RuntimeError: MCP server closed connection`. The agent burns its whole turn
+`MCP server closed connection`. The agent burns its whole turn
 budget on failing tools and the trial grades `0.0` — a full-price run that measured nothing.
 Reproduced on `examples/native/native_shared_domain`: three trials, `tool_calls=5`, every
 call failed, `avg_score_micro=0.0`.

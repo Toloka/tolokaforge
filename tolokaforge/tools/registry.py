@@ -2,6 +2,7 @@
 
 import copy
 import json
+import logging
 import re
 import time
 from abc import ABC, abstractmethod
@@ -11,6 +12,8 @@ from typing import Any
 
 from jsonschema import validate
 from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
 
 
 def convert_nullable_to_json_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -213,6 +216,16 @@ def resolve_tool_status(result: ToolResult) -> ToolExecutionStatus:
     return ToolExecutionStatus.SUCCESS if result.success else ToolExecutionStatus.ERROR
 
 
+TOOL_FAILURE_WITHOUT_MESSAGE = "Tool returned failure with no error message"
+"""Recorded for a call that failed without saying why.
+
+A failed call may not record ``""``: the gRPC client substitutes a sentence of
+its own for an empty ``error_message`` (:meth:`GrpcRunnerClient._status_to_error`),
+so an empty text reaches the host as a third wording. Both substrates and both
+builtin wrappers state this one instead.
+"""
+
+
 def resolve_tool_output(result: ToolResult) -> str:
     """The text a recorder stores for ``result``.
 
@@ -222,12 +235,26 @@ def resolve_tool_output(result: ToolResult) -> str:
     the one place that decision lives, so the two recorder call sites cannot
     drift the way the status decision did before :func:`resolve_tool_status`.
 
-    The two substrates still disagree on a *failed* call's text (the runner
-    prefixes ``Tool error: <Type>:``, the in-process executor does not), which
-    makes a ``result`` matcher non-portable; #717 tracks converging them, and
-    this function is where that convergence belongs.
+    Both grading substrates record what this function and
+    :func:`raised_tool_failure_text` return, so a ``result`` predicate over a
+    failed call reads the same text whichever substrate ran the trial.
     """
-    return result.output if result.success else (result.error or "")
+    if result.success:
+        return result.output
+    return result.error or TOOL_FAILURE_WITHOUT_MESSAGE
+
+
+def raised_tool_failure_text(exc: BaseException) -> str:
+    """The text a recorder stores for a call that ended by raising ``exc``.
+
+    The exception's own message and nothing else — no type prefix, no wrapper
+    sentence — so the record carries the tool's words rather than the executing
+    layer's rendering of them, identically on both substrates. An exception
+    raised with no message carries its class name, because the empty string is
+    not recordable (see :data:`TOOL_FAILURE_WITHOUT_MESSAGE`). The type and the
+    traceback stay in the executing layer's log.
+    """
+    return str(exc) or type(exc).__name__
 
 
 class Tool(ABC):
@@ -417,10 +444,11 @@ class ToolExecutor:
             result = tool.execute(**arguments)
             self.registry._call_counts[tool_name] = self.registry._call_counts.get(tool_name, 0) + 1
         except Exception as e:
+            logger.error(f"Tool {tool_name} raised exception: {e}", exc_info=True)
             result = ToolResult(
                 success=False,
                 output="",
-                error=f"Tool execution failed: {e}",
+                error=raised_tool_failure_text(e),
                 duration_s=time.time() - start_time,
                 status=ToolExecutionStatus.ERROR,
             )
