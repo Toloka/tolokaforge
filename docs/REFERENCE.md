@@ -148,8 +148,8 @@ transcript_rules:
   max_turns: 40
   min_assistant_turns: 1                   # opt-in floor: 0 turns fails the component
   tool_expectations:                       # graded on both substrates
-    required_tools: ["db_update"]          # must have been called SUCCESSFULLY
-    disallowed_tools: ["bash"]             # must not be called at ANY status
+    required_tools: ["db_update"]          # the AGENT must have called it SUCCESSFULLY
+    disallowed_tools: ["bash"]             # the AGENT must not call it, at ANY status
 
 trace_checks:                              # ordering / scoped absence / counting over the timeline
   constraints:                             # closed ten-kind vocabulary; hold whichever route was taken
