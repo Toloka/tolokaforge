@@ -30,6 +30,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from tests.canonical._factories import (
     make_env_endpoints,
@@ -748,11 +749,20 @@ def _make_task_description_for_run(task_id: str) -> Any:
 
 
 def _adapter_for_run(task_dir: Path) -> Any:
-    """The adapter seam a full ``run()`` reads, over a pack with no grading file.
+    """The adapter seam a full ``run()`` reads, over a pack the pre-flight can grade.
 
-    *task_dir* is a real directory: the run's pre-flight resolves each task's
-    grading file under it and has nothing to check.
+    *task_dir* is a real directory, and the grading block every task here declares is
+    written into it — the smallest gradeable one, since nothing about these emissions
+    turns on what the pack grades by.
     """
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {"jsonpaths": [{"path": "$.items", "operator": "exists"}]},
+            }
+        )
+    )
     adapter = MagicMock()
     adapter.to_task_description.side_effect = _make_task_description_for_run
     adapter.docker_stack_requirements.return_value = None

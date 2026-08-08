@@ -1175,28 +1175,28 @@ def test_a_task_id_resolving_in_two_roots_names_every_pack_that_claims_it(tmp_pa
     assert str(first) in str(raised.value) and str(second) in str(raised.value)
 
 
-def _gradeless_pack(tmp_path: Path, *, adapter_type: str) -> Path:
-    """A search root holding one pack for the corpus's task id that names no grading block.
+def _gradeless_pack(tmp_path: Path, *, adapter_type: str, grading_ref: str | None = None) -> Path:
+    """A search root holding one pack for the corpus's task id with no grading block on disk.
 
     Written out rather than taken from ``write_migration_pack``, which returns the
     ``grading.yaml`` it always writes and declares in its ``task.yaml``: the loader
-    auto-picks a sibling, so a pack naming no grading source is one with no such file.
+    auto-picks a sibling, so a pack with no block to read is one with no such file —
+    whether it names *grading_ref* or nothing at all.
     """
     pack = tmp_path / "gradeless" / "notes"
     pack.mkdir(parents=True)
-    (pack / "task.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "task_id": _CORPUS_TASK_ID,
-                "name": f"a pack declaring no grading block, under {adapter_type}",
-                "description": "A fixture task directory that names no grading source.",
-                "adapter_type": adapter_type,
-                "initial_state": {},
-                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
-                "actors": {"user": {"mode": "scripted", "scripted_flow": []}},
-            }
-        )
-    )
+    task: dict[str, Any] = {
+        "task_id": _CORPUS_TASK_ID,
+        "name": f"a pack with no grading block on disk, under {adapter_type}",
+        "description": "A fixture task directory with no grading file to read.",
+        "adapter_type": adapter_type,
+        "initial_state": {},
+        "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+        "actors": {"user": {"mode": "scripted", "scripted_flow": []}},
+    }
+    if grading_ref is not None:
+        task["grading"] = grading_ref
+    (pack / "task.yaml").write_text(yaml.safe_dump(task))
     return pack.parent
 
 
@@ -1205,25 +1205,30 @@ def _gradeless_pack(tmp_path: Path, *, adapter_type: str) -> Path:
     ["native", "tau"],
     ids=["the_adapter_that_grades_from_a_file", "an_adapter_that_resolves_its_own"],
 )
-def test_a_pack_declaring_no_grading_block_is_refused_naming_the_pack(
-    tmp_path: Path, adapter_type: str
+@pytest.mark.parametrize(
+    "grading_ref", [None, "grading.yaml"], ids=["naming_none", "naming_a_file_that_is_not_there"]
+)
+def test_a_pack_with_no_grading_block_on_disk_is_refused_naming_the_pack(
+    tmp_path: Path, adapter_type: str, grading_ref: str | None
 ) -> None:
     """Both declared adapters refuse here, where ``tolokaforge validate`` refuses only one.
 
     Validate passes a pack whose declared adapter resolves its own grading config, because
-    that adapter decides what an absent source means. Reconcile reads the migration declared
-    beside that file and the ``trace_checks`` block it names, and a synthesised config
-    supplies neither — so a corpus recording this task's verdicts has nothing to reconcile
-    them against either way, and the refusal names the pack instead of leaking the path
-    join's ``TypeError``.
+    that adapter decides what having no block to read means. Reconcile reads the migration
+    declared beside that file and the ``trace_checks`` block it names, and a synthesised
+    config supplies neither — so a corpus recording this task's verdicts has nothing to
+    reconcile them against either way, and the refusal names the pack instead of leaking
+    the path join's ``TypeError``. A ``grading:`` ref with no file at it is that same
+    state: reconcile would otherwise read a declaration off a path nothing wrote and
+    report the task as declaring no migration.
     """
-    root = _gradeless_pack(tmp_path, adapter_type=adapter_type)
+    root = _gradeless_pack(tmp_path, adapter_type=adapter_type, grading_ref=grading_ref)
 
     with pytest.raises(ReconcileError) as raised:
         _reconcile(_corpus(tmp_path), root)
 
     assert str(root / "notes" / "task.yaml") in str(raised.value)
-    assert "no grading block" in str(raised.value)
+    assert "no grading block is on disk" in str(raised.value)
     assert "unsupported operand type(s)" not in str(raised.value)
 
 

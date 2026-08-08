@@ -618,6 +618,24 @@ def _write_grading(tmp_path: Path, grading: dict[str, Any]) -> Path:
     return grading_path
 
 
+def test_a_path_with_no_file_at_it_is_not_a_clean_bill_of_health(tmp_path: Path) -> None:
+    """This gate reads a file, and a path with none behind it is nobody's silent pass.
+
+    Whether a task has a block to read at all is resolved upstream, by
+    :func:`grading_source_under_adapter` off the adapter the task declares, so a path
+    reaching here has already been stat'd and one that is gone by the time this opens it
+    is a vanished file rather than a task naming no source. Both callers turn the raise
+    into a named per-task failure, where an empty report would have read as a pack that
+    passed every rule.
+    """
+    absent = tmp_path / "grading.yaml"
+
+    with pytest.raises(FileNotFoundError) as excinfo:
+        validate_grading_yaml(absent, inventory=ToolInventory.unresolvable())
+
+    assert str(absent) in str(excinfo.value)
+
+
 _HAZARDS = (
     pytest.param(_trace_block(_tool_call("http_reqest")), "http_reqest", id="present_typo"),
     pytest.param(

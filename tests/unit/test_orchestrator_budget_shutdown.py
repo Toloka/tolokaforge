@@ -21,6 +21,7 @@ from typing import Any
 from unittest.mock import MagicMock
 
 import pytest
+import yaml
 
 from tolokaforge.core.budgets import (
     CompositeBudget,
@@ -96,6 +97,22 @@ def _task_config(task_id: str) -> TaskConfig:
     )
 
 
+def _write_grading_yaml(task_dir: Path) -> None:
+    """The block every task here declares, so the run's pre-flight has one to read.
+
+    These runs are about the budget, not about grading, so the block is the smallest
+    gradeable one: a single state check carrying the whole weight.
+    """
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {"jsonpaths": [{"path": "$.items", "operator": "exists"}]},
+            }
+        )
+    )
+
+
 def _task_description(task_id: str) -> TaskDescription:
     return TaskDescription(
         task_id=task_id,
@@ -154,8 +171,7 @@ def _build_orchestrator(
     adapter.to_task_description.side_effect = lambda tid: _task_description(tid)
     adapter.docker_stack_requirements.return_value = MagicMock(needs_rag_service=False)
     adapter.trial_grader_name = "runner_rpc"
-    # A real directory carrying no grading.yaml: the run's pre-flight resolves
-    # each task's grading file under it and has nothing to check.
+    _write_grading_yaml(tmp_path)
     adapter.get_task_dir.return_value = tmp_path
     orch.adapter = adapter
     return orch, tmp_path / "results" / "run"
