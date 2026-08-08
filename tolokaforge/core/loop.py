@@ -402,7 +402,9 @@ class ToolCallingLoop:
                 Message(
                     role=MessageRole.TOOL,
                     content=(
-                        tool_result.output if tool_result.success else f"Error: {tool_result.error}"
+                        tool_result.output
+                        if tool_result.success
+                        else f"Error: {resolve_tool_output(tool_result)}"
                     ),
                     content_blocks=(tool_result.content_blocks if tool_result.success else None),
                     tool_call_id=tc.id,

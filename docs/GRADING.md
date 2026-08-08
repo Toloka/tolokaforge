@@ -457,7 +457,7 @@ check over tool calls sees the same fields whichever substrate grades it:
 | `arguments` | the arguments the caller passed, verbatim |
 | `executor` | `agent` or `user` (`ToolExecutorIdentity`) |
 | `status` | how the call ended (`ToolExecutionStatus`) |
-| `output` | the tool's output, untruncated — or the failure text on a failed call |
+| `output` | the tool's output, untruncated — or, on a failed call, the tool's own failure text |
 | `latency_seconds` | wall time measured by the recording caller |
 | `timestamp` | when the call was recorded |
 
@@ -471,10 +471,10 @@ attempted.
 
 Two properties are worth reading carefully:
 
-- **`output` on a failed call is the executing layer's failure text, not the
-  tool's.** It is also not the text the `role: tool` message carries — the
-  message view and the record view word a failure differently. A `result` matcher
-  combined with `status != success` is matching harness text.
+- **`output` on a failed call is the tool's own failure text**, worded
+  identically by both grading substrates — see G5 for the four forms it takes.
+  The `role: tool` message carries the same text behind an `Error: ` prefix, so
+  the two views still differ by that prefix and the record is the one to read.
 - **`arguments` are never rewritten.** They are the grader's input; see
   [`docs/SECURITY.md`](SECURITY.md#tool-call-arguments).
 
@@ -671,14 +671,18 @@ initial user prompt precedes the first assistant message and carries index 0.
     a constraint should not depend on which shape it takes. Whether `error` is the
     right status for a call that never reached a tool is #727.
 - **G5 — where both views describe one call, the record wins.** The two views word
-  the same failure differently: the `role: tool` message carries `Error: <error>`,
-  while the record carries the executing layer's own text, untruncated. So `result`
-  and `status` are read from the record wherever a record exists. This is a rule
-  about precedence between two present views, not about what exists when only one
-  of them is — G6b covers that. The two substrates also word an executor-level
-  failure differently from each other, so a `result` predicate combined with
-  `status != success` is matching harness text and is not substrate-portable;
-  match on `status` instead.
+  the same failure differently: the `role: tool` message carries `Error: <text>`,
+  while the record carries that text alone, untruncated. So `result` and `status`
+  are read from the record wherever a record exists. This is a rule about
+  precedence between two present views, not about what exists when only one of
+  them is — G6b covers that. Both substrates record one text for one failure, in
+  one of four forms: the message the tool signalled in `ToolResult.error`; the
+  message a raised exception carries, or its class name where it carries none;
+  `Tool returned failure with no error message` where a tool failed without
+  saying why; and `Tool '<name>' not found` for a call naming a tool the trial
+  does not have. No executing layer adds a wrapper of its own — the exception's
+  type and traceback stay in that layer's log — so the recorded text is the same
+  whichever substrate ran the trial.
 - **G6 — records-only is a declared input state.** Hash-only grading legitimately
   omits the transcript, and `role: system` messages are not events (N3), so an
   input carrying no assistant or user turn is built from the records alone:
@@ -693,8 +697,8 @@ initial user prompt precedes the first assistant message and carries index 0.
   is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
   its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
   that message's text, joined by id and never by position. A failed call's text is
-  then the agent-facing rendering (`Error: <error>`) rather than the executing
-  layer's own, which is one more reason a `result` predicate is not portable (G5).
+  then the agent-facing rendering — the recorded text behind an `Error: ` prefix —
+  which is why G5 reads the record wherever one exists.
   `records_present` therefore means "a record view was supplied", not "results
   exist": a constraint reading `status`, `executor` or `latency_seconds` is still a
   **named failing sub-check** and never a silent pass, while a phrase rule still

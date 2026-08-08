@@ -15,11 +15,13 @@ every ``TOOL_RESULT`` on **both** substrates carries a positive float — the
 regression being a substrate that records a constant ``0.0``, which no
 cross-substrate equality could ever catch.
 
-The tool succeeds on every call, because a *failed* call's recorded text is the
-executing layer's own and the two layers word failure differently: the core
-executor records the tool's ``ToolResult.error`` while the runner wraps the raised
-exception as ``Tool error: <Type>: <msg>``. Statuses agree; the failure text does
-not, so a ``result`` predicate on a failed call is not substrate-portable.
+The scripted trial fails five ways as well as succeeding — a tool signalling its
+own failure with and without a message, a tool raising with and without one, and
+a call to a tool neither substrate has — because a failed call's ``result`` text
+is what a matcher reads. Those five are compared as absolute texts, not merely
+for cross-substrate equality: the two substrates share the helper and the
+constant that word a failure, and a bug in something shared is symmetric, so
+equality alone would hold while both sides were wrong.
 """
 
 from __future__ import annotations
@@ -62,23 +64,37 @@ from tolokaforge.core.models import (
     Trajectory,
 )
 from tolokaforge.core.runner import TrialToolCallRecorder
+from tolokaforge.runner import runner_pb2 as pb2
+from tolokaforge.runner.models import ToolSchema
+from tolokaforge.runner.tool_factory import BuiltinGenericToolWrapper
 from tolokaforge.tools.registry import Tool, ToolExecutor, ToolRegistry, ToolResult
 
 pytestmark = pytest.mark.canonical
 
 _AGENT_POLICY = "You are a refund agent."
 
-# One assistant generation per tuple. The first declares two calls whose
-# arguments are identical, including a ``token``-named one: they are
-# distinguishable only by id, and their results differ, so a positional join
-# would swap them.
-_TURNS: tuple[tuple[tuple[str, dict[str, Any]], ...], ...] = (
+# One assistant generation per tuple, each call ``(id, tool, arguments)``. The
+# first turn declares two calls whose arguments are identical, including a
+# ``token``-named one: they are distinguishable only by id, and their results
+# differ, so a positional join would swap them. The last turn fails five ways.
+_TURNS: tuple[tuple[tuple[str, str, dict[str, Any]], ...], ...] = (
     (
-        ("call_A", {"order_id": "42", "token": "sk-live-secret"}),
-        ("call_B", {"order_id": "42", "token": "sk-live-secret"}),
+        ("call_A", "refund", {"order_id": "42", "token": "sk-live-secret"}),
+        ("call_B", "refund", {"order_id": "42", "token": "sk-live-secret"}),
     ),
-    (("call_C", {"order_id": "77", "token": "sk-live-secret"}),),
+    (("call_C", "refund", {"order_id": "77", "token": "sk-live-secret"}),),
+    (
+        ("call_D", "calculator", {"mode": "signals_failure"}),
+        ("call_E", "calculator", {"mode": "signals_failure_silently"}),
+        ("call_F", "calculator", {"mode": "raises"}),
+        ("call_G", "calculator", {"mode": "raises_silently"}),
+        ("call_H", "nope", {}),
+    ),
 )
+
+# The calls the fixture expects to fail, so a substrate that quietly succeeded
+# on one of them is caught where it happens rather than in the comparison.
+_FAILING_CALL_IDS = frozenset({"call_D", "call_E", "call_F", "call_G", "call_H"})
 
 # Everything the two substrates must agree on. ``latency_seconds`` is checked
 # separately, per this module's docstring.
@@ -139,6 +155,45 @@ class _RefundTool(Tool):
         return ToolResult(success=True, output=self._impl(kwargs))
 
 
+class _ScriptedFailures(Tool):
+    """The failing tool implementation both substrates run.
+
+    Named for a builtin because the runner reaches it through the real
+    ``BuiltinGenericToolWrapper``, which only constructs tools the builtin
+    registry knows — and that wrapper, not the service's raw-callable branch,
+    is how a builtin tool's signalled failure reaches the runner in production.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("calculator", "Fails the way its argument asks for")
+
+    def get_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {
+                    "type": "object",
+                    "properties": {"mode": {"type": "string"}},
+                    "required": ["mode"],
+                },
+            },
+        }
+
+    def execute(self, **kwargs: Any) -> ToolResult:
+        mode = kwargs["mode"]
+        if mode == "signals_failure":
+            return ToolResult(success=False, output="", error="order 42 is already refunded")
+        if mode == "signals_failure_silently":
+            return ToolResult(success=False, output="", error="")
+        if mode == "raises":
+            raise RuntimeError("kaboom")
+        if mode == "raises_silently":
+            raise ValueError()
+        raise AssertionError(f"unscripted failure mode {mode!r}")
+
+
 class _NullSink(MetricsSink):
     def record_generation(self, result: GenerationResult) -> None:
         pass
@@ -163,13 +218,17 @@ def _core_substrate() -> tuple[list[Message], tuple[RecordedToolCall, ...]]:
     """Drive the scripted calls through the core substrate's real recording path."""
     registry = ToolRegistry()
     registry.register(_RefundTool(_Refunder()))
+    registry.register(_ScriptedFailures())
     recorder = TrialToolCallRecorder()
     messages = [Message(role=MessageRole.USER, content="refund order 42, twice, then 77")]
     ToolCallingLoop(
         llm_client=_ScriptedClient(
             [
                 _generation(
-                    [ToolCall(id=call_id, name="refund", arguments=args) for call_id, args in turn]
+                    [
+                        ToolCall(id=call_id, name=tool_name, arguments=args)
+                        for call_id, tool_name, args in turn
+                    ]
                 )
                 for turn in _TURNS
             ]
@@ -198,21 +257,38 @@ def _runner_substrate(
         mock_grpc_context,
     )
     assert registered.success is True, registered.error
-    runner_service.trials[trial_id].agent_tools["refund"] = _Refunder()
+    agent_tools = runner_service.trials[trial_id].agent_tools
+    agent_tools["refund"] = _Refunder()
+    agent_tools["calculator"] = _wrapped_failing_tool()
 
     for turn in _TURNS:
-        for call_id, arguments in turn:
+        for call_id, tool_name, arguments in turn:
             response = runner_service.ExecuteTool(
                 execute_request(
                     trial_id,
-                    "refund",
+                    tool_name,
                     arguments_json=json.dumps(arguments),
                     call_id=call_id,
                 ),
                 mock_grpc_context,
             )
-            assert response.error_message == "", response.error_message
+            assert (response.status != pb2.EXECUTION_STATUS_SUCCESS) is (
+                call_id in _FAILING_CALL_IDS
+            ), response.error_message
     return runner_service.trials[trial_id].recorded
+
+
+def _wrapped_failing_tool() -> BuiltinGenericToolWrapper:
+    """``_ScriptedFailures`` behind the wrapper the runner builds for a builtin."""
+    wrapper = BuiltinGenericToolWrapper(
+        ToolSchema(
+            name="calculator",
+            description="Fails the way its argument asks for",
+            parameters={"type": "object"},
+        )
+    )
+    wrapper._tool = _ScriptedFailures()
+    return wrapper
 
 
 def _wire_round_trip(messages: list[Message]) -> list[Message]:
@@ -266,24 +342,42 @@ def test_the_compared_timeline_is_the_scripted_trial(substrate_timelines) -> Non
     for timeline in substrate_timelines:
         assert timeline.message_view_present is True
         assert timeline.records_present is True
-        assert [event.kind for event in timeline.events] == [
-            TraceEventKind.USER_MESSAGE,
-            TraceEventKind.ASSISTANT_MESSAGE,
-            TraceEventKind.TOOL_CALL,
-            TraceEventKind.TOOL_RESULT,
-            TraceEventKind.TOOL_CALL,
-            TraceEventKind.TOOL_RESULT,
-            TraceEventKind.ASSISTANT_MESSAGE,
-            TraceEventKind.TOOL_CALL,
-            TraceEventKind.TOOL_RESULT,
-            TraceEventKind.ASSISTANT_MESSAGE,
-        ]
+        assert [event.kind for event in timeline.events] == (
+            [
+                TraceEventKind.USER_MESSAGE,
+                TraceEventKind.ASSISTANT_MESSAGE,
+                TraceEventKind.TOOL_CALL,
+                TraceEventKind.TOOL_RESULT,
+                TraceEventKind.TOOL_CALL,
+                TraceEventKind.TOOL_RESULT,
+                TraceEventKind.ASSISTANT_MESSAGE,
+                TraceEventKind.TOOL_CALL,
+                TraceEventKind.TOOL_RESULT,
+                TraceEventKind.ASSISTANT_MESSAGE,
+            ]
+            + [TraceEventKind.TOOL_CALL, TraceEventKind.TOOL_RESULT] * 5
+            + [TraceEventKind.ASSISTANT_MESSAGE]
+        )
         assert {event.call_id: event.result for event in _results(timeline)} == {
             "call_A": '{"call_index": 1, "refunded": "42"}',
             "call_B": '{"call_index": 2, "refunded": "42"}',
             "call_C": '{"call_index": 3, "refunded": "77"}',
+            "call_D": "order 42 is already refunded",
+            "call_E": "Tool returned failure with no error message",
+            "call_F": "kaboom",
+            "call_G": "ValueError",
+            "call_H": "Tool 'nope' not found",
         }
-        assert all(event.status is ToolExecutionStatus.SUCCESS for event in _results(timeline))
+        assert {event.call_id: event.status for event in _results(timeline)} == {
+            "call_A": ToolExecutionStatus.SUCCESS,
+            "call_B": ToolExecutionStatus.SUCCESS,
+            "call_C": ToolExecutionStatus.SUCCESS,
+            "call_D": ToolExecutionStatus.ERROR,
+            "call_E": ToolExecutionStatus.ERROR,
+            "call_F": ToolExecutionStatus.ERROR,
+            "call_G": ToolExecutionStatus.ERROR,
+            "call_H": ToolExecutionStatus.TOOL_NOT_FOUND,
+        }
         assert all(event.executor is ToolExecutorIdentity.AGENT for event in _results(timeline))
 
 
@@ -291,14 +385,36 @@ def test_both_substrates_record_the_token_argument_raw(substrate_timelines) -> N
     """A matcher on a ``token``-named argument must mean the same thing on both
     substrates, which holds only because neither redacts at record time."""
     for timeline in substrate_timelines:
-        calls = [event for event in timeline.events if event.kind is TraceEventKind.TOOL_CALL]
+        calls = [
+            event
+            for event in timeline.events
+            if event.kind is TraceEventKind.TOOL_CALL and event.tool_name == "refund"
+        ]
         assert [event.arguments["token"] for event in calls] == ["sk-live-secret"] * 3
 
 
 def test_both_substrates_measure_a_real_latency(substrate_timelines) -> None:
     """Excluded from the equality above, so this is the only guard on the field:
-    a substrate recording a constant ``0.0`` is caught here and nowhere else."""
+    a substrate recording a constant ``0.0`` is caught here and nowhere else.
+
+    A call the runner refuses before execution ran for no time and is stamped
+    ``0.0``, so the guard covers the calls that ran — named here, so narrowing
+    it further would fail rather than pass vacuously."""
     for timeline in substrate_timelines:
-        latencies = [event.latency_seconds for event in _results(timeline)]
-        assert latencies and all(isinstance(value, float) for value in latencies)
+        executed = [
+            event
+            for event in _results(timeline)
+            if event.status is not ToolExecutionStatus.TOOL_NOT_FOUND
+        ]
+        assert [event.call_id for event in executed] == [
+            "call_A",
+            "call_B",
+            "call_C",
+            "call_D",
+            "call_E",
+            "call_F",
+            "call_G",
+        ]
+        latencies = [event.latency_seconds for event in executed]
+        assert all(isinstance(value, float) for value in latencies)
         assert all(value > 0.0 for value in latencies), latencies

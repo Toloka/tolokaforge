@@ -232,7 +232,7 @@ class Capability(str, Enum):
     Concrete regression captured by this capability: some models
     substitute ``:`` for the duplicated ``_`` and emit names like
     ``workday_api:workday_api_get_employee`` that the harness rejects
-    with ``Tool '…' not found in agent tools``. A model that produces
+    with ``Tool '…' not found``. A model that produces
     *any* of ``:``, ``/``, or ``.`` separators when echoing a
     registered name fails this capability."""
 

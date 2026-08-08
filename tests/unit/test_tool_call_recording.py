@@ -106,6 +106,26 @@ class _Boom(Tool):
         raise RuntimeError("kaboom")
 
 
+class _Silent(Tool):
+    """Fails without saying why: ``error`` is left unset, not merely empty."""
+
+    def __init__(self) -> None:
+        super().__init__("silent", "Fail without saying why")
+
+    def get_schema(self) -> dict[str, Any]:
+        return {
+            "type": "function",
+            "function": {
+                "name": self.name,
+                "description": self.description,
+                "parameters": {"type": "object", "properties": {}},
+            },
+        }
+
+    def execute(self, **kwargs: Any) -> ToolResult:
+        return ToolResult(success=False, output="")
+
+
 class _Secretive(Tool):
     """Takes an argument whose name the deleted redaction rewrote."""
 
@@ -161,12 +181,14 @@ def _drive_loop(
     tool_calls: list[list[ToolCall]],
     executor: ToolExecutor,
     recorder: TrialToolCallRecorder | None,
-) -> None:
-    """Run the real loop over ``tool_calls``, one assistant turn per element."""
+) -> list[Message]:
+    """Run the real loop over ``tool_calls``, one assistant turn per element,
+    and return the transcript it built."""
     results = [
         GenerationResult(text="", tool_calls=calls, usage=Usage(prompt_tokens=1))
         for calls in tool_calls
     ]
+    messages: list[Message] = []
     ToolCallingLoop(
         llm_client=_ScriptedClient(results),
         tool_executor=executor,
@@ -176,7 +198,8 @@ def _drive_loop(
         should_terminate=lambda result, turn, messages: None,
         logger=get_logger("recording-test", strict=False),
         recorder=recorder,
-    ).run("sys", [], time.time())
+    ).run("sys", messages, time.time())
+    return messages
 
 
 def _record_one(
@@ -197,6 +220,19 @@ def _record_one(
         "the loop makes must produce exactly one"
     )
     return recorder.recorded[0]
+
+
+def _message_and_record(tool: Tool) -> tuple[Message, Any]:
+    """One call to ``tool``: the ``role: tool`` message the agent reads, and the
+    record a matcher reads."""
+    recorder = TrialToolCallRecorder()
+    messages = _drive_loop(
+        [[ToolCall(id="toolu_A", name=tool.name, arguments={})]],
+        ToolExecutor(_registry(tool)),
+        recorder,
+    )
+    message = next(message for message in messages if message.tool_call_id == "toolu_A")
+    return message, recorder.recorded[0]
 
 
 # ---------------------------------------------------------------------------
@@ -504,27 +540,17 @@ def test_messages_are_unaffected_by_recording() -> None:
     message still holds the loop's own ``Error: `` prefixed text, which is not
     the text the record holds — the timeline resolves that by taking ``result``
     from the record."""
-    recorder = TrialToolCallRecorder()
-    messages: list[Message] = []
-    ToolCallingLoop(
-        llm_client=_ScriptedClient(
-            [
-                GenerationResult(
-                    text="",
-                    tool_calls=[ToolCall(id="toolu_A", name="boom", arguments={})],
-                    usage=Usage(prompt_tokens=1),
-                )
-            ]
-        ),
-        tool_executor=ToolExecutor(_registry(_Boom())),
-        tool_schemas=[],
-        config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
-        metrics=_CountingSink(),
-        should_terminate=lambda result, turn, messages: None,
-        logger=get_logger("recording-test", strict=False),
-        recorder=recorder,
-    ).run("sys", messages, time.time())
+    message, record = _message_and_record(_Boom())
 
-    tool_message = next(message for message in messages if message.tool_call_id == "toolu_A")
-    assert tool_message.content.startswith("Error: Tool execution failed: kaboom")
-    assert recorder.recorded[0].output == "Tool execution failed: kaboom"
+    assert message.content == "Error: kaboom"
+    assert record.output == "kaboom"
+
+
+def test_a_failure_with_no_message_of_its_own_states_the_shared_sentence() -> None:
+    """A tool that fails without saying why is recorded as a sentence rather
+    than as nothing. An empty text would reach the host as the gRPC client's own
+    wording instead, so the agent and a matcher would read different failures."""
+    message, record = _message_and_record(_Silent())
+
+    assert record.output == "Tool returned failure with no error message"
+    assert message.content == "Error: Tool returned failure with no error message"
