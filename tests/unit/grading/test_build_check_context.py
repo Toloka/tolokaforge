@@ -36,11 +36,14 @@ def _task() -> TaskContext:
 
 
 class TestInitialStateResolution:
-    """``initial_state.data`` is the initial ``json_db`` dict when one is
-    supplied, else empty. Non-dict values (str path, ``None``) do not
-    surface as data — the host reads ``.json_db``, not ``.tables``, and a
-    path-style value would need file I/O which the helper deliberately
-    does not perform.
+    """``initial_state.data`` is the mapping it is handed, and ``{}`` for ``None``.
+
+    The helper performs no I/O, which is why it takes a mapping rather than the
+    authored ``initial_state.json_db``: a task may write that key as the name of a
+    JSON file, and reading one is the caller's job — ``GradingEngine`` resolves
+    either shape through ``read_declared_initial_state`` before calling here, and
+    hands over what it read. So the two answers below are the whole rule at this
+    layer: a state, or none.
     """
 
     def test_dict_initial_state_is_used_as_data(self) -> None:
