@@ -39,13 +39,22 @@ migration:
   contradicts is heard here rather than by whoever reads the migration report. It is
   the one gate that does, because the file cannot affect a grade and a run must not
   abort on authoring metadata.
+* ``state_checks.id_fields`` against the state the task seeds: a defective
+  declaration — a table absent from the seeded state, a key component absent from
+  every seeded record of its table, a key that does not uniquely identify them — is
+  refused by ``tolokaforge validate``; ``relaxed_validation`` downgrades the same
+  declaration to a pass; a ``json_db`` not on disk is refused naming the path; and a
+  pack whose adapter this command cannot read the seeded state of draws ``?``,
+  never a ``✗``.
 
-Every gate here is about the block's own shape, so the calls pass an unresolvable
-tool inventory: none of these rejections has anything to do with the task's tools,
-and the value that reports "nothing about the tools is checkable" is what makes that
-explicit. The calls outside a ``pytest.raises`` are the standing lock that an
-unresolvable inventory fails nothing — folding ``unchecked`` into the fatal channels
-reddens every one of them. What a *resolvable* inventory rejects is locked in
+Every *shape* gate here is about the block's own shape, so those calls pass an
+unresolvable tool inventory: none of those rejections has anything to do with the
+task's tools, and the value that reports "nothing about the tools is checkable" is
+what makes that explicit. The calls outside a ``pytest.raises`` are the standing
+lock that an unresolvable inventory fails nothing — folding ``unchecked`` into the
+fatal channels reddens every one of them. The ``id_fields``-vs-seeded-state tests
+are the exception: they drive the CLI, which resolves the seeded tables and holds
+the declaration against them. What a *resolvable* inventory rejects is locked in
 ``tests/unit/grading/test_grading_authoring_gate.py``.
 """
 
@@ -55,7 +64,7 @@ import json
 import textwrap
 import types
 from pathlib import Path
-from typing import Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin
 
 import pytest
 import yaml
@@ -712,45 +721,54 @@ def test_validate_rejects_an_id_fields_key_that_cannot_key_its_table(
         validate_grading_yaml(grading, inventory=_UNRESOLVED)
 
 
-def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
-    """`positions: [account_id, symbol]` passes `tolokaforge validate` end to end.
+_SEEDED_POSITIONS = {
+    "positions": [
+        {"account_id": "A1", "symbol": "AAPL", "qty": 5},
+        {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+    ]
+}
+"""Two rows ``account_id`` alone cannot tell apart, seeded with no ``ticker`` field."""
 
-    Driven through the CLI rather than ``validate_grading_yaml`` so the list form
-    is accepted by the whole load path, not just the config model in isolation.
-    ``validate`` never builds a ``TaskDescription``, so the adapter's
-    id_fields-vs-initial_state cross-check is out of its reach (#923) — that gate
-    is locked at its own boundary in
-    ``tests/unit/test_native_adapter_id_fields_validation.py``.
+
+def _write_keyed_pack(
+    root: Path,
+    *,
+    id_fields: dict[str, Any],
+    seeded: dict[str, Any] | None = _SEEDED_POSITIONS,
+    relaxed: bool = False,
+    adapter_type: str | None = None,
+) -> Path:
+    """A native pack declaring *id_fields* over *seeded*, and its task.yaml path.
+
+    *seeded* left ``None`` writes no ``initial_state.json`` while the task keeps
+    naming one, which is the pack whose seeded state cannot be read at all.
     """
-    task_dir = tmp_path / "composite_key"
+    task_dir = root / "keyed_pack"
     task_dir.mkdir(parents=True)
-    (task_dir / "initial_state.json").write_text(
-        json.dumps(
-            {
-                "positions": [
-                    {"account_id": "A1", "symbol": "AAPL", "qty": 5},
-                    {"account_id": "A1", "symbol": "MSFT", "qty": 7},
-                ]
-            }
-        )
-    )
-    (task_dir / "task.yaml").write_text(
-        yaml.safe_dump(
-            {
-                "task_id": "composite_key_probe",
-                "name": "Composite key probe",
-                "category": "test",
-                "description": "Probe task for composite id_fields validation.",
-                "initial_state": {"json_db": "initial_state.json"},
-                "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
-                "user_simulator": {
-                    "mode": "scripted",
-                    "scripted_flow": [{"role": "user", "content": "hi"}],
-                },
-                "grading": "grading.yaml",
-            }
-        )
-    )
+    if seeded is not None:
+        (task_dir / "initial_state.json").write_text(json.dumps(seeded))
+    task: dict[str, Any] = {
+        "task_id": "keyed_pack",
+        "name": "Keyed pack",
+        "category": "test",
+        "description": "Probe task for id_fields validation.",
+        "initial_state": {"json_db": "initial_state.json"},
+        "tools": {"agent": {"enabled": []}, "user": {"enabled": []}},
+        "user_simulator": {
+            "mode": "scripted",
+            "scripted_flow": [{"role": "user", "content": "hi"}],
+        },
+        "grading": "grading.yaml",
+    }
+    if adapter_type is not None:
+        task["adapter_type"] = adapter_type
+    (task_dir / "task.yaml").write_text(yaml.safe_dump(task))
+    state_checks: dict[str, Any] = {
+        "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+        "id_fields": id_fields,
+    }
+    if relaxed:
+        state_checks["relaxed_validation"] = True
     (task_dir / "grading.yaml").write_text(
         yaml.safe_dump(
             {
@@ -759,20 +777,107 @@ def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
                     "weights": {"state_checks": 1.0},
                     "pass_threshold": 1.0,
                 },
-                "state_checks": {
-                    "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
-                    "id_fields": {"positions": ["account_id", "symbol"]},
-                },
+                "state_checks": state_checks,
             }
         )
     )
+    return task_dir / "task.yaml"
 
-    result = CliRunner(mix_stderr=False).invoke(
-        cli, ["validate", "--tasks", str(task_dir / "task.yaml")]
+
+def _validate(task_yaml: Path):
+    """``tolokaforge validate`` over one pack, wide enough that no path soft-wraps."""
+    return CliRunner(mix_stderr=False).invoke(
+        cli, ["validate", "--tasks", str(task_yaml)], env={"COLUMNS": "400"}
+    )
+
+
+def test_validate_accepts_a_pack_declaring_a_composite_key(tmp_path: Path):
+    """`positions: [account_id, symbol]` passes `tolokaforge validate` end to end.
+
+    Driven through the CLI rather than ``validate_grading_yaml`` so the list form is
+    accepted by the whole load path, not just the config model in isolation. The
+    declaration is also held against the state the task seeds here — the seeded rows
+    carry both components and only the pair tells them apart — so this is the passing
+    half of the cross-check the next test refuses; the adapter-boundary gate keeps its
+    own lock in ``tests/unit/test_native_adapter_id_fields_validation.py``.
+    """
+    result = _validate(
+        _write_keyed_pack(tmp_path, id_fields={"positions": ["account_id", "symbol"]})
     )
 
     assert "1 valid, 0 invalid" in result.stderr
     assert result.exit_code == 0
+
+
+def test_validate_refuses_a_key_component_the_seeded_records_do_not_carry(tmp_path: Path):
+    """The cross-check reaches the command an author runs before any run is started.
+
+    The pack seeds ``account_id`` / ``symbol`` and declares ``[account_id, ticker]``.
+    It used to exit 0 here and be refused only when the run built its task description,
+    after the author had already been told the pack was fine.
+    """
+    result = _validate(
+        _write_keyed_pack(tmp_path, id_fields={"positions": ["account_id", "ticker"]})
+    )
+
+    assert result.exit_code == 1
+    assert "positions" in result.stderr
+    assert "ticker" in result.stderr
+    assert "0 valid, 1 invalid" in result.stderr
+
+
+def test_validate_passes_a_defective_declaration_the_pack_relaxed(tmp_path: Path):
+    """``relaxed_validation`` downgrades at validate exactly as it does on the run path.
+
+    Same defective declaration as the refusal above: the escape hatch is the whole
+    difference, and a pack that relies on it must not be failed by the gate that exists
+    to let it through.
+    """
+    result = _validate(
+        _write_keyed_pack(tmp_path, id_fields={"positions": ["account_id", "ticker"]}, relaxed=True)
+    )
+
+    assert result.exit_code == 0
+    assert "1 valid, 0 invalid" in result.stderr
+
+
+def test_validate_refuses_a_pack_whose_seeded_state_is_not_on_disk(tmp_path: Path):
+    """A task naming a ``json_db`` that does not exist is refused naming the path.
+
+    Reading the seeded state at validate is what makes this answerable: the pack used
+    to validate clean and fail at run start with ``JSON DB file not found``, one whole
+    run later.
+    """
+    task_yaml = _write_keyed_pack(
+        tmp_path, id_fields={"positions": ["account_id", "symbol"]}, seeded=None
+    )
+
+    result = _validate(task_yaml)
+
+    assert result.exit_code == 1
+    assert "JSON DB file not found" in result.stderr
+    assert str(task_yaml.parent / "initial_state.json") in result.stderr
+
+
+def test_validate_reports_the_declaration_unchecked_for_an_adapter_it_cannot_read(tmp_path: Path):
+    """A pack this command cannot read the seeded state of draws a `?`, never a `✗`.
+
+    ``initial_state.json_db`` is the native reading. Holding another adapter's pack
+    against it would refuse packs that run fine, and passing it silently would read as
+    a clean bill of health for a declaration nothing checked — so the same defective
+    key that fails above is reported and never fatal here.
+    """
+    result = _validate(
+        _write_keyed_pack(
+            tmp_path,
+            id_fields={"positions": ["account_id", "ticker"]},
+            adapter_type="an_adapter_this_environment_does_not_install",
+        )
+    )
+
+    assert result.exit_code == 0
+    assert "? state_checks.id_fields not checked" in result.stderr
+    assert "1 valid, 0 invalid" in result.stderr
 
 
 def test_validate_names_a_misspelled_state_checks_key_and_the_accepted_set(tmp_path: Path):
