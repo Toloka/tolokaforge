@@ -1272,11 +1272,11 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
     and both are named with the roots searched, because a corpus recorded against one tree
     reconciled against another is otherwise silently reconciled against nothing.
 
-    A pack that resolves and names no grading source is refused too, under every declared
-    adapter — unlike ``tolokaforge validate``, which passes such a pack where its declared
-    adapter resolves its own grading config, because a config resolved that way carries no
-    migration declaration and no ``trace_checks`` block for a recorded verdict to be
-    recomputed from.
+    A pack that resolves and has no grading block on disk — naming none, or naming a path
+    with no file at it — is refused too, under every declared adapter, unlike
+    ``tolokaforge validate``, which passes such a pack where its declared adapter resolves
+    its own grading config: a config resolved that way carries no migration declaration and
+    no ``trace_checks`` block for a recorded verdict to be recomputed from.
     """
     written = ", ".join(str(root) for root in roots)
     found = _declaring_task_files(task_id, roots)
@@ -1297,14 +1297,14 @@ def _grading_path_of(task_id: str, roots: Sequence[Path]) -> Path:
     source = grading_source_under_adapter(task_config, task_dir, adapter_type)
     if source.path is None:
         raise ReconcileError(
-            f"{found[0]} declares task_id {task_id!r} and no grading block — no `grading:` "
-            "field and no sibling grading.yaml — so a corpus recording this task's verdicts "
-            "has nothing to reconcile them against: the migration is declared beside that "
-            "file, and the trace_checks block it names is what every recorded verdict is "
-            f"recomputed from. That holds under every declared adapter, {adapter_type!r} "
-            "included: one that grades from the file has none to read, and one that resolves "
-            "its own grading config writes neither. Declare `grading:` pointing at the block "
-            "this pack grades by, or add a grading.yaml beside its task.yaml"
+            f"{found[0]} declares task_id {task_id!r} and no grading block is on disk for it, "
+            "so a corpus recording this task's verdicts has nothing to reconcile them "
+            "against: the migration is declared beside that file, and the trace_checks block "
+            "it names is what every recorded verdict is recomputed from. That holds under "
+            f"every declared adapter, {adapter_type!r} included: one that grades from the "
+            "file has none to read, and one that resolves its own grading config writes "
+            "neither. Point `grading:` at the block this pack grades by, or add a "
+            "grading.yaml beside its task.yaml"
         )
     return source.path
 

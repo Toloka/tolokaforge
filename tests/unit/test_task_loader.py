@@ -610,16 +610,20 @@ class TestSiblingGradingAutoPickup:
         assert task.grading is None
 
     @pytest.mark.parametrize(
-        ("declares_grading", "adapter_type", "kind"),
+        ("declares_grading", "writes_the_file", "adapter_type", "kind"),
         [
-            (True, "native", GradingSourceKind.ON_DISK),
-            (True, "tau", GradingSourceKind.ON_DISK),
-            (False, "native", GradingSourceKind.WITHHELD),
-            (False, "tau", GradingSourceKind.UNINTERROGABLE),
+            (True, True, "native", GradingSourceKind.ON_DISK),
+            (True, True, "tau", GradingSourceKind.ON_DISK),
+            (True, False, "native", GradingSourceKind.WITHHELD),
+            (True, False, "tau", GradingSourceKind.UNINTERROGABLE),
+            (False, False, "native", GradingSourceKind.WITHHELD),
+            (False, False, "tau", GradingSourceKind.UNINTERROGABLE),
         ],
         ids=[
-            "a_declared_file_is_the_source",
-            "a_declared_file_is_the_source_whatever_the_adapter",
+            "a_declared_file_that_is_there_is_the_source",
+            "a_declared_file_that_is_there_is_the_source_whatever_the_adapter",
+            "a_declared_file_that_is_not_there_is_owed_to_the_adapter_that_grades_from_one",
+            "a_declared_file_that_is_not_there_is_unanswerable_by_an_adapter_that_does_not",
             "the_adapter_that_grades_from_a_file_is_owed_one",
             "the_adapter_that_answers_for_itself_is_owed_nothing",
         ],
@@ -628,23 +632,27 @@ class TestSiblingGradingAutoPickup:
         self,
         tmp_path: Path,
         declares_grading: bool,
+        writes_the_file: bool,
         adapter_type: str,
         kind: GradingSourceKind,
     ) -> None:
-        """An absent grading source means opposite things to the two adapter kinds.
+        """Having no block to read means opposite things to the two adapter kinds.
 
         ``get_grading_config`` is abstract and the implementations disagree: the
-        native one refuses a task that names no file, while the terminal-bench one
+        native one refuses a task it has no block for, while the terminal-bench one
         synthesises a whole config without reading the field. So the same absence is
-        a defect under one declared adapter and unanswerable under another — while a
-        *declared* path is the source under either, because the reading gate one
-        layer down owns whether that file is there.
+        a defect under one declared adapter and unanswerable under another — and a
+        path with no file at it is that same absence, not a source, because there is
+        no block behind it for anything downstream to read.
         """
         task_dir = tmp_path / "flat_task"
         extra: dict[str, object] = {"adapter_type": adapter_type}
         if declares_grading:
             extra["grading"] = "grading.yaml"
-        task, resolved_dir = load_task_yaml(self._write_minimal_task(task_dir, **extra))
+        task_path = self._write_minimal_task(task_dir, **extra)
+        if writes_the_file:
+            self._write_grading(task_dir / "grading.yaml")
+        task, resolved_dir = load_task_yaml(task_path)
 
         source = grading_source_under_adapter(task, resolved_dir, task.adapter_type)
 
@@ -673,6 +681,29 @@ class TestSiblingGradingAutoPickup:
         assert "`grading:`" in reason
         assert "grading.yaml beside its task.yaml" in reason
         assert "before any trial is scheduled" in reason
+
+    def test_a_declared_file_that_is_not_there_names_the_path_and_both_ways_to_supply_it(
+        self, tmp_path: Path
+    ) -> None:
+        """A dangling ``grading:`` ref is a different defect from an undeclared one.
+
+        The author has already said which file grades the task, so the sentence names
+        the ref they wrote and the path it resolved to, and offers the two ways out of
+        that state rather than sending them looking for a field that is right there.
+        """
+        task_dir = tmp_path / "flat_task"
+        task, resolved_dir = load_task_yaml(
+            self._write_minimal_task(task_dir, grading="grading.yaml")
+        )
+
+        reason = grading_source_under_adapter(task, resolved_dir, task.adapter_type).reason
+
+        assert "'min'" in reason
+        assert "'grading.yaml'" in reason
+        assert str(task_dir / "grading.yaml") in reason
+        assert "Correct the `grading:` path" in reason
+        assert "create that file" in reason
+        assert "no `grading:` field" not in reason
 
     def test_an_uninterrogable_source_names_the_adapter_it_could_not_ask(
         self, tmp_path: Path

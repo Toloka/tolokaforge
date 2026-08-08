@@ -284,6 +284,53 @@ class TestValidateCommand:
             assert "`grading:`" in result.stderr
             assert "grading.yaml beside its task.yaml" in result.stderr
 
+    @pytest.mark.parametrize(
+        ("adapter_type", "exit_code", "summary"),
+        [("tau", 0, "1 valid, 0 invalid"), ("native", 1, "0 valid, 1 invalid")],
+        ids=["adapter_validate_cannot_ask", "the_adapter_that_grades_from_a_file"],
+    )
+    def test_validate_answers_a_task_whose_declared_grading_file_is_absent(
+        self,
+        runner: CliRunner,
+        tmp_path: Path,
+        adapter_type: str,
+        exit_code: int,
+        summary: str,
+    ) -> None:
+        """A ``grading:`` ref with nothing at it is answered here, not at grade time.
+
+        The native adapter reads the block from the path the task names, so a path with
+        no file at it is the same refusal as naming none — raised while validate is the
+        thing reading, rather than while a paid-for trial's artifacts are written. Every
+        other adapter resolves its own grading config, so validate reports the path it
+        could not check and passes the pack.
+        """
+        directory = tmp_path / f"dangling_{adapter_type}"
+        directory.mkdir(parents=True)
+        task_file = directory / "task.yaml"
+        task_file.write_text(
+            yaml.dump(
+                {
+                    "task_id": directory.name,
+                    "description": "A task naming a grading file that is not on disk.",
+                    "adapter_type": adapter_type,
+                    "grading": "grading.yaml",
+                }
+            )
+        )
+
+        result = runner.invoke(cli, ["validate", "--tasks", str(task_file)], env={"COLUMNS": "400"})
+
+        assert result.exit_code == exit_code, result.stderr
+        assert summary in result.stderr
+        assert str(directory / "grading.yaml") in result.stderr
+        if exit_code == 0:
+            assert "? grading not checked" in result.stderr
+            assert f"'{adapter_type}'" in result.stderr
+        else:
+            assert directory.name in result.stderr
+            assert "create that file" in result.stderr
+
 
 # ===================================================================
 # docker command group

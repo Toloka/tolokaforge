@@ -10,6 +10,7 @@ from typing import Any
 from unittest.mock import MagicMock, patch
 
 import pytest
+import yaml
 
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.models import (
@@ -84,6 +85,22 @@ def _make_trajectory(
             score=score,
             components=GradeComponents(state_checks=score),
         ),
+    )
+
+
+def _write_grading_yaml(task_dir: Path) -> None:
+    """The block :func:`_make_task_config` declares, so an enqueue pre-flight can read it.
+
+    The smallest gradeable one — a single state check carrying the whole weight — because
+    nothing here is about what the pack grades by.
+    """
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {"jsonpaths": [{"path": "$.items", "operator": "exists"}]},
+            }
+        )
     )
 
 
@@ -1474,8 +1491,7 @@ class TestPrepareRunIdempotency:
         adapter.to_task_description.side_effect = lambda tid: _task_description_with_judge(
             tid, has_judge=False
         )
-        # A real directory carrying no grading.yaml: the enqueue pre-flight
-        # resolves each task's grading file under it and has nothing to check.
+        _write_grading_yaml(tmp_path)
         adapter.get_task_dir.return_value = tmp_path
         orch.adapter = adapter
         return orch
