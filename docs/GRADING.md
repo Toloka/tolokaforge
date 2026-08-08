@@ -897,15 +897,16 @@ the full declared key. A declaration that cannot name a key at all — an empty
 list, a blank or non-string component, or a component repeated twice — is
 refused when the config loads, naming the table.
 
-The adapter cross-checks the whole `id_fields` map against the seeded
-`initial_state.tables` at task-description build time — at the orchestrator's
-pre-run gradeability gate and again at `RegisterTrial`, so a bad declaration
-costs a build error, never a trial. One gate, three findings, reported together
-in a single message: a map key naming no seeded table ("unknown table" — a
-typo, or a table missing from `initial_state`); a declared key component —
-single field and composite components alike — absent from every seeded record
-of its table; and a declared key — single or composite — that does not
-uniquely identify the table's seeded records, named by the colliding key
+The whole `id_fields` map is cross-checked against the seeded
+`initial_state.tables` at three gates, all reading one computation so they cannot
+disagree: `tolokaforge validate`, task-description build time (the orchestrator's
+pre-run gradeability gate) and `RegisterTrial`. A bad declaration therefore costs a
+`✗` line at validate — before a run is even started — and a build error after that,
+never a trial. One check, three findings, reported together: a map key naming no
+seeded table ("unknown table" — a typo, or a table missing from `initial_state`); a
+declared key component — single field and composite components alike — absent from
+every seeded record of its table; and a declared key — single or composite — that
+does not uniquely identify the table's seeded records, named by the colliding key
 value. A key that cannot tell two seeded rows apart cannot address either row
 for an update or a delete, so the non-unique finding is what refuses a
 single-field declaration over rows only a composite key distinguishes. Each
@@ -913,10 +914,17 @@ finding carries its exact remediation (fix the typo, add the table, seed the
 field, widen the key to a composite list, or opt in below). A component
 present in *some* seeded record passes the component finding; a record
 actually missing it still fails loud at write or diff time, per component.
-`tolokaforge validate` does not run this cross-check — it never builds a task
-description (#923); the shape rules on the declaration itself (empty list,
-blank or duplicate component) do fire there. Legacy tasks that pre-date the
-check can downgrade every finding to one warning:
+
+`validate` reads the seeded state the native way, from `initial_state.json_db`, so
+a task whose `json_db` names a file that is not on disk is a `✗` naming the path
+there rather than a `RuntimeError` at run start. A task an adapter maintained
+outside this repository owns may seed its state some other way, and holding its
+declaration against a reading that adapter does not use would reject packs that run
+fine: those packs draw a `?` line for `state_checks.id_fields` — never checked,
+never fatal — and `RegisterTrial` keeps enforcing at run time. The shape rules on
+the declaration itself (empty list, blank or duplicate component) fire at every gate
+whatever the adapter, because they read the declaration alone. Legacy tasks that
+pre-date the check can downgrade every finding to one warning:
 
 ```yaml
 state_checks:
@@ -933,10 +941,10 @@ that bypass `NativeAdapter.to_task_description`. Both keys are consumed at load
 time / `RegisterTrial` on both substrates rather than in the grade-time component
 phase — see [Substrate Parity](#substrate-parity).
 
-**Tables materialized only by `initialization_actions`**: the cross-check reads
+**Tables materialized only by `initialization_actions`**: every gate reads
 `initial_state.tables` (typically populated from `initial_state.json_db`). A
-table that first appears only via an `initialization_action` won't be visible to
-the check — an `id_fields` entry for such a table needs `relaxed_validation:
+table that first appears only via an `initialization_action` is visible to none of
+them — an `id_fields` entry for such a table needs `relaxed_validation:
 true` today. Add the table to `initial_state.json_db` (even with an empty list)
 if you want the strict check to accept it: a table seeded empty passes the
 unknown-table finding and is skipped by the record-level findings (absent

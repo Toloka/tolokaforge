@@ -69,6 +69,7 @@ from tolokaforge.core.grading.config_validation import (
     CombineLayer,
     HashSourceLayer,
     ReplayWorld,
+    SeededTablesLayer,
     Skip,
     ToolInventory,
     authored_hash_block,
@@ -115,6 +116,7 @@ _PROJECT_SCOPED_DEFAULT_KEYS = frozenset(TaskDefaults.model_fields) - frozenset(
 _UNRESOLVED_COMBINE_LAYER = CombineLayer.unresolvable()
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 _UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
 
 
 _GRADING_BLOCK_SHAPES: dict[str, str] = {
@@ -278,6 +280,7 @@ def validate_grading_yaml(
     inventory: ToolInventory,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
     hash_sources: HashSourceLayer = _UNRESOLVED_HASH_SOURCE_LAYER,
+    seeded_tables: SeededTablesLayer = _UNRESOLVED_SEEDED_TABLES,
     combine_layer: CombineLayer = _UNRESOLVED_COMBINE_LAYER,
     fail_on: GradingFindingSeverity = GradingFindingSeverity.ADVISORY,
 ) -> AuthoringReport:
@@ -334,6 +337,11 @@ def validate_grading_yaml(
             ``tolokaforge validate`` holds no adapter, so it asks the registered class
             through :func:`hash_source_layer_under_adapter`, while a run's pre-flight
             asks the adapter instance it is about to grade with.
+        seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
+            declaration keys, resolved through :func:`seeded_tables_under_adapter`. A
+            caller that cannot read them leaves the default,
+            :meth:`SeededTablesLayer.unresolvable`, which moves the declaration into
+            ``unchecked`` instead of holding it against a state nobody resolved.
         combine_layer: What the task's enclosing project supplies beneath its own
             ``combine`` block. A caller that cannot resolve it leaves the default,
             :meth:`CombineLayer.unresolvable`, which skips the two weight rules into
@@ -391,6 +399,7 @@ def validate_grading_yaml(
         inventory,
         replay_world=replay_world,
         hash_sources=hash_sources,
+        seeded_tables=seeded_tables,
         effective_combine=effective_combine,
     )
     if effective_combine is None:
@@ -818,6 +827,28 @@ def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[
     else:
         data = json_db
     return {name: _seeded_records(collection) for name, collection in data.items()}
+
+
+def seeded_tables_under_adapter(
+    task: TaskConfig, task_dir: Path, adapter_type: str
+) -> SeededTablesLayer:
+    """The tables to check *task*'s ``id_fields`` declaration against, under *adapter_type*.
+
+    ``initial_state.json_db`` is the *native* reading of what a task seeds, so a task an
+    external adapter owns gets :meth:`SeededTablesLayer.unresolvable` for the reason
+    :func:`tool_inventory_under_adapter` gives: holding a declaration against a state the
+    adapter does not seed would reject packs that run fine.
+
+    A native task whose ``json_db`` names a file that is not on disk raises out of here
+    rather than reporting an empty view, which is what makes the caller's per-task
+    failure accounting name the missing path — the same refusal the run path meets when
+    it builds the task description.
+    """
+    from tolokaforge.runner.models import AdapterType
+
+    if adapter_type != AdapterType.NATIVE.value:
+        return SeededTablesLayer.unresolvable()
+    return SeededTablesLayer(tables=seeded_tables_from_task(task, task_dir))
 
 
 def _seeded_records(collection: Any) -> list[dict[str, Any]]:

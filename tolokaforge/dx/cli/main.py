@@ -1472,6 +1472,7 @@ def validate(tasks: str):
         grading_source_under_adapter,
         hash_source_layer_under_adapter,
         replay_world_under_adapter,
+        seeded_tables_under_adapter,
         tool_inventory_under_adapter,
         validate_grading_yaml,
     )
@@ -1506,6 +1507,9 @@ def validate(tasks: str):
                     ),
                     replay_world=replay_world_under_adapter(task_config, task_config.adapter_type),
                     hash_sources=hash_source_layer_under_adapter(
+                        task_config, task_dir, task_config.adapter_type
+                    ),
+                    seeded_tables=seeded_tables_under_adapter(
                         task_config, task_dir, task_config.adapter_type
                     ),
                     combine_layer=CombineLayer(project_combine),
