@@ -4,7 +4,8 @@ A single-field ``key`` (default ``id``) requires the record to **contain**
 that field; an explicit ``null`` value is a legal, addressable key. Every
 upsert in a batch — including one with no ``record`` at all — is validated
 before any operation applies, so a refused batch leaves the rows, the
-version, and the SQL mirror untouched. The matcher requires the stored row
+version, and the SQL mirror untouched, and auto-creates no table. The
+matcher requires the stored row
 to carry every key field, so a stored ``null`` matches an incoming ``null``
 instead of the first row that lacks the field.
 """
@@ -126,6 +127,24 @@ def test_record_less_upsert_mid_batch_is_refused_without_applying(db_test_client
     state = _state(db_test_client, "t_no_record")
     assert state["data"]["positions"] == POSITIONS
     assert state["version"] == version_before
+
+
+def test_refused_upsert_does_not_auto_create_the_missing_table(db_test_client):
+    _init(db_test_client, "t_missing_table", {"accounts": [{"account_id": "A1"}]})
+
+    resp = _mutate(
+        db_test_client,
+        "t_missing_table",
+        "positions",
+        [{"op": "upsert", "record": {"symbol": "NVDA"}, "key": "account_id"}],
+    )
+
+    assert resp.status_code == 400, resp.text
+    detail = resp.json()["detail"]
+    assert detail["error"] == "InvalidOperation"
+    assert detail["details"]["missing_components"] == ["account_id"]
+    assert detail["details"]["op_index"] == 0
+    assert "positions" not in _state(db_test_client, "t_missing_table")["data"]
 
 
 def test_explicit_null_key_updates_the_stored_null_row(db_test_client):
