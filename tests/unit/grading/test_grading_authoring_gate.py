@@ -19,6 +19,8 @@ a mocked registry would let the severity table drift from what the tools declare
 from __future__ import annotations
 
 import ast
+import json
+import logging
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
@@ -32,8 +34,10 @@ from tests.utils.golden_source_shapes import sources_no_replay_can_iterate
 from tolokaforge.adapters._task_loader import (
     build_tool_inventory,
     load_task_yaml,
+    seeded_tables_under_adapter,
     validate_grading_yaml,
 )
+from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _A_NON_EMPTY_SECTION_STILL_DECLARES,
@@ -50,6 +54,7 @@ from tolokaforge.core.grading.config_validation import (
     Finding,
     HashSourceLayer,
     ReplayWorld,
+    SeededTablesLayer,
     SuppliedSourceState,
     ToolInventory,
     _authored_hash_is_a_state_source,
@@ -208,6 +213,26 @@ _AN_ADAPTER_SUPPLIES_AN_EMPTY_SOURCE = HashSourceLayer(
     supplied=AdapterHashSource(where=_A_FIXTURE_AN_ADAPTER_READS, state=SuppliedSourceState.EMPTY)
 )
 
+# What a caller can say about the tables a task seeds, which its ``id_fields``
+# declaration keys. The resolved layer seeds two rows one component alone cannot tell
+# apart, so a declaration is held against real records rather than against an empty
+# view every declaration would be wrong about. The unresolvable one is the answer for a
+# caller holding no task.yaml, and the default every row that is not about the seeded
+# tables carries.
+_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY = {
+    "positions": [
+        {"account_id": "A1", "symbol": "AAPL"},
+        {"account_id": "A1", "symbol": "MSFT"},
+    ]
+}
+_NO_CALLER_READ_WHAT_THE_TASK_SEEDS = SeededTablesLayer.unresolvable()
+_THE_TASK_SEEDS_THESE_TABLES = SeededTablesLayer(tables=_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY)
+
+
+def _keyed_state(id_fields: dict[str, Any]) -> dict[str, Any]:
+    """A state block declaring *id_fields* beside a source that makes it evaluable."""
+    return {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION], "id_fields": id_fields}}
+
 
 def _quotes(operator: str, name: str) -> dict[str, Any]:
     """A ``present`` over an assistant message whose text reads the bound *name*."""
@@ -225,7 +250,9 @@ class _Rule:
     nothing in either finding channel, so only the row that is about the world says
     what the task supplies. ``hash_sources`` defaults to the native reading — the
     authored block is the whole layer — so only the rows about the layer say who else
-    may supply the source.
+    may supply the source. ``seeded_tables`` defaults the other way, to unresolvable:
+    no other row's fixture declares ``id_fields``, so the rows about the seeded tables
+    are the only ones that name what the task seeds.
     """
 
     label: str
@@ -237,6 +264,7 @@ class _Rule:
     combine: GradingCombineConfig | None = None
     world: ReplayWorld = ReplayWorld.unresolvable()
     hash_sources: HashSourceLayer = _THE_BLOCK_IS_THE_WHOLE_LAYER
+    seeded_tables: SeededTablesLayer = _NO_CALLER_READ_WHAT_THE_TASK_SEEDS
 
 
 _RULES: tuple[_Rule, ...] = (
@@ -461,6 +489,26 @@ _RULES: tuple[_Rule, ...] = (
         combine=GradingCombineConfig(weights={}),
     ),
     _Rule(
+        label="an_id_fields_declaration_nothing_resolved_the_seeded_tables_for",
+        task=_HELPDESK,
+        grading=_keyed_state({"positions": ["account_id", "symbol"]}),
+        checker="_check_id_fields_against_seeded_tables",
+        channel="unchecked",
+        message="no caller resolved the tables this task seeds",
+    ),
+    _Rule(
+        label="an_id_fields_component_no_seeded_record_carries",
+        task=_HELPDESK,
+        grading=_keyed_state({"positions": ["account_id", "ticker"]}),
+        checker="_check_id_fields_against_seeded_tables",
+        channel="errors",
+        # The table and the component together: the author has to know which key of
+        # which table to go and fix.
+        message="declares key component(s) ['ticker'] absent from every seeded record "
+        "of table 'positions'",
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    ),
+    _Rule(
         label="weight_naming_a_component_the_pack_never_configures",
         task=_HELPDESK,
         grading={},
@@ -495,6 +543,7 @@ def test_each_rule_is_reported_in_its_own_channel_naming_the_fix(rule: _Rule) ->
         effective_combine=rule.combine,
         replay_world=rule.world,
         hash_sources=rule.hash_sources,
+        seeded_tables=rule.seeded_tables,
     )
 
     reported = _texts(report, rule.channel)
@@ -539,6 +588,7 @@ def test_every_checker_the_module_declares_is_provoked_by_a_rule(
             effective_combine=rule.combine,
             replay_world=rule.world,
             hash_sources=rule.hash_sources,
+            seeded_tables=rule.seeded_tables,
         )
 
     assert answered == declared
@@ -1043,6 +1093,155 @@ def test_an_unresolvable_hash_source_layer_may_not_carry_a_supplied_source() -> 
         )
 
     assert HashSourceLayer.unresolvable().supplied is None
+
+
+# ---------------------------------------------------------------------------
+# The id_fields declaration, held against what the task seeds
+# ---------------------------------------------------------------------------
+
+
+def test_a_relaxed_declaration_is_downgraded_to_a_log_line_and_nothing_else(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """The escape hatch has to leave every report channel empty, advisories included.
+
+    The default ``fail_on`` is ADVISORY, so reporting the downgrade as an advisory
+    would fail precisely the packs ``relaxed_validation`` exists to pass — the gentler
+    channel is the harsher answer here. A logged warning is the whole observable, which
+    is what the run path already does with the same findings.
+    """
+    grading = {
+        "state_checks": {
+            "jsonpaths": [_A_JSONPATH_ASSERTION],
+            "id_fields": {"positions": ["account_id", "ticker"]},
+            "relaxed_validation": True,
+        }
+    }
+
+    with caplog.at_level(logging.WARNING):
+        report = inspect_grading_authoring(
+            grading, _inventory(_HELPDESK), seeded_tables=_THE_TASK_SEEDS_THESE_TABLES
+        )
+
+    assert (report.errors, report.advisories, report.unchecked) == ((), (), ())
+    warned = [record.getMessage() for record in caplog.records if record.levelno >= logging.WARNING]
+    assert any("'ticker'" in message for message in warned), warned
+
+
+def test_a_declaration_the_seeded_records_answer_reports_nothing() -> None:
+    """The positive half: a key that does address the seeded rows draws no line at all.
+
+    Without it the rows above would pass against a checker that reported every
+    declaration, and the ``?`` line for an unresolvable layer would read as the only
+    outcome an author ever sees.
+    """
+    report = inspect_grading_authoring(
+        _keyed_state({"positions": ["account_id", "symbol"]}),
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert (report.errors, report.advisories, report.unchecked) == ((), (), ())
+
+
+@pytest.mark.parametrize(
+    "seeded_tables",
+    [
+        pytest.param(_NO_CALLER_READ_WHAT_THE_TASK_SEEDS, id="nothing_resolved_the_tables"),
+        pytest.param(_THE_TASK_SEEDS_THESE_TABLES, id="the_tables_are_resolved"),
+    ],
+)
+@pytest.mark.parametrize(
+    "state_checks",
+    [
+        pytest.param({"jsonpaths": [_A_JSONPATH_ASSERTION]}, id="no_id_fields_key"),
+        pytest.param({"jsonpaths": [_A_JSONPATH_ASSERTION], "id_fields": {}}, id="an_empty_map"),
+    ],
+)
+def test_a_pack_declaring_no_key_draws_nothing_under_either_layer(
+    state_checks: dict[str, Any], seeded_tables: SeededTablesLayer
+) -> None:
+    """A pack that declares no key is not owed a ``?`` line about one.
+
+    The unresolvable layer is every caller's default, so a skip for a declaration
+    nobody wrote would print an unchecked line beside every task in the corpus.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": state_checks}, _inventory(_HELPDESK), seeded_tables=seeded_tables
+    )
+
+    assert (report.errors, report.advisories, report.unchecked) == ((), (), ())
+
+
+def test_a_seeded_tables_layer_is_resolved_or_it_is_not() -> None:
+    """Both halves of the invariant, because both are incoherent in the same way.
+
+    A resolved layer with no view would hold every declaration against nothing and
+    refuse every table as unknown; an unresolvable one carrying tables has them
+    resolved and then ignored, since the rule that reads them is skipped.
+    """
+    with pytest.raises(ValueError, match="resolved seeded-tables layer carries no view"):
+        SeededTablesLayer(tables=None)
+    with pytest.raises(ValueError, match="unresolvable seeded-tables layer carries facts"):
+        SeededTablesLayer(tables={}, known=False)
+
+    assert SeededTablesLayer.unresolvable().tables is None
+    assert SeededTablesLayer(tables={}).known is True
+
+
+def test_the_same_defect_reads_the_same_at_the_adapter_and_at_validate(tmp_path: Path) -> None:
+    """One pack, both gates, one sentence — the guard against re-divergence.
+
+    ``tolokaforge validate`` and ``NativeAdapter.to_task_description`` refuse the same
+    declaration, and an author who fixes what one of them said has fixed what the other
+    would have said. Locking the sentence rather than the fact of refusal is the point:
+    two implementations agreeing that a pack is broken while disagreeing about which
+    table and which component is the state this check was written to end.
+    """
+    task_dir = tmp_path / "tasks" / "positions"
+    task_dir.mkdir(parents=True)
+    (task_dir / "initial_state.json").write_text(json.dumps(_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY))
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": "positions",
+                "description": "one defective declaration, read by both gates",
+                "initial_state": {"json_db": "initial_state.json"},
+                "tools": {"agent": {"enabled": []}},
+                "grading": "grading.yaml",
+            }
+        )
+    )
+    (task_dir / "grading.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "combine": {"method": "weighted", "weights": {"state_checks": 1.0}},
+                "state_checks": {
+                    "jsonpaths": [_A_JSONPATH_ASSERTION],
+                    "id_fields": {"positions": ["account_id", "ticker"]},
+                },
+            }
+        )
+    )
+    task, effective_dir = load_task_yaml(task_dir / "task.yaml")
+
+    with pytest.raises(ValueError) as at_the_adapter:
+        NativeAdapter(
+            {"base_dir": str(tmp_path), "tasks_glob": "tasks/**/task.yaml"}
+        ).to_task_description("positions")
+    with pytest.raises(ValueError) as at_validate:
+        validate_grading_yaml(
+            task_dir / "grading.yaml",
+            inventory=ToolInventory.unresolvable(),
+            seeded_tables=seeded_tables_under_adapter(task, effective_dir, task.adapter_type),
+        )
+
+    sentence = (
+        "state_checks.id_fields['positions'] declares key component(s) ['ticker'] absent "
+        "from every seeded record of table 'positions'"
+    )
+    assert sentence in str(at_the_adapter.value)
+    assert sentence in str(at_validate.value)
 
 
 def test_golden_actions_alone_are_a_hash_source() -> None:

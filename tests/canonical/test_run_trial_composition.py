@@ -66,6 +66,10 @@ def flat_pack(tmp_path: Path) -> Path:
                 "weights": {"state_checks": 1.0},
                 "pass_threshold": 1.0,
             },
+            # The weight above needs the section it names: a pack weighting a component
+            # it never configures cannot be graded as written, and the pre-run gate
+            # refuses it before either path here builds a trajectory.
+            "state_checks": {"jsonpaths": [{"path": "$.db.notes", "equals": []}]},
         },
     )
     return tmp_path
@@ -97,6 +101,12 @@ def _orchestrator_trajectory(base_dir: Path, task, output_dir: Path) -> Trajecto
     adapter_stub.to_task_description.side_effect = lambda _tid: task_desc
     adapter_stub.docker_stack_requirements.return_value = None
     adapter_stub.trial_grader_name = "runner_rpc"
+    # The pre-run gate reads the pack off the adapter — its directory, and the layers
+    # the real adapter answers for its own tasks. Left auto-mocked, the gate resolves a
+    # mock as a path and reads whatever that opens.
+    adapter_stub.get_task_dir.side_effect = adapter.get_task_dir
+    adapter_stub.grading_hash_source_layer.side_effect = adapter.grading_hash_source_layer
+    adapter_stub.grading_combine_layer.side_effect = adapter.grading_combine_layer
     orch.adapter = adapter_stub
     orch.run()
     (trajectory,) = orch.results

@@ -16,6 +16,7 @@ from tolokaforge.adapters._task_loader import (
     GradingSourceKind,
     grading_source_under_adapter,
     replay_world_under_adapter,
+    seeded_tables_under_adapter,
     tool_inventory_under_adapter,
     validate_grading_yaml,
 )
@@ -1580,6 +1581,7 @@ class Orchestrator:
                 inventory=tool_inventory_under_adapter(task, task_dir, adapter_type),
                 replay_world=replay_world_under_adapter(task, adapter_type),
                 hash_sources=self.adapter.grading_hash_source_layer(task, task_dir),
+                seeded_tables=seeded_tables_under_adapter(task, task_dir, adapter_type),
                 combine_layer=self.adapter.grading_combine_layer(),
                 fail_on=fail_on,
             )
