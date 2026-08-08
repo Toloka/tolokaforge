@@ -15,8 +15,9 @@ Two harnesses, deliberately:
 
 - ``FakeDBClient`` records the mutation payloads the proxy emits and answers
   query/get_state from an in-memory store it never mutates — it locks payload
-  *shape* only. Its ``query()`` regex matches a single-predicate JSONPath, so
-  composite lookups exercise the full-scan fallback here.
+  *shape* only. Its ``query()`` regex matches a single quoted-string predicate
+  and string-coerces the stored value, which is not the dialect the real
+  service speaks, so composite lookups exercise the full-scan fallback here.
 - The ``db_client`` fixture wraps the real in-process db-service, the only
   harness on which "which row changed" is answerable, and the only one that
   speaks the JSONPath dialect a lookup is actually judged by — every row-level
@@ -120,7 +121,16 @@ def _make_dynamic_model() -> type[BaseModel]:
 
 
 class FakeDBClient:
-    """Records mutation payloads; answers query/get_state from an in-memory store."""
+    """Records mutation payloads; answers query/get_state from an in-memory store.
+
+    Its ``query()`` speaks **only** the quoted-string shape of the dialect — one
+    predicate, ``=='...'`` — and matches by ``str()``-coercing the stored value,
+    so it *finds* an int-keyed row where the real service misses, and it matches
+    no composite predicate at all. That coercion is the precise divergence that
+    hid the untyped-literal bug, so this harness locks mutation payload shape and
+    nothing else: what a lookup resolves, costs in round trips, or logs is
+    answerable only on the ``db_client`` harness.
+    """
 
     def __init__(self, state: dict | None = None):
         self.state = {k: [dict(r) for r in v] for k, v in (state or {}).items()}
@@ -665,3 +675,99 @@ async def test_a_declared_key_that_matches_nothing_reads_as_a_miss(db_client, lo
     debug = _messages(lookup_logs, logging.DEBUG)
     assert [m for m in debug if "declared key lookup on 'widgets.widget_id' missed" in m]
     assert not [m for m in debug if "declares no key field" in m]
+
+
+# ---------------------------------------------------------------------------
+# Composite lookup — the same encoder, the composite scan's own predicate
+# ---------------------------------------------------------------------------
+
+
+class Slotted(BaseModel):
+    """Composite-keyed by ``(account_id, slot)`` — a str component beside an int one."""
+
+    model_config = {"extra": "forbid"}
+
+    account_id: str
+    slot: int | None
+    qty: int = 0
+
+    def get_id(self) -> str:
+        return f"{self.account_id}_{self.slot}"
+
+
+SLOTS = [
+    {"account_id": "A1", "slot": 1, "qty": 10},
+    {"account_id": "A1", "slot": 2, "qty": 20},
+    {"account_id": "O'Brien", "slot": 2, "qty": 30},
+    {"account_id": "1", "slot": 9, "qty": 40},
+]
+
+SLOT_KEY = {"slots": ["account_id", "slot"]}
+
+
+async def test_composite_int_component_resolves_in_one_query(db_client):
+    """Every component goes through the one encoder, so a composite key mixing a
+    string and an int resolves from the index instead of scanning."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_int", "slots", Slotted, SLOTS, SLOT_KEY
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "A1", "slot": 2})
+    assert found is not None and found.qty == 20
+    assert calls.round_trips == (1, 0)
+    assert calls.jsonpaths == ["$.slots[?(@.account_id=='A1' & @.slot==2)]"]
+
+
+async def test_composite_quote_bearing_component_resolves_without_a_query_error(
+    db_client, lookup_logs
+):
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_quote", "slots", Slotted, SLOTS, SLOT_KEY
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "O'Brien", "slot": 2})
+    assert found is not None and found.qty == 30
+    assert calls.round_trips == (1, 0)
+    assert _messages(lookup_logs, logging.WARNING) == []
+
+
+async def test_composite_unencodable_component_skips_the_whole_query(db_client, lookup_logs):
+    """One component with no literal makes the whole conjunction unaskable — and the
+    scan, which has no such limit, still finds the row."""
+    rows = [*SLOTS, {"account_id": "A2", "slot": None, "qty": 50}]
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_none", "slots", Slotted, rows, SLOT_KEY
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "A2", "slot": None})
+    assert found is not None and found.qty == 50
+    assert calls.round_trips == (0, 1)
+    info = _messages(lookup_logs, logging.INFO)
+    assert [m for m in info if "slots.account_id+slot" in m and "slot=None" in m]
+
+
+async def test_a_composite_query_hit_the_record_contradicts_is_not_a_hit(db_client, lookup_logs):
+    """The dialect coerces components too (``@.account_id==1`` matches a stored
+    ``"1"``), so the composite hit is held against the composite scan's predicate."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_coerce", "slots", Slotted, SLOTS, SLOT_KEY
+    )
+    assert await proxy.get_by_id(Slotted, {"account_id": 1, "slot": 9}) is None
+    assert await proxy.get_by_id(Slotted, {"account_id": "1", "slot": 9}) is not None
+    assert calls.round_trips == (2, 1)
+    assert _messages(lookup_logs, logging.WARNING) == []
+
+
+async def test_a_composite_hit_is_verified_the_way_the_scan_compares(db_client):
+    """The composite scan compares the model's own dump, so a component stored as
+    ``"2"`` in an int-typed field is ``2`` to it. Verifying the raw record instead
+    would make the query miss a row its own scan then finds — one predicate on
+    both sides is what keeps the hit worth a round trip."""
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_comp_roundtrip",
+        "slots",
+        Slotted,
+        [{"account_id": "A1", "slot": "2", "qty": 7}],
+        SLOT_KEY,
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "A1", "slot": 2})
+    assert found is not None and found.qty == 7
+    assert calls.round_trips == (1, 0)
