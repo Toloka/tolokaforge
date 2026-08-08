@@ -28,6 +28,7 @@ from tolokaforge.core.grading.combine_weights import (
 from tolokaforge.core.grading.golden_replay import (
     GoldenReplayRecord,
     incomplete_replay_reason,
+    read_declared_initial_state,
     refuse_unreplayable_golden_source,
     require_golden_replay_world,
     resolve_initial_state,
@@ -522,9 +523,16 @@ class GradingEngine:
         """Build the host-side :class:`CheckContext` from a :class:`Trajectory`.
 
         Owns the transcript-from-``Trajectory`` transform (rich :class:`Message`
-        objects → author-facing :class:`CheckMessage`); the state-shape rule
-        is delegated to :func:`build_check_context` so the runner path applies
-        the same precedence by construction.
+        objects → author-facing :class:`CheckMessage`) and the read of whichever
+        shape the task declared its ``initial_state.json_db`` in, which is I/O and
+        therefore this call site's rather than :func:`build_check_context`'s; the
+        state-shape rule is delegated to :func:`build_check_context` so the runner
+        path applies the same precedence by construction.
+
+        Raises:
+            UnresolvableInitialState: the task declares ``initial_state.json_db`` as a
+                file no reader can resolve, which is a check's evidence missing rather
+                than empty. Handled by the caller as a context that could not be built.
         """
         messages: list[CheckMessage] = []
         for msg in trajectory.messages:
@@ -547,12 +555,13 @@ class GradingEngine:
                 )
             )
 
-        initial_json_db: dict[str, Any] | None = None
-        if self.task_initial_state and isinstance(self.task_initial_state.json_db, dict):
-            initial_json_db = self.task_initial_state.json_db
-
         return build_check_context(
-            initial_state_json_db=initial_json_db,
+            initial_state_json_db=read_declared_initial_state(
+                task_dir=self.task_dir,
+                initial_state_json_db=(
+                    self.task_initial_state.json_db if self.task_initial_state else None
+                ),
+            ),
             final_env_state=final_env_state,
             transcript=Transcript(messages=messages),
             task=TaskContext(
