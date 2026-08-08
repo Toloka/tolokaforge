@@ -166,7 +166,7 @@ from tolokaforge.runner.tool_factory import (
     ToolLifecycleContext,
     ToolReconstructionError,
 )
-from tolokaforge.tools.registry import ToolExecutionStatus
+from tolokaforge.tools.registry import ToolExecutionStatus, raised_tool_failure_text
 
 logger = logging.getLogger(__name__)
 
@@ -1223,7 +1223,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 arguments=arguments,
                 executor=executor,
                 status=pb2.EXECUTION_STATUS_TOOL_NOT_FOUND,
-                error_message=f"Tool '{tool_name}' not found in {executor.value} tools",
+                error_message=f"Tool '{tool_name}' not found",
             )
 
         # Determine timeout
@@ -1355,9 +1355,8 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         except Exception as e:
             # Catch all exceptions from tool execution
             status = pb2.EXECUTION_STATUS_ERROR
-            # Sanitize error message - don't expose internal details
-            error_message = f"Tool error: {type(e).__name__}: {str(e)}"
-            logger.error(f"ExecuteTool: {tool_name} raised exception: {e}")
+            error_message = raised_tool_failure_text(e)
+            logger.error(f"ExecuteTool: {tool_name} raised {type(e).__name__}: {e}")
             logger.error(traceback.format_exc())
 
         # Calculate latency

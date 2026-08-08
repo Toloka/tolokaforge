@@ -144,7 +144,7 @@ def test_result_comes_from_the_record_not_the_message() -> None:
     """The two views word the same failure differently; the record is authoritative."""
     messages = [
         _assistant("", _call("call_A", "refund", order_id="42")),
-        _tool_message("call_A", "Error: Tool error: ValueError: already refunded"),
+        _tool_message("call_A", "Error: already refunded"),
     ]
     records = [
         recorded_call(
@@ -454,7 +454,7 @@ def test_a_records_present_timeline_neither_joins_nor_validates_its_tool_message
     run over evidence nothing reads."""
     messages = [
         _assistant("", _call("call_A", "refund", order_id="42")),
-        _tool_message("call_A", "Error: Tool error: ValueError: already refunded"),
+        _tool_message("call_A", "Error: already refunded"),
         _tool_message("call_ghost", "answers a call this trial never made"),
     ]
     records = [recorded_call("refund", call_id="call_A", output="already refunded")]

@@ -714,38 +714,6 @@ class TraceMatcher(BaseModel):
             )
         return self
 
-    @model_validator(mode="after")
-    def _require_a_success_status_beside_a_result_predicate(self) -> TraceMatcher:
-        """#717: a failed call's result text differs between the two substrates.
-
-        Successful result text is byte-identical across substrates and canonically
-        locked; nothing proves that for a failure, so a ``result`` predicate is
-        admitted only where portability holds. The rule is syntactic — one operator,
-        ``equals``, valued ``success`` — rather than "does this status admit a
-        failure", which would be a satisfiability question over every operator.
-        """
-        if self.result is None or _asserts_a_successful_call(self.status):
-            return self
-        raise ValueError(
-            "a result predicate needs a status predicate reading exactly "
-            f"{{equals: {ToolExecutionStatus.SUCCESS.value}}} beside it. A failed call's "
-            "result text is not identical on the two substrates (#717), so only a "
-            "successful call's result is matchable. To assert a call failed, match on "
-            "status instead"
-        )
-
-
-def _asserts_a_successful_call(status: ValuePredicate | None) -> bool:
-    """Whether ``status`` is the exact predicate #717 admits a ``result`` read beside.
-
-    Syntactic — one operator, ``equals``, valued ``success`` — rather than "does this
-    status admit a failure", which would be a satisfiability question over every
-    operator.
-    """
-    if status is None or status.declared_operators() != {"equals"}:
-        return False
-    return status.equals == ToolExecutionStatus.SUCCESS.value
-
 
 class BoundValue(BaseModel):
     """One name a binding extracts out of the event it selected.
@@ -864,27 +832,6 @@ class TraceBinding(BaseModel):
             "is a handful of members — every event carrying the bound value is already "
             "selected by a predicate on that field reading an equals literal, so the "
             "correlation says nothing the literal does not"
-        )
-
-    @model_validator(mode="after")
-    def _require_a_success_status_beside_a_result_extraction(self) -> TraceBinding:
-        """#717 over a value bound out of ``result`` rather than compared against it.
-
-        The landed rule fires on a ``result`` *predicate*, which a binder carries
-        none of. A failed call's result text differs between the substrates, and a
-        value bound out of it propagates that difference into every reference.
-        """
-        bound_from_result = sorted(
-            name for name, value in self.values.items() if value.head_segment() == "result"
-        )
-        if not bound_from_result or _asserts_a_successful_call(self.match.status):
-            return self
-        raise ValueError(
-            f"bindings {bound_from_result} read result without a status predicate reading "
-            f"exactly {{equals: {ToolExecutionStatus.SUCCESS.value}}} on the binder's "
-            "match. A failed call's result text is not identical on the two substrates "
-            "(#717), so a value bound out of it grades differently on each. Add the "
-            "status predicate, or bind an argument of the call instead"
         )
 
 
@@ -2886,8 +2833,8 @@ class RecordedToolCall(BaseModel):
     arguments: dict[str, Any]
     executor: ToolExecutorIdentity
     status: ToolExecutionStatus
-    # Untruncated. On a failed call this is the failure text the executing layer
-    # produced, which is not the text the ``role: tool`` message carries.
+    # Untruncated. On a failed call this is the tool's own failure text, which
+    # the ``role: tool`` message carries behind an ``Error: `` prefix.
     output: str
     # Wall time measured by the recording caller around the call.
     latency_seconds: float

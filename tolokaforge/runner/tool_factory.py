@@ -59,6 +59,7 @@ from tolokaforge.tools.persistent_shell import (
     DockerComposeBashSession,
     LocalBashSession,
 )
+from tolokaforge.tools.registry import TOOL_FAILURE_WITHOUT_MESSAGE, raised_tool_failure_text
 from tolokaforge.tools.str_replace_editor import (
     DockerComposeEditor,
     EditorBackend,
@@ -115,12 +116,17 @@ class ToolExecutionError(Exception):
     Raising this from a wrapper's execute() lets the runner service record
     EXECUTION_STATUS_ERROR so tool_success_rate, failure_attribution, and
     error_count reflect reality.
+
+    ``str`` is the tool's own message alone, because the runner records it as
+    the failed call's result text and the in-process substrate records the same
+    text verbatim from ``ToolResult.error``. ``tool_name`` stays an attribute
+    and the runner's log names the tool independently.
     """
 
     def __init__(self, tool_name: str, message: str):
         self.tool_name = tool_name
         self.message = message
-        super().__init__(f"{tool_name}: {message}")
+        super().__init__(message)
 
 
 # =============================================================================
@@ -745,10 +751,7 @@ class BuiltinFileToolWrapper(ToolWrapper):
         # preserving correct tool_success_rate and failure attribution.
         # The runner's exception handler sends the error message back to
         # the LLM, so the agent can still self-correct.
-        raise ToolExecutionError(
-            self.name,
-            result.error or "Tool returned failure with no error message",
-        )
+        raise ToolExecutionError(self.name, result.error or TOOL_FAILURE_WITHOUT_MESSAGE)
 
 
 # =============================================================================
@@ -814,10 +817,7 @@ class BuiltinGenericToolWrapper(ToolWrapper):
         # preserving correct tool_success_rate and failure attribution.
         # The runner's exception handler sends the error message back to
         # the LLM, so the agent can still self-correct.
-        raise ToolExecutionError(
-            self.name,
-            result.error or "Tool returned failure with no error message",
-        )
+        raise ToolExecutionError(self.name, result.error or TOOL_FAILURE_WITHOUT_MESSAGE)
 
 
 # =============================================================================
@@ -1350,7 +1350,7 @@ class StrReplaceEditorToolWrapper(ToolWrapper):
         try:
             return await loop.run_in_executor(None, self._dispatch, arguments)
         except EditorError as exc:
-            raise ToolExecutionError(self.name, str(exc)) from exc
+            raise ToolExecutionError(self.name, raised_tool_failure_text(exc)) from exc
 
     def _dispatch(self, arguments: dict[str, Any]) -> str:
         command = arguments.get("command")
