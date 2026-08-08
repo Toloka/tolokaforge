@@ -60,9 +60,9 @@ class TraceEvent:
     ``executor``, ``status`` and ``latency_seconds`` come from the trial's
     tool-call record alone, so a call the trial never recorded carries ``None``
     for all three. ``result`` prefers the record — the record's failure text is
-    the executing layer's own and is untruncated, while the ``role: tool``
-    message words the same failure differently — and falls back to that message
-    on a timeline that carries no record view at all.
+    untruncated and carries no ``Error:`` prefix, unlike the ``role: tool``
+    message — and falls back to that message on a timeline that carries no
+    record view at all.
     """
 
     position: int

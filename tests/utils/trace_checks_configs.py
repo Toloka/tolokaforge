@@ -10,11 +10,9 @@ assertion rather than quietly losing its coverage.
 
 from typing import Any
 
-# Every operator, spread across the fields whose values each one reads. The
-# ``status``/``result`` pairing is #717's rule: a result predicate is admitted only
-# beside a status predicate reading exactly ``{equals: success}``. The two binding
-# operators name values ``_PAYMENT_BINDER`` extracts, so the matcher is authorable
-# only under the constraint that carries that binder.
+# Every operator, spread across the fields whose values each one reads. The two
+# binding operators name values ``_PAYMENT_BINDER`` extracts, so the matcher is
+# authorable only under the constraint that carries that binder.
 EVERY_OPERATOR_MATCHER: dict[str, Any] = {
     "kind": "tool_call",
     "tool": {"equals": "billing_api_get_payment"},

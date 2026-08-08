@@ -211,7 +211,7 @@ Pro emits:   workday_api:workday_api_get_employee
 ```
 
 The harness rejects the synthesised name (`Tool 'workday_api:workday_api_get_employee'
-not found in agent tools`) and the model retries — often eventually
+not found`) and the model retries — often eventually
 hitting `max_turns` without finishing the task.
 
 **Affects**: the `ots_*_internal` task packs use this convention
@@ -249,7 +249,7 @@ pre-fix):
   - name: knowledge_base_search_policy       # invented; not registered
     arguments: {query: "System Access"}
 - role: tool
-  content: "Tool 'knowledge_base_search_policy' not found in agent tools"
+  content: "Error: Tool 'knowledge_base_search_policy' not found"
 ```
 
 ### 2.3 Pre-fix: "stops reasoning after turn 1" on long-context tool flows

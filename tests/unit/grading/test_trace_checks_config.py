@@ -278,52 +278,6 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_reject_fields_the_kind_never_carries",
     ),
     _Rejection(
-        label="result_without_a_status_predicate",
-        block=_block(
-            _constraint(
-                {"present": {"match": {"kind": "tool_result", "result": {"contains": "ok"}}}}
-            )
-        ),
-        message="#717",
-        validator="_require_a_success_status_beside_a_result_predicate",
-    ),
-    _Rejection(
-        label="result_beside_a_non_success_status",
-        block=_block(
-            _constraint(
-                {
-                    "present": {
-                        "match": {
-                            "kind": "tool_result",
-                            "status": {"not_equals": "error"},
-                            "result": {"contains": "ok"},
-                        }
-                    }
-                }
-            )
-        ),
-        message="#717",
-        validator="_require_a_success_status_beside_a_result_predicate",
-    ),
-    _Rejection(
-        label="result_beside_a_two_operator_status",
-        block=_block(
-            _constraint(
-                {
-                    "present": {
-                        "match": {
-                            "kind": "tool_result",
-                            "status": {"equals": "success", "exists": True},
-                            "result": {"contains": "ok"},
-                        }
-                    }
-                }
-            )
-        ),
-        message="#717",
-        validator="_require_a_success_status_beside_a_result_predicate",
-    ),
-    _Rejection(
         label="immediately_before_without_among",
         block=_block(
             _constraint(
@@ -679,14 +633,6 @@ _REJECTIONS: tuple[_Rejection, ...] = (
         validator="_reject_an_extraction_over_a_closed_vocabulary",
     ),
     _Rejection(
-        label="extraction_from_result_without_a_success_status",
-        block=_block(
-            _constraint(_references_the_case(), bind=_binder(values={"case": {"field": "result"}}))
-        ),
-        message="read result without a status predicate",
-        validator="_require_a_success_status_beside_a_result_extraction",
-    ),
-    _Rejection(
         label="capture_pattern_with_two_groups",
         block=_block(
             _constraint(
@@ -761,20 +707,40 @@ def test_a_bound_value_no_reference_reads_is_a_load_error():
     TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=_binder())))
 
 
-def test_a_binder_reading_result_loads_beside_a_success_status():
-    """The other half of #717 extended: the rule admits the portable shape.
+# A ``result`` read is admissible whatever status the call it selects ended with.
+# Both substrates record one text for one failure — the tool's own message — so
+# nothing about the status decides whether the text is portable. The two sweeps
+# below span the status shapes an author writes, including the ones a scoping rule
+# would have had to refuse.
 
-    Its rejection row above stays green under a rule that rejected every
-    ``result`` extraction, which would leave the portable correlation unwritable.
-    """
-    binding = {
-        "match": {
-            "kind": "tool_call",
-            "tool": {"equals": "open_case"},
-            "status": {"equals": "success"},
-        },
-        "values": {"case": {"field": "result", "pattern": r"case ([0-9]+)"}},
-    }
+_STATUSES_A_RESULT_READ_LOADS_BESIDE: tuple[dict[str, Any] | None, ...] = (
+    None,
+    {"equals": "error"},
+    {"equals": "success"},
+    {"not_equals": "error"},
+    {"equals": "success", "exists": True},
+)
+
+
+@pytest.mark.parametrize("status", _STATUSES_A_RESULT_READ_LOADS_BESIDE)
+def test_a_result_predicate_loads_beside_any_status_predicate(status: dict[str, Any] | None):
+    matcher: dict[str, Any] = {"kind": "tool_result", "result": {"contains": "already refunded"}}
+    if status is not None:
+        matcher["status"] = status
+
+    config = TraceChecksConfig(**_block(_constraint({"present": {"match": matcher}})))
+
+    loaded = config.constraints[0].require.present.match
+    assert loaded.result.declared_operators() == {"contains"}
+    assert (loaded.status is None) is (status is None)
+
+
+@pytest.mark.parametrize("status", _STATUSES_A_RESULT_READ_LOADS_BESIDE)
+def test_a_binder_reading_result_loads_beside_any_status_predicate(status: dict[str, Any] | None):
+    match: dict[str, Any] = {"kind": "tool_call", "tool": {"equals": "open_case"}}
+    if status is not None:
+        match["status"] = status
+    binding = {"match": match, "values": {"case": {"field": "result", "pattern": r"case ([0-9]+)"}}}
 
     config = TraceChecksConfig(**_block(_constraint(_references_the_case(), bind=binding)))
 
@@ -1087,9 +1053,6 @@ def test_a_matcher_may_read_every_field_its_kind_carries():
         matcher: dict[str, Any] = {"kind": kind.value}
         for name in sorted(matchable):
             matcher[name] = {"payment_id": {"exists": True}} if name == "args" else {"exists": True}
-        # #717 admits a result predicate only beside a success status.
-        if "result" in matchable:
-            matcher["status"] = {"equals": "success"}
         TraceConstraintExpr(present={"match": matcher})
 
 
