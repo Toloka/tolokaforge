@@ -34,7 +34,7 @@ the Docker architecture's trial isolation and grading requirements.
 1. **Trial Isolation** — Each trial has isolated state, schemas, and snapshots
 2. **Schema-Aware** — Stores table schemas for validation and type inference
 3. **Unstable Field Filtering** — Explicit field exclusion for deterministic hashing
-4. **Tau/TlkMcpCore Compatible** — Hash algorithm matches existing implementations
+4. **Single-Substrate Digests** — state hashes are `compute_stable_hash` output ([Get Stable Hash](#4-get-stable-hash)); a digest never crosses substrates
 5. **Snapshot/Restore** — Supports golden path execution during grading
 
 ---
