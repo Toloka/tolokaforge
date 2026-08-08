@@ -2833,8 +2833,8 @@ class RecordedToolCall(BaseModel):
     arguments: dict[str, Any]
     executor: ToolExecutorIdentity
     status: ToolExecutionStatus
-    # Untruncated. On a failed call this is the failure text the executing layer
-    # produced, which is not the text the ``role: tool`` message carries.
+    # Untruncated. On a failed call this is the tool's own failure text, which
+    # the ``role: tool`` message carries behind an ``Error: `` prefix.
     output: str
     # Wall time measured by the recording caller around the call.
     latency_seconds: float

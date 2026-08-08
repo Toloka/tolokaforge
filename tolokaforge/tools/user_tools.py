@@ -12,6 +12,7 @@ from tolokaforge.tools.registry import (
     Tool,
     ToolExecutionStatus,
     ToolResult,
+    raised_tool_failure_text,
     sanitize_tool_schema,
 )
 
@@ -347,7 +348,7 @@ class UserToolExecutor:
             return ToolResult(
                 success=False,
                 output="",
-                error=f"User tool '{tool_name}' not found",
+                error=f"Tool '{tool_name}' not found",
                 status=ToolExecutionStatus.TOOL_NOT_FOUND,
             )
 
@@ -357,7 +358,7 @@ class UserToolExecutor:
             return ToolResult(
                 success=False,
                 output="",
-                error=f"User tool execution failed: {str(e)}",
+                error=raised_tool_failure_text(e),
                 status=ToolExecutionStatus.ERROR,
             )
 
