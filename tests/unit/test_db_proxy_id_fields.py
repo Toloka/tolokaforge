@@ -15,19 +15,24 @@ Two harnesses, deliberately:
 
 - ``FakeDBClient`` records the mutation payloads the proxy emits and answers
   query/get_state from an in-memory store it never mutates — it locks payload
-  *shape* only. Its ``query()`` regex matches a single-predicate JSONPath, so
-  composite lookups exercise the full-scan fallback here.
+  *shape* only. Its ``query()`` regex matches a single quoted-string predicate
+  and string-coerces the stored value, which is not the dialect the real
+  service speaks, so composite lookups exercise the full-scan fallback here.
 - The ``db_client`` fixture wraps the real in-process db-service, the only
-  harness on which "which row changed" is answerable — every row-level
-  assertion lives there.
+  harness on which "which row changed" is answerable, and the only one that
+  speaks the JSONPath dialect a lookup is actually judged by — every row-level
+  assertion and every lookup assertion lives there, counting round trips with a
+  pass-through recorder rather than a stand-in.
 """
 
 import inspect
+import logging
 import re
 from types import SimpleNamespace
+from typing import Any
 
 import pytest
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError, create_model
 
 from tolokaforge.runner.db_proxy import DBServiceProxy, IdFieldResolutionError
 from tolokaforge.runner.id_resolution import TableKey
@@ -116,7 +121,16 @@ def _make_dynamic_model() -> type[BaseModel]:
 
 
 class FakeDBClient:
-    """Records mutation payloads; answers query/get_state from an in-memory store."""
+    """Records mutation payloads; answers query/get_state from an in-memory store.
+
+    Its ``query()`` speaks **only** the quoted-string shape of the dialect — one
+    predicate, ``=='...'`` — and matches by ``str()``-coercing the stored value,
+    so it *finds* an int-keyed row where the real service misses, and it matches
+    no composite predicate at all. That coercion is the precise divergence that
+    hid the untyped-literal bug, so this harness locks mutation payload shape and
+    nothing else: what a lookup resolves, costs in round trips, or logs is
+    answerable only on the ``db_client`` harness.
+    """
 
     def __init__(self, state: dict | None = None):
         self.state = {k: [dict(r) for r in v] for k, v in (state or {}).items()}
@@ -429,3 +443,331 @@ async def test_single_key_rows_unchanged_through_the_real_service(db_client):
     assert await _rows(db_client, "t_proxy_single_key", "widgets") == [
         {"widget_id": "W1", "status": "ready"}
     ]
+
+
+# ---------------------------------------------------------------------------
+# Single-field lookup — typed JSONPath literals, verified hits (real service)
+# ---------------------------------------------------------------------------
+
+
+class _ScalarKeyed(BaseModel):
+    """Base for the plainly-typed ``id`` models the lookup cases vary the key type over."""
+
+    model_config = {"extra": "forbid"}
+
+    def get_id(self) -> Any:
+        return self.id
+
+
+def _scalar_keyed(name: str, annotation: Any) -> type[BaseModel]:
+    return create_model(name, __base__=_ScalarKeyed, id=(annotation, ...), label=(str, ""))
+
+
+IntKeyed = _scalar_keyed("IntKeyed", int)
+BoolKeyed = _scalar_keyed("BoolKeyed", bool)
+FloatKeyed = _scalar_keyed("FloatKeyed", float)
+StrIdKeyed = _scalar_keyed("StrIdKeyed", str)
+NullableIntKeyed = _scalar_keyed("NullableIntKeyed", int | None)
+
+
+class _Calls:
+    """Pass-through recorder: counts the round trips a lookup costs and keeps the
+    JSONPath it sent, while the real service still answers every call."""
+
+    def __init__(self, db_client):
+        self.query = 0
+        self.get_state = 0
+        self.jsonpaths: list[str] = []
+        real_query, real_get_state = db_client.query, db_client.get_state
+
+        async def query(trial_id, jsonpath):
+            self.query += 1
+            self.jsonpaths.append(jsonpath)
+            return await real_query(trial_id, jsonpath)
+
+        async def get_state(trial_id, tables=None):
+            self.get_state += 1
+            return await real_get_state(trial_id, tables=tables)
+
+        db_client.query, db_client.get_state = query, get_state
+
+    @property
+    def round_trips(self) -> tuple[int, int]:
+        return self.query, self.get_state
+
+
+async def _lookup_proxy(db_client, trial_id, table, model_cls, rows, id_fields=None):
+    proxy = await _service_proxy(db_client, trial_id, table, model_cls, rows, id_fields)
+    return proxy, _Calls(db_client)
+
+
+def _messages(caplog, level: int) -> list[str]:
+    return [r.message for r in caplog.records if r.levelno == level]
+
+
+@pytest.fixture
+def lookup_logs(caplog):
+    caplog.set_level(logging.DEBUG, logger="tolokaforge.runner.db_proxy")
+    return caplog
+
+
+async def test_int_key_resolves_in_one_query(db_client):
+    """An int key is a bare decimal literal, so the row comes back from the index
+    without the full scan the quoted literal always degraded to."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_int", "orders", IntKeyed, [{"id": 4, "label": "four"}, {"id": 5}]
+    )
+    found = await proxy.get_by_id(IntKeyed, 5)
+    assert found is not None and found.id == 5
+    assert calls.round_trips == (1, 0)
+
+
+async def test_declared_string_key_keeps_the_quoted_wire_predicate(db_client):
+    """A plain string still travels as ``@.field=='value'`` — the framing the
+    FakeDBClient matcher and every existing caller speak."""
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_str",
+        "widgets",
+        WidgetLike,
+        [{"widget_id": "W1", "status": "new"}],
+        {"widgets": "widget_id"},
+    )
+    found = await proxy.get_by_id(WidgetLike, "W1")
+    assert found is not None and found.widget_id == "W1"
+    assert calls.round_trips == (1, 0)
+    assert calls.jsonpaths == ["$.widgets[?(@.widget_id=='W1')]"]
+
+
+async def test_quote_bearing_key_resolves_without_a_query_error(db_client, lookup_logs):
+    """``O'Brien`` closed the literal early and drew a 400 that was swallowed into
+    a debug line; escaped, it resolves in the one query."""
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_quote",
+        "widgets",
+        WidgetLike,
+        [{"widget_id": "O'Brien", "status": "new"}],
+        {"widgets": "widget_id"},
+    )
+    found = await proxy.get_by_id(WidgetLike, "O'Brien")
+    assert found is not None and found.status == "new"
+    assert calls.round_trips == (1, 0)
+    assert _messages(lookup_logs, logging.WARNING) == []
+
+
+@pytest.mark.parametrize(
+    ("model_cls", "rows", "lookup", "expected_label", "expected_literal"),
+    [
+        (
+            BoolKeyed,
+            [{"id": True, "label": "on"}, {"id": False, "label": "off"}],
+            False,
+            "off",
+            "false",
+        ),
+        (
+            FloatKeyed,
+            [{"id": 1.5, "label": "lo"}, {"id": 2.5, "label": "hi"}],
+            2.5,
+            "hi",
+            "2.5",
+        ),
+    ],
+    ids=["bool", "float"],
+)
+async def test_non_string_key_types_resolve_in_one_query(
+    db_client, model_cls, rows, lookup, expected_label, expected_literal
+):
+    """A bool spells ``true``/``false`` and a float a bare decimal — ``bool`` ahead of
+    ``int``, which it subclasses, so a bool key never travels as ``1``."""
+    proxy, calls = await _lookup_proxy(
+        db_client, f"t921_{expected_label}", "things", model_cls, rows
+    )
+    found = await proxy.get_by_id(model_cls, lookup)
+    assert found is not None and found.label == expected_label
+    assert calls.round_trips == (1, 0)
+    assert calls.jsonpaths == [f"$.things[?(@.id=={expected_literal})]"]
+
+
+async def test_unencodable_key_value_skips_the_query_visibly(db_client, lookup_logs):
+    """``None`` has no literal in this dialect (``==null`` matches nothing), so the
+    guaranteed-futile query is not sent and an operator can see why."""
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_none",
+        "widgets",
+        WidgetLike,
+        [{"widget_id": "W1", "status": "new"}],
+        {"widgets": "widget_id"},
+    )
+    assert await proxy.get_by_id(WidgetLike, None) is None
+    assert calls.round_trips == (0, 1)
+    assert [m for m in _messages(lookup_logs, logging.INFO) if "widgets.widget_id" in m]
+
+
+async def test_query_error_is_operator_visible_and_the_scan_still_answers(db_client, lookup_logs):
+    """A numeric filter over a column holding ``null`` is a 400 (#966). The row
+    still comes back — from the scan — and the failure is not hidden at debug."""
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_poison",
+        "orders",
+        NullableIntKeyed,
+        [{"id": 5, "label": "five"}, {"id": None, "label": "poison"}],
+    )
+    found = await proxy.get_by_id(NullableIntKeyed, 5)
+    assert found is not None and found.label == "five"
+    assert calls.round_trips == (1, 1)
+    assert [m for m in _messages(lookup_logs, logging.WARNING) if "orders.id" in m]
+
+
+async def test_a_query_hit_the_model_contradicts_is_not_a_hit(db_client, lookup_logs):
+    """The dialect coerces (``@.id==7`` matches a stored ``"7"``). A hit counts only
+    once the model agrees, so query and scan answer with one predicate."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_coerce", "things", StrIdKeyed, [{"id": "7", "label": "seven"}]
+    )
+    assert await proxy.get_by_id(StrIdKeyed, 7) is None
+    assert await proxy.get_by_id(StrIdKeyed, "7") is not None
+    assert calls.round_trips == (2, 1)
+    assert _messages(lookup_logs, logging.WARNING) == []
+
+
+async def test_a_query_hit_the_model_cannot_validate_is_not_a_query_error(db_client, lookup_logs):
+    """The other coercion artifact: the hit is a row this model cannot represent.
+    It is a miss, not a query failure — and the scan, reading the same row, is
+    what surfaces it."""
+    proxy, _ = await _lookup_proxy(
+        db_client, "t921_unrepresentable", "things", StrIdKeyed, [{"id": 7, "label": "seven"}]
+    )
+    with pytest.raises(ValidationError):
+        await proxy.get_by_id(StrIdKeyed, 7)
+    assert _messages(lookup_logs, logging.WARNING) == []
+    assert [m for m in _messages(lookup_logs, logging.DEBUG) if "declared key lookup" in m]
+
+
+async def test_a_table_with_no_usable_key_issues_no_query(db_client, lookup_logs):
+    """Neither an ``id_fields`` entry nor an ``id`` field: the ``@.id`` probe cannot
+    match anything, so it is not sent, and its reason reads differently from a miss."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_nokey", "users", EmailKeyed, [{"email": "a@x.io", "name": "A"}]
+    )
+    found = await proxy.get_by_id(EmailKeyed, "a@x.io")
+    assert found is not None and found.name == "A"
+    assert calls.round_trips == (0, 1)
+    debug = _messages(lookup_logs, logging.DEBUG)
+    assert [m for m in debug if "declares no key field" in m]
+    assert not [m for m in debug if "declared key lookup" in m]
+
+
+async def test_a_declared_key_that_matches_nothing_reads_as_a_miss(db_client, lookup_logs):
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_miss",
+        "widgets",
+        WidgetLike,
+        [{"widget_id": "W1", "status": "new"}],
+        {"widgets": "widget_id"},
+    )
+    assert await proxy.get_by_id(WidgetLike, "W404") is None
+    assert calls.round_trips == (1, 1)
+    debug = _messages(lookup_logs, logging.DEBUG)
+    assert [m for m in debug if "declared key lookup on 'widgets.widget_id' missed" in m]
+    assert not [m for m in debug if "declares no key field" in m]
+
+
+# ---------------------------------------------------------------------------
+# Composite lookup — the same encoder, the composite scan's own predicate
+# ---------------------------------------------------------------------------
+
+
+class Slotted(BaseModel):
+    """Composite-keyed by ``(account_id, slot)`` — a str component beside an int one."""
+
+    model_config = {"extra": "forbid"}
+
+    account_id: str
+    slot: int | None
+    qty: int = 0
+
+    def get_id(self) -> str:
+        return f"{self.account_id}_{self.slot}"
+
+
+SLOTS = [
+    {"account_id": "A1", "slot": 1, "qty": 10},
+    {"account_id": "A1", "slot": 2, "qty": 20},
+    {"account_id": "O'Brien", "slot": 2, "qty": 30},
+    {"account_id": "1", "slot": 9, "qty": 40},
+]
+
+SLOT_KEY = {"slots": ["account_id", "slot"]}
+
+
+async def test_composite_int_component_resolves_in_one_query(db_client):
+    """Every component goes through the one encoder, so a composite key mixing a
+    string and an int resolves from the index instead of scanning."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_int", "slots", Slotted, SLOTS, SLOT_KEY
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "A1", "slot": 2})
+    assert found is not None and found.qty == 20
+    assert calls.round_trips == (1, 0)
+    assert calls.jsonpaths == ["$.slots[?(@.account_id=='A1' & @.slot==2)]"]
+
+
+async def test_composite_quote_bearing_component_resolves_without_a_query_error(
+    db_client, lookup_logs
+):
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_quote", "slots", Slotted, SLOTS, SLOT_KEY
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "O'Brien", "slot": 2})
+    assert found is not None and found.qty == 30
+    assert calls.round_trips == (1, 0)
+    assert _messages(lookup_logs, logging.WARNING) == []
+
+
+async def test_composite_unencodable_component_skips_the_whole_query(db_client, lookup_logs):
+    """One component with no literal makes the whole conjunction unaskable — and the
+    scan, which has no such limit, still finds the row."""
+    rows = [*SLOTS, {"account_id": "A2", "slot": None, "qty": 50}]
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_none", "slots", Slotted, rows, SLOT_KEY
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "A2", "slot": None})
+    assert found is not None and found.qty == 50
+    assert calls.round_trips == (0, 1)
+    info = _messages(lookup_logs, logging.INFO)
+    assert [m for m in info if "slots.account_id+slot" in m and "slot=None" in m]
+
+
+async def test_a_composite_query_hit_the_record_contradicts_is_not_a_hit(db_client, lookup_logs):
+    """The dialect coerces components too (``@.account_id==1`` matches a stored
+    ``"1"``), so the composite hit is held against the composite scan's predicate."""
+    proxy, calls = await _lookup_proxy(
+        db_client, "t921_comp_coerce", "slots", Slotted, SLOTS, SLOT_KEY
+    )
+    assert await proxy.get_by_id(Slotted, {"account_id": 1, "slot": 9}) is None
+    assert await proxy.get_by_id(Slotted, {"account_id": "1", "slot": 9}) is not None
+    assert calls.round_trips == (2, 1)
+    assert _messages(lookup_logs, logging.WARNING) == []
+
+
+async def test_a_composite_hit_is_verified_the_way_the_scan_compares(db_client):
+    """The composite scan compares the model's own dump, so a component stored as
+    ``"2"`` in an int-typed field is ``2`` to it. Verifying the raw record instead
+    would make the query miss a row its own scan then finds — one predicate on
+    both sides is what keeps the hit worth a round trip."""
+    proxy, calls = await _lookup_proxy(
+        db_client,
+        "t921_comp_roundtrip",
+        "slots",
+        Slotted,
+        [{"account_id": "A1", "slot": "2", "qty": 7}],
+        SLOT_KEY,
+    )
+    found = await proxy.get_by_id(Slotted, {"account_id": "A1", "slot": 2})
+    assert found is not None and found.qty == 7
+    assert calls.round_trips == (1, 0)
