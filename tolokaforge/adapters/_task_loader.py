@@ -314,14 +314,12 @@ def validate_grading_yaml(
     actors. Every finding is named in one raise rather than the first one found,
     because an author fixing a pack wants the list.
 
-    A grading path that is not on disk returns an empty report: this gate reads a
-    file, and whether a task has a block to read at all is a task-level question
-    :func:`grading_source_under_adapter` answers off the adapter the task declares —
-    the native adapter grades from the file, while another may synthesise its whole
-    config without one.
-
     Args:
-        grading_path: The task's grading file.
+        grading_path: The task's grading file, on disk. Whether a task has a block to
+            read at all is a task-level question :func:`grading_source_under_adapter`
+            answers off the adapter the task declares, and both gates resolve it before
+            calling here, so this one is handed a file rather than deciding what its
+            absence means.
         inventory: The task's tool set. A caller that cannot resolve one passes
             :meth:`ToolInventory.unresolvable`, which skips every tool-aware rule
             into the returned report's ``unchecked`` and fails nothing.
@@ -357,10 +355,10 @@ def validate_grading_yaml(
     Raises:
         ValueError / pydantic.ValidationError: If the grading block is invalid.
         RuntimeError: If the file or any grading key it declares is not a mapping.
+        FileNotFoundError: If *grading_path* is not on disk — the file vanished between
+            that resolution and this read. Both gates convert it to a named per-task
+            failure rather than letting a pack read as checked.
     """
-    if not grading_path.exists():
-        return AuthoringReport()
-
     with open(grading_path) as f:
         raw_grading_data = yaml.safe_load(f)
 
