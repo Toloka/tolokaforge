@@ -37,6 +37,7 @@ import math
 import threading
 from collections.abc import Callable, Mapping
 from copy import deepcopy
+from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
@@ -55,6 +56,19 @@ T = TypeVar("T", bound=BaseModel)
 
 
 __all__ = ["DBServiceProxy", "SyncDBServiceProxy", "IdFieldResolutionError"]
+
+
+@dataclass(frozen=True)
+class _NameMatch:
+    """A table matched to a model class by name, and the rule that matched it."""
+
+    table: str
+    rule: str
+
+
+def _snake_case(class_name: str) -> str:
+    """Convert a CamelCase class name to snake_case."""
+    return "".join(["_" + c.lower() if c.isupper() else c for c in class_name]).lstrip("_")
 
 
 def _jsonpath_literal(value: Any) -> str | None:
@@ -191,6 +205,54 @@ class DBServiceProxy:
             f"DBServiceProxy.register_model: {model_cls.__name__} (key={model_key}) -> table '{table_name}' (dict_id={id(self._model_name_to_table)})"
         )
 
+    def _match_name(self, model_cls: type[BaseModel]) -> _NameMatch | None:
+        """
+        Find the table in db_table_names whose name matches the model's class name.
+
+        Five rules are tried per table, in order, so a table earlier in
+        db_table_names wins over a later one whatever rule matches it: suffix
+        match singular (``tau_manufacturing_capa`` ends with ``_capa``), suffix
+        match plural (``zendesk_users`` ends with ``_users``), ``-ies`` plural
+        suffix (``entries`` for ``entry``), exact singular, exact plural.
+
+        Pure: no registration, and no derived-name last resort.
+        """
+        snake_name = _snake_case(model_cls.__name__)
+        singular_suffix = f"_{snake_name}"
+        plural_suffix = f"_{snake_name}s"
+        ies_suffix = f"_{snake_name[:-1]}ies" if snake_name.endswith("y") else None
+
+        for db_table in self.db_table_names:
+            if db_table.endswith(singular_suffix):
+                return _NameMatch(db_table, f"singular suffix '{singular_suffix}'")
+            if db_table.endswith(plural_suffix):
+                return _NameMatch(db_table, f"plural suffix '{plural_suffix}'")
+            if ies_suffix and db_table.endswith(ies_suffix):
+                return _NameMatch(db_table, f"ies plural suffix '{ies_suffix}'")
+            if db_table == snake_name:
+                return _NameMatch(db_table, "exact singular match")
+            if db_table == f"{snake_name}s":
+                return _NameMatch(db_table, "exact plural match")
+        return None
+
+    def match_table_by_name(self, model_cls: type[BaseModel]) -> str | None:
+        """
+        Report which table an unregistered model resolves to by class name.
+
+        Query-only view of the same match _get_table_name falls back to, for
+        callers that need to say where a model will land before it lands there.
+        Registers nothing, and answers None where _get_table_name would go on to
+        derive a table name from the class name.
+
+        Args:
+            model_cls: The model class to match
+
+        Returns:
+            The matching table name, or None if no table name matches
+        """
+        match = self._match_name(model_cls)
+        return match.table if match else None
+
     def _get_table_name(self, model_cls: type[BaseModel]) -> str:
         """
         Get the table name for a model class.
@@ -212,79 +274,23 @@ class DBServiceProxy:
             logger.debug(f"_get_table_name: FOUND model_key='{model_key}' -> table='{table_name}'")
             return table_name
 
-        # Log the mismatch for debugging
-        logger.warning(
+        logger.debug(
             f"Model key '{model_key}' not found in registered models. "
             f"Available keys: {list(self._model_name_to_table.keys())}"
         )
 
-        # Fallback: derive table name suffix from class name
-        # Convert CamelCase to snake_case
-        name = model_cls.__name__
-        snake_name = "".join(["_" + c.lower() if c.isupper() else c for c in name]).lstrip("_")
-
-        # Try to find a matching table in db_table_names
-        # This handles the case where tables have namespace prefixes (e.g., tau_manufacturing_capa)
-        if self.db_table_names:
-            # Build suffixes to match against (both singular and plural)
-            snake_suffix_singular = f"_{snake_name}"
-            snake_suffix_plural = f"_{snake_name}s"
-            # Handle -y -> -ies pluralization
-            if snake_name.endswith("y"):
-                snake_suffix_plural_ies = f"_{snake_name[:-1]}ies"
-            else:
-                snake_suffix_plural_ies = None
-
-            for db_table in self.db_table_names:
-                # Strategy 1: suffix match singular (e.g., "tau_manufacturing_capa" ends with "_capa")
-                if db_table.endswith(snake_suffix_singular):
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(singular suffix '{snake_suffix_singular}')"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 2: suffix match plural (e.g., "zendesk_users" ends with "_users")
-                if db_table.endswith(snake_suffix_plural):
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(plural suffix '{snake_suffix_plural}')"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 3: -ies plural suffix (e.g., "entries" for "entry")
-                if snake_suffix_plural_ies and db_table.endswith(snake_suffix_plural_ies):
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(ies plural suffix '{snake_suffix_plural_ies}')"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 4: exact match with singular (e.g., "capa" == "capa")
-                if db_table == snake_name:
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(exact singular match)"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
-                # Strategy 5: exact match with plural (e.g., "capas" == "capas")
-                if db_table == f"{snake_name}s":
-                    logger.info(
-                        f"_get_table_name: Matched model {model_cls.__name__} to table '{db_table}' "
-                        f"(exact plural match)"
-                    )
-                    # Register for future lookups
-                    self.register_model(db_table, model_cls)
-                    return db_table
+        match = self._match_name(model_cls)
+        if match is not None:
+            logger.info(
+                f"_get_table_name: Matched model {model_cls.__name__} to table "
+                f"'{match.table}' ({match.rule})"
+            )
+            # Register for future lookups
+            self.register_model(match.table, model_cls)
+            return match.table
 
         # Last resort fallback: derive table name from class name
-        # Simple pluralization
-        table_name = snake_name
+        table_name = _snake_case(model_cls.__name__)
         if not table_name.endswith("s"):
             table_name += "s"
 
