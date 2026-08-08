@@ -235,6 +235,23 @@ The rows say *signal* parity rather than *score* parity because of the two shape
 gate refuses: they survive in bundles recorded before the rule, and there each substrate
 takes a different component.
 
+**One comparison, one substrate.** Every hash comparison in the system computes both
+sides on one substrate: core hashes both operands with `state_digest`
+(`consistent_hash(to_hashable(...))`,
+[`state_checks.py`](../tolokaforge/core/grading/state_checks.py)), the runner hashes
+both with [`compute_stable_hash`](../tolokaforge/core/hash.py). The two algebras share
+the folding promise — `numeric_string_fields` behaves identically on both — and nothing
+else: they label every state differently, so digests never cross substrates and are
+never authored, which is why a hash source names a state rather than a digest. The two
+functions are deliberately not unified: `compute_stable_hash` backs persisted digests —
+db-service ETags, snapshot hashes, and the `ResetTrialResponse.state_hash` /
+`GetStateResponse.stable_hash` wire fields — and core's algebra reproduces the digests
+recorded bundles carry, so changing either function invalidates digests that already
+exist, while nothing needs a digest to travel between substrates.
+[`tests/canonical/test_expected_state_hash_is_not_portable.py`](../tests/canonical/test_expected_state_hash_is_not_portable.py)
+locks all three facts: same equivalence relation, a different label on every state, and
+no wire route for a digest to cross.
+
 The golden-actions differential runs over real gRPC and a real db-service, in
 [`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
 a matching and a diverging final state against the same golden replay, at two weights
