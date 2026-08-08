@@ -190,7 +190,7 @@ def read_declared_initial_state(
     declaring none answers ``None`` rather than raising, and every refusal names
     ``initial_state.json_db``, the declared path and the problem without naming which
     source wanted the state. The empty state is a state here — the reading that refuses
-    it belongs to whoever cannot use one, which is :func:`resolve_initial_state` above.
+    it belongs to whoever cannot use one, which is :func:`resolve_initial_state`.
 
     Raises:
         UnresolvableInitialState: the task declares a file and there is no ``task_dir``
