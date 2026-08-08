@@ -22,9 +22,11 @@ Fifteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
 6. both substrates fold a hash verdict and a JSONPath score into one
    ``state_checks`` component by the author's weight, pinned cell by cell to
    arithmetic this module computes for itself;
-7. the hash verdict either substrate can produce is binary, which is what makes
-   lock 6's canonical-tier hash inputs the only values that path yields rather
-   than a stand-in for it;
+7. the hash verdict either substrate can produce is binary — source-audited for
+   the producers whose verdict leaves as a bare float in a tuple, and a type
+   invariant of ``HashGradingResult`` for the producer whose verdict leaves
+   inside it — which is what makes lock 6's canonical-tier hash inputs the only
+   values that path yields rather than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
    enumerated here, and the two tables those claims rest on — lock 6's weight sweep
    and lock 9's method answers — stay substantive;
@@ -78,11 +80,11 @@ from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
 from types import MappingProxyType, UnionType
-from typing import Any, Union, get_args, get_origin
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 import pytest
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, ValidationError
 
 from tests.utils.combine_method_verdicts import (
     COMBINE_METHOD_COMPONENTS,
@@ -95,7 +97,7 @@ from tolokaforge.core import models as core_models
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
-from tolokaforge.core.grading.golden_replay import resolve_initial_state
+from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -216,13 +218,22 @@ _GOLDEN_ACTIONS_KEY = "state_checks.hash.golden_actions"
 _GOLDEN_REPLAY_PACK = "shop_orders_02"
 
 # Every function that can hand a hash verdict to the shared composer, as
-# (repo-relative module, function name). Asserted as set equality against the
-# hash family's declared evaluators, so a fourth producer forces an edit here
-# instead of landing with lock 7 green and lock 6's binariness premise false.
-_HASH_VERDICT_PRODUCERS = frozenset(
+# (repo-relative module, function name), partitioned by the shape the verdict
+# leaves in. Tuple-verdict producers hand it on as a bare float in a tuple, so
+# lock 7 audits their sources; the model-verdict producer returns it inside
+# ``HashGradingResult``, which derives the score from ``hash_match``, so lock 7
+# proves that invariant instead of reading its source. The union is asserted as
+# set equality against the hash family's declared evaluators, so a fourth
+# producer forces an edit here instead of landing with lock 7 green and lock
+# 6's binariness premise false.
+_TUPLE_VERDICT_PRODUCERS = frozenset(
     {
         ("tolokaforge/core/grading/state_checks.py", "check_hash"),
         ("tolokaforge/core/grading/state_checks.py", "check_hash_against_golden_replay"),
+    }
+)
+_MODEL_VERDICT_PRODUCERS = frozenset(
+    {
         ("tolokaforge/runner/service.py", "_execute_hash_grading"),
     }
 )
@@ -533,19 +544,23 @@ def _evaluator_source(evaluator: str) -> tuple[str, str]:
     return str(Path(module.__file__).resolve().relative_to(_REPO_ROOT)), attributes[-1]
 
 
-def _declared_hash_verdict_producers() -> frozenset[tuple[str, str]]:
+def _declared_hash_verdict_producers() -> dict[tuple[str, str], Any]:
     """Every evaluator the manifest names for a *scored* member of the hash family.
+
+    Keyed by source location — what the frozen producer partitions pin — with the
+    resolved callable as the value, so lock 7's model-verdict clause reads the
+    declared return type off the same walk its gate reads the set from.
 
     ``state_checks.hash.weight`` is ``CONFIG_INPUT`` — it names the composer that
     consumes a verdict, not a function that produces one — so the ``SCORED_CHECK``
     filter is what keeps the fold itself out of the audit.
     """
-    return frozenset(
-        _evaluator_source(evaluator)
+    return {
+        _evaluator_source(evaluator): _import_dotted(evaluator)
         for author_key in family_author_keys(_HASH_FAMILY_ROOT)
         for evaluator in (entry(author_key).core_evaluator, entry(author_key).runner_evaluator)
         if evaluator is not None and entry(author_key).kind is KeyKind.SCORED_CHECK
-    )
+    }
 
 
 # --------------------------------------------------------------------------
@@ -1667,21 +1682,19 @@ def _verdict_constants(expression: ast.expr) -> frozenset[float] | None:
 def _verdict_expression(node: ast.AST) -> ast.expr | None:
     """The expression ``node`` puts in the hash-score position, or ``None``.
 
-    Three shapes carry a verdict out of a producer: the first element of a returned
-    tuple (the ``(score, reason)`` pair both core producers return), a ``hash_score``
-    keyword argument (the runner returns its verdict inside a model), and an
-    assignment to ``hash_score``, which the other two then hand on.
+    Two shapes carry a verdict out of a tuple-verdict producer: the first element
+    of a returned tuple (the ``(score, reason, …)`` pair both audited producers
+    return) and an assignment to ``hash_score``, which a later return then hands on.
     """
     if isinstance(node, ast.Return) and isinstance(node.value, ast.Tuple):
         return node.value.elts[0]
-    named = isinstance(node, ast.keyword) and node.arg == _HASH_SCORE_NAME
     assigned = (
         isinstance(node, ast.Assign)
         and len(node.targets) == 1
         and isinstance(node.targets[0], ast.Name)
         and node.targets[0].id == _HASH_SCORE_NAME
     )
-    return node.value if named or assigned else None
+    return node.value if assigned else None
 
 
 def _sole_function(module_path: str, function_name: str) -> ast.AST:
@@ -1709,7 +1722,7 @@ def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[
     Fails when a score position holds a computed expression rather than a choice
     between literals: a derived partial verdict would make lock 6's ``0.0``/``1.0``
     runner inputs a stand-in for values that path never yields. Fails too when the
-    producer leaves by a ``return`` whose verdict sits outside the three positions
+    producer leaves by a ``return`` whose verdict sits outside the two positions
     :func:`_verdict_expression` reads — otherwise a refactor to ``return result``
     routes the verdict past the audit while the literals it left behind keep the
     binariness assertion green.
@@ -1735,36 +1748,79 @@ def _reachable_hash_verdicts(module_path: str, function_name: str) -> frozenset[
     assert not unaudited, (
         f"{module_path}::{function_name} returns at lines {unaudited} without putting a "
         "verdict in a position this audit reads — the first element of a returned tuple, "
-        f"an assignment to {_HASH_SCORE_NAME}, or a {_HASH_SCORE_NAME}= keyword. The "
-        "literals it leaves behind would keep the binariness assertion green while the "
-        "verdict it actually returns went unread"
+        f"or an assignment to {_HASH_SCORE_NAME}. The literals it leaves behind would "
+        "keep the binariness assertion green while the verdict it actually returns "
+        "went unread"
     )
     return frozenset(constants)
 
 
-def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
-    """Read from the source, because neither remaining producer is callable here.
+def _minimal_hash_result(**score_fields: Any) -> runner_models.HashGradingResult:
+    """A ``HashGradingResult`` carrying only what lock 7's model clause varies."""
+    return runner_models.HashGradingResult(
+        basis=runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE,
+        golden_replay=GoldenReplayRecord(authored=0),
+        **score_fields,
+    )
 
-    The runner's hash evaluator drives db-service over HTTP and core's golden-replay
-    producer needs a task's MCP server, so a canonical-tier call reaches neither.
-    What is callable is ``check_hash``, which core's ``expect_initial_state`` branch
-    reaches by hashing the pack's declared initial state; the composition fixture's
-    two cases are graded through it against a digest computed here the way that
-    branch computes it — which pins the two values lock 6 hands the runner as the
-    ones core's own evaluator returns for the same states.
+
+def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
+    """Each producer is held to binariness by the shape its verdict leaves in.
+
+    The two core producers hand their verdict on as a bare float in a tuple, and
+    core's golden-replay producer needs a task's MCP server, so their sources are
+    read: each must choose its score between literals, and every ``return`` must
+    carry it somewhere the audit reads. The runner's producer returns its verdict
+    inside ``HashGradingResult``, which derives ``hash_score`` from ``hash_match``
+    — so instead of reading that function's source, the lock proves the derivation
+    by exhaustion over the model's one free bit, that supplying a score at
+    construction is refused, and that the producer's declared return type keeps
+    the verdict inside the model.
+
+    What is callable is ``check_hash``, which core's ``expect_initial_state``
+    branch reaches by hashing the pack's declared initial state; the composition
+    fixture's two cases are graded through it against a digest computed here the
+    way that branch computes it — which pins the two values lock 6 hands the
+    runner as the ones core's own evaluator returns for the same states.
     """
     producers = _declared_hash_verdict_producers()
-    assert producers == _HASH_VERDICT_PRODUCERS, (
+    assert frozenset(producers) == _TUPLE_VERDICT_PRODUCERS | _MODEL_VERDICT_PRODUCERS, (
         "the set of functions the manifest names as hash-verdict producers changed. Every "
-        "one is audited below, and lock 6 hands the runner's fold a 0.0/1.0 verdict on the "
-        "strength of that audit — so widening this set is an edit a reviewer sees"
+        "one is guarded below — tuple-verdict producers by source audit, the model-verdict "
+        "producer by the model's own derivation — and lock 6 hands the runner's fold a "
+        "0.0/1.0 verdict on the strength of that guard, so widening either partition is an "
+        "edit a reviewer sees"
     )
-    for module_path, function_name in sorted(producers):
+    for module_path, function_name in sorted(_TUPLE_VERDICT_PRODUCERS):
         reachable = _reachable_hash_verdicts(module_path, function_name)
         assert reachable == _BINARY_HASH_VERDICT, (
             f"{module_path}::{function_name} can produce hash scores {sorted(reachable)}, "
             f"not {sorted(_BINARY_HASH_VERDICT)}"
         )
+
+    for module_path, function_name in sorted(_MODEL_VERDICT_PRODUCERS):
+        declared_return = get_type_hints(producers[(module_path, function_name)]).get("return")
+        assert declared_return is runner_models.HashGradingResult, (
+            f"{module_path}::{function_name} declares return type {declared_return!r}, not "
+            "HashGradingResult — its verdict would leave outside the model whose derivation "
+            "is the whole of what holds this producer to a binary verdict"
+        )
+    for match in (True, False):
+        derived = _minimal_hash_result(hash_match=match).hash_score
+        assert derived == (1.0 if match else 0.0), (
+            f"HashGradingResult(hash_match={match}) derives hash_score {derived}, so the "
+            "score no longer restates the verdict bit"
+        )
+    assert {
+        _minimal_hash_result(hash_match=match).hash_score for match in (True, False)
+    } == _BINARY_HASH_VERDICT, (
+        "exhausting hash_match yields hash scores outside "
+        f"{sorted(_BINARY_HASH_VERDICT)}, so the model-verdict producer's path can hand "
+        "the fold a value lock 6 never drives"
+    )
+    for match, score in ((True, 0.0), (True, 1.0), (False, 0.37)):
+        with pytest.raises(ValidationError, match=_HASH_SCORE_NAME):
+            _minimal_hash_result(hash_match=match, hash_score=score)
 
     pack = _pack_dir(test_data_dir, _COMPOSITION_KEY)
     task_id = _task_id_for(_COMPOSITION_KEY)
