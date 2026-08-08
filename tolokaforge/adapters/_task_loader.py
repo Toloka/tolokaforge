@@ -796,6 +796,47 @@ def hash_source_layer_under_adapter(
     return resolved.grading_hash_source_layer(task, task_dir)
 
 
+def seeded_tables_from_task(task: TaskConfig, task_dir: Path) -> dict[str, list[dict[str, Any]]]:
+    """The tables *task* seeds through ``initial_state.json_db``, by collection name.
+
+    The native reading of a task's seeded state, shared by the task-description
+    build and the gates that hold a grading declaration against it. A string
+    names a JSON file under *task_dir*; a mapping is the seeded data written
+    inline; a task seeding neither seeds nothing. A named file that is not on
+    disk raises :class:`RuntimeError` — a task declaring state it cannot supply
+    is broken wherever it is read.
+    """
+    if not (task.initial_state and task.initial_state.json_db):
+        return {}
+    json_db = task.initial_state.json_db
+    if isinstance(json_db, str):
+        json_db_path = task_dir / json_db
+        if not json_db_path.exists():
+            raise RuntimeError(f"JSON DB file not found: {json_db_path}")
+        with open(json_db_path) as f:
+            data = json.load(f)
+    else:
+        data = json_db
+    return {name: _seeded_records(collection) for name, collection in data.items()}
+
+
+def _seeded_records(collection: Any) -> list[dict[str, Any]]:
+    """Normalise one seeded collection to the record list its table carries.
+
+    A list is already the records. A mapping is records keyed by id when every
+    value is itself a mapping, and one record otherwise — a mapping of
+    primitives is the table's single row, not a row per field. Anything else is
+    a single record too.
+    """
+    if isinstance(collection, list):
+        return collection
+    if isinstance(collection, dict):
+        values = list(collection.values())
+        if values and all(isinstance(value, dict) for value in values):
+            return values
+    return [collection]
+
+
 class GradingSourceKind(str, Enum):
     """Where a run of one task reads its grading block, or why it reads none."""
 

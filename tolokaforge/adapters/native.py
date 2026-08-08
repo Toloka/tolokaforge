@@ -14,6 +14,7 @@ from tolokaforge.adapters._task_loader import (
     load_task_yaml,
     refuse_malformed_grading_shapes,
     resolve_agent_tool_schemas,
+    seeded_tables_from_task,
 )
 from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter
 from tolokaforge.core.grading.checks_helpers import custom_checks_enabled
@@ -518,53 +519,7 @@ class NativeAdapter(BaseAdapter):
                 )
                 agent_tools.append(tool_schema)
 
-        # Build initial state from json_db
-        initial_tables: dict[str, list[dict[str, Any]]] = {}
-        if task.initial_state and task.initial_state.json_db:
-            json_db = task.initial_state.json_db
-            if isinstance(json_db, str):
-                json_db_path = task_dir / json_db
-                if json_db_path.exists():
-                    with open(json_db_path) as f:
-                        data = json.load(f)
-                    # Convert data to table format
-                    for collection_name, collection_data in data.items():
-                        if isinstance(collection_data, list):
-                            # List of records
-                            records = collection_data
-                        elif isinstance(collection_data, dict):
-                            # Check if this is a single record or a dict of records
-                            # A single record has primitive values (str, int, bool, etc.)
-                            # A dict of records has dict values
-                            values = list(collection_data.values())
-                            if values and all(isinstance(v, dict) for v in values):
-                                # Dict of records keyed by ID
-                                records = values
-                            else:
-                                # Single record - wrap in list
-                                records = [collection_data]
-                        else:
-                            records = [collection_data]
-                        initial_tables[collection_name] = records
-                else:
-                    raise RuntimeError(f"JSON DB file not found: {json_db_path}")
-            elif isinstance(json_db, dict):
-                for collection_name, collection_data in json_db.items():
-                    if isinstance(collection_data, list):
-                        # List of records
-                        records = collection_data
-                    elif isinstance(collection_data, dict):
-                        # Check if this is a single record or a dict of records
-                        values = list(collection_data.values())
-                        if values and all(isinstance(v, dict) for v in values):
-                            # Dict of records keyed by ID
-                            records = values
-                        else:
-                            # Single record - wrap in list
-                            records = [collection_data]
-                    else:
-                        records = [collection_data]
-                    initial_tables[collection_name] = records
+        initial_tables = seeded_tables_from_task(task, task_dir)
 
         # Build initialization actions. The core-side ``InitializationAction``
         # names the invoked tool ``func_name`` (author-facing); the runner-side
