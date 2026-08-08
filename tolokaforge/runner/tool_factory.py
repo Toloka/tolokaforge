@@ -1422,10 +1422,12 @@ class ToolFactory:
             db_table_names: Optional list of actual table names from initial_state.
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
-                               Used for ID field matching during model registration.
+                               Used for declared-key matching and validation during
+                               model registration.
             id_fields: Optional per-table primary-key overrides (table_name -> key
                        field or ordered component list), from grading config
-                       state_checks.id_fields. Forwarded to the DB proxy and to
+                       state_checks.id_fields. Drives declared-key matching during
+                       model registration and is forwarded to the DB proxy and to
                        TauSyncToolWrapper diff-sync so key resolution is
                        data-driven; a table absent resolves to ``"id"``.
         """
