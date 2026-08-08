@@ -10,7 +10,11 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - read_audit_log
+      - verify_checksum
+      - delete_row
   user:
     enabled: []
 

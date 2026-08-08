@@ -243,6 +243,20 @@ A pack whose key reads DB state declares its rows in `task.yaml`'s `initial_stat
 not only in the case's `state:` — the runner provisions a trial's DB service from
 `initial_state`, and lock 15 grades every pack through `RegisterTrial`.
 
+A parity pack's `tools.agent.enabled` names every tool its grading block and its
+trials do: the authoring gate refuses a matcher or a `tool_expectations` entry
+naming a tool no actor can call, and a declaration short of the timeline describes
+a trial the task could not have run. The schemas come from the pack's own
+`mcp_server.py` through the `fixtures/tools.json` it commits beside it — a JSON
+list of `{name, description, parameters}` covering *every* enabled tool, including
+`write_file`, because one server sources all of an MCP-bearing task's tools. Each
+`parameters` object declares as `properties`, under `additionalProperties: false`,
+every argument name that pack's matchers address and its timeline sends, which is
+what puts the gate's argument checks at error tier rather than leaving them
+unchecked. Nothing starts these servers — both parity suites substitute a call's
+recorded result before any `ExecuteTool` — so a script's bodies echo their
+arguments, and it exists to define the tools whose schemas the pack ships.
+
 The pack directory is the author key with its dots replaced by underscores, so a
 leaf key inside a list field gets its own pack:
 `trace_checks.constraints.absent_before` is
