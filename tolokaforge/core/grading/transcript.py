@@ -69,11 +69,13 @@ def evaluate_transcript_rules(
       sub-check: an unmet floor appends one failing row and forces ``score`` to
       ``0.0``, and a met floor appends no row so it never dilutes the fraction.
     - ``tool_expectations`` ({required_tools, disallowed_tools}): one sub-check
-      per declared tool. A required tool must have been called *successfully*; a
-      disallowed tool must not have run at **any** status, because an attempted
-      forbidden call is itself the violation. Both fail on a timeline that carries
-      no records for a call the message view declared — whether it ran is then
-      unknown, and a "did not run" reading would pass every forbidden call.
+      per declared tool, over the **agent's** calls alone. A required tool must
+      have been called *successfully*; a disallowed tool must not have run at
+      **any** status, because an attempted forbidden call is itself the violation.
+      A user-simulator call satisfies neither list and violates neither. Both fail
+      on a timeline that carries no records for a call the message view declared —
+      whether it ran, and who ran it, is then unknown, and a "did not run" reading
+      would pass every forbidden call.
     - ``required_actions`` (list[RequiredAction]): each declared tool call must
       appear on the timeline, matched by ``name`` + ``requestor`` and
       by the argument subset named in ``compare_args`` (``None`` = compare all
@@ -239,14 +241,20 @@ def _declared(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedC
     return [call for call in calls if call.tool_name == tool_name]
 
 
-def _executed(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
-    """The calls to ``tool_name`` that actually ran, so carry an outcome.
+def _executed_by_agent(calls: Sequence[AttemptedCall], tool_name: str) -> list[AttemptedCall]:
+    """The agent's own calls to ``tool_name`` that ran, so carry an outcome.
 
-    Separates ran from did-not-run only while the timeline carries records.
-    Without them every call reads as un-run, so callers ask
+    ``tool_expectations`` grade the agent's tool use, so a user-simulator call is
+    another actor's and counts for neither list. Executor identity comes from the
+    record, which is also what separates ran from did-not-run: without records
+    every call reads as un-run and as executed by nobody, so callers ask
     :func:`_outcome_unknown` first instead of reading absent evidence as a fact.
     """
-    return [call for call in _declared(calls, tool_name) if call.status is not None]
+    return [
+        call
+        for call in _declared(calls, tool_name)
+        if call.status is not None and call.executor is ToolExecutorIdentity.AGENT
+    ]
 
 
 def _outcome_unknown(
@@ -350,10 +358,12 @@ def _unmet_activity_floor(min_assistant_turns: int, turn_count: int) -> Transcri
 def _check_required_tool(
     tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
 ) -> TranscriptRuleResult:
-    """A required tool must have been called successfully at least once.
+    """The agent must have called a required tool successfully at least once.
 
     Same "a failed call did not happen" rule ``_check_required_action`` applies:
-    an errored call did not accomplish the work the author required.
+    an errored call did not accomplish the work the author required. A
+    user-simulator call to the same tool is not the agent having used it, so it
+    satisfies nothing whatever its status.
     """
     if _outcome_unknown(calls, tool_name, records_present=records_present):
         return TranscriptRuleResult(
@@ -362,7 +372,9 @@ def _check_required_tool(
             passed=False,
             message=f"Required tool {tool_name!r}: {_UNRECORDED}",
         )
-    called = any(call.status is ToolExecutionStatus.SUCCESS for call in _executed(calls, tool_name))
+    called = any(
+        call.status is ToolExecutionStatus.SUCCESS for call in _executed_by_agent(calls, tool_name)
+    )
     return TranscriptRuleResult(
         rule_type="required_tool",
         rule={"required_tool": tool_name},
@@ -378,13 +390,14 @@ def _check_required_tool(
 def _check_disallowed_tool(
     tool_name: str, calls: Sequence[AttemptedCall], *, records_present: bool
 ) -> TranscriptRuleResult:
-    """A disallowed tool must not have run, at any status.
+    """The agent must not have run a disallowed tool, at any status.
 
     Status-insensitive on purpose: attempting a forbidden call is the violation,
     so an errored attempt fails the check just like a successful one. A call the
     agent declared on a terminating turn never reached the substrate and is not
-    counted; a ``trace_checks`` matcher over the call event is where that intent is
-    nameable. That exclusion needs the record view, so a declared call the timeline holds no
+    counted, and neither is a user-simulator call — the prohibition is on the
+    agent. A ``trace_checks`` matcher over the call event is where either intent is
+    nameable. Both exclusions need the record view, so a declared call the timeline holds no
     records for fails the check instead of reading as one that never ran.
     """
     if _outcome_unknown(calls, tool_name, records_present=records_present):
@@ -394,7 +407,7 @@ def _check_disallowed_tool(
             passed=False,
             message=f"Disallowed tool {tool_name!r}: {_UNRECORDED}",
         )
-    offending = _executed(calls, tool_name)
+    offending = _executed_by_agent(calls, tool_name)
     if not offending:
         message = f"Disallowed tool {tool_name!r} was never called"
     else:

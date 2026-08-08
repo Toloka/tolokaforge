@@ -1,6 +1,6 @@
 """Differential lock: one ``transcript_rules`` pack, two substrates, one score.
 
-Twenty rows, each an authored pack under ``tests/data/transcript_parity/`` plus
+Twenty-two rows, each an authored pack under ``tests/data/transcript_parity/`` plus
 the trial's two views of itself — its messages and its tool-call record. Every row
 is graded through **both** substrates' real paths:
 
@@ -11,16 +11,16 @@ is graded through **both** substrates' real paths:
 Driving through the adapter is what keeps the rows readable as authored packs
 rather than as either substrate's internal config model.
 
-Eighteen of the rows sit on the eight scoring questions a transcript rule has to
+Twenty of the rows sit on the nine scoring questions a transcript rule has to
 answer the same way on either substrate — how the sub-checks aggregate, what
 denominator they aggregate over, which events a phrase rule reads, whether a
 phrase matches case-insensitively, whether it matches as the phrase or as a bag of
-its words, whether a call's status counts, whether a veto beats a fraction, and
-what a missing tool-call record proves. The rows are pinned at two different
-scores and the two **anchor** rows sit on no question at all, so a harness that
-drove one substrate twice, or returned a constant, fails some of them.
+its words, whether a call's status counts, whose call it was, whether a veto beats
+a fraction, and what a missing tool-call record proves. The rows are pinned at
+three different scores and the two **anchor** rows sit on no question at all, so a
+harness that drove one substrate twice, or returned a constant, fails some of them.
 
-A ninth question is not a row, because its answer is that neither substrate
+A tenth question is not a row, because its answer is that neither substrate
 produces a component at all: what an events-less trial scores is a property of the
 fold rather than of one pack's verdict, so it is locked by the two named tests
 below, which drive the core engine's ``grade_trajectory`` against the runner's own
@@ -67,7 +67,7 @@ _FIXTURE_TIMESTAMP = datetime(2026, 1, 1, tzinfo=timezone.utc)
 
 
 class _ScoringQuestion(str, Enum):
-    """The eight scoring questions both substrates have to answer alike."""
+    """The nine scoring questions both substrates have to answer alike."""
 
     AGGREGATION = "aggregation"
     DENOMINATOR = "denominator"
@@ -75,12 +75,13 @@ class _ScoringQuestion(str, Enum):
     CASE = "case"
     MATCHING_MODE = "matching mode"
     CALL_STATUS = "call status"
+    CALL_EXECUTOR = "call executor"
     VETO_VS_FRACTION = "veto vs fraction"
     RECORD_ABSENT = "record-absent evidence"
 
 
-def _user(text: str) -> Message:
-    return Message(role=MessageRole.USER, content=text)
+def _user(text: str, *calls: ToolCall) -> Message:
+    return Message(role=MessageRole.USER, content=text, tool_calls=list(calls) or None)
 
 
 def _assistant(text: str, *calls: ToolCall) -> Message:
@@ -88,7 +89,11 @@ def _assistant(text: str, *calls: ToolCall) -> Message:
 
 
 def _record_for(
-    call: ToolCall, status: ToolExecutionStatus, *, output: str = ""
+    call: ToolCall,
+    status: ToolExecutionStatus,
+    *,
+    output: str = "",
+    executor: ToolExecutorIdentity = ToolExecutorIdentity.AGENT,
 ) -> RecordedToolCall:
     """The record a substrate keeps of ``call`` once it ran.
 
@@ -100,7 +105,7 @@ def _record_for(
         sequence=0,
         tool_name=call.name,
         arguments=call.arguments,
-        executor=ToolExecutorIdentity.AGENT,
+        executor=executor,
         output=output,
         status=status,
         latency_seconds=0.0,
@@ -121,8 +126,8 @@ class _Row:
     """One pack graded over one trial, and the component score both substrates owe.
 
     ``tool_log`` is stated per row rather than derived from the messages: whether
-    the trial kept a record of the calls it declared is itself one of the seven
-    questions.
+    the trial kept a record of the calls it declared, and which actor that record
+    names, are two of the nine questions.
     """
 
     row_id: str
@@ -313,6 +318,45 @@ _ROWS: tuple[_Row, ...] = (
         expected=0.0,
         question=_ScoringQuestion.CALL_STATUS,
     ),
+    # Both CALL_EXECUTOR rows author USER-executor records: the grading path reads the
+    # executor off the record alone; the packs' `tools.user.enabled: []` inventory is
+    # deliberately not consulted (per-actor inventory validation is #974, dormant until #688).
+    _Row(
+        row_id="user_call_does_not_satisfy_required_tool",
+        pack="required_tools_one",
+        messages=(
+            _user("I wrote the report myself.", _WRITE_FILE),
+            _assistant("Then there is nothing left for me to write."),
+        ),
+        tool_log=(
+            _record_for(
+                _WRITE_FILE,
+                ToolExecutionStatus.SUCCESS,
+                output="written",
+                executor=ToolExecutorIdentity.USER,
+            ),
+        ),
+        expected=0.0,
+        question=_ScoringQuestion.CALL_EXECUTOR,
+    ),
+    _Row(
+        row_id="user_call_does_not_violate_disallowed_tool",
+        pack="disallowed_tools_one",
+        messages=(
+            _user("I removed the customer record myself.", _DELETE_CUSTOMER),
+            _assistant("Understood — I will leave the record alone."),
+        ),
+        tool_log=(
+            _record_for(
+                _DELETE_CUSTOMER,
+                ToolExecutionStatus.SUCCESS,
+                output="deleted",
+                executor=ToolExecutorIdentity.USER,
+            ),
+        ),
+        expected=1.0,
+        question=_ScoringQuestion.CALL_EXECUTOR,
+    ),
     _Row(
         row_id="communicate_info_missing_beside_a_found_phrase",
         pack="communicate_info_and_must_contain",
@@ -439,7 +483,7 @@ def test_both_substrates_score_one_transcript_rules_pack_alike(
 
 
 def test_every_scoring_question_is_measured_by_a_row():
-    """Each of the eight questions keeps a row that answers it.
+    """Each of the nine questions keeps a row that answers it.
 
     ``_ScoringQuestion`` is declared independently of the table, so a row dropped
     from ``_ROWS`` leaves the question it carried with nothing measuring it.
