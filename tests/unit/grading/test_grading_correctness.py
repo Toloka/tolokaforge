@@ -17,7 +17,7 @@ import pytest
 pytestmark = pytest.mark.unit
 
 from tests.utils.recorded_calls import recorded_call
-from tests.utils.timelines import build_timeline
+from tests.utils.timelines import Turn, build_timeline, build_turn_timeline
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.state_checks import StateChecker, consistent_hash, to_hashable
@@ -794,6 +794,85 @@ class TestTranscriptRulesEvaluation:
         assert result.passed is True
         assert result.score == 1.0
         assert result.details[0].message == "Disallowed tool 'delete_customer' was never called"
+
+    def test_a_user_simulator_call_does_not_satisfy_a_required_tool(self):
+        """`tool_expectations` grade the agent's tool use, so the user simulator
+        running the tool is not the agent having used it — the same posture the
+        phrase rules take towards the user's text."""
+        config = self._config(tool_expectations=ToolExpectations(required_tools=["transfer"]))
+        timeline = build_turn_timeline(
+            [
+                Turn(
+                    role="user",
+                    content="I transferred the balance myself.",
+                    recorded=[self._call("transfer", executor="user")],
+                ),
+                Turn(role="assistant", content="Understood."),
+            ]
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is False
+        assert result.score == 0.0
+        assert result.details[0].message == "Required tool 'transfer' was never called successfully"
+
+    @pytest.mark.parametrize("status", ["success", "error"])
+    def test_a_user_simulator_call_does_not_violate_a_disallowed_tool(self, status):
+        """The prohibition is on the agent, whatever the user's own call did."""
+        config = self._config(tool_expectations=ToolExpectations(disallowed_tools=["transfer"]))
+        timeline = build_turn_timeline(
+            [
+                Turn(
+                    role="user",
+                    content="I transferred the balance myself.",
+                    recorded=[self._call("transfer", executor="user", status=status)],
+                ),
+                Turn(role="assistant", content="Understood."),
+            ]
+        )
+
+        result = evaluate_transcript_rules(timeline, config)
+
+        assert result.passed is True
+        assert result.score == 1.0
+        assert result.details[0].message == "Disallowed tool 'transfer' was never called"
+
+    def test_both_actors_calling_one_tool_is_graded_on_the_agents_call_alone(self):
+        """The trial both checks are ambiguous on: agent and user simulator call
+        the same tool. The agent's successful call satisfies the requirement and
+        supplies the violation; the user's errored call does neither, and the
+        disallowed sub-check counts one call rather than two."""
+        timeline = build_turn_timeline(
+            [
+                Turn(
+                    role="user",
+                    content="I already tried transferring it.",
+                    recorded=[self._call("transfer", executor="user", status="error", sequence=0)],
+                ),
+                Turn(
+                    role="assistant",
+                    content="Transferring it now.",
+                    recorded=[self._call("transfer", sequence=1)],
+                ),
+            ]
+        )
+
+        required = evaluate_transcript_rules(
+            timeline, self._config(tool_expectations=ToolExpectations(required_tools=["transfer"]))
+        )
+        disallowed = evaluate_transcript_rules(
+            timeline,
+            self._config(tool_expectations=ToolExpectations(disallowed_tools=["transfer"])),
+        )
+
+        assert required.passed is True
+        assert required.details[0].message == "Required tool 'transfer' was called successfully"
+        assert disallowed.passed is False
+        assert (
+            disallowed.details[0].message
+            == "Disallowed tool 'transfer' was called 1 time(s) (statuses: success)"
+        )
 
     def test_a_records_less_timeline_fails_every_tool_expectation_by_name(self):
         """Re-grading a recorded bundle is this shape: `tool_log` is not written to
