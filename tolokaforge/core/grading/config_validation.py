@@ -2,13 +2,13 @@
 
 Substrate-neutral and pure — no adapter, no filesystem: an adapter resolves the
 task's tool set into a :class:`ToolInventory`, the world its golden actions replay in
-into a :class:`ReplayWorld` and the task's effective ``combine``, and
-:func:`inspect_grading_authoring` reads only those. A tool set the adapter cannot
-report is :meth:`ToolInventory.unresolvable` — distinct from a task that declares no
-tools, because the two decide opposite things: nothing is checkable against the first,
-while every tool name is wrong against the second. A replay world reads the same way
-through :meth:`ReplayWorld.unresolvable`, and an effective combine no caller could
-resolve is ``None``.
+into a :class:`ReplayWorld`, the tables it seeds into a :class:`SeededTablesLayer` and
+the task's effective ``combine``, and :func:`inspect_grading_authoring` reads only
+those. A tool set the adapter cannot report is :meth:`ToolInventory.unresolvable` —
+distinct from a task that declares no tools, because the two decide opposite things:
+nothing is checkable against the first, while every tool name is wrong against the
+second. A replay world and a seeded-tables layer read the same way through their own
+``unresolvable()``, and an effective combine no caller could resolve is ``None``.
 
 The defects here are the author's, and every one of them is otherwise charged to
 the agent or to nobody: a misspelled tool name in a ``present`` matcher scores the
@@ -23,8 +23,10 @@ not the list of actions to replay is iterated by one substrate and handed to the
 replay loop and crashes both once the trial is paid for, a section declaring
 nothing scores nothing while reading as configured, a probe declared beside a state
 source the fold also scores leaves one component holding two verdicts and each
-substrate discarding a different one, and a component and its weight naming each other
-only one way leaves the two substrates folding different maps for the same trial.
+substrate discarding a different one, a primary key declared over records the task
+never seeds addresses no row for a write or a diff, and a component and its weight
+naming each other only one way leaves the two substrates folding different maps for
+the same trial.
 
 What the schema cannot answer is reported as :class:`Skip` and never raises, so
 the gate has no false-reject mode. The severity of each rule is documented in
@@ -33,6 +35,7 @@ the gate has no false-reject mode. The severity of each rule is documented in
 
 from __future__ import annotations
 
+import logging
 import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
@@ -70,6 +73,9 @@ from tolokaforge.core.models import (
     TranscriptRulesConfig,
     ValuePredicate,
 )
+from tolokaforge.runner.id_resolution import id_fields_findings
+
+logger = logging.getLogger(__name__)
 
 
 class ArgumentSchema(str, Enum):
@@ -267,6 +273,39 @@ class ReplayWorld:
     def unresolvable(cls) -> ReplayWorld:
         """The world of a caller that cannot say what a task gives a golden replay."""
         return cls(initial_state=InitialStateSource.ABSENT, mcp_server=False, known=False)
+
+
+@dataclass(frozen=True)
+class SeededTablesLayer:
+    """The tables a task seeds, which its ``state_checks.id_fields`` declaration keys.
+
+    A caller that cannot read what a task seeds reports :meth:`unresolvable`, which
+    leaves the declaration unchecked — distinct from a caller reporting a task that
+    seeds nothing, which is ``tables={}`` and a real answer with real consequences: a
+    declared table is then the unknown-table finding, exactly as on the run path.
+    """
+
+    tables: Mapping[str, list[dict[str, Any]]] | None
+    known: bool = True
+
+    def __post_init__(self) -> None:
+        if self.known and self.tables is None:
+            raise ValueError(
+                "a resolved seeded-tables layer carries no view, so every declaration "
+                "would be held against nothing. Report the tables the task seeds — {} "
+                "where it seeds none — or report unresolvable()"
+            )
+        if not self.known and self.tables is not None:
+            raise ValueError(
+                "an unresolvable seeded-tables layer carries facts: the rule that reads "
+                f"them is skipped, so tables {sorted(self.tables)} would be resolved and "
+                "then ignored. Report the tables with known=True, or report nothing"
+            )
+
+    @classmethod
+    def unresolvable(cls) -> SeededTablesLayer:
+        """The layer of a caller that cannot read what a task seeds."""
+        return cls(tables=None, known=False)
 
 
 @dataclass(frozen=True)
@@ -547,9 +586,19 @@ _UNRESOLVED_HASH_SOURCE_REASON = (
     "own fixtures — so whether this block grades as written is not checkable here"
 )
 
+_UNRESOLVED_SEEDED_TABLES_REASON = (
+    "no caller resolved the tables this task seeds — reading initial_state.json_db is the "
+    "native reading, and a task an adapter maintained outside this repository owns may seed "
+    "its state some other way — so whether the declared keys address the seeded records is "
+    "not checkable here"
+)
+
+_ID_FIELDS_ADDRESS = "state_checks.id_fields"
+
 # Bound once so the signature's default is the value, not a call in the annotation.
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 _UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
+_UNRESOLVED_SEEDED_TABLES = SeededTablesLayer.unresolvable()
 
 
 def inspect_grading_authoring(
@@ -559,6 +608,7 @@ def inspect_grading_authoring(
     effective_combine: GradingCombineConfig | None = None,
     replay_world: ReplayWorld = _UNRESOLVED_REPLAY_WORLD,
     hash_sources: HashSourceLayer = _UNRESOLVED_HASH_SOURCE_LAYER,
+    seeded_tables: SeededTablesLayer = _UNRESOLVED_SEEDED_TABLES,
 ) -> AuthoringReport:
     """Report what a task's tools, its replay world and its fold say about its grading block.
 
@@ -595,6 +645,10 @@ def inspect_grading_authoring(
             that cannot say which adapter grades the task — it moves the hash-source
             rule's finding to ``unchecked`` where that rule would have refused, and
             fails nothing.
+        seeded_tables: The tables the task seeds, which its ``state_checks.id_fields``
+            declaration keys. The default, :meth:`SeededTablesLayer.unresolvable`, is
+            the answer for a caller holding no ``task.yaml`` — it skips the rule reading
+            them wherever a declaration would have been checked, and fails nothing.
     """
     constraints = tuple(_trace_constraints(grading))
     sites = tuple(_trace_matcher_sites(constraints))
@@ -607,6 +661,7 @@ def inspect_grading_authoring(
         _check_golden_actions_are_a_list(grading),
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
+        _check_id_fields_against_seeded_tables(grading, seeded_tables),
     ]
     if inventory.known:
         reports += [
@@ -1126,6 +1181,50 @@ def _check_probes_are_the_only_state_source(grading: Mapping[str, Any]) -> Autho
             ),
         )
     )
+
+
+def _check_id_fields_against_seeded_tables(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A declared primary key addresses the records its table is seeded with.
+
+    The same three findings the run path's gates report, from the same computation
+    (:func:`~tolokaforge.runner.id_resolution.id_fields_findings`) so a pack cannot be
+    refused at one gate and passed at another: a declared table absent from the seeded
+    state, a declared key component absent from every seeded record of its table, and a
+    declared key that does not uniquely identify them. Each finding is addressed at
+    ``state_checks.id_fields`` and carries its own remediation; the caller's raiser
+    already names the grading file, so no context prefix is re-added.
+
+    ``relaxed_validation`` downgrades exactly as it does on the run path: a logged
+    warning is the whole observable, on no report channel at all. An advisory would
+    read as the gentler answer and be the harsher one — the default ``fail_on`` is
+    :attr:`~tolokaforge.core.models.GradingFindingSeverity.ADVISORY`, so it would fail
+    precisely the packs the escape hatch exists to pass.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return AuthoringReport()
+    id_fields = state_checks.get("id_fields")
+    if not isinstance(id_fields, Mapping) or not id_fields:
+        return AuthoringReport()
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(Skip(_ID_FIELDS_ADDRESS, _UNRESOLVED_SEEDED_TABLES_REASON),)
+        )
+    # __post_init__ makes a known layer with no view unconstructable; the assert
+    # narrows ``tables`` for static analysis.
+    assert seeded_tables.tables is not None
+    findings = id_fields_findings(id_fields, seeded_tables.tables)
+    if not findings:
+        return AuthoringReport()
+    if state_checks.get("relaxed_validation"):
+        logger.warning(
+            "state_checks.relaxed_validation downgrades this task's id_fields findings: %s",
+            " ".join(findings),
+        )
+        return AuthoringReport()
+    return AuthoringReport(errors=tuple(Finding(_ID_FIELDS_ADDRESS, f) for f in findings))
 
 
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:

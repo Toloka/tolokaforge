@@ -106,6 +106,26 @@ A_GOLDEN_REPLAY = {
     "state_checks": {"hash": {"enabled": True, "golden_actions": [{"name": "http_request"}]}},
 }
 
+# A declaration held against the state the task seeds: two rows ``account_id`` alone
+# cannot tell apart, keyed by the composite that can. The relaxed twin declares a
+# component no seeded record carries, which the escape hatch downgrades on both gates.
+A_KEYED_STATE: dict[str, Any] = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": {
+        "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+        "id_fields": {"positions": ["account_id", "symbol"]},
+    },
+}
+
+A_RELAXED_DEFECTIVE_KEY: dict[str, Any] = {
+    "combine": {"weights": {"state_checks": 1.0}},
+    "state_checks": {
+        "jsonpaths": [{"path": "$.db.positions[0].qty", "equals": 5}],
+        "id_fields": {"positions": ["account_id", "ticker"]},
+        "relaxed_validation": True,
+    },
+}
+
 # The frozen-core adapter convention #911 was filed for: hash grading on, nothing
 # declared to compare against, the source living in fixtures the block never names.
 AN_ADAPTER_SUPPLIED_HASH = {
@@ -171,6 +191,29 @@ def _write_replaying_task(root: Path, task_id: str, *, mcp_server: str | None) -
         agent["mcp_server"] = mcp_server
     _write_task_yaml(
         task_dir, task_id, {"agent": agent}, A_GOLDEN_REPLAY, initial_state="initial_state.json"
+    )
+
+
+def _write_keyed_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
+    """A task seeding two rows one component alone cannot key, and its declaration."""
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "initial_state.json").write_text(
+        json.dumps(
+            {
+                "positions": [
+                    {"account_id": "A1", "symbol": "AAPL", "qty": 5},
+                    {"account_id": "A1", "symbol": "MSFT", "qty": 7},
+                ]
+            }
+        )
+    )
+    _write_task_yaml(
+        task_dir,
+        task_id,
+        {"agent": {"enabled": ["http_request"]}},
+        grading,
+        initial_state="initial_state.json",
     )
 
 
@@ -782,6 +825,56 @@ def test_the_same_pack_reaches_its_trials_when_the_adapter_supplies_the_source(
         for record in caplog.records
         if "could not check" in record.getMessage() and record.where == "state_checks.hash.enabled"
     ] == []
+    assert len(conductor.call_log.runs) == 1
+
+
+def test_a_declaration_the_seeded_state_answers_draws_no_unchecked_line(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The pre-run gate resolves the seeded tables rather than leaving them defaulted.
+
+    Left defaulted the rule would report every native pack's declaration as something
+    nobody could check — a "not checked" warning on every run whose pack declares
+    ``id_fields``, for a check that had in fact already run one frame earlier while the
+    task description was built.
+    """
+    root = tmp_path / "pack"
+    _write_keyed_task(root, "TASK-KEYED", A_KEYED_STATE)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    assert [
+        record.where for record in caplog.records if "could not check" in record.getMessage()
+    ] == []
+    assert len(conductor.call_log.runs) == 1
+
+
+def test_the_gates_rule_does_run_on_a_pack_the_description_build_lets_through(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """The reachability half: silence above must mean checked, not skipped.
+
+    A strict defect aborts inside ``to_task_description`` before the gate's rule is
+    reached, so the only pack that proves the rule runs on this path is one the
+    description build lets through — a relaxed defective declaration, which both gates
+    downgrade to a warning. The gate's own logger emitting it is what says the rule ran
+    against the seeded tables rather than being skipped for want of them.
+    """
+    root = tmp_path / "pack"
+    _write_keyed_task(root, "TASK-RELAXED-KEY", A_RELAXED_DEFECTIVE_KEY)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with caplog.at_level(logging.WARNING):
+        orchestrator.run()
+
+    from_the_gates_rule = [
+        record.getMessage()
+        for record in caplog.records
+        if record.name == "tolokaforge.core.grading.config_validation"
+    ]
+    assert any("'ticker'" in message for message in from_the_gates_rule), from_the_gates_rule
     assert len(conductor.call_log.runs) == 1
 
 

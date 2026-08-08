@@ -106,6 +106,7 @@ from tolokaforge.adapters._task_loader import (
     hash_source_layer_under_adapter,
     load_task_yaml,
     replay_world_under_adapter,
+    seeded_tables_under_adapter,
 )
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
@@ -113,6 +114,7 @@ from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
     HashSourceLayer,
     ReplayWorld,
+    SeededTablesLayer,
     ToolInventory,
     inspect_grading_authoring,
 )
@@ -499,6 +501,7 @@ def _gate_reports(
     inventory: ToolInventory,
     world: ReplayWorld,
     hash_sources: HashSourceLayer,
+    seeded_tables: SeededTablesLayer,
 ) -> tuple[AuthoringReport, AuthoringReport]:
     """A pack's own gate report, and the same pack's under one weight naming nothing.
 
@@ -508,11 +511,13 @@ def _gate_reports(
     gating a whole pack owes that — so a clean sweep would still read clean with those
     two rules never run. The probed report is empty in exactly that case.
 
-    The replay world and the hash layer are the pack's own too, resolved the way the
-    gate's callers resolve each: an unresolvable world would report a skip for every
-    pack replaying golden actions, an unresolvable layer one for every hash block whose
-    flag and source disagree, and the ``unchecked`` assertion below would stop saying
-    which rules were skipped either way.
+    The replay world, the hash layer and the seeded tables are the pack's own too,
+    resolved the way the gate's callers resolve each: an unresolvable world would
+    report a skip for every pack replaying golden actions, an unresolvable hash layer
+    one for every hash block whose flag and source disagree, an unresolvable
+    seeded-tables layer one for every pack declaring ``id_fields``, and the
+    ``unchecked`` assertion below would stop saying which rules were skipped in any of
+    those cases.
     """
     combine = _effective_combine(task_yaml, grading)
     probed = combine.model_copy(
@@ -524,6 +529,7 @@ def _gate_reports(
             inventory,
             replay_world=world,
             hash_sources=hash_sources,
+            seeded_tables=seeded_tables,
             effective_combine=combine,
         ),
         inspect_grading_authoring(
@@ -531,6 +537,7 @@ def _gate_reports(
             inventory,
             replay_world=world,
             hash_sources=hash_sources,
+            seeded_tables=seeded_tables,
             effective_combine=probed,
         ),
     )
@@ -574,6 +581,7 @@ def test_no_shipped_pack_fails_the_authoring_gate() -> None:
             inventory,
             replay_world_under_adapter(task, task.adapter_type),
             hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
+            seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
         reported = [
             f"{finding.where}: {finding.message}" for finding in report.errors + report.advisories
@@ -627,11 +635,12 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
     The ``unchecked`` assertion is what stops that from reading as a clean bill of
     health. Every pack reports exactly the one tool-set skip; a rule moved behind
     ``inventory.known`` would show up here as a second skip rather than as a silent
-    loss of coverage. Each pack's real replay world and real hash layer are passed for
-    that assertion's sake: both are resolved off the ``task.yaml`` every caller here
-    holds, so leaving either unresolvable would add a second skip — to the four packs
-    that replay golden actions, or to any pack whose hash flag and source disagree —
-    and say nothing about any rule.
+    loss of coverage. Each pack's real replay world, hash layer and seeded tables are
+    passed for that assertion's sake: all three are resolved off the ``task.yaml``
+    every caller here holds, so leaving any of them unresolvable would add a second
+    skip — to the four packs that replay golden actions, to any pack whose hash flag
+    and source disagree, or to every pack declaring ``id_fields`` — and say nothing
+    about any rule.
     """
     findings: dict[str, list[str]] = {}
     unchecked: dict[str, list[str]] = {}
@@ -646,6 +655,7 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
             ToolInventory.unresolvable(),
             replay_world=replay_world_under_adapter(task, task.adapter_type),
             hash_sources=hash_source_layer_under_adapter(task, task_dir, task.adapter_type),
+            seeded_tables=seeded_tables_under_adapter(task, task_dir, task.adapter_type),
         )
         pack = str(task_yaml.relative_to(_REPO))
         if report.errors or report.advisories:

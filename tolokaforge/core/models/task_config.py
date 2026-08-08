@@ -426,8 +426,8 @@ class StateChecksConfig(BaseModel):
     # config-driven rather than introspecting model source (which breaks when the
     # domain source is not on disk).
     id_fields: dict[str, str | list[str]] = Field(default_factory=dict)
-    # Escape hatch for legacy tasks: downgrade the adapter's id_fields cross-check
-    # (id_fields keys must appear in initial_state.tables) from a raise to a warning.
+    # Escape hatch for legacy tasks: downgrade the id_fields cross-check (id_fields
+    # keys must appear in initial_state.tables) to a warning at every gate that runs it.
     # New tasks should fix typos or add the table, not enable this.
     relaxed_validation: bool = False
 
