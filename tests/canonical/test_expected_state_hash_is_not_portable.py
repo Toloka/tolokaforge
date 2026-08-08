@@ -15,9 +15,11 @@ that literal is a core-algebra digest, so routing it to the runner's evaluator w
 ``0.0`` on the state core scores ``1.0``. The fourth pins that there is no longer a wire
 field to route it through.
 
-See #915 for unifying the two hash functions, which is not in reach here:
-``compute_stable_hash`` also backs db-service ETags, snapshot hashes and
-``ResetTrialResponse.state_hash``.
+The two functions are deliberately separate (#915). ``compute_stable_hash`` backs
+persisted digests — db-service ETags, snapshot hashes, ``ResetTrialResponse.state_hash``
+— and core's algebra reproduces the digests recorded bundles carry, so unifying in
+either direction invalidates digests that already exist; and with no wire field left to
+carry one across, nothing needs the portability unification would buy.
 """
 
 from __future__ import annotations

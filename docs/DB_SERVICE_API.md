@@ -34,7 +34,7 @@ the Docker architecture's trial isolation and grading requirements.
 1. **Trial Isolation** — Each trial has isolated state, schemas, and snapshots
 2. **Schema-Aware** — Stores table schemas for validation and type inference
 3. **Unstable Field Filtering** — Explicit field exclusion for deterministic hashing
-4. **Tau/TlkMcpCore Compatible** — Hash algorithm matches existing implementations
+4. **Single-Substrate Digests** — state hashes are `compute_stable_hash` output ([Get Stable Hash](#4-get-stable-hash)); a digest never crosses substrates
 5. **Snapshot/Restore** — Supports golden path execution during grading
 
 ---
@@ -226,37 +226,21 @@ Get SHA-256 hash of the stable state. This is the primary endpoint for grading c
 
 #### Hash Computation Algorithm
 
-The hash is computed to match the existing Tau/TlkMcpCore implementation:
+The hash is the runner substrate's persisted digest, computed by
+[`tolokaforge/core/hash.py::compute_stable_hash`](../tolokaforge/core/hash.py) —
+the implementation of record: unstable-field filtering, datetime conversion,
+number canonicalization (numeric types always, numeric-looking strings per the
+task's `numeric_string_fields` opt-in), then compact sorted JSON and SHA-256.
+Every consumer of db-service digests — ETags, snapshot hashes, and the
+`ResetTrialResponse.state_hash` / `GetStateResponse.stable_hash` wire fields —
+compares only against output of that same function
+([`TASK_DESCRIPTION_SCHEMA.md` § Stable State Hash](TASK_DESCRIPTION_SCHEMA.md#stable-state-hash)).
 
-```python
-def compute_stable_hash(state: Dict, unstable_fields: List[UnstableFieldSpec]) -> str:
-    # 1. Deep copy state
-    stable_state = copy.deepcopy(state)
-    
-    # 2. Remove unstable fields from each table
-    for spec in unstable_fields:
-        table = stable_state.get(spec.table_name, [])
-        for record in table:
-            if spec.field_name in record:
-                del record[spec.field_name]
-    
-    # 3. Convert datetime objects to ISO strings
-    stable_state = convert_datetime_to_str(stable_state)
-    
-    # 4. Serialize with sorted keys and compact separators
-    json_str = json.dumps(stable_state, sort_keys=True, separators=(",", ":"))
-    
-    # 5. Compute SHA-256
-    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
-```
-
-**CRITICAL:** The hash algorithm must match the canonical algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm) and [`calculate_database_hash()`](../contrib/mcp_core/src/mcp_core/utils/validation.py:74) from mcp_core:
-- `sort_keys=True` for deterministic key ordering
-- `separators=(",", ":")` for compact JSON (no spaces) — NOT default `(", ", ": ")`
-- `encode("utf-8")` — explicit UTF-8 encoding
-- SHA-256 hexdigest
-
-**WARNING:** Using different separators or serialization methods (e.g., `str(tuple)`) will cause hash mismatches and grading failures.
+Core grading hashes state in a different algebra by design (`state_digest` in
+[`tolokaforge/core/grading/state_checks.py`](../tolokaforge/core/grading/state_checks.py)):
+the two agree on which states are equal and label every state differently, so a
+hash comparison computes both sides on one substrate and a digest never crosses
+substrates — see [`GRADING.md` § Substrate Parity](GRADING.md#substrate-parity).
 
 ---
 
@@ -624,33 +608,10 @@ def convert_datetime_to_str(data: Any) -> Any:
 
 ## Hash Computation Algorithm
 
-The hash must be compatible with existing Tau/TlkMcpCore implementations:
-
-```python
-def compute_stable_hash(trial: TrialState) -> str:
-    """
-    Compute SHA-256 hash of stable state.
-    
-    MUST match mcp_core.utils.validation.calculate_database_hash()
-    """
-    # Get stable state (unstable fields filtered)
-    stable_state = get_stable_state(trial)
-    
-    # Serialize with deterministic settings
-    # - sort_keys=True: deterministic key ordering
-    # - separators=(",", ":"): compact JSON, no spaces
-    json_str = json.dumps(stable_state, sort_keys=True, separators=(",", ":"))
-    
-    # SHA-256 with UTF-8 encoding
-    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
-```
-
-### Compatibility Notes
-
-1. **Key Ordering**: `sort_keys=True` ensures deterministic ordering regardless of Python dict insertion order
-2. **Compact JSON**: `separators=(",", ":")` removes whitespace for consistent hashing
-3. **UTF-8 Encoding**: Explicit UTF-8 encoding before hashing
-4. **Datetime Handling**: All datetime objects converted to ISO 8601 strings before serialization
+The service hashes stable state with
+[`tolokaforge/core/hash.py::compute_stable_hash`](../tolokaforge/core/hash.py) —
+see [Get Stable Hash](#4-get-stable-hash) for the algorithm, its scope, and the
+substrate invariant.
 
 ---
 
