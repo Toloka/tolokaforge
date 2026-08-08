@@ -38,7 +38,7 @@ from pydantic import BaseModel, Field
 
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
-from tolokaforge.runner.id_resolution import compute_diff_ops
+from tolokaforge.runner.id_resolution import TableKey, compute_diff_ops, table_key
 from tolokaforge.runner.models import (
     InvocationStyle,
 )
@@ -1422,10 +1422,12 @@ class ToolFactory:
             db_table_names: Optional list of actual table names from initial_state.
                            These are the source of truth for table name registration.
             initial_state_data: Optional dict mapping table names to their records.
-                               Used for ID field matching during model registration.
+                               Used for declared-key matching and validation during
+                               model registration.
             id_fields: Optional per-table primary-key overrides (table_name -> key
                        field or ordered component list), from grading config
-                       state_checks.id_fields. Forwarded to the DB proxy and to
+                       state_checks.id_fields. Drives declared-key matching during
+                       model registration and is forwarded to the DB proxy and to
                        TauSyncToolWrapper diff-sync so key resolution is
                        data-driven; a table absent resolves to ``"id"``.
         """
@@ -1607,35 +1609,91 @@ class ToolFactory:
                 f"Class '{source.class_name}' not found in module '{module_path}': {e}",
             )
 
-    def _get_id_field_name(self, model_cls: type) -> str | None:
+    def _match_table_by_declared_key(
+        self, model_cls: type[BaseModel], claimed_tables: set[str]
+    ) -> str | None:
         """
-        Extract the ID field name from a model's get_id() method.
+        Find the seeded table whose declared primary key ``model_cls`` carries.
 
-        Parses the source code of get_id() to find 'return self.FIELD_NAME'
-        and extracts FIELD_NAME.
-
-        Examples:
-            Review.get_id → self.review_id → "review_id"
-            QualityReview.get_id → self.quality_review_id → "quality_review_id"
-            Sku.get_id → self.sku_id → "sku_id"
+        A seeded table is a candidate when every component of its key — resolved
+        from ``state_checks.id_fields``, defaulting to ``"id"`` — is both a field
+        of the model and present in the table's first record. Candidates are
+        tried with explicitly declared tables ahead of ``"id"``-defaulted ones,
+        so a model carrying both a declared table's key and an incidental ``id``
+        field claims the declared table; within each rank ``db_table_names``
+        order decides. The first candidate whose first record validates against
+        the model wins — validation is what discriminates two tables sharing a
+        key shape.
 
         Args:
-            model_cls: The model class with a get_id() method
+            model_cls: The model class to match
+            claimed_tables: Table names already claimed by an earlier model
 
         Returns:
-            The ID field name, or None if extraction fails
+            The matching table name, or None if no candidate validates
         """
-        import inspect
+        declared: list[tuple[str, TableKey, dict[str, Any]]] = []
+        defaulted: list[tuple[str, TableKey, dict[str, Any]]] = []
+        for table in self.db_table_names:
+            if table in claimed_tables:
+                continue
+            records = self._initial_state_data.get(table, [])
+            if not records:
+                continue
+            key = table_key(table, self.id_fields)
+            if any(f not in model_cls.model_fields or f not in records[0] for f in key.fields):
+                continue
+            rank = declared if self.id_fields.get(table) else defaulted
+            rank.append((table, key, records[0]))
 
-        try:
-            source = inspect.getsource(model_cls.get_id)
-            for line in source.split("\n"):
-                line = line.strip()
-                if line.startswith("return self."):
-                    return line.replace("return self.", "").strip()
-        except (TypeError, OSError):
-            pass
+        for table, key, record in declared + defaulted:
+            try:
+                model_cls.model_validate(record)
+            except Exception:
+                logger.debug(
+                    f"Declared key matched but validation failed: {model_cls.__name__} vs '{table}'"
+                )
+                continue
+            logger.info(
+                f"Matched {model_cls.__name__} to '{table}' via declared key "
+                f"{list(key.fields)} + validation"
+            )
+            return table
         return None
+
+    def _report_unregistered(self, model_cls: type[BaseModel], claimed_tables: set[str]) -> None:
+        """
+        Report what becomes of a model the registration pass could not match.
+
+        The DB proxy's class-name fallback resolves many of them on first use,
+        which is a working case rather than a failure: that outcome is reported
+        at info, naming the table the proxy will reach, and only a model nothing
+        will resolve draws a warning — with the declaration that would fix it.
+
+        Args:
+            model_cls: The model class no strategy matched
+            claimed_tables: Table names already claimed by an earlier model
+        """
+        lazy_table = self._async_proxy.match_table_by_name(model_cls)
+        if lazy_table is not None:
+            logger.info(
+                f"Model {model_cls.__name__} is not registered eagerly; the DB proxy "
+                f"resolves it by class name to table '{lazy_table}' on first use"
+            )
+            return
+
+        unclaimed = {
+            t: list(table_key(t, self.id_fields).fields)
+            for t in self.db_table_names
+            if t not in claimed_tables
+        }
+        logger.warning(
+            f"Cannot match model {model_cls.__name__} "
+            f"(fields={sorted(model_cls.model_fields)}) to any table, and no table name "
+            f"matches its class name. Skipping registration. "
+            f"Unclaimed tables and their declared keys: {unclaimed}. "
+            f"Declare the intended table's key under state_checks.id_fields to register it."
+        )
 
     def _register_toolset_models(self, toolset: str) -> None:
         """
@@ -1649,23 +1707,21 @@ class ToolFactory:
         1. table_name ClassVar: If model has a table_name attribute, use it directly
            or find a table ending with that name.
 
-        2. ID field matching (universal): Extract the ID field name from get_id(),
-           then find the table whose records contain that field. This is the most
-           reliable approach as it works for ANY domain without code changes.
-           Examples:
-             Review.get_id → self.review_id → table with review_id → review_api_reviews ✅
-             QualityReview.get_id → self.quality_review_id → table with quality_review_id → content_api_quality_reviews ✅
+        2. Declared-key matching (universal): Match the model against the primary
+           key each seeded table declares under ``state_checks.id_fields``
+           (default ``"id"``), single or composite — see
+           :meth:`_match_table_by_declared_key`. Works for ANY domain without
+           code changes, since the declaration travels with the task.
 
         3. Suffix matching (only for empty tables): Falls back to suffix matching
            only for tables with no records in initial_state.
 
-        4. FAIL LOUD: If no match found, raise RuntimeError to surface the issue.
+        4. Report and skip: a model matching nothing is left unregistered — at
+           info where the DB proxy's class-name fallback will resolve it on
+           first use, at warning where nothing will.
 
         Args:
             toolset: The toolset path (e.g., 'consulting.zendesk', 'external_retail_toolset.oms')
-
-        Raises:
-            RuntimeError: If any model cannot be matched to a table
         """
         # Only register once per toolset
         if hasattr(self, "_registered_toolsets"):
@@ -1711,33 +1767,9 @@ class ToolFactory:
                                 )
                                 break
 
-                # Strategy 2: ID field matching (universal)
+                # Strategy 2: declared-key matching (universal)
                 if matched_table is None:
-                    id_field = self._get_id_field_name(model_cls)
-                    if id_field:
-                        # Collect all candidates with matching first key
-                        candidates = []
-                        for t in self.db_table_names:
-                            if t in claimed_tables:
-                                continue
-                            records = initial_data.get(t, [])
-                            if records and list(records[0].keys())[0] == id_field:
-                                candidates.append((t, records))
-
-                        # Always validate before claiming - prevents wrong model from claiming table
-                        for t, records in candidates:
-                            try:
-                                model_cls.model_validate(records[0])
-                                matched_table = t
-                                logger.info(
-                                    f"Matched {model_cls.__name__} to '{t}' via ID field '{id_field}' + validation"
-                                )
-                                break
-                            except Exception:
-                                logger.debug(
-                                    f"ID field matched but validation failed: {model_cls.__name__} vs '{t}'"
-                                )
-                                continue
+                    matched_table = self._match_table_by_declared_key(model_cls, claimed_tables)
 
                 # Strategy 3: Suffix matching ONLY for empty tables
                 if matched_table is None:
@@ -1770,15 +1802,10 @@ class ToolFactory:
                             )
                             break
 
-                # Strategy 4: WARN and skip (don't crash on missing optional tables)
+                # Strategy 4: report where the model lands, and skip (don't crash on
+                # missing optional tables)
                 if matched_table is None:
-                    id_field = self._get_id_field_name(model_cls) or "unknown"
-                    unclaimed = [t for t in self.db_table_names if t not in claimed_tables]
-                    logger.warning(
-                        f"Cannot match model {model_cls.__name__} (id_field={id_field}) "
-                        f"to any table. Skipping registration. "
-                        f"Available unclaimed: {unclaimed}"
-                    )
+                    self._report_unregistered(model_cls, claimed_tables)
                     continue  # Skip this model, don't register
 
                 # Register the model with the matched table
