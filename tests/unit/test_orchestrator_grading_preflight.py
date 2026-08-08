@@ -236,6 +236,26 @@ def _write_gradeless_task(root: Path, task_id: str) -> None:
     )
 
 
+def _write_dangling_grading_task(root: Path, task_id: str) -> None:
+    """A task naming a ``grading.yaml`` that was never written beside it.
+
+    Nothing else about the pack is unusual — its one tool is the builtin every clean
+    pack here declares — so the only thing the gate can refuse it for is the dangling ref.
+    """
+    task_dir = root / "tasks" / task_id
+    task_dir.mkdir(parents=True)
+    (task_dir / "task.yaml").write_text(
+        yaml.safe_dump(
+            {
+                "task_id": task_id,
+                "description": f"pack {task_id}",
+                "tools": {"agent": {"enabled": ["http_request"]}},
+                "grading": "grading.yaml",
+            }
+        )
+    )
+
+
 def _write_task_yaml(
     task_dir: Path,
     task_id: str,
@@ -425,6 +445,33 @@ def test_a_task_declaring_no_grading_source_aborts_before_the_first_trial(tmp_pa
     message = str(excinfo.value)
     assert "TASK-NO-GRADING-SOURCE" in message, message
     assert "`grading:`" in message, message
+    assert "TASK-B-CLEAN" not in message, message
+
+
+def test_a_task_whose_declared_grading_file_is_absent_aborts_before_the_first_trial(
+    tmp_path: Path,
+) -> None:
+    """A ``grading:`` ref with no file at it costs the run the same as naming none.
+
+    ``get_grading_config`` opens the path the task names while artifacts are written —
+    the last phase of a trial whose tokens are already spent — and the gate used to wave
+    such a pack through, because a declared path was taken as a source without anyone
+    looking for the file. The clean sibling is the control: a gate that refused every
+    pack would abort this run identically without it.
+    """
+    root = tmp_path / "pack"
+    _write_dangling_grading_task(root, "TASK-DANGLING-GRADING")
+    _write_builtin_task(root, "TASK-B-CLEAN", CLEAN)
+    orchestrator, conductor = _orchestrator(root, tmp_path / "results")
+
+    with pytest.raises(ValueError) as excinfo:
+        orchestrator.run()
+
+    assert conductor.call_log.runs == []
+    message = str(excinfo.value)
+    assert "TASK-DANGLING-GRADING" in message, message
+    assert str(root / "tasks" / "TASK-DANGLING-GRADING" / "grading.yaml") in message, message
+    assert "create that file" in message, message
     assert "TASK-B-CLEAN" not in message, message
 
 
