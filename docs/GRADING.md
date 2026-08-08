@@ -1803,19 +1803,27 @@ turn 0** with the first assistant turn, so `first_turn: 0` includes it. "Before
 the first user message" is therefore not expressible as a window — that window is
 always empty — and the intent is `absent_before`.
 
-### Matching a result is scoped to successful calls
+### Matching a result on a failed call
 
-This scoping exists because of #717. A matcher carrying a `result` predicate must
-also carry a `status` predicate whose **only** operator is `equals`, valued
-`success`. Any other status predicate —
-`not_equals: error`, `in_: [success, timeout]`, `exists: true`, or none at all —
-is rejected at load naming #717.
+A `result` predicate loads beside any `status` predicate, or none. Both substrates
+record one text for one failure — the four forms are written out beside
+[G5](#guarantees) — and the timeline parity suite holds them byte-equal, so
+asserting *why* a call failed is as portable as asserting that it did:
 
-A successful call's result text is byte-identical across substrates and pinned by
-the timeline parity suite. A **failed** call's text is not: the two substrates
-word the same failure differently (#717). So a result predicate is admitted only
-where portability holds. To assert that a call failed, match on `status` — which
-agrees everywhere — rather than on the failure text.
+```yaml
+- id: refused_as_already_refunded
+  description: the refund failed because the order was already refunded
+  require:
+    present:
+      match:
+        kind: tool_result
+        status: { equals: error }
+        result: { contains: already refunded }
+```
+
+The same holds for a binder extracting `field: result`. What a `result` read still
+depends on is the tool-call **record**: on a bundle re-graded without one, the text
+comes from the `role: tool` message instead and carries an `Error: ` prefix (G6b).
 
 ### `on_missing` — what an unmatched anchor decides
 
@@ -2497,7 +2505,6 @@ evaluator.
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
 | Migrating a rubric criterion into a constraint needs recorded judge verdicts to decide it, and one pack in the corpus has them. The machinery ships — the [`migration.yaml` declaration](#declaring-a-migration-the-migrationyaml-sidecar), its two load-time hazard rules, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md)'s bar — and one criterion is narrowed against a committed corpus. The other rubric packs have no recorded verdicts, so a [declared candidacy](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) there has nothing to be decided against | #793 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
-| A **failed** call's result text is not matchable, so `result` requires `status: { equals: success }` | #717 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
 
 Wall-clock time is not on the list: `latency_seconds` is deliberately unmatchable
@@ -2771,13 +2778,15 @@ it. Neither correct way to write the intent is flagged — `equals_binding` on a
 predicate compares two natively-typed values, and a `pattern` on the extraction binds
 a capture, which is a string.
 
-**A binder reading `field: result` makes its pack records-dependent.** The
-[#717 rule](#matching-a-result-is-scoped-to-successful-calls) requires
-`status: { equals: success }` on such a binder's `match`, and `status` is a field only
-the tool-call record carries — so on a bundle re-graded without records the binder's
-own matcher is undecidable and the constraint reports that the candidate set cannot be
-determined, where a binder over `args` stays decidable. Not a finding: the gate reads
-the block, not the bundle it will be graded against. It is stated here because it is
+**A binder reading `field: result` makes its pack records-dependent.** `result`
+comes from the tool-call record wherever one exists and from the answering
+`role: tool` message otherwise ([G6b](#guarantees)), and on a **failed** call those
+two differ by the `Error: ` prefix the message carries — so a binder over a failure
+extracts one text on a fresh run and a prefixed one on a bundle re-graded without
+its `tool_log.yaml` sidecar. A binder whose `match` also carries a `status`
+predicate is undecidable there outright, `status` being a field only the record
+holds. A binder over `args` has neither split. Not a finding: the gate reads the
+block, not the bundle it will be graded against. It is stated here because it is
 the kind of consequence a re-graded bundle otherwise surfaces months later.
 
 **A block that scores nothing is rejected.** `trace_checks` declaring neither
