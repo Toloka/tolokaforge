@@ -781,16 +781,17 @@ def grade_trial(trial_id: str, llm_messages: list[dict]) -> Grade:
     )
 ```
 
-**CRITICAL: Hash Algorithm Compatibility**
+**CRITICAL: Hash Substrate Discipline**
 
-The `db_service.get_stable_hash()` call MUST use the canonical hash algorithm defined in [`TASK_DESCRIPTION_SCHEMA.md`](TASK_DESCRIPTION_SCHEMA.md#canonical-hash-algorithm):
-
-```python
-json_str = json.dumps(stable_state, sort_keys=True, separators=(",", ":"), default=str)
-return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
-```
-
-All components (DB Service, adapters, grading engine) MUST use this exact algorithm for hash comparison to work correctly.
+`db_service.get_stable_hash()` and every comparison against its output MUST stay
+within the runner substrate's persisted-digest algorithm —
+`tolokaforge/core/hash.py::compute_stable_hash`, defined in
+[`TASK_DESCRIPTION_SCHEMA.md` § Stable State Hash](TASK_DESCRIPTION_SCHEMA.md#stable-state-hash).
+That scope is db-service and the consumers of its digests, nothing wider. The
+grading engine's core substrate hashes state in a different algebra by design:
+the two agree on which states are equal and label every state differently, so a
+hash comparison computes both sides on one substrate and a digest never crosses
+substrates — see [`GRADING.md` § Substrate Parity](GRADING.md#substrate-parity).
 
 ### Component scores on the wire
 

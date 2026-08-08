@@ -20,7 +20,7 @@ Host (Loader)                    Runner Container (Runtime)         DB Service C
 3. **Adapter-Agnostic** — single schema supports Native, Tau, and TlkMcpCore
 4. **Unstable Fields as Data** — field stability metadata is explicit, not Python annotations
 5. **Reconstructable** — `ToolSource` provides enough info to reconstruct tools at runtime
-6. **Canonical Hash Algorithm** — all components use identical JSON-based SHA-256 hashing
+6. **Single-Substrate Hash Comparisons** — a state-hash comparison computes both sides within one substrate's algorithm; a digest never crosses substrates ([Stable State Hash](#stable-state-hash))
 
 ---
 
@@ -718,43 +718,27 @@ POST   /restore/{name}        ← restore from snapshot (for golden path executi
 
 ---
 
-## Canonical Hash Algorithm
+## Stable State Hash
 
-**CRITICAL:** All components MUST use the identical hash algorithm for grading to work correctly.
+This section defines the **runner substrate's** persisted-digest algorithm — what
+db-service's `/state/hash` endpoint, ETags, snapshot hashes and the
+`ResetTrialResponse.state_hash` / `GetStateResponse.stable_hash` wire fields all
+compute. The implementation of record is
+[`tolokaforge/core/hash.py::compute_stable_hash`](../tolokaforge/core/hash.py):
+unstable-field filtering, datetime conversion, number canonicalization (numeric
+types always, numeric-looking strings per the task's `numeric_string_fields`
+opt-in), then compact sorted JSON and SHA-256. Every consumer of that substrate's
+digests computes and compares them with that function — and only consumers of that
+substrate's digests are bound by it.
 
-```python
-import hashlib
-import json
-from typing import Any, Dict
-
-def compute_stable_hash(state: Dict[str, Any]) -> str:
-    """
-    Compute canonical hash of stable state.
-    
-    This algorithm MUST be used by:
-    - DB Service /state/hash endpoint
-    - TlkMcpCore adapter grading
-    - Tau adapter grading
-    - Any other component computing state hashes
-    
-    Algorithm:
-    1. JSON serialize with sort_keys=True, separators=(",", ":")
-    2. UTF-8 encode
-    3. SHA-256 hexdigest
-    
-    IMPORTANT: Do NOT use str(tuple) or other serialization methods!
-    """
-    json_str = json.dumps(state, sort_keys=True, separators=(",", ":"), default=str)
-    return hashlib.sha256(json_str.encode("utf-8")).hexdigest()
-```
-
-**Key Requirements:**
-- `sort_keys=True` — deterministic key ordering
-- `separators=(",", ":")` — compact JSON, no spaces (NOT default `(", ", ": ")`)
-- `encode("utf-8")` — explicit UTF-8 encoding
-- `default=str` — handle datetime and other non-JSON types
-
-**Reference Implementation:** [`mcp_core.utils.validation.calculate_database_hash()`](../contrib/mcp_core/src/mcp_core/utils/validation.py)
+Core grading's digest is a different algebra by design — `state_digest`
+(`consistent_hash(to_hashable(...))`) in
+[`tolokaforge/core/grading/state_checks.py`](../tolokaforge/core/grading/state_checks.py).
+The two agree on which states are equal (the `numeric_string_fields` folding
+promise holds identically on both) and label every state differently, so a
+state-hash comparison computes both sides within one substrate and a digest never
+crosses substrates — see
+[`GRADING.md` § Substrate Parity](GRADING.md#substrate-parity).
 
 ---
 
