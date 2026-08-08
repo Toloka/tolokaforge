@@ -1212,6 +1212,9 @@ def _check_id_fields_against_seeded_tables(
         return AuthoringReport(
             unchecked=(Skip(_ID_FIELDS_ADDRESS, _UNRESOLVED_SEEDED_TABLES_REASON),)
         )
+    # __post_init__ makes a known layer with no view unconstructable; the assert
+    # narrows ``tables`` for static analysis.
+    assert seeded_tables.tables is not None
     findings = id_fields_findings(id_fields, seeded_tables.tables)
     if not findings:
         return AuthoringReport()

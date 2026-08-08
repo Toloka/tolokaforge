@@ -2518,8 +2518,10 @@ so a distributed enqueue is rejected once rather than by every worker identicall
 
 The named list is of packs that **load** and cannot be graded. A pack the loader itself
 refuses — a malformed grading shape, the file's own or one of its keys; a grading file
-that is not parseable YAML; an adapter backend the host has not installed — stops the
-pass where it stands with its own sentence, and the packs behind it are not read. #880
+that is not parseable YAML; a task naming an `initial_state.json_db` that is not on
+disk, read to hold `id_fields` against the tables it seeds; an adapter backend the host
+has not installed — stops the pass where it stands with its own sentence, and the packs
+behind it are not read. #880
 owns folding that class into the named list.
 
 Findings come in three classes:
@@ -2535,6 +2537,7 @@ Findings come in three classes:
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
+| a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
 | any hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
@@ -2553,6 +2556,7 @@ Findings come in three classes:
 | the same absence where the task declares any other `adapter_type` | unchecked | `grading` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
+| an `id_fields` declaration where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks.id_fields` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
 | an `args` address below its first segment | unchecked | per path |
@@ -2570,8 +2574,9 @@ false-reject mode. It is surfaced beside the task all the same — `validate` pr
 it, a run logs it — because a gate that could check nothing must not read as a clean
 bill of health. A task whose tool set the loader cannot resolve, an MCP pack that
 commits no `fixtures/tools.json`, an `args` address below its first segment, a property
-whose schema writes no `type`, a replay world no caller resolved, a hash block whose
-flag and source disagree under an external adapter that may supply the source itself,
+whose schema writes no `type`, a replay world no caller resolved, an `id_fields`
+declaration whose seeded tables no caller resolved, a hash block whose flag and source
+disagree under an external adapter that may supply the source itself,
 and a task naming no grading source under an adapter that resolves its own all land
 here.
 

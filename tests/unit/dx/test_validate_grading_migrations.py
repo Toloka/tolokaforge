@@ -39,13 +39,22 @@ migration:
   contradicts is heard here rather than by whoever reads the migration report. It is
   the one gate that does, because the file cannot affect a grade and a run must not
   abort on authoring metadata.
+* ``state_checks.id_fields`` against the state the task seeds: a defective
+  declaration — a table absent from the seeded state, a key component absent from
+  every seeded record of its table, a key that does not uniquely identify them — is
+  refused by ``tolokaforge validate``; ``relaxed_validation`` downgrades the same
+  declaration to a pass; a ``json_db`` not on disk is refused naming the path; and a
+  pack whose adapter this command cannot read the seeded state of draws ``?``,
+  never a ``✗``.
 
-Every gate here is about the block's own shape, so the calls pass an unresolvable
-tool inventory: none of these rejections has anything to do with the task's tools,
-and the value that reports "nothing about the tools is checkable" is what makes that
-explicit. The calls outside a ``pytest.raises`` are the standing lock that an
-unresolvable inventory fails nothing — folding ``unchecked`` into the fatal channels
-reddens every one of them. What a *resolvable* inventory rejects is locked in
+Every *shape* gate here is about the block's own shape, so those calls pass an
+unresolvable tool inventory: none of those rejections has anything to do with the
+task's tools, and the value that reports "nothing about the tools is checkable" is
+what makes that explicit. The calls outside a ``pytest.raises`` are the standing
+lock that an unresolvable inventory fails nothing — folding ``unchecked`` into the
+fatal channels reddens every one of them. The ``id_fields``-vs-seeded-state tests
+are the exception: they drive the CLI, which resolves the seeded tables and holds
+the declaration against them. What a *resolvable* inventory rejects is locked in
 ``tests/unit/grading/test_grading_authoring_gate.py``.
 """
 
