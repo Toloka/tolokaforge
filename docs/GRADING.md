@@ -859,7 +859,11 @@ state_checks:
 
 Map keys are the table names as they appear in `initial_state`. This is config
 data that travels with the task, so key resolution never depends on reading model
-source at runtime. A table keyed by neither `"id"` nor a declared
+source at runtime. The runner reads the same map when it matches a toolset's
+model classes to db-service tables at trial setup: a model declaring every
+component of a table's key — single or composite, in any order — is registered
+to that table up front, rather than resolved from its class name on first use.
+A table keyed by neither `"id"` nor a declared
 field fails loud at write time with the exact `id_fields` entry to add, and a
 record missing any declared key component fails loud naming the table, the
 missing component and the full declared key — per component, not just for the
