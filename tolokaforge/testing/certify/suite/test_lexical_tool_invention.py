@@ -9,7 +9,7 @@ Concrete regression: Gemini 3.1 Pro is observed to emit
 knowledge base" — even though the registered tool is named
 ``typesense_search_policy``. The model conflates the prompt phrasing
 with a fabricated tool name that doesn't exist, and the harness
-rejects every such call with ``Tool '…' not found in agent tools``.
+rejects every such call with ``Tool '…' not found``.
 
 Where :attr:`Capability.TOOL_NAME_DISCIPLINE` catches *structural*
 malformations of an offered name, this capability catches *lexical

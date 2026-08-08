@@ -1802,3 +1802,46 @@ def test_a_bound_shared_gate_applies_to_every_route():
     assert result.gate_failed is True
     assert result.score == 0.0
     assert "failed under (rec='Y')" in result.constraints[0].message
+
+
+@pytest.mark.parametrize(
+    ("recorded_text", "passes"),
+    [("order 42 is already refunded", True), ("the account is closed", False)],
+)
+def test_a_result_predicate_over_a_failed_call_is_decided_by_the_recorded_text(
+    recorded_text: str, passes: bool
+):
+    """An author may assert *why* a call failed, not only that it did.
+
+    The two rows share the ``error`` status and differ only in the text the tool
+    stated, so a constraint that passed on the status alone would pass both. Which
+    verdict this reaches is substrate-independent: both substrates record one text
+    for one failure, held byte-equal by the timeline parity suite, and the key
+    manifest names one evaluator for both.
+    """
+    timeline = build_timeline(
+        turns=(("user", "Refund the order."), ("assistant", "Refunding.")),
+        recorded=[recorded_call(_LOOKUP, status=ToolExecutionStatus.ERROR, output=recorded_text)],
+    )
+    config = TraceChecksConfig(
+        constraints=[
+            {
+                "id": "refused_as_already_refunded",
+                "description": "the refund failed saying the order was already refunded",
+                "require": {
+                    "present": {
+                        "match": {
+                            "kind": "tool_result",
+                            "status": {"equals": "error"},
+                            "result": {"contains": "already refunded"},
+                        }
+                    }
+                },
+            }
+        ]
+    )
+
+    verdict = evaluate_trace_checks(timeline, config).constraints[0]
+
+    assert verdict.passed is passes
+    assert verdict.undecided is False
