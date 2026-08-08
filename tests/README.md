@@ -176,7 +176,7 @@ Compare output against committed golden snapshots in `snapshots/`.
 - Transcript rules substrate parity (`test_transcript_substrate_parity.py`) — one
   authored pack under `tests/data/transcript_parity/`, one trial, graded through both
   substrates' real adapter paths, must produce the same `transcript_rules` component
-  and the value the row pins. Twenty rows: eighteen sit on the eight scoring questions
+  and the value the row pins. Twenty-two rows: twenty sit on the nine scoring questions
   a transcript rule has to answer the same way on either substrate, and two unmarked
   **anchor** rows, at two different scores, sit on no question at all and are the
   harness's own proof. A row pinning a value the runner does not produce raises
