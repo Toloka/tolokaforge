@@ -201,35 +201,28 @@ def _first_duplicate_key_value(
     return None
 
 
-def check_id_fields_against_seeded_tables(
+def id_fields_findings(
     id_fields: Mapping[str, str | list[str]],
     tables: Mapping[str, list[dict[str, Any]]],
-    *,
-    context: str,
-    relaxed: bool,
-) -> str | None:
-    """Validate every ``id_fields`` entry against the seeded tables.
+) -> list[str]:
+    """Return one sentence per defect in ``id_fields`` against ``tables``.
 
-    One gate, three findings, reported together in a single message: a
-    declared table absent from ``tables``, a declared key component absent
-    from the union of the table's seeded records' keys, and a declared key —
-    single or composite — that does not uniquely identify the table's seeded
-    records. The record-level checks are skipped for a table seeded empty —
-    its rows may arrive via ``initialization_actions``, which this gate cannot
-    see — and the uniqueness check is skipped when a component is absent from
-    every record, because the component finding already owns that defect. A
-    collision between records that merely lack a component (an absent
-    component projects as ``None`` in the scan) is likewise reported as the
-    component defect, not as a ``None``-valued duplicate.
+    Three findings, each carrying its own remediation: a declared table absent
+    from ``tables``, a declared key component absent from the union of the
+    table's seeded records' keys, and a declared key — single or composite —
+    that does not uniquely identify the table's seeded records. The
+    record-level checks are skipped for a table seeded empty — its rows may
+    arrive via ``initialization_actions``, which this gate cannot see — and the
+    uniqueness check is skipped when a component is absent from every record,
+    because the component finding already owns that defect. A collision
+    between records that merely lack a component (an absent component projects
+    as ``None`` in the scan) is likewise reported as the component defect, not
+    as a ``None``-valued duplicate.
 
-    Returns ``None`` when the checks pass or the findings are downgraded via
-    ``relaxed=True`` (one warning is logged in that case). Returns the message
-    string on a strict failure so callers can raise or return it.
-
-    ``context`` prefixes the message (e.g. task id or ``"RegisterTrial: <trial>"``).
+    Empty on a clean declaration and on an empty ``id_fields``.
     """
     if not id_fields:
-        return None
+        return []
     findings: list[str] = []
     unknown = sorted(set(id_fields) - set(tables))
     if unknown:
@@ -278,6 +271,25 @@ def check_id_fields_against_seeded_tables(
                     f"the seeded data, or set "
                     f"state_checks.relaxed_validation: true."
                 )
+    return findings
+
+
+def check_id_fields_against_seeded_tables(
+    id_fields: Mapping[str, str | list[str]],
+    tables: Mapping[str, list[dict[str, Any]]],
+    *,
+    context: str,
+    relaxed: bool,
+) -> str | None:
+    """Report :func:`id_fields_findings` as one gate message.
+
+    Returns ``None`` when the checks pass or the findings are downgraded via
+    ``relaxed=True`` (one warning is logged in that case). Returns the findings
+    space-joined behind a ``context`` prefix (e.g. task id or
+    ``"RegisterTrial: <trial>"``) on a strict failure, so callers can raise or
+    return it.
+    """
+    findings = id_fields_findings(id_fields, tables)
     if not findings:
         return None
     msg = f"[{context}] " + " ".join(findings)
