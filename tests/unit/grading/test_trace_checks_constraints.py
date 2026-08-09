@@ -1351,8 +1351,10 @@ def test_a_type_mismatched_equals_binding_says_the_comparison_was_not_made():
     """``eq`` over a string and an int is false outright, so this is never true either.
 
     The gate rejects this shape wherever the tool's schema types the extraction, and
-    the residue it cannot type is exactly what this backstop covers — so the operator
-    that the gate exempts on an ``args`` predicate is not exempt on a text field.
+    the residue it cannot type — no schema resolved, a path below its first segment, a
+    property the schema gives no single type — is exactly what this backstop covers.
+    It reads the value the predicate holds, so it answers only where that value is
+    text, which is why a text field is where it can be provoked.
     """
     require = {
         "present": {"match": {"kind": "assistant_message", "text": {"equals_binding": "delivery"}}}

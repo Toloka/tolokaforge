@@ -167,7 +167,7 @@ trace_checks:                              # ordering / scoped absence / countin
         values:                            # name -> extraction; at least one, each referenced below
           case:                            # the name equals_binding / contains_binding reads
             field: args.case_url           # tool | text | result | args.<dotted path>
-            pattern: '(https://[^/]+/cases/[0-9]+)'  # optional; exactly one group, always a string
+            pattern: '(https://[^/]+/cases/[0-9]+)'  # optional; exactly one group, off a field that holds text
         on_unbound: fail                   # fail (default) | pass — a binder that selected nothing
       require:                             # exactly one constraint kind
         before:
