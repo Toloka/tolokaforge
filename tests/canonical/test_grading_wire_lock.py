@@ -22,6 +22,18 @@ over an unmeasured surface.
 locks an engine to a runner image. It is one table, set-equal to the census rows that
 carry a :class:`_DocLock`, with its breadth column rendered from the census's *measured*
 ``emitted_for`` — so the doc cannot say a key waits on a gate the models do not give it.
+Which rows *belong* on it is not left to judgement for the keys that matter most: a key
+every pack emits breaks every trial spec against an image lacking it, so that class is
+held complete — locked, or exempt under :data:`_UNLOCKED_UNCONDITIONAL` for predating the
+floor.
+
+**Two readers stay two here as well.** The table is read through
+``doc_anchors.section``, which bounds a body at any ``^#{1,3} `` line and does not track
+code fences: a ``#`` comment inside a fenced block ends that read early and returns a
+*short* body with no error (#986). A short read is invisible to a lock that iterates the
+rows it was handed — it checks what it sees and passes — so a second, fence-aware reader
+finds the same section's end and the two are held to the same table rows before any key
+set is compared.
 
 **What is declared and not measured.** These fields carry no measurement behind them,
 collected here rather than hedged at each use:
@@ -44,7 +56,16 @@ collected here rather than hedged at each use:
 - ``_DocLock.direction`` — whether the key bites one way or both. Depends on what a past
   image declared. The retired-key half of a both-directions claim is measured by
   :func:`test_a_retired_wire_key_is_declared_by_no_model`; the other half is not.
+- ``_RETIRED_KEY_BREADTH`` — the breadth cell for a locked key no current model declares.
+  Every other cell in that column is rendered from a measured ``emitted_for``; this one
+  is hand-written, because nothing emits the key there is a gate to measure.
 - ``_RetiredWireKey.reason``.
+
+For a **gated** key, whether it carries a lock stays a judgement: nothing detects one
+dropped from the census and the table together. For an unconditionally emitted key it is
+no longer a judgement —
+:func:`test_every_unconditionally_emitted_key_is_locked_or_declared_older_than_the_floor`
+answers it from the walk's own ``emitted_for``.
 
 Two surfaces are deliberately outside this census and tracked in #983: the trial spec's
 non-grading keys (``initial_state``, ``user_simulator``, ``agent_tools``,
@@ -62,7 +83,8 @@ import re
 import types
 import typing
 from collections.abc import Iterable, Iterator
-from dataclasses import dataclass
+from dataclasses import dataclass, is_dataclass
+from dataclasses import fields as dataclass_fields
 from enum import Enum
 from functools import lru_cache
 from pathlib import Path
@@ -70,6 +92,7 @@ from typing import Any
 
 import pytest
 from pydantic import BaseModel
+from pydantic.fields import FieldInfo
 
 from tests.utils.doc_anchors import anchor, section
 from tolokaforge.adapters.native import NativeAdapter
@@ -94,6 +117,29 @@ _SUPPORTED_IMAGE_FLOOR = "v0.13.1"
 arrived at or after this belongs on the table; one whose locked shape predates it does
 not."""
 
+_UNLOCKED_UNCONDITIONAL: frozenset[str] = frozenset(
+    {
+        "grading",
+        "grading.grading_method",
+        "grading.llm_judge",
+        "grading.pass_threshold",
+        "grading.state_checks",
+        "grading.transcript_rules",
+        "grading.weights",
+        "search",
+        "search.api_key",
+        "search.documents_path",
+        "search.domain_name",
+        "search.enabled",
+        "search.host",
+        "search.port",
+    }
+)
+"""Keys every pack puts on the wire that carry no version lock: each predates
+:data:`_SUPPORTED_IMAGE_FLOOR`, so no image the table speaks about can reject one. The set
+cannot rot in the growth direction — a key arriving now is ``unreleased``, which clears the
+floor, so a lock is the only correct answer for one."""
+
 _RETIRED_KEY_BREADTH = "no current engine"
 """The breadth cell for a locked key no current model declares: nothing emits it, so the
 census has no measured ``emitted_for`` to render."""
@@ -101,6 +147,13 @@ census has no measured ``emitted_for`` to render."""
 _CHANGELOG_RELEASE = re.compile(r"^## (v\d+\.\d+\.\d+)")
 _FLOOR_IN_PREAMBLE = re.compile(r"runner images from `(v\d+\.\d+\.\d+)` onward")
 _ANY_HEADING = re.compile(r"^#{1,3} ")
+"""Hand-copied from ``doc_anchors._HEADING`` rather than imported: the whole-or-nothing
+check below is only a check while the two readers bound the *same* section, and a copy
+that drifts reds there instead of quietly agreeing with a changed original."""
+
+_FENCE = re.compile(r"^\s*(?:```|~~~)")
+"""Both fence syntaxes CommonMark defines. A tilde fence is the hole a backtick-only
+predicate leaves: both readers would step over neither, agree on a short count, and pass."""
 
 # Every pack under the native example corpus, all of which build. Pinned so a pack
 # dropping out of the corpus fails rather than silently shrinking the walk over it.
@@ -142,9 +195,11 @@ class _WireKey:
     ``""`` when every pack emits it."""
 
     wire_shape: str
-    """The rendered annotation the value crosses as. Rendering resolves ``Literal`` and
-    ``str, Enum`` members into the string, so a change to a value *domain* is visible
-    here and not only a change of type."""
+    """The rendered annotation the value crosses as, with the field's declared
+    constraints beside it (``int | None [ge=1]``). Rendering resolves ``Literal`` and
+    ``str, Enum`` members into the string and reads ``FieldInfo.metadata``, so a change
+    to the accepted *value set* is visible here and not only a change of type — a bound
+    relaxed on a locked key is as wire-breaking as a renamed field."""
 
     is_leaf_container: bool = False
     """Whether this row's value is a model the census deliberately does not descend
@@ -374,12 +429,12 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
     _WireKey(
         path="grading.transcript_rules.max_turns",
         emitted_for="grading.transcript_rules",
-        wire_shape="int | None",
+        wire_shape="int | None [ge=1]",
     ),
     _WireKey(
         path="grading.transcript_rules.min_assistant_turns",
         emitted_for="grading.transcript_rules",
-        wire_shape="int | None",
+        wire_shape="int | None [ge=1]",
         since="v0.15.0",
         lock=_DocLock(
             doc_key="transcript_rules.min_assistant_turns",
@@ -541,6 +596,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.custom_checks",
         emitted_for="",
         wire_shape="dict[str, Any] | None",
+        since="v0.13.1",
+        lock=_DocLock(
+            doc_key="custom_checks",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
 )
 
@@ -628,6 +688,40 @@ def _element_model(annotation: object) -> type[BaseModel] | None:
     return None
 
 
+def _contains_model(annotation: object) -> bool:
+    """Whether a model is reachable anywhere inside this annotation.
+
+    Read only to refuse an annotation the walk would otherwise record as a leaf while a
+    model sits inside it — ``dict[str, M]``, ``M1 | M2``, ``list[M | None]``,
+    ``tuple[M, ...]``. The refusal is self-checking where the record would not be:
+    :func:`_emitted_key_paths` stops at the same boundary and would agree with the walk,
+    and lock 5 reads only rows that *declare* themselves leaves, so an undeclared one is
+    invisible to every comparison.
+    """
+    if isinstance(annotation, type) and issubclass(annotation, BaseModel):
+        return True
+    return any(_contains_model(arg) for arg in typing.get_args(annotation))
+
+
+def _render_constraints(field: FieldInfo) -> str:
+    """The declared constraints on a field, rendered beside its annotation.
+
+    Pydantic keeps ``ge`` / ``le`` / ``min_length`` and friends in ``FieldInfo.metadata``
+    rather than in the annotation, so a bound relaxed or removed is a wire-visible change
+    to the accepted value set that the rendered annotation alone cannot show.
+    """
+    rendered: list[str] = []
+    for constraint in field.metadata:
+        if is_dataclass(constraint):
+            rendered += [
+                f"{member.name}={getattr(constraint, member.name)}"
+                for member in dataclass_fields(constraint)
+            ]
+        else:
+            rendered.append(repr(constraint))
+    return f" [{', '.join(sorted(rendered))}]" if rendered else ""
+
+
 def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_WalkedKey]:
     """Every wire key path under ``model``, with the gate its emission waits on.
 
@@ -641,10 +735,17 @@ def _walk_model(model: type[BaseModel], prefix: str, gate: str) -> Iterator[_Wal
         nested = _nested_model(field.annotation)
         element = _element_model(field.annotation)
         stopped = path in _WALK_STOPS
+        rendered = _render_annotation(field.annotation) + _render_constraints(field)
+        if not stopped and nested is None and element is None and _contains_model(field.annotation):
+            raise AssertionError(
+                f"{path}: {rendered} carries a model the walk cannot descend into; "
+                "teach the walk this shape rather than letting it record a container "
+                "as a leaf"
+            )
         yield _WalkedKey(
             path=path,
             emitted_for=gate,
-            wire_shape=_render_annotation(field.annotation),
+            wire_shape=rendered,
             descended=not stopped and (nested is not None or element is not None),
         )
         if stopped:
@@ -782,11 +883,13 @@ def _fence_aware_section_lines() -> list[str]:
     readers are held to the same table-row count before any key set is compared.
     """
     lines = _GRADING_DOC.read_text(encoding="utf-8").splitlines()
-    start = lines.index(_VERSION_LOCK_HEADING) + 1
+    starts = [index for index, line in enumerate(lines) if line.rstrip() == _VERSION_LOCK_HEADING]
+    found = len(starts)
+    assert found == 1, f"{_VERSION_LOCK_HEADING} appears {found} times in {_GRADING_DOC.name}"
     body: list[str] = []
     inside_fence = False
-    for line in lines[start:]:
-        if line.lstrip().startswith("```"):
+    for line in lines[starts[0] + 1 :]:
+        if _FENCE.match(line):
             inside_fence = not inside_fence
             continue
         if not inside_fence and _ANY_HEADING.match(line):
@@ -818,7 +921,7 @@ def _version_lock_table() -> tuple[dict[str, str], ...]:
     """
     read = _table_lines(_version_lock_section().splitlines())
     whole = _table_lines(_fence_aware_section_lines())
-    assert len(read) == len(whole), (
+    assert read == whole, (
         f"the section read carries {len(read)} table lines against {len(whole)} in the "
         "section itself, so this table is short — a truncated read, not a doc naming "
         "fewer keys"
@@ -839,8 +942,11 @@ def _changelog_releases() -> frozenset[str]:
     )
 
 
-def _locked_rows() -> tuple[_WireKey | _RetiredWireKey, ...]:
-    return tuple(row for row in (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS) if row.lock)
+def _locked_rows() -> tuple[tuple[_WireKey | _RetiredWireKey, _DocLock], ...]:
+    """Every census row carrying a version lock, paired with that lock."""
+    return tuple(
+        (row, row.lock) for row in (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS) if row.lock is not None
+    )
 
 
 def test_the_census_names_every_grading_wire_key_the_engine_emits() -> None:
@@ -859,6 +965,11 @@ def test_the_census_names_every_grading_wire_key_the_engine_emits() -> None:
 def test_every_censused_key_declares_the_gate_its_emission_waits_on() -> None:
     walked = {key.path: key.emitted_for for key in _walked_wire_keys()}
     declared = {row.path: row.emitted_for for row in _WIRE_KEYS}
+    unreached = sorted(declared.keys() - walked.keys())
+    assert unreached == [], (
+        "a census row the walk never reached, so the per-key comparison below skipped "
+        "it rather than measuring it"
+    )
     drift = {
         path: (declared[path], walked[path])
         for path in sorted(declared.keys() & walked.keys())
@@ -874,6 +985,11 @@ def test_every_censused_key_declares_the_gate_its_emission_waits_on() -> None:
 def test_every_censused_key_declares_the_shape_it_crosses_as() -> None:
     walked = {key.path: key.wire_shape for key in _walked_wire_keys()}
     declared = {row.path: row.wire_shape for row in _WIRE_KEYS}
+    unreached = sorted(declared.keys() - walked.keys())
+    assert unreached == [], (
+        "a census row the walk never reached, so the per-key comparison below skipped "
+        "it rather than measuring it"
+    )
     drift = {
         path: (declared[path], walked[path])
         for path in sorted(declared.keys() & walked.keys())
@@ -958,7 +1074,7 @@ def test_the_example_corpus_emits_what_the_census_says_it_emits() -> None:
 
 
 def test_the_version_lock_table_names_exactly_the_keys_the_census_locks() -> None:
-    locked = {row.lock.doc_key: row.lock.direction for row in _locked_rows() if row.lock}
+    locked = {lock.doc_key: lock.direction for _, lock in _locked_rows()}
     assert locked, "no census row carries a doc lock, so this lock asserts nothing"
     tabled = {_unwrapped(row["key"]): row["direction"] for row in _version_lock_table()}
 
@@ -975,7 +1091,7 @@ def test_the_version_lock_table_names_exactly_the_keys_the_census_locks() -> Non
 
 
 def test_the_table_states_the_breadth_the_models_actually_emit() -> None:
-    measured = {row.lock.doc_key: _doc_breadth(row) for row in _locked_rows() if row.lock}
+    measured = {lock.doc_key: _doc_breadth(row) for row, lock in _locked_rows()}
     breadths = set(measured.values())
     assert len(breadths) > 1, "every locked key renders the same breadth"
     drift = {
@@ -991,7 +1107,7 @@ def test_the_doc_and_the_census_name_the_same_releases_and_the_changelog_records
     floor_is_released = _SUPPORTED_IMAGE_FLOOR in releases
     assert floor_is_released, "the support floor names no release CHANGELOG.md records"
 
-    declared = {row.lock.doc_key: row.since for row in _locked_rows() if row.lock}
+    declared = {lock.doc_key: row.since for row, lock in _locked_rows()}
     unrecorded = sorted(
         f"{key}={since}"
         for key, since in declared.items()
@@ -1015,9 +1131,7 @@ def test_the_doc_and_the_census_name_the_same_releases_and_the_changelog_records
     )
 
 
-def test_a_key_is_on_the_list_exactly_when_its_locked_shape_arrived_within_the_support_window() -> (
-    None
-):
+def test_every_dated_key_carries_a_doc_lock_and_clears_the_support_floor() -> None:
     rows = (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS)
     unpaired = sorted(row.path for row in rows if (row.lock is not None) != (row.since is not None))
     assert unpaired == [], (
@@ -1027,10 +1141,11 @@ def test_a_key_is_on_the_list_exactly_when_its_locked_shape_arrived_within_the_s
 
     dated = [row for row in rows if row.since is not None and row.since != _UNRELEASED]
     assert dated, "no row names an exact release, so the floor comparison runs over nothing"
+    floor = _version_tuple(_SUPPORTED_IMAGE_FLOOR)
     below = sorted(
-        f"{row.path}={row.since} < {_SUPPORTED_IMAGE_FLOOR}"
-        for row in dated
-        if _version_tuple(row.since or "") < _version_tuple(_SUPPORTED_IMAGE_FLOOR)
+        f"{path}={since} < {_SUPPORTED_IMAGE_FLOOR}"
+        for path, since in ((row.path, row.since) for row in dated)
+        if since is not None and _version_tuple(since) < floor
     )
     assert below == [], "a locked key's shape predates the support floor the table declares"
 
@@ -1061,3 +1176,19 @@ def test_the_mirrors_send_the_reader_to_the_one_list() -> None:
         elif target not in headings:
             broken[doc.name] = f"links to {into_the_table}, which resolves to no heading"
     assert broken == {}, "a mirror does not resolve to the one version-lock table"
+
+
+def test_every_unconditionally_emitted_key_is_locked_or_declared_older_than_the_floor() -> None:
+    unconditional = {row.path for row in _WIRE_KEYS if row.emitted_for == ""}
+    locked = {row.path for row in _WIRE_KEYS if row.lock}
+    assert unconditional, "no census row is emitted unconditionally, so this lock asserts nothing"
+
+    unnamed = sorted(_UNLOCKED_UNCONDITIONAL - unconditional)
+    assert unnamed == [], "an exemption names no unconditionally emitted census row"
+
+    unaccounted = sorted(unconditional - locked - _UNLOCKED_UNCONDITIONAL)
+    assert unaccounted == [], (
+        "a key every pack puts on the wire carries neither a version lock nor an "
+        "exemption; an image lacking it rejects every trial spec, so it belongs on the "
+        "version-lock table or in _UNLOCKED_UNCONDITIONAL with its release predating the floor"
+    )

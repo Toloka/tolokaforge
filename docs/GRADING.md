@@ -966,7 +966,9 @@ it at `RegisterTrial` rather than ignoring it — see
 [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
 `id_fields` is locked by its *value* as well as its name; the release its image first
 presents that value in is in
-[§ Runner-engine version lock](#runner-engine-version-lock).
+[§ Runner-engine version lock](#runner-engine-version-lock). `relaxed_validation` has no
+row there because it predates that table's support floor — every image the table speaks
+about already presents it.
 
 ### Runner-engine version lock
 
@@ -980,12 +982,19 @@ For a key whose shape changed, that is the release the current shape arrived in;
 key this table covers because a current image *lacks* it, it is the release the absence
 arrived in. `unreleased` means no released image presents it yet.
 
-**This table speaks about runner images from `v0.13.1` onward**, and a key belongs on
-it exactly when its locked shape arrived at or after that floor. Nothing in this
-repository declares how far back images are supported, so the floor is a stated
-judgement rather than a derived policy — but it is not an arbitrary one: `v0.13.1` is
-the single release where `env_assertions` was removed, `hash_weight` and
-`tool_expectations` arrived, and the `combine_method` value domain changed.
+**This table speaks about runner images from `v0.13.1` onward**, and no key on it
+predates that floor. Nothing in this repository declares how far back images are
+supported, so the floor is a stated judgement rather than a derived policy — but it is
+not an arbitrary one: `v0.13.1` is the single release where `env_assertions` was
+removed, `hash_weight`, `tool_expectations` and `custom_checks` arrived, and the
+`combine_method` value domain changed.
+
+**A row dated to the floor itself bites only images older than this table's scope.** It
+is listed so the release is on record, not because an image the table speaks about can
+reject it. What the table does promise in the other direction: every key the engine puts
+on the wire for *every* pack is either on it or older than the floor — so an image at or
+above `v0.13.1` cannot be rejecting a trial spec over an unconditional key this table
+does not name.
 
 | key | emitted for | first declared by | direction |
 |---|---|---|---|
@@ -993,6 +1002,7 @@ the single release where `env_assertions` was removed, `hash_weight` and
 | `state_checks.hash_weight` | a pack declaring `state_checks` | `v0.13.1` | new engine → old image |
 | `transcript_rules.tool_expectations` | a pack declaring `transcript_rules` | `v0.13.1` | new engine → old image |
 | `combine_method` | every pack | `v0.13.1` | both directions |
+| `custom_checks` | every pack | `v0.13.1` | new engine → old image |
 | `transcript_rules.min_assistant_turns` | a pack declaring `transcript_rules` | `v0.15.0` | new engine → old image |
 | `trace_checks` | every pack | `v0.15.0` | new engine → old image |
 | `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
