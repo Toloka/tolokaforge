@@ -67,10 +67,12 @@ collected here rather than hedged at each use:
   **not** asserted is that any given member truly predates the floor.
 - ``_RetiredWireKey.reason``.
 
-What no longer rests on judgement is which rows belong on the table. Every censused key is
-locked or exempt, so a key dropped from the census and the table together, or added to a
-container and never dated, fails
-:func:`test_every_censused_key_is_locked_or_declared_older_than_the_floor`.
+What no longer rests on judgement is which rows belong on the table *while the key exists*:
+every censused key is locked or exempt, and a key dropped from the census and the table
+while a model still declares it reds against the walk. What survives is removal — a key
+taken out of the models, the census, the table and :data:`_PREDATES_FLOOR` together leaves
+nothing to fire, so nothing forces it into :data:`_RETIRED_WIRE_KEYS` where an older image
+still rejecting it would be recorded.
 
 Two surfaces are deliberately outside this census and tracked in #983: the trial spec's
 non-grading keys (``initial_state``, ``user_simulator``, ``agent_tools``,
