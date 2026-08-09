@@ -163,8 +163,9 @@ Compare output against committed golden snapshots in `snapshots/`.
   authored packs outside those roots — `grading_parity`, `transcript_parity`,
   `tests/data/projects` and `tests/data/migration_packs` — to the same gate. A new
   parity fixture whose grading names a tool its `task.yaml` never declares fails
-  there, before anyone runs `validate`. Every pack in that walk carries a positive
-  control, so the sweep cannot read clean by having stopped running.
+  there, before anyone runs `validate`. Every pack in that walk carries both of the
+  walk's positive controls — a tool no actor can call and a weight naming no
+  component — so the sweep cannot read clean by having stopped running.
 - Grading substrate parity (`test_grading_substrate_parity.py`) — a failure means a
   `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
   it, addresses a position below a claimed field by something other than an element
@@ -221,9 +222,11 @@ Compare output against committed golden snapshots in `snapshots/`.
   to cross-referencing each other, so neither spelling can be documented alone.
 
 Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
-authors a `task.yaml` and a `grading.yaml`. A pack that drives a differential adds
-a `trial.yaml` holding one named case per trial it grades — conventionally
-`satisfying` and `violating` — in the one shape its loader reads:
+authors a `task.yaml` and a `grading.yaml`, and — where its grading or its trials
+name a tool — an `mcp_server.py` with the `fixtures/tools.json` described below. A
+pack that drives a differential adds a `trial.yaml` holding one named case per
+trial it grades — conventionally `satisfying` and `violating` — in the one shape
+its loader reads:
 
 ```yaml
 satisfying:
@@ -264,7 +267,7 @@ every argument name that pack's matchers address and its timeline sends, which i
 what puts the gate's argument checks at error tier rather than leaving them
 unchecked. Nothing starts these servers — both parity suites substitute a call's
 recorded result before any `ExecuteTool` — so a script's bodies echo their
-arguments, and it exists to define the tools whose schemas the pack ships.
+arguments: the script exists to define the tools whose schemas the pack ships.
 
 The pack directory is the author key with its dots replaced by underscores, so a
 leaf key inside a list field gets its own pack:

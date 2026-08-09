@@ -27,8 +27,11 @@ def billing_api_get_payment(
 def servicenow_csm_update_case(
     data: dict,
     case_id: Annotated[str, Field(description="Case identifier, e.g. 'CS-1042'")],
+    u_resolution_code: Annotated[
+        str, Field(description="Resolution code written on the case")
+    ] = "",
 ) -> dict:
-    return {"case_id": case_id}
+    return {"case_id": case_id, "u_resolution_code": u_resolution_code}
 
 
 if __name__ == "__main__":

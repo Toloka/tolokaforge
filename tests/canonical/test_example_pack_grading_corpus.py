@@ -30,8 +30,11 @@ Fifteen claims over the packs an author reads as the reference:
    nothing unchecked — the measured proof that the gate ships green rather than the
    claim that it does. The 48 authored packs outside those two roots — the two parity
    roots, the recorded projects and the migration fixtures — face the same whole gate
-   against their own inventories, so a fixture naming a tool its task never declares
-   is refused before anyone runs ``validate``. The rules a ``task.yaml`` holder can
+   through the same call site, against their own inventories and their own effective
+   combines, so a fixture naming a tool its task never declares, or weighting a
+   component it never configures, is refused before anyone runs ``validate``. Every
+   schema those packs resolve closes its argument set, which is what keeps the
+   argument rules refusing rather than advising. The rules a ``task.yaml`` holder can
    run without a tool set are held over the wider 107-pack walk on top of that, so no
    pack anywhere can declare a section that asserts nothing.
 6. **``cache_debug`` grades two genuinely alternative diagnostic routes and cannot be
@@ -115,6 +118,7 @@ from tolokaforge.adapters._task_loader import (
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.config_validation import (
+    ArgumentSchema,
     AuthoringReport,
     HashSourceLayer,
     ReplayWorld,
@@ -708,7 +712,8 @@ def test_no_authored_grading_block_asserts_nothing() -> None:
 
 # The address the golden-action name rule reports under, and a name no pack declares.
 # The name is every tool-set control's sentinel: injected into a hash block here, and
-# written over a matcher or a tool_expectations entry by the whole-gate guard.
+# written over a matcher or a tool_expectations entry — or injected as one where the
+# pack authors neither — by the whole-gate guard.
 _GOLDEN_ACTION_ADDRESS = "state_checks.hash.golden_actions["
 _A_TOOL_NO_ACTOR_CAN_CALL = "a_tool_no_actor_can_call"
 
@@ -847,11 +852,10 @@ def _retargeting_one_tool_named(grading: Any) -> bool:
             if isinstance(tool.get("equals"), str):
                 tool["equals"] = _A_TOOL_NO_ACTOR_CAN_CALL
                 return True
-            for key in ("in_", "in"):
-                named = tool.get(key)
-                if isinstance(named, list) and named and isinstance(named[0], str):
-                    named[0] = _A_TOOL_NO_ACTOR_CAN_CALL
-                    return True
+            named = tool.get("in_")
+            if isinstance(named, list) and named and isinstance(named[0], str):
+                named[0] = _A_TOOL_NO_ACTOR_CAN_CALL
+                return True
         expectations = grading.get("tool_expectations")
         if isinstance(expectations, dict):
             for key in ("required_tools", "disallowed_tools"):
@@ -895,23 +899,40 @@ def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
     :func:`_gated_packs` stops at the two task roots, which leaves the 48 packs under
     ``grading_parity``, ``transcript_parity``, ``tests/data/projects`` and
     ``tests/data/migration_packs`` reached only by guards scoped to a single rule
-    apiece. Here each faces the whole gate, against **its own** inventory, replay world,
-    hash layer and seeded tables, built the way ``tolokaforge validate``'s caller builds
-    them — so a fixture whose grading names a tool its task never declares is refused
-    here, before anyone runs ``validate`` and before a trial is paid for.
+    apiece. Here each faces the whole gate through :func:`_gate_reports` — the same
+    instrument the gated walk runs, over the half of the corpus that walk does not
+    reach — against **its own** inventory, replay world, hash layer, seeded tables and
+    effective combine, built the way ``tolokaforge validate``'s caller builds them. So a
+    fixture whose grading names a tool its task never declares is refused here, before
+    anyone runs ``validate`` and before a trial is paid for.
 
     The residue is asserted empty rather than pinned to whatever comes back: every one of
     these packs declares the schemas of the arguments it addresses, so a skip appearing
     here is a fixture that stopped doing so.
 
-    The control is defined for every pack by whichever of its two branches that pack can
-    carry, because the 23 authoring neither a matcher nor a ``tool_expectations`` entry
-    would otherwise sit inside a walk that proves nothing about them.
+    Closure is asserted beside the residue because ``fixtures/tools.json`` is a cache: a
+    pack whose committed file goes missing has it regenerated from the pack's own server,
+    and the servers never emit ``additionalProperties``. The regenerated schema checks
+    the same argument names at advisory tier instead of refusing them, which moves
+    nothing in a report whose addressed arguments are all present — so neither the sweep
+    nor the residue can see that happen, and this list can. A tool whose schema does not
+    resolve read-only at all is a different state and stays legitimate here.
+
+    Two controls, because the sweep answers for two families of rule. Every pack is
+    checked again with a tool no actor can call, written wherever that pack can hold
+    one — the 23 authoring neither a matcher nor a ``tool_expectations`` entry would
+    otherwise sit inside a walk that proves nothing about them — and again with a weight
+    naming no component, which :func:`_gate_reports` supplies from the same resolved
+    combine: hand the gate no combine and the two weight rules are absent from the
+    report entirely, so a sweep that stopped resolving the layer would go on reading
+    clean over rules that never ran.
     """
     findings: dict[str, list[str]] = {}
     advisories: dict[str, list[str]] = {}
     unchecked: dict[str, list[str]] = {}
-    unprobed: list[str] = []
+    opened: list[str] = []
+    unprobed_tools: list[str] = []
+    unprobed_weights: list[str] = []
     misaddressed: list[str] = []
     packs = _packs_outside_the_gate_walk()
 
@@ -925,15 +946,22 @@ def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
         tables = seeded_tables_under_adapter(task, task_dir, task.adapter_type)
         pack = str(task_yaml.relative_to(_REPO))
 
-        report = inspect_grading_authoring(
-            grading, inventory, replay_world=world, hash_sources=layer, seeded_tables=tables
-        )
+        report, weighted = _gate_reports(task_yaml, grading, inventory, world, layer, tables)
         if report.errors:
             findings[pack] = [f"{f.where}: {f.message}" for f in report.errors]
         if report.advisories:
             advisories[pack] = [f"{f.where}: {f.message}" for f in report.advisories]
         if report.unchecked:
             unchecked[pack] = [f"{skip.where}: {skip.reason}" for skip in report.unchecked]
+        opened += [
+            f"{pack}:{tool}"
+            for tool in sorted(inventory.declared)
+            if inventory.strictness(tool) is ArgumentSchema.OPEN
+        ]
+        if [finding.where for finding in weighted.errors] != [
+            f"combine.weights.{_A_WEIGHT_NAMING_NO_COMPONENT}"
+        ]:
+            unprobed_weights.append(pack)
 
         probed = inspect_grading_authoring(
             _naming_a_tool_no_actor_can_call_where_the_pack_looks(grading),
@@ -944,9 +972,11 @@ def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
         )
         reported = _findings_naming_the_uncallable_tool(probed)
         if not reported:
-            unprobed.append(pack)
+            unprobed_tools.append(pack)
         misaddressed += [
-            where for where in reported if not where.startswith(_UNCALLABLE_TOOL_ADDRESSES)
+            reported_finding
+            for reported_finding in reported
+            if not reported_finding.startswith(_UNCALLABLE_TOOL_ADDRESSES)
         ]
 
     assert len(packs) == _PACKS_OUTSIDE_THE_GATE_WALK, (
@@ -966,9 +996,17 @@ def test_the_packs_outside_the_gate_walk_are_held_to_the_whole_gate() -> None:
         "the gate could not check a rule for these packs — an addressed argument whose "
         "schema no longer resolves — so the sweep above passed over what it reports on"
     )
-    assert unprobed == [], (
+    assert opened == [], (
+        "a schema in this walk stopped closing its argument set, so an argument the "
+        "gate would refuse is now only advised about and the sweep above reads green"
+    )
+    assert unprobed_tools == [], (
         "the gate did not refuse a tool no actor can call for these packs, so the rule "
         "never ran here and the clean sweep above proves nothing about them"
+    )
+    assert unprobed_weights == [], (
+        "the gate did not refuse a weight naming no component for these packs, so the "
+        "weight rules never ran here and the clean sweep above proves nothing about them"
     )
     assert misaddressed == [], (
         "a control finding quoted the sentinel from an address neither the trace rule "

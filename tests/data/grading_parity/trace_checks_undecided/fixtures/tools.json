@@ -27,6 +27,12 @@
           "description": "Case identifier, e.g. 'CS-1042'",
           "title": "Case Id",
           "type": "string"
+        },
+        "u_resolution_code": {
+          "default": "",
+          "description": "Resolution code written on the case",
+          "title": "U Resolution Code",
+          "type": "string"
         }
       },
       "required": [
