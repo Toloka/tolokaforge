@@ -959,77 +959,95 @@ unknown-table finding and is skipped by the record-level findings (absent
 component and non-unique key), because there is no record to hold the declared
 key against.
 
-**Runner-engine version lock**: `id_fields` and `relaxed_validation` are declared
-on the runner-side `StateChecksConfig` (`extra="forbid"`), so a new engine emitting
-these keys requires a runner image built from the same release. Old engine + new runner
-is safe **for these keys**: an engine that predates them ignores what it does not
-declare, since a model's `extra` setting is fixed when the engine is built. An engine
-from this release onward refuses a key it does not declare instead of ignoring it — see
+**Both keys carry the runner-engine version lock.** `id_fields` and
+`relaxed_validation` are declared on the runner-side `RunnerStateChecksConfig`
+(`extra="forbid"`), so an image that does not present a key rejects a pack declaring
+it at `RegisterTrial` rather than ignoring it — see
 [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
+`id_fields` is locked by its *value* as well as its name; the release its image first
+presents that value in is in
+[§ Runner-engine version lock](#runner-engine-version-lock). `relaxed_validation` has no
+row there because it predates that table's support floor — every image the table speaks
+about already presents it.
 
-**Runner-engine version lock (both directions)**: the trial spec crosses the wire as
-a plain `model_dump_json()` parsed by `extra="forbid"` runner models — so a field, or
-a field *value*, that the receiving side does not declare fails validation rather than
-being dropped. Nine keys carry the lock:
+### Runner-engine version lock
 
-- `state_checks.env_assertions`, which the current runner `StateChecksConfig` does not
-  declare: an engine older than this release translates it onto that field, so an
-  **old engine against a new runner image** is rejected at `RegisterTrial`.
-- `state_checks.hash_weight`, which a runner image older than this release does not
-  declare: the current engine emits it (as `null` when the pack declares no weight),
-  so a **new engine against an old runner image** is rejected the same way.
-- `state_checks.expect_initial_state`, the field carrying the hash source that names the
-  state a refusal task expects. A **new engine** emits `expect_initial_state`, which a
-  runner image older than this release does not declare, and an **old engine** emits
-  `expected_hash` — the field a stored digest crossed on, deleted here — which a current
-  one does not. So this key is rejected in *both* directions rather than one. The
-  authored `grading.yaml` key is `state_checks.hash.expect_initial_state`, and the
-  digest it replaces is retired: a pack declaring `expected_state_hash` migrates, per
+The trial spec crosses the wire as a plain `model_dump_json()` parsed by
+`extra="forbid"` runner models — so a field, or a field *value*, that the receiving
+side does not declare fails validation rather than being dropped.
+
+**`first declared by` names the release whose image first presents the key in the
+shape this row's lock is about** — not the release the key's name first appeared in.
+For a key whose shape changed, that is the release the current shape arrived in; for a
+key this table covers because a current image *lacks* it, it is the release the absence
+arrived in. `unreleased` means no released image presents it yet.
+
+**This table speaks about runner images from `v0.13.1` onward**, and a key belongs on
+it exactly when its locked shape arrived at or after that floor. Nothing in this
+repository declares how far back images are supported, so the floor is a stated
+judgement rather than a derived policy — but it is not an arbitrary one: `v0.13.1` is
+the single release where `env_assertions` was removed, `hash_weight`,
+`tool_expectations` and `custom_checks` arrived, and the `combine_method` value domain
+changed. That membership rule is operative rather than aspirational: every grading key
+the engine can put on the wire is held to it, so one added below any container has to
+join this table or be recorded as predating the floor. Which keys predate it is a
+declaration made when that record was written, not something re-derived per release.
+
+**A row dated to the floor itself bites only images older than this table's scope.** It
+is listed so the release is on record, not because an image the table speaks about can
+reject it.
+
+| key | emitted for | first declared by | direction |
+|---|---|---|---|
+| `state_checks.env_assertions` | no current engine | `v0.13.1` | old engine → new image |
+| `state_checks.hash_weight` | a pack declaring `state_checks` | `v0.13.1` | new engine → old image |
+| `transcript_rules.tool_expectations` | a pack declaring `transcript_rules` | `v0.13.1` | new engine → old image |
+| `combine_method` | every pack | `v0.13.1` | both directions |
+| `custom_checks` | every pack | `v0.13.1` | new engine → old image |
+| `transcript_rules.min_assistant_turns` | a pack declaring `transcript_rules` | `v0.15.0` | new engine → old image |
+| `trace_checks` | every pack | `v0.15.0` | new engine → old image |
+| `state_checks.id_fields` | a pack declaring `state_checks` | `v0.16.1` | new engine → old image |
+| `state_checks.expect_initial_state` | a pack declaring `state_checks` | `unreleased` | both directions |
+| `transcript_rules.required_actions[*].name` | a pack declaring `transcript_rules.required_actions` | `unreleased` | both directions |
+| `search.plane` | every pack | `unreleased` | new engine → old image |
+
+`emitted for` is what the adapter puts on the wire, not what the pack asks for: a key
+whose cell reads **every pack** is emitted as `null` when the pack declares nothing
+under it, and `null` is a key an image must still declare. That is why `trace_checks`
+bites a pack that grades no trajectory at all, and why `search.plane` bites a task
+with no knowledge base.
+
+Three rows need more than a cell:
+
+- **`state_checks.expect_initial_state` bites in both directions because two spellings
+  cross.** A current engine emits `expect_initial_state`; an engine predating it emits
+  `expected_hash` — the field a stored digest crossed on, deleted here — which a
+  current image does not declare. The authored `grading.yaml` key is
+  `state_checks.hash.expect_initial_state`, and the digest it replaces is retired: a
+  pack declaring `expected_state_hash` migrates, per
   [§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
-- `transcript_rules.min_assistant_turns`, which a runner image older than this release
-  does not declare: the current engine emits it (as `null` when the pack declares no
-  floor), so a **new engine against an old runner image** is rejected the same way.
-- `trace_checks`, a whole grading section a runner image older than this release does
-  not declare: the current engine emits it (as `null` when the pack declares no
-  constraints) on **every** pack, so a **new engine against an old runner image** is
-  rejected the same way, whether or not the pack grades a trajectory.
-- `combine_method`, whose declared value domain both gained and lost members in this
-  release. The runner `GradingConfig` validates it against the closed set in
-  [§ Score Combination](#score-combination): a **new engine** translating `any` is
-  rejected by an older image, and an **old engine** translating a name the set no
-  longer holds is rejected by a current one.
-- `transcript_rules.required_actions[*].name`, which the wire spelled `tool_name`
-  before one model served both the authored block and the trial spec. A **new engine**
-  emits `name`, which a runner image older than this release does not declare, and an
-  **old engine** emits `tool_name`, which a current one does not — so this key is
-  rejected in *both* directions rather than one. The authored `grading.yaml` key is
-  `name:` and is unchanged; nothing in a task pack migrates.
-- `search.plane`, the field naming which plane serves a task's knowledge base. A
-  runner image older than this release does not declare it; the current engine
-  emits it (as `null` when the task declares no plane) on **every** task, since
-  `TaskDescription.search` is always emitted, so a **new engine against an old
-  runner image** is rejected the same way.
-- `state_checks.id_fields`, whose declared **value** shape admits a composite
-  (list-valued) key. A runner image that predates the list form declares the value
-  as a plain string, so a **new engine against an old runner image** emitting a
-  list value is rejected at `RegisterTrial` with a Pydantic `string_type` error
-  naming `id_fields` — the correct fail-loud outcome, since that image cannot
-  resolve a composite key.
+- **`state_checks.id_fields` is locked by its value, not its name.** An image
+  predating the list form declares the value as a plain string, so a pack declaring a
+  composite (list-valued) key is rejected with a Pydantic `string_type` error naming
+  `id_fields` — the correct fail-loud outcome, since that image cannot resolve a
+  composite key. A single-field declaration crosses as the same plain string it always
+  did.
+- **`state_checks.env_assertions` is on this table because a current image does *not*
+  declare it.** An engine predating its removal translates the authored key onto that
+  field, so the rejection is an old engine against a new image — the one row here whose
+  direction runs that way.
 
-The first three bite on **every** pack carrying a non-empty `state_checks:` block,
-`min_assistant_turns` on **every** pack carrying a `transcript_rules:` block, and
-`trace_checks` and `search.plane` on **every** pack at all — whether or not the pack
-declares the key, because the adapter emits all six unconditionally.
-`required_actions[*].name` bites only on a pack that declares `required_actions`,
-since an empty list carries no element
-to spell either way. `combine_method` bites only on a
-pack declaring an affected value — `weighted` and `all` cross in either direction —
-and `id_fields` only on a pack declaring a composite key: a single-field declaration
-crosses as the same plain string it always did. So
-a new engine requires a runner image from the same release for any pack, and
-`make docker-build-core` is part of every engine upgrade. (`db_hash_check` was never
-declared on the runner config at all, so no engine ever emitted it and it is not part
-of this lock — a populated `db_hash_check` is rejected core-side at config load.)
+`combine_method` is locked by its value domain the same way `id_fields` is: the runner
+validates it against the closed set in [§ Score Combination](#score-combination), so a
+value one side's set does not hold is rejected at the value rather than at the key.
+`transcript_rules.required_actions[*].name` reached the wire as `tool_name` before one
+model served both the authored block and the trial spec; the authored `grading.yaml`
+key is `name:` and is unchanged, so nothing in a task pack migrates.
+
+A new engine therefore requires a runner image presenting every key above, and
+`make docker-build-core` is part of every engine upgrade. `db_hash_check` is **not**
+on this table: it was never declared on the runner config at all, so no engine ever
+emitted it, and a populated `db_hash_check` is rejected core-side at config load.
 
 **This lock is narrower than the proto3 rule that governs the rest of registration.**
 `engine_protocol_version` and `call_id` are proto message fields, which an older
@@ -1212,7 +1230,7 @@ that it was declared but not consulted — on both substrates, from one constant
 them ones no gate admits.** The
 fold is one function (`core/grading/state_composition.py`) and both the core engine
 and the runner's `GradeTrial` call it, so the *rule* is shared; the runner carries
-the weight as the flattened `state_checks.hash_weight` on its `StateChecksConfig` and
+the weight as the flattened `state_checks.hash_weight` on its `RunnerStateChecksConfig` and
 applies the same presence gate at `RegisterTrial`. What is not shared is what each
 substrate feeds that fold:
 
@@ -1431,16 +1449,11 @@ own bounds one side only, so only a pack declaring both can close the window.
 true: a ceiling of `0` closes the window on its own, and a floor of `0` asserts
 nothing. Either is rejected at load naming the key and the bound.
 
-**Runner-engine version lock**: `min_assistant_turns` is declared on
-`TranscriptRulesConfig` (`extra="forbid"`), so an engine of this release
-requires a runner image built from it — the engine emits the field on **every** pack
-carrying a `transcript_rules:` block, as `null` when the pack declares no floor, so
-an older image rejects such a pack at `RegisterTrial` whether or not it asks for a
-floor. Old engine + new runner is safe **for this key**: an engine that predates it
-ignores what it does not declare, since a model's `extra` setting is fixed when the
-engine is built. An engine from this release onward refuses a key it does not declare
-instead of ignoring it — see
-[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
+**`min_assistant_turns` carries the runner-engine version lock.** It is declared on
+`TranscriptRulesConfig` (`extra="forbid"`) and the engine emits it on **every** pack
+carrying a `transcript_rules:` block, as `null` when the pack declares no floor. The
+release its image first presents it in, and the direction it bites, are in
+[§ Runner-engine version lock](#runner-engine-version-lock).
 
 ### `tool_expectations`
 
@@ -1491,14 +1504,11 @@ it. So both lists are checked against the task's declared tool set by
 is an authoring error naming the tools the task does declare. See
 [What is validated before a run](#what-is-validated-before-a-run).
 
-**Runner-engine version lock**: `tool_expectations` is declared on
-`TranscriptRulesConfig` (`extra="forbid"`), so a new engine emitting the key
-requires a runner image built from the same release — `RegisterTrial` rejects it
-otherwise. Old engine + new runner is safe **for this key**: an engine that predates it
-ignores what it does not declare, since a model's `extra` setting is fixed when the
-engine is built. An engine from this release onward refuses a key it does not declare
-instead of ignoring it — see
-[§ Which keys a grading block refuses](#which-keys-a-grading-block-refuses).
+**`tool_expectations` carries the runner-engine version lock.** It is declared on
+`TranscriptRulesConfig` (`extra="forbid"`), so an image that does not present it
+rejects a pack declaring one at `RegisterTrial`. The release its image first presents
+it in, and the direction it bites, are in
+[§ Runner-engine version lock](#runner-engine-version-lock).
 
 ---
 
@@ -3572,9 +3582,8 @@ aggregate that map alone, the disagreement is a verdict flip rather than a magni
 canonical differential therefore proves the dispatch over deterministic components, which
 is the whole of what is provable for these keys.
 
-`combine_method` is one of the keys that lock an engine to a runner image built from
-the same release: see [Hash-Based Grading](#hash-based-grading-tau-bench-compatible)
-§ "Runner-engine version lock (both directions)".
+`combine_method` is one of the keys that lock an engine to a runner image presenting
+it: see [§ Runner-engine version lock](#runner-engine-version-lock).
 
 The `weighted` mean:
 
