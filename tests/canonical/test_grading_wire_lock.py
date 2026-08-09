@@ -61,7 +61,7 @@ import json
 import re
 import types
 import typing
-from collections.abc import Iterator
+from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from enum import Enum
 from functools import lru_cache
@@ -100,6 +100,7 @@ census has no measured ``emitted_for`` to render."""
 
 _CHANGELOG_RELEASE = re.compile(r"^## (v\d+\.\d+\.\d+)")
 _FLOOR_IN_PREAMBLE = re.compile(r"runner images from `(v\d+\.\d+\.\d+)` onward")
+_ANY_HEADING = re.compile(r"^#{1,3} ")
 
 # Every pack under the native example corpus, all of which build. Pinned so a pack
 # dropping out of the corpus fails rather than silently shrinking the walk over it.
@@ -767,6 +768,34 @@ def _version_lock_section() -> str:
     return section(lines, _VERSION_LOCK_HEADING, _GRADING_DOC.name)
 
 
+def _table_lines(body: Iterable[str]) -> list[str]:
+    return [line for line in body if line.startswith("|")]
+
+
+def _fence_aware_section_lines() -> list[str]:
+    """The heading's body up to the next heading, with fenced blocks stepped over.
+
+    A second reader for the section, and the only reason it exists: ``doc_anchors.section``
+    bounds a body at any ``^#{1,3} `` line without tracking code fences, so a ``#`` comment
+    inside a fenced block ends its read early and returns a *short* body with no error
+    (#986). A short read of a table looks exactly like a doc naming fewer keys, so the two
+    readers are held to the same table-row count before any key set is compared.
+    """
+    lines = _GRADING_DOC.read_text(encoding="utf-8").splitlines()
+    start = lines.index(_VERSION_LOCK_HEADING) + 1
+    body: list[str] = []
+    inside_fence = False
+    for line in lines[start:]:
+        if line.lstrip().startswith("```"):
+            inside_fence = not inside_fence
+            continue
+        if not inside_fence and _ANY_HEADING.match(line):
+            break
+        body.append(line)
+    assert not inside_fence, f"unclosed code fence under {_VERSION_LOCK_HEADING}"
+    return body
+
+
 def _unwrapped(cell: str) -> str:
     """A cell that is one whole code span, without its backticks.
 
@@ -781,12 +810,20 @@ def _unwrapped(cell: str) -> str:
 
 @lru_cache(maxsize=1)
 def _version_lock_table() -> tuple[dict[str, str], ...]:
-    """The table's data rows, keyed by column header."""
-    rows = [
-        [cell.strip() for cell in line.strip().strip("|").split("|")]
-        for line in _version_lock_section().splitlines()
-        if line.startswith("|")
-    ]
+    """The table's data rows, keyed by column header.
+
+    Every doc-side lock reads the table through here, so the read is checked against the
+    fence-aware reader once rather than at each of them: a short read silently shrinks
+    what a lock iterating the rows measures, and passes.
+    """
+    read = _table_lines(_version_lock_section().splitlines())
+    whole = _table_lines(_fence_aware_section_lines())
+    assert len(read) == len(whole), (
+        f"the section read carries {len(read)} table lines against {len(whole)} in the "
+        "section itself, so this table is short — a truncated read, not a doc naming "
+        "fewer keys"
+    )
+    rows = [[cell.strip() for cell in line.strip().strip("|").split("|")] for line in read]
     assert len(rows) > 2, f"{_VERSION_LOCK_HEADING} carries no table"
     header, separator, *body = rows
     assert all(set(cell) <= {"-", ":"} for cell in separator), "row 2 is not a table rule"
