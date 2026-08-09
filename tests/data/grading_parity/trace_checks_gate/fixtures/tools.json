@@ -1,0 +1,40 @@
+[
+  {
+    "name": "read_meter",
+    "description": "Read a meter's current value.",
+    "parameters": {
+      "properties": {
+        "meter_id": {
+          "description": "Meter identifier, e.g. 'M-7'",
+          "title": "Meter Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "meter_id"
+      ],
+      "title": "read_meterArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "reset_meter",
+    "description": "Reset a meter to zero.",
+    "parameters": {
+      "properties": {
+        "meter_id": {
+          "description": "Meter identifier, e.g. 'M-7'",
+          "title": "Meter Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "meter_id"
+      ],
+      "title": "reset_meterArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

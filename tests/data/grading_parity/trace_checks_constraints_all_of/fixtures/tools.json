@@ -1,0 +1,46 @@
+[
+  {
+    "name": "write_report",
+    "description": "Write up a case in full.",
+    "parameters": {
+      "properties": {
+        "case_id": {
+          "description": "Case identifier, e.g. 'CS-1042'",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "body": {
+          "description": "Text of the report",
+          "title": "Body",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "body"
+      ],
+      "title": "write_reportArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "close_case",
+    "description": "Close a case, ending work on it.",
+    "parameters": {
+      "properties": {
+        "case_id": {
+          "description": "Case identifier, e.g. 'CS-1042'",
+          "title": "Case Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id"
+      ],
+      "title": "close_caseArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

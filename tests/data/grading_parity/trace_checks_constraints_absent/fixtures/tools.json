@@ -1,0 +1,40 @@
+[
+  {
+    "name": "billing_api_refund_payment",
+    "description": "Refund a payment in full.",
+    "parameters": {
+      "properties": {
+        "payment_id": {
+          "description": "Payment identifier, e.g. 'PAY-664306'",
+          "title": "Payment Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "payment_id"
+      ],
+      "title": "billing_api_refund_paymentArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "customer_api_delete_account",
+    "description": "Delete a customer account and everything filed under it.",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id"
+      ],
+      "title": "customer_api_delete_accountArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

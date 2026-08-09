@@ -1,0 +1,46 @@
+[
+  {
+    "name": "billing_api_get_payment",
+    "description": "Fetch a payment record by its identifier.",
+    "parameters": {
+      "properties": {
+        "payment_id": {
+          "description": "Payment identifier, e.g. 'PAY-664306'",
+          "title": "Payment Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "payment_id"
+      ],
+      "title": "billing_api_get_paymentArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "servicenow_csm_update_case",
+    "description": "Update a customer service case, recording how it was resolved.",
+    "parameters": {
+      "properties": {
+        "case_id": {
+          "description": "Case identifier, e.g. 'CS-1042'",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "u_resolution_code": {
+          "default": "",
+          "description": "Resolution code written on the case",
+          "title": "U Resolution Code",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id"
+      ],
+      "title": "servicenow_csm_update_caseArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

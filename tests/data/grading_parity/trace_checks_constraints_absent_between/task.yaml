@@ -10,7 +10,11 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - open_case
+      - close_case
+      - notify_customer
   user:
     enabled: []
 

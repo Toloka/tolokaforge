@@ -1,0 +1,59 @@
+[
+  {
+    "name": "order_api_get_order",
+    "description": "Fetch an order by its identifier.",
+    "parameters": {
+      "properties": {
+        "order_id": {
+          "description": "Order identifier, e.g. 'O-001'",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ],
+      "title": "order_api_get_orderArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "search_policy",
+    "description": "Search the policy library.",
+    "parameters": {
+      "properties": {
+        "query": {
+          "description": "Text to search the policy library for",
+          "title": "Query",
+          "type": "string"
+        }
+      },
+      "required": [
+        "query"
+      ],
+      "title": "search_policyArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_case",
+    "description": "Open a case for a piece of work.",
+    "parameters": {
+      "properties": {
+        "subject": {
+          "description": "One-line summary the case is opened under",
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject"
+      ],
+      "title": "create_caseArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

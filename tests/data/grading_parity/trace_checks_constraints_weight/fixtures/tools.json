@@ -1,0 +1,46 @@
+[
+  {
+    "name": "verify_identity",
+    "description": "Verify that the caller is who they say they are.",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id"
+      ],
+      "title": "verify_identityArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "log_contact_note",
+    "description": "File a note about a contact on the customer record.",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        },
+        "note": {
+          "description": "Text of the note kept on the contact record",
+          "title": "Note",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id",
+        "note"
+      ],
+      "title": "log_contact_noteArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]
