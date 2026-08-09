@@ -2825,8 +2825,10 @@ from whether the two names differ. This is the one rule resting on **two** schem
 claims, so the weaker decides: an error only where both forbid extra arguments, an
 advisory wherever either permits them. An extraction no schema describes still has a
 type — `tool`, `text` and `result` are text and a bare `field: args` is the argument
-mapping — and a predicate carrying a `regex` beside its reference is left to the rule
-above, which reports that same mistake at the extraction's address.
+mapping. A predicate carrying a `regex` beside its reference is left to the rule
+above **where that rule reaches the extraction**, which is an `args` field carrying no
+`pattern`; over a capture or a `tool` / `text` / `result` extraction that rule exits
+before it resolves anything, so this one answers rather than deferring into silence.
 
 **A capture is text only where the value beneath it is**: a `pattern` narrows a
 string and yields nothing off anything else, so a capture over an argument the schema

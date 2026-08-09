@@ -2924,6 +2924,28 @@ def test_every_rule_naming_a_repair_names_the_same_one() -> None:
     assert correlated.errors[0].message.endswith(repair)
 
 
+def test_a_bare_args_binding_is_typed_without_resolving_the_binders_tool() -> None:
+    """``TraceEvent`` types ``arguments`` a mapping whatever tool the binder selected.
+
+    So the answer never rested on a schema, and reaching for one first would lose
+    the finding on every binder whose matcher names no single tool — a shape that
+    still draws its own ``unchecked`` line at the extraction, beside this error.
+    """
+    grading = _bound_block(
+        {"kind": "tool_call"},
+        {"a": {"field": "args"}},
+        {"present": {"match": _tool_call("read_file", offset={"equals_binding": "a"})}},
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    assert "type 'object'" in report.errors[0].message
+    assert [skip.where for skip in report.unchecked] == ["trace_checks.probe.bind.values.a.field"]
+
+
 def test_a_number_argument_correlated_with_an_integer_binding_is_not_flagged() -> None:
     """Two types that differ and correlate anyway, which a difference rule refuses.
 
@@ -3001,22 +3023,56 @@ def test_two_binding_operators_on_one_predicate_draw_two_findings() -> None:
     assert named == ["contains_binding", "equals_binding"]
 
 
-def test_a_regex_beside_the_reference_draws_exactly_one_finding() -> None:
-    """One mistake, one report: the shipped textual rule already owns this shape.
+_REGEX_BESIDE_A_REFERENCE = (
+    pytest.param(
+        {"r": {"field": "result"}},
+        "trace_checks.probe.present.match.args.offset",
+        id="a_non_args_extraction_the_shipped_rule_exits_on",
+    ),
+    pytest.param(
+        {"r": {"field": "args.path", "pattern": "([0-9]+)"}},
+        "trace_checks.probe.present.match.args.offset",
+        id="a_capture_the_shipped_rule_exits_on",
+    ),
+    pytest.param(
+        {"r": {"field": "args.offset"}},
+        "trace_checks.probe.bind.values.r.field",
+        id="an_args_extraction_the_shipped_rule_reaches",
+    ),
+    pytest.param(
+        {"r": {"field": "args"}},
+        "trace_checks.probe.bind.values.r.field",
+        id="a_bare_args_extraction_the_shipped_rule_reaches",
+    ),
+)
+
+
+@pytest.mark.parametrize(("values", "address"), _REGEX_BESIDE_A_REFERENCE)
+def test_a_regex_beside_the_reference_draws_exactly_one_finding(
+    values: dict[str, Any], address: str
+) -> None:
+    """One mistake, one report — and standing down is scoped to where the other rule reports.
 
     A ``regex`` on the predicate says the argument holds text whatever the schema
-    types it, which is what makes the reference textual — and that rule reports at
-    the extraction's address. Reporting again here would name one defect twice.
+    types it, which is what makes the reference textual to the extraction rule. But
+    that rule exits on a non-``args`` field and on a ``pattern`` before it resolves
+    anything, so deferring wherever a ``regex`` appears would leave the first two
+    rows here unreported at both tiers rather than reported once. The address is
+    what says which rule answered.
     """
-    report = _correlated(
-        _CODING,
-        "read_file",
-        _INTEGER_ARGUMENT,
-        _tool_call("write_file", content={"regex": "line [0-9]+", "equals_binding": "start"}),
+    grading = _bound_block(
+        _tool_call("read_file"),
+        values,
+        {
+            "present": {
+                "match": _tool_call("read_file", offset={"regex": "[0-9]+", "equals_binding": "r"})
+            }
+        },
     )
 
-    assert len(report.errors + report.advisories) == 1
-    assert report.errors[0].where == _EXTRACTION_ADDRESS
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors + report.advisories] == [address]
 
 
 def test_a_path_below_its_first_segment_draws_exactly_one_skip() -> None:

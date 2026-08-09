@@ -1543,18 +1543,23 @@ _WHAT_TYPED_THE_BINDING: Mapping[_BoundTypeSource, str] = {
     _BoundTypeSource.CAPTURE: "the capture pattern makes it text",
 }
 
+# Only the last clause of each is always an edit to this file: aligning two declared
+# types means editing a tool's schema, which the author may not own.
 _HOW_TO_CORRELATE: Mapping[_BoundTypeSource, str] = {
     _BoundTypeSource.SCHEMA: (
-        "Correlate two arguments the tools type the same way, or compare a regex capture "
-        "against a field holding text"
+        "Correlate two arguments the tools type the same way, extract a regex capture off "
+        "a field that holds text — tool, text or result — or assert the two calls separately "
+        "instead of correlating them"
     ),
     _BoundTypeSource.EVENT: (
-        "Correlate an argument the tool types the same way, or compare this binding against "
-        "a field holding text"
+        "Correlate an argument the tool types the same way, extract a regex capture off a "
+        "field that holds text, or assert the two calls separately instead of correlating "
+        "them"
     ),
     _BoundTypeSource.CAPTURE: (
-        "A capture is text, so compare it against a field holding text — or drop the pattern "
-        "and correlate the value as the tool typed it"
+        "A capture is text, so compare it against a field holding text — drop the pattern "
+        "and correlate the value as the tool typed it, or assert the two calls separately "
+        "instead of correlating them"
     ),
 }
 
@@ -1581,15 +1586,22 @@ def _check_bound_comparisons(
 def _references_this_rule_answers_for(site: _BindingSite) -> tuple[_PredicateSite, ...]:
     """The references read off an ``args`` mapping and reported by nothing else.
 
-    A predicate carrying a ``regex`` beside its reference is already textual to
-    :func:`_textual_references`, which reports the same mistake at the extraction's
-    address, so it is left there rather than reported a second time here.
+    A ``regex`` beside the reference is deferred by :func:`_one_bound_comparison`
+    where the extraction rule can reach it, which is not everywhere.
     """
-    return tuple(
-        reference
-        for reference in site.references
-        if reference.argument_path is not None and reference.predicate.regex is None
-    )
+    return tuple(reference for reference in site.references if reference.argument_path is not None)
+
+
+def _the_extraction_rule_answers_for(value: BoundValue) -> bool:
+    """Whether :func:`_uncorrelatable_extraction` reports on this extraction at all.
+
+    A ``regex`` beside a reference makes it textual to :func:`_textual_references`,
+    which reports the mistake at the extraction's ``.field`` address — but only for
+    the extractions :func:`_one_extraction` reaches, and it exits on a non-``args``
+    field and on a ``pattern`` before it resolves anything. Deferring wherever a
+    ``regex`` appears would silence those two shapes at both tiers instead.
+    """
+    return value.pattern is None and value.head_segment() == "args"
 
 
 def _binding_operands(predicate: ValuePredicate) -> tuple[tuple[str, str], ...]:
@@ -1636,7 +1648,10 @@ def _one_bound_comparison(
                 ),
             )
         )
-    bound = _what_the_binding_holds(site, site.binding.values[name], inventory)
+    value = site.binding.values[name]
+    if reference.predicate.regex is not None and _the_extraction_rule_answers_for(value):
+        return AuthoringReport()
+    bound = _what_the_binding_holds(site, value, inventory)
     if bound.declared not in JSON_TYPES or ever_satisfiable(operator, held, bound.declared):
         return AuthoringReport()
     return _never_true_correlation(reference, operator, name, held, bound, resolved)
@@ -1661,12 +1676,12 @@ def _what_the_binding_holds(
         return _BoundValueType("string", _BoundTypeSource.CAPTURE, None, None)
     if value.head_segment() != "args":
         return _BoundValueType("string", _BoundTypeSource.EVENT, None, None)
-    resolved = _resolved_tool(site.binding.match, inventory, site.where)
-    if isinstance(resolved, Skip):
-        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
     _, _, path = value.field.partition(".")
     if not path:
         return _BoundValueType("object", _BoundTypeSource.EVENT, None, None)
+    resolved = _resolved_tool(site.binding.match, inventory, site.where)
+    if isinstance(resolved, Skip):
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
     head, _, below = path.partition(".")
     if below or head not in resolved.properties:
         return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
