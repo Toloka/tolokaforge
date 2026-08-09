@@ -10,7 +10,11 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - order_api_get_order
+      - search_policy
+      - create_case
   user:
     enabled: []
 

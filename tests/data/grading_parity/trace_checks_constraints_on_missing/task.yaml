@@ -10,7 +10,10 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - verify_identity
+      - disclose_balance
   user:
     enabled: []
 

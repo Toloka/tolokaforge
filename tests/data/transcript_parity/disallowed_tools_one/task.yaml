@@ -12,8 +12,10 @@ initial_state:
 
 tools:
   agent:
+    mcp_server: mcp_server.py
     enabled:
       - write_file
+      - delete_customer
   user:
     enabled: []
 
