@@ -197,16 +197,11 @@ buys.
 **That reasoning covers the proto message only, and registration also carries a
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,
 parsed by `extra="forbid"` Pydantic models, so a field the older image does not
-declare is a validation error rather than a dropped byte — and the engine emits
-`state_checks.hash_weight` and `state_checks.expect_initial_state` on every pack with
-a non-empty `state_checks:` block, `transcript_rules.min_assistant_turns` on every
-pack with a `transcript_rules:` block, and the whole `trace_checks` section plus
-`search.plane` on **every** pack. A newer engine against an older image is therefore
-rejected at `RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden`
-error naming the field. See
-[`GRADING.md`](GRADING.md#hash-based-grading-tau-bench-compatible) § "Runner-engine
-version lock (both directions)" for the full list of keys that bite and in which
-direction.
+declare is a validation error rather than a dropped byte. Several grading keys are
+emitted on **every** pack, so a newer engine against an older image is rejected at
+`RegisterTrial` for any pack at all, with a Pydantic `extra_forbidden` error naming
+the field. Which keys bite, from which release, and in which direction is one table:
+[`GRADING.md`](GRADING.md#runner-engine-version-lock) § Runner-engine version lock.
 
 **So the order matters: rebuild the image before rolling the engine.** Upgrading
 the engine first leaves you inside the one window this gate cannot close, and — for
