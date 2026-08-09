@@ -24,7 +24,7 @@ import logging
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any
+from typing import Any, get_args, get_type_hints
 
 import pytest
 import yaml
@@ -41,6 +41,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _A_NON_EMPTY_SECTION_STILL_DECLARES,
+    _MATCHER_FIELD_ATTRIBUTES,
     _NO_INITIAL_STATE_FILE,
     _NO_MCP_SERVER_MODULE,
     _TEXTUAL_MATCHER_FIELDS,
@@ -2697,6 +2698,32 @@ _REFERENCES_THAT_COMPARE_TEXT = (
         "result",
         id="result",
     ),
+    pytest.param(
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "status": {"equals_binding": "start"},
+                }
+            }
+        },
+        "status",
+        id="status",
+    ),
+    pytest.param(
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "executor": {"equals_binding": "start"},
+                }
+            }
+        },
+        "executor",
+        id="executor",
+    ),
 )
 
 
@@ -2704,10 +2731,12 @@ _REFERENCES_THAT_COMPARE_TEXT = (
 def test_every_event_field_holding_text_flags_a_binding_of_another_type(
     require: dict[str, Any], field: str
 ) -> None:
-    """``TraceEvent`` declares three fields as ``str | None``, and all three compare text.
+    """Five ``TraceEvent`` fields hold a ``str`` at runtime, and all five compare text.
 
-    A rule naming only the field a cell happened to use would let the identical
-    never-true check through on the other two.
+    ``status`` and ``executor`` reach a predicate as members of a closed vocabulary
+    typed ``str``, so the value compared is text exactly as ``result``'s is. A rule
+    naming only the field a cell happened to use would let the identical never-true
+    check through on the other four.
     """
     grading = _bound_block(_tool_call("read_file"), _INTEGER_ARGUMENT, require)
 
@@ -2757,39 +2786,44 @@ def test_a_matcher_carrying_no_predicate_at_all_is_not_a_finding() -> None:
     assert report == AuthoringReport()
 
 
-# Which attribute of ``TraceEvent`` each matchable field reads, written out here so
-# the type check below compares the gate's set against the dataclass rather than
-# against itself. ``args`` addresses ``arguments``, whose members are typed by the
-# tool schema and not by the event.
-_MATCHER_FIELD_ATTRIBUTES = {
-    "tool": "tool_name",
-    "text": "text",
-    "result": "result",
-    "executor": "executor",
-    "status": "status",
-    "args": "arguments",
-}
-
-
-def test_the_textual_matcher_fields_are_the_events_string_fields() -> None:
-    """A field the event types as text is one every reference compares correctly.
+def test_the_textual_matcher_fields_are_the_fields_whose_value_is_a_string() -> None:
+    """A field whose runtime value is a ``str`` is one every reference compares correctly.
 
     The gate flags a binding reference sitting on one of these against a schema-typed
-    non-string extraction, and exempts the rest. So a field retyped to ``str | None``
-    on ``TraceEvent`` and left out of the gate's set is a never-true check the gate
-    stops reporting — the same class it exists to catch — and one typed as anything
-    else but listed here is a correct native comparison the gate starts rejecting.
+    non-string extraction, and exempts the rest. So a field the event types as text
+    and the gate leaves out is a never-true check the gate stops reporting — the same
+    class it exists to catch — and one typed as anything else but held here is a
+    correct native comparison the gate starts rejecting.
+
+    Three assertions, each falsifiable on its own. The mapping is held against the
+    matchable union, so a field the model gains cannot go untyped. The membership is
+    written out, so retyping an attribute on ``TraceEvent`` reds here rather than
+    moving the gate's set and the derivation together in silence. And the gate's set
+    is held against a set resolved through ``typing.get_type_hints`` and
+    ``issubclass``, so a derivation that reads the annotation's *spelling* — which is
+    what let ``status`` and ``executor`` stay out while claiming to be the event's
+    string fields — cannot pass beside the type test.
     """
     matchable = {field for fields in TRACE_MATCHABLE_FIELDS_BY_KIND.values() for field in fields}
     assert set(_MATCHER_FIELD_ATTRIBUTES) == matchable
 
-    annotations = TraceEvent.__annotations__
+    annotations = get_type_hints(TraceEvent)
+    declared = {
+        field: [
+            member
+            for member in get_args(annotations[attribute]) or (annotations[attribute],)
+            if member is not type(None)
+        ]
+        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
+    }
+    assert all(len(members) == 1 for members in declared.values()), declared
     textual = {
         field
-        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
-        if annotations[attribute] == "str | None"
+        for field, (member,) in declared.items()
+        if isinstance(member, type) and issubclass(member, str)
     }
 
+    assert textual == {"tool", "text", "result", "status", "executor"}
     assert textual == _TEXTUAL_MATCHER_FIELDS
 
 

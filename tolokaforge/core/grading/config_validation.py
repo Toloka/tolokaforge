@@ -40,7 +40,7 @@ import re
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, get_args, get_type_hints
 
 from pydantic import BaseModel, ValidationError
 
@@ -61,6 +61,7 @@ from tolokaforge.core.grading.state_composition import (
     hash_block_is_a_state_source,
     probes_conflict_with_another_state_source,
 )
+from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     BoundValue,
     GradingCombineConfig,
@@ -490,9 +491,46 @@ _UNCORRELATABLE_JSON_TYPES: frozenset[str] = frozenset(
     and not ever_satisfiable("contains_binding", "string", declared)
 )
 
-# The event fields ``TraceEvent`` declares as ``str | None``, so a predicate on one of
-# them compares text whatever the value it is handed was typed as.
-_TEXTUAL_MATCHER_FIELDS: frozenset[str] = frozenset({"tool", "text", "result"})
+# Which ``TraceEvent`` attribute each matchable field reads. A matcher names the
+# field; the type of the value a predicate on it is handed is the attribute's.
+_MATCHER_FIELD_ATTRIBUTES: Mapping[str, str] = {
+    "tool": "tool_name",
+    "text": "text",
+    "result": "result",
+    "executor": "executor",
+    "status": "status",
+    "args": "arguments",
+}
+
+
+def _is_a_string_at_runtime(annotation: Any) -> bool:
+    """Whether a ``TraceEvent`` annotation types its value as text.
+
+    The declared type is the annotation's single non-``None`` member, and the value
+    is text when that member is a ``str`` subclass — which is what makes the closed
+    vocabularies behind ``status`` and ``executor`` text and ``args``' mapping not.
+    """
+    declared = [
+        member for member in get_args(annotation) or (annotation,) if member is not type(None)
+    ]
+    if len(declared) != 1:
+        return False
+    return isinstance(declared[0], type) and issubclass(declared[0], str)
+
+
+def _matcher_fields_whose_value_is_a_string() -> frozenset[str]:
+    """The matchable fields a predicate reads text off, whatever it is handed."""
+    annotations = get_type_hints(TraceEvent)
+    return frozenset(
+        field
+        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
+        if _is_a_string_at_runtime(annotations[attribute])
+    )
+
+
+# Computed off the event rather than listed, so the set and the claim behind it
+# cannot disagree.
+_TEXTUAL_MATCHER_FIELDS: frozenset[str] = _matcher_fields_whose_value_is_a_string()
 
 # What an argument name outside a closed schema costs, per site. One rule, two
 # policies: an unreadable predicate leaves the matcher unmatched and an unreadable
@@ -1371,9 +1409,9 @@ def _one_extraction(
 ) -> AuthoringReport:
     """One extraction against the schema of the tool its binder selects.
 
-    Only an ``args`` extraction has a declared type at all: ``tool``, ``text`` and
-    ``result`` are the event's own string fields, which no tool schema describes
-    and which every reference compares correctly.
+    Only an ``args`` extraction has a declared type at all: the other extractable
+    fields are the event's own, which no tool schema describes and which every
+    reference compares correctly.
     """
     if value.head_segment() != "args":
         return AuthoringReport()
