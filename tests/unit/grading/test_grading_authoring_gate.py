@@ -12,8 +12,11 @@ reported in. :func:`test_every_checker_the_module_declares_is_provoked_by_a_rule
 holds the table against the module by running it: a checker no row provokes is a
 rule nothing exercises, and a row naming a checker the module lost fails there too.
 
-Every inventory is built from a real task pack, and every schema is the tool's own —
-a mocked registry would let the severity table drift from what the tools declare.
+Every schema is the tool's own — a mocked registry would let the severity table
+drift from what the tools declare. Where one pack cannot express a shape, several
+are unioned rather than a schema invented. The one exception is written out and
+says so: no pack types a property outside the six JSON type names, and the rule
+that answers for those has to be given one.
 """
 
 from __future__ import annotations
@@ -24,7 +27,7 @@ import logging
 from dataclasses import dataclass
 from functools import cache
 from pathlib import Path
-from typing import Any, get_args, get_type_hints
+from typing import Any, get_type_hints
 
 import pytest
 import yaml
@@ -41,6 +44,7 @@ from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.grading import config_validation
 from tolokaforge.core.grading.config_validation import (
     _A_NON_EMPTY_SECTION_STILL_DECLARES,
+    _HOW_TO_CORRELATE,
     _MATCHER_FIELD_ATTRIBUTES,
     _NO_INITIAL_STATE_FILE,
     _NO_MCP_SERVER_MODULE,
@@ -60,6 +64,8 @@ from tolokaforge.core.grading.config_validation import (
     SuppliedSourceState,
     ToolInventory,
     _authored_hash_is_a_state_source,
+    _BoundTypeSource,
+    _is_a_string_at_runtime,
     inspect_grading_authoring,
 )
 from tolokaforge.core.grading.golden_replay import (
@@ -2586,11 +2592,10 @@ def test_a_capture_pattern_on_the_extraction_is_not_flagged_for_its_type() -> No
     """The type rule does not fire at the extraction's own address under a pattern.
 
     A capture is not the value the schema typed, so what the reference compares is
-    settled at ``.pattern`` and not here — and this block *is* reported, one level
-    up, by the rule that owns the shape. Scoped to the type rule's own address
-    rather than to an empty report: asserting the report were empty would pin the
-    absence of every rule rather than the presence of this exemption, and would
-    now be false besides.
+    settled at ``.pattern`` and not here — where the rule that owns the shape does
+    report this block. Scoped to the type rule's own address rather than to an
+    empty report, which this block is not: asserting emptiness would pin the
+    absence of every rule rather than the presence of this exemption.
     """
     grading = _bound_block(
         _tool_call("read_file"),
@@ -2790,22 +2795,24 @@ def test_the_same_correlation_on_open_schemas_is_an_advisory() -> None:
     assert "type 'array'" in report.advisories[0].message
 
 
-# One closed schema beside one open one, which no task in this repository declares —
-# every pack's tools are strict together or loose together, so the pairing that
-# separates "both schemas forbid extras" from "either does" has to be written out.
-_A_CLOSED_TOOL_BESIDE_AN_OPEN_ONE = ToolInventory(
-    declared=frozenset({"read_file", "place_order"}),
-    parameters={
-        "read_file": {
-            "additionalProperties": False,
-            "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}},
-        },
-        "place_order": {
-            "properties": {"customer_id": {"type": "string"}, "items": {"type": "array"}}
-        },
-    },
-    known=True,
-)
+def _one_task_worth_of_tools(*tasks: Path) -> ToolInventory:
+    """Every tool of several packs in one inventory, each keeping its own schema.
+
+    No task in this repository declares a closed schema beside an open one — each
+    pack's tools are strict together or loose together — so the pairing that
+    separates "both schemas forbid extras" from "either does" cannot be resolved
+    from a single pack. Unioning two real inventories reaches it without inventing
+    a schema: every claim still comes from the tool that made it.
+    """
+    resolved = [_inventory(task) for task in tasks]
+    return ToolInventory(
+        declared=frozenset(name for one in resolved for name in one.declared),
+        parameters={name: schema for one in resolved for name, schema in one.parameters.items()},
+        known=True,
+    )
+
+
+_A_CLOSED_TOOL_BESIDE_AN_OPEN_ONE = _one_task_worth_of_tools(_CODING, _SHOP_ORDERS)
 
 _MIXED_STRICTNESS_PAIRS = (
     pytest.param(
@@ -2863,6 +2870,58 @@ def test_an_argument_correlated_with_a_bare_result_extraction_is_an_error() -> N
         "trace_checks.probe.present.match.args.offset"
     ]
     assert "the event types it" in report.errors[0].message
+
+
+def test_a_capture_correlated_with_a_natively_typed_argument_names_the_capture() -> None:
+    """A capture is text, and the author is owed the repair they have not taken.
+
+    Three things settle a bound type — a schema, the event, and a ``pattern`` — and
+    the finding must not collapse them: an author who already wrote a capture and
+    is told to write a capture is given no repair at all, and the event did not
+    type this one, the pattern did. The verdict is unchanged either way, since
+    ``"123" == 123`` is false on every trajectory.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"digits": {"field": "args.path", "pattern": "([0-9]+)"}},
+        _tool_call("read_file", offset={"equals_binding": "digits"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    message = report.errors[0].message
+    assert "the capture pattern makes it text" in message
+    assert "the event types it" not in message
+    assert "compare a regex capture" not in message
+    assert "drop the pattern" in message
+
+
+def test_every_rule_naming_a_repair_names_the_same_one() -> None:
+    """A repair one rule recommends and another refuses is worse than no repair.
+
+    Two rules answer for a binding whose type cannot hold against what reads it —
+    the extraction's own type rule and the correlation rule — and both close by
+    naming what the author should write instead. Narrowing one and not the other
+    leaves the branch recommending, in one release, a shape it refuses in another.
+    """
+    read_as_text = _correlated(
+        _CODING,
+        "read_file",
+        _INTEGER_ARGUMENT,
+        {"kind": "assistant_message", "text": {"contains_binding": "start"}},
+    )
+    correlated = _correlated(
+        _CODING,
+        "read_file",
+        _INTEGER_ARGUMENT,
+        _tool_call("read_file", path={"equals_binding": "start"}),
+    )
+
+    repair = _HOW_TO_CORRELATE[_BoundTypeSource.SCHEMA]
+    assert read_as_text.errors[0].message.endswith(repair)
+    assert correlated.errors[0].message.endswith(repair)
 
 
 def test_a_number_argument_correlated_with_an_integer_binding_is_not_flagged() -> None:
@@ -3318,28 +3377,22 @@ def test_the_textual_matcher_fields_are_the_fields_whose_value_is_a_string() -> 
     matchable union, so a field the model gains cannot go untyped. The membership is
     written out, so retyping an attribute on ``TraceEvent`` reds here rather than
     moving the gate's set and the derivation together in silence. And the gate's set
-    is held against a set resolved through ``typing.get_type_hints`` and
-    ``issubclass``, so a derivation that reads the annotation's *spelling* — which is
-    what let ``status`` and ``executor`` stay out while claiming to be the event's
-    string fields — cannot pass beside the type test.
+    is held against one computed here through the shipped predicate, so a constant
+    that stops being derived at all — the shape that let ``status`` and ``executor``
+    stay out while the comment claimed they were the event's string fields — cannot
+    pass beside the written-out membership.
+
+    The predicate itself is called rather than re-implemented: a second walk here
+    would move with the first under a retype and take the independence with it.
     """
     matchable = {field for fields in TRACE_MATCHABLE_FIELDS_BY_KIND.values() for field in fields}
     assert set(_MATCHER_FIELD_ATTRIBUTES) == matchable
 
     annotations = get_type_hints(TraceEvent)
-    declared = {
-        field: [
-            member
-            for member in get_args(annotations[attribute]) or (annotations[attribute],)
-            if member is not type(None)
-        ]
-        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
-    }
-    assert all(len(members) == 1 for members in declared.values()), declared
     textual = {
         field
-        for field, (member,) in declared.items()
-        if isinstance(member, type) and issubclass(member, str)
+        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
+        if _is_a_string_at_runtime(annotations[attribute])
     }
 
     assert textual == {"tool", "text", "result", "status", "executor"}
@@ -3352,10 +3405,10 @@ def test_the_types_no_reference_can_correlate_with_text_are_read_off_the_table()
     The membership is what this holds, and it would hold just as well against a
     hand-written set — the derivation itself is carried by
     ``test_each_table_cell_agrees_with_the_shipped_operator_over_real_values``,
-    which measures every cell against the operators. What this adds is that the
-    rule's answer did not move when it stopped being written out: a type is
-    uncorrelatable with text exactly when neither binding operator can ever hold
-    between a string the event yields and a value of that type.
+    which measures every cell against the operators. What this adds is the answer
+    the rule must give whatever the derivation is: a type is uncorrelatable with
+    text exactly when neither binding operator can ever hold between a string the
+    event yields and a value of that type.
     """
     never_text = frozenset({"integer", "number", "boolean", "array", "object"})
 

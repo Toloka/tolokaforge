@@ -91,7 +91,9 @@ def ever_satisfiable(operator: str, held: str | None, bound: str | None) -> bool
     schema or a value the caller could not type — answers ``True``: no evidence
     that the pair can never hold, which is the only answer a gate with no
     false-reject mode may give. A caller wanting to report that absence asks
-    ``held in JSON_TYPES`` itself.
+    ``held in JSON_TYPES`` itself, and every caller that reports one must keep
+    doing so: the widening lives here, so a caller that stops pre-gating loses its
+    report silently instead of failing.
 
     An operator this table does not answer for is the codebase's mistake rather
     than an author's, and raises.

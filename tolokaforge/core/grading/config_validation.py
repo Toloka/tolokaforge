@@ -37,10 +37,11 @@ from __future__ import annotations
 
 import logging
 import re
+import types
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any, get_args, get_type_hints
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ValidationError
 
@@ -391,6 +392,19 @@ class _PredicateSite:
     one path whose last ``.args.`` separator is inside it."""
 
 
+class _BoundTypeSource(str, Enum):
+    """What settles the type a binding holds, which decides how it is repaired."""
+
+    SCHEMA = "schema"
+    """A tool's schema types the argument the extraction addresses."""
+
+    EVENT = "event"
+    """``TraceEvent`` types the field, including ``args`` as the argument mapping."""
+
+    CAPTURE = "capture"
+    """A ``pattern`` narrows the extraction, so what binds is the capture."""
+
+
 @dataclass(frozen=True)
 class _BoundValueType:
     """The JSON type a binding holds, and what settles it."""
@@ -398,8 +412,13 @@ class _BoundValueType:
     declared: str | None
     """``None`` where nothing types it, which is no evidence rather than a mismatch."""
 
+    source: _BoundTypeSource
+    """Which of the three settles it, which the finding must not collapse: the repair
+    an author is owed differs, and telling one who already wrote a capture to write a
+    capture names no repair at all."""
+
     tool: str | None
-    """The tool whose schema types it, or ``None`` where the event does."""
+    """The tool whose schema types it, for :attr:`_BoundTypeSource.SCHEMA` alone."""
 
     strictness: ArgumentSchema | None
     """The schema claim the type rests on, or ``None`` where no schema was read."""
@@ -516,6 +535,10 @@ _UNCORRELATABLE_JSON_TYPES: frozenset[str] = frozenset(
     and not ever_satisfiable("contains_binding", "string", declared)
 )
 
+# Both spellings of a union: ``X | None`` resolves to one and ``Optional[X]`` to the
+# other, and only these two make an annotation's arguments its alternatives.
+_UNION_ORIGINS: frozenset[Any] = frozenset({Union, types.UnionType})
+
 # Which ``TraceEvent`` attribute each matchable field reads. A matcher names the
 # field; the type of the value a predicate on it is handed is the attribute's.
 _MATCHER_FIELD_ATTRIBUTES: Mapping[str, str] = {
@@ -534,10 +557,12 @@ def _is_a_string_at_runtime(annotation: Any) -> bool:
     The declared type is the annotation's single non-``None`` member, and the value
     is text when that member is a ``str`` subclass — which is what makes the closed
     vocabularies behind ``status`` and ``executor`` text and ``args``' mapping not.
+
+    Only a union is split. ``get_args`` would otherwise read a parameterised generic
+    as its own union of members, so ``list[str]`` would answer for ``str``.
     """
-    declared = [
-        member for member in get_args(annotation) or (annotation,) if member is not type(None)
-    ]
+    members = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    declared = [member for member in members if member is not type(None)]
     if len(declared) != 1:
         return False
     return isinstance(declared[0], type) and issubclass(declared[0], str)
@@ -1508,6 +1533,32 @@ def _uncapturable_extraction(
     return AuthoringReport(advisories=(finding,))
 
 
+# What settled the bound type, and the repair that leaves. Written per source
+# because the repair an author already took is no repair at all: one who wrote a
+# capture cannot be told to write a capture, and one whose binding is typed by the
+# event has no schema to align.
+_WHAT_TYPED_THE_BINDING: Mapping[_BoundTypeSource, str] = {
+    _BoundTypeSource.SCHEMA: "{tool!r} declares it",
+    _BoundTypeSource.EVENT: "the event types it",
+    _BoundTypeSource.CAPTURE: "the capture pattern makes it text",
+}
+
+_HOW_TO_CORRELATE: Mapping[_BoundTypeSource, str] = {
+    _BoundTypeSource.SCHEMA: (
+        "Correlate two arguments the tools type the same way, or compare a regex capture "
+        "against a field holding text"
+    ),
+    _BoundTypeSource.EVENT: (
+        "Correlate an argument the tool types the same way, or compare this binding against "
+        "a field holding text"
+    ),
+    _BoundTypeSource.CAPTURE: (
+        "A capture is text, so compare it against a field holding text — or drop the pattern "
+        "and correlate the value as the tool typed it"
+    ),
+}
+
+
 def _check_bound_comparisons(
     binders: tuple[_BindingSite, ...], inventory: ToolInventory
 ) -> AuthoringReport:
@@ -1594,26 +1645,36 @@ def _one_bound_comparison(
 def _what_the_binding_holds(
     site: _BindingSite, value: BoundValue, inventory: ToolInventory
 ) -> _BoundValueType:
-    """The JSON type a binding holds, and what settles it.
+    """The JSON type a binding holds, and which of the three sources settles it.
 
-    A capture is a string, and so is a ``tool`` / ``text`` / ``result`` extraction,
-    which ``TraceEvent`` types as text and no tool schema describes; a bare
-    ``field: args`` binds the argument mapping. Only an ``args`` path is answered
-    by a schema, so only that reading carries a claim severity can rest on.
+    A capture that binds is a string, and so is a ``tool`` / ``text`` / ``result``
+    extraction, which ``TraceEvent`` types as text and no tool schema describes; a
+    bare ``field: args`` binds the argument mapping. Only an ``args`` path is
+    answered by a schema, so only that reading carries a claim severity can rest on.
+
+    The extraction is typed here and again in :func:`_one_extraction`, which reads
+    the same schema to answer a different question about the same key. The two are
+    deliberately separate: this one must answer for a capture and for a non-``args``
+    field, which that one exits on before it resolves anything.
     """
-    if value.pattern is not None or value.head_segment() != "args":
-        return _BoundValueType("string", None, None)
+    if value.pattern is not None:
+        return _BoundValueType("string", _BoundTypeSource.CAPTURE, None, None)
+    if value.head_segment() != "args":
+        return _BoundValueType("string", _BoundTypeSource.EVENT, None, None)
     resolved = _resolved_tool(site.binding.match, inventory, site.where)
     if isinstance(resolved, Skip):
-        return _BoundValueType(None, None, None)
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
     _, _, path = value.field.partition(".")
     if not path:
-        return _BoundValueType("object", None, None)
+        return _BoundValueType("object", _BoundTypeSource.EVENT, None, None)
     head, _, below = path.partition(".")
     if below or head not in resolved.properties:
-        return _BoundValueType(None, None, None)
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
     return _BoundValueType(
-        inventory.declared_type(resolved.name, head), resolved.name, resolved.strictness
+        inventory.declared_type(resolved.name, head),
+        _BoundTypeSource.SCHEMA,
+        resolved.name,
+        resolved.strictness,
     )
 
 
@@ -1626,15 +1687,13 @@ def _never_true_correlation(
     resolved: _ResolvedTool,
 ) -> AuthoringReport:
     """The finding, at the severity the weaker of the two schemas permits."""
-    typed_by = "the event types it" if bound.tool is None else f"{bound.tool!r} declares it"
     finding = Finding(
         reference.where,
         f"{operator} reads {reference.argument_path!r}, which {resolved.name!r} declares as "
         f"type {held!r}, against binding {name!r}, which holds type {bound.declared!r} — "
-        f"{typed_by}. No pair of values of those two types satisfies {operator}, so the "
-        "comparison is false on every trajectory and reads as the agent's failure. "
-        "Correlate two arguments the tools type the same way, or compare a regex capture "
-        "against a field holding text",
+        f"{_WHAT_TYPED_THE_BINDING[bound.source].format(tool=bound.tool)}. No pair of values "
+        f"of those two types satisfies {operator}, so the comparison is false on every "
+        f"trajectory and reads as the agent's failure. {_HOW_TO_CORRELATE[bound.source]}",
     )
     claims = tuple(claim for claim in (resolved.strictness, bound.strictness) if claim is not None)
     if all(claim is ArgumentSchema.CLOSED for claim in claims):
@@ -1683,9 +1742,8 @@ def _uncorrelatable_extraction(
         f"binding {name!r} extracts {value.field!r}, which {resolved.name!r} declares as "
         f"type {declared!r}, and {read_from} compares it against a field holding text. A "
         "non-string value is never a substring and equals nothing a text field holds, so "
-        "the check is false on every trajectory and reads as the agent's failure. Reference "
-        "the binding from an args predicate, which compares two arguments as they were "
-        "written, or extract a regex capture off a field that holds text",
+        "the check is false on every trajectory and reads as the agent's failure. "
+        + _HOW_TO_CORRELATE[_BoundTypeSource.SCHEMA],
     )
     if resolved.strictness is ArgumentSchema.CLOSED:
         return AuthoringReport(errors=(finding,))

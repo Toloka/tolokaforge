@@ -2050,9 +2050,16 @@ A **binding reference** between a text field and a value bound out of an integer
 argument is therefore false on **every** trajectory, `equals_binding` exactly as much
 as `contains_binding`. That is not scored as an agent failure: the constraint fails
 with a message saying the comparison was not made, naming the binding, its value, its
-type, the operator that could not make the comparison, and the two ways to write the
-intent — a reference on an `args` predicate, which compares two arguments as they
-were written, or a `pattern` capture taken off a field that holds text.
+type, the operator that could not make the comparison, and two ways to write the
+intent — "a reference on an args predicate, which compares two arguments as they were
+written, or a regex capture, which is always text".
+
+**The gate states both of those more narrowly than the evaluator's sentence does**,
+and the gate is the one that answers first: an `args` predicate is only a repair
+where the two arguments' declared types can ever satisfy the operator, and a capture
+is only text where the field beneath it holds text. Each is checked in its own right
+below, so an author who takes either repair against a schema that refuses it is told
+so before the run rather than by a second failed trial.
 
 **`tolokaforge validate` catches it first, wherever a schema declares the type.**
 The config models cannot: `args.reason_code` is a string and `args.delivery_id` is an
