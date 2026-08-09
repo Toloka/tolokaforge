@@ -220,6 +220,19 @@ Compare output against committed golden snapshots in `snapshots/`.
   fraction carries one division and no branch, while the judge's must raise on a
   non-positive denominator. The same file holds `docs/GRADING.md`'s two gate sections
   to cross-referencing each other, so neither spelling can be documented alone.
+- Grading wire census (`test_grading_wire_lock.py`) — the key paths the trial spec puts
+  on the wire under `task.grading` and `task.search`, written out by hand and compared
+  against an independent walk of the declared runner models: the path, the gate its
+  emission waits on, and the shape its value crosses as. A field added to a runner
+  grading model without a census row fails naming the path; so does a census row naming
+  a key no model declares, a gate the models contradict, a shape that widened, and a
+  retired path a model re-declares. The walk's stops (`_WALK_STOPS`) and the census's
+  declared leaf containers are two hand-written constants held equal — neither is
+  derived from the other, because a walk that stopped wherever the census declared a
+  leaf would let one hand edit delete a subtree from both sides at once. Every
+  buildable pack under `examples/native/**` is then built and serialised the way the
+  conductor serialises a trial spec, so "the model declares it" and "the adapter emits
+  it" are separate claims. Add the row; never widen the walk to match the census.
 
 Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
 authors a `task.yaml` and a `grading.yaml`, and — where its grading or its trials
