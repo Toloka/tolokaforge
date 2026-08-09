@@ -46,6 +46,7 @@ from tolokaforge.core.grading.config_validation import (
     _TEXTUAL_MATCHER_FIELDS,
     _TOOL_EXPECTATION_HAZARDS,
     _TRANSCRIPT_RULE_KEYS,
+    _UNCORRELATABLE_JSON_TYPES,
     _WHAT_EACH_SECTION_MUST_DECLARE,
     UNRESOLVED_COMBINE_REASON,
     AdapterHashSource,
@@ -2648,6 +2649,33 @@ def test_every_json_type_that_is_never_text_is_reported(
     assert f"type {declared!r}" in reported[0].message
 
 
+def test_an_argument_typed_outside_the_json_type_names_is_not_flagged() -> None:
+    """A schema is free to write a ``type`` the table has no answer for.
+
+    ``type: "null"`` is legal JSON Schema and a typo is legal YAML, and the gate
+    answers without a false-reject mode, so a name it cannot read is no evidence
+    rather than a finding — and rather than a raise inside ``tolokaforge validate``.
+    The inventory is written out rather than resolved from a pack because no in-repo
+    schema types a property outside the six names; the packs this answers for are
+    maintained outside this repository.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"read_file"}),
+        parameters={
+            "read_file": {
+                "additionalProperties": False,
+                "properties": {"offset": {"type": "null"}},
+            }
+        },
+        known=True,
+    )
+    grading = _bound_block(
+        _tool_call("read_file"), _INTEGER_ARGUMENT, _quotes("contains_binding", "start")
+    )
+
+    assert inspect_grading_authoring(grading, inventory) == AuthoringReport()
+
+
 _REFERENCES_THAT_COMPARE_TEXT = (
     pytest.param(_quotes("contains_binding", "start"), "text", id="text"),
     pytest.param(
@@ -2763,3 +2791,19 @@ def test_the_textual_matcher_fields_are_the_events_string_fields() -> None:
     }
 
     assert textual == _TEXTUAL_MATCHER_FIELDS
+
+
+def test_the_types_no_reference_can_correlate_with_text_are_read_off_the_table() -> None:
+    """The five types the rule refuses, derived rather than listed beside the rule.
+
+    The membership is what this holds, and it would hold just as well against a
+    hand-written set — the derivation itself is carried by
+    ``test_each_table_cell_agrees_with_the_shipped_operator_over_real_values``,
+    which measures every cell against the operators. What this adds is that the
+    rule's answer did not move when it stopped being written out: a type is
+    uncorrelatable with text exactly when neither binding operator can ever hold
+    between a string the event yields and a value of that type.
+    """
+    never_text = frozenset({"integer", "number", "boolean", "array", "object"})
+
+    assert never_text == _UNCORRELATABLE_JSON_TYPES

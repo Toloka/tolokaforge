@@ -53,6 +53,7 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
@@ -478,11 +479,15 @@ _WHICH_SUBSTRATE_DISCARDS_WHICH = (
     "two without it — one trial, two state_checks components."
 )
 
-# The JSON types whose values are never strings. A schema declaring one of them for
-# an argument settles that a reference comparing the bound value against text cannot
-# hold; ``string``, and a property writing no type at all, settle nothing.
+# The JSON types whose values are never strings, read off the shared table: a type
+# no binding operator can ever satisfy against a held string. A schema declaring one
+# of them for an argument settles that a reference comparing the bound value against
+# text cannot hold; ``string``, and a property writing no type at all, settle nothing.
 _UNCORRELATABLE_JSON_TYPES: frozenset[str] = frozenset(
-    {"integer", "number", "boolean", "array", "object"}
+    declared
+    for declared in JSON_TYPES
+    if not ever_satisfiable("equals_binding", "string", declared)
+    and not ever_satisfiable("contains_binding", "string", declared)
 )
 
 # The event fields ``TraceEvent`` declares as ``str | None``, so a predicate on one of
