@@ -17,6 +17,12 @@ drift from what the tools declare. Where one pack cannot express a shape, severa
 are unioned rather than a schema invented. The one exception is written out and
 says so: no pack types a property outside the six JSON type names, and the rule
 that answers for those has to be given one.
+
+**A finding is asserted by its message as well as its address.** The address says
+which rule answered; only the message says what the author is told, and the two
+fail independently. A dispatch that renders one sentence for every case leaves
+every address right and every finding wrong — a shape an address-only suite reads
+as green, and the content assertions here catch on the first run.
 """
 
 from __future__ import annotations
