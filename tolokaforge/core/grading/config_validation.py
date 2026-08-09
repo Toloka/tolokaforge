@@ -37,10 +37,11 @@ from __future__ import annotations
 
 import logging
 import re
+import types
 from collections.abc import Callable, Iterable, Iterator, Mapping
 from dataclasses import dataclass
 from enum import Enum
-from typing import Any
+from typing import Any, Union, get_args, get_origin, get_type_hints
 
 from pydantic import BaseModel, ValidationError
 
@@ -53,6 +54,7 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
     HASH_SOURCE_KEYS,
@@ -60,6 +62,7 @@ from tolokaforge.core.grading.state_composition import (
     hash_block_is_a_state_source,
     probes_conflict_with_another_state_source,
 )
+from tolokaforge.core.grading.trace_timeline import TraceEvent
 from tolokaforge.core.models import (
     BoundValue,
     GradingCombineConfig,
@@ -74,6 +77,7 @@ from tolokaforge.core.models import (
     ValuePredicate,
 )
 from tolokaforge.runner.id_resolution import id_fields_findings
+from tolokaforge.runner.models import TRACE_PREDICATE_BINDING_OPERATORS
 
 logger = logging.getLogger(__name__)
 
@@ -377,6 +381,48 @@ class _PredicateSite:
     field: str
     predicate: ValuePredicate
 
+    matcher: TraceMatcher
+    """The matcher this predicate was read from, whose ``tool`` names the schema
+    that types the value it reads."""
+
+    argument_path: str | None
+    """The key this predicate was filed under in an ``args`` mapping, ``None`` for
+    a predicate on a field of the event. Carried rather than recovered from
+    :attr:`where`, which cannot be split back: ``args: {"a.args.b": …}`` addresses
+    one path whose last ``.args.`` separator is inside it."""
+
+
+class _BoundTypeSource(str, Enum):
+    """What settles the type a binding holds, which decides how it is repaired."""
+
+    SCHEMA = "schema"
+    """A tool's schema types the argument the extraction addresses."""
+
+    EVENT = "event"
+    """``TraceEvent`` types the field, including ``args`` as the argument mapping."""
+
+    CAPTURE = "capture"
+    """A ``pattern`` narrows the extraction, so what binds is the capture."""
+
+
+@dataclass(frozen=True)
+class _BoundValueType:
+    """The JSON type a binding holds, and what settles it."""
+
+    declared: str | None
+    """``None`` where nothing types it, which is no evidence rather than a mismatch."""
+
+    source: _BoundTypeSource
+    """Which of the three settles it, which the finding must not collapse: the repair
+    an author is owed differs, and telling one who already wrote a capture to write a
+    capture names no repair at all."""
+
+    tool: str | None
+    """The tool whose schema types it, for :attr:`_BoundTypeSource.SCHEMA` alone."""
+
+    strictness: ArgumentSchema | None
+    """The schema claim the type rests on, or ``None`` where no schema was read."""
+
 
 @dataclass(frozen=True)
 class _BindingSite:
@@ -478,16 +524,63 @@ _WHICH_SUBSTRATE_DISCARDS_WHICH = (
     "two without it — one trial, two state_checks components."
 )
 
-# The JSON types whose values are never strings. A schema declaring one of them for
-# an argument settles that a reference comparing the bound value against text cannot
-# hold; ``string``, and a property writing no type at all, settle nothing.
+# The JSON types whose values are never strings, read off the shared table: a type
+# no binding operator can ever satisfy against a held string. A schema declaring one
+# of them for an argument settles that a reference comparing the bound value against
+# text cannot hold; ``string``, and a property writing no type at all, settle nothing.
 _UNCORRELATABLE_JSON_TYPES: frozenset[str] = frozenset(
-    {"integer", "number", "boolean", "array", "object"}
+    declared
+    for declared in JSON_TYPES
+    if not ever_satisfiable("equals_binding", "string", declared)
+    and not ever_satisfiable("contains_binding", "string", declared)
 )
 
-# The event fields ``TraceEvent`` declares as ``str | None``, so a predicate on one of
-# them compares text whatever the value it is handed was typed as.
-_TEXTUAL_MATCHER_FIELDS: frozenset[str] = frozenset({"tool", "text", "result"})
+# Both spellings of a union: ``X | None`` resolves to one and ``Optional[X]`` to the
+# other, and only these two make an annotation's arguments its alternatives.
+_UNION_ORIGINS: frozenset[Any] = frozenset({Union, types.UnionType})
+
+# Which ``TraceEvent`` attribute each matchable field reads. A matcher names the
+# field; the type of the value a predicate on it is handed is the attribute's.
+_MATCHER_FIELD_ATTRIBUTES: Mapping[str, str] = {
+    "tool": "tool_name",
+    "text": "text",
+    "result": "result",
+    "executor": "executor",
+    "status": "status",
+    "args": "arguments",
+}
+
+
+def _is_a_string_at_runtime(annotation: Any) -> bool:
+    """Whether a ``TraceEvent`` annotation types its value as text.
+
+    The declared type is the annotation's single non-``None`` member, and the value
+    is text when that member is a ``str`` subclass — which is what makes the closed
+    vocabularies behind ``status`` and ``executor`` text and ``args``' mapping not.
+
+    Only a union is split. ``get_args`` would otherwise read a parameterised generic
+    as its own union of members, so ``list[str]`` would answer for ``str``.
+    """
+    members = get_args(annotation) if get_origin(annotation) in _UNION_ORIGINS else (annotation,)
+    declared = [member for member in members if member is not type(None)]
+    if len(declared) != 1:
+        return False
+    return isinstance(declared[0], type) and issubclass(declared[0], str)
+
+
+def _matcher_fields_whose_value_is_a_string() -> frozenset[str]:
+    """The matchable fields a predicate reads text off, whatever it is handed."""
+    annotations = get_type_hints(TraceEvent)
+    return frozenset(
+        field
+        for field, attribute in _MATCHER_FIELD_ATTRIBUTES.items()
+        if _is_a_string_at_runtime(annotations[attribute])
+    )
+
+
+# Computed off the event rather than listed, so the set and the claim behind it
+# cannot disagree.
+_TEXTUAL_MATCHER_FIELDS: frozenset[str] = _matcher_fields_whose_value_is_a_string()
 
 # What an argument name outside a closed schema costs, per site. One rule, two
 # policies: an unreadable predicate leaves the matcher unmatched and an unreadable
@@ -670,6 +763,7 @@ def inspect_grading_authoring(
             _check_golden_action_names(grading, inventory),
             _check_argument_paths(sites, inventory),
             _check_bound_extractions(binders, inventory),
+            _check_bound_comparisons(binders, inventory),
         ]
     else:
         reports.append(AuthoringReport(unchecked=(Skip("grading", _UNRESOLVABLE_REASON),)))
@@ -1350,12 +1444,12 @@ def _check_bound_extractions(
 ) -> AuthoringReport:
     """What a tool's schema says about the values a binder draws out of its calls.
 
-    Two answers off the one resolved schema: the extraction addresses an argument
-    the tool declares, and the type declared there can be compared against the
-    fields the constraint references the name from.
+    Three answers off the one resolved schema: the extraction addresses an argument
+    the tool declares, a capture can be taken off the value declared there, and that
+    value can be compared against the fields the constraint references the name from.
     """
     return _merged(
-        _one_extraction(f"{site.where}.values.{name}.field", name, value, site, inventory)
+        _one_extraction(f"{site.where}.values.{name}", name, value, site, inventory)
         for site in binders
         for name, value in site.binding.values.items()
     )
@@ -1366,23 +1460,260 @@ def _one_extraction(
 ) -> AuthoringReport:
     """One extraction against the schema of the tool its binder selects.
 
-    Only an ``args`` extraction has a declared type at all: ``tool``, ``text`` and
-    ``result`` are the event's own string fields, which no tool schema describes
-    and which every reference compares correctly.
+    *where* addresses the extraction, and each answer is reported at the key that
+    carries it — the value's own type under ``.field``, a capture that cannot be
+    taken off it under ``.pattern``, which is the key the author deletes.
+
+    Only an ``args`` extraction has a declared type at all: the other extractable
+    fields are the event's own, which no tool schema describes and which every
+    reference compares correctly.
     """
     if value.head_segment() != "args":
         return AuthoringReport()
-    resolved = _resolved_tool(site.binding.match, inventory, where)
+    field = f"{where}.field"
+    resolved = _resolved_tool(site.binding.match, inventory, field)
     if isinstance(resolved, Skip):
         return AuthoringReport(unchecked=(resolved,))
     _, _, path = value.field.partition(".")
     if not path:
-        return _uncorrelatable_extraction(where, name, value, "object", resolved, site.references)
-    addressed = _one_argument_path(where, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
+        return _by_declared_type(where, name, value, "object", resolved, site.references)
+    addressed = _one_argument_path(field, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
     if addressed != AuthoringReport():
         return addressed
     declared = inventory.declared_type(resolved.name, path)
-    return _uncorrelatable_extraction(where, name, value, declared, resolved, site.references)
+    return _by_declared_type(where, name, value, declared, resolved, site.references)
+
+
+def _by_declared_type(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+    references: tuple[_PredicateSite, ...],
+) -> AuthoringReport:
+    """Both answers the declared type gives about one extraction, at their own keys."""
+    return _merged(
+        (
+            _uncapturable_extraction(where, name, value, declared, resolved),
+            _uncorrelatable_extraction(
+                f"{where}.field", name, value, declared, resolved, references
+            ),
+        )
+    )
+
+
+def _uncapturable_extraction(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+) -> AuthoringReport:
+    """A capture pattern over a value the schema types as something other than text.
+
+    A pattern narrows a value only where the value is a string and yields nothing
+    otherwise, so the name binds on no event whatever the agent did and the default
+    ``on_unbound`` reports that as the agent's failure. Which predicate reads the
+    name — or whether any does — does not enter into it, and neither does whether
+    the pattern compiles: fixing the pattern does not make an integer capturable.
+    """
+    if value.pattern is None or declared not in JSON_TYPES or declared == "string":
+        return AuthoringReport()
+    finding = Finding(
+        f"{where}.pattern",
+        f"binding {name!r} narrows {value.field!r} by a capture pattern, and {resolved.name!r} "
+        f"declares that as type {declared!r}. A capture is taken off text alone, so the "
+        "binding yields no assignment on any trajectory and the default on_unbound reports "
+        "that as the agent's failure. Drop the pattern to bind the value as the tool typed "
+        "it, or take the capture off a field that holds text",
+    )
+    if resolved.strictness is ArgumentSchema.CLOSED:
+        return AuthoringReport(errors=(finding,))
+    return AuthoringReport(advisories=(finding,))
+
+
+# What settled the bound type, and the repair that leaves. Written per source
+# because the repair an author already took is no repair at all: one who wrote a
+# capture cannot be told to write a capture, and one whose binding is typed by the
+# event has no schema to align.
+_WHAT_TYPED_THE_BINDING: Mapping[_BoundTypeSource, str] = {
+    _BoundTypeSource.SCHEMA: "{tool!r} declares it",
+    _BoundTypeSource.EVENT: "the event types it",
+    _BoundTypeSource.CAPTURE: "the capture pattern makes it text",
+}
+
+# Only the last clause of each is always an edit to this file: aligning two declared
+# types means editing a tool's schema, which the author may not own.
+_HOW_TO_CORRELATE: Mapping[_BoundTypeSource, str] = {
+    _BoundTypeSource.SCHEMA: (
+        "Correlate two arguments the tools type the same way, extract a regex capture off "
+        "a field that holds text — tool, text or result — or assert the two calls separately "
+        "instead of correlating them"
+    ),
+    _BoundTypeSource.EVENT: (
+        "Correlate an argument the tool types the same way, extract a regex capture off a "
+        "field that holds text, or assert the two calls separately instead of correlating "
+        "them"
+    ),
+    _BoundTypeSource.CAPTURE: (
+        "A capture is text, so compare it against a field holding text — drop the pattern "
+        "and correlate the value as the tool typed it, or assert the two calls separately "
+        "instead of correlating them"
+    ),
+}
+
+
+def _check_bound_comparisons(
+    binders: tuple[_BindingSite, ...], inventory: ToolInventory
+) -> AuthoringReport:
+    """Whether a reference on an ``args`` predicate can ever hold against what it reads.
+
+    Two arguments correlate natively where the tools type them the same way, which
+    is what the feature exists for — and are false on every trajectory where they
+    do not. Both types come off schemas, so this is the one rule resting on two
+    tools' claims, and the weaker of the two decides its severity.
+    """
+    return _merged(
+        _one_bound_comparison(reference, operator, name, site, inventory)
+        for site in binders
+        for reference in _references_this_rule_answers_for(site)
+        for operator, name in _binding_operands(reference.predicate)
+        if name in site.binding.values
+    )
+
+
+def _references_this_rule_answers_for(site: _BindingSite) -> tuple[_PredicateSite, ...]:
+    """The references read off an ``args`` mapping and reported by nothing else.
+
+    A ``regex`` beside the reference is deferred by :func:`_one_bound_comparison`
+    where the extraction rule can reach it, which is not everywhere.
+    """
+    return tuple(reference for reference in site.references if reference.argument_path is not None)
+
+
+def _the_extraction_rule_answers_for(value: BoundValue) -> bool:
+    """Whether :func:`_uncorrelatable_extraction` reports on this extraction at all.
+
+    A ``regex`` beside a reference makes it textual to :func:`_textual_references`,
+    which reports the mistake at the extraction's ``.field`` address — but only for
+    the extractions :func:`_one_extraction` reaches, and it exits on a non-``args``
+    field and on a ``pattern`` before it resolves anything. Deferring wherever a
+    ``regex`` appears would silence those two shapes at both tiers instead.
+    """
+    return value.pattern is None and value.head_segment() == "args"
+
+
+def _binding_operands(predicate: ValuePredicate) -> tuple[tuple[str, str], ...]:
+    """Each binding operator this predicate declares, with the name it reads.
+
+    A predicate is a conjunction, so two operators are two comparisons and an
+    author who wrote two mistakes is owed two findings.
+    """
+    return tuple(
+        (operator, getattr(predicate, operator))
+        for operator in sorted(TRACE_PREDICATE_BINDING_OPERATORS)
+        if getattr(predicate, operator) is not None
+    )
+
+
+def _one_bound_comparison(
+    reference: _PredicateSite,
+    operator: str,
+    name: str,
+    site: _BindingSite,
+    inventory: ToolInventory,
+) -> AuthoringReport:
+    """One reference, against the declared types of the two values it compares.
+
+    Every gap another rule already reports is left to it: a matcher naming no one
+    tool and a path below its first segment are both answered by
+    :func:`_one_matchers_argument_paths`, at the same addresses this would use.
+    """
+    resolved = _resolved_tool(reference.matcher, inventory, reference.where)
+    if isinstance(resolved, Skip):
+        return AuthoringReport()
+    head, _, below = reference.argument_path.partition(".")
+    if below or head not in resolved.properties:
+        return AuthoringReport()
+    held = inventory.declared_type(resolved.name, head)
+    if held not in JSON_TYPES:
+        return AuthoringReport(
+            unchecked=(
+                Skip(
+                    reference.where,
+                    f"{resolved.name!r} declares no single type for {head!r} — no type at "
+                    f"all, or a union of several — so whether {operator} can ever hold "
+                    f"against binding {name!r} is not checkable",
+                ),
+            )
+        )
+    value = site.binding.values[name]
+    if reference.predicate.regex is not None and _the_extraction_rule_answers_for(value):
+        return AuthoringReport()
+    bound = _what_the_binding_holds(site, value, inventory)
+    if bound.declared not in JSON_TYPES or ever_satisfiable(operator, held, bound.declared):
+        return AuthoringReport()
+    return _never_true_correlation(reference, operator, name, held, bound, resolved)
+
+
+def _what_the_binding_holds(
+    site: _BindingSite, value: BoundValue, inventory: ToolInventory
+) -> _BoundValueType:
+    """The JSON type a binding holds, and which of the three sources settles it.
+
+    A capture that binds is a string, and so is a ``tool`` / ``text`` / ``result``
+    extraction, which ``TraceEvent`` types as text and no tool schema describes; a
+    bare ``field: args`` binds the argument mapping. Only an ``args`` path is
+    answered by a schema, so only that reading carries a claim severity can rest on.
+
+    The extraction is typed here and again in :func:`_one_extraction`, which reads
+    the same schema to answer a different question about the same key. The two are
+    deliberately separate: this one must answer for a capture and for a non-``args``
+    field, which that one exits on before it resolves anything.
+    """
+    if value.pattern is not None:
+        return _BoundValueType("string", _BoundTypeSource.CAPTURE, None, None)
+    if value.head_segment() != "args":
+        return _BoundValueType("string", _BoundTypeSource.EVENT, None, None)
+    _, _, path = value.field.partition(".")
+    if not path:
+        return _BoundValueType("object", _BoundTypeSource.EVENT, None, None)
+    resolved = _resolved_tool(site.binding.match, inventory, site.where)
+    if isinstance(resolved, Skip):
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
+    head, _, below = path.partition(".")
+    if below or head not in resolved.properties:
+        return _BoundValueType(None, _BoundTypeSource.SCHEMA, None, None)
+    return _BoundValueType(
+        inventory.declared_type(resolved.name, head),
+        _BoundTypeSource.SCHEMA,
+        resolved.name,
+        resolved.strictness,
+    )
+
+
+def _never_true_correlation(
+    reference: _PredicateSite,
+    operator: str,
+    name: str,
+    held: str,
+    bound: _BoundValueType,
+    resolved: _ResolvedTool,
+) -> AuthoringReport:
+    """The finding, at the severity the weaker of the two schemas permits."""
+    finding = Finding(
+        reference.where,
+        f"{operator} reads {reference.argument_path!r}, which {resolved.name!r} declares as "
+        f"type {held!r}, against binding {name!r}, which holds type {bound.declared!r} — "
+        f"{_WHAT_TYPED_THE_BINDING[bound.source].format(tool=bound.tool)}. No pair of values "
+        f"of those two types satisfies {operator}, so the comparison is false on every "
+        f"trajectory and reads as the agent's failure. {_HOW_TO_CORRELATE[bound.source]}",
+    )
+    claims = tuple(claim for claim in (resolved.strictness, bound.strictness) if claim is not None)
+    if all(claim is ArgumentSchema.CLOSED for claim in claims):
+        return AuthoringReport(errors=(finding,))
+    return AuthoringReport(advisories=(finding,))
 
 
 def _uncorrelatable_extraction(
@@ -1398,7 +1729,9 @@ def _uncorrelatable_extraction(
     ``contains`` reads two strings as a substring pair and falls back to equality
     for every other pairing, and ``equals_binding`` is that same equality, so both
     are false on every trajectory — a check indistinguishable from the agent
-    failing. A ``pattern`` on the extraction binds a capture, which is a string.
+    failing. An extraction carrying a ``pattern`` is exempt because what the
+    reference compares is the capture rather than the value the schema typed;
+    whether that capture can be taken at all is answered at ``.pattern``.
     """
     if value.pattern is not None:
         return AuthoringReport()
@@ -1424,9 +1757,8 @@ def _uncorrelatable_extraction(
         f"binding {name!r} extracts {value.field!r}, which {resolved.name!r} declares as "
         f"type {declared!r}, and {read_from} compares it against a field holding text. A "
         "non-string value is never a substring and equals nothing a text field holds, so "
-        "the check is false on every trajectory and reads as the agent's failure. Reference "
-        "the binding from an args predicate, which compares two arguments as they were "
-        "written, or bind a regex capture, which is always text",
+        "the check is false on every trajectory and reads as the agent's failure. "
+        + _HOW_TO_CORRELATE[_BoundTypeSource.SCHEMA],
     )
     if resolved.strictness is ArgumentSchema.CLOSED:
         return AuthoringReport(errors=(finding,))
@@ -1642,10 +1974,12 @@ def _predicate_sites(site: _MatcherSite) -> Iterator[_PredicateSite]:
     for name in type(site.matcher).model_fields:
         value = getattr(site.matcher, name)
         if isinstance(value, ValuePredicate):
-            yield _PredicateSite(f"{site.where}.{name}", name, value)
+            yield _PredicateSite(f"{site.where}.{name}", name, value, site.matcher, None)
         elif isinstance(value, Mapping):
             for path, predicate in value.items():
-                yield _PredicateSite(f"{site.where}.{name}.{path}", name, predicate)
+                yield _PredicateSite(
+                    f"{site.where}.{name}.{path}", name, predicate, site.matcher, path
+                )
 
 
 def _merged(reports: Iterable[AuthoringReport]) -> AuthoringReport:
