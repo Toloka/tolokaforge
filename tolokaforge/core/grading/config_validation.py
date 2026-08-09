@@ -1393,12 +1393,12 @@ def _check_bound_extractions(
 ) -> AuthoringReport:
     """What a tool's schema says about the values a binder draws out of its calls.
 
-    Two answers off the one resolved schema: the extraction addresses an argument
-    the tool declares, and the type declared there can be compared against the
-    fields the constraint references the name from.
+    Three answers off the one resolved schema: the extraction addresses an argument
+    the tool declares, a capture can be taken off the value declared there, and that
+    value can be compared against the fields the constraint references the name from.
     """
     return _merged(
-        _one_extraction(f"{site.where}.values.{name}.field", name, value, site, inventory)
+        _one_extraction(f"{site.where}.values.{name}", name, value, site, inventory)
         for site in binders
         for name, value in site.binding.values.items()
     )
@@ -1409,23 +1409,77 @@ def _one_extraction(
 ) -> AuthoringReport:
     """One extraction against the schema of the tool its binder selects.
 
+    *where* addresses the extraction, and each answer is reported at the key that
+    carries it — the value's own type under ``.field``, a capture that cannot be
+    taken off it under ``.pattern``, which is the key the author deletes.
+
     Only an ``args`` extraction has a declared type at all: the other extractable
     fields are the event's own, which no tool schema describes and which every
     reference compares correctly.
     """
     if value.head_segment() != "args":
         return AuthoringReport()
-    resolved = _resolved_tool(site.binding.match, inventory, where)
+    field = f"{where}.field"
+    resolved = _resolved_tool(site.binding.match, inventory, field)
     if isinstance(resolved, Skip):
         return AuthoringReport(unchecked=(resolved,))
     _, _, path = value.field.partition(".")
     if not path:
-        return _uncorrelatable_extraction(where, name, value, "object", resolved, site.references)
-    addressed = _one_argument_path(where, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
+        return _by_declared_type(where, name, value, "object", resolved, site.references)
+    addressed = _one_argument_path(field, path, resolved, _UNBINDABLE_EXTRACTION_HAZARD)
     if addressed != AuthoringReport():
         return addressed
     declared = inventory.declared_type(resolved.name, path)
-    return _uncorrelatable_extraction(where, name, value, declared, resolved, site.references)
+    return _by_declared_type(where, name, value, declared, resolved, site.references)
+
+
+def _by_declared_type(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+    references: tuple[_PredicateSite, ...],
+) -> AuthoringReport:
+    """Both answers the declared type gives about one extraction, at their own keys."""
+    return _merged(
+        (
+            _uncapturable_extraction(where, name, value, declared, resolved),
+            _uncorrelatable_extraction(
+                f"{where}.field", name, value, declared, resolved, references
+            ),
+        )
+    )
+
+
+def _uncapturable_extraction(
+    where: str,
+    name: str,
+    value: BoundValue,
+    declared: str | None,
+    resolved: _ResolvedTool,
+) -> AuthoringReport:
+    """A capture pattern over a value the schema types as something other than text.
+
+    A pattern narrows a value only where the value is a string and yields nothing
+    otherwise, so the name binds on no event whatever the agent did and the default
+    ``on_unbound`` reports that as the agent's failure. Which predicate reads the
+    name — or whether any does — does not enter into it, and neither does whether
+    the pattern compiles: fixing the pattern does not make an integer capturable.
+    """
+    if value.pattern is None or declared not in JSON_TYPES or declared == "string":
+        return AuthoringReport()
+    finding = Finding(
+        f"{where}.pattern",
+        f"binding {name!r} narrows {value.field!r} by a capture pattern, and {resolved.name!r} "
+        f"declares that as type {declared!r}. A capture is taken off text alone, so the "
+        "binding yields no assignment on any trajectory and the default on_unbound reports "
+        "that as the agent's failure. Drop the pattern to bind the value as the tool typed "
+        "it, or take the capture off a field that holds text",
+    )
+    if resolved.strictness is ArgumentSchema.CLOSED:
+        return AuthoringReport(errors=(finding,))
+    return AuthoringReport(advisories=(finding,))
 
 
 def _uncorrelatable_extraction(
@@ -1441,7 +1495,9 @@ def _uncorrelatable_extraction(
     ``contains`` reads two strings as a substring pair and falls back to equality
     for every other pairing, and ``equals_binding`` is that same equality, so both
     are false on every trajectory — a check indistinguishable from the agent
-    failing. A ``pattern`` on the extraction binds a capture, which is a string.
+    failing. An extraction carrying a ``pattern`` is exempt because what the
+    reference compares is the capture rather than the value the schema typed;
+    whether that capture can be taken at all is answered at ``.pattern``.
     """
     if value.pattern is not None:
         return AuthoringReport()
@@ -1469,7 +1525,7 @@ def _uncorrelatable_extraction(
         "non-string value is never a substring and equals nothing a text field holds, so "
         "the check is false on every trajectory and reads as the agent's failure. Reference "
         "the binding from an args predicate, which compares two arguments as they were "
-        "written, or bind a regex capture, which is always text",
+        "written, or extract a regex capture off a field that holds text",
     )
     if resolved.strictness is ArgumentSchema.CLOSED:
         return AuthoringReport(errors=(finding,))

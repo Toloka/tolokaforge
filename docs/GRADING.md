@@ -2042,7 +2042,7 @@ as `contains_binding`. That is not scored as an agent failure: the constraint fa
 with a message saying the comparison was not made, naming the binding, its value, its
 type, the operator that could not make the comparison, and the two ways to write the
 intent — a reference on an `args` predicate, which compares two arguments as they
-were written, or a `pattern` capture, which is always text.
+were written, or a `pattern` capture taken off a field that holds text.
 
 **`tolokaforge validate` catches it first, wherever a schema declares the type.**
 The config models cannot: `args.reason_code` is a string and `args.delivery_id` is an
@@ -2572,6 +2572,7 @@ Findings come in three classes:
 | an `args` address whose first segment is outside the properties of a tool whose schema forbids extras | error | every matcher's `args` key, every `bind.values[*].field` |
 | the same against a tool whose schema permits extras | advisory | as above |
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference on one of the event's text fields — `tool`, `text`, `result`, `status`, `executor` — or beside a `regex` on the same predicate | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
+| a `bind.values[*].pattern` over an argument the tool types `integer` / `number` / `boolean` / `array` / `object`, or over a bare `field: args` — a capture is taken off text alone, so the name binds on no trajectory | error on a schema forbidding extras, advisory on one permitting them | `bind.values[*].pattern` |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
@@ -2786,9 +2787,14 @@ vocabularies that subclass `str`, so the value compared is text like the rest �
 beside a `regex` that asserts the same of an argument, is false on **every**
 trajectory. That is the [type limit](#the-bound-values-type-is-load-bearing)
 answered before the run: the declared type lives in the tool's JSON schema, and the
-gate is the only tier holding it. Neither correct way to write the intent is flagged — `equals_binding` on an `args`
-predicate compares two natively-typed values, and a `pattern` on the extraction binds
-a capture, which is a string.
+gate is the only tier holding it. `equals_binding` on an `args` predicate is not
+flagged — it compares two natively-typed values — and neither is a `pattern` on the
+extraction, whose capture is a string and is compared as one. **A capture is text
+only where the value beneath it is**: a `pattern` narrows a string and yields
+nothing off anything else, so a capture over an argument the schema types
+`integer` / `number` / `boolean` / `array` / `object` binds no name on any
+trajectory, and that is reported at the extraction's `pattern` key — the key the
+author deletes to fix it — rather than at its `field`.
 
 **A binder reading `field: result` makes its pack records-dependent.** `result`
 comes from the tool-call record wherever one exists and from the answering

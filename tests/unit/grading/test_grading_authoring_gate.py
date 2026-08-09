@@ -327,6 +327,18 @@ _RULES: tuple[_Rule, ...] = (
         message="probable typo rather than a certainty",
     ),
     _Rule(
+        label="capture_pattern_over_an_argument_the_schema_types_non_string",
+        task=_CODING,
+        grading=_bound_block(
+            _tool_call("read_file"),
+            {"start": {"field": "args.offset", "pattern": "([0-9]+)"}},
+            _quotes("contains_binding", "start"),
+        ),
+        checker="_check_bound_extractions",
+        channel="errors",
+        message="A capture is taken off text alone",
+    ),
+    _Rule(
         label="matcher_regex_that_does_not_compile",
         task=_HELPDESK,
         grading=_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
@@ -2542,11 +2554,14 @@ def test_a_bound_array_read_as_text_is_an_advisory_on_an_open_schema() -> None:
 
 
 def test_a_capture_pattern_on_the_extraction_is_not_flagged_for_its_type() -> None:
-    """A regex capture is a string whatever field it was taken off.
+    """The type rule does not fire at the extraction's own address under a pattern.
 
-    Scoped to the type rule's own address rather than to an empty report: the gate
-    answers nothing else about this block, and asserting that would pin the absence
-    of every rule rather than the presence of this exemption.
+    A capture is not the value the schema typed, so what the reference compares is
+    settled at ``.pattern`` and not here — and this block *is* reported, one level
+    up, by the rule that owns the shape. Scoped to the type rule's own address
+    rather than to an empty report: asserting the report were empty would pin the
+    absence of every rule rather than the presence of this exemption, and would
+    now be false besides.
     """
     grading = _bound_block(
         _tool_call("read_file"),
@@ -2558,6 +2573,106 @@ def test_a_capture_pattern_on_the_extraction_is_not_flagged_for_its_type() -> No
 
     flagged = [finding.where for finding in report.errors + report.advisories]
     assert _EXTRACTION_ADDRESS not in flagged, flagged
+
+
+_PATTERN_ADDRESS = "trace_checks.probe.bind.values.start.pattern"
+
+
+def test_a_capture_pattern_over_a_non_string_argument_is_an_error_on_a_closed_schema() -> None:
+    """A pattern binds a capture off text alone, and nothing off an integer.
+
+    ``_extracted`` narrows by pattern only where the value is a ``str`` and yields
+    nothing otherwise, so the name binds on no event however the agent behaved and
+    the default ``on_unbound`` charges the miss to it — the message a genuine agent
+    failure carries. Which predicate reads the name does not enter into it.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.offset", "pattern": "([0-9]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'integer'" in report.errors[0].message
+    assert report.advisories == ()
+
+
+def test_a_capture_pattern_over_a_non_string_argument_is_an_advisory_on_an_open_schema() -> None:
+    """The severity rests on the one schema the rule reads, as its neighbour's does.
+
+    A schema permitting arguments it does not declare describes its tool loosely,
+    and hard-failing on it would enforce a claim the schema does not make.
+    """
+    grading = _bound_block(
+        _tool_call("place_order"),
+        {"ordered": {"field": "args.items", "pattern": "(W[0-9]+)"}},
+        _quotes("contains_binding", "ordered"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_SHOP_ORDERS))
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.bind.values.ordered.pattern"
+    ]
+    assert "type 'array'" in report.advisories[0].message
+
+
+def test_a_capture_pattern_over_a_string_argument_is_not_flagged() -> None:
+    """The shape the feature exists for, one token from the flagged one.
+
+    "Bind the directory out of the path the agent read" is a capture over an
+    argument the schema types ``string``, separated from the error above only by
+    which argument ``read_file`` was asked about.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.path", "pattern": "([a-z]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    assert inspect_grading_authoring(grading, _inventory(_CODING)) == AuthoringReport()
+
+
+def test_a_capture_pattern_over_the_whole_argument_mapping_is_flagged() -> None:
+    """``field: args`` binds the mapping itself, which no pattern reads either.
+
+    The one extraction whose type no schema declares and the gate knows anyway:
+    ``TraceEvent`` types ``arguments`` as a mapping, so the capture yields nothing
+    for the same reason it yields nothing off an integer.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args", "pattern": "([0-9]+)"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS]
+    assert "type 'object'" in report.errors[0].message
+
+
+def test_an_uncompilable_pattern_over_a_non_string_argument_names_both_repairs() -> None:
+    """Two findings at one key, because they are two mistakes with two fixes.
+
+    The rule does not read whether the pattern compiles, and it must not: making
+    the regex valid does not make an integer capturable, so an author shown only
+    the compile error would fix it and still bind nothing.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"start": {"field": "args.offset", "pattern": "([0-9]+"}},
+        _quotes("contains_binding", "start"),
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [finding.where for finding in report.errors] == [_PATTERN_ADDRESS, _PATTERN_ADDRESS]
+    assert "does not compile" in report.errors[0].message
+    assert "type 'integer'" in report.errors[1].message
 
 
 def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> None:
