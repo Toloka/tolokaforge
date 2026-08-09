@@ -220,6 +220,35 @@ Compare output against committed golden snapshots in `snapshots/`.
   fraction carries one division and no branch, while the judge's must raise on a
   non-positive denominator. The same file holds `docs/GRADING.md`'s two gate sections
   to cross-referencing each other, so neither spelling can be documented alone.
+- Grading wire census (`test_grading_wire_lock.py`) — the key paths the trial spec puts
+  on the wire under `task.grading` and `task.search`, written out by hand and compared
+  against an independent walk of the declared runner models: the path, the gate its
+  emission waits on, and the shape its value crosses as. A field added to a runner
+  grading model without a census row fails naming the path; so does a census row naming
+  a key no model declares, a gate the models contradict, a shape that widened, and a
+  retired path a model re-declares. The walk's stops (`_WALK_STOPS`) and the census's
+  declared leaf containers are two hand-written constants held equal — neither is
+  derived from the other, because a walk that stopped wherever the census declared a
+  leaf would let one hand edit delete a subtree from both sides at once. Every
+  pack under `examples/native/**` is then built and serialised the way the conductor
+  serialises a trial spec, so "the model declares it" and "the adapter emits it" are
+  separate claims. Add the row; never widen the walk to match the census. Every censused
+  key must additionally carry a version lock or be named in the exemption set that
+  records it as predating the support floor — so a grading field added below any
+  container, not only a new top-level key, has to join the version-lock table or be
+  argued into that set. The set is a snapshot, which is what makes the check decidable
+  without a release per row: a key in neither was added after it.
+  The same file holds `docs/GRADING.md` § Runner-engine version lock — the subset that
+  locks an engine to a runner image — to the census: same keys, same directions, a
+  breadth column rendered from the census's *measured* gate rather than written by
+  hand, a release per key that `CHANGELOG.md` records, and no key dated below the
+  support floor the table's own preamble states. `docs/RUNNER.md` and
+  `docs/TROUBLESHOOTING.md` are held to resolving pointers at that heading, so renaming
+  it reds rather than returning the reader to nothing. The table is read by two
+  independent readers held to the same rows — `doc_anchors.section` bounds a body at any
+  `^#{1,3} ` line without tracking code fences, so a `#` comment inside a fenced block
+  ends its read early and every lock iterating the rows would pass over the ones it never
+  saw (#986). Never put a fenced block inside that section.
 
 Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
 authors a `task.yaml` and a `grading.yaml`, and — where its grading or its trials
