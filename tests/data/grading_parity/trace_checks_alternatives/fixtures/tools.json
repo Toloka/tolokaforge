@@ -1,0 +1,78 @@
+[
+  {
+    "name": "read_ledger",
+    "description": "Read the ledger entries held for an account.",
+    "parameters": {
+      "properties": {
+        "account_id": {
+          "description": "Account identifier, e.g. 'ACC-88'",
+          "title": "Account Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id"
+      ],
+      "title": "read_ledgerArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "recompute_ledger_total",
+    "description": "Recompute an account's ledger total from its entries.",
+    "parameters": {
+      "properties": {
+        "account_id": {
+          "description": "Account identifier, e.g. 'ACC-88'",
+          "title": "Account Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id"
+      ],
+      "title": "recompute_ledger_totalArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "fetch_statement",
+    "description": "Fetch an account's most recent statement.",
+    "parameters": {
+      "properties": {
+        "account_id": {
+          "description": "Account identifier, e.g. 'ACC-88'",
+          "title": "Account Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id"
+      ],
+      "title": "fetch_statementArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "read_closing_balance",
+    "description": "Read the closing balance off a statement.",
+    "parameters": {
+      "properties": {
+        "account_id": {
+          "description": "Account identifier, e.g. 'ACC-88'",
+          "title": "Account Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "account_id"
+      ],
+      "title": "read_closing_balanceArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

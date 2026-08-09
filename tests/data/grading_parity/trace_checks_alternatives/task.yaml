@@ -10,7 +10,12 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - read_ledger
+      - recompute_ledger_total
+      - fetch_statement
+      - read_closing_balance
   user:
     enabled: []
 

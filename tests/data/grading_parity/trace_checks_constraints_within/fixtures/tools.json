@@ -1,0 +1,65 @@
+[
+  {
+    "name": "order_api_get_order",
+    "description": "Fetch an order by its identifier.",
+    "parameters": {
+      "properties": {
+        "order_id": {
+          "description": "Order identifier, e.g. 'O-001'",
+          "title": "Order Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "order_id"
+      ],
+      "title": "order_api_get_orderArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "create_case",
+    "description": "Open a case for a piece of work.",
+    "parameters": {
+      "properties": {
+        "subject": {
+          "description": "One-line summary the case is opened under",
+          "title": "Subject",
+          "type": "string"
+        }
+      },
+      "required": [
+        "subject"
+      ],
+      "title": "create_caseArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "send_email",
+    "description": "Send the customer an email.",
+    "parameters": {
+      "properties": {
+        "case_id": {
+          "description": "Case identifier, e.g. 'CS-1042'",
+          "title": "Case Id",
+          "type": "string"
+        },
+        "template": {
+          "description": "Identifier of the message template to send",
+          "title": "Template",
+          "type": "string"
+        }
+      },
+      "required": [
+        "case_id",
+        "template"
+      ],
+      "title": "send_emailArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]
