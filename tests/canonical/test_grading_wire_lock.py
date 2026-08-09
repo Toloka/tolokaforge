@@ -18,12 +18,33 @@ wherever the census declares a leaf, one hand edit adding a container as a censu
 would delete that subtree from both sides at once and leave the first three locks green
 over an unmeasured surface.
 
-**What is declared and not measured.** ``_WireKey.is_leaf_container`` and
-``_RetiredWireKey.reason`` carry no measurement behind them. ``is_leaf_container`` is
-declared rather than derived on purpose: deriving it would need a "is this rendered
-annotation a model?" predicate only the walk can answer, which is the coupling
-:data:`_WALK_STOPS` exists to avoid. Its honesty is asserted instead — a declared leaf
-must have no census row below it.
+``docs/GRADING.md`` § Runner-engine version lock is the reader's copy of the subset that
+locks an engine to a runner image. It is one table, set-equal to the census rows that
+carry a :class:`_DocLock`, with its breadth column rendered from the census's *measured*
+``emitted_for`` — so the doc cannot say a key waits on a gate the models do not give it.
+
+**What is declared and not measured.** These fields carry no measurement behind them,
+collected here rather than hedged at each use:
+
+- ``is_leaf_container`` — declared rather than derived on purpose: deriving it would
+  need a "is this rendered annotation a model?" predicate only the walk can answer,
+  which is the coupling :data:`_WALK_STOPS` exists to avoid. Its honesty is asserted
+  instead — a declared leaf must have no census row below it.
+- ``since`` — the release whose image first presents the key **in the shape this row's
+  lock is about**, not the release the key's name first appeared in. Measurable only by
+  scanning tags, which CI cannot do: its jobs check out shallow with no tags. What *is*
+  asserted is that the value names a release ``CHANGELOG.md`` records or ``unreleased``,
+  that doc and census agree on it, and that it is at or above
+  :data:`_SUPPORTED_IMAGE_FLOOR`. What is **not** asserted is that the release named is
+  the right one. A row carrying ``since = None`` claims "presented by every image at or
+  above the floor", and nothing checks that claim either.
+- :data:`_SUPPORTED_IMAGE_FLOOR` — the oldest runner image the table speaks about. A
+  judgement, not a derived support policy: nothing in this repository declares how far
+  back images are supported.
+- ``_DocLock.direction`` — whether the key bites one way or both. Depends on what a past
+  image declared. The retired-key half of a both-directions claim is measured by
+  :func:`test_a_retired_wire_key_is_declared_by_no_model`; the other half is not.
+- ``_RetiredWireKey.reason``.
 
 Two surfaces are deliberately outside this census and tracked in #983: the trial spec's
 non-grading keys (``initial_state``, ``user_simulator``, ``agent_tools``,
@@ -37,6 +58,7 @@ interior.
 from __future__ import annotations
 
 import json
+import re
 import types
 import typing
 from collections.abc import Iterator
@@ -49,6 +71,7 @@ from typing import Any
 import pytest
 from pydantic import BaseModel
 
+from tests.utils.doc_anchors import anchor, section
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core.project_loader import load_project_config
 from tolokaforge.runner.models import TaskDescription
@@ -57,10 +80,50 @@ pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
 _REPO = Path(__file__).resolve().parents[2]
 _NATIVE_EXAMPLES = _REPO / "examples" / "native"
+_DOCS = _REPO / "docs"
+_GRADING_DOC = _DOCS / "GRADING.md"
+_RUNNER_DOC = _DOCS / "RUNNER.md"
+_TROUBLESHOOTING_DOC = _DOCS / "TROUBLESHOOTING.md"
+_CHANGELOG = _REPO / "CHANGELOG.md"
+
+_VERSION_LOCK_HEADING = "### Runner-engine version lock"
+_UNRELEASED = "unreleased"
+
+_SUPPORTED_IMAGE_FLOOR = "v0.13.1"
+"""The oldest runner image the version-lock table speaks about. A key whose locked shape
+arrived at or after this belongs on the table; one whose locked shape predates it does
+not."""
+
+_RETIRED_KEY_BREADTH = "no current engine"
+"""The breadth cell for a locked key no current model declares: nothing emits it, so the
+census has no measured ``emitted_for`` to render."""
+
+_CHANGELOG_RELEASE = re.compile(r"^## (v\d+\.\d+\.\d+)")
+_FLOOR_IN_PREAMBLE = re.compile(r"runner images from `(v\d+\.\d+\.\d+)` onward")
 
 # Every pack under the native example corpus, all of which build. Pinned so a pack
 # dropping out of the corpus fails rather than silently shrinking the walk over it.
 _NATIVE_PACK_COUNT = 29
+
+
+class _Direction(str, Enum):
+    """Which pairing a locked key is rejected in."""
+
+    NEW_ENGINE_OLD_IMAGE = "new engine → old image"
+    OLD_ENGINE_NEW_IMAGE = "old engine → new image"
+    BOTH = "both directions"
+
+
+@dataclass(frozen=True)
+class _DocLock:
+    """A key's row on ``docs/GRADING.md`` § Runner-engine version lock."""
+
+    doc_key: str
+    """The doc's spelling of the key — rooted at the grading block rather than at the
+    task description, and addressing a position below a list with ``[*]`` where the
+    census uses ``[]``."""
+
+    direction: _Direction
 
 
 @dataclass(frozen=True)
@@ -86,6 +149,13 @@ class _WireKey:
     """Whether this row's value is a model the census deliberately does not descend
     into. Declared, not derived."""
 
+    since: str | None = None
+    """The release whose image first presents this key in the shape its doc row locks,
+    or ``unreleased``. ``None`` on a key the version-lock table does not carry."""
+
+    lock: _DocLock | None = None
+    """This key's row on the version-lock table, or ``None`` when it carries none."""
+
 
 @dataclass(frozen=True)
 class _RetiredWireKey:
@@ -93,6 +163,8 @@ class _RetiredWireKey:
 
     path: str
     reason: str
+    since: str | None = None
+    lock: _DocLock | None = None
 
 
 _WALK_STOPS: tuple[str, ...] = ("grading.trace_checks", "environment_manifest")
@@ -122,6 +194,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="search.plane",
         emitted_for="",
         wire_shape="Literal['typesense', 'rag_service'] | None",
+        since="unreleased",
+        lock=_DocLock(
+            doc_key="search.plane",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="search.domain_name",
@@ -157,6 +234,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.combine_method",
         emitted_for="",
         wire_shape="Literal['weighted', 'all', 'any']",
+        since="v0.13.1",
+        lock=_DocLock(
+            doc_key="combine_method",
+            direction=_Direction.BOTH,
+        ),
     ),
     _WireKey(
         path="grading.weights",
@@ -187,6 +269,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.state_checks.expect_initial_state",
         emitted_for="grading.state_checks",
         wire_shape="bool",
+        since="unreleased",
+        lock=_DocLock(
+            doc_key="state_checks.expect_initial_state",
+            direction=_Direction.BOTH,
+        ),
     ),
     _WireKey(
         path="grading.state_checks.golden_actions",
@@ -207,6 +294,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.state_checks.hash_weight",
         emitted_for="grading.state_checks",
         wire_shape="float | None",
+        since="v0.13.1",
+        lock=_DocLock(
+            doc_key="state_checks.hash_weight",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="grading.state_checks.numeric_string_fields",
@@ -217,6 +309,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.state_checks.id_fields",
         emitted_for="grading.state_checks",
         wire_shape="dict[str, str | list[str]]",
+        since="v0.16.1",
+        lock=_DocLock(
+            doc_key="state_checks.id_fields",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="grading.state_checks.relaxed_validation",
@@ -282,11 +379,21 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.transcript_rules.min_assistant_turns",
         emitted_for="grading.transcript_rules",
         wire_shape="int | None",
+        since="v0.15.0",
+        lock=_DocLock(
+            doc_key="transcript_rules.min_assistant_turns",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="grading.transcript_rules.tool_expectations",
         emitted_for="grading.transcript_rules",
         wire_shape="ToolExpectations | None",
+        since="v0.13.1",
+        lock=_DocLock(
+            doc_key="transcript_rules.tool_expectations",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="grading.transcript_rules.tool_expectations.required_tools",
@@ -317,6 +424,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         path="grading.transcript_rules.required_actions[].name",
         emitted_for="grading.transcript_rules.required_actions",
         wire_shape="str",
+        since="unreleased",
+        lock=_DocLock(
+            doc_key="transcript_rules.required_actions[*].name",
+            direction=_Direction.BOTH,
+        ),
     ),
     _WireKey(
         path="grading.transcript_rules.required_actions[].arguments",
@@ -348,6 +460,11 @@ _WIRE_KEYS: tuple[_WireKey, ...] = (
         emitted_for="",
         wire_shape="TraceChecksConfig | None",
         is_leaf_container=True,
+        since="v0.15.0",
+        lock=_DocLock(
+            doc_key="trace_checks",
+            direction=_Direction.NEW_ENGINE_OLD_IMAGE,
+        ),
     ),
     _WireKey(
         path="grading.llm_judge",
@@ -434,6 +551,11 @@ _RETIRED_WIRE_KEYS: tuple[_RetiredWireKey, ...] = (
     _RetiredWireKey(
         path="grading.state_checks.env_assertions",
         reason="environment assertions were removed from the state-check block",
+        since="v0.13.1",
+        lock=_DocLock(
+            doc_key="state_checks.env_assertions",
+            direction=_Direction.OLD_ENGINE_NEW_IMAGE,
+        ),
     ),
     _RetiredWireKey(
         path="grading.transcript_rules.required_actions[].tool_name",
@@ -622,6 +744,68 @@ def _emitted_grading_keys(description: TaskDescription) -> dict[str, object]:
     return emitted
 
 
+def _doc_breadth(row: _WireKey | _RetiredWireKey) -> str:
+    """The version-lock table's ``emitted for`` cell for this row.
+
+    The one place the census's measured ``emitted_for`` is rendered into the doc's
+    wording, so a doc cell and a model gate cannot drift into two different claims.
+    """
+    if isinstance(row, _RetiredWireKey):
+        return _RETIRED_KEY_BREADTH
+    if not row.emitted_for:
+        return "every pack"
+    return f"a pack declaring `{row.emitted_for.removeprefix('grading.')}`"
+
+
+def _version_tuple(release: str) -> tuple[int, ...]:
+    return tuple(int(part) for part in release.removeprefix("v").split("."))
+
+
+@lru_cache(maxsize=1)
+def _version_lock_section() -> str:
+    lines = _GRADING_DOC.read_text(encoding="utf-8").splitlines()
+    return section(lines, _VERSION_LOCK_HEADING, _GRADING_DOC.name)
+
+
+def _unwrapped(cell: str) -> str:
+    """A cell that is one whole code span, without its backticks.
+
+    Only a cell that is *entirely* a code span is unwrapped: a breadth cell reads
+    ``a pack declaring `state_checks``` and must keep the backticks around the key it
+    names, or the doc and the census would be compared on different strings.
+    """
+    if len(cell) > 1 and cell.startswith("`") and cell.endswith("`"):
+        return cell[1:-1]
+    return cell
+
+
+@lru_cache(maxsize=1)
+def _version_lock_table() -> tuple[dict[str, str], ...]:
+    """The table's data rows, keyed by column header."""
+    rows = [
+        [cell.strip() for cell in line.strip().strip("|").split("|")]
+        for line in _version_lock_section().splitlines()
+        if line.startswith("|")
+    ]
+    assert len(rows) > 2, f"{_VERSION_LOCK_HEADING} carries no table"
+    header, separator, *body = rows
+    assert all(set(cell) <= {"-", ":"} for cell in separator), "row 2 is not a table rule"
+    return tuple(dict(zip(header, cells, strict=True)) for cells in body)
+
+
+@lru_cache(maxsize=1)
+def _changelog_releases() -> frozenset[str]:
+    return frozenset(
+        match.group(1)
+        for line in _CHANGELOG.read_text(encoding="utf-8").splitlines()
+        if (match := _CHANGELOG_RELEASE.match(line))
+    )
+
+
+def _locked_rows() -> tuple[_WireKey | _RetiredWireKey, ...]:
+    return tuple(row for row in (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS) if row.lock)
+
+
 def test_the_census_names_every_grading_wire_key_the_engine_emits() -> None:
     walked = {key.path for key in _walked_wire_keys()}
     declared = {row.path for row in _WIRE_KEYS}
@@ -734,3 +918,109 @@ def test_the_example_corpus_emits_what_the_census_says_it_emits() -> None:
         "every pack expects the same key set, so the gated rows were never told apart "
         "from the unconditional ones"
     )
+
+
+def test_the_version_lock_table_names_exactly_the_keys_the_census_locks() -> None:
+    locked = {row.lock.doc_key: row.lock.direction for row in _locked_rows() if row.lock}
+    assert locked, "no census row carries a doc lock, so this lock asserts nothing"
+    tabled = {_unwrapped(row["key"]): row["direction"] for row in _version_lock_table()}
+
+    untabled = sorted(locked.keys() - tabled.keys())
+    assert untabled == [], "a census row carries a doc lock with no row on the table"
+    uncensused = sorted(tabled.keys() - locked.keys())
+    assert uncensused == [], "the version-lock table names a key no census row locks"
+    drift = {
+        key: (locked[key].value, tabled[key])
+        for key in sorted(locked.keys() & tabled.keys())
+        if locked[key].value != tabled[key]
+    }
+    assert drift == {}, "declared direction != the table's, as {key: (declared, table)}"
+
+
+def test_the_table_states_the_breadth_the_models_actually_emit() -> None:
+    measured = {row.lock.doc_key: _doc_breadth(row) for row in _locked_rows() if row.lock}
+    breadths = set(measured.values())
+    assert len(breadths) > 1, "every locked key renders the same breadth"
+    drift = {
+        key: (measured[key], row["emitted for"])
+        for row in _version_lock_table()
+        if (key := _unwrapped(row["key"])) in measured and measured[key] != row["emitted for"]
+    }
+    assert drift == {}, "the table's breadth != the census's measured one, as {key: (census, doc)}"
+
+
+def test_the_doc_and_the_census_name_the_same_releases_and_the_changelog_records_them() -> None:
+    releases = _changelog_releases()
+    floor_is_released = _SUPPORTED_IMAGE_FLOOR in releases
+    assert floor_is_released, "the support floor names no release CHANGELOG.md records"
+
+    declared = {row.lock.doc_key: row.since for row in _locked_rows() if row.lock}
+    unrecorded = sorted(
+        f"{key}={since}"
+        for key, since in declared.items()
+        if since != _UNRELEASED and since not in releases
+    )
+    assert unrecorded == [], "a census `since` names no release CHANGELOG.md records"
+
+    drift = {
+        key: (declared[key], _unwrapped(row["first declared by"]))
+        for row in _version_lock_table()
+        if (key := _unwrapped(row["key"])) in declared
+        and declared[key] != _unwrapped(row["first declared by"])
+    }
+    assert drift == {}, "the table's release != the census's, as {key: (census, doc)}"
+
+    stated = _FLOOR_IN_PREAMBLE.search(_version_lock_section())
+    assert stated is not None, f"{_VERSION_LOCK_HEADING}'s preamble states no support floor"
+    assert stated.group(1) == _SUPPORTED_IMAGE_FLOOR, (
+        f"the preamble's floor {stated.group(1)} and _SUPPORTED_IMAGE_FLOOR "
+        f"{_SUPPORTED_IMAGE_FLOOR} disagree"
+    )
+
+
+def test_a_key_is_on_the_list_exactly_when_its_locked_shape_arrived_within_the_support_window() -> (
+    None
+):
+    rows = (*_WIRE_KEYS, *_RETIRED_WIRE_KEYS)
+    unpaired = sorted(row.path for row in rows if (row.lock is not None) != (row.since is not None))
+    assert unpaired == [], (
+        "a row declares a `since` without a doc lock or a doc lock without a `since`; "
+        "the version-lock table carries exactly the keys dated to a release"
+    )
+
+    dated = [row for row in rows if row.since is not None and row.since != _UNRELEASED]
+    assert dated, "no row names an exact release, so the floor comparison runs over nothing"
+    below = sorted(
+        f"{row.path}={row.since} < {_SUPPORTED_IMAGE_FLOOR}"
+        for row in dated
+        if _version_tuple(row.since or "") < _version_tuple(_SUPPORTED_IMAGE_FLOOR)
+    )
+    assert below == [], "a locked key's shape predates the support floor the table declares"
+
+
+def test_a_container_is_a_census_leaf_only_while_it_carries_the_lock() -> None:
+    leaves = [row for row in _WIRE_KEYS if row.is_leaf_container]
+    assert leaves, "no census row declares a leaf container, so this lock asserts nothing"
+    unlocked = sorted(row.path for row in leaves if row.lock is None)
+    assert unlocked == [], (
+        "a container is a census leaf while carrying no version lock; the census stops "
+        "there because the container is rejected whole, so its interior needs a census "
+        "of its own the day it stops being locked"
+    )
+
+
+def test_the_mirrors_send_the_reader_to_the_one_list() -> None:
+    target = anchor(_VERSION_LOCK_HEADING)
+    headings = {
+        anchor(line)
+        for line in _GRADING_DOC.read_text(encoding="utf-8").splitlines()
+        if line.startswith("#")
+    }
+    into_the_table = f"{_GRADING_DOC.name}#{target}"
+    broken: dict[str, str] = {}
+    for doc in (_RUNNER_DOC, _TROUBLESHOOTING_DOC):
+        if into_the_table not in doc.read_text(encoding="utf-8"):
+            broken[doc.name] = f"carries no link to {into_the_table}"
+        elif target not in headings:
+            broken[doc.name] = f"links to {into_the_table}, which resolves to no heading"
+    assert broken == {}, "a mirror does not resolve to the one version-lock table"

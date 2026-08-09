@@ -233,6 +233,13 @@ Compare output against committed golden snapshots in `snapshots/`.
   buildable pack under `examples/native/**` is then built and serialised the way the
   conductor serialises a trial spec, so "the model declares it" and "the adapter emits
   it" are separate claims. Add the row; never widen the walk to match the census.
+  The same file holds `docs/GRADING.md` § Runner-engine version lock — the subset that
+  locks an engine to a runner image — to the census: same keys, same directions, a
+  breadth column rendered from the census's *measured* gate rather than written by
+  hand, a release per key that `CHANGELOG.md` records, and no key dated below the
+  support floor the table's own preamble states. `docs/RUNNER.md` and
+  `docs/TROUBLESHOOTING.md` are held to resolving pointers at that heading, so renaming
+  it reds rather than returning the reader to nothing.
 
 Every substrate-parity pack lives in `tests/data/grading_parity/<task_id>/` and
 authors a `task.yaml` and a `grading.yaml`, and — where its grading or its trials

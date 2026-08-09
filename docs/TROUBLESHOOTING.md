@@ -39,26 +39,19 @@ every registration and the runner refuses anything below its own, so no trial st
 and no tokens are spent.
 
 **The engine is newer than the image.** The error is a Pydantic validation failure —
-`extra_forbidden` — naming a field the older image's config models do not declare.
-Five fields carry it: `state_checks.hash_weight` and
-`state_checks.expect_initial_state`, which both appear for **every** pack carrying a
-non-empty `state_checks:` block, `transcript_rules.min_assistant_turns`, which appears
-for **every** pack carrying a `transcript_rules:` block, and `trace_checks` and
-`search.plane`, which appear for **every** pack. The engine emits all five whether or
-not the pack declares them, so any pack at all reproduces this against an image older
-than the engine.
-A field's declared value shape locks the same way: a pack declaring a composite
-(list-valued) `state_checks.id_fields` key against an image that predates the list
-form is rejected with a `string_type` error naming `id_fields`, and a
-`combine_method` value the image's closed set does not hold is rejected at the
-value.
+`extra_forbidden` — naming a field the older image's config models do not declare. The
+engine emits several grading keys whether or not the pack declares them, so any pack at
+all reproduces this against an image older than the engine. A field's declared *value*
+shape locks the same way: the error is then a `string_type` or a value error naming the
+key rather than an `extra_forbidden`.
 The trial spec crosses the wire as a JSON string parsed by `extra="forbid"`
 models, so an unknown key there is an error rather than a dropped field — unlike a
 proto message field, which an older runner ignores.
 
-See [RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock
-and [GRADING.md](GRADING.md#hash-based-grading-tau-bench-compatible) §
-"Runner-engine version lock (both directions)".
+Which keys bite, from which release, and in which direction is one table:
+[GRADING.md](GRADING.md#runner-engine-version-lock) § Runner-engine version lock. For
+the protocol-version half of the pairing see
+[RUNNER.md](RUNNER.md#engine--image-version-lock) § Engine / image version lock.
 
 ## Every Tool Call Fails: MCP server closed connection
 
