@@ -1,0 +1,46 @@
+[
+  {
+    "name": "write_file",
+    "description": "Write content to a file",
+    "parameters": {
+      "properties": {
+        "path": {
+          "description": "Path to the file to write",
+          "title": "Path",
+          "type": "string"
+        },
+        "content": {
+          "description": "Content to write to the file",
+          "title": "Content",
+          "type": "string"
+        }
+      },
+      "required": [
+        "path",
+        "content"
+      ],
+      "title": "write_fileArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  },
+  {
+    "name": "delete_customer",
+    "description": "Delete a customer record.",
+    "parameters": {
+      "properties": {
+        "customer_id": {
+          "description": "Customer identifier, e.g. 'C-101'",
+          "title": "Customer Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "customer_id"
+      ],
+      "title": "delete_customerArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]

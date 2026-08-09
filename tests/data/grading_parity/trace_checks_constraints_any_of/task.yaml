@@ -10,7 +10,11 @@ initial_state:
 
 tools:
   agent:
-    enabled: []
+    mcp_server: mcp_server.py
+    enabled:
+      - search_policy
+      - escalate_to_human
+      - resolve_case
   user:
     enabled: []
 

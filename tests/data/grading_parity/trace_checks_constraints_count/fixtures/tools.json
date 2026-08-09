@@ -1,0 +1,21 @@
+[
+  {
+    "name": "billing_api_get_payment",
+    "description": "Fetch a payment record by its identifier.",
+    "parameters": {
+      "properties": {
+        "payment_id": {
+          "description": "Payment identifier, e.g. 'PAY-664306'",
+          "title": "Payment Id",
+          "type": "string"
+        }
+      },
+      "required": [
+        "payment_id"
+      ],
+      "title": "billing_api_get_paymentArguments",
+      "type": "object",
+      "additionalProperties": false
+    }
+  }
+]
