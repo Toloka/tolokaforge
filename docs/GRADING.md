@@ -2034,7 +2034,17 @@ bound `int` is neither found inside a string nor equal to one. Measured:
 ```python
 contains("http://api/deliveries/4021", 4021)    # False
 contains("http://api/deliveries/4021", "4021")  # True
+contains(4021, "http://api/deliveries/4021")    # False — the reverse direction
+contains(["W1", "W2"], "W1")                    # True  — descent finds a scalar
+contains(["W1", "W2"], ["W1"])                  # False — and never a container
+1 == 1.0 == True                                # True  — three JSON types, one value
 ```
+
+Which pairs can ever hold is a per-operator table, not "do the two types differ":
+`equals_binding` holds across `integer` / `number` / `boolean` and between two
+arrays or two objects, while `contains_binding` over an array or object **haystack**
+holds against any scalar **needle** by descent — and against no container one,
+because the descent never compares a container to what it is looking for.
 
 A **binding reference** between a text field and a value bound out of an integer
 argument is therefore false on **every** trajectory, `equals_binding` exactly as much
@@ -2050,10 +2060,16 @@ integer, and `BoundValue` cannot tell them apart, so a model-tier rejection broa
 enough to catch the second would refuse the first. The declared type lives in the
 tool's JSON schema, which the [authoring gate](#what-is-validated-before-a-run) holds
 — so the misuse is an **error** before the trial is paid for, on a schema forbidding
-extras, and an advisory on one permitting them. Both tiers reject and neither warns.
-The gate's residue is where no schema resolved, where the path runs below its first
-segment, and where the property writes no `type`; there the evaluation-time failure
-above is the whole backstop.
+extras, and an advisory on one permitting them.
+
+**The gate is the only tier holding the reverse direction.** The evaluation-time
+message above is raised from the value the *predicate* reads, and only where that
+value is a string, so a text binding correlated against a natively-typed argument
+passes it and the constraint reads as `present is unmatched` — the message a genuine
+agent miss carries. Every never-true shape the gate can type is answered before the
+run; the residue it cannot type — no schema resolved, a path below its first segment,
+a property writing no `type` or one outside the six JSON type names — is `unchecked`,
+and there nothing backstops the reverse direction at all.
 
 ### When a constraint cannot be decided
 
@@ -2573,6 +2589,8 @@ Findings come in three classes:
 | the same against a tool whose schema permits extras | advisory | as above |
 | a `bind.values[*].field` the tool types `integer` / `number` / `boolean` / `array` / `object`, read by a reference on one of the event's text fields — `tool`, `text`, `result`, `status`, `executor` — or beside a `regex` on the same predicate | error on a schema forbidding extras, advisory on one permitting them | every `bind.values[*].field` |
 | a `bind.values[*].pattern` over an argument the tool types `integer` / `number` / `boolean` / `array` / `object`, or over a bare `field: args` — a capture is taken off text alone, so the name binds on no trajectory | error on a schema forbidding extras, advisory on one permitting them | `bind.values[*].pattern` |
+| a reference on an `args` predicate whose declared type and the binding's declared type no value of either can satisfy the operator between — `equals_binding` across `integer` / `number` / `boolean` holds, `contains_binding` finds a scalar inside a container and a container inside nothing | error only where **both** schemas forbid extras, advisory wherever either permits them | the predicate's own `args.<path>` |
+| the same reference where the argument's schema writes no `type`, or writes one outside the six JSON type names | unchecked | as above |
 | a `regex` pattern that does not compile | error | every predicate, every `bind.values[*].pattern`, plus `transcript_rules.disallow_regex` |
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
@@ -2787,12 +2805,25 @@ vocabularies that subclass `str`, so the value compared is text like the rest �
 beside a `regex` that asserts the same of an argument, is false on **every**
 trajectory. That is the [type limit](#the-bound-values-type-is-load-bearing)
 answered before the run: the declared type lives in the tool's JSON schema, and the
-gate is the only tier holding it. `equals_binding` on an `args` predicate is not
-flagged — it compares two natively-typed values — and neither is a `pattern` on the
-extraction, whose capture is a string and is compared as one. **A capture is text
-only where the value beneath it is**: a `pattern` narrows a string and yields
-nothing off anything else, so a capture over an argument the schema types
-`integer` / `number` / `boolean` / `array` / `object` binds no name on any
+gate is the only tier holding it.
+
+**An `args` predicate is checked against both declared types, not exempted.** A
+reference there compares two arguments as the tools typed them, which is the
+correlation the feature exists for — and is false on every trajectory where no pair
+of values of those two types could satisfy the operator. So `read_file.path`
+correlated with a binding off `read_file.offset` is reported, and so is the reverse,
+while `read_file.limit` against that same `offset` binding is not: the answer comes
+from the [comparability table](#the-bound-values-type-is-load-bearing) rather than
+from whether the two names differ. This is the one rule resting on **two** schemas'
+claims, so the weaker decides: an error only where both forbid extra arguments, an
+advisory wherever either permits them. An extraction no schema describes still has a
+type — `tool`, `text` and `result` are text and a bare `field: args` is the argument
+mapping — and a predicate carrying a `regex` beside its reference is left to the rule
+above, which reports that same mistake at the extraction's address.
+
+**A capture is text only where the value beneath it is**: a `pattern` narrows a
+string and yields nothing off anything else, so a capture over an argument the schema
+types `integer` / `number` / `boolean` / `array` / `object` binds no name on any
 trajectory, and that is reported at the extraction's `pattern` key — the key the
 author deletes to fix it — rather than at its `field`.
 

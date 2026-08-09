@@ -339,6 +339,34 @@ _RULES: tuple[_Rule, ...] = (
         message="A capture is taken off text alone",
     ),
     _Rule(
+        label="args_correlation_neither_type_can_satisfy_on_closed_schemas",
+        task=_CODING,
+        grading=_bound_block(
+            _tool_call("read_file"),
+            {"start": {"field": "args.offset"}},
+            {"present": {"match": _tool_call("read_file", path={"equals_binding": "start"})}},
+        ),
+        checker="_check_bound_comparisons",
+        channel="errors",
+        message="Correlate two arguments the tools type the same way",
+    ),
+    _Rule(
+        label="args_correlation_neither_type_can_satisfy_on_an_open_schema",
+        task=_SHOP_ORDERS,
+        grading=_bound_block(
+            _tool_call("place_order"),
+            {"ordered": {"field": "args.items"}},
+            {
+                "present": {
+                    "match": _tool_call("place_order", customer_id={"equals_binding": "ordered"})
+                }
+            },
+        ),
+        checker="_check_bound_comparisons",
+        channel="advisories",
+        message="Correlate two arguments the tools type the same way",
+    ),
+    _Rule(
         label="matcher_regex_that_does_not_compile",
         task=_HELPDESK,
         grading=_trace_block({"kind": "tool_call", "tool": {"regex": "http_(request"}}),
@@ -2508,6 +2536,7 @@ def test_an_extraction_the_schema_cannot_answer_for_is_unchecked(
 # smallest edit to its neighbour that changes the answer.
 
 _EXTRACTION_ADDRESS = "trace_checks.probe.bind.values.start.field"
+_ARGUMENT_ADDRESS = "trace_checks.probe.present.match.args.path"
 _INTEGER_ARGUMENT = {"start": {"field": "args.offset"}}
 
 
@@ -2689,6 +2718,381 @@ def test_a_bound_integer_correlated_with_another_argument_is_not_flagged() -> No
     )
 
     assert inspect_grading_authoring(grading, _inventory(_CODING)) == AuthoringReport()
+
+
+def _correlated(task: Path, binder: str, values: dict[str, Any], match: dict[str, Any]) -> Any:
+    """One binder over *binder*'s calls, correlated into *match*, against *task*."""
+    grading = _bound_block(_tool_call(binder), values, {"present": {"match": match}})
+    return inspect_grading_authoring(grading, _inventory(task))
+
+
+def test_a_string_argument_correlated_with_an_integer_binding_is_an_error() -> None:
+    """The wholesale ``args`` exemption was as wide as "both sides are arguments".
+
+    Two arguments correlate natively only where the tools type them the same way.
+    ``read_file`` types ``path`` a string and ``offset`` an integer, and no string
+    equals an integer, so this is red on every trajectory — and the message it
+    fails with is the one a genuine agent miss carries.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"n": {"field": "args.offset"}},
+        _tool_call("read_file", path={"equals_binding": "n"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [_ARGUMENT_ADDRESS]
+    assert "type 'string'" in report.errors[0].message
+    assert "type 'integer'" in report.errors[0].message
+    assert "'read_file'" in report.errors[0].message
+    assert report.advisories == ()
+
+
+def test_an_integer_argument_correlated_with_a_string_binding_is_an_error() -> None:
+    """The reverse direction, which nothing catches at either tier today.
+
+    The evaluation-time backstop guards ``isinstance(value, str)`` on the value the
+    predicate reads, so a *text* binding against a natively-typed argument passes
+    it and the constraint reads as ``present is unmatched`` — the agent's failure.
+    The gate is the only tier that answers this one.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"p": {"field": "args.path"}},
+        _tool_call("read_file", offset={"equals_binding": "p"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    assert "type 'integer'" in report.errors[0].message
+
+
+def test_the_same_correlation_on_open_schemas_is_an_advisory() -> None:
+    """The finding rests on two schemas' claims, so the weaker one decides.
+
+    A schema permitting arguments it does not declare describes its tool loosely,
+    and this is the one rule reading two of them — hard-failing here would enforce
+    against both packs a claim neither makes.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("place_order", customer_id={"equals_binding": "it"}),
+    )
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.args.customer_id"
+    ]
+    assert "type 'array'" in report.advisories[0].message
+
+
+# One closed schema beside one open one, which no task in this repository declares —
+# every pack's tools are strict together or loose together, so the pairing that
+# separates "both schemas forbid extras" from "either does" has to be written out.
+_A_CLOSED_TOOL_BESIDE_AN_OPEN_ONE = ToolInventory(
+    declared=frozenset({"read_file", "place_order"}),
+    parameters={
+        "read_file": {
+            "additionalProperties": False,
+            "properties": {"path": {"type": "string"}, "offset": {"type": "integer"}},
+        },
+        "place_order": {
+            "properties": {"customer_id": {"type": "string"}, "items": {"type": "array"}}
+        },
+    },
+    known=True,
+)
+
+_MIXED_STRICTNESS_PAIRS = (
+    pytest.param(
+        "read_file",
+        {"n": {"field": "args.offset"}},
+        _tool_call("place_order", customer_id={"equals_binding": "n"}),
+        "trace_checks.probe.present.match.args.customer_id",
+        id="the_loose_schema_types_the_argument",
+    ),
+    pytest.param(
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("read_file", path={"equals_binding": "it"}),
+        "trace_checks.probe.present.match.args.path",
+        id="the_loose_schema_types_the_binding",
+    ),
+)
+
+
+@pytest.mark.parametrize(("binder", "values", "match", "address"), _MIXED_STRICTNESS_PAIRS)
+def test_a_correlation_resting_on_one_loose_schema_is_an_advisory(
+    binder: str, values: dict[str, Any], match: dict[str, Any], address: str
+) -> None:
+    """The finding rests on two claims, so the weaker one decides — from either side.
+
+    A schema permitting arguments it does not declare describes its tool loosely,
+    and it is loose about the *type* it wrote for the same reason. Hard-failing on
+    a pair where either half is that loose would enforce a claim only one of them
+    makes, and the two rows here are that reading in both directions.
+    """
+    grading = _bound_block(_tool_call(binder), values, {"present": {"match": match}})
+
+    report = inspect_grading_authoring(grading, _A_CLOSED_TOOL_BESIDE_AN_OPEN_ONE)
+
+    assert report.errors == ()
+    assert [finding.where for finding in report.advisories] == [address]
+
+
+def test_an_argument_correlated_with_a_bare_result_extraction_is_an_error() -> None:
+    """An extraction no schema describes still has a type, and the event gives it.
+
+    ``field: result`` binds text — ``TraceEvent`` types it that way and no tool
+    schema mentions it — so correlating it against an integer argument is never
+    true. Calling that side unresolved would lose the finding and add an
+    ``unchecked`` line saying nothing.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        {"r": {"field": "result"}},
+        _tool_call("read_file", offset={"equals_binding": "r"}),
+    )
+
+    assert [finding.where for finding in report.errors] == [
+        "trace_checks.probe.present.match.args.offset"
+    ]
+    assert "the event types it" in report.errors[0].message
+
+
+def test_a_number_argument_correlated_with_an_integer_binding_is_not_flagged() -> None:
+    """Two types that differ and correlate anyway, which a difference rule refuses.
+
+    ``search_kb`` types ``alpha`` a number and ``top_k`` an integer, and Python
+    equates ``1`` with ``1.0``, so this holds on any trajectory where the agent
+    passes the same figure to both.
+    """
+    report = _correlated(
+        _RAG,
+        "search_kb",
+        {"k": {"field": "args.top_k"}},
+        _tool_call("search_kb", alpha={"equals_binding": "k"}),
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_a_container_needle_is_flagged_against_a_container_haystack() -> None:
+    """``contains`` descends into a haystack and never compares it to the needle.
+
+    Both sides are the same declared type here, so a rule reading "do the types
+    differ" would pass it — and the descent reaches only the scalars inside, so an
+    array is found in nothing at all.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("place_order", items={"contains_binding": "it"}),
+    )
+
+    assert [finding.where for finding in report.advisories] == [
+        "trace_checks.probe.present.match.args.items"
+    ]
+    assert "contains_binding" in report.advisories[0].message
+
+
+def test_a_scalar_needle_against_a_container_haystack_is_not_flagged() -> None:
+    """The asymmetry the table exists for, one token from its flagged neighbour.
+
+    The same ``array`` argument, the same operator, and only the binding's type
+    changed: a string is found inside a list of strings by descent, which is the
+    correlation "the order carried the customer the lookup returned" is written as.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"c": {"field": "args.customer_id"}},
+        _tool_call("place_order", items={"contains_binding": "c"}),
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_two_binding_operators_on_one_predicate_draw_two_findings() -> None:
+    """A predicate is a conjunction, so two operators are two comparisons.
+
+    Both must hold for the predicate to, so an author who wrote two never-true
+    comparisons made two mistakes and is owed the address of each operator.
+    """
+    report = _correlated(
+        _SHOP_ORDERS,
+        "place_order",
+        {"it": {"field": "args.items"}},
+        _tool_call("place_order", customer_id={"equals_binding": "it", "contains_binding": "it"}),
+    )
+
+    assert len(report.advisories) == 2
+    named = sorted(
+        operator
+        for operator in ("equals_binding", "contains_binding")
+        for finding in report.advisories
+        if finding.message.startswith(operator)
+    )
+    assert named == ["contains_binding", "equals_binding"]
+
+
+def test_a_regex_beside_the_reference_draws_exactly_one_finding() -> None:
+    """One mistake, one report: the shipped textual rule already owns this shape.
+
+    A ``regex`` on the predicate says the argument holds text whatever the schema
+    types it, which is what makes the reference textual — and that rule reports at
+    the extraction's address. Reporting again here would name one defect twice.
+    """
+    report = _correlated(
+        _CODING,
+        "read_file",
+        _INTEGER_ARGUMENT,
+        _tool_call("write_file", content={"regex": "line [0-9]+", "equals_binding": "start"}),
+    )
+
+    assert len(report.errors + report.advisories) == 1
+    assert report.errors[0].where == _EXTRACTION_ADDRESS
+
+
+def test_a_path_below_its_first_segment_draws_exactly_one_skip() -> None:
+    """The shipped skip already lands at this address, so this rule stands down.
+
+    A second ``unchecked`` row at one address reports one gap twice and reads as
+    two unanswered questions.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "mobile"},
+                    "args": {"actions.deep": {"equals_binding": "start"}},
+                }
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_MOBILE))
+
+    assert [skip.where for skip in report.unchecked] == [
+        "trace_checks.probe.present.match.args.actions.deep"
+    ]
+    assert report.errors + report.advisories == ()
+
+
+def test_an_argument_path_is_read_as_authored_rather_than_split_out_of_its_address() -> None:
+    """``args: {"path.args.offset": …}`` addresses one path, and it is below a head.
+
+    Recovering the path from the finding's address by its last ``.args.`` would
+    read ``'offset'`` — a real ``read_file`` argument of another type — and report
+    a correlation the author never wrote. The path travels with the predicate, so
+    this is one skip and no finding.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        {"p": {"field": "args.path"}},
+        {
+            "present": {
+                "match": {
+                    "kind": "tool_call",
+                    "tool": {"equals": "read_file"},
+                    "args": {"path.args.offset": {"equals_binding": "p"}},
+                }
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [skip.where for skip in report.unchecked] == [
+        "trace_checks.probe.present.match.args.path.args.offset"
+    ]
+    assert report.errors + report.advisories == ()
+
+
+def test_a_matcher_naming_no_tool_draws_exactly_one_skip() -> None:
+    """Which schema types the argument is already unanswered one address up.
+
+    ``_one_matchers_argument_paths`` reports it for the matcher as a whole, and a
+    second row per predicate would multiply one gap by however many arguments the
+    matcher happens to carry.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {
+            "present": {
+                "match": {"kind": "tool_call", "args": {"path": {"equals_binding": "start"}}}
+            }
+        },
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_CODING))
+
+    assert [skip.where for skip in report.unchecked] == ["trace_checks.probe.present.match.args"]
+    assert report.errors + report.advisories == ()
+
+
+def test_an_argument_the_schema_gives_no_type_leaves_the_comparison_unchecked() -> None:
+    """A property writing an ``anyOf`` and no ``type`` settles nothing either way.
+
+    Reported rather than passed over: the comparison may well be never-true, and
+    the author is owed the difference between "checked and fine" and "not
+    checkable". ``mobile.actions`` is the corpus's only such property.
+    """
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {"present": {"match": _tool_call("mobile", actions={"equals_binding": "start"})}},
+    )
+
+    report = inspect_grading_authoring(grading, _inventory(_MOBILE))
+
+    assert [skip.where for skip in report.unchecked] == [
+        "trace_checks.probe.present.match.args.actions"
+    ]
+    assert "no single type for 'actions'" in report.unchecked[0].reason
+    assert report.errors + report.advisories == ()
+
+
+def test_an_argument_typed_outside_the_json_type_names_leaves_it_unchecked() -> None:
+    """A schema may write a ``type`` the table has no answer for, and must not crash.
+
+    ``type: "null"`` is legal JSON Schema and a typo is legal YAML. Either reaches
+    ``ever_satisfiable`` as an author-supplied string, and the gate answers without
+    a false-reject mode, so the comparison is unchecked rather than refused — and
+    rather than a ``KeyError`` inside ``tolokaforge validate``. Written out because
+    no in-repo schema types a property outside the six names; the packs this
+    answers for are maintained outside this repository.
+    """
+    inventory = ToolInventory(
+        declared=frozenset({"read_file"}),
+        parameters={
+            "read_file": {
+                "additionalProperties": False,
+                "properties": {"path": {"type": "null"}, "offset": {"type": "integer"}},
+            }
+        },
+        known=True,
+    )
+    grading = _bound_block(
+        _tool_call("read_file"),
+        _INTEGER_ARGUMENT,
+        {"present": {"match": _tool_call("read_file", path={"equals_binding": "start"})}},
+    )
+
+    report = inspect_grading_authoring(grading, inventory)
+
+    assert [skip.where for skip in report.unchecked] == [_ARGUMENT_ADDRESS]
+    assert report.errors + report.advisories == ()
 
 
 def test_a_bound_integer_equated_against_text_is_flagged_like_a_containment() -> None:
