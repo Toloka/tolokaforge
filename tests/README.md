@@ -232,10 +232,12 @@ Compare output against committed golden snapshots in `snapshots/`.
   leaf would let one hand edit delete a subtree from both sides at once. Every
   pack under `examples/native/**` is then built and serialised the way the conductor
   serialises a trial spec, so "the model declares it" and "the adapter emits it" are
-  separate claims. Add the row; never widen the walk to match the census. A key every
-  pack emits must additionally carry a version lock or an exemption declaring it older
-  than the support floor — an unconditional key breaks every pack against an image
-  lacking it, so that class is held complete rather than checked row by row.
+  separate claims. Add the row; never widen the walk to match the census. Every censused
+  key must additionally carry a version lock or be named in the exemption set that
+  records it as predating the support floor — so a grading field added below any
+  container, not only a new top-level key, has to join the version-lock table or be
+  argued into that set. The set is a snapshot, which is what makes the check decidable
+  without a release per row: a key in neither was added after it.
   The same file holds `docs/GRADING.md` § Runner-engine version lock — the subset that
   locks an engine to a runner image — to the census: same keys, same directions, a
   breadth column rendered from the census's *measured* gate rather than written by

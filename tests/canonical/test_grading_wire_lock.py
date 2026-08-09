@@ -22,10 +22,10 @@ over an unmeasured surface.
 locks an engine to a runner image. It is one table, set-equal to the census rows that
 carry a :class:`_DocLock`, with its breadth column rendered from the census's *measured*
 ``emitted_for`` — so the doc cannot say a key waits on a gate the models do not give it.
-Which rows *belong* on it is not left to judgement for the keys that matter most: a key
-every pack emits breaks every trial spec against an image lacking it, so that class is
-held complete — locked, or exempt under :data:`_UNLOCKED_UNCONDITIONAL` for predating the
-floor.
+Which rows *belong* on it is not left to judgement: every censused key is either locked or
+named in :data:`_PREDATES_FLOOR` for predating the support floor, so a grading field added
+to any container — not only a new top-level key — must join the table or be argued into
+that set.
 
 **Two readers stay two here as well.** The table is read through
 ``doc_anchors.section``, which bounds a body at any ``^#{1,3} `` line and does not track
@@ -59,13 +59,18 @@ collected here rather than hedged at each use:
 - ``_RETIRED_KEY_BREADTH`` — the breadth cell for a locked key no current model declares.
   Every other cell in that column is rendered from a measured ``emitted_for``; this one
   is hand-written, because nothing emits the key there is a gate to measure.
+- :data:`_PREDATES_FLOOR` — that each of its members predates the floor. Verified at
+  authoring time by reading the models at the tag below it; CI checks out shallow with no
+  tags and re-derives nothing, so it is the same class of claim as ``since``. What the
+  set *is* used for needs no dates: it is a snapshot, so a path neither in it nor locked
+  was added after the snapshot and its shape is therefore at or above the floor. What is
+  **not** asserted is that any given member truly predates the floor.
 - ``_RetiredWireKey.reason``.
 
-For a **gated** key, whether it carries a lock stays a judgement: nothing detects one
-dropped from the census and the table together. For an unconditionally emitted key it is
-no longer a judgement —
-:func:`test_every_unconditionally_emitted_key_is_locked_or_declared_older_than_the_floor`
-answers it from the walk's own ``emitted_for``.
+What no longer rests on judgement is which rows belong on the table. Every censused key is
+locked or exempt, so a key dropped from the census and the table together, or added to a
+container and never dated, fails
+:func:`test_every_censused_key_is_locked_or_declared_older_than_the_floor`.
 
 Two surfaces are deliberately outside this census and tracked in #983: the trial spec's
 non-grading keys (``initial_state``, ``user_simulator``, ``agent_tools``,
@@ -117,14 +122,53 @@ _SUPPORTED_IMAGE_FLOOR = "v0.13.1"
 arrived at or after this belongs on the table; one whose locked shape predates it does
 not."""
 
-_UNLOCKED_UNCONDITIONAL: frozenset[str] = frozenset(
+_PREDATES_FLOOR: frozenset[str] = frozenset(
     {
         "grading",
         "grading.grading_method",
         "grading.llm_judge",
+        "grading.llm_judge.customization",
+        "grading.llm_judge.customization.disable_knowledge_search",
+        "grading.llm_judge.customization.include_agent_system_prompt",
+        "grading.llm_judge.customization.system_prompt",
+        "grading.llm_judge.rubric",
+        "grading.llm_judge.rubric.criteria",
+        "grading.llm_judge.rubric.criteria[].description",
+        "grading.llm_judge.rubric.criteria[].expected",
+        "grading.llm_judge.rubric.criteria[].id",
+        "grading.llm_judge.rubric.criteria[].kind",
+        "grading.llm_judge.rubric.criteria[].required",
+        "grading.llm_judge.rubric.criteria[].weight",
+        "grading.llm_judge.rubric.reference",
         "grading.pass_threshold",
         "grading.state_checks",
+        "grading.state_checks.db_probes",
+        "grading.state_checks.db_probes[].description",
+        "grading.state_checks.db_probes[].dsn",
+        "grading.state_checks.db_probes[].expect",
+        "grading.state_checks.db_probes[].name",
+        "grading.state_checks.db_probes[].query",
+        "grading.state_checks.golden_actions",
+        "grading.state_checks.golden_actions[].arguments",
+        "grading.state_checks.golden_actions[].tool_name",
+        "grading.state_checks.hash_enabled",
+        "grading.state_checks.jsonpath_checks",
+        "grading.state_checks.numeric_string_fields",
+        "grading.state_checks.relaxed_validation",
         "grading.transcript_rules",
+        "grading.transcript_rules.communicate_info",
+        "grading.transcript_rules.communicate_info[].info",
+        "grading.transcript_rules.communicate_info[].required",
+        "grading.transcript_rules.disallow_regex",
+        "grading.transcript_rules.max_turns",
+        "grading.transcript_rules.must_contain",
+        "grading.transcript_rules.required_actions",
+        "grading.transcript_rules.required_actions[].action_id",
+        "grading.transcript_rules.required_actions[].arguments",
+        "grading.transcript_rules.required_actions[].compare_args",
+        "grading.transcript_rules.required_actions[].requestor",
+        "grading.transcript_rules.tool_expectations.disallowed_tools",
+        "grading.transcript_rules.tool_expectations.required_tools",
         "grading.weights",
         "search",
         "search.api_key",
@@ -135,10 +179,15 @@ _UNLOCKED_UNCONDITIONAL: frozenset[str] = frozenset(
         "search.port",
     }
 )
-"""Keys every pack puts on the wire that carry no version lock: each predates
-:data:`_SUPPORTED_IMAGE_FLOOR`, so no image the table speaks about can reject one. The set
-cannot rot in the growth direction — a key arriving now is ``unreleased``, which clears the
-floor, so a lock is the only correct answer for one."""
+"""Census paths carrying no version lock: each predates :data:`_SUPPORTED_IMAGE_FLOOR`,
+so no image the table speaks about can reject one.
+
+A snapshot of the pre-floor census taken when this set was written, which is what makes
+the completeness lock decidable without a date per row: a path that is neither exempt nor
+locked was, by construction, added after the snapshot, so its shape is at or above the
+floor. Nothing in CI re-derives it — see the module docstring's "declared and not
+measured".
+"""
 
 _RETIRED_KEY_BREADTH = "no current engine"
 """The breadth cell for a locked key no current model declares: nothing emits it, so the
@@ -1178,17 +1227,24 @@ def test_the_mirrors_send_the_reader_to_the_one_list() -> None:
     assert broken == {}, "a mirror does not resolve to the one version-lock table"
 
 
-def test_every_unconditionally_emitted_key_is_locked_or_declared_older_than_the_floor() -> None:
-    unconditional = {row.path for row in _WIRE_KEYS if row.emitted_for == ""}
+def test_every_censused_key_is_locked_or_declared_older_than_the_floor() -> None:
+    paths = {row.path for row in _WIRE_KEYS}
     locked = {row.path for row in _WIRE_KEYS if row.lock}
-    assert unconditional, "no census row is emitted unconditionally, so this lock asserts nothing"
+    assert locked, "no census row carries a lock, so this lock asserts nothing"
 
-    unnamed = sorted(_UNLOCKED_UNCONDITIONAL - unconditional)
-    assert unnamed == [], "an exemption names no unconditionally emitted census row"
+    unnamed = sorted(_PREDATES_FLOOR - paths)
+    assert unnamed == [], (
+        "an exemption names no census row; a dead exemption pre-authorises any future "
+        "key that reuses the name"
+    )
+    both = sorted(_PREDATES_FLOOR & locked)
+    assert both == [], (
+        "a path is both locked and exempt; adding a lock means deleting the exemption, "
+        "or the stale one stays ready to re-authorise dropping the key from the table"
+    )
 
-    unaccounted = sorted(unconditional - locked - _UNLOCKED_UNCONDITIONAL)
+    unaccounted = sorted(paths - locked - _PREDATES_FLOOR)
     assert unaccounted == [], (
-        "a key every pack puts on the wire carries neither a version lock nor an "
-        "exemption; an image lacking it rejects every trial spec, so it belongs on the "
-        "version-lock table or in _UNLOCKED_UNCONDITIONAL with its release predating the floor"
+        "a censused wire key carries neither a version lock nor an exemption; if its "
+        "shape arrived at or after the floor, an image lacking it rejects the trial spec"
     )
