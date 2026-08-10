@@ -56,9 +56,12 @@ author-facing key is one `GradingKey` entry declaring three axes:
   `DIFFERENTIAL_CANONICAL`: a satisfying/violating pair moves both substrates'
   scores in-process. `DIFFERENTIAL_INTEGRATION`: the differential needs real
   services, and `enforcing_test` names the test function that runs it as a pytest
-  nodeid — `<module path>::<test function>`, resolved by the canonical suite
-  against the module's own AST so naming a file that merely contains a test is
-  rejected. `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
+  nodeid — `<module path>::<test function>`. `enforcing_test` is required at that
+  tier and permitted at any, and the canonical suite resolves it wherever it is
+  present, against the module's own AST, so naming a file that merely contains a
+  test is rejected; on a canonically proven entry it records where the same claim
+  was additionally observed in production rather than carrying the enforcement.
+  `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
 
 `trace_checks` is the one component where parity is structural rather than
 maintained: both substrates call the same `evaluate_trace_checks` over the same
@@ -269,12 +272,42 @@ and required to differ between the two weights.
 **What that proves and what it does not.** The runner's own golden-replay verdict
 reaches the shared composer, and the author's `weight` reaches the fold — measured
 on the wire: forcing the runner's fold to a constant weight, and replacing it with a
-plain product of the two scores, each turn every cell red. What it does not prove is
-`state_checks.numeric_string_fields`, which stays `FIELD_RESOLUTION_ONLY` (#687) —
-the folding pair is claimed to be honored identically on both substrates and no test
-drives it through the runner's hash evaluator. Nor does the canonical suite prove
-this test *passes*: it resolves the nodeid and stops there, and `test-gate` does not
-fire on a pull request (#700), so this tier is run locally and its output quoted.
+plain product of the two scores, each turn every cell red. No cell there lists a
+`numeric_string_fields` entry; that key is proven by its own differential, below.
+Nor does the canonical suite prove this test *passes*: it resolves the nodeid and stops
+there. The job that runs on every pull request is `test-smoke`, whose repo-suite pytest
+step is `tests/unit/ tests/canonical/` and which has no integration step at all; `test-gate`
+is the job that runs `tests/integration/`, and it is triggered by the `ready-to-merge`
+label — so the canonical tier gates every pull request, and this tier's output is
+quoted from a local run until that label lands.
+
+**`numeric_string_fields` folds by name, on both substrates.** A six-cell matrix in the
+parity suite declares one money field at `"130.00"` and grades a trial that left it at
+`"130.0"` — the same amount written another way — or at `"131.0"`, under three field
+lists: the empty list, `["amount"]`, and `["quantity"]`, a different field the same
+record declares. Exactly one cell scores `1.0`, and both substrates answer every cell
+alike — the runner through `RegisterTrial` → a mutation on the trial's own db-service →
+`GradeTrial`, core through `GradingEngine.grade_trajectory`, neither arm reading what
+the other computed. The `["quantity"]` cells are what make it a differential rather
+than a smoke test: a build that folded whenever the author wrote a *non-empty* list
+answers every other cell correctly. The boundary is one table, one record depth, one
+declared field and one hash source — `expect_initial_state`, which costs the claim
+nothing because the key is read once per grade on both substrates whatever the basis.
+`canonicalize_numbers: false` and the guards [`hash.py`](../tolokaforge/core/hash.py)
+documents separately — booleans never folding to ints, leading-zero ids never
+equating — carry their own unit coverage, which this matrix does not extend. A folding
+field nested under a differently named record key at greater depth is outside both.
+
+The same pair is also observed on the production path, in
+[`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
+one representation difference — a golden action rewriting `"130.00"` as `"130.0"` — under
+the empty list, `["amount"]` and `["quantity"]`, graded over real gRPC against the
+containerised db-service. Those cells declare one state source and no `hash.weight`, so
+the wire's `state_checks` component is the hash verdict itself and reading it needs no
+arithmetic. That is what the row's `enforcing_test` names. It adds the one
+thing no in-process test can speak for — that the *deployed* db-service parses and honours
+the `numeric_string_fields` query parameter the runner sends it — and it is falsifiable by
+configuration only, because a source patch does not reach a container.
 
 **A service-free differential reaches that evaluator.** `_drive_hash_family`
 ([`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py))
@@ -284,7 +317,7 @@ runner's evaluator runs against a real database with no service to stand up. Not
 load-bearing is mocked there: the db-service app is the real one and only the HTTP
 transport is a `TestClient`. The hash family's `DIFFERENTIAL_INTEGRATION` rows therefore
 name the tier each entry was measured at rather than the strongest tier reachable for
-it, and #687 owns re-measuring them against that path.
+it, and #1018 owns re-measuring them against that path.
 
 **Coverage and enforcement are orthogonal on purpose**, which is what lets a true
 coverage claim carry weak enforcement. `state_checks.hash.golden_actions` is the
@@ -318,6 +351,15 @@ on a citation:
 - `state_checks.hash.weight` — the sweep still spans two weights strictly inside
   `(0, 1)`, the weights at which a fold that merely *selects* the dominant source is
   distinguishable from one that mixes them.
+- `state_checks.numeric_string_fields` — the folding matrix still pairs a
+  representation difference against a genuine one, under the empty list beside two
+  lists of one name each: the field that differs, and another field the record
+  declares. Equal length is what the second list is for — drop it and a build reading
+  the list's *length* rather than the names it holds answers every remaining cell
+  correctly. This is also the one entry here whose clause resolves its differential's
+  own nodeid through the same parse the `enforcing_test` claims use, so deleting or
+  renaming the function that runs the matrix fails the enumeration instead of leaving
+  it unchanged; the other entries keep the weaker guarantee stated above.
 - `combine.method` — the method differential's hand-written answer table still
   covers every declared method, with a distinct score each, so an implementation
   returning one aggregation for all three cannot satisfy it. See
