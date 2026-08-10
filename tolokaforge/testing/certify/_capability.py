@@ -38,10 +38,12 @@ class Capability(str, Enum):
     may or may not support against a given live provider.
 
     Each value maps 1:1 to a ``test_<value>.py`` file under
-    ``tests/integration/llm/``. Adding a new capability requires:
+    :mod:`tolokaforge.testing.certify.suite`. Adding a new capability
+    requires:
 
     * Adding the enum member here.
-    * Shipping a new ``test_<value>.py`` that uses
+    * Shipping a new ``test_<value>.py`` under
+      ``tolokaforge/testing/certify/suite/`` that uses
       ``skip_unless_capability_declared`` to gate the body.
     * Declaring the capability on every
       :class:`ModelCertificate` (in either ``required`` or

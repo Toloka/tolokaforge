@@ -2,7 +2,7 @@
 
 External callers ``pip install tolokaforge`` and drive the capability
 probe suite against their own model list by importing the data types
-here and, in later stages, the shared fixtures + probe-registration
+and fixtures here, and — in the next stage — the probe-registration
 decorator.
 
 Consumers reach for:
@@ -14,14 +14,21 @@ Consumers reach for:
   exclusions / rationales / probe parameter overrides.
 * :data:`ALL_MODELS` — the tuple of certificates the shared suite
   parametrises over.
+* :func:`live_client`, :func:`skip_unless_capability_declared` — pytest
+  fixtures the suite bodies consume. Out-of-tree callers pull them into
+  their own conftest via
+  ``pytest_plugins = ["tolokaforge.testing.certify.fixtures"]``.
 """
 
 from ._capability import Capability
 from ._registry import ALL_MODELS
 from .certificate import ModelCertificate
+from .fixtures import live_client, skip_unless_capability_declared
 
 __all__ = [
     "ALL_MODELS",
     "Capability",
     "ModelCertificate",
+    "live_client",
+    "skip_unless_capability_declared",
 ]

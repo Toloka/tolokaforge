@@ -3,7 +3,8 @@
 Locks:
 
 * The exported ``__all__`` — the seam every out-of-tree caller relies
-  on. Additions land in later stages; this test pins the Stage 1 set.
+  on. Additions extend this set as later stages introduce new
+  surface (probe registration).
 * :class:`Capability` shape — string-valued ``Enum``, unique values,
   round-trip via the value string.
 * :class:`ModelCertificate` construction — the five originally-required
@@ -29,8 +30,19 @@ pytestmark = pytest.mark.unit
 
 
 class TestPublicAll:
-    def test_all_exports_stage1_surface(self) -> None:
-        assert set(certify.__all__) == {"ALL_MODELS", "Capability", "ModelCertificate"}
+    def test_all_exports_public_surface(self) -> None:
+        assert set(certify.__all__) == {
+            "ALL_MODELS",
+            "Capability",
+            "ModelCertificate",
+            "live_client",
+            "skip_unless_capability_declared",
+        }
+
+    def test_fixtures_are_reachable_from_public_namespace(self) -> None:
+        # Same objects the suite conftest re-exports via pytest_plugins.
+        assert callable(certify.live_client)
+        assert callable(certify.skip_unless_capability_declared)
 
 
 class TestCapabilityShape:
