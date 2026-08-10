@@ -1998,6 +1998,9 @@ class LLMClient:
         message = choice.message
 
         text = message.content or ""
+        text = self.capabilities.assistant_text_policy.parse_assistant_text(
+            text, model_config=self.config
+        )
         tool_calls: list[ToolCall] = []
 
         reasoning_result = self.capabilities.reasoning_codec.extract(message)
@@ -2076,7 +2079,16 @@ class LLMClient:
         messages: list[Message],
         tools: list[dict[str, Any]] | None,  # noqa: ARG002
     ) -> GenerationResult:
-        """Deterministic mock responder for offline tests."""
+        """Deterministic mock responder for offline tests.
+
+        The synthesised text bypasses
+        :attr:`~ModelCapabilities.assistant_text_policy` on purpose: offline
+        tests use ``mock`` provider to exercise the harness without any real
+        provider text on the wire, so there are no provider markers to strip.
+        Piping the mock text through the policy would couple offline tests
+        to whatever policy the resolved preset picks — including subclasses
+        that strip strings the mock scenario deliberately embeds.
+        """
 
         last_message = messages[-1] if messages else None
         text: str

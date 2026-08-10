@@ -43,6 +43,7 @@ _PRESET_CASES = [
             "reasoning_codec": "anthropic",
             "cache_policy": "anthropic_ephemeral",
             "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
         },
     ),
     (
@@ -56,6 +57,7 @@ _PRESET_CASES = [
             "reasoning_codec": "anthropic",
             "cache_policy": "anthropic_ephemeral",
             "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
         },
     ),
     (
@@ -69,6 +71,7 @@ _PRESET_CASES = [
             "reasoning_codec": "openai",
             "cache_policy": "none",
             "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
         },
     ),
     (
@@ -82,6 +85,7 @@ _PRESET_CASES = [
             "reasoning_codec": "openai",
             "cache_policy": "none",
             "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
         },
     ),
     (
@@ -95,6 +99,7 @@ _PRESET_CASES = [
             "reasoning_codec": "openai",
             "cache_policy": "none",
             "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
         },
     ),
     (
@@ -108,6 +113,7 @@ _PRESET_CASES = [
             "reasoning_codec": "none",
             "cache_policy": "none",
             "message_assembly_policy": "nova",
+            "assistant_text_policy": "passthrough",
         },
     ),
     (
@@ -121,6 +127,7 @@ _PRESET_CASES = [
             "reasoning_codec": "none",
             "cache_policy": "none",
             "message_assembly_policy": "null",
+            "assistant_text_policy": "passthrough",
         },
     ),
 ]
