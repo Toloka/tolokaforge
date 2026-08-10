@@ -1896,7 +1896,43 @@ def _assert_the_folding_matrix_discriminates() -> None:
     question askable: a representation difference a fold may collapse beside a genuine
     difference it must refuse, and two field lists of one name each — the field that
     differs, and another the record declares.
+
+    The differential is then bound to *this* matrix, because the clauses below and the
+    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
+    the parametrisation would drop the control rows while every clause here still read
+    the whole constant. What that binding reaches is the decorator naming the constant
+    whole; a helper filtering rows at call time would still escape it.
     """
+    module_path, _, function_name = _FOLDING_DIFFERENTIAL_NODEID.partition("::")
+    differential = next(
+        (
+            node
+            for node in ast.parse((_REPO_ROOT / module_path).read_text()).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        ),
+        None,
+    )
+    assert differential is not None, (
+        f"{module_path} declares no module-level {function_name!r}, so the matrix below "
+        "is asserted over and driven by nothing"
+    )
+    parametrisation = [
+        node for decorator in differential.decorator_list for node in ast.walk(decorator)
+    ]
+    assert any(
+        isinstance(node, ast.Name) and node.id == _FOLDING_MATRIX_NAME for node in parametrisation
+    ), (
+        f"{function_name} is not parametrised over {_FOLDING_MATRIX_NAME}, so the rows this "
+        "test asserts the discrimination of and the rows that differential drives are two "
+        "separate lists"
+    )
+    assert not any(isinstance(node, ast.Subscript) for node in parametrisation), (
+        f"{function_name}'s parametrisation subscripts its source, so it can drive a subset "
+        f"of {_FOLDING_MATRIX_NAME} while every clause here still reads the whole constant. "
+        "Dropping the control rows that way reopens the per-field question in silence"
+    )
+
     record = _FOLDING_INITIAL_ORDERS["orders"][0]
     assert {_FOLDING_FIELD, _FOLDING_CONTROL_FIELD} <= set(record), (
         f"the folding record {record} does not declare both {_FOLDING_FIELD!r} and "
@@ -1949,9 +1985,10 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     nothing: a differential deleted wholesale leaves the escaped set unchanged.
 
     Lock 19 is the one entry here that does not rest on membership: its nodeid is
-    resolved through the same parse the ``enforcing_test`` claims use, so deleting or
-    renaming the function that runs its matrix fails this test. The other entries keep
-    the weaker guarantee.
+    resolved through the same parse the ``enforcing_test`` claims use, and its
+    parametrisation is read out of the same AST, so deleting the function, renaming it,
+    or pointing it at a *subset* of the matrix asserted here all fail this test. The
+    other entries keep the weaker guarantee.
     """
     reached = {item.author_key for item in _differential_entries()}
     escaped = {
@@ -2014,10 +2051,10 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "zero-total-weight rule scoped to every method would satisfy the whole table"
     )
 
-    _assert_the_folding_matrix_discriminates()
     _assert_nodeid_is_collectable(
         f"{_NUMERIC_STRING_FIELDS_KEY}: its differential", _FOLDING_DIFFERENTIAL_NODEID
     )
+    _assert_the_folding_matrix_discriminates()
 
 
 # --------------------------------------------------------------------------
@@ -4269,6 +4306,9 @@ _NUMERIC_STRING_FOLDING_MATRIX: tuple[_FoldingCell, ...] = (
     _FoldingCell((_FOLDING_CONTROL_FIELD,), "130.0", 0.0),
     _FoldingCell((_FOLDING_CONTROL_FIELD,), "131.0", 0.0),
 )
+
+_FOLDING_MATRIX_NAME = "_NUMERIC_STRING_FOLDING_MATRIX"
+"""The matrix constant's own name, so lock 8 can read it out of the differential's AST."""
 
 _FOLDING_DIFFERENTIAL_NODEID = (
     "tests/canonical/test_grading_substrate_parity.py"

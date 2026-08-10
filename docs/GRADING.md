@@ -275,8 +275,8 @@ on the wire: forcing the runner's fold to a constant weight, and replacing it wi
 plain product of the two scores, each turn every cell red. No cell there lists a
 `numeric_string_fields` entry; that key is proven by its own differential, below.
 Nor does the canonical suite prove this test *passes*: it resolves the nodeid and stops
-there. The job that runs on every pull request is `test-smoke`, whose one pytest step
-is `tests/unit/ tests/canonical/` and which has no integration step at all; `test-gate`
+there. The job that runs on every pull request is `test-smoke`, whose repo-suite pytest
+step is `tests/unit/ tests/canonical/` and which has no integration step at all; `test-gate`
 is the job that runs `tests/integration/`, and it is triggered by the `ready-to-merge`
 label — so the canonical tier gates every pull request, and this tier's output is
 quoted from a local run until that label lands.
