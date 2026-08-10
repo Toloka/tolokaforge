@@ -33,9 +33,8 @@ from __future__ import annotations
 
 import pytest
 
-from tests.integration.llm._capability import Capability
-from tests.integration.llm.registry import ALL_MODELS
 from tolokaforge.core.output.artifacts import model_id_slug
+from tolokaforge.testing.certify import ALL_MODELS, Capability
 
 pytestmark = pytest.mark.canonical
 
@@ -57,7 +56,7 @@ _CORE_CAPABILITIES = frozenset(
         # litellm's catalog AND no entry in our ``pricing.json``) is a
         # benchmarking-blocking gap to fix at the data layer, not a
         # capability to opt out of. See
-        # tests/integration/llm/_capability.py::Capability.COST_USD_POPULATED.
+        # tolokaforge/testing/certify/_capability.py::Capability.COST_USD_POPULATED.
         Capability.COST_USD_POPULATED,
         # Single-turn baseline — every realistic modern function-
         # calling model passes ``test_required_fields_complete``.
@@ -65,7 +64,7 @@ _CORE_CAPABILITIES = frozenset(
         # are not single-turn-deterministic; this baseline gates the
         # cleanly-reproducible surface, with a future multi-turn
         # variant gating the heavy-context surface separately. See
-        # tests/integration/llm/_capability.py::Capability.REQUIRED_FIELDS_COMPLETE
+        # tolokaforge/testing/certify/_capability.py::Capability.REQUIRED_FIELDS_COMPLETE
         # for the empirical justification.
         Capability.REQUIRED_FIELDS_COMPLETE,
         # Single-turn baseline — every registered modern model
@@ -76,7 +75,7 @@ _CORE_CAPABILITIES = frozenset(
         # single-turn-deterministic; this baseline gates the
         # cleanly-reproducible surface, with a future multi-turn
         # variant gating the production surface separately. See
-        # tests/integration/llm/_capability.py::Capability.PROGRESS_AFTER_SUCCESS
+        # tolokaforge/testing/certify/_capability.py::Capability.PROGRESS_AFTER_SUCCESS
         # for the empirical justification.
         Capability.PROGRESS_AFTER_SUCCESS,
     }
@@ -113,10 +112,10 @@ class TestRegistryInvariants:
         """
         import importlib
 
-        from tests.integration.llm import registry
+        from tolokaforge.testing.certify import _registry
 
         original = ALL_MODELS
-        reloaded = importlib.reload(registry).ALL_MODELS
+        reloaded = importlib.reload(_registry).ALL_MODELS
         assert [c.model_id for c in reloaded] == [c.model_id for c in original]
 
 
@@ -138,7 +137,7 @@ class TestCapabilityCoverage:
         assert not missing, (
             f"Orphan capabilities (no certificate references them): {missing}. "
             "Declare each capability on at least one certificate in "
-            "tests/integration/llm/registry.py."
+            "tolokaforge/testing/certify/_registry.py."
         )
 
     def test_every_capability_has_required_coverage(self) -> None:
@@ -148,7 +147,8 @@ class TestCapabilityCoverage:
             assert in_required, (
                 f"No certificate requires {cap.value!r} — the capability "
                 "test's pass-path is untested. Declare it in the ``required`` "
-                "set of at least one ModelCertificate in registry.py."
+                "set of at least one ModelCertificate in "
+                "tolokaforge/testing/certify/_registry.py."
             )
 
     def test_non_core_capabilities_have_both_branches(self) -> None:
@@ -168,7 +168,8 @@ class TestCapabilityCoverage:
             assert in_unsupported, (
                 f"No certificate lists {cap.value!r} as known_unsupported — "
                 "the capability test's skip-path is untested. Declare it on "
-                "at least one ModelCertificate in registry.py whose target "
+                "at least one ModelCertificate in "
+                "tolokaforge/testing/certify/_registry.py whose target "
                 "provider genuinely lacks this capability."
             )
 

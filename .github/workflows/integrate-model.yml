@@ -687,7 +687,7 @@ jobs:
           # cache_policy), and a narrow list silently drops the new file while committing its
           # wiring -> a build-breaking dangling import. Plus the cert + preset.
           git add tolokaforge/core/llm tolokaforge/core/data/model_presets.yaml \
-            tolokaforge/core/data/pricing.json tests/integration/llm/ 2>/dev/null || true
+            tolokaforge/core/data/pricing.json tolokaforge/testing/certify/_registry.py 2>/dev/null || true
           if git diff --cached --quiet; then
             echo "::error::finalize produced no file changes"; exit 1
           fi

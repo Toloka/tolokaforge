@@ -16,7 +16,7 @@ curl -s https://openrouter.ai/api/v1/models | \
 | File / dir | Branch | Reason |
 |---|---|---|
 | `tolokaforge/core/data/pricing.json` | **main** | Shared cost catalog |
-| `tests/integration/llm/registry.py` | **main** | Capability certificate is shared |
+| `tolokaforge/testing/certify/_registry.py` | **main** | Capability certificate is shared |
 | `tolokaforge/core/data/model_presets.yaml` | **main** | Only if new preset needed |
 
 Evaluation-specific configs **must not land on `main`** — see
@@ -125,9 +125,9 @@ invocations pick it up automatically without re-specifying `--presets-file`.
 ## 3. Add a ModelCertificate
 
 Append to `ALL_MODELS` in
-[`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py).
+[`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py).
 Pick `required` and `known_unsupported` from the
-[`Capability`](../tests/integration/llm/_capability.py) enum.
+[`Capability`](../tolokaforge/testing/certify/_capability.py) enum.
 
 **Rules (non-negotiable):**
 
@@ -162,7 +162,7 @@ The disciplined flow:
 
 1. Copy the sibling cert as a *starting hypothesis*.
 2. Tentatively flip every `known_unsupported` entry to `required`.
-3. Run `pytest tests/integration/llm/ -k <model_id> -v`.
+3. Run `pytest --pyargs tolokaforge.testing.certify.suite -k <model_id> -v`.
 4. Move back to `known_unsupported` only the capabilities that
    *actually* failed live. The PR diff records exactly which
    regressions persisted vs which were silently fixed.
@@ -196,10 +196,28 @@ MC(
 ),
 ```
 
+**Widened certificate fields.** `ModelCertificate` also carries four
+default-empty widening fields, populated only when a specific per-model
+quirk needs to travel as certificate data rather than test-body code:
+
+- `excluded_capabilities: frozenset[Capability]` — shared-body per-probe
+  opt-outs orthogonal to `known_unsupported` (e.g. the muse-spark-1.1
+  auto-cache ratchet exclusion — the counter is unreliable on cold
+  calls, so the ratchet consults `cert.excluded_capabilities` and skips
+  the cert).
+- `known_unsupported_reasons: Mapping[Capability, str]` — human-readable
+  rationale keyed by capability, surfaced by report generators and
+  dashboards.
+- `probe_params: Mapping[Capability, Mapping[str, Any]]` — per-model
+  probe-parameter overrides (e.g. `{Capability.PROMPT_CACHING: {"prompt_tokens": 12000}}`)
+  for shared bodies that consult the map.
+- `capability_extras: Mapping[str, str]` — opaque per-model quirks that
+  do not fit the `Capability` enum, consulted by adapter code paths.
+
 ## 4. Run the capability suite locally
 
 ```bash
-scripts/with_env.sh uv run pytest tests/integration/llm/ \
+scripts/with_env.sh uv run pytest --pyargs tolokaforge.testing.certify.suite \
     -k <your_model_id> -v --tb=short
 ```
 
@@ -309,20 +327,20 @@ If the model lives on a provider that isn't already routed through
 
 | Capability | Guards | Test file |
 |---|---|---|
-| `basic_completion` | Model returns non-empty text for a simple turn. | [`test_basic_completion.py`](../tests/integration/llm/test_basic_completion.py) |
-| `simple_tool_call` | Model emits a valid structured tool call when offered a calculator + distractor pair. | [`test_simple_tool_call.py`](../tests/integration/llm/test_simple_tool_call.py) |
-| `multi_turn_tool_use` | Two-turn flow: tool call → tool result → final answer OR chained tool call. | [`test_multi_turn_tool_use.py`](../tests/integration/llm/test_multi_turn_tool_use.py) |
-| `dict_map_tool_call` | Typed `Dict[str, T]` parameters round-trip as native dicts. | [`test_dict_map_tool_call.py`](../tests/integration/llm/test_dict_map_tool_call.py) |
-| `decimal_field_tool_call` | Pydantic `Decimal` fields don't trip the provider's regex validator. | [`test_decimal_field_tool_call.py`](../tests/integration/llm/test_decimal_field_tool_call.py) |
-| `thinking_emits_blocks` | Provider surfaces structured thinking blocks, not a concatenated summary. | [`test_thinking_emits_blocks.py`](../tests/integration/llm/test_thinking_emits_blocks.py) |
-| `thinking_replay_roundtrip` | Signed thinking blocks from turn 1 echo back verbatim on turn 2. | [`test_thinking_replay_roundtrip.py`](../tests/integration/llm/test_thinking_replay_roundtrip.py) |
-| `prompt_caching` | Second identical call hits the provider-side ephemeral cache. | [`test_prompt_caching.py`](../tests/integration/llm/test_prompt_caching.py) |
-| `usage_metrics_populated` | `result.usage.prompt_tokens`, `.completion_tokens`, and `.provider_raw` populated. | [`test_usage_metrics_populated.py`](../tests/integration/llm/test_usage_metrics_populated.py) |
-| `tool_name_discipline` | Model echoes the EXACT registered tool name even when it contains repeated `_`-segments (e.g. `workday_api_workday_api_get_employee`). Catches the Gemini 3.1 Pro `:` substitution regression. | [`test_tool_name_discipline.py`](../tests/integration/llm/test_tool_name_discipline.py) |
-| `lexical_tool_invention` | Model does NOT fabricate a plausible-but-nonexistent tool name from the system-prompt vocabulary (e.g. inventing `knowledge_base_search_policy` when the registered tool is `typesense_search_policy`). | [`test_lexical_tool_invention.py`](../tests/integration/llm/test_lexical_tool_invention.py) |
-| `required_fields_complete` | Single-turn baseline: when a tool's schema marks N fields as `required` and the user provides values for every one, the model emits all N. **Core capability** — every modern function-calling model passes. | [`test_required_fields_complete.py`](../tests/integration/llm/test_required_fields_complete.py) |
-| `unsigned_thinking_replay` | Reasoning *text* from turn 1 round-trips into turn 2's request payload via the codec's `encode_for_replay` path, even when blocks lack signatures. Gemini-Pro-applicable variant of `thinking_replay_roundtrip`. | [`test_unsigned_thinking_replay.py`](../tests/integration/llm/test_unsigned_thinking_replay.py) |
-| `progress_after_success` | Single-turn baseline: after a successful tool call + acknowledgment from the user, the model does NOT re-emit the same tool call with the same arguments. **Core capability** — every modern function-calling model passes the synthetic probe. Catches the grok-4.3 production loop pattern (re-calling `salesforce_create_case` 17× after success) at its single-turn surface. | [`test_progress_after_success.py`](../tests/integration/llm/test_progress_after_success.py) |
+| `basic_completion` | Model returns non-empty text for a simple turn. | [`test_basic_completion.py`](../tolokaforge/testing/certify/suite/test_basic_completion.py) |
+| `simple_tool_call` | Model emits a valid structured tool call when offered a calculator + distractor pair. | [`test_simple_tool_call.py`](../tolokaforge/testing/certify/suite/test_simple_tool_call.py) |
+| `multi_turn_tool_use` | Two-turn flow: tool call → tool result → final answer OR chained tool call. | [`test_multi_turn_tool_use.py`](../tolokaforge/testing/certify/suite/test_multi_turn_tool_use.py) |
+| `dict_map_tool_call` | Typed `Dict[str, T]` parameters round-trip as native dicts. | [`test_dict_map_tool_call.py`](../tolokaforge/testing/certify/suite/test_dict_map_tool_call.py) |
+| `decimal_field_tool_call` | Pydantic `Decimal` fields don't trip the provider's regex validator. | [`test_decimal_field_tool_call.py`](../tolokaforge/testing/certify/suite/test_decimal_field_tool_call.py) |
+| `thinking_emits_blocks` | Provider surfaces structured thinking blocks, not a concatenated summary. | [`test_thinking_emits_blocks.py`](../tolokaforge/testing/certify/suite/test_thinking_emits_blocks.py) |
+| `thinking_replay_roundtrip` | Signed thinking blocks from turn 1 echo back verbatim on turn 2. | [`test_thinking_replay_roundtrip.py`](../tolokaforge/testing/certify/suite/test_thinking_replay_roundtrip.py) |
+| `prompt_caching` | Second identical call hits the provider-side ephemeral cache. | [`test_prompt_caching.py`](../tolokaforge/testing/certify/suite/test_prompt_caching.py) |
+| `usage_metrics_populated` | `result.usage.prompt_tokens`, `.completion_tokens`, and `.provider_raw` populated. | [`test_usage_metrics_populated.py`](../tolokaforge/testing/certify/suite/test_usage_metrics_populated.py) |
+| `tool_name_discipline` | Model echoes the EXACT registered tool name even when it contains repeated `_`-segments (e.g. `workday_api_workday_api_get_employee`). Catches the Gemini 3.1 Pro `:` substitution regression. | [`test_tool_name_discipline.py`](../tolokaforge/testing/certify/suite/test_tool_name_discipline.py) |
+| `lexical_tool_invention` | Model does NOT fabricate a plausible-but-nonexistent tool name from the system-prompt vocabulary (e.g. inventing `knowledge_base_search_policy` when the registered tool is `typesense_search_policy`). | [`test_lexical_tool_invention.py`](../tolokaforge/testing/certify/suite/test_lexical_tool_invention.py) |
+| `required_fields_complete` | Single-turn baseline: when a tool's schema marks N fields as `required` and the user provides values for every one, the model emits all N. **Core capability** — every modern function-calling model passes. | [`test_required_fields_complete.py`](../tolokaforge/testing/certify/suite/test_required_fields_complete.py) |
+| `unsigned_thinking_replay` | Reasoning *text* from turn 1 round-trips into turn 2's request payload via the codec's `encode_for_replay` path, even when blocks lack signatures. Gemini-Pro-applicable variant of `thinking_replay_roundtrip`. | [`test_unsigned_thinking_replay.py`](../tolokaforge/testing/certify/suite/test_unsigned_thinking_replay.py) |
+| `progress_after_success` | Single-turn baseline: after a successful tool call + acknowledgment from the user, the model does NOT re-emit the same tool call with the same arguments. **Core capability** — every modern function-calling model passes the synthetic probe. Catches the grok-4.3 production loop pattern (re-calling `salesforce_create_case` 17× after success) at its single-turn surface. | [`test_progress_after_success.py`](../tolokaforge/testing/certify/suite/test_progress_after_success.py) |
 
 ## Related reading
 
@@ -331,7 +349,7 @@ If the model lives on a provider that isn't already routed through
 - [`docs/LLM_LAYER.md`](LLM_LAYER.md) — policy slot contracts +
   implementation notes.
 - The Gemini certificates in
-  [`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py)
+  [`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py)
   are a worked example of an entire model family registered with
   asymmetric postures across variants (Flash `required` vs Pro
   `known_unsupported` for the same capability) — useful when a new

@@ -217,10 +217,10 @@ prefixes; `ots_08_travel_internal` has many; `tau_manufacturing` has
 none, hence no exposure).
 
 **Detection**: live reproducer at
-[`tests/integration/llm/test_tool_name_discipline.py`](../tests/integration/llm/test_tool_name_discipline.py)
+[`tolokaforge/testing/certify/suite/test_tool_name_discipline.py`](../tolokaforge/testing/certify/suite/test_tool_name_discipline.py)
 captures the symptom. Pro is declared `TOOL_NAME_DISCIPLINE`
 known_unsupported in
-[`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py).
+[`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py).
 
 **Harness response**: known_unsupported declaration. Not silently
 worked around — the eval correctly measures the cost.
@@ -234,7 +234,7 @@ knowledge base"), Pro fabricates a tool name like
 phrasing, not the tool catalog.
 
 **Detection**: live reproducer at
-[`tests/integration/llm/test_lexical_tool_invention.py`](../tests/integration/llm/test_lexical_tool_invention.py)
+[`tolokaforge/testing/certify/suite/test_lexical_tool_invention.py`](../tolokaforge/testing/certify/suite/test_lexical_tool_invention.py)
 captures this. Pro is declared `LEXICAL_TOOL_INVENTION` known_unsupported.
 
 Example trajectory snippet (Pro on `ots_07_logistics_internal`
@@ -459,7 +459,7 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
   (config-error retry filter),
   [#151](https://github.com/Toloka/tolokaforge/issues/151)
   (api_error follow-up).
-- Capability registry: [`tests/integration/llm/registry.py`](../tests/integration/llm/registry.py)
+- Capability registry: [`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py)
   (`TOOL_NAME_DISCIPLINE`, `LEXICAL_TOOL_INVENTION` declared
   `known_unsupported` for Pro).
 - Codec fix commits: `c394409a0` (extras round-trip), `8b1511d67`

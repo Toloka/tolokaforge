@@ -22,8 +22,8 @@ from typing import Any
 import pytest
 from pydantic import BaseModel, ConfigDict, TypeAdapter
 
-from tests.integration.llm.registry import ALL_MODELS
 from tolokaforge.core.llm.presets import build_capabilities
+from tolokaforge.testing.certify import ALL_MODELS
 
 pytestmark = pytest.mark.unit
 

@@ -43,7 +43,7 @@ ADR-0002 § Considered Options deferred its Option 4 on an explicit, measurable 
 
 And the *original* draft of this ADR made three things *worse* rather than neutral:
 
-- **Per-model certification exclusions** (`_UNRELIABLE_COLD_CACHE_REPORT_NAMES` in `#474`) live in shared test-body code that the original draft moved into the engine wheel as `tolokaforge.testing.certify.suite`. A per-model exclusion becomes an engine-wheel edit.
+- **Per-model certification exclusions** (the muse-spark-1.1 implicit-cache exclusion landed in `#474` as one worked example) live in shared test-body code that the original draft moved into the engine wheel as `tolokaforge.testing.certify.suite`. A per-model exclusion becomes an engine-wheel edit.
 - **New `Capability` values ship together with their probe body** (`8c8f88b` — three values, three probe files landed together). Under the original draft the enum lives in the models wheel and probe bodies in the engine wheel — two releases for one addition.
 - **Per-model cert bodies** (`test_nova_api.py`, `test_gemini_placeholder_signature_replay.py`, `#846`'s codec unit test) go into the engine wheel and lose the models cadence.
 
@@ -82,7 +82,7 @@ This target is not fully bought by the widened design — the § Consequences �
 
 **Certification harness — where does it live?**
 
-1. **Stays where it is** (`tests/integration/llm/registry.py`). Rejected — this is the load-bearing coupling.
+1. **Stays where it was** (`tests/integration/llm/registry.py`, the pre-split location). Rejected — this was the load-bearing coupling.
 2. **Move to a separate repo.** Rejected — re-creates the coordination problem elsewhere.
 3. **Extract into a public `tolokaforge.testing.certify` seam inside the engine wheel, with certificate-borne exclusion data and out-of-tree probe registration.** Selected. Shared test bodies remain engine code (the engine defines what "supported" means on the wire), but exclusion sets, probe parameters, and per-model bodies are certificate data and models-wheel content respectively.
 
@@ -207,17 +207,17 @@ The engine ships default bindings that reproduce today's behaviour for the shipp
 
 - `Capability` enum stays **engine-authoritative** and lives in `tolokaforge/testing/certify/`. Rationale (revised 2026-08-07 per follow-up review): the shared suite references enum members by attribute (`Capability.BASIC_COMPLETION`), so a rename or drop from the models side would break engine code silently through attribute access — and attribute access has no registry the class-name-existence guard could check against. Keeping the enum engine-owned costs an engine release when a genuinely new *category* is coined (rare — the same event a new lifecycle stage or new probe pattern would trigger), and buys silent-break protection for the common case. Requirement 8's decoupling is delivered instead via a certificate-borne `capability_extras` field (below).
 - `ModelCertificate` dataclass lives in `tolokaforge_models.certificates`; gains four new fields (widening):
-  - `excluded_capabilities: frozenset[Capability]` — replaces engine-side sets like `_UNRELIABLE_COLD_CACHE_REPORT_NAMES`. Shared test bodies check `cert.excluded_capabilities` instead of a hardcoded name set.
+  - `excluded_capabilities: frozenset[Capability]` — replaces engine-side hardcoded per-model exclusion sets in shared bodies. Shared test bodies check `cert.excluded_capabilities` instead of a hardcoded name set.
   - `known_unsupported_reasons: dict[Capability, str]` — human-readable explanation surfaced in reports.
   - `probe_params: dict[Capability, dict[str, Any]]` — per-model tuning for probe bodies (e.g. reduced token budgets, alternate prompts).
   - `capability_extras: dict[str, str]` (NEW — revised 2026-08-07) — free-form capability names the models wheel declares without adding to the engine's `Capability` enum. Used when a per-model quirk needs to be surfaced in the certificate but does not correspond to a shipped shared probe. Read by consumers (report generation, dashboards) as opaque strings; no enum-attribute access, so no silent-break class.
-- `live_client`, `skip_unless_capability_declared` pytest fixtures — moved from `tests/integration/llm/conftest.py`. The `TF_PRESETS_FILE` env-var overlay hook (`conftest.py:47-66`) is preserved.
+- `live_client`, `skip_unless_capability_declared` pytest fixtures — live at `tolokaforge/testing/certify/fixtures.py`; the `TF_PRESETS_FILE` env-var overlay hook is preserved in the suite conftest.
 - `tolokaforge.testing.certify.suite` — the ~30 `test_*.py` bodies, parametrised on `ALL_MODELS` supplied via fixture. Test bodies read exclusion data from certificates and probe params from `cert.probe_params`; no more hardcoded per-model sets.
 - `tolokaforge.testing.certify.probes` (NEW) — `@register_probe(Capability.X)` decorator collects per-capability probe bodies from `tolokaforge_models/tests/`. Engine's shared suite dispatches to the registered probe. A genuinely new `Capability` value (rare) is Bucket B and lands in the same engine release that adds the probe pattern; per-model *tuning* of an existing capability's probe travels through `cert.probe_params` on the models cadence.
 
 Per-model test bodies (`test_nova_api.py`, `test_gemini_placeholder_signature_replay.py`, `#846`'s codec unit test) → `tolokaforge_models/tests/`. Collected via `pytest --pyargs tolokaforge_models.tests` from the models CI. Same fixtures, same overlay hooks.
 
-The in-tree suite under `tests/integration/llm/` becomes a thin wrapper (or is deleted) — `tolokaforge-models` CI is the source of truth for the real registry.
+The parametrised suite lives under `tolokaforge/testing/certify/suite/`; `tests/integration/llm/` retains only the per-model bodies (`test_nova_api.py`, `test_gemini_placeholder_signature_replay.py`) and the one-off live gateway test. After the cutover, `tolokaforge-models` CI is the source of truth for the real registry.
 
 ## Install-time validation (new — widening)
 
@@ -392,7 +392,7 @@ The classification step inspects the resolved policy graph: if every needed poli
 **Sub-issues under the umbrella tracked at [GH #645](https://github.com/Toloka/tolokaforge/issues/645)** — decompose via `/writing-development-tickets` after this ADR merges. Landing order chosen so each unblocks the next; **the acceptance test is deliberately built early so it reports at every step, and the workflow retarget lands right after the first manual Bucket A succeeds rather than at the end** (both revised 2026-08-07 per follow-up review — see § What "success" looks like and § Consequences → known ceiling). Realistic PR count 9–10 (numbered arcs below are consolidatable).
 
 1. **Fail-loud entry-point registry semantics** — fix the [GH #544](https://github.com/Toloka/tolokaforge/issues/544) pattern on `tolokaforge.adapters` preventatively; apply the same discipline to the new policy-class entry-point mechanism. Resolved by [#930](https://github.com/Toloka/tolokaforge/issues/930); canonical shape lives in [`docs/ADAPTER_ARCHITECTURE.md` § Fail-loud registry pattern](../ADAPTER_ARCHITECTURE.md#fail-loud-registry-pattern) and the `tolokaforge.core.plugin_registry` module docstring.
-2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing — the acceptance test in (3) depends on this seam. Move `_capability.py`, `registry.py`, fixtures, ~30 test bodies. Add `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields. Add probe-registration decorator API.
+2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing — the acceptance test in (3) depends on this seam. Move `_capability.py`, `registry.py`, fixtures, ~30 test bodies. Add `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields. Add probe-registration decorator API. Resolved by [#931](https://github.com/Toloka/tolokaforge/issues/931); `tolokaforge.testing.certify` is the public engine seam, `ModelCertificate` widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras`, and `@register_probe` ships as the forward-compat dispatch seam.
 3. **Acceptance-test scaffolding** — `tests/canonical/test_models_wheel_replay.py`. Replays the last N integrations against the engine tree **as it stood on each integration's date** (git checkout per-integration, not against post-follow-up-8 `main` — otherwise the retroactive hook masks the measurement). Reports the "engine releases avoided" number at every subsequent PR. Initial run reports the status-quo baseline (3-in-5 or whatever the tree of the day yields); each PR (4)–(11) should move the number. Landing this before (4) means every subsequent change is measured against the target.
 4. **Fingerprint** — widened `models_fingerprint` on `engine_run_state.json`.
 5. **New extension slots — `assistant_text_policy` + `params_policy` + narrow `message_assembly_policy`.** Base classes, registry entries, wire-in points in `client.py`. The Cohere text-marker slot unblocks integration #929; the narrow message-assembly version turns the `client.py:1213` filler string into policy data (no new slot type, just data extraction of an existing string).
@@ -441,7 +441,7 @@ Points settled by the 2026-08-07 follow-up review are marked ✅ with the resolu
   - [`tolokaforge/core/llm/client.py`](../../tolokaforge/core/llm/client.py) — Nova branch, rotation, rate-limit classification all move to provider-bindings data.
   - [`tolokaforge/core/llm/proxy.py`](../../tolokaforge/core/llm/proxy.py) — `UNROUTABLE_PROVIDERS` moves to data.
   - [`tolokaforge/core/engine_run_state.py`](../../tolokaforge/core/engine_run_state.py) — where `models_fingerprint` lands.
-  - [`tests/integration/llm/`](../../tests/integration/llm/) — the certification harness that becomes `tolokaforge.testing.certify`.
+  - [`tolokaforge/testing/certify/`](../../tolokaforge/testing/certify/) — the public engine-side certification seam; the physical relocation of certificate data and per-model bodies to `tolokaforge_models/` happens in the cutover.
   - [`scripts/hatch/hatch_runner_subset_builder.py`](../../scripts/hatch/hatch_runner_subset_builder.py) — pattern the new `hatch_models_subset_builder.py` mirrors.
 - Related issues:
   - [GH #645](https://github.com/Toloka/tolokaforge/issues/645) — the public issue that catalysed this ADR, and its [2026-08-07 review comment](https://github.com/Toloka/tolokaforge/issues/645#issuecomment-5213977204) that catalysed the widening. The follow-up review on this PR (2026-08-07 later that day) drove the revisions marked *"revised 2026-08-07"* throughout — capability-enum flip, no-stub plan, Nova three-site record, class-name-check placement, `minimum_engine_version` runtime rationale, nested-unknown-key allow-list scoping, `__all__` deletion caveat, ninth-slot Cohere correction, and the § What "success" looks like framing note.

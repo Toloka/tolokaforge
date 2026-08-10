@@ -25,17 +25,23 @@ from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 PYTEST = ["uv", "run", "pytest"]
-DEFAULT_PATH = "tests/integration/llm/"
+DEFAULT_PYARGS = "tolokaforge.testing.certify.suite"
 
 
-def collect_nodes(k_expr: str, path: str = DEFAULT_PATH) -> list[str]:
-    """Collect the pytest node ids matching ``-k k_expr`` (one --collect-only pass)."""
+def collect_nodes(k_expr: str, pyargs: str = DEFAULT_PYARGS) -> list[str]:
+    """Collect the pytest node ids matching ``-k k_expr`` (one --collect-only pass).
+
+    Collects via ``--pyargs`` against the installed suite package so the
+    caller works from a fresh ``uv sync`` clone or a worktree checkout
+    without encoding a "tests live inside this checkout" assumption.
+    """
     proc = subprocess.run(
         # `-o addopts=` clears the repo's addopts (which force a verbose TREE collect layout);
         # with them cleared, `-q --collect-only` prints one flat `path::node[param]` per line.
         [
             *PYTEST,
-            path,
+            "--pyargs",
+            pyargs,
             "-k",
             k_expr,
             "--collect-only",
@@ -71,16 +77,16 @@ def run(
     out: str,
     reps: int = 15,
     workers: int = 10,
-    path: str = DEFAULT_PATH,
+    pyargs: str = DEFAULT_PYARGS,
 ) -> int:
     """Collect the candidate's nodes and run each ``(node x rep)`` unit into ``out``,
     parallelized at ``workers``. Report-only: always returns 0 (a failing probe is data
     for the next stage, not a gate)."""
     out_dir = Path(out)
     out_dir.mkdir(parents=True, exist_ok=True)
-    nodes = collect_nodes(k_expr, path)
+    nodes = collect_nodes(k_expr, pyargs)
     if not nodes:
-        print(f"run_probes: no nodes matched -k {k_expr!r} under {path}")
+        print(f"run_probes: no nodes matched -k {k_expr!r} under --pyargs {pyargs}")
         return 0
     units = build_units(nodes, reps)
     with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:

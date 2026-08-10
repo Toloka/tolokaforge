@@ -73,10 +73,14 @@ def run_probes(
     out: str = typer.Option(..., "--out", help="junit output dir (e.g. observation/capability)"),
     reps: int = typer.Option(15, "--reps", help="repeats per node (CAPABILITY_K)"),
     workers: int = typer.Option(10, "--workers", help="flat-pool width (node x rep)"),
-    path: str = typer.Option(probes.DEFAULT_PATH, "--path", help="test root to collect from"),
+    pyargs: str = typer.Option(
+        probes.DEFAULT_PYARGS,
+        "--pyargs",
+        help="pytest --pyargs target package for collection (e.g. tolokaforge.testing.certify.suite)",
+    ),
 ) -> None:
     """Flat (node x rep) parallel probe runner for the OBSERVE stage."""
-    raise typer.Exit(probes.run(k_expr, out, reps=reps, workers=workers, path=path))
+    raise typer.Exit(probes.run(k_expr, out, reps=reps, workers=workers, pyargs=pyargs))
 
 
 @app.command("reprobe")

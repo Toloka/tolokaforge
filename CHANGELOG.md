@@ -2,6 +2,16 @@
 
 All notable changes to this project are documented in this file.
 
+## Unreleased
+
+### Feat
+
+- **testing**: new public engine seam `tolokaforge.testing.certify` — `Capability`, `ModelCertificate` (widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras`), `ALL_MODELS`, and the `@register_probe` / `get_probe` dispatch API for out-of-tree probe bodies (#931).
+
+### Fix
+
+- **automation**: `run-probes` renamed the `--path <dir>` flag to `--pyargs <module>` for the moved certification suite (defaulting to `tolokaforge.testing.certify.suite`); `integrate-model.yml` uses the default so no operator-side changes are needed (#931).
+
 ## v0.16.1 (2026-08-07)
 
 ### Feat
