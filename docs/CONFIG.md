@@ -360,11 +360,17 @@ both the overlay file and the offending key.
 #### Distributed-worker propagation
 
 `tolokaforge prepare --presets-file overlay.yaml ...` persists the resolved
-overlay path into `engine_run_state.json` alongside the run queue. Worker
-subprocesses launched later from the same `--run-dir` pick it up
-automatically — you don't have to thread the flag through every
-`tolokaforge worker` invocation. A worker-side `--presets-file` flag still
-wins over the persisted value when both are set.
+overlay path into `engine_run_state.json` alongside the run queue, together
+with the `models_fingerprint` of the fully-resolved preset + pricing +
+certificate state (see [`docs/OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md#engine_run_statejson)
+for the on-disk schema). The overlay is folded into the fingerprint's
+`content_sha256`, so two runs that resolve to different preset tables record
+different digests — a completed run identifies both the overlay path and the
+exact model-data snapshot it was scored against. Worker subprocesses launched
+later from the same `--run-dir` pick up the overlay path automatically — you
+don't have to thread the flag through every `tolokaforge worker` invocation.
+A worker-side `--presets-file` flag still wins over the persisted value when
+both are set.
 
 ## Task Specification (`task.yaml`)
 

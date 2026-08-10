@@ -9,6 +9,7 @@ resolution order.
 
 from __future__ import annotations
 
+import copy
 import fnmatch
 import inspect
 import logging
@@ -64,11 +65,12 @@ from tolokaforge.core.llm.schema_sanitizer import (
 
 __all__ = [
     "build_capabilities",
-    "resolve_policy_names",
-    "resolve_effective_preset",
-    "set_overlay_path",
     "get_overlay_path",
+    "get_resolved_presets",
+    "resolve_effective_preset",
     "resolve_overlay_path",
+    "resolve_policy_names",
+    "set_overlay_path",
     "validate_overlay_file",
 ]
 
@@ -426,6 +428,19 @@ def _load_presets() -> dict[str, Any]:
     overlay = _load_overlay_file(_OVERLAY_PATH)
     _CACHED_PRESETS = _merge_overlay(bundled, overlay, _OVERLAY_PATH)
     return _CACHED_PRESETS
+
+
+def get_resolved_presets() -> dict[str, Any]:
+    """Return the resolved (bundled ⊕ overlay) preset table as a defensive copy.
+
+    Public accessor for callers that need the merged preset state as data
+    — the model-data fingerprint (see
+    :func:`tolokaforge.core.model_data.compute_models_fingerprint`),
+    diagnostics tools, and any other caller that needs the merged data
+    snapshot without re-reading YAML. Returns a fresh ``dict`` on every
+    call so callers cannot mutate the module cache.
+    """
+    return copy.deepcopy(_load_presets())
 
 
 def _iter_preset_matches(

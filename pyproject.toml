@@ -36,6 +36,11 @@ dependencies = [
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",
     "jsonschema>=4.20.0",
+    # PEP 440 specifier parsing — used by ``tolokaforge.core.model_data`` to
+    # validate ``minimum_engine_version`` on the resolved models fingerprint.
+    # Kept as a direct dep so a downstream prune of ``black`` / ``build`` cannot
+    # quietly remove ``packaging`` from the resolved set.
+    "packaging>=24.0",
     # Configuration
     "pyyaml>=6.0.1",
     "python-dotenv>=1.0.0",

@@ -60,6 +60,44 @@ rolled up run-wide in `aggregate.json` → `captured_service_logs` (see
   audit the trial lives inside a single `trials/{task_id}/{trial_index}/`
   directory. There is no results-root sidecar tree.
 
+## `engine_run_state.json`
+
+Written under `{output_dir}/` at run start by both `tolokaforge run` and
+`tolokaforge prepare`. Carries the engine-level inputs a worker subprocess
+needs to join a run and the resolved model-data snapshot the run was
+scored against, so a completed run identifies both the effective preset
+overlay and the exact tolokaforge-models resolution behind every score.
+
+```json
+{
+  "run_id": "results/coding_example_20260629_154233",
+  "presets_file": "/path/to/overlay.yaml",
+  "models_fingerprint": {
+    "package_version": "in-tree",
+    "content_sha256": "9f0d…64-hex chars…",
+    "api_version": 1,
+    "minimum_engine_version": ">=0.16,<0.17"
+  }
+}
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `run_id` | string | Canonical run identifier — the `{output_dir}` basename. Stamped on every `TrialSpec.run_id` so workers reuse it across the queue. |
+| `presets_file` | string \| null | Absolute path to the preset overlay active when `prepare` / `run` executed, or `null` when no overlay was in effect. Workers launched later from the same `--run-dir` read this to reinstall the same overlay without an explicit `--presets-file` on every invocation. |
+| `models_fingerprint` | object | Resolved model-data snapshot — see the sub-table below. Absent on runs prepared before this field was introduced; consumers that read this file with the `read_persisted_models_fingerprint` helper get `None` in that case. |
+
+`models_fingerprint` sub-fields:
+
+| Field | Type | Meaning |
+|---|---|---|
+| `package_version` | string | The `tolokaforge-models` PEP 440 version whose bundle resolved this run, or the literal `"in-tree"` sentinel while the data still ships in the engine wheel. |
+| `content_sha256` | string | Lowercase 64-hex-char sha256 over the canonicalised `{presets, pricing, certificates}` triple after all overlays have been folded in. Same inputs produce a byte-identical digest; any overlay tweak (a new preset entry, a pricing rate change, a certificate field) changes the digest. |
+| `api_version` | integer | Contract version of the hashed payload — `1` today. A future change to the payload shape bumps this so readers know to reject an older client's output rather than mis-compare it. |
+| `minimum_engine_version` | string | PEP 440 specifier the model-data snapshot requires the engine to satisfy. Parsed via `packaging.specifiers.SpecifierSet`. |
+
+Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data.compute_models_fingerprint`](../tolokaforge/core/model_data.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context and the pre-cutover sentinel semantics.
+
 ## `LIMIT_HIT.json`
 
 Written under `{output_dir}/` on the first budget crossing during a

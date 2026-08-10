@@ -7,10 +7,12 @@ All notable changes to this project are documented in this file.
 ### Feat
 
 - **testing**: new public engine seam `tolokaforge.testing.certify` — `Capability`, `ModelCertificate` (widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras`), `ALL_MODELS`, and the `@register_probe` / `get_probe` dispatch API for out-of-tree probe bodies (#931).
+- **observability**: `engine_run_state.json` records the resolved model-data fingerprint — the `models_fingerprint` field carries `{package_version, content_sha256, api_version, minimum_engine_version}` computed from the post-overlay preset table, pricing table, and certificate registry, so a completed run identifies exactly which model-data snapshot it was scored against (#933).
 
 ### Fix
 
 - **automation**: `run-probes` renamed the `--path <dir>` flag to `--pyargs <module>` for the moved certification suite (defaulting to `tolokaforge.testing.certify.suite`); `integrate-model.yml` uses the default so no operator-side changes are needed (#931).
+- **testing**: `tolokaforge.testing.certify` no longer eagerly imports the pytest fixtures at the package level — runtime callers of the certify seam (e.g. `tolokaforge.core.model_data`) no longer need `pytest` installed. Suite authors continue to reach the fixtures via `pytest_plugins = ["tolokaforge.testing.certify.fixtures"]` or by importing the submodule directly (#931, exposed and fixed via #933).
 
 ## v0.16.1 (2026-08-07)
 

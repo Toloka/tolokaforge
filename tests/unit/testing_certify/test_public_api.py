@@ -36,15 +36,24 @@ class TestPublicAll:
             "Capability",
             "ModelCertificate",
             "get_probe",
-            "live_client",
             "register_probe",
-            "skip_unless_capability_declared",
         }
 
-    def test_fixtures_are_reachable_from_public_namespace(self) -> None:
-        # Same objects the suite conftest re-exports via pytest_plugins.
-        assert callable(certify.live_client)
-        assert callable(certify.skip_unless_capability_declared)
+    def test_fixtures_are_not_reachable_from_public_namespace(self) -> None:
+        # Importing the package must not pull in pytest — the fixtures live
+        # on the submodule so a runtime caller of the certify seam can use
+        # it without installing pytest.
+        assert not hasattr(certify, "live_client")
+        assert not hasattr(certify, "skip_unless_capability_declared")
+
+    def test_fixtures_reachable_via_submodule(self) -> None:
+        # Suite authors reach the fixtures through the submodule — the same
+        # object ``pytest_plugins = ["tolokaforge.testing.certify.fixtures"]``
+        # loads into the pytest session.
+        from tolokaforge.testing.certify import fixtures
+
+        assert callable(fixtures.live_client)
+        assert callable(fixtures.skip_unless_capability_declared)
 
     def test_probe_seam_is_reachable_from_public_namespace(self) -> None:
         assert callable(certify.register_probe)
