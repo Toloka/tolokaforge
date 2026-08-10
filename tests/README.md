@@ -360,10 +360,12 @@ testcontainer fixtures pin, so retag after building:
 
 Some suites in this tier are the `enforcing_test` a grading-key manifest entry
 names — `test_docker_grading_hash_composition.py` for the `state_checks.hash`
-family, `test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
+family and for `state_checks.numeric_string_fields`,
+`test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
 `test_rubric_judge_live.py` for `llm_judge`. `test_grading_substrate_parity.py`
-resolves each nodeid without importing it, so renaming one of those test functions
-fails the canonical tier naming the manifest entry.
+resolves each nodeid without importing it — every entry carrying one, whatever its
+enforcement tier — so renaming one of those test functions fails the canonical tier
+naming the manifest entry.
 
 Two members of this tier are **Docker-free and keyless** (they need only the `uv`
 CLI): `test_plugin_discovery.py` and `test_external_harness_e2e.py`. Both install

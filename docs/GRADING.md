@@ -56,9 +56,12 @@ author-facing key is one `GradingKey` entry declaring three axes:
   `DIFFERENTIAL_CANONICAL`: a satisfying/violating pair moves both substrates'
   scores in-process. `DIFFERENTIAL_INTEGRATION`: the differential needs real
   services, and `enforcing_test` names the test function that runs it as a pytest
-  nodeid — `<module path>::<test function>`, resolved by the canonical suite
-  against the module's own AST so naming a file that merely contains a test is
-  rejected. `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
+  nodeid — `<module path>::<test function>`. `enforcing_test` is required at that
+  tier and permitted at any, and the canonical suite resolves it wherever it is
+  present, against the module's own AST, so naming a file that merely contains a
+  test is rejected; on a canonically proven entry it records where the same claim
+  was additionally observed in production rather than carrying the enforcement.
+  `FIELD_RESOLUTION_ONLY`: only "the field exists and resolves" is proven.
 
 `trace_checks` is the one component where parity is structural rather than
 maintained: both substrates call the same `evaluate_trace_checks` over the same
@@ -294,6 +297,17 @@ nothing because the key is read once per grade on both substrates whatever the b
 documents separately — booleans never folding to ints, leading-zero ids never
 equating — carry their own unit coverage, which this matrix does not extend. A folding
 field nested under a differently named record key at greater depth is outside both.
+
+The same pair is also observed on the production path, in
+[`tests/integration/test_docker_grading_hash_composition.py`](../tests/integration/test_docker_grading_hash_composition.py):
+one representation difference — a golden action rewriting `"130.00"` as `"130.0"` — under
+the empty list, `["amount"]` and `["quantity"]`, graded over real gRPC against the
+containerised db-service. Those cells declare one state source and no `hash.weight`, so
+the wire's `state_checks` component is the hash verdict itself and reading it needs no
+arithmetic. That is what the row's `enforcing_test` names. It adds the one
+thing no in-process test can speak for — that the *deployed* db-service parses and honours
+the `numeric_string_fields` query parameter the runner sends it — and it is falsifiable by
+configuration only, because a source patch does not reach a container.
 
 **A service-free differential reaches that evaluator.** `_drive_hash_family`
 ([`tests/canonical/test_grading_substrate_parity.py`](../tests/canonical/test_grading_substrate_parity.py))

@@ -13,8 +13,9 @@ component that took a verdict:
 2. the exemption sets are frozen here — in the test module, never beside the
    manifest data they guard — so widening one is a reviewable edit, every entry
    matching lock 3's predicate names both evaluators and owns a fixture, and every
-   ``DIFFERENTIAL_INTEGRATION`` claim's ``enforcing_test`` nodeid resolves to a test
-   function pytest would collect;
+   entry carrying an ``enforcing_test`` — at any tier, since a canonically proven
+   claim may still record where it was observed in production — has that nodeid
+   resolve to a test function pytest would collect;
 3. every key claiming both substrates at ``DIFFERENTIAL_CANONICAL`` demonstrably
    moves both substrates' component scores, through each substrate's real
    production evaluator and its real combine;
@@ -1160,7 +1161,7 @@ def test_exemption_sets_are_frozen_and_classified(test_data_dir):
     )
 
     for item in GRADING_KEYS:
-        if item.enforcement is Enforcement.DIFFERENTIAL_INTEGRATION:
+        if item.enforcing_test:
             _assert_enforcing_test_is_collectable(item)
         for evaluator in (item.core_evaluator, item.runner_evaluator):
             if evaluator is None:
