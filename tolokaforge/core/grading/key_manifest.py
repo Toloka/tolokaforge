@@ -456,12 +456,11 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         author_key="state_checks.numeric_string_fields",
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="StateChecksConfig.numeric_string_fields",
         runner_field="RunnerStateChecksConfig.numeric_string_fields",
         core_evaluator="tolokaforge.core.hash.compute_stable_hash",
         runner_evaluator=RUNNER_HASH_EVALUATOR,
-        tracking_issue=687,
     ),
     GradingKey(
         author_key="state_checks.id_fields",

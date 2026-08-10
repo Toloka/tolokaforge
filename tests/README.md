@@ -170,7 +170,8 @@ Compare output against committed golden snapshots in `snapshots/`.
   `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
   it, addresses a position below a claimed field by something other than an element
   path — the manifest's one mechanism for that — no longer survives adapter
-  translation, or names a `runner_field` the runtime ledger cannot resolve. Fix the
+  translation, names a `runner_field` the runtime ledger cannot resolve, or stopped
+  folding a listed numeric-string field by name on one of the two substrates. Fix the
   manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
