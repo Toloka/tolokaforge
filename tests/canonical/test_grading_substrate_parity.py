@@ -1,10 +1,10 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Seventeen locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+Eighteen locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
 what each grading key is, which substrate scores it, and whether the two agree.
-Locks 16 and 17 are over what a grade *does* and *says*, which the manifest does not
-describe — the proposition a hash source compares against, and the sentence a
-component contributes to ``Grade.reasons``:
+Locks 16-18 are over what a grade *does* and *says*, which the manifest does not
+describe — the proposition a hash source compares against, and what
+``Grade.reasons`` carries for a component that took a verdict:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves; a position below a claimed
@@ -67,18 +67,28 @@ component contributes to ``Grade.reasons``:
 17. the ``custom_checks`` segment of ``Grade.reasons`` names the check that decided
     the trial, and is one text on both substrates — extracted from each substrate's
     ``reasons`` by splitting on the segment separator rather than compared whole,
-    because the two legitimately differ elsewhere in that string (#994).
+    because the two legitimately differ elsewhere in that string (#994);
+18. every component :data:`GRADE_COMPONENTS` registers narrates itself in a real
+    grade: a trial driven through ``RegisterTrial → GradeTrial`` on a config
+    populating that component carries the marker production emits for it. The fold
+    enumerates the registry and the renderer enumerates by hand, so this is what
+    holds the second list to the first — and the per-component marker is what a row
+    asserts beyond the fallback's absence, which a renamed segment satisfies.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10, 11, 15, 16 and 17 drive a real trial, and each reads it through
-one fixture loader, so what a ``grading_parity`` pack can express bounds what they can
-prove — for lock 15 that bound covers the keys its driver table sends to a parity
-pack, the hash family, the probes and the judge being driven from tasks written out
-in this module instead, and for lock 17 it is one pack declaring one check, so the
-shapes it reaches are all-passed and all-failed.
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17 and 18 drive a real trial, and each reads it
+through one fixture loader, so what a ``grading_parity`` pack can express bounds what
+they can prove — for locks 15 and 18 that bound covers the keys their driver tables
+send to a parity pack, the hash family, the probes and the judge being driven from
+tasks written out in this module instead, and for lock 17 it is one pack declaring one
+check, so the shapes it reaches are all-passed and all-failed. Lock 18's
+``state_checks`` row drives one of that component's three sources; the sub-source
+counterpart is three unit locks — ``test_runner_jsonpath_grading.py`` on the JSONPath
+and db-probe sentences, and ``test_grading_correctness.py`` on the hash verdict — so
+this module's table is not the whole guarantee for that slot.
 That loader's contract — a tool call belongs to the message that requested it, and
 carries that call's own result text — is locked at the end of this module.
 """
@@ -113,6 +123,7 @@ from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -3810,6 +3821,98 @@ def test_the_compared_custom_checks_segments_are_this_packs_two_verdicts(
     assert satisfying_runner.components.custom_checks == pytest.approx(1.0)
     assert violating_runner.components.custom_checks == pytest.approx(0.0)
     assert NO_COMPONENTS_EVALUATED not in violating_runner.reasons, violating_runner.reasons
+
+
+# --------------------------------------------------------------------------
+# 18. Every registered component narrates itself in a real grade
+# --------------------------------------------------------------------------
+
+_COMPONENT_NARRATION: Mapping[str, tuple[str, str]] = MappingProxyType(
+    {
+        "state_checks": ("state_checks.jsonpaths", "JSONPath:"),
+        "transcript_rules": ("transcript_rules.must_contain", "Transcript:"),
+        "trace_checks": ("trace_checks.constraints", "Trace checks:"),
+        "llm_judge": ("llm_judge", "Judge:"),
+        "custom_checks": ("custom_checks", "Custom checks:"),
+    }
+)
+"""Per registry component: an author key that populates it, and the marker it emits.
+
+The key half is an **author** key rather than the bare registry name, because
+:func:`_drive_the_key` keys on author keys and :func:`_drive_parity_pack` resolves a
+pack as ``grading_parity/<author key, dots to underscores>``; no pack exists under
+``state_checks`` or ``transcript_rules``.
+
+The marker half is what a row asserts beyond the absence of
+:data:`NO_COMPONENTS_EVALUATED`. Every pack these rows drive declares one component,
+so deleting that component's branch from ``build_grade_reasons`` empties ``reasons``
+and the trial falls to the fallback — measured on all five rows, and the absence
+clause catches each. What it cannot catch is a marker that *changed*: a renamed
+segment leaves ``reasons`` non-empty and the absence clause true, so the marker is
+the only half that reds. It is also the half that would discriminate a deletion on a
+multi-component trial, where the other components' segments keep the absence clause
+true — a shape no pack in this table reaches.
+
+Both halves are written out rather than derived. Comprehended from
+:data:`GRADE_COMPONENTS` the totality assertion below would compare a set against
+itself, and read from the production constants the marker would follow a rename
+instead of catching one — the same reason ``accountable_author_keys()`` and lock 15's
+driver table are written out.
+"""
+
+
+def test_every_registered_component_has_a_narration_row():
+    """A component absent from the table would drop out of the sweep, not fail it."""
+    unnarrated = sorted({spec.name for spec in GRADE_COMPONENTS} - set(_COMPONENT_NARRATION))
+    stale = sorted(set(_COMPONENT_NARRATION) - {spec.name for spec in GRADE_COMPONENTS})
+
+    assert not unnarrated and not stale, (
+        f"the component narration table names no row for {unnarrated or 'nothing'} and "
+        f"names {stale or 'nothing'} that is not a registered grade component. A "
+        "component without a row is one whose verdict may reach no grade at all"
+    )
+
+
+@pytest.mark.parametrize(
+    ("author_key", "marker"),
+    tuple(
+        pytest.param(author_key, marker, id=component)
+        for component, (author_key, marker) in _COMPONENT_NARRATION.items()
+    ),
+)
+def test_every_registered_component_narrates_itself_in_a_real_grade(
+    author_key, marker, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """The fold enumerates the registry; the renderer enumerated by hand.
+
+    Nothing held the second list to the first, which is how ``custom_checks`` came to
+    score a trial and contribute no sentence to its grade. This is the registry
+    holding the renderer: a component added to :data:`GRADE_COMPONENTS` without a
+    branch that names it fails here rather than shipping a grade that says the
+    component was never evaluated.
+
+    Driven through the same real ``RegisterTrial → GradeTrial`` as lock 15, so what is
+    read is a grade the runner built rather than a call to the renderer with a
+    hand-made component dict — the renderer was always *reachable*; the caller never
+    gave it anything, and a unit lock over ``build_grade_reasons`` would have been
+    green through the whole defect.
+    """
+    _, response = _drive_the_key(
+        author_key,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        monkeypatch,
+        label="narration",
+    )
+
+    assert response.success is True, response.error
+    reasons = response.grade.reasons
+    assert marker in reasons, (
+        f"{author_key} scored its component and the grade never named it: no "
+        f"{marker!r} in {reasons!r}"
+    )
+    assert NO_COMPONENTS_EVALUATED not in reasons, reasons
 
 
 # --------------------------------------------------------------------------

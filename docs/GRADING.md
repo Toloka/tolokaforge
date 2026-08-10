@@ -116,6 +116,14 @@ evaluator's decision, the audit or the combine. A key the manifest enforces at t
 integration tier for its **score** is still driven here for its **recording site**;
 the two are orthogonal.
 
+The same suite drives one real trial per **component** and asserts the grade names
+it. Every component the registry carries — `state_checks`, `transcript_rules`,
+`trace_checks`, `llm_judge`, `custom_checks` — contributes its own segment to
+`Grade.reasons` under the marker it emits, so a trial that scored a component and
+said nothing about it is a red test rather than a grade a reader has to notice is
+incomplete. The fold enumerates the registry; this is what holds the renderer,
+which enumerates by hand, to the same list.
+
 Three properties keep the ledger from rejecting configs that grade correctly:
 
 - **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
