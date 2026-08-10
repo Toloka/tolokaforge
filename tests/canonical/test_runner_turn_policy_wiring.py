@@ -30,6 +30,7 @@ import pytest
 
 from tolokaforge.core.llm.client import GenerationResult, UserSimulator
 from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import Message, TerminationReason
 from tolokaforge.core.run_display_events import LLMCallObservation
 from tolokaforge.core.runner import TrialRunner
@@ -53,6 +54,9 @@ class _ScriptedAgent:
         observation: LLMCallObservation | None = None,
     ) -> GenerationResult:
         return self._items.pop(0) if len(self._items) > 1 else self._items[0]
+
+    def classify_loop_error(self, exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())
 
 
 def _agent(text: str) -> GenerationResult:
