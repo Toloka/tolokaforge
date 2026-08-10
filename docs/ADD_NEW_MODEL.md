@@ -88,7 +88,7 @@ don't need to cut a new wheel. Put the same preset entry in a separate YAML
 file and point the engine at it:
 
 ```yaml
-# my_overlay.yaml — same schema as model_presets.yaml
+# my_overlay.yaml — the model_presets.yaml schema, plus `litellm_models:`
 presets:
   my_provider_new_model:
     match: ["my-provider/new-model*"]
@@ -117,6 +117,12 @@ overlay path and the offending key):
   `match:` globs let you shadow a bundled preset.
 - Same-named overlay presets replace the bundled entry (logged at INFO so the
   swap is visible).
+- A `litellm_models:` entry needs a non-empty `evidence` and at least one
+  capability set true, its key must be a full `<provider>/<model>` litellm id,
+  and unknown keys are rejected. That block is how a model litellm's own map
+  does not carry gets its parameters admitted - without it the provider
+  refuses `tools` before the request is sent. See
+  [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
 
 For distributed runs, the overlay path passed to `tolokaforge prepare` is
 persisted into the run queue's state file. Subsequent `tolokaforge worker`
