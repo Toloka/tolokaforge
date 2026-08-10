@@ -210,6 +210,16 @@ class RunnerInitialStateConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def provisions_database(initial_state: RunnerInitialStateConfig) -> bool:
+    """Whether registering a trial with this initial state gives it a DB service.
+
+    Every field the DB service is initialised from counts, not just the rows: a task
+    declaring only ``schemas`` or only ``unstable_fields`` still provisions a database,
+    and every grading branch that reads one still reaches it.
+    """
+    return bool(initial_state.tables or initial_state.schemas or initial_state.unstable_fields)
+
+
 # =============================================================================
 # Pre-Trial Actions (from TASK_DESCRIPTION_SCHEMA.md)
 # =============================================================================
@@ -437,6 +447,20 @@ class RunnerStateChecksConfig(BaseModel):
             golden_actions=self.golden_actions,
             weight=self.hash_weight,
         )
+
+    def authored_state_sources(self) -> dict[str, Any]:
+        """This block's state sources under the author's key names.
+
+        The same translation :meth:`_authored_hash_block` performs, one level up, for a
+        rule that reads the whole block rather than the hash alone. Only the three keys
+        declaring a source are carried: the rest of the block configures how a source is
+        scored, not whether one is read.
+        """
+        return {
+            "hash": self._authored_hash_block().model_dump(),
+            "jsonpaths": self.jsonpath_checks,
+            "db_probes": [probe.model_dump() for probe in self.db_probes],
+        }
 
     def hash_comparison_basis(self) -> HashComparisonBasis:
         """Which state a hash comparison over this config compares the trial against.

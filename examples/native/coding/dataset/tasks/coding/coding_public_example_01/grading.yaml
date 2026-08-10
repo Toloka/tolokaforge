@@ -6,8 +6,8 @@ combine:
   pass_threshold: 0.8
 state_checks:
   jsonpaths:
-    - path: "$.filesystem['/env/fs/agent-visible/buggy_math.py']"
-      contains: "amount * (1 + tax_rate)"
+    - path_glob: "/env/fs/agent-visible/buggy_math.py"
+      contains_ci: "amount * (1 + tax_rate)"
       description: "Tax computation uses additive formulation"
     - path_glob: "/env/fs/agent-visible/submissions/*"
       contains_ci: "root cause"

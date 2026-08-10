@@ -6,8 +6,15 @@ description: |
   declares two deterministic components a single trial splits — one scores 0.0 and
   the other 1.0 — so the three aggregations give three different scores.
 
+# RegisterTrial provisions the trial's DB service from initial_state, and this pack's
+# jsonpath reads `$.db.orders`. The seeded status contradicts the assertion's
+# `equals: shipped` deliberately: the fixture's whole point is one trial that splits
+# into a 0.0 component and a 1.0 one, so the three aggregations give three scores.
 initial_state:
-  json_db: null
+  json_db:
+    orders:
+      - id: O1
+        status: pending
 
 tools:
   agent:

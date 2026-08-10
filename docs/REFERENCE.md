@@ -123,10 +123,12 @@ combine:
   pass_threshold: 0.8
 
 state_checks:
-  jsonpaths:
-    - path: "$.users[?(@.id=='123')].verified"
+  jsonpaths:                          # a path: is rooted at db (or tables) — the state
+                                      # both substrates read from the trial's database.
+                                      # A file is asserted with path_glob: + contains_ci:
+    - path: "$.db.users[?(@.id=='123')].verified"
       equals: true
-    - path: "$.orders[-1].status"
+    - path: "$.db.orders[-1].status"
       equals: "completed"
   hash:                               # CLOSED: enabled, expect_initial_state,
                                       # golden_actions, weight, description — any

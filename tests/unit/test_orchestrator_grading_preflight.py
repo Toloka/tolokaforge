@@ -147,10 +147,21 @@ _MCP_TOOLS_FIXTURE = [
 
 
 def _write_builtin_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
-    """A task whose one tool is a builtin — a closed schema the gate can read."""
+    """A task whose one tool is a builtin — a closed schema the gate can read.
+
+    It seeds a table, because a block reading the trial's database is authorable only
+    on a task that provisions one and several of these fixtures enable the hash.
+    """
     task_dir = root / "tasks" / task_id
     task_dir.mkdir(parents=True)
-    _write_task_yaml(task_dir, task_id, {"agent": {"enabled": ["http_request"]}}, grading)
+    (task_dir / "initial_state.json").write_text(json.dumps({"widgets": [{"id": "W1"}]}))
+    _write_task_yaml(
+        task_dir,
+        task_id,
+        {"agent": {"enabled": ["http_request"]}},
+        grading,
+        initial_state="initial_state.json",
+    )
 
 
 def _write_mcp_task(root: Path, task_id: str, grading: dict[str, Any]) -> None:
