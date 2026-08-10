@@ -26,6 +26,11 @@
 #     preset stays on ``null``: injecting the filler elsewhere creates
 #     a few-shot pattern that Gemini echoes back as its own response
 #     (2026-04-30 OTS regression).
+#   assistant_text_policy:    passthrough (default; every shipped preset)
+#     A subclass reshapes ``message.content`` before it lands in
+#     ``GenerationResult.text`` — used out-of-tree to strip provider
+#     markers (e.g. Cohere's ``<|START_TEXT|>…<|END_TEXT|>`` delimiters
+#     under #929) without an engine release.
 
 default:
   schema_sanitizer: passthrough

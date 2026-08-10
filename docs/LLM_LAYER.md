@@ -22,6 +22,7 @@ for the design rationale and the canonical litellm surface.
 | [`content_policy.py`](../tolokaforge/core/llm/content_policy.py) | Tool-result content format (OpenAI / Anthropic) |
 | [`message_assembly_policy.py`](../tolokaforge/core/llm/message_assembly_policy.py) | Empty-assistant-content filler injection (Nova-only) |
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
+| [`assistant_text_policy.py`](../tolokaforge/core/llm/assistant_text_policy.py) | Assistant-text reshaping between litellm parse and `GenerationResult.text` |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
@@ -965,6 +966,50 @@ JSON-encoded array of `{key,…}` objects for a dict-map), the response
 policy recovers the correct native shape before the tool implementation
 sees it.
 
+## `assistant_text_policy`
+
+```python
+class AssistantTextPolicy(Protocol):
+    def parse_assistant_text(
+        self, text: str, *, model_config: ModelConfig
+    ) -> str: ...
+```
+
+Reshapes the assistant's textual reply between litellm's parse and
+`GenerationResult.text` — the string that lands in `trajectory.yaml`,
+transcript graders, and LLM-judge input. Wired into
+[`LLMClient._assemble_result`](../tolokaforge/core/llm/client.py): after
+`text = message.content or ""` the client calls
+`self.capabilities.assistant_text_policy.parse_assistant_text(text, model_config=self.config)`
+and stores the return value. The full text is passed unmodified so a
+subclass can dispatch on structure (start/end markers, template tokens)
+rather than on a pre-digested slice; `ModelConfig` is threaded through so
+a single subclass can match by resolved model name, provider, or
+capability overrides.
+
+The mock-generator path at `_assemble_result`'s synthetic branch is
+deliberately excluded — offline tests inject deterministic strings and
+must stay policy-agnostic, otherwise every offline fixture couples to
+whatever preset the run resolves.
+
+One implementation ships:
+
+* `PassthroughAssistantText` (default) — returns the text unchanged.
+  Every shipped preset resolves to this class, so wire output is
+  byte-identical to a hookless client.
+
+**Load-bearing case — Cohere marker stripping ([#929](https://github.com/Toloka/tolokaforge/issues/929)).**
+Cohere Command-A+ wraps every reply in `<|START_TEXT|>…<|END_TEXT|>`
+delimiters on the wire; `ResponsePolicy` reshapes only tool-call
+arguments, so pre-slot the delimiters flowed into `trajectory.yaml` and
+depressed LLM-judge scores. Under this slot a `CohereMarkerAssistantText`
+subclass in `tolokaforge_models/policies/` strips the markers without any
+engine edit — proven by
+[`tests/unit/llm/test_assistant_text_policy_seam.py`](../tests/unit/llm/test_assistant_text_policy_seam.py),
+which threads a fixture-scope subclass through
+`build_capabilities` → `_assemble_result` and asserts the markers are
+gone.
+
 ## `capabilities`
 
 ```python
@@ -978,6 +1023,7 @@ class ModelCapabilities:
     reasoning_codec:         ReasoningCodec        = field(default_factory=NoReasoningCodec)
     cache_policy:            CachePolicy           = field(default_factory=NoCache)
     message_assembly_policy: MessageAssemblyPolicy = field(default_factory=NullMessageAssembly)
+    assistant_text_policy:   AssistantTextPolicy   = field(default_factory=PassthroughAssistantText)
 ```
 
 ## `presets`
@@ -995,15 +1041,15 @@ Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
 the same three policies. Keep this table in sync with
 [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
 
-| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` |
-|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|
-| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            |
-| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       |
-| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       |
-| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          |
-| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          |
-| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          |
-| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `openai`         | `none`            |
+| Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
+|-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
+| `default`               | *(fallthrough)*                                                  | `passthrough`      | `standard`          | `none`            | `openai`         | `none`            | `null`                    | `passthrough`           |
+| `anthropic_claude_4_7`  | `anthropic/claude-{opus,sonnet}-4.7*`, `*claude-{opus,sonnet}-4.7*` | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `anthropic`             | `anthropic/*`, `*claude*`                                        | `passthrough`      | `standard`          | `none`            | `anthropic`      | `anthropic`       | `null`                    | `passthrough`           |
+| `openai_gpt5`           | `openai/gpt-5*`, `*gpt-5*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `xai_grok`              | `x-ai/*`, `xai/*`, `grok*`                                       | `strict`           | `array_dict_map`    | `none`            | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `qwen`                  | `qwen/*`, `qwen3*`                                               | `strict`           | `array_dict_map`    | `dict_map_hints`  | `openai`         | `openai`          | `null`                    | `passthrough`           |
+| `aws_nova`              | `nova*` (+ provider `nova`)                                      | `passthrough`      | `unwrap_input`      | `none`            | `nova`           | `none`            | `nova`                    | `passthrough`           |
 
 Order matters — first match wins. `anthropic_claude_4_7` is declared
 *before* the generic `anthropic` preset so Claude 4.7 picks up its
@@ -1034,9 +1080,12 @@ produce the JSON-serialisable preset fingerprint landed on
 * `resolve_policy_names(capabilities) -> dict[str, str]` — reverse-lookup
   from policy instances on a `ModelCapabilities` to the registry names
   (`schema_sanitizer`, `prompt_policy`, `content_policy`,
-  `response_policy`, `reasoning_codec`, `cache_policy`). `params_policy`
+  `response_policy`, `reasoning_codec`, `cache_policy`,
+  `message_assembly_policy`, `assistant_text_policy`). `params_policy`
   is intentionally omitted — it is a stateful `GenerationParams`
-  dataclass, not a single-named policy.
+  dataclass whose constructor kwargs are already serialised alongside
+  the fingerprint via `model_config.<role>.capabilities`, not a
+  single-named policy.
 
 Both helpers raise `ValueError` on unknown inputs rather than returning
 placeholders — per AGENTS.md rule #1 we surface drift immediately. Unit

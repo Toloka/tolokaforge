@@ -315,16 +315,67 @@ and set `cache_policy: none` on the preset. Observe cache-hit rates via
 `Metrics.usage.cache_read_input_tokens` + `cache_creation_input_tokens` in
 `metrics.yaml`.
 
-To add support for a new model, add an entry to `tolokaforge/core/data/model_presets.yaml`:
+To add support for a new model, add an entry to
+`tolokaforge/core/data/model_presets.yaml`. Nine slots exist today —
+`schema_sanitizer`, `prompt_policy`, `content_policy`, `response_policy`,
+`reasoning_codec`, `cache_policy`, `params_policy`,
+`message_assembly_policy`, `assistant_text_policy` — each mapping 1:1 to
+a class registry in
+[`tolokaforge/core/llm/presets.py`](../tolokaforge/core/llm/presets.py).
+The overlay validator rejects unknown slot names (`ValueError` with a
+`difflib.get_close_matches` suggestion) and unknown nested `params:`
+keys inside a slot block. See
+[ADR-0030 § Extension-point surface](adr/0030-tolokaforge-models-split.md#extension-point-surface-new--widening).
+
+Each slot value takes one of two shapes:
+
+1. **Bare `name` (legacy).** Deprecated since v0.17.0; removed in
+   v0.18.0. Works for slots whose class takes no constructor kwargs.
+2. **`{name, params}` mapping (recommended).** The `params` dict is
+   forwarded to the class constructor, so a policy configurable at YAML
+   level (e.g. Gemini's placeholder-signature filter, Nova's alternate
+   filler string) needs no engine code change.
 
 ```yaml
 presets:
   my_new_model:
     match: ["my-provider/my-model*"]
-    schema_sanitizer: strict       # passthrough | strict
-    prompt_policy: dict_map_hints  # none | dict_map_hints
-    cache_policy: none             # none | anthropic_ephemeral (Anthropic only)
+    schema_sanitizer: strict                     # bare name — no ctor kwargs needed
+    prompt_policy: dict_map_hints
+    cache_policy: none
+    reasoning_codec: {name: gemini, params: {drop_placeholder_signature: true}}
+    message_assembly_policy: {name: nova, params: {empty_assistant_filler: "Sure."}}
+    # Top-level `params:` is the `GenerationParams` shorthand — its keys must
+    # match `GenerationParams.KNOWN_KEYS`:
+    params:
+      supports_seed: true
+      reasoning_via_extra_body: true
 ```
+
+**Deprecation window.** `_RECOGNISED_OVERRIDE_KEYS` (the
+`capabilities:` bespoke override keys landing on
+`ModelConfig.capabilities`) follows the same v0.17.x → v0.18.0 window
+as bare `name` slot values and is removed together in v0.18.0 — see
+[#1017](https://github.com/Toloka/tolokaforge/issues/1017).
+
+**Mutex on the `params_policy` slot.** A preset may declare **either** a
+top-level `params: {…}` shorthand (the historical form; treated as
+`params_policy: {name: generation_params, params: {…}}`) **or** a
+slot-nested `params_policy: {name: …, params: {…}}` — never both.
+Overlay load raises `ValueError` naming both source keys and the preset;
+merging or picking one silently would produce a fingerprint that
+disagrees with the actual constructor kwargs.
+
+**Legacy `capabilities:` overrides — modern equivalents.** The
+per-`ModelConfig` `capabilities:` block still accepts the historical
+bespoke keys (`gemini_drop_placeholder_signature`,
+`dict_map_prompt_hints`, `supports_typed_dict_maps`, …). The modern
+equivalent lives in the preset overlay under the appropriate slot: e.g.
+`capabilities: {gemini_drop_placeholder_signature: true}` is equivalent
+to a preset overlay that declares
+`reasoning_codec: {name: gemini, params: {drop_placeholder_signature: true}}`.
+The legacy keys stay accepted through v0.17.x and go away in v0.18.0
+alongside `_RECOGNISED_OVERRIDE_KEYS`.
 
 ### Preset overlay file (no engine release required)
 
