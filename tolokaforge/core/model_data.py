@@ -16,10 +16,12 @@ is already resolved by the CLI startup path before an orchestrator write
 site invokes :func:`compute_models_fingerprint`.
 
 See ADR-0030 § "Fingerprinting for auditability" for the wheel-split
-context. Pre-cutover, :data:`MODELS_PACKAGE_VERSION` is the literal
-``"in-tree"`` sentinel; #938 moves the three constants
-(:data:`MODELS_PACKAGE_VERSION`, :data:`MODELS_MINIMUM_ENGINE_VERSION`,
-:data:`MODELS_FINGERPRINT_API_VERSION`) into the ``tolokaforge-models``
+context. While the model data still ships in the engine wheel,
+:data:`MODELS_PACKAGE_VERSION` is the literal ``"in-tree"`` sentinel and
+the three module constants (:data:`MODELS_PACKAGE_VERSION`,
+:data:`MODELS_MINIMUM_ENGINE_VERSION`,
+:data:`MODELS_FINGERPRINT_API_VERSION`) are sourced here; when the
+``tolokaforge-models`` wheel-split lands they will be sourced from that
 wheel's ``__init__``.
 """
 
@@ -27,9 +29,10 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any
+from typing import Annotated, Any, Final, Literal
 
-from pydantic import BaseModel, ConfigDict
+from packaging.specifiers import InvalidSpecifier, SpecifierSet
+from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
 
 from tolokaforge.core.llm.presets import get_resolved_presets
 from tolokaforge.core.pricing import MODEL_PRICING
@@ -45,19 +48,19 @@ __all__ = [
 ]
 
 
-#: Pre-cutover sentinel — flipped to the ``tolokaforge-models`` wheel's
-#: PEP 440 version string when #938 lands.
-MODELS_PACKAGE_VERSION: str = "in-tree"
+#: Sentinel used while model data ships in the engine wheel; a real
+#: PEP 440 version string replaces it when the wheel-split lands.
+MODELS_PACKAGE_VERSION: Final[str] = "in-tree"
 
 #: PEP 440 specifier naming the engine floor the current bundled model
-#: data (with #931's widened :class:`ModelCertificate`) is compatible
-#: with. #938 will source this from the wheel.
-MODELS_MINIMUM_ENGINE_VERSION: str = ">=0.16,<0.17"
+#: data (tracking #931's widened :class:`ModelCertificate`) is compatible
+#: with.
+MODELS_MINIMUM_ENGINE_VERSION: Final[str] = ">=0.16,<0.17"
 
 #: Integer version of the fingerprint payload contract; bumped whenever
 #: :func:`compute_models_fingerprint` changes the shape of the hashed
 #: payload in a way readers must know about.
-MODELS_FINGERPRINT_API_VERSION: int = 1
+MODELS_FINGERPRINT_API_VERSION: Final[int] = 1
 
 
 class ModelsFingerprint(BaseModel):
@@ -68,7 +71,7 @@ class ModelsFingerprint(BaseModel):
     package_version:
         The ``tolokaforge-models`` PEP 440 version, or the literal
         ``"in-tree"`` sentinel while the data still ships in the engine
-        wheel (pre-#938).
+        wheel.
     content_sha256:
         Lowercase hex sha256 over the canonicalised
         ``{presets, pricing, certificates}`` triple. Same inputs →
@@ -84,9 +87,18 @@ class ModelsFingerprint(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     package_version: str
-    content_sha256: str
-    api_version: int
+    content_sha256: Annotated[str, StringConstraints(pattern=r"^[0-9a-f]{64}$")]
+    api_version: Literal[1]
     minimum_engine_version: str
+
+    @field_validator("minimum_engine_version")
+    @classmethod
+    def _validate_minimum_engine_version(cls, value: str) -> str:
+        try:
+            SpecifierSet(value)
+        except InvalidSpecifier as exc:
+            raise ValueError(f"not a valid PEP 440 specifier: {value!r}") from exc
+        return value
 
 
 def _capability_key(capability: Capability) -> str:
@@ -181,8 +193,8 @@ def compute_models_fingerprint() -> ModelsFingerprint:
 def decode_models_fingerprint(state: dict[str, Any]) -> ModelsFingerprint | None:
     """Return the parsed fingerprint from an ``engine_run_state.json`` dict.
 
-    * ``None`` when the ``models_fingerprint`` field is absent (pre-#933
-      runs never wrote it).
+    * ``None`` when the ``models_fingerprint`` field is absent (older
+      state files that predate this field).
     * :class:`ModelsFingerprint` when the field is a well-formed dict.
     * Raises :class:`pydantic.ValidationError` when the field is a dict
       but malformed — loud-fail matches the existing malformed-JSON

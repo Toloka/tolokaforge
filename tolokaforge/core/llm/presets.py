@@ -436,8 +436,9 @@ def get_resolved_presets() -> dict[str, Any]:
     Public accessor for callers that need the merged preset state as data
     — the model-data fingerprint (see
     :func:`tolokaforge.core.model_data.compute_models_fingerprint`),
-    diagnostics tools, or a future report generator. Returns a fresh
-    ``dict`` on every call so callers cannot mutate the module cache.
+    diagnostics tools, and any other caller that needs the merged data
+    snapshot without re-reading YAML. Returns a fresh ``dict`` on every
+    call so callers cannot mutate the module cache.
     """
     return copy.deepcopy(_load_presets())
 

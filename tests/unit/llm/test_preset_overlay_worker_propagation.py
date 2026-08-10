@@ -136,7 +136,7 @@ class TestEngineRunStatePersistence:
     def test_absent_fingerprint_field_returns_none(self, tmp_path: Path) -> None:
         # A run prepared before the fingerprint field was introduced has
         # the other fields but no ``models_fingerprint``. The reader must
-        # tolerate that shape — additive-compat with pre-#933 state files.
+        # tolerate that shape.
         (tmp_path / "engine_run_state.json").write_text(
             json.dumps({"run_id": "run-legacy", "presets_file": None})
         )

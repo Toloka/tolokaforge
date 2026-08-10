@@ -1,6 +1,6 @@
 """Unit tests for :mod:`tolokaforge.core.model_data`.
 
-Locks the fingerprint contract behaviour before the Stage 2 wire-in:
+Locks the fingerprint contract behaviour:
 
 * Determinism — same resolved state, byte-identical sha.
 * Overlay sensitivity — preset overlay, pricing overlay, and certificate
@@ -191,3 +191,33 @@ def test_decode_round_trip_with_valid_payload() -> None:
 def test_decode_raises_validation_error_on_malformed_payload() -> None:
     with pytest.raises(ValidationError):
         md.decode_models_fingerprint({"models_fingerprint": {"package_version": "x"}})
+
+
+def test_minimum_engine_version_rejects_invalid_pep440_specifier() -> None:
+    with pytest.raises(ValidationError):
+        md.ModelsFingerprint(
+            package_version="in-tree",
+            content_sha256="a" * 64,
+            api_version=1,
+            minimum_engine_version="not a specifier",
+        )
+
+
+def test_api_version_rejects_unknown_contract_version() -> None:
+    with pytest.raises(ValidationError):
+        md.ModelsFingerprint(
+            package_version="in-tree",
+            content_sha256="a" * 64,
+            api_version=99,
+            minimum_engine_version=">=0.16,<0.17",
+        )
+
+
+def test_content_sha256_rejects_non_hex_or_truncated_digest() -> None:
+    with pytest.raises(ValidationError):
+        md.ModelsFingerprint(
+            package_version="in-tree",
+            content_sha256="not_hex_valid_content",
+            api_version=1,
+            minimum_engine_version=">=0.16,<0.17",
+        )
