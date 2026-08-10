@@ -6,8 +6,8 @@ combine:
   pass_threshold: 0.8
 state_checks:
   jsonpaths:
-    - path: "$.filesystem['/env/fs/agent-visible/CHANGELOG_DRAFT.md']"
-      contains: "STATUS: READY"
+    - path_glob: "/env/fs/agent-visible/CHANGELOG_DRAFT.md"
+      contains_ci: "STATUS: READY"
       description: "Changelog placeholder finalized to READY via str_replace"
     - path_glob: "/env/fs/agent-visible/release/*"
       contains_ci: "changelog"

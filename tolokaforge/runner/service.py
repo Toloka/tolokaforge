@@ -65,6 +65,12 @@ from tolokaforge.core.grading.golden_replay import (
     resolve_golden_action_names,
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
+from tolokaforge.core.grading.jsonpath_addressing import (
+    JsonPathTarget,
+    addresses_the_database,
+    block_addresses_the_database,
+    unreachable_target,
+)
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, RagServiceKnowledgeSearch
@@ -133,6 +139,7 @@ from tolokaforge.runner.models import (
     KeyAccountingRecord,
     RecordedToolCall,
     RunnerGradeComponents,
+    RunnerInitialStateConfig,
     RunnerStateChecksConfig,
     SearchConfig,
     SearchPlane,
@@ -143,6 +150,7 @@ from tolokaforge.runner.models import (
     TraceChecksResult,
     TranscriptEvaluationResult,
     TranscriptRulesConfig,
+    provisions_database,
 )
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
@@ -395,6 +403,73 @@ def _no_plane_refusal(
         f"built. Declare search.plane: typesense for a corpus this run's TypeSense serves, or "
         f"search.plane: rag_service with search.enabled: true."
     )
+
+
+def _unreachable_state_checks_refusal(
+    state_checks: RunnerStateChecksConfig, initial_state: RunnerInitialStateConfig
+) -> str | None:
+    """Why this ``state_checks`` block cannot be graded against this trial, if it cannot.
+
+    The sentence alone; the caller names the trial it refused, so one call site decides
+    how every refusal in this family opens on the wire.
+
+    Two authoring defects leave ``GradeTrial`` with no state to read, and each is
+    refused by name rather than scored, because the score either would produce is a
+    component value the agent did not earn. A block reading the database of a task that
+    provisions none reaches the DB client for a trial ``RegisterTrial`` never registered
+    there; a ``path:`` rooted outside what the runner composes resolves against a
+    JSONPath state built from the database alone, and scores ``0.0`` for a state never
+    read.
+
+    The authoring gate states the same rule before a trial is paid for, and neither
+    point makes the other redundant: ``core.grading.config_validation`` is named in
+    :data:`~tolokaforge.core._runner_subset.RUNNER_SUBSET_EXCLUDED_FILES`, so the gate
+    ships in the base wheel and never inside the runner image, and it is skipped
+    wholesale for a task whose grading source cannot be interrogated. A trial arriving
+    here may never have been offered to it.
+    """
+    if block_addresses_the_database(state_checks.authored_state_sources()) and (
+        not provisions_database(initial_state)
+    ):
+        if state_checks.hash_enabled:
+            where = "state_checks.hash"
+            declares = (
+                f"is enabled and compares against {state_checks.hash_comparison_basis().value}"
+            )
+        else:
+            assertion = next(a for a in state_checks.jsonpath_checks if addresses_the_database(a))
+            where = "state_checks.jsonpaths"
+            described = assertion.get("description")
+            declares = f"declares path {assertion.get('path')!r}" + (
+                f" ({described})" if described else ""
+            )
+        return (
+            f"{where} {declares}, which reads the trial's database, but the task's "
+            f"initial_state provisions none — no tables, no schemas, no unstable_fields "
+            f"— so no DB service was registered for this trial and there is no state for "
+            f"{where} to read. Seed the state the assertion reads under "
+            f"initial_state.json_db, or drop {where} from the pack."
+        )
+
+    for assertion in state_checks.jsonpath_checks:
+        target = unreachable_target(assertion)
+        if target is None:
+            continue
+        described = assertion.get("description")
+        remedy = (
+            "Address a file with path_glob: and contains_ci:, which both substrates read "
+            "the same way."
+            if target is JsonPathTarget.FILESYSTEM
+            else "Address the trial's database, which is rooted at db or tables."
+        )
+        return (
+            f"state_checks.jsonpaths declares path {assertion.get('path')!r}"
+            + (f" ({described})" if described else "")
+            + ", which addresses state the runner's JSONPath grading does not carry: it "
+            "composes db and tables from the trial's database and nothing else, so this "
+            f"assertion can never match there. {remedy}"
+        )
+    return None
 
 
 # =============================================================================
@@ -906,20 +981,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             judge_model_config=trial_spec.judge_model_config,
         )
 
-        # Initialize DB Service with initial_state — only when the trial
-        # actually declares DB state to initialise. Tasks that use no DB
-        # tables / schemas / unstable_fields (e.g. adapters that grade via
-        # `custom_checks` + an HTTP endpoint on a sidecar, and drive no
-        # runner-managed state) skip the DB call entirely, so the runner
+        # A task that provisions no database (e.g. an adapter grading via
+        # `custom_checks` + an HTTP endpoint on a sidecar, driving no
+        # runner-managed state) skips the DB call entirely, so the runner
         # provisions cleanly even when no `db-service` sits in the trial's
-        # compose stack. Matches the guard the state-diff renderer already
-        # applies at `_maybe_render_state_diff` (checks `not initial_state.tables`).
-        # FAIL FAST is preserved for trials that DO declare DB state.
+        # compose stack. FAIL FAST is preserved for trials that DO declare DB state.
         initial_state = task_description.initial_state
-        needs_db = bool(
-            initial_state.tables or initial_state.schemas or initial_state.unstable_fields
-        )
-        if needs_db:
+        if provisions_database(initial_state):
             try:
                 # Run async operation on dedicated event loop thread
                 self._run_async(
@@ -1456,16 +1524,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 error=f"Grading error: {type(e).__name__}: {str(e)}",
             )
 
-    async def _assemble_jsonpath_state(self, trial_id: str) -> dict[str, Any]:
+    async def _assemble_jsonpath_state(
+        self, trial_id: str, *, fetch_db: bool = True
+    ) -> dict[str, Any]:
         # Feeds path: jsonpath state_checks. Two roots: "db"/"tables" carry
         # the DB service's stable state (empty when the trial has no DB —
         # filesystem-only tasks); "filesystem" mirrors /work/ back out under
         # the logical /env/fs/agent-visible/ layout the task YAML asserts
         # against, so ``$.filesystem['/env/fs/agent-visible/foo.py']`` can
         # match the file the agent actually edited.
+        db_state: dict[str, Any] = {}
         try:
-            stable = await self.db_client.get_stable_state(trial_id)
-            db_state: dict[str, Any] = stable.data
+            if fetch_db:
+                stable = await self.db_client.get_stable_state(trial_id)
+                db_state = stable.data
         except DBTrialNotFoundError:
             # Filesystem-only tasks never call db_client.init_trial(), so an
             # absent DB is the expected shape. For tasks that DID declare a
@@ -1475,7 +1547,6 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             logger.warning(
                 f"GradeTrial: {trial_id} - DB trial not found; grading with empty DB state"
             )
-            db_state = {}
         return {
             "db": db_state,
             "tables": db_state,
@@ -1583,6 +1654,20 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Get state_checks config (may name a hash source)
         state_checks_config = grading_config.state_checks
 
+        if state_checks_config:
+            state_checks_refusal = _unreachable_state_checks_refusal(
+                state_checks_config, trial_context.task_description.initial_state
+            )
+            if state_checks_refusal is not None:
+                logger.error(f"GradeTrial: {trial_id} - {state_checks_refusal}")
+                return pb2.GradeTrialResponse(
+                    success=False,
+                    error=(
+                        f"Trial {trial_id!r} cannot be graded as authored: "
+                        f"{state_checks_refusal}"
+                    ),
+                )
+
         # A) HASH-BASED GRADING
         # Run hash grading when hash_enabled is set (even with no source, which
         # represents refusal tasks where the expected state == initial state).
@@ -1622,11 +1707,19 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             # Only assemble a state dict when at least one assertion targets
             # it via ``path:``. File-only (``path_glob:``) checks never needed
             # a state dict; they read files off disk directly via
-            # ``evaluate_jsonpath_file_checks``.
+            # ``evaluate_jsonpath_file_checks``. The DB round-trip inside the
+            # assembly is further gated on a check actually addressing the
+            # database, so a filesystem-only pack costs no DB call and gains
+            # no DB failure mode.
             jsonpath_checks = state_checks_config.jsonpath_checks
             jsonpath_state = None
             if any(check.get("path") is not None for check in jsonpath_checks):
-                jsonpath_state = await self._assemble_jsonpath_state(trial_id)
+                jsonpath_state = await self._assemble_jsonpath_state(
+                    trial_id,
+                    fetch_db=any(
+                        addresses_the_database(check) for check in jsonpath_checks
+                    ),
+                )
             jsonpath_score, jsonpath_reasons = evaluate_jsonpath_checks(
                 jsonpath_checks,
                 state=jsonpath_state,

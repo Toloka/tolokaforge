@@ -54,6 +54,12 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.jsonpath_addressing import (
+    JsonPathTarget,
+    addresses_the_database,
+    block_addresses_the_database,
+    unreachable_target,
+)
 from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
@@ -688,6 +694,50 @@ _UNRESOLVED_SEEDED_TABLES_REASON = (
 
 _ID_FIELDS_ADDRESS = "state_checks.id_fields"
 
+_JSONPATHS_ADDRESS = "state_checks.jsonpaths"
+_HASH_ENABLED_ADDRESS = "state_checks.hash.enabled"
+
+_UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ = (
+    "no caller resolved the tables this task seeds — reading initial_state.json_db is the "
+    "native reading, and a task an adapter maintained outside this repository owns may seed "
+    "its state some other way — so whether this block reads a database the trial will have "
+    "is not checkable here"
+)
+
+_READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF = (
+    "{declares}, which reads the trial's database, but this task's initial_state seeds no "
+    "tables — so no DB service is registered for the trial and GradeTrial refuses it rather "
+    "than scoring it. Seed the state the block reads under initial_state.json_db, or drop "
+    "{where} from the pack."
+)
+
+_A_PATH_BEYOND_THE_RUNNERS_STATE = (
+    "path {path!r} addresses state the runner's JSONPath grading does not carry: it "
+    "composes db and tables from the trial's database and nothing else, while the core "
+    "engine also composes agent, user and filesystem — so this assertion scores on one "
+    "substrate and can never match on the other. {remedy}"
+)
+
+_ADDRESS_A_FILE_BY_GLOB = (
+    "Address a file with path_glob: and contains_ci:, the pairing both substrates read."
+)
+
+_ADDRESS_THE_DATABASE = "Address the trial's database, which is rooted at db or tables."
+
+_A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ = (
+    "path_glob {glob!r} is compared with {operator}, which the runner's file-content "
+    "evaluator does not read — it reads contains_ci alone, and an absent contains_ci is the "
+    "empty string, which every file contains. The assertion therefore passes on the runner "
+    "whatever the file says, while core scores it for real. Compare with contains_ci."
+)
+
+_NO_OPERATOR_AT_ALL = "no comparison operator"
+
+# The comparison vocabulary a ``jsonpaths`` assertion may write. Only ``contains_ci``
+# survives the runner's file-content evaluator, which is what the ``path_glob`` rule
+# below is about; the other three are legitimate beneath a ``path:``.
+_JSONPATH_COMPARISONS: tuple[str, ...] = ("equals", "equals_ci", "contains", "contains_ci")
+
 # Bound once so the signature's default is the value, not a call in the annotation.
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 _UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
@@ -755,6 +805,9 @@ def inspect_grading_authoring(
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
         _check_id_fields_against_seeded_tables(grading, seeded_tables),
+        _check_state_reads_a_database_the_task_seeds(grading, seeded_tables),
+        _check_jsonpaths_address_a_reachable_state(grading),
+        _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
     ]
     if inventory.known:
         reports += [
@@ -850,7 +903,7 @@ def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
     return bool(
         state_checks.get("jsonpaths")
         or state_checks.get("db_probes")
-        or hash_block.get("enabled")
+        or _hash_is_enabled(hash_block)
         or any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
     )
 
@@ -1073,12 +1126,13 @@ def _check_hash_source_declared(
     tuple names first. What the message claims of both substrates is only what holds of
     both: the flag is read before any source.
 
-    Both halves read the flag for truth rather than for ``True``, because that is
-    what decides the grade: core branches on its truthiness and the runner coerces
-    it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
-    would be stricter than either substrate. A source is read the same way — an
-    empty ``golden_actions`` list replays nothing, which is why both substrates
-    treat it as no source at all and why such a block is
+    Both halves read the flag through :func:`_hash_is_enabled`, which is the
+    value that decides the grade: both substrates build the block into a
+    ``StateHashConfig`` before either evaluator branches, so ``enabled: 1`` does read
+    the hash and ``enabled: "false"`` does not, and reading either off the key would
+    speak for a substrate neither of them is. A source is read for truth the same way —
+    an empty ``golden_actions`` list replays nothing, which is why both substrates treat
+    it as no source at all and why such a block is
     :func:`_check_sections_declare_something`'s rather than this rule's.
 
     Both halves also hold only where the authored block is the whole layer, which is
@@ -1098,7 +1152,7 @@ def _check_hash_source_declared(
     hash_block = authored_hash_block(grading)
     if hash_block is None:
         return AuthoringReport()
-    enabled = hash_block.get("enabled")
+    enabled = _hash_is_enabled(hash_block)
     declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
     if enabled and declared is None:
         return _an_enabled_block_declaring_no_source(hash_sources)
@@ -1112,7 +1166,9 @@ def _check_hash_source_declared(
         errors=(
             Finding(
                 f"state_checks.hash.{declared}",
-                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
+                _A_HASH_SOURCE_NOTHING_READS.format(
+                    key=declared, enabled=hash_block.get("enabled")
+                ),
             ),
         )
     )
@@ -1176,6 +1232,42 @@ def authored_hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return hash_block if isinstance(hash_block, Mapping) else None
 
 
+def _hash_is_enabled(hash_block: object) -> bool:
+    """Whether an authored ``state_checks.hash`` block switches hash grading on.
+
+    Every gate rule reading the flag reads it here, and the answer is
+    :class:`StateHashConfig`'s rather than the key's, because the coercion is part of
+    what the flag means: ``enabled: "false"`` is the ``False`` both substrates grade on,
+    and a rule reading the truthy string speaks for neither. Anything that is no mapping
+    declares no flag — the block's own shape validation owns that.
+
+    A block the model refuses is read off the key instead. That pack does not load, and
+    the one answer these rules may not give is the lenient one — a rule that blessed it
+    would pass an authoring defect through on the strength of a second one.
+    """
+    if not isinstance(hash_block, Mapping):
+        return False
+    try:
+        return StateHashConfig.model_validate(hash_block).enabled
+    except ValidationError:
+        return bool(hash_block.get("enabled"))
+
+
+def state_sources_as_a_run_reads_them(state_checks: Mapping[str, Any]) -> dict[str, Any]:
+    """This block's state sources, with ``hash.enabled`` read the way a run reads it.
+
+    The authored counterpart of
+    :meth:`~tolokaforge.runner.models.RunnerStateChecksConfig.authored_state_sources`,
+    for a caller holding YAML rather than a config it has already built. Both hand
+    :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`
+    the same flag, so the gate cannot refuse a block the runtime grades cleanly.
+
+    Only the flag is rewritten: every other key is the author's, which is the vocabulary
+    that predicate reads.
+    """
+    return {**state_checks, "hash": {"enabled": _hash_is_enabled(state_checks.get("hash"))}}
+
+
 def _authored_hash_is_a_state_source(grading: Mapping[str, Any]) -> bool:
     """Whether the authored block is enabled with something to compare against.
 
@@ -1209,7 +1301,8 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     so a shape defect is refused for a pack whose adapter can report neither rather than
     skipped with the rules that do need them.
 
-    Read under a truthy ``hash.enabled`` and then **whatever else the block declares**,
+    Read under a ``hash.enabled`` a run switches on and then **whatever else the block
+    declares**,
     unlike :func:`_check_golden_replay_world` beside it, which reads the source the
     replay needs a world for: ``NativeAdapter.to_task_description`` iterates the authored
     value whatever else the block says, so a shape no replay can iterate leaves the pack
@@ -1228,7 +1321,7 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     declares no other source, and nothing at all where it declares one.
     """
     hash_block = authored_hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return AuthoringReport()
     reason = unreplayable_golden_source(hash_block.get("golden_actions"))
     if reason is None:
@@ -1321,11 +1414,144 @@ def _check_id_fields_against_seeded_tables(
     return AuthoringReport(errors=tuple(Finding(_ID_FIELDS_ADDRESS, f) for f in findings))
 
 
+def _jsonpath_assertions(grading: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """The ``state_checks.jsonpaths`` entries written as mappings, in authored order."""
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return ()
+    return tuple(
+        entry for entry in state_checks.get("jsonpaths") or () if isinstance(entry, Mapping)
+    )
+
+
+def _check_state_reads_a_database_the_task_seeds(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A block reading the trial's database is authored on a task that provisions one.
+
+    ``RegisterTrial`` provisions the DB service from ``initial_state``, so a block
+    reading it on a task that seeds nothing reaches a service that was never started:
+    ``GradeTrial`` refuses the trial, and the whole trial is paid for first. That
+    refusal is the runtime half of this rule, and this is the half that costs nothing.
+
+    An enabled ``hash`` block counts with or without a declared source, because the
+    stable hash is fetched before any source is consulted — see
+    :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`,
+    the one predicate this rule and its runtime half both read. The flag reaching it is
+    :func:`_hash_is_enabled`'s, not the authored key's, so that the two halves
+    read one value as well as one predicate.
+
+    ``relaxed_validation`` does not downgrade this, unlike
+    :func:`_check_id_fields_against_seeded_tables`. That escape hatch exists for a
+    declaration whose keys no longer resolve against seeded records, which still grades;
+    a pack refused here does not grade at all on either substrate, so passing it would
+    hand the author a green gate and a failed run.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return AuthoringReport()
+    state_sources = state_sources_as_a_run_reads_them(state_checks)
+    if not block_addresses_the_database(state_sources):
+        return AuthoringReport()
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(Skip("state_checks", _UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ),)
+        )
+    if seeded_tables.tables:
+        return AuthoringReport()
+
+    if state_sources["hash"]["enabled"]:
+        where = _HASH_ENABLED_ADDRESS
+        declares = "state_checks.hash is enabled"
+    else:
+        assertion = next(a for a in _jsonpath_assertions(grading) if addresses_the_database(a))
+        where = _JSONPATHS_ADDRESS
+        described = assertion.get("description")
+        declares = f"state_checks.jsonpaths declares path {assertion.get('path')!r}" + (
+            f" ({described})" if described else ""
+        )
+    return AuthoringReport(
+        errors=(
+            Finding(
+                where,
+                _READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF.format(declares=declares, where=where),
+            ),
+        )
+    )
+
+
+def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A ``path:`` addresses the trial's database, which is the state both substrates read.
+
+    Reads nothing but the block, so it answers for every pack — including one whose
+    seeded tables no caller could resolve, where the sibling rule above can only skip.
+
+    A pack refused here is not merely graded differently on the two substrates: with a
+    database provisioned the core engine resolves such a path against its own composed
+    filesystem and the runner cannot, and without one ``GradeTrial`` refuses the trial
+    outright. Neither outcome is a score its author would recognise.
+    """
+    findings: list[Finding] = []
+    for assertion in _jsonpath_assertions(grading):
+        target = unreachable_target(assertion)
+        if target is None:
+            continue
+        findings.append(
+            Finding(
+                _JSONPATHS_ADDRESS,
+                _A_PATH_BEYOND_THE_RUNNERS_STATE.format(
+                    path=assertion.get("path"),
+                    remedy=(
+                        _ADDRESS_A_FILE_BY_GLOB
+                        if target is JsonPathTarget.FILESYSTEM
+                        else _ADDRESS_THE_DATABASE
+                    ),
+                ),
+            )
+        )
+    return AuthoringReport(errors=tuple(findings))
+
+
+def _check_path_glob_is_compared_the_way_the_runner_reads_it(
+    grading: Mapping[str, Any],
+) -> AuthoringReport:
+    """A ``path_glob:`` assertion is compared with ``contains_ci``, the only one both read.
+
+    The runner's file evaluator reads ``check.get("contains_ci", "")`` and tests
+    membership in the file's text, so an assertion writing any other operator — or none
+    — compares the empty string against every matched file and passes whatever they
+    contain, while core applies the operator the author wrote. A vacuous pass and a
+    substrate divergence in one assertion (#466).
+
+    This rule guards the road the ``filesystem``-rooted refusal above sends authors
+    down, which is why it lands with them rather than later.
+    """
+    findings: list[Finding] = []
+    for assertion in _jsonpath_assertions(grading):
+        glob = assertion.get("path_glob")
+        if glob is None:
+            continue
+        written = [name for name in _JSONPATH_COMPARISONS if assertion.get(name) is not None]
+        if written == ["contains_ci"]:
+            continue
+        findings.append(
+            Finding(
+                _JSONPATHS_ADDRESS,
+                _A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ.format(
+                    glob=glob,
+                    operator=" and ".join(written) if written else _NO_OPERATOR_AT_ALL,
+                ),
+            )
+        )
+    return AuthoringReport(errors=tuple(findings))
+
+
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:
     """A pack replaying golden actions is authored against a task that gives them a world.
 
     The block is read the way core reads it — the flag, then ``golden_actions``, the one
-    source needing a world at all. A falsy ``hash.enabled`` is a source nobody resolves,
+    source needing a world at all. A ``hash.enabled`` a run reads as off is a source
+    nobody resolves,
     for the reason :func:`_check_hash_source_declared` gives at length. The actions are
     then read for truthiness and never for shape: a truthy non-list value is refused
     here for the world it lacks and by :func:`_check_golden_actions_are_a_list` for being
@@ -1344,7 +1570,7 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
     skip for a rule that had nothing to check.
     """
     hash_block = authored_hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return AuthoringReport()
     if not hash_block.get("golden_actions"):
         return AuthoringReport()
@@ -1382,7 +1608,8 @@ def _check_golden_action_names(
     core raises out of the grading engine, the runner answers ``GradeTrial`` with
     ``success=false``. The gate is where that costs nothing.
 
-    Read only under a truthy ``hash.enabled``, the flag both substrates test before
+    Read only under a ``hash.enabled`` a run switches on, the flag both substrates test
+    before
     they read any source, for the reason :func:`_check_hash_source_declared` gives at
     length: a name under a disabled flag is never resolved, so refusing it would be
     stricter than the grade. That block is refused there instead, at the source key the
@@ -1411,14 +1638,14 @@ def _check_golden_action_names(
 def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
     """Each golden action's name as written, in the order the replay would run them.
 
-    Nothing at all where the flag is falsy, so the caller reads only the source a
+    Nothing at all where a run reads the flag as off, so the caller reads only the source a
     substrate would read. An action that is not a mapping, and one carrying no ``name``,
     both yield ``None``: ``golden_actions`` leaves its elements unclaimed (#907), so there
     is no load error to defer to, and the index of the offending action is what an author
     acts on.
     """
     hash_block = authored_hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return
     actions = hash_block.get("golden_actions")
     if not isinstance(actions, list):
