@@ -100,6 +100,11 @@ class ScriptedClient:
             cost_usd=0.001,
         )
 
+    def classify_loop_error(self, exc: Exception):
+        from tolokaforge.core.loop import classify_loop_error
+
+        return classify_loop_error(exc, ())
+
 
 class FakeDBReader:
     def __init__(self, state: dict | None = None):
@@ -1059,6 +1064,11 @@ def test_judge_loop_crash_errors_not_scores():
     class BoomClient:
         def generate(self, system, messages, tools, tool_choice="auto", observation=None):
             raise RuntimeError("provider exploded")
+
+        def classify_loop_error(self, exc: Exception):
+            from tolokaforge.core.loop import classify_loop_error
+
+            return classify_loop_error(exc, ())
 
     result = _run_llm_judge(
         rubric=rubric,

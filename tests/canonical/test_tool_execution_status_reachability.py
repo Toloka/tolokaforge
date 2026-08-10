@@ -32,7 +32,13 @@ from tests.utils.runner_requests import (
 from tolokaforge.core.llm.client import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.loop import LoopConfig, MetricsSink, ToolCallingLoop
+from tolokaforge.core.loop import (
+    LoopConfig,
+    MetricsSink,
+    TerminationDecision,
+    ToolCallingLoop,
+    classify_loop_error,
+)
 from tolokaforge.core.models import ToolCall, ToolExecutionStatus
 from tolokaforge.core.runner import TrialToolCallRecorder
 from tolokaforge.runner import runner_pb2 as pb2
@@ -84,6 +90,10 @@ class _ScriptedClient:
         return self._result
 
 
+def _classify_no_patterns(exc: Exception) -> TerminationDecision:
+    return classify_loop_error(exc, ())
+
+
 def _core_recorded_status(tool_name: str, arguments: dict[str, Any]) -> ToolExecutionStatus:
     """Drive one call through the core substrate's real recording path."""
     registry = ToolRegistry()
@@ -102,6 +112,7 @@ def _core_recorded_status(tool_name: str, arguments: dict[str, Any]) -> ToolExec
         config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
         metrics=_NullSink(),
         should_terminate=lambda result, turn, messages: None,
+        classify_error=_classify_no_patterns,
         logger=get_logger("status-reachability", strict=False),
         recorder=recorder,
     ).run("sys", [], time.time())

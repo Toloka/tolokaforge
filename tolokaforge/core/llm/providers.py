@@ -14,6 +14,8 @@ RunConfig provider names.
 
 from __future__ import annotations
 
+import re
+from collections.abc import Iterable
 from functools import cache
 from importlib import resources
 
@@ -21,10 +23,61 @@ import yaml
 from pydantic import BaseModel, ConfigDict
 
 __all__ = [
+    "DEFAULT_RATE_LIMIT_PATTERNS",
     "ProviderBinding",
     "SlugRewrite",
+    "compile_rate_limit_patterns",
     "get_provider_binding",
 ]
+
+
+DEFAULT_RATE_LIMIT_PATTERNS: tuple[str, ...] = (
+    # The class name litellm / openai put in the message itself, e.g.
+    # "litellm.RateLimitError: RateLimitError: OpenrouterException - ...".
+    r"\bRateLimitError\b",
+    # 429 in a *status* position: "Error code: 429", "status_code=429",
+    # "status 429", "HTTP/1.1 429". The trailing guard keeps it off longer
+    # numbers, and requiring the keyword keeps it off token counts and ids.
+    r"(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)",
+    # The HTTP reason phrase, with or without the numeric status.
+    r"(?i)\btoo\s+many\s+requests\b",
+    # Provider prose, but only in an error construction — "rate limit exceeded",
+    # never a bare mention such as a docs link about rate limits and quotas.
+    r"(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b",
+)
+"""Anchored last-resort text shapes for the LLM client's rate-limit classifier.
+
+An unanchored ``"429" in str(exc)`` matches token counts (``you requested
+4429``), request ids (``req_8f429ab2``) and JSON bodies (``{'total_tokens':
+429}``); an unanchored ``"rate limit" in ...`` matches an auth error whose
+message links to rate-limit docs. Under probe mode a false positive hands a
+*deterministic* failure the multi-hour fixed-interval budget and pollutes the
+429 census the mode exists to produce, so each pattern requires a status
+keyword, the HTTP reason phrase, or rate-limit prose in an error construction.
+A bare ``429`` with no such context is deliberately NOT a match — guessing
+would misroute control flow.
+
+These are shapes an *engine* wrapper produces, not a catalogue of provider
+quota prose. Vertex's ``RESOURCE_EXHAUSTED: Quota exceeded for quota metric``,
+OpenAI's ``insufficient_quota``, ``TPM limit reached``, ``Requests limit
+exceeded`` and Anthropic's ``overloaded_error`` all match **nothing** here and
+are meant to: they arrive typed through litellm, so the type / status tier of
+:meth:`LLMClient._is_rate_limit_exception` catches them and the text miss is
+harmless. Adding prose for them would widen the false-positive surface for no
+gain.
+
+Every shipped provider in ``providers.yaml`` carries a verbatim copy of this
+list. A new provider defaults to this shape unless its YAML overrides it.
+"""
+
+
+def compile_rate_limit_patterns(patterns: Iterable[str]) -> tuple[re.Pattern[str], ...]:
+    """Compile ``patterns`` into an immutable tuple of regex objects.
+
+    Flags are embedded inline (``(?i)``) rather than passed to :func:`re.compile`
+    so a per-provider YAML entry can decide case-sensitivity per pattern.
+    """
+    return tuple(re.compile(pattern) for pattern in patterns)
 
 
 class SlugRewrite(BaseModel):

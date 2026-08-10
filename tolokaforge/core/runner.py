@@ -340,6 +340,7 @@ class TrialRunner:
                     recorder=self.tool_call_recorder,
                     request_limiter=self.request_limiter,
                     normalize_tool_arguments=self._normalize_tool_arguments,
+                    classify_error=self.agent_client.classify_loop_error,
                     logger=self.logger,
                     call_observation=LLMCallObservation(
                         events=self._events,

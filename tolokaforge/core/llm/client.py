@@ -16,9 +16,12 @@ import os
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from enum import Enum
-from typing import Any
+from typing import TYPE_CHECKING, Any
+
+if TYPE_CHECKING:
+    from tolokaforge.core.loop import TerminationDecision
 
 import litellm
 import openai
@@ -43,7 +46,7 @@ from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
-from tolokaforge.core.llm.providers import get_provider_binding
+from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
 from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
@@ -99,7 +102,7 @@ class AllApiKeysExhaustedError(RuntimeError):
     (``TrialRunner._is_rate_limit_error``, ``core/resume.py``) treat it as the
     plain ``RuntimeError`` it always was.
 
-    The type exists so :func:`_is_rate_limit_exception` and
+    The type exists so :meth:`LLMClient._is_rate_limit_exception` and
     :func:`is_typed_rate_limit_exception` can tell this apart from a transient
     429. ``_call_with_key_rotation`` enters its rotation branch on
     the provider's own 429 ("Key limit exceeded") and chains it as ``__cause__``,
@@ -269,7 +272,7 @@ def _should_retry_exception(exc: BaseException) -> bool:
 
 
 _EXCEPTION_CAUSE_DEPTH = 4
-"""How far :func:`_is_rate_limit_exception` walks ``__cause__``.
+"""How far :meth:`LLMClient._is_rate_limit_exception` walks ``__cause__``.
 
 ``_call_with_key_rotation`` re-raises every non-timeout provider error as
 ``RuntimeError(f"LLM API call failed: {e}") from e``, so the typed 429 the
@@ -279,57 +282,20 @@ unbounded walk on a self-referencing chain.
 """
 
 
-_RATE_LIMIT_TEXT_PATTERNS: tuple[re.Pattern[str], ...] = (
-    # The class name litellm / openai put in the message itself, e.g.
-    # "litellm.RateLimitError: RateLimitError: OpenrouterException - ...".
-    re.compile(r"\bRateLimitError\b"),
-    # 429 in a *status* position: "Error code: 429", "status_code=429",
-    # "status 429", "HTTP/1.1 429". The trailing guard keeps it off longer
-    # numbers, and requiring the keyword keeps it off token counts and ids.
-    re.compile(
-        r"(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)",
-        re.IGNORECASE,
-    ),
-    # The HTTP reason phrase, with or without the numeric status.
-    re.compile(r"\btoo\s+many\s+requests\b", re.IGNORECASE),
-    # Provider prose, but only in an error construction — "rate limit exceeded",
-    # never a bare mention such as a docs link about rate limits and quotas.
-    re.compile(
-        r"\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b",
-        re.IGNORECASE,
-    ),
-)
-"""Anchored last-resort text shapes for :func:`_is_rate_limit_exception`.
+def matches_rate_limit_text(text: str, patterns: Iterable[re.Pattern[str]]) -> bool:
+    """True when *text* carries one of the anchored 429 shapes in *patterns*.
 
-An unanchored ``"429" in str(exc)`` matches token counts (``you requested
-4429``), request ids (``req_8f429ab2``) and JSON bodies (``{'total_tokens':
-429}``); an unanchored ``"rate limit" in ...`` matches an auth error whose
-message links to rate-limit docs. Under probe mode a false positive hands a
-*deterministic* failure the multi-hour fixed-interval budget and pollutes the
-429 census the mode exists to produce, so each pattern requires a status
-keyword, the HTTP reason phrase, or rate-limit prose in an error construction.
-A bare ``429`` with no such context is deliberately NOT a match — guessing
-would misroute control flow.
+    Callers supply the pattern set: shipped providers carry a bundled default
+    (see :data:`tolokaforge.core.llm.providers.DEFAULT_RATE_LIMIT_PATTERNS`),
+    but the client resolves them per-provider via
+    :attr:`LLMClient._compiled_rate_limit_patterns`.
 
-These are shapes an *engine* wrapper produces, not a catalogue of provider
-quota prose. Vertex's ``RESOURCE_EXHAUSTED: Quota exceeded for quota metric``,
-OpenAI's ``insufficient_quota``, ``TPM limit reached``, ``Requests limit
-exceeded`` and Anthropic's ``overloaded_error`` all match **nothing** here and
-are meant to: they arrive typed through litellm, so tier 1 of
-:func:`_is_rate_limit_exception` catches them and the text miss is harmless.
-Adding prose for them would widen the false-positive surface for no gain.
-"""
-
-
-def matches_rate_limit_text(text: str) -> bool:
-    """True when *text* carries one of the anchored 429 shapes.
-
-    Prose is not evidence of a rate limit on its own — see
-    :data:`_RATE_LIMIT_TEXT_PATTERNS` and
-    :func:`~tolokaforge.core.loop.classify_loop_error`, which uses a match here
-    as a *harness* diagnostic rather than as an infrastructure verdict.
+    Prose is not evidence of a rate limit on its own — this predicate acts as
+    a *harness* diagnostic (via
+    :func:`~tolokaforge.core.loop.classify_loop_error`) rather than as an
+    infrastructure verdict.
     """
-    return any(pattern.search(text) for pattern in _RATE_LIMIT_TEXT_PATTERNS)
+    return any(pattern.search(text) for pattern in patterns)
 
 
 class _RateLimitTypeEvidence(str, Enum):
@@ -393,42 +359,6 @@ def is_typed_rate_limit_exception(exc: BaseException) -> bool:
     return _rate_limit_type_evidence(exc) is _RateLimitTypeEvidence.TYPED_429
 
 
-def _is_rate_limit_exception(exc: BaseException) -> bool:
-    """True when *exc* is a **transient** upstream 429.
-
-    Three tiers, strongest evidence first:
-
-    1. **Type / status**, and 2. the **terminal-condition veto** — both from
-       :func:`_rate_limit_type_evidence`. The veto keeps key exhaustion on the
-       ordinary bounded-exponential branch instead of probe mode's multi-hour
-       fixed-interval budget.
-    3. **Anchored text**, last resort — see :data:`_RATE_LIMIT_TEXT_PATTERNS`.
-       It runs only when *no* link in the chain carried an HTTP status at all,
-       i.e. for the shape the tier exists for: a wrapper that stringified the
-       provider error instead of chaining it. An authoritative non-429 status
-       beats prose, because the outermost message is
-       ``RuntimeError(f"LLM API call failed: {e}")`` and ``e``'s message can
-       embed a provider response body that echoes request content — a task
-       conversation about rate limiting would otherwise hand a deterministic
-       400 the multi-hour budget. This is deliberately *not* a narrowing of
-       tiers 1-2: an untyped chain still text-matches, so a real 429 that
-       arrives only as prose is still absorbed.
-
-    Used by the rate-limit probe controller, which asks about *transience* —
-    a different question from :func:`is_typed_rate_limit_exception`, which asks
-    what the error can be proven to be.
-    """
-    evidence = _rate_limit_type_evidence(exc)
-    if evidence is _RateLimitTypeEvidence.TYPED_429:
-        return True
-    if evidence in (
-        _RateLimitTypeEvidence.TERMINAL_EXHAUSTION,
-        _RateLimitTypeEvidence.OTHER_HTTP_STATUS,
-    ):
-        return False
-    return matches_rate_limit_text(str(exc))
-
-
 def _build_rate_limit_wait(probe: RateLimitProbeConfig) -> wait_base:
     """The probe's 429 wait strategy: a fixed interval plus symmetric jitter.
 
@@ -449,21 +379,6 @@ def _build_rate_limit_wait(probe: RateLimitProbeConfig) -> wait_base:
     if spread == 0.0:
         return fixed
     return wait_combine(fixed, wait_random(min=-spread, max=spread))
-
-
-def _is_rate_limit_retry_state(retry_state: RetryCallState) -> bool:
-    """:func:`_is_rate_limit_exception` for a tenacity retry state.
-
-    ``outcome`` is ``None`` before the first attempt has produced anything;
-    tenacity does not reach ``stop`` / ``wait`` / ``before_sleep`` in that
-    state, but the hooks stay total so a tenacity change cannot turn this into
-    an ``AttributeError`` mid-run.
-    """
-    outcome = retry_state.outcome
-    if outcome is None:
-        return False
-    exc = outcome.exception()
-    return exc is not None and _is_rate_limit_exception(exc)
 
 
 # Native finish_reason values that indicate the upstream provider produced
@@ -697,6 +612,10 @@ class LLMClient:
         self._api_call_wall_timeout_s = self._load_api_wall_timeout()
         self._rate_limit_probe = self._load_rate_limit_probe(rate_limit_probe)
 
+        self._compiled_rate_limit_patterns = compile_rate_limit_patterns(
+            self._provider_binding.rate_limit_patterns
+        )
+
         # Sleep hook the outer-retry ``Retrying`` controller in ``generate``
         # binds per call. Tests replace it with a no-op to make the 5-attempt
         # ``wait_exponential(multiplier=2, min=4, max=60)`` backoff instant.
@@ -713,6 +632,76 @@ class LLMClient:
     @capabilities.setter
     def capabilities(self, value: ModelCapabilities) -> None:
         self._capabilities = value
+
+    # ------------------------------------------------------------------
+    # Rate-limit classification — per-provider, closes over the binding's
+    # compiled patterns so downstream callers never reach for internals.
+    # ------------------------------------------------------------------
+
+    def _is_rate_limit_exception(self, exc: BaseException) -> bool:
+        """True when *exc* is a **transient** upstream 429.
+
+        Three tiers, strongest evidence first:
+
+        1. **Type / status**, and 2. the **terminal-condition veto** — both from
+           :func:`_rate_limit_type_evidence`. The veto keeps key exhaustion on
+           the ordinary bounded-exponential branch instead of probe mode's
+           multi-hour fixed-interval budget.
+        3. **Anchored text**, last resort — the client's provider binding
+           carries the shipped default pattern list (see
+           :data:`tolokaforge.core.llm.providers.DEFAULT_RATE_LIMIT_PATTERNS`).
+           It runs only when *no* link in the chain carried an HTTP status at
+           all, i.e. for the shape the tier exists for: a wrapper that
+           stringified the provider error instead of chaining it. An
+           authoritative non-429 status beats prose, because the outermost
+           message is ``RuntimeError(f"LLM API call failed: {e}")`` and ``e``'s
+           message can embed a provider response body that echoes request
+           content — a task conversation about rate limiting would otherwise
+           hand a deterministic 400 the multi-hour budget. This is deliberately
+           *not* a narrowing of tiers 1-2: an untyped chain still text-matches,
+           so a real 429 that arrives only as prose is still absorbed.
+
+        Used by the rate-limit probe controller, which asks about
+        *transience* — a different question from
+        :func:`is_typed_rate_limit_exception`, which asks what the error can
+        be proven to be.
+        """
+        evidence = _rate_limit_type_evidence(exc)
+        if evidence is _RateLimitTypeEvidence.TYPED_429:
+            return True
+        if evidence in (
+            _RateLimitTypeEvidence.TERMINAL_EXHAUSTION,
+            _RateLimitTypeEvidence.OTHER_HTTP_STATUS,
+        ):
+            return False
+        return matches_rate_limit_text(str(exc), self._compiled_rate_limit_patterns)
+
+    def _is_rate_limit_retry_state(self, retry_state: RetryCallState) -> bool:
+        """:meth:`_is_rate_limit_exception` for a tenacity retry state.
+
+        ``outcome`` is ``None`` before the first attempt has produced anything;
+        tenacity does not reach ``stop`` / ``wait`` / ``before_sleep`` in that
+        state, but the hooks stay total so a tenacity change cannot turn this
+        into an ``AttributeError`` mid-run.
+        """
+        outcome = retry_state.outcome
+        if outcome is None:
+            return False
+        exc = outcome.exception()
+        return exc is not None and self._is_rate_limit_exception(exc)
+
+    def classify_loop_error(self, exc: Exception) -> TerminationDecision:
+        """Classify a turn-loop exception against this client's rate-limit patterns.
+
+        Bound entry point the loop and the judge consume as
+        ``classify_error=llm_client.classify_loop_error``. Closes over
+        :attr:`_compiled_rate_limit_patterns` so provider-specific text shapes
+        stay behind the client's public surface.
+        """
+        # Deferred to break the loop.py -> client.py -> loop.py import cycle.
+        from tolokaforge.core.loop import classify_loop_error
+
+        return classify_loop_error(exc, self._compiled_rate_limit_patterns)
 
     # ------------------------------------------------------------------
     # API key handling
@@ -1400,14 +1389,14 @@ class LLMClient:
 
         def _probe_stop(retry_state: RetryCallState) -> bool:
             nonlocal seen_429
-            if _is_rate_limit_retry_state(retry_state):
+            if self._is_rate_limit_retry_state(retry_state):
                 seen_429 += 1
                 elapsed = retry_state.seconds_since_start or 0.0
                 return elapsed >= probe.per_call_budget_s
             return (retry_state.attempt_number - seen_429) >= 5
 
         def _probe_wait(retry_state: RetryCallState) -> float:
-            if _is_rate_limit_retry_state(retry_state):
+            if self._is_rate_limit_retry_state(retry_state):
                 return rate_limit_wait(retry_state)
             return standard_wait(retry_state)
 
@@ -1453,7 +1442,7 @@ class LLMClient:
             if (
                 probe_stats is not None
                 and self._rate_limit_probe is not None
-                and _is_rate_limit_retry_state(retry_state)
+                and self._is_rate_limit_retry_state(retry_state)
             ):
                 probe_stats.record_retry(
                     role=observation.role,
@@ -1907,7 +1896,7 @@ class LLMClient:
             - :class:`AllApiKeysExhaustedError` (``"All API keys exhausted"``)
                after the last OpenRouter key hit a quota error. A dedicated
                subclass because the condition is terminal — see the class
-               docstring and :func:`_is_rate_limit_exception`.
+               docstring and :meth:`LLMClient._is_rate_limit_exception`.
             - ``LLMApiTimeoutError`` when the call times out repeatedly.
             - ``f"LLM API call failed: {e}"`` for any other provider error.
         """

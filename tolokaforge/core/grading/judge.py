@@ -754,6 +754,7 @@ class LLMJudge:
             config=LoopConfig(max_turns=self._max_turns, episode_timeout_s=self._episode_timeout_s),
             metrics=metrics,
             should_terminate=termination,
+            classify_error=client.classify_loop_error,
             logger=logger,
             user_turn=None,
         )

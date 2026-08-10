@@ -35,6 +35,7 @@ See ``docs/RUBRIC_GRADING_DESIGN.md`` Stage 1 for design rationale.
 
 from __future__ import annotations
 
+import re
 import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -162,9 +163,19 @@ class MetricsSink(Protocol):
 
 
 ErrorClassifier = Callable[[Exception], TerminationDecision]
+"""One-arg callable ``ToolCallingLoop`` invokes on a turn-loop exception.
+
+The provider's rate-limit text patterns are closed over by the callable
+(``LLMClient.classify_loop_error`` binds them from the client's
+:class:`ProviderBinding`), so the loop itself never carries provider state.
+:func:`classify_loop_error` is the two-arg module-level implementation the
+bound method delegates to.
+"""
 
 
-def classify_loop_error(exc: Exception) -> TerminationDecision:
+def classify_loop_error(
+    exc: Exception, patterns: tuple[re.Pattern[str], ...]
+) -> TerminationDecision:
     """Classify a turn-loop exception into a terminal reason + message.
 
     ``API_TIMEOUT`` and ``RATE_LIMIT`` are matched by *type* — through the
@@ -177,7 +188,8 @@ def classify_loop_error(exc: Exception) -> TerminationDecision:
     An exception whose *text* looks like a rate limit but carries no typed
     evidence terminates as ``ERROR``. Something in the stack stringified a
     provider exception instead of chaining it — our defect, so the trial counts
-    and the message says why it was not treated as a rate limit.
+    and the message says why it was not treated as a rate limit. Text matching
+    consults *patterns* — the caller's compiled per-provider list.
     """
     error_str = str(exc)
     if isinstance(exc, LLMApiTimeoutError):
@@ -192,7 +204,7 @@ def classify_loop_error(exc: Exception) -> TerminationDecision:
             system_message=f"Rate limit error: {error_str}. Dialogue terminated.",
             status=TrialStatus.ERROR,
         )
-    if matches_rate_limit_text(error_str):
+    if matches_rate_limit_text(error_str, patterns):
         return TerminationDecision(
             reason=TerminationReason.ERROR,
             system_message=(
@@ -255,12 +267,19 @@ class ToolCallingLoop:
     normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
         None
     )
-    classify_error: ErrorClassifier = classify_loop_error
+    classify_error: ErrorClassifier | None = None
     call_observation: LLMCallObservation | None = None
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
+
+    def __post_init__(self) -> None:
+        if self.classify_error is None:
+            raise RuntimeError(
+                "ToolCallingLoop.classify_error is required; callers pass "
+                "classify_error=llm_client.classify_loop_error"
+            )
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.
