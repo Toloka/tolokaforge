@@ -65,9 +65,8 @@ class TestCapabilityShape:
         assert len(values) == len(set(values))
 
     def test_capability_membership_stable(self) -> None:
-        # Stage 1 is a verbatim relocation — the enum stays at its current
-        # 23 members. Any accidental add/drop trips this guard before the
-        # canonical registry test sees the change.
+        # Any accidental add/drop of a Capability trips this guard
+        # before the canonical registry test sees the change.
         assert len(list(Capability)) == 23
 
 
@@ -150,6 +149,108 @@ class TestOverlapInvariant:
         msg = str(exc.value)
         assert Capability.BASIC_COMPLETION.value in msg
         assert Capability.PROMPT_CACHING.value in msg
+
+    def test_required_and_excluded_capabilities_overlap_raises(self) -> None:
+        with pytest.raises(ValueError) as exc:
+            ModelCertificate(
+                model_id="openrouter__fake_fake-7",
+                provider="openrouter",
+                name="fake/fake-7",
+                env_key="OPENROUTER_API_KEY",
+                required=frozenset({Capability.PROMPT_CACHING, Capability.BASIC_COMPLETION}),
+                excluded_capabilities=frozenset(
+                    {Capability.PROMPT_CACHING, Capability.BASIC_COMPLETION}
+                ),
+            )
+        msg = str(exc.value)
+        assert "excluded_capabilities" in msg
+        assert Capability.PROMPT_CACHING.value in msg
+        assert Capability.BASIC_COMPLETION.value in msg
+
+    def test_known_unsupported_and_excluded_may_overlap(self) -> None:
+        # muse-spark's shape: declare honestly (known_unsupported) AND opt
+        # out of the ratchet (excluded_capabilities). Both together is the
+        # intended pattern, not an invariant violation.
+        cert = ModelCertificate(
+            model_id="openrouter__fake_fake-8",
+            provider="openrouter",
+            name="fake/fake-8",
+            env_key="OPENROUTER_API_KEY",
+            known_unsupported=frozenset({Capability.IMPLICIT_PROMPT_CACHING}),
+            excluded_capabilities=frozenset({Capability.IMPLICIT_PROMPT_CACHING}),
+        )
+        assert Capability.IMPLICIT_PROMPT_CACHING in cert.known_unsupported
+        assert Capability.IMPLICIT_PROMPT_CACHING in cert.excluded_capabilities
+
+
+class TestHashable:
+    def _make_cert(self, **overrides: object) -> ModelCertificate:
+        defaults: dict[str, object] = {
+            "model_id": "openrouter__fake_fake-hash",
+            "provider": "openrouter",
+            "name": "fake/fake-hash",
+            "env_key": "OPENROUTER_API_KEY",
+            "required": frozenset({Capability.BASIC_COMPLETION}),
+            "known_unsupported": frozenset({Capability.IMPLICIT_PROMPT_CACHING}),
+            "excluded_capabilities": frozenset({Capability.IMPLICIT_PROMPT_CACHING}),
+            "known_unsupported_reasons": {Capability.IMPLICIT_PROMPT_CACHING: "unreliable"},
+            "probe_params": {Capability.PROMPT_CACHING: {"prompt_tokens": 12000}},
+            "capability_extras": {"quirk": "wrap"},
+        }
+        defaults.update(overrides)
+        return ModelCertificate(**defaults)  # type: ignore[arg-type]
+
+    def test_populated_cert_is_hashable(self) -> None:
+        cert = self._make_cert()
+        assert isinstance(hash(cert), int)
+
+    def test_equal_populated_certs_hash_equal(self) -> None:
+        a = self._make_cert()
+        b = self._make_cert()
+        assert a == b
+        assert hash(a) == hash(b)
+
+    def test_certs_differing_on_excluded_hash_differently(self) -> None:
+        a = self._make_cert()
+        c = self._make_cert(excluded_capabilities=frozenset())
+        assert a != c
+        assert hash(a) != hash(c)
+
+    def test_registry_certs_all_hashable(self) -> None:
+        # Guards against a registry entry with mapping data that would
+        # break the hash contract in production.
+        {hash(cert) for cert in ALL_MODELS}
+
+
+class TestMappingFieldsFrozen:
+    def test_mapping_fields_are_read_only(self) -> None:
+        cert = ModelCertificate(
+            model_id="openrouter__fake_fake-frozen",
+            provider="openrouter",
+            name="fake/fake-frozen",
+            env_key="OPENROUTER_API_KEY",
+            known_unsupported_reasons={Capability.PROMPT_CACHING: "reason"},
+            probe_params={Capability.PROMPT_CACHING: {"prompt_tokens": 12000}},
+            capability_extras={"quirk": "wrap"},
+        )
+        with pytest.raises(TypeError):
+            cert.known_unsupported_reasons[Capability.BASIC_COMPLETION] = "x"  # type: ignore[index]
+        with pytest.raises(TypeError):
+            cert.probe_params[Capability.BASIC_COMPLETION] = {}  # type: ignore[index]
+        with pytest.raises(TypeError):
+            cert.capability_extras["k"] = "v"  # type: ignore[index]
+
+    def test_mutating_source_dict_does_not_bleed_into_cert(self) -> None:
+        source = {Capability.PROMPT_CACHING: "reason"}
+        cert = ModelCertificate(
+            model_id="openrouter__fake_fake-bleed",
+            provider="openrouter",
+            name="fake/fake-bleed",
+            env_key="OPENROUTER_API_KEY",
+            known_unsupported_reasons=source,
+        )
+        source[Capability.BASIC_COMPLETION] = "leaked"
+        assert Capability.BASIC_COMPLETION not in cert.known_unsupported_reasons
 
 
 class TestAllModels:

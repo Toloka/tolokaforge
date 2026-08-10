@@ -2558,18 +2558,9 @@ _ALL: list[MC] = [
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
-        # meta/muse-spark-1.1 is opted out of the auto-cache ratchet
-        # (test_known_unsupported_routes_do_not_auto_cache) because its
-        # provider-side cached_tokens counter is unreliable on cold
-        # calls: a 19,585-token, never-before-sent unique prompt returned
-        # cached=19,581 on call 1 (verified live 2026-07-17, US
-        # Codespaces). A real first-call cross-request cache HIT is
-        # impossible, so the counter tracks the discounted billing tier
-        # (or is a provider mis-report), not caching we can certify — see
-        # the IMPLICIT_PROMPT_CACHING known_unsupported entry above for
-        # the full evidence. Excluding here keeps the ratchet honest on
-        # the routes where its "observable cached_tokens ⟹ upstream
-        # silently started auto-caching" premise actually holds.
+        # Opts muse-spark-1.1 out of test_known_unsupported_routes_do_not_auto_cache
+        # — see the IMPLICIT_PROMPT_CACHING known_unsupported entry above
+        # for the cold-call cached_tokens evidence.
         excluded_capabilities=frozenset({C.IMPLICIT_PROMPT_CACHING}),
     ),
     # -----------------------------------------------------------------

@@ -3,14 +3,12 @@
 Two invariants ride together here and neither can drift silently:
 
 1. The muse-spark-1.1 cert opts out of the implicit-prompt-caching
-   ratchet through :attr:`ModelCertificate.excluded_capabilities` — the
-   pre-Stage-3 hardcoded name-set has been retired and the exclusion is
-   now certificate data.
-2. Every ``_ratchet_targets()`` in the suite returns the same
-   ``model_id`` set it returned pre-Stage-3 (baseline embedded below).
-   The ``excluded_capabilities`` swap is meant to change the *predicate*,
-   not the collected target set — a diff here means the data migration
-   perturbed a ratchet target and the swap is wrong.
+   ratchet through :attr:`ModelCertificate.excluded_capabilities` —
+   the exclusion is certificate data, not a hardcoded name-set inside
+   the ratchet module.
+2. Every ``_ratchet_targets()`` in the suite returns the baseline
+   ``model_id`` set embedded below. Changing the exclusion predicate
+   shape must not perturb the set of model_ids it resolves to.
 """
 
 from __future__ import annotations
@@ -29,10 +27,9 @@ _RATCHET_MODULES = (
     "tolokaforge.testing.certify.suite.test_enum_slash_tolerance_unsupported_ratchet",
 )
 
-# Pre-Stage-3 baseline captured against the byte-identical Stage 2 tree
-# and the hardcoded-name-set predicate. The post-Stage-3 output must be
-# set-for-set identical — ``excluded_capabilities`` changes the predicate
-# shape, not the targets it resolves to.
+# Baseline captured against the ratchet's current predicate. A diff
+# here means the certificate-data lookup resolves to a different
+# target set than expected — investigate before regenerating.
 _RATCHET_TARGETS_BASELINE: dict[str, list[str]] = {
     "tolokaforge.testing.certify.suite.test_implicit_prompt_caching_unsupported_ratchet": [
         "openrouter__deepseek_deepseek-v3.2-exp",
@@ -104,9 +101,7 @@ class TestExclusionMovedFromHardcodedSetToCertificate:
 
 class TestRatchetTargetsSetForSet:
     """Baseline lock — ``excluded_capabilities`` must not perturb the
-    computed target set of any ratchet in the suite. The baseline was
-    captured against the pre-Stage-3 tree (hardcoded predicate); the
-    post-Stage-3 output (certificate-data predicate) must equal it.
+    computed target set of any ratchet in the suite.
     """
 
     @pytest.mark.parametrize("module_name", _RATCHET_MODULES)

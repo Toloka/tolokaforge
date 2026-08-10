@@ -20,7 +20,7 @@ same way to an operator debugging a bad install.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from typing import Any
+from typing import Any, TypeVar
 
 from ._capability import Capability
 from .certificate import ModelCertificate
@@ -29,6 +29,7 @@ __all__ = ["get_probe", "register_probe", "registered_probes"]
 
 _ProbeCallable = Callable[..., Any]
 _RegistryKey = tuple[Capability, str | None]
+_F = TypeVar("_F", bound=_ProbeCallable)
 
 _REGISTRY: dict[_RegistryKey, _ProbeCallable] = {}
 
@@ -37,7 +38,7 @@ def register_probe(
     capability: Capability,
     *,
     model_id: str | None = None,
-) -> Callable[[_ProbeCallable], _ProbeCallable]:
+) -> Callable[[_F], _F]:
     """Register a probe body for ``capability``, optionally scoped to one
     ``model_id``.
 
@@ -52,7 +53,7 @@ def register_probe(
     :mod:`tolokaforge.core.plugin_registry`.
     """
 
-    def decorator(func: _ProbeCallable) -> _ProbeCallable:
+    def decorator(func: _F) -> _F:
         key: _RegistryKey = (capability, model_id)
         if key in _REGISTRY:
             existing = _REGISTRY[key]
