@@ -221,12 +221,16 @@ jobs:
     # untouched — auto-promote and move-tags are mutually exclusive.
     if: github.event_name == 'push' && contains(github.ref_name, '-rc.')
     runs-on: ubuntu-latest
+    # Bound the blast radius of a hung Docker Hub call — the default 6h would
+    # tie up the runner and hold the concurrency slot for the tag. move-tags
+    # below is analogous and could use the same cap; kept scoped to this PR.
+    timeout-minutes: 20
     # Same OIDC scoping as move-tags — the promote step uses the `release`
     # deployment scope, minting a Docker Hub push token distinct from the
     # `pre-stable` token that pushed the rc images. An rc build that fell into
     # this branch through some ref-name accident would fail OIDC claim
-    # resolution and block the push, matching the safety property the
-    # existing publish job's environment expression names on line 68.
+    # resolution and block the push, matching the safety property the publish
+    # job's `environment:` expression enforces for the initial rc push.
     environment: release
     permissions:
       id-token: write
@@ -291,11 +295,18 @@ jobs:
       # smoke, and move-tags sequence for no additional value. The rc tag is
       # the auditable pointer to the digest that was promoted; the Release
       # title names the stable version so `gh release list` reads correctly.
+      # Fail loud on a Docker Hub hiccup — GH-Actions `bash` default is
+      # `set -eo pipefail`, but a failing `$(imagetools inspect …)` command
+      # substitution is NOT propagated to errexit unless `inherit_errexit`
+      # is on. Without this shopt, a transient 500 would leave `digest=""`
+      # and the step would silently publish a garbled digest row.
       - name: Collect image digests
         env:
           VERSION: ${{ steps.meta.outputs.version }}
           REF_NAME: ${{ github.ref_name }}
         run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
           {
             echo "## Published images (auto-promoted from ${REF_NAME})"
             echo ""
@@ -308,10 +319,15 @@ jobs:
             done
           } | tee release-notes.md >> "$GITHUB_STEP_SUMMARY"
 
+      # The Release title carries the rc suffix so that a hotfix flow which
+      # auto-promotes rc.1 and then rc.2 for the same X.Y.Z produces two
+      # visibly distinct Releases in `gh release list`. Without the suffix
+      # both entries would read `Docker images vX.Y.Z` and consumers would
+      # have to open each body to tell which is the current stable.
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          name: Docker images v${{ steps.meta.outputs.version }}
+          name: Docker images v${{ steps.meta.outputs.version }} (from ${{ steps.meta.outputs.rc_version }})
           body_path: release-notes.md
           # Do NOT append_body — the auto-promote job is idempotent for the
           # image tags, and the release body must be idempotent too. A retry

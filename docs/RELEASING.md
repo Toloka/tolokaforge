@@ -103,13 +103,21 @@ version, and the operator investigates the rc images before anything moves.
 ### Override — manual `image-vX.Y.Z` push
 
 The manual path stays available for rare cases the automated path cannot cover
-(promoting an older rc after a hotfix, re-publishing after a Docker Hub incident,
-etc.). Pushing an `image-vX.Y.Z` tag (no `-rc.` suffix) triggers the same
-`publish-images.yml` workflow through the `move-tags` job, which mints the
-`release`-environment OIDC token and moves `:latest` / `:X.Y` onto the
-already-published immutable `:X.Y.Z` digest. Use this only when the automated
-promote is not the right fit; for a routine release it does nothing beyond what
-auto-promote already did.
+(re-publishing after a Docker Hub incident, cutting a fresh stable build off a
+hotfix branch, etc.). Pushing an `image-vX.Y.Z` tag (no `-rc.` suffix) fires the
+same `publish-images.yml` workflow through the full `build-wheel` → `publish` →
+`smoke` → `move-tags` sequence: **the images are rebuilt from source** and
+`:X.Y.Z` is republished with the fresh digest, then `:latest` / `:X.Y` move onto
+that digest.
+
+**This is a rebuild, not a retag** — the manifest digest published under
+`:X.Y.Z` after a manual override differs from the auto-promoted digest even
+when the source tree is identical (base-image drift, transitive dep resolution,
+buildkit re-serialization). The freshly-built images pass rc-smoke on the way
+out, but the specific bytes that operators may have already validated against
+the auto-promoted digest are gone. Do not use the manual path as a "safety
+net" or "double-check" on top of auto-promote; use it only when you need a
+fresh build.
 
 ### Trade-offs of the automated flow
 
@@ -136,10 +144,13 @@ Three properties of the auto-promote path that are worth knowing:
   framing (a well-formed `error` line on garbage stdin counts as pass), so it
   never spends provider tokens. This is the right coverage for the release
   ceremony's scope but does not exercise real trials. For major releases with
-  broad behavior changes, consider running a full smoke against the rc images
-  before the auto-promote fires — you can pull `:X.Y.Z-rc.1` manually while
-  the workflow is between `smoke` and `auto-promote-rc-to-stable` and, if
-  something looks off, cancel the workflow before the promote step starts.
+  broad behavior changes where you want a human gate between `smoke` and
+  promotion, add a **required reviewer** to the `release` deployment
+  environment in the repository settings — the auto-promote job runs under
+  that environment and will pause pending approval before the retag step.
+  Without a required reviewer configured, the workflow transitions from
+  `smoke` into `auto-promote-rc-to-stable` in seconds; there is no
+  meaningful window in which to cancel the run by hand.
 
 ### Dry run
 
