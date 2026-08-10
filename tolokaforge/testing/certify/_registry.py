@@ -2547,18 +2547,30 @@ _ALL: list[MC] = [
                 #    (cost call1 == call2: with no cold baseline the
                 #    "call 2 < call 1" delta cannot exist).
                 # Net: the classic cold->warm reuse we would credit as
-                # caching is unverifiable here, so we do not claim it. NB:
-                # the observable cached_tokens would make the auto-cache
-                # ratchet (test_known_unsupported_routes_do_not_auto_cache)
-                # fire on this route, so muse is excluded there
-                # (_UNRELIABLE_COLD_CACHE_REPORT_NAMES) carrying this same
-                # rationale — the counter is not a reliable real-caching
-                # signal here. That exclusion is a targeted stopgap, not a
-                # real fix; follow-up #484 will teach the ratchet to send a
-                # cold probe before trusting cached_tokens.
+                # caching is unverifiable here, so we do not claim it. The
+                # auto-cache ratchet (see ``excluded_capabilities`` below)
+                # would otherwise trip on the observable cached_tokens
+                # counter for the same reason — the counter is not a
+                # reliable real-caching signal on this route. That
+                # exclusion is a targeted stopgap, not a real fix;
+                # follow-up #484 will teach the ratchet to send a cold
+                # probe before trusting cached_tokens.
                 C.IMPLICIT_PROMPT_CACHING,
             }
         ),
+        # meta/muse-spark-1.1 is opted out of the auto-cache ratchet
+        # (test_known_unsupported_routes_do_not_auto_cache) because its
+        # provider-side cached_tokens counter is unreliable on cold
+        # calls: a 19,585-token, never-before-sent unique prompt returned
+        # cached=19,581 on call 1 (verified live 2026-07-17, US
+        # Codespaces). A real first-call cross-request cache HIT is
+        # impossible, so the counter tracks the discounted billing tier
+        # (or is a provider mis-report), not caching we can certify — see
+        # the IMPLICIT_PROMPT_CACHING known_unsupported entry above for
+        # the full evidence. Excluding here keeps the ratchet honest on
+        # the routes where its "observable cached_tokens ⟹ upstream
+        # silently started auto-caching" premise actually holds.
+        excluded_capabilities=frozenset({C.IMPLICIT_PROMPT_CACHING}),
     ),
     # -----------------------------------------------------------------
     # thinkingmachines/inkling (OpenRouter) — landed via auto-resolve

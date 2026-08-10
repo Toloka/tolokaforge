@@ -196,6 +196,24 @@ MC(
 ),
 ```
 
+**Widened certificate fields.** `ModelCertificate` also carries four
+default-empty widening fields, populated only when a specific per-model
+quirk needs to travel as certificate data rather than test-body code:
+
+- `excluded_capabilities: frozenset[Capability]` — shared-body per-probe
+  opt-outs orthogonal to `known_unsupported` (e.g. the muse-spark-1.1
+  auto-cache ratchet exclusion — the counter is unreliable on cold
+  calls, so the ratchet consults `cert.excluded_capabilities` and skips
+  the cert).
+- `known_unsupported_reasons: Mapping[Capability, str]` — human-readable
+  rationale keyed by capability, surfaced by report generators and
+  dashboards.
+- `probe_params: Mapping[Capability, Mapping[str, Any]]` — per-model
+  probe-parameter overrides (e.g. `{Capability.PROMPT_CACHING: {"prompt_tokens": 12000}}`)
+  for shared bodies that consult the map.
+- `capability_extras: Mapping[str, str]` — opaque per-model quirks that
+  do not fit the `Capability` enum, consulted by adapter code paths.
+
 ## 4. Run the capability suite locally
 
 ```bash

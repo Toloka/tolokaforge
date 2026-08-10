@@ -45,28 +45,22 @@ def _is_anthropic(cert: ModelCertificate) -> bool:
     return any(name.startswith(p) or p in name for p in _ANTHROPIC_NAME_PREFIXES)
 
 
-# Routes whose provider reports a non-trivial ``cached_tokens`` count even on
-# a genuinely COLD, never-before-sent prompt — so the counter does NOT signal
-# a real cross-request cache hit and the ratchet's core premise (observable
-# cached_tokens ⟹ upstream silently started auto-caching ⟹ promote to
-# ``required``) does not hold. These are declared IMPLICIT_PROMPT_CACHING
-# ``known_unsupported`` in the registry with the SAME rationale, and excluded
-# here so the ratchet doesn't force a promotion the standard
-# ``test_implicit_prompt_caching`` cannot satisfy (no cold baseline ⟹ no
-# ``call2 < call1`` cost delta).
-#
-# meta/muse-spark-1.1 (verified live 2026-07-17, US Codespaces): a 19,585-token
-# unique prompt returned ``cached=19,581`` on call 1; the discount is real
-# (cached input billed at the cache_read rate) but "caching" cannot be
-# certified. See tolokaforge/testing/certify/_registry.py for the full evidence.
-# NB: this is a targeted exclusion, not a real fix — the ratchet cannot yet
-# distinguish "always-reports-cached" routes from genuine auto-cache. Tracked
-# in #484 (teach the ratchet to send a cold probe before trusting the count).
-_UNRELIABLE_COLD_CACHE_REPORT_NAMES = frozenset({"meta/muse-spark-1.1"})
-
-
 def _reports_cache_on_cold_call(cert: ModelCertificate) -> bool:
-    return cert.name.lower() in _UNRELIABLE_COLD_CACHE_REPORT_NAMES
+    """Certs whose provider reports a non-trivial ``cached_tokens`` count
+    even on a genuinely cold, never-before-sent prompt — so the counter
+    does not signal a real cross-request cache hit, and the ratchet's
+    core premise (observable ``cached_tokens`` ⟹ upstream silently
+    started auto-caching ⟹ promote to ``required``) does not hold.
+
+    Opting out is data on the certificate:
+    ``excluded_capabilities`` names :attr:`Capability.IMPLICIT_PROMPT_CACHING`
+    when the route's counter is unreliable on cold calls. See the
+    excluded cert's own inline evidence in
+    :mod:`tolokaforge.testing.certify._registry` for the full rationale.
+    Follow-up #484 will teach the ratchet to send a cold probe before
+    trusting the counter, retiring the exclusion.
+    """
+    return Capability.IMPLICIT_PROMPT_CACHING in cert.excluded_capabilities
 
 
 def _ratchet_targets() -> list[ModelCertificate]:

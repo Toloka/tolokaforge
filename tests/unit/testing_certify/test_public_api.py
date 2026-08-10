@@ -35,7 +35,9 @@ class TestPublicAll:
             "ALL_MODELS",
             "Capability",
             "ModelCertificate",
+            "get_probe",
             "live_client",
+            "register_probe",
             "skip_unless_capability_declared",
         }
 
@@ -43,6 +45,10 @@ class TestPublicAll:
         # Same objects the suite conftest re-exports via pytest_plugins.
         assert callable(certify.live_client)
         assert callable(certify.skip_unless_capability_declared)
+
+    def test_probe_seam_is_reachable_from_public_namespace(self) -> None:
+        assert callable(certify.register_probe)
+        assert callable(certify.get_probe)
 
 
 class TestCapabilityShape:
