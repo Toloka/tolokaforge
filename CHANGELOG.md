@@ -7,6 +7,7 @@ All notable changes to this project are documented in this file.
 ### Feat
 
 - **testing**: new public engine seam `tolokaforge.testing.certify` — `Capability`, `ModelCertificate` (widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras`), `ALL_MODELS`, and the `@register_probe` / `get_probe` dispatch API for out-of-tree probe bodies (#931).
+- **observability**: `engine_run_state.json` records the resolved model-data fingerprint — the `models_fingerprint` field carries `{package_version, content_sha256, api_version, minimum_engine_version}` computed from the post-overlay preset table, pricing table, and certificate registry, so a completed run identifies exactly which model-data snapshot it was scored against (#933).
 
 ### Fix
 

@@ -246,22 +246,24 @@ Migration note in [`docs/RELEASING.md`](../RELEASING.md) + release notes on the 
 
 ## Fingerprinting for auditability
 
-`tolokaforge/core/engine_run_state.py:22-34` — `write_engine_run_state` gains one field:
+[`tolokaforge/core/engine_run_state.py`](../../tolokaforge/core/engine_run_state.py) — `write_engine_run_state` carries a `models_fingerprint` field:
 
 ```jsonc
 {
   "run_id": "...",
   "presets_file": "/path/or/null",
   "models_fingerprint": {
-    "package_version": "1.4.2",              // tolokaforge_models.__version__
+    "package_version": "1.4.2",              // tolokaforge_models.__version__ (or "in-tree" pre-cutover)
     "content_sha256": "...",                 // sha256 over presets + pricing + providers + vendor_prefixes + certificates + policy registrations (post-overlay)
     "api_version": 1,
-    "minimum_engine_version": ">=0.15,<0.17"
+    "minimum_engine_version": ">=0.16,<0.17"
   }
 }
 ```
 
 Any completed run can be reconstructed: reinstall the named `tolokaforge-models` version, apply the same overlay, get byte-identical model resolution. ADR-0002 § Follow-ups called for a fingerprint round-trip through an overlay — this delivers it, over the widened data surface.
+
+**Pre-cutover sentinel.** While the model data still ships in the engine wheel, `package_version` is the literal string `"in-tree"` and `content_sha256` is computed over the subset already resolvable from `tolokaforge.core.model_data` (`model_presets.yaml`, `pricing.json`, and the certificate registry). `minimum_engine_version` is `">=0.16,<0.17"` — the engine floor the current bundle is compatible with (0.16 is the first release carrying #931's widened `ModelCertificate`, which the certificate portion of the hash depends on). The cutover PR (#938 in this ADR's follow-ups) flips the three constants' source from `tolokaforge.core.model_data` to `tolokaforge_models.__init__` and widens the hashed payload to include `providers.yaml` + `vendor_prefixes.yaml`; the field shape and reader API stay unchanged.
 
 ## Independent versioning
 
@@ -394,7 +396,7 @@ The classification step inspects the resolved policy graph: if every needed poli
 1. **Fail-loud entry-point registry semantics** — fix the [GH #544](https://github.com/Toloka/tolokaforge/issues/544) pattern on `tolokaforge.adapters` preventatively; apply the same discipline to the new policy-class entry-point mechanism. Resolved by [#930](https://github.com/Toloka/tolokaforge/issues/930); canonical shape lives in [`docs/ADAPTER_ARCHITECTURE.md` § Fail-loud registry pattern](../ADAPTER_ARCHITECTURE.md#fail-loud-registry-pattern) and the `tolokaforge.core.plugin_registry` module docstring.
 2. **Certification seam extraction + certificate exclusion data + probe registration.** Load-bearing — the acceptance test in (3) depends on this seam. Move `_capability.py`, `registry.py`, fixtures, ~30 test bodies. Add `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras` fields. Add probe-registration decorator API. Resolved by [#931](https://github.com/Toloka/tolokaforge/issues/931); `tolokaforge.testing.certify` is the public engine seam, `ModelCertificate` widened with `excluded_capabilities` / `known_unsupported_reasons` / `probe_params` / `capability_extras`, and `@register_probe` ships as the forward-compat dispatch seam.
 3. **Acceptance-test scaffolding** — `tests/canonical/test_models_wheel_replay.py`. Replays the last N integrations against the engine tree **as it stood on each integration's date** (git checkout per-integration, not against post-follow-up-8 `main` — otherwise the retroactive hook masks the measurement). Reports the "engine releases avoided" number at every subsequent PR. Initial run reports the status-quo baseline (3-in-5 or whatever the tree of the day yields); each PR (4)–(11) should move the number. Landing this before (4) means every subsequent change is measured against the target. Resolved by [#932](https://github.com/Toloka/tolokaforge/issues/932); canonical test at [`tests/canonical/test_models_wheel_replay.py`](../../tests/canonical/test_models_wheel_replay.py), baseline snapshot at [`tests/canonical/snapshots/models_wheel_replay/metric.json`](../../tests/canonical/snapshots/models_wheel_replay/metric.json).
-4. **Fingerprint** — widened `models_fingerprint` on `engine_run_state.json`.
+4. **Fingerprint** — widened `models_fingerprint` on `engine_run_state.json`. Resolved by [#933](https://github.com/Toloka/tolokaforge/issues/933); [`tolokaforge/core/model_data.py`](../../tolokaforge/core/model_data.py) is the pure seam (`ModelsFingerprint`, `compute_models_fingerprint`, `decode_models_fingerprint`), [`tolokaforge/core/engine_run_state.py`](../../tolokaforge/core/engine_run_state.py) persists the field on every run, and [`docs/OUTPUT_FORMAT.md`](../OUTPUT_FORMAT.md) documents the on-disk schema.
 5. **New extension slots — `assistant_text_policy` + `params_policy` + narrow `message_assembly_policy`.** Base classes, registry entries, wire-in points in `client.py`. The Cohere text-marker slot unblocks integration #929; the narrow message-assembly version turns the `client.py:1213` filler string into policy data (no new slot type, just data extraction of an existing string).
 6. **Policy configuration — slot values become `{name, params}`.** Overlay validator extended with the engine ∪ models-declared allow-list. `_RECOGNISED_OVERRIDE_KEYS` removed.
 7. **Provider bindings as data.** `providers.yaml` schema including the three Nova sites (`_configure_nova_base_url`, `_format_model_name`, kwargs block with `custom_llm_provider`) and the two-step slug handling. `UNROUTABLE_PROVIDERS`, rate-limit regex, `OPENROUTER_API_KEYS` rotation all read from data. Engine ships defaults matching today; models wheel supplies overrides once it lands.
