@@ -54,6 +54,11 @@ from tolokaforge.core.grading.grade_components import (
     GRADE_COMPONENTS,
     component_requested,
 )
+from tolokaforge.core.grading.jsonpath_addressing import (
+    addresses_the_database,
+    addresses_the_filesystem,
+    block_addresses_the_database,
+)
 from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.state_composition import (
     CONFLICTING_STATE_SOURCES_MESSAGE,
@@ -688,6 +693,44 @@ _UNRESOLVED_SEEDED_TABLES_REASON = (
 
 _ID_FIELDS_ADDRESS = "state_checks.id_fields"
 
+_JSONPATHS_ADDRESS = "state_checks.jsonpaths"
+_HASH_ENABLED_ADDRESS = "state_checks.hash.enabled"
+
+_UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ = (
+    "no caller resolved the tables this task seeds — reading initial_state.json_db is the "
+    "native reading, and a task an adapter maintained outside this repository owns may seed "
+    "its state some other way — so whether this block reads a database the trial will have "
+    "is not checkable here"
+)
+
+_READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF = (
+    "{declares}, which reads the trial's database, but this task's initial_state seeds no "
+    "tables — so no DB service is registered for the trial and GradeTrial refuses it rather "
+    "than scoring it. Seed the state the block reads under initial_state.json_db, or drop "
+    "{where} from the pack."
+)
+
+_A_PATH_ROOTED_AT_THE_FILESYSTEM = (
+    "path {path!r} is rooted at 'filesystem', which the runner's JSONPath state does not "
+    "carry: it composes db and tables from the trial's database and nothing else, so this "
+    "assertion can never match there. Address a file with path_glob: and contains_ci:, the "
+    "pairing both substrates read the same way."
+)
+
+_A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ = (
+    "path_glob {glob!r} is compared with {operator}, which the runner's file-content "
+    "evaluator does not read — it reads contains_ci alone, and an absent contains_ci is the "
+    "empty string, which every file contains. The assertion therefore passes on the runner "
+    "whatever the file says, while core scores it for real. Compare with contains_ci."
+)
+
+_NO_OPERATOR_AT_ALL = "no comparison operator"
+
+# The comparison vocabulary a ``jsonpaths`` assertion may write. Only ``contains_ci``
+# survives the runner's file-content evaluator, which is what the ``path_glob`` rule
+# below is about; the other three are legitimate beneath a ``path:``.
+_JSONPATH_COMPARISONS: tuple[str, ...] = ("equals", "equals_ci", "contains", "contains_ci")
+
 # Bound once so the signature's default is the value, not a call in the annotation.
 _UNRESOLVED_REPLAY_WORLD = ReplayWorld.unresolvable()
 _UNRESOLVED_HASH_SOURCE_LAYER = HashSourceLayer.unresolvable()
@@ -755,6 +798,9 @@ def inspect_grading_authoring(
         _check_probes_are_the_only_state_source(grading),
         _check_golden_replay_world(grading, replay_world),
         _check_id_fields_against_seeded_tables(grading, seeded_tables),
+        _check_state_reads_a_database_the_task_seeds(grading, seeded_tables),
+        _check_jsonpaths_address_a_reachable_state(grading),
+        _check_path_glob_is_compared_the_way_the_runner_reads_it(grading),
     ]
     if inventory.known:
         reports += [
@@ -1319,6 +1365,127 @@ def _check_id_fields_against_seeded_tables(
         )
         return AuthoringReport()
     return AuthoringReport(errors=tuple(Finding(_ID_FIELDS_ADDRESS, f) for f in findings))
+
+
+def _jsonpath_assertions(grading: Mapping[str, Any]) -> tuple[Mapping[str, Any], ...]:
+    """The ``state_checks.jsonpaths`` entries written as mappings, in authored order."""
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return ()
+    return tuple(
+        entry for entry in state_checks.get("jsonpaths") or () if isinstance(entry, Mapping)
+    )
+
+
+def _check_state_reads_a_database_the_task_seeds(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> AuthoringReport:
+    """A block reading the trial's database is authored on a task that provisions one.
+
+    ``RegisterTrial`` provisions the DB service from ``initial_state``, so a block
+    reading it on a task that seeds nothing reaches a service that was never started:
+    ``GradeTrial`` refuses the trial, and the whole trial is paid for first. That
+    refusal is the runtime half of this rule, and this is the half that costs nothing.
+
+    An enabled ``hash`` block counts with or without a declared source, because the
+    stable hash is fetched before any source is consulted — see
+    :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`,
+    which both halves read so that neither can drift from the other.
+
+    ``relaxed_validation`` does not downgrade this, unlike
+    :func:`_check_id_fields_against_seeded_tables`. That escape hatch exists for a
+    declaration whose keys no longer resolve against seeded records, which still grades;
+    a pack refused here does not grade at all on either substrate, so passing it would
+    hand the author a green gate and a failed run.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return AuthoringReport()
+    if not block_addresses_the_database(state_checks):
+        return AuthoringReport()
+    if not seeded_tables.known:
+        return AuthoringReport(
+            unchecked=(Skip("state_checks", _UNRESOLVED_SEEDED_TABLES_FOR_A_STATE_READ),)
+        )
+    if seeded_tables.tables:
+        return AuthoringReport()
+
+    hash_block = authored_hash_block(grading) or {}
+    if hash_block.get("enabled"):
+        where = _HASH_ENABLED_ADDRESS
+        declares = "state_checks.hash is enabled"
+    else:
+        assertion = next(a for a in _jsonpath_assertions(grading) if addresses_the_database(a))
+        where = _JSONPATHS_ADDRESS
+        described = assertion.get("description")
+        declares = f"state_checks.jsonpaths declares path {assertion.get('path')!r}" + (
+            f" ({described})" if described else ""
+        )
+    return AuthoringReport(
+        errors=(
+            Finding(
+                where,
+                _READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF.format(declares=declares, where=where),
+            ),
+        )
+    )
+
+
+def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> AuthoringReport:
+    """A ``path:`` addresses the trial's database, which is the state both substrates read.
+
+    Reads nothing but the block, so it answers for every pack — including one whose
+    seeded tables no caller could resolve, where the sibling rule above can only skip.
+
+    A pack refused here is not merely graded differently on the two substrates: with a
+    database provisioned the core engine resolves such a path against its own composed
+    filesystem and the runner cannot, and without one ``GradeTrial`` refuses the trial
+    outright. Neither outcome is a score its author would recognise.
+    """
+    return AuthoringReport(
+        errors=tuple(
+            Finding(_JSONPATHS_ADDRESS, _A_PATH_ROOTED_AT_THE_FILESYSTEM.format(path=path))
+            for path in (
+                assertion.get("path")
+                for assertion in _jsonpath_assertions(grading)
+                if addresses_the_filesystem(assertion)
+            )
+        )
+    )
+
+
+def _check_path_glob_is_compared_the_way_the_runner_reads_it(
+    grading: Mapping[str, Any],
+) -> AuthoringReport:
+    """A ``path_glob:`` assertion is compared with ``contains_ci``, the only one both read.
+
+    The runner's file evaluator reads ``check.get("contains_ci", "")`` and tests
+    membership in the file's text, so an assertion writing any other operator — or none
+    — compares the empty string against every matched file and passes whatever they
+    contain, while core applies the operator the author wrote. A vacuous pass and a
+    substrate divergence in one assertion (#466).
+
+    This rule guards the road the ``filesystem``-rooted refusal above sends authors
+    down, which is why it lands with them rather than later.
+    """
+    findings: list[Finding] = []
+    for assertion in _jsonpath_assertions(grading):
+        glob = assertion.get("path_glob")
+        if glob is None:
+            continue
+        written = [name for name in _JSONPATH_COMPARISONS if assertion.get(name) is not None]
+        if written == ["contains_ci"]:
+            continue
+        findings.append(
+            Finding(
+                _JSONPATHS_ADDRESS,
+                _A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ.format(
+                    glob=glob,
+                    operator=" and ".join(written) if written else _NO_OPERATOR_AT_ALL,
+                ),
+            )
+        )
+    return AuthoringReport(errors=tuple(findings))
 
 
 def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -> AuthoringReport:

@@ -241,6 +241,13 @@ _TWO_ROWS_ONE_COMPONENT_CANNOT_KEY = {
 }
 _NO_CALLER_READ_WHAT_THE_TASK_SEEDS = SeededTablesLayer.unresolvable()
 _THE_TASK_SEEDS_THESE_TABLES = SeededTablesLayer(tables=_TWO_ROWS_ONE_COMPONENT_CANNOT_KEY)
+_THE_TASK_SEEDS_NO_TABLES = SeededTablesLayer(tables={})
+
+_A_FILESYSTEM_ROOTED_ASSERTION = {
+    "path": "$.filesystem['/env/fs/agent-visible/x.py']",
+    "contains": "def divide",
+}
+_A_FILE_ASSERTION = {"path_glob": "/env/fs/agent-visible/x.py", "contains_ci": "def divide"}
 
 
 def _keyed_state(id_fields: dict[str, Any]) -> dict[str, Any]:
@@ -282,6 +289,35 @@ class _Rule:
 
 
 _RULES: tuple[_Rule, ...] = (
+    _Rule(
+        label="state_read_on_a_task_that_seeds_no_database",
+        task=_HELPDESK,
+        grading={"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION]}},
+        checker="_check_state_reads_a_database_the_task_seeds",
+        channel="errors",
+        message="seeds no tables",
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    ),
+    _Rule(
+        label="a_path_addressing_the_filesystem",
+        task=_HELPDESK,
+        grading={"state_checks": {"jsonpaths": [_A_FILESYSTEM_ROOTED_ASSERTION]}},
+        checker="_check_jsonpaths_address_a_reachable_state",
+        channel="errors",
+        message="is rooted at 'filesystem'",
+    ),
+    _Rule(
+        label="a_path_glob_the_runner_cannot_read",
+        task=_HELPDESK,
+        grading={
+            "state_checks": {
+                "jsonpaths": [{"path_glob": "/env/fs/agent-visible/x.py", "contains": "def divide"}]
+            }
+        },
+        checker="_check_path_glob_is_compared_the_way_the_runner_reads_it",
+        channel="errors",
+        message="which the runner's file-content evaluator does not read",
+    ),
     _Rule(
         label="matcher_names_an_undeclared_tool",
         task=_HELPDESK,
@@ -1034,7 +1070,12 @@ def test_a_truthy_hash_flag_is_not_a_finding(enabled: Any) -> None:
     """
     grading = {"state_checks": {"hash": {"enabled": enabled, "expect_initial_state": True}}}
 
-    assert inspect_grading_authoring(grading, _inventory(_HELPDESK)) == AuthoringReport()
+    assert (
+        inspect_grading_authoring(
+            grading, _inventory(_HELPDESK), seeded_tables=_THE_TASK_SEEDS_THESE_TABLES
+        )
+        == AuthoringReport()
+    )
 
 
 @pytest.mark.parametrize("enabled", _HASH_FLAGS_BOTH_SUBSTRATES_GRADE_ON)
@@ -1104,7 +1145,10 @@ def test_the_frozen_adapter_convention_is_unchecked_rather_than_refused() -> Non
     grading = {"state_checks": {"hash": {"enabled": True, "weight": 1.0}}}
 
     report = inspect_grading_authoring(
-        grading, ToolInventory.unresolvable(), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
+        grading,
+        ToolInventory.unresolvable(),
+        hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report.errors == ()
@@ -1124,7 +1168,10 @@ def test_a_block_the_hash_rule_accepts_reports_nothing_on_an_unresolved_layer() 
     grading = {"state_checks": {"hash": {"enabled": True, "expect_initial_state": True}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE
+        grading,
+        _inventory(_HELPDESK),
+        hash_sources=_AN_ADAPTER_MAY_SUPPLY_THE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1142,7 +1189,10 @@ def test_an_adapter_supplying_a_usable_source_leaves_the_bare_block_clean() -> N
     grading = {"state_checks": {"hash": {"enabled": True, "weight": 1.0}}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE
+        grading,
+        _inventory(_HELPDESK),
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1237,12 +1287,96 @@ def test_a_pack_declaring_no_key_draws_nothing_under_either_layer(
 
     The unresolvable layer is every caller's default, so a skip for a declaration
     nobody wrote would print an unchecked line beside every task in the corpus.
+
+    The claim is about the ``id_fields`` address alone. These blocks assert over the
+    trial's database, so under an unresolvable layer the sibling rule asking whether
+    the task seeds one reports its own skip — at ``state_checks``, about a declaration
+    the author did write.
     """
     report = inspect_grading_authoring(
         {"state_checks": state_checks}, _inventory(_HELPDESK), seeded_tables=seeded_tables
     )
 
-    assert (report.errors, report.advisories, report.unchecked) == ((), (), ())
+    assert (report.errors, report.advisories) == ((), ())
+    assert [skip for skip in report.unchecked if skip.where == "state_checks.id_fields"] == []
+
+
+def test_a_database_reading_block_is_clean_on_a_task_that_seeds_the_tables() -> None:
+    """The accepting half: the rule refuses an absent database, not a present one."""
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION]}},
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_an_unresolvable_layer_skips_the_seeded_read_and_still_refuses_the_path() -> None:
+    """One unresolvable input silences one rule, not the block.
+
+    The two rules read different things: what the task seeds is a fact about the
+    ``task.yaml``, and where a path is rooted is a fact about the block. So a caller
+    that cannot resolve the first still gets the second — which matters because the
+    gate is skipped wholesale for exactly the tasks whose seeded tables no caller can
+    read, and a silent pass there would be the shape this rule exists to close.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION, _A_FILESYSTEM_ROOTED_ASSERTION]}},
+        _inventory(_HELPDESK),
+        seeded_tables=_NO_CALLER_READ_WHAT_THE_TASK_SEEDS,
+    )
+
+    assert [skip.where for skip in report.unchecked] == ["state_checks"]
+    assert "not checkable here" in report.unchecked[0].reason
+    assert [finding.where for finding in report.errors] == ["state_checks.jsonpaths"]
+    assert "is rooted at 'filesystem'" in report.errors[0].message
+
+
+def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused() -> None:
+    """The hash half of the same rule, in the shape that declares no source at all.
+
+    ``_execute_hash_grading`` reads the trial's stable hash before it consults either
+    source, so this block reaches the database exactly as one declaring both does. It
+    is addressed to the flag, which is the key that put it there.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": {"hash": {"enabled": True}}},
+        _inventory(_HELPDESK),
+        hash_sources=_AN_ADAPTER_SUPPLIES_A_USABLE_SOURCE,
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.hash.enabled"]
+    assert "seeds no tables" in report.errors[0].message
+
+
+def test_a_path_glob_compared_with_contains_ci_is_the_shape_the_rule_accepts() -> None:
+    """The operator both substrates read draws nothing — the pairing the docs prescribe."""
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_FILE_ASSERTION]}},
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
+    )
+
+    assert report == AuthoringReport()
+
+
+def test_relaxed_validation_does_not_downgrade_a_block_that_cannot_grade() -> None:
+    """The escape hatch that passes an ``id_fields`` pack does not pass this one.
+
+    ``relaxed_validation`` exists for a declaration whose keys no longer resolve
+    against seeded records — a pack that still grades. A block reading a database its
+    task does not provision grades on neither substrate, so downgrading it would hand
+    the author a green gate and a failed run.
+    """
+    report = inspect_grading_authoring(
+        {"state_checks": {"jsonpaths": [_A_JSONPATH_ASSERTION], "relaxed_validation": True}},
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert [finding.where for finding in report.errors] == ["state_checks.jsonpaths"]
 
 
 def test_a_seeded_tables_layer_is_resolved_or_it_is_not() -> None:
@@ -1328,7 +1462,10 @@ def test_golden_actions_alone_are_a_hash_source() -> None:
     grading = _golden_actions({"name": "write_file"})
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1615,7 +1752,10 @@ def test_an_unresolvable_inventory_leaves_a_golden_action_name_unchecked() -> No
     grading = _golden_actions({"name": "close_widget"})
 
     report = inspect_grading_authoring(
-        grading, ToolInventory.unresolvable(), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        ToolInventory.unresolvable(),
+        replay_world=_A_BUILDABLE_WORLD,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report.errors == ()
@@ -1665,7 +1805,10 @@ def test_every_replay_fact_a_task_withholds_from_its_golden_path_is_its_own_erro
     loads a file under the task directory.
     """
     report = inspect_grading_authoring(
-        _golden_actions({"name": "write_file"}), _inventory(_HELPDESK), replay_world=world
+        _golden_actions({"name": "write_file"}),
+        _inventory(_HELPDESK),
+        replay_world=world,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert [finding.where for finding in report.errors] == [
@@ -1727,6 +1870,7 @@ def test_a_world_no_caller_resolved_leaves_the_golden_replay_unchecked() -> None
         _golden_actions({"name": "write_file"}),
         _inventory(_HELPDESK),
         replay_world=ReplayWorld.unresolvable(),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report.errors == ()
@@ -1752,7 +1896,10 @@ def test_a_pack_that_replays_nothing_draws_no_skip_for_a_world() -> None:
     grading = {"state_checks": {"jsonpaths": [{"path": "$.widgets[0].status", "equals": "closed"}]}}
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=ReplayWorld.unresolvable()
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=ReplayWorld.unresolvable(),
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()
@@ -1877,7 +2024,10 @@ def test_a_falsy_golden_source_beside_the_other_source_is_no_finding(golden_acti
     }
 
     report = inspect_grading_authoring(
-        grading, _inventory(_HELPDESK), replay_world=_A_BUILDABLE_WORLD
+        grading,
+        _inventory(_HELPDESK),
+        replay_world=_A_BUILDABLE_WORLD,
+        seeded_tables=_THE_TASK_SEEDS_THESE_TABLES,
     )
 
     assert report == AuthoringReport()

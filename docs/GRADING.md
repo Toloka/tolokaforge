@@ -2632,6 +2632,9 @@ Findings come in three classes:
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
+| a `state_checks` block reading the trial's database — a `path:` addressing it, or a `hash` enabled with or without a source — on a task whose `initial_state` seeds no tables, where the caller resolved what the task seeds | error | `state_checks.jsonpaths` or `state_checks.hash.enabled` |
+| a `state_checks.jsonpaths[*].path` rooted at `filesystem`, which the runner's JSONPath state does not carry — read from the block alone, so it answers whatever the caller resolved | error | `state_checks.jsonpaths` |
+| a `state_checks.jsonpaths[*].path_glob` compared with anything but `contains_ci` — including no operator at all — which the runner's file evaluator reads as the empty string every file contains | error | `state_checks.jsonpaths` |
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
@@ -2652,6 +2655,7 @@ Findings come in three classes:
 | either absence where the task declares any other `adapter_type` | unchecked | `grading` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
+| a database-reading `state_checks` block where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks` |
 | an `id_fields` declaration where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks.id_fields` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |

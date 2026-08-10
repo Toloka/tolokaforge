@@ -175,6 +175,11 @@ from tolokaforge.core.project_loader import (
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
+from tolokaforge.runner.models import (
+    RunnerInitialStateConfig,
+    TableSchema,
+    provisions_database,
+)
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -668,6 +673,52 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
         SeededTablesLayer(tables={}),
     )
     assert probed_absent_database is True
+
+
+def test_the_gate_and_the_runtime_read_one_fact_about_what_a_task_seeds() -> None:
+    """The gate's answer and the runtime's answer are the same answer, per shipped task.
+
+    The gate refuses a database-reading block against ``seeded_tables.tables``;
+    ``RegisterTrial`` provisions the DB service against
+    :func:`~tolokaforge.runner.models.provisions_database`. A task the first calls
+    seeded and the second calls unprovisioned would pass the gate and fail the run.
+
+    **What this cannot express, stated rather than left to be inferred.** Over the
+    native corpus the two are equal by construction: ``NativeAdapter`` hard-codes
+    ``schemas`` and ``unstable_fields`` empty, and the core ``InitialStateConfig``
+    declares neither field, so no ``task.yaml`` can express a disagreement. The
+    control row below writes out the shape that can — schemas seeded, tables empty —
+    and shows the two answers parting there. The corpus half therefore reds on exactly
+    one future change: the day ``NativeAdapter`` populates either field without the
+    gate being revisited. That is the drift it exists to catch, and the only one.
+    """
+    disagreed: list[str] = []
+    examined: list[str] = []
+    for task_yaml in _corpus_task_files():
+        if task_yaml in _TASKS_WITHOUT_A_PROJECT:
+            continue
+        task, task_dir = load_task_yaml(task_yaml)
+        if task.adapter_type != "native":
+            continue
+        task_id, adapter = _pack_adapter(task_yaml)
+        runtime = provisions_database(adapter.to_task_description(task_id).initial_state)
+        gate = bool(seeded_tables_under_adapter(task, task_dir, "native").tables)
+        examined.append(str(task_yaml.relative_to(_REPO)))
+        if runtime != gate:
+            disagreed.append(f"{task_yaml}: provisions_database={runtime} seeded_tables={gate}")
+
+    assert examined, "the walk selected no native task"
+    print(f"native tasks holding both answers to one fact: {len(examined)}")
+    assert not disagreed, (
+        "the gate and RegisterTrial disagree about whether these tasks provision a "
+        f"database, so a pack the gate passes fails its run: {disagreed}"
+    )
+
+    schemas_only = RunnerInitialStateConfig(
+        tables={}, schemas=[TableSchema(table_name="orders", fields={"id": "string"})]
+    )
+    assert provisions_database(schemas_only) is True
+    assert bool(SeededTablesLayer(tables={}).tables) is False
 
 
 def test_no_shipped_pack_fails_the_authoring_gate() -> None:

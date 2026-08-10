@@ -90,7 +90,7 @@ def _task_config(task_id: str) -> TaskConfig:
         name=f"Test Task {task_id}",
         category="tool_use",
         description="A test task",
-        initial_state=InitialStateConfig(),
+        initial_state=InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
         tools=ToolsConfig(),
         user_simulator=UserSimulatorConfig(mode="scripted"),
         grading="grading.yaml",
