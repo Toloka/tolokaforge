@@ -584,6 +584,25 @@ what it replaced: such a trial stays inside the measured denominator, so the zer
 would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
 failure reported against evidence that was never read.
 
+#### A `state_checks` block the trial cannot answer
+
+This fails the RPC for the same reason. Before any grading branch reads the database,
+`GradeTrial` refuses two authoring shapes by name, each error opening `Trial '<id>'
+cannot be graded as authored:` and then naming the key, the offending assertion and the
+way out:
+
+| shape | why it cannot be graded |
+|---|---|
+| a block reading the database — a `path:` addressing it, or `hash` enabled with or without a source — on a task whose `initial_state` provisions no tables, schemas or unstable fields | no DB service was registered for the trial, so there is no state to read |
+| a `state_checks.jsonpaths` entry whose `path:` is rooted where the runner composes nothing — `filesystem`, `agent`, `user`, `mock_web_url` or `rag_corpus_dir`, the roots the core engine composes and the runner does not | the runner builds its JSONPath state from the trial's database alone, so the assertion resolves on one substrate and can never match on the other. A file is addressed with `path_glob:` + `contains_ci:`, the pairing both read; anything else the trial holds is rooted at `db` or `tables` |
+
+Neither is scored. Evaluating either against the state it lacks yields `0.0` and a
+reason about state the grader never read — a number indistinguishable from an agent
+that failed the assertion, entering every rate above as its failure. The authoring gate
+states the same rule before a trial is scheduled; `GradeTrial` states it because that
+gate does not reach every trial — it is skipped wholesale for a task whose grading
+source cannot be interrogated, and it does not ship inside the runner image.
+
 The consequence is that such a trial is **counted but unscored**. The conductor's
 grading phase catches the exception, records the reason on
 `Trajectory.grading_error`, and lets the trial finish its normal path: its
@@ -1080,8 +1099,8 @@ never the message an operator sees for this pairing.
 
 ### The `jsonpaths` assertion vocabulary
 
-One assertion names a `path` and **exactly one** comparison from a closed set of
-four:
+One assertion names a `path` — a JSONPath expression addressing **the trial's
+database** — and **exactly one** comparison from a closed set of four:
 
 | operator | holds when |
 |---|---|
@@ -1098,13 +1117,19 @@ cannot fail is worse than none. A path that resolves to nothing is a failed chec
 too. A path resolving to several values holds when **any** of them satisfies the
 comparison.
 
-**`path_glob` is a different assertion with a narrower vocabulary.** It matches
-written files by shell glob rather than the state by JSONPath — the way a
-file-writing task avoids asserting on a filename the agent chose — and the two
-substrates read it differently: core-side it applies any of the four operators to the
-matched entries of `state["filesystem"]`, while the runner routes it to a
-file-content evaluator that reads only `contains_ci`. Write `path_glob` with
-`contains_ci` for a check that means the same thing wherever the trial was graded.
+**`path_glob` is the assertion that addresses the filesystem**, and the only one: the
+JSONPath state the runner resolves a `path` against carries `db` and `tables` and
+nothing else, so a file is reachable by glob or not at all. It matches written files
+by shell glob rather than the database by JSONPath — the way a file-writing task
+avoids asserting on a filename the agent chose.
+
+Write it with `contains_ci`. The two substrates read the operator differently:
+core-side any of the four applies to the matched entries of `state["filesystem"]`,
+while the runner routes it to a file-content evaluator that reads only `contains_ci`
+— and reads an absent one as the empty string, which every file contains. Any other
+operator is therefore a runner-side pass that asserts nothing, and a core-side
+verdict that can disagree with it
+([#466](https://github.com/toloka/tolokaforge/issues/466)).
 
 ### Folding the hash verdict with `jsonpaths`
 
@@ -1158,7 +1183,7 @@ reads is the author's defect whatever lies beside it. Where no adapter answers, 
 shapes are reported unchecked at the same address. See the hash rows in
 [What is validated before a run](#what-is-validated-before-a-run):
 
-- **Either source under a falsy `enabled`** is a comparison that never runs. Both
+- **Either source under an `enabled` a run reads as off** is a comparison that never runs. Both
   substrates test the flag before reading any source, so the pack grades its state
   without the hash its author asked for and says nothing — a golden path there replays
   on neither substrate, and an initial-state comparison runs on neither. The refusal is
@@ -1175,10 +1200,14 @@ shapes are reported unchecked at the same address. See the hash rows in
   translation of its own flattened fields. The message names both keys, either being
   the author's to drop.
 
-Both halves read for truth rather than for `true`/absence: core branches on the
-flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, and an
-empty `golden_actions` list replays nothing, so it is no more a source than an absent
-one. The rules' class and the rest of the pre-run gate are in
+**Both halves read `enabled` the way a run reads it.** Every surface builds the block into
+a `StateHashConfig` before any evaluator branches, so the flag the gate tests is the
+coerced one: `enabled: 1` and `enabled: "yes"` grade and load, `enabled: "false"`,
+`enabled: "no"`, `enabled: "off"` and `enabled: "0"` are the `false` a run grades on
+however truthy the YAML string reads, and a value the model refuses is a load error
+before any of this. A source is read for truth instead — an empty `golden_actions` list
+replays nothing, so it is no more a source than an absent one. The rules' class and the
+rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
 
 **The block is closed, and both of the adapter's reads of it refuse the same key.** A key
@@ -1199,7 +1228,7 @@ read a trial there passes through, and a key dropped at that read reaches
 
 | key | what it declares |
 |---|---|
-| `enabled` | whether the hash is compared at all. A source under a falsy flag, or a truthy flag with no source, is refused rather than graded |
+| `enabled` | whether the hash is compared at all, read as the block's own model coerces it. A source under a flag a run reads as off, or a flag it reads as on with no source, is refused rather than graded |
 | `golden_actions` | the actions to replay for an expected state |
 | `expect_initial_state` | that the expected final state *is* the state the task starts in — the refusal-task shape, read from `initial_state.json_db` in either shape a task writes it. Refused beside `golden_actions`, which names a different expected state |
 | `weight` | the hash's share of the `state_checks` component where `jsonpaths` is non-empty too. No default — the shape that needs one and declares none is refused |
@@ -2620,17 +2649,20 @@ Findings come in three classes:
 | a `state_checks`, `transcript_rules` or `custom_checks` section written as an empty mapping | error | that section |
 | a `state_checks` block declaring no source at all — no non-empty `jsonpaths`, no `db_probes`, and a `hash` block naming neither its flag nor a source | error | `state_checks` |
 | `db_probes` beside a non-empty `jsonpaths`, or beside a `hash` block enabled with a source — raised as a config load error before the gate is reached, so it is reported alone | error | `state_checks.db_probes` |
+| a `state_checks` block reading the trial's database — a `path:` addressing it, or a `hash` enabled with or without a source — on a task whose `initial_state` seeds no tables, where the caller resolved what the task seeds | error | `state_checks.jsonpaths` or `state_checks.hash.enabled` |
+| a `state_checks.jsonpaths[*].path` rooted at `filesystem`, which the runner's JSONPath state does not carry — read from the block alone, so it answers whatever the caller resolved | error | `state_checks.jsonpaths` |
+| a `state_checks.jsonpaths[*].path_glob` compared with anything but `contains_ci` — including no operator at all — which the runner's file evaluator reads as the empty string every file contains | error | `state_checks.jsonpaths` |
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| any hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
-| a truthy `state_checks.hash.enabled` with no source — no non-empty `golden_actions`, no truthy `expect_initial_state` — where the adapter reports that nothing lies beneath the authored block, which is what `adapter_type: native` means | error | `state_checks.hash.enabled` |
+| any hash source declared under a `hash.enabled` a run reads as off — written `false`, `"false"`, `0`, `"0"`, `"no"`, `"off"`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
+| a `state_checks.hash.enabled` a run reads as on with no source — no non-empty `golden_actions`, no truthy `expect_initial_state` — where the adapter reports that nothing lies beneath the authored block, which is what `adapter_type: native` means | error | `state_checks.hash.enabled` |
 | the same shape where the adapter reports the source it supplies beneath the block and that source is **usable** — the frozen-core convention, a golden-actions fixture the block never names | no finding: checked and passed | — |
 | the same shape where the adapter reports that source **missing or empty** — the trial would be paid for and take no hash verdict — the message naming the fixture in the adapter's own vocabulary | error | `state_checks.hash.enabled` |
 | a truthy `expect_initial_state` beside another hash source — raised as a config load error wherever the block is constructed, so it is reported alone | error | `state_checks.hash.expect_initial_state` |
 | either hash flag/source mismatch above, where **no** adapter answers — the declared `adapter_type` names an adapter this environment has not installed, or one that has not implemented the hook | unchecked | the address the error would have carried |
-| a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
-| a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
+| a truthy `golden_actions` that is not a list of actions, under a `hash.enabled` a run reads as on and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
+| a golden action naming a tool outside the task's declared set, under a `hash.enabled` a run reads as on | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
 | a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
@@ -2640,6 +2672,7 @@ Findings come in three classes:
 | either absence where the task declares any other `adapter_type` | unchecked | `grading` |
 | a tool set the loader cannot resolve for this task | unchecked | whole block |
 | what a task gives a golden replay, where no caller resolved it | unchecked | `state_checks.hash.golden_actions` |
+| a database-reading `state_checks` block where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks` |
 | an `id_fields` declaration where no caller resolved the seeded tables — the declared `adapter_type` is not `native`, or names an adapter this environment has not installed | unchecked | `state_checks.id_fields` |
 | an effective `combine` no caller could resolve | unchecked | `combine.weights` |
 | an `args` address on a tool whose schema did not resolve | unchecked | per matcher, per extraction |
@@ -2740,9 +2773,9 @@ pack's server module. A native pack whose golden action names a `TOOLS` entry it
 no actor therefore replays but is refused here; no pack in the repository has that
 shape, and #815 owns unifying the three namespaces.
 
-Like the source rule beside it, this one reads only a hash block whose flag is truthy,
-because a source under a falsy flag is resolved by nobody and refusing it would be
-stricter than the grade. Such a block is refused by that rule instead, at the flag
+Like the source rule beside it, this one reads only a hash block a run switches on,
+because a source under a flag a run reads as off is resolved by nobody and refusing it
+would be stricter than the grade. Such a block is refused by that rule instead, at the flag
 rather than at the name: a `golden_actions` list under `hash.enabled: false` replays on
 neither substrate whatever its names are, so what an author fixes is the flag or the
 source, and naming an action nothing was ever going to run would send them to the wrong

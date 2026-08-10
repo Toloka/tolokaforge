@@ -125,11 +125,16 @@ from tolokaforge.core.grading.config_validation import (
     SeededTablesLayer,
     ToolInventory,
     inspect_grading_authoring,
+    state_sources_as_a_run_reads_them,
 )
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
     GRADE_COMPONENTS,
     component_requested,
+)
+from tolokaforge.core.grading.jsonpath_addressing import (
+    block_addresses_the_database,
+    unreachable_target,
 )
 from tolokaforge.core.grading.rubric import aggregate_rubric, parse_submit_report
 from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
@@ -171,6 +176,11 @@ from tolokaforge.core.project_loader import (
 from tolokaforge.dx.cli.main import cli
 from tolokaforge.runner.grading import compose_runner_trial_verdict
 from tolokaforge.runner.grading_ledger import audit_accounted_keys
+from tolokaforge.runner.models import (
+    RunnerInitialStateConfig,
+    TableSchema,
+    provisions_database,
+)
 
 pytestmark = [pytest.mark.canonical, pytest.mark.grading]
 
@@ -570,6 +580,160 @@ def _gate_reports(
             effective_combine=probed,
         ),
     )
+
+
+_A_FILESYSTEM_ROOTED_PATH = "$.filesystem['/env/fs/agent-visible/x.py']"
+_AN_AGENT_ROOTED_PATH = "$.agent.customers[0].balance"
+_A_DATABASE_ROOTED_PATH = "$.db.orders[0].status"
+
+
+def _states_a_pack_addresses_but_cannot_reach(
+    grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
+) -> tuple[list[str], bool]:
+    """The paths this pack writes that the runner cannot resolve, and its absent-DB read.
+
+    An unresolvable ``seeded_tables`` answers ``False`` for the second reading: what a
+    task seeds is the one input it needs, and no pack is held to a fact nobody could
+    resolve. The first reading needs nothing but the block, so it answers for every
+    pack.
+    """
+    state_checks = grading.get("state_checks")
+    if not isinstance(state_checks, Mapping):
+        return [], False
+    beyond_the_runner = [
+        assertion["path"]
+        for assertion in state_checks.get("jsonpaths") or ()
+        if isinstance(assertion, Mapping) and unreachable_target(assertion) is not None
+    ]
+    reads_a_database_it_does_not_seed = (
+        bool(
+            block_addresses_the_database(state_sources_as_a_run_reads_them(state_checks))
+            and seeded_tables.known
+        )
+        and not seeded_tables.tables
+    )
+    return beyond_the_runner, reads_a_database_it_does_not_seed
+
+
+def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
+    """Every authored ``state_checks`` block reads state the trial grading it has.
+
+    Two readings over the whole authored corpus — both task roots and the parity,
+    project and migration packs outside them — because a pack failing either cannot be
+    graded at all: a ``path:`` rooted anywhere but ``db`` or ``tables`` — ``filesystem``,
+    ``agent``, ``user`` — resolves on the core engine and not on the runner, and a block
+    reading the database of a task that seeds none reaches a DB service ``RegisterTrial``
+    never registered.
+
+    The examined population is printed rather than counted silently, and asserted
+    non-empty: both residues are lists that a walk selecting nothing would leave empty
+    while reading clean. The two readings are then run again over blocks written here
+    to fail them, through the same function the sweep calls — so a zero above is a fact
+    about the corpus rather than about a predicate that stopped discriminating.
+    """
+    examined: list[str] = []
+    beyond_the_runner: dict[str, list[str]] = {}
+    reading_an_absent_database: list[str] = []
+
+    for task_yaml in sorted({t for t, _ in _gated_packs()} | set(_packs_outside_the_gate_walk())):
+        task, task_dir = load_task_yaml(task_yaml)
+        if not task.grading or not (task_dir / task.grading).is_file():
+            continue
+        grading = yaml.safe_load((task_dir / task.grading).read_text()) or {}
+        state_checks = grading.get("state_checks")
+        if not isinstance(state_checks, Mapping) or not (
+            state_checks.get("jsonpaths") or state_checks.get("hash")
+        ):
+            continue
+        pack = str(task_yaml.relative_to(_REPO))
+        examined.append(pack)
+        paths, absent_database = _states_a_pack_addresses_but_cannot_reach(
+            grading, seeded_tables_under_adapter(task, task_dir, task.adapter_type)
+        )
+        if paths:
+            beyond_the_runner[pack] = paths
+        if absent_database:
+            reading_an_absent_database.append(pack)
+
+    print(f"packs declaring a state_checks source ({len(examined)}):\n  " + "\n  ".join(examined))
+    assert examined, "the walk selected no pack declaring a state_checks source"
+
+    assert not beyond_the_runner, (
+        "a state_checks.jsonpaths path addresses state the runner does not compose, so "
+        "it resolves only on the core engine — root it at db or tables, or write a file "
+        f"assertion as path_glob: + contains_ci:: {beyond_the_runner}"
+    )
+    assert not reading_an_absent_database, (
+        "a state_checks block reads the trial's database on a task whose initial_state "
+        f"seeds none, so GradeTrial refuses it before a score exists: "
+        f"{reading_an_absent_database}"
+    )
+
+    probed_paths, _ = _states_a_pack_addresses_but_cannot_reach(
+        {
+            "state_checks": {
+                "jsonpaths": [
+                    {"path": _A_FILESYSTEM_ROOTED_PATH},
+                    {"path": _AN_AGENT_ROOTED_PATH},
+                ]
+            }
+        },
+        SeededTablesLayer.unresolvable(),
+    )
+    assert probed_paths == [_A_FILESYSTEM_ROOTED_PATH, _AN_AGENT_ROOTED_PATH]
+    _, probed_absent_database = _states_a_pack_addresses_but_cannot_reach(
+        {"state_checks": {"jsonpaths": [{"path": _A_DATABASE_ROOTED_PATH}]}},
+        SeededTablesLayer(tables={}),
+    )
+    assert probed_absent_database is True
+
+
+def test_the_gate_and_the_runtime_read_one_fact_about_what_a_task_seeds() -> None:
+    """The gate's answer and the runtime's answer are the same answer, per shipped task.
+
+    The gate refuses a database-reading block against ``seeded_tables.tables``;
+    ``RegisterTrial`` provisions the DB service against
+    :func:`~tolokaforge.runner.models.provisions_database`. A task the first calls
+    seeded and the second calls unprovisioned would pass the gate and fail the run.
+
+    **What this cannot express, stated rather than left to be inferred.** Over the
+    native corpus the two are equal by construction: ``NativeAdapter`` hard-codes
+    ``schemas`` and ``unstable_fields`` empty, and the core ``InitialStateConfig``
+    declares neither field, so no ``task.yaml`` can express a disagreement. The
+    control row below writes out the shape that can — schemas seeded, tables empty —
+    and asserts the two answers parting there. It is constructed rather than loaded,
+    for the same reason: it pins that the predicates disagree on that shape, not that
+    any resolver produces it. The corpus half therefore reds on exactly
+    one future change: the day ``NativeAdapter`` populates either field without the
+    gate being revisited. That is the drift it exists to catch, and the only one.
+    """
+    disagreed: list[str] = []
+    examined: list[str] = []
+    for task_yaml in _corpus_task_files():
+        if task_yaml in _TASKS_WITHOUT_A_PROJECT:
+            continue
+        task, task_dir = load_task_yaml(task_yaml)
+        if task.adapter_type != "native":
+            continue
+        task_id, adapter = _pack_adapter(task_yaml)
+        runtime = provisions_database(adapter.to_task_description(task_id).initial_state)
+        gate = bool(seeded_tables_under_adapter(task, task_dir, "native").tables)
+        examined.append(str(task_yaml.relative_to(_REPO)))
+        if runtime != gate:
+            disagreed.append(f"{task_yaml}: provisions_database={runtime} seeded_tables={gate}")
+
+    assert examined, "the walk selected no native task"
+    print(f"native tasks holding both answers to one fact: {len(examined)}")
+    assert not disagreed, (
+        "the gate and RegisterTrial disagree about whether these tasks provision a "
+        f"database, so a pack the gate passes fails its run: {disagreed}"
+    )
+
+    schemas_only = RunnerInitialStateConfig(
+        tables={}, schemas=[TableSchema(table_name="orders", fields={"id": "string"})]
+    )
+    assert provisions_database(schemas_only) is True
+    assert provisions_database(schemas_only) != bool(SeededTablesLayer(tables={}).tables)
 
 
 def test_no_shipped_pack_fails_the_authoring_gate() -> None:
