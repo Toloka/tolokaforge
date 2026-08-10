@@ -10,6 +10,14 @@ concurrency:
   group: publish-images-${{ github.ref }}
   cancel-in-progress: true
 
+# Single source of truth for the first-party image set. The matrix below
+# carries per-image metadata (Dockerfile path, whether the image bundles
+# the wheel) and must stay in sync with this list, but every bash loop that
+# only needs the names reads from here — kept in one place so adding a
+# fifth image is one env edit + one matrix row, not six sites.
+env:
+  FIRST_PARTY_IMAGES: "runner db-service rag-service mock-web"
+
 jobs:
   build-wheel:
     name: Build wheel
@@ -204,6 +212,132 @@ jobs:
             uv run pytest tests/integration/deploy/test_published_images_rc_smoke.py \
             -v --tb=short -m "integration and requires_docker"
 
+  auto-promote-rc-to-stable:
+    name: Auto-promote rc → stable (retag digest + move :latest + release notes)
+    needs: smoke
+    # Only fires on the automated rc-push path. A workflow_dispatch dry-run has
+    # no images to promote (see the publish job's `push: false`) and skips.
+    # A manual stable `image-vX.Y.Z` push takes the move-tags branch below
+    # untouched — auto-promote and move-tags are mutually exclusive.
+    if: github.event_name == 'push' && contains(github.ref_name, '-rc.')
+    runs-on: ubuntu-latest
+    # Bound the blast radius of a hung Docker Hub call — the default 6h would
+    # tie up the runner and hold the concurrency slot for the tag. move-tags
+    # below is analogous and could use the same cap; kept scoped to this PR.
+    timeout-minutes: 20
+    # Same OIDC scoping as move-tags — the promote step uses the `release`
+    # deployment scope, minting a Docker Hub push token distinct from the
+    # `pre-stable` token that pushed the rc images. An rc build that fell into
+    # this branch through some ref-name accident would fail OIDC claim
+    # resolution and block the push, matching the safety property the publish
+    # job's `environment:` expression enforces for the initial rc push.
+    environment: release
+    permissions:
+      id-token: write
+      contents: write
+    steps:
+      - name: Resolve version tags
+        id: meta
+        run: |
+          rc_version="${GITHUB_REF_NAME#image-v}"       # e.g. 0.14.2-rc.1
+          version="${rc_version%%-rc.*}"                # e.g. 0.14.2
+          major_minor="${version%.*}"                   # e.g. 0.14
+          {
+            echo "rc_version=$rc_version"
+            echo "version=$version"
+            echo "major_minor=$major_minor"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Mint Docker Hub OIDC token
+        id: docker_oidc
+        uses: docker/oidc-action@v1
+        with:
+          connection_id: "06a2983d-e4d1-473e-8dab-f1d6ead9bc8f"
+
+      - name: Docker Hub login
+        uses: docker/login-action@v3
+        with:
+          username: tolokasoft1
+          password: ${{ steps.docker_oidc.outputs.token }}
+
+      # Same-digest retag from :X.Y.Z-rc.N onto :X.Y.Z. No rebuild — the
+      # image bytes are already public and rc-smoke has already validated
+      # them. Idempotent: re-running re-points the immutable :X.Y.Z tag
+      # onto the same digest, so a mid-loop failure is safe to rerun.
+      - name: Retag rc → stable (idempotent digest copy)
+        env:
+          RC_VERSION: ${{ steps.meta.outputs.rc_version }}
+          VERSION: ${{ steps.meta.outputs.version }}
+        run: |
+          for image in $FIRST_PARTY_IMAGES; do
+            repo="tolokasoft1/tolokaforge-${image}"
+            docker buildx imagetools create -t "${repo}:${VERSION}" "${repo}:${RC_VERSION}"
+          done
+
+      # Duplicated from the move-tags job below — kept in-place so the
+      # auto-promote job is self-contained and its DAG stays linear off
+      # `smoke`. A shared job would need a needs-graph across two `if:`
+      # branches that complicates the graph for no readability win.
+      - name: Move :latest and :major.minor onto the stable digest
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
+        run: |
+          for image in $FIRST_PARTY_IMAGES; do
+            repo="tolokasoft1/tolokaforge-${image}"
+            docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
+            docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
+          done
+
+      # Attach the GitHub Release to the rc tag that triggered this run — not
+      # to a new `image-vX.Y.Z` git tag. Creating a stable git tag here would
+      # fire publish-images.yml on that tag and duplicate the entire build,
+      # smoke, and move-tags sequence for no additional value. The rc tag is
+      # the auditable pointer to the digest that was promoted; the Release
+      # title names the stable version so `gh release list` reads correctly.
+      # Fail loud on a Docker Hub hiccup — GH-Actions `bash` default is
+      # `set -eo pipefail`, but a failing `$(imagetools inspect …)` command
+      # substitution is NOT propagated to errexit unless `inherit_errexit`
+      # is on. Without this shopt, a transient 500 would leave `digest=""`
+      # and the step would silently publish a garbled digest row.
+      - name: Collect image digests
+        env:
+          VERSION: ${{ steps.meta.outputs.version }}
+          REF_NAME: ${{ github.ref_name }}
+        run: |
+          set -euo pipefail
+          shopt -s inherit_errexit
+          {
+            echo "## Published images (auto-promoted from ${REF_NAME})"
+            echo ""
+            echo "| Image | Tag | Digest |"
+            echo "|---|---|---|"
+            for image in $FIRST_PARTY_IMAGES; do
+              repo="tolokasoft1/tolokaforge-${image}"
+              digest="$(docker buildx imagetools inspect "${repo}:${VERSION}" --format '{{.Manifest.Digest}}')"
+              echo "| \`${repo}\` | ${VERSION} | \`${digest}\` |"
+            done
+          } | tee release-notes.md >> "$GITHUB_STEP_SUMMARY"
+
+      # The Release title carries the rc suffix so that a hotfix flow which
+      # auto-promotes rc.1 and then rc.2 for the same X.Y.Z produces two
+      # visibly distinct Releases in `gh release list`. Without the suffix
+      # both entries would read `Docker images vX.Y.Z` and consumers would
+      # have to open each body to tell which is the current stable.
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          name: Docker images v${{ steps.meta.outputs.version }} (from ${{ steps.meta.outputs.rc_version }})
+          body_path: release-notes.md
+          # Do NOT append_body — the auto-promote job is idempotent for the
+          # image tags, and the release body must be idempotent too. A retry
+          # (rerun-failed-jobs, transient CI hiccup) with `append_body: true`
+          # would pile duplicate digest tables into the same Release. False
+          # (the default) replaces the body, so retries land on identical
+          # content whether they're the first run or the tenth.
+          append_body: false
+          generate_release_notes: true
+
   move-tags:
     name: Move :latest and :X.Y
     needs: smoke
@@ -246,7 +380,7 @@ jobs:
           VERSION: ${{ steps.meta.outputs.version }}
           MAJOR_MINOR: ${{ steps.meta.outputs.major_minor }}
         run: |
-          for image in runner db-service rag-service mock-web; do
+          for image in $FIRST_PARTY_IMAGES; do
             repo="tolokasoft1/tolokaforge-${image}"
             docker buildx imagetools create -t "${repo}:latest" "${repo}:${VERSION}"
             docker buildx imagetools create -t "${repo}:${MAJOR_MINOR}" "${repo}:${VERSION}"
@@ -268,7 +402,7 @@ jobs:
             echo ""
             echo "| Image | Tag | Digest |"
             echo "|---|---|---|"
-            for image in runner db-service rag-service mock-web; do
+            for image in $FIRST_PARTY_IMAGES; do
               repo="tolokasoft1/tolokaforge-${image}"
               digest="$(docker buildx imagetools inspect "${repo}:${version}" --format '{{.Manifest.Digest}}')"
               echo "| \`${repo}\` | ${version} | \`${digest}\` |"
