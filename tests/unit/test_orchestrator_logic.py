@@ -105,7 +105,11 @@ def _write_grading_yaml(task_dir: Path) -> None:
 
 
 def _make_task_config(task_id: str = "TASK-001", **overrides: Any) -> TaskConfig:
-    """Build a minimal TaskConfig for testing."""
+    """Build the smallest gradeable TaskConfig these tests need.
+
+    It seeds a table because the grading block beside it asserts a ``path:`` over
+    the trial's database, which is authorable only on a task that provisions one.
+    """
     from tolokaforge.core.models import (
         ActorSpec,
         InitialStateConfig,

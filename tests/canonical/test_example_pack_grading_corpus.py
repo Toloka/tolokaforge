@@ -701,7 +701,9 @@ def test_the_gate_and_the_runtime_read_one_fact_about_what_a_task_seeds() -> Non
     ``schemas`` and ``unstable_fields`` empty, and the core ``InitialStateConfig``
     declares neither field, so no ``task.yaml`` can express a disagreement. The
     control row below writes out the shape that can — schemas seeded, tables empty —
-    and shows the two answers parting there. The corpus half therefore reds on exactly
+    and asserts the two answers parting there. It is constructed rather than loaded,
+    for the same reason: it pins that the predicates disagree on that shape, not that
+    any resolver produces it. The corpus half therefore reds on exactly
     one future change: the day ``NativeAdapter`` populates either field without the
     gate being revisited. That is the drift it exists to catch, and the only one.
     """
@@ -731,7 +733,7 @@ def test_the_gate_and_the_runtime_read_one_fact_about_what_a_task_seeds() -> Non
         tables={}, schemas=[TableSchema(table_name="orders", fields={"id": "string"})]
     )
     assert provisions_database(schemas_only) is True
-    assert bool(SeededTablesLayer(tables={}).tables) is False
+    assert provisions_database(schemas_only) != bool(SeededTablesLayer(tables={}).tables)
 
 
 def test_no_shipped_pack_fails_the_authoring_gate() -> None:

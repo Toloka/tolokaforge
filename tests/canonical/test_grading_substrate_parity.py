@@ -2747,6 +2747,35 @@ def test_a_path_rooted_where_only_the_core_engine_composes_is_refused(
     assert "DB state unavailable" not in response.grade.reasons
 
 
+def test_the_authored_state_source_view_carries_every_source_key_the_manifest_names() -> None:
+    """The runtime's authored view is keyed by the manifest, not by its one consumer.
+
+    ``authored_state_sources`` is how ``GradeTrial`` hands
+    ``block_addresses_the_database`` a block in the author's vocabulary — the same
+    vocabulary the gate reads its raw YAML in — so the two points cannot answer the
+    same question about different keys. A source key added to ``state_checks`` and not
+    to the view would make the runtime's answer quietly narrower than the gate's, which
+    is the split this whole family exists to close.
+
+    The expectation is derived from :data:`GRADING_KEYS` rather than written out: a
+    ``state_checks`` leaf that scores is a source, and one that only shapes how a source
+    scores is a ``CONFIG_INPUT``. ``db_probes`` is therefore carried although
+    ``block_addresses_the_database`` never consults it — the view answers for the block,
+    and a view trimmed to its current reader would have to be widened again, silently,
+    by whoever writes the next rule.
+    """
+    source_keys = {
+        item.author_key.split(".", 1)[1]
+        for item in GRADING_KEYS
+        if item.author_key.startswith("state_checks.")
+        and item.author_key.count(".") == 1
+        and item.kind is KeyKind.SCORED_CHECK
+    }
+
+    assert source_keys, "no state_checks leaf in the manifest scores, so this proves nothing"
+    assert set(runner_models.RunnerStateChecksConfig().authored_state_sources()) == source_keys
+
+
 _REFUSALS_THAT_NAME_THE_TRIAL = (
     pytest.param(
         runner_models.RunnerStateChecksConfig(

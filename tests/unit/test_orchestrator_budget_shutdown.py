@@ -85,6 +85,11 @@ def _cost_factory(cost_per_trial: float) -> Callable[[str, int], Trajectory]:
 
 
 def _task_config(task_id: str) -> TaskConfig:
+    """The task every budget test runs, sized to what the run's pre-flight reads.
+
+    It seeds a table because the grading block beside it asserts a ``path:`` over
+    the trial's database, which is authorable only on a task that provisions one.
+    """
     return TaskConfig(
         task_id=task_id,
         name=f"Test Task {task_id}",
