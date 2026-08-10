@@ -143,6 +143,7 @@ from tolokaforge.runner.models import (
     TraceChecksResult,
     TranscriptEvaluationResult,
     TranscriptRulesConfig,
+    provisions_database,
 )
 from tolokaforge.runner.protocol import (
     ENGINE_PROTOCOL_VERSION,
@@ -901,20 +902,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             judge_model_config=trial_spec.judge_model_config,
         )
 
-        # Initialize DB Service with initial_state — only when the trial
-        # actually declares DB state to initialise. Tasks that use no DB
-        # tables / schemas / unstable_fields (e.g. adapters that grade via
-        # `custom_checks` + an HTTP endpoint on a sidecar, and drive no
-        # runner-managed state) skip the DB call entirely, so the runner
+        # A task that provisions no database (e.g. an adapter grading via
+        # `custom_checks` + an HTTP endpoint on a sidecar, driving no
+        # runner-managed state) skips the DB call entirely, so the runner
         # provisions cleanly even when no `db-service` sits in the trial's
-        # compose stack. Matches the guard the state-diff renderer already
-        # applies at `_maybe_render_state_diff` (checks `not initial_state.tables`).
-        # FAIL FAST is preserved for trials that DO declare DB state.
+        # compose stack. FAIL FAST is preserved for trials that DO declare DB state.
         initial_state = task_description.initial_state
-        needs_db = bool(
-            initial_state.tables or initial_state.schemas or initial_state.unstable_fields
-        )
-        if needs_db:
+        if provisions_database(initial_state):
             try:
                 # Run async operation on dedicated event loop thread
                 self._run_async(

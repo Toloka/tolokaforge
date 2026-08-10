@@ -210,6 +210,16 @@ class RunnerInitialStateConfig(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+def provisions_database(initial_state: RunnerInitialStateConfig) -> bool:
+    """Whether registering a trial with this initial state gives it a DB service.
+
+    Every field the DB service is initialised from counts, not just the rows: a task
+    declaring only ``schemas`` or only ``unstable_fields`` still provisions a database,
+    and every grading branch that reads one still reaches it.
+    """
+    return bool(initial_state.tables or initial_state.schemas or initial_state.unstable_fields)
+
+
 # =============================================================================
 # Pre-Trial Actions (from TASK_DESCRIPTION_SCHEMA.md)
 # =============================================================================
