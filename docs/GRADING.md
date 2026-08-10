@@ -1075,8 +1075,8 @@ correct — the alternative is grading the trial by a rule the author never chos
 
 ### The `jsonpaths` assertion vocabulary
 
-One assertion names a `path` and **exactly one** comparison from a closed set of
-four:
+One assertion names a `path` — a JSONPath expression addressing **the trial's
+database** — and **exactly one** comparison from a closed set of four:
 
 | operator | holds when |
 |---|---|
@@ -1093,13 +1093,19 @@ cannot fail is worse than none. A path that resolves to nothing is a failed chec
 too. A path resolving to several values holds when **any** of them satisfies the
 comparison.
 
-**`path_glob` is a different assertion with a narrower vocabulary.** It matches
-written files by shell glob rather than the state by JSONPath — the way a
-file-writing task avoids asserting on a filename the agent chose — and the two
-substrates read it differently: core-side it applies any of the four operators to the
-matched entries of `state["filesystem"]`, while the runner routes it to a
-file-content evaluator that reads only `contains_ci`. Write `path_glob` with
-`contains_ci` for a check that means the same thing wherever the trial was graded.
+**`path_glob` is the assertion that addresses the filesystem**, and the only one: the
+JSONPath state the runner resolves a `path` against carries `db` and `tables` and
+nothing else, so a file is reachable by glob or not at all. It matches written files
+by shell glob rather than the database by JSONPath — the way a file-writing task
+avoids asserting on a filename the agent chose.
+
+Write it with `contains_ci`. The two substrates read the operator differently:
+core-side any of the four applies to the matched entries of `state["filesystem"]`,
+while the runner routes it to a file-content evaluator that reads only `contains_ci`
+— and reads an absent one as the empty string, which every file contains. Any other
+operator is therefore a runner-side pass that asserts nothing, and a core-side
+verdict that can disagree with it
+([#466](https://github.com/toloka/tolokaforge/issues/466)).
 
 ### Folding the hash verdict with `jsonpaths`
 
@@ -1110,7 +1116,7 @@ trial's final state, and both levels are fixed:
 | source | evaluated against |
 |---|---|
 | `hash` | the **unwrapped** database inside the final state (`db`, else `agent`, else the state itself) — the level the golden state and `compute_stable_hash` both describe |
-| `jsonpaths` | the **whole** final environment state, so an assertion is rooted `$.db.<table>[…]` |
+| `jsonpaths` | the trial's database, composed under a `db` root — so an assertion is rooted `$.db.<table>[…]` |
 
 A source that declares nothing to evaluate produces no verdict, and a source
 nobody configured contributes nothing rather than a score. An empty `jsonpaths`

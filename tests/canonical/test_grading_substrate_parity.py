@@ -2540,30 +2540,38 @@ def test_an_undecided_verdict_crosses_the_wire_as_the_fact_it_is(
 # --------------------------------------------------------------------------
 
 _STATE_READING_PACKS = (
-    ("state_checks_jsonpaths", "state_checks"),
-    ("custom_checks", "custom_checks"),
+    ("state_checks_jsonpaths", "state_checks", "satisfying", 1.0),
+    ("custom_checks", "custom_checks", "satisfying", 1.0),
+    ("combine_method", "state_checks", "split_components", 0.0),
 )
 
 
-@pytest.mark.parametrize(("task_id", "component"), _STATE_READING_PACKS)
+@pytest.mark.parametrize(("task_id", "component", "case_name", "expected"), _STATE_READING_PACKS)
 def test_a_state_reading_pack_grades_through_the_runners_own_registration(
-    task_id, component, test_data_dir, runner_service, mock_grpc_context
+    task_id, component, case_name, expected, test_data_dir, runner_service, mock_grpc_context
 ):
-    """Both DB-reading parity packs are reachable through ``RegisterTrial`` and score.
+    """A pack whose grading reads the trial's database grades through ``RegisterTrial``.
 
-    Every other parity pack grades off the transcript, so these two are the only
-    ones whose runner path depends on the trial's DB service having been
-    provisioned — and ``RegisterTrial`` provisions it from ``initial_state``, not
-    from the trial fixture's ``state:``.
+    ``RegisterTrial`` provisions the DB service from ``initial_state``, not from the
+    trial fixture's ``state:``, so such a pack reaches a score here only if its task
+    seeds one.
 
-    Only the satisfying case is asserted. The rows come from ``initial_state``, so
-    the violating case replays its messages against those same rows and scores
-    identically; discriminating the two is lock 3's claim, made over the trial
-    fixture's state. What is claimed here is reachability of the runner's own path.
+    Each row carries the case it drives and the component value that case is authored
+    to produce, because the packs do not agree on one: two are satisfied by the rows
+    their ``initial_state`` seeds, and ``combine_method`` seeds a status its assertion
+    contradicts, so its trial splits into a 0.0 component and a 1.0 one. Pinning the
+    value per row is what holds that seed — a seed satisfying the assertion scores 1.0
+    here and makes the pack a different fixture, which no other lock over it can see:
+    both arms of the combine differential read the trial fixture's ``state:`` and never
+    consult ``initial_state`` at all.
+
+    Discriminating a satisfying case from a violating one is lock 3's claim, made over
+    the trial fixture's state. What is claimed here is reachability of the runner's own
+    path, and the component value that path produces.
     """
     adapter = _parity_adapter(test_data_dir)
     task_description = adapter.to_task_description(task_id)
-    case = _load_case(test_data_dir / "grading_parity" / task_id, "satisfying")
+    case = _load_case(test_data_dir / "grading_parity" / task_id, case_name)
 
     response = _grade_pack_through_the_runner(
         runner_service,
@@ -2574,10 +2582,10 @@ def test_a_state_reading_pack_grades_through_the_runners_own_registration(
     )
 
     assert response.success is True, response.error
-    assert getattr(response.grade.components, component) == pytest.approx(1.0), (
+    assert getattr(response.grade.components, component) == pytest.approx(expected), (
         f"{task_id} reached GradeTrial but scored {component} at "
-        f"{getattr(response.grade.components, component)}: the runner graded against "
-        "a database RegisterTrial did not provision from initial_state"
+        f"{getattr(response.grade.components, component)} rather than {expected}: the "
+        "runner graded against a database that does not carry what initial_state seeds"
     )
 
 
