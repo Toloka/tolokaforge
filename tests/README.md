@@ -183,6 +183,22 @@ Compare output against committed golden snapshots in `snapshots/`.
   missing from the lock's driver table fails
   `test_every_ledger_key_names_a_driver_that_can_populate_it` instead, which means a
   new ledger key arrived with no way to drive it: add a driver, never drop the row.
+  **Locks 16-18 are not about the manifest at all** — they are about what a grade
+  *does* and *says*, which the manifest does not describe, so neither the manifest
+  entry nor an exemption set is ever the repair. A **lock 16** failure means the two
+  substrates disagreed on `state_checks.hash.expect_initial_state` — the proposition
+  "the trial left the state as it found it", each substrate hashing both sides in its
+  own algebra: fix whichever evaluator moved. A **lock 17** failure means the
+  substrates' `Custom checks:` segment diverged, or the shared renderer stopped
+  naming the check that decided the trial: fix `custom_checks_reason` in
+  `tolokaforge/core/grading/checks_helpers.py`, or whichever call site re-wrapped
+  what it returned. A **lock 18** failure means a registered grade component
+  contributes no segment to `Grade.reasons`: fix the branch in `build_grade_reasons`
+  that names it — **never** the marker in `_COMPONENT_NARRATION`, which is the
+  written-out counterpart the lock exists to hold the renderer against. A component
+  added to `GRADE_COMPONENTS` with no row fails
+  `test_every_registered_component_has_a_narration_row` instead: add the row and the
+  branch together.
 - Transcript rules substrate parity (`test_transcript_substrate_parity.py`) — one
   authored pack under `tests/data/transcript_parity/`, one trial, graded through both
   substrates' real adapter paths, must produce the same `transcript_rules` component
