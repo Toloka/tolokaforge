@@ -167,7 +167,14 @@ class TestRunnerPipeline:
         assert response.metrics.exit_code == 0
 
     def test_grade_trial_no_grading_config(self, runner_service, mock_grpc_context):
-        """Test GradeTrial passes by default when no grading config."""
+        """A task declaring no grading at all: the fold's sentence is the whole account.
+
+        Nothing was asked for, so nothing is owed and the trial passes — and the fold
+        is what says so, because no component rendered anything to say it beside.
+        The sentence is asserted exactly and alone: a grade opening with a separator
+        is what a renderer contributing nothing produces if its output is appended to
+        rather than joined with the rest.
+        """
         trial_id = "no_grading_test:0"
 
         # Create task without grading config
@@ -197,9 +204,55 @@ class TestRunnerPipeline:
         assert response.success is True
         assert response.grade.binary_pass is True
         assert response.grade.score == 1.0
-        # Message changed from "No grading config" to "No grading components evaluated"
-        assert (
-            "No grading" in response.grade.reasons or "no grading" in response.grade.reasons.lower()
+        assert response.grade.reasons == (
+            "no component was configured and no weight names one, so nothing was "
+            "scored and nothing was owed"
+        )
+
+    def test_grade_trial_joins_the_segments_a_skipped_component_leaves(
+        self, runner_service, mock_grpc_context
+    ):
+        """Two segments and no renderer output: the join is what puts them together.
+
+        A pack declaring a transcript rule over a trial whose timeline carries no
+        events reaches ``GradeTrial`` with a skip note and a fold sentence and nothing
+        from the components' renderer, which is the shape that catches a composition
+        appending to that renderer's output — one segment would not, the separator
+        landing where the empty output was.
+        """
+        trial_id = "skipped_component_test:0"
+        task_description = {
+            "task_id": "skipped_component",
+            "name": "Skipped Component Test",
+            "category": "test",
+            "description": "A task whose only rule cannot be evaluated",
+            "adapter_type": "tau",
+            "system_prompt": "You are a test assistant.",
+            "initial_state": {"tables": {}, "schemas": []},
+            "agent_tools": [],
+            "user_tools": [],
+            "grading": {
+                "transcript_rules": {"must_contain": ["hello"]},
+                "combine_method": "weighted",
+                "weights": {"transcript_rules": 1.0},
+            },
+        }
+
+        runner_service.RegisterTrial(
+            register_request(
+                trial_spec_json(task_description, trial_id=trial_id), trial_id=trial_id
+            ),
+            mock_grpc_context,
+        )
+        response = runner_service.GradeTrial(
+            pb2.GradeTrialRequest(trial_id=trial_id), mock_grpc_context
+        )
+
+        assert response.success is True
+        assert response.grade.reasons == (
+            "transcript_rules.must_contain skipped: the trial's timeline carries no events"
+            " | no scored component carries any weight, so the trial earned nothing: "
+            "transcript_rules produced no verdict"
         )
 
     def test_grade_trial_not_found(self, runner_service, mock_grpc_context):
