@@ -650,16 +650,17 @@ testing nothing.
 
 ### Key rotation under a gateway
 
-Rotation stays bound to the provider key chain (`OPENROUTER_API_KEYS` and
-friends), and whether it still applies depends on **one** thing: is a gateway
-key pinned?
+Rotation binds to the provider record's `api_keys_env`
+(OpenRouter's is `OPENROUTER_API_KEYS`); the rotation logic republishes into
+`api_key_env` (OpenRouter's `OPENROUTER_API_KEY`). Whether rotation still
+applies depends on **one** thing: is a gateway key pinned?
 
 - **`LLM_PROXY_API_KEY` set** — rotation is skipped. `_rotate_key` republishes
-  `OPENROUTER_API_KEY` into the environment, but the pinned `api_key` kwarg
-  takes precedence in litellm, so rotating would resend byte-identical requests
-  and then report an exhausted key chain that was never in play. A gateway
-  quota or authorization rejection raises an error naming the gateway URL
-  instead.
+  the provider's `api_key_env` into the environment, but the pinned `api_key`
+  kwarg takes precedence in litellm, so rotating would resend byte-identical
+  requests and then report an exhausted key chain that was never in play. A
+  gateway quota or authorization rejection raises an error naming the gateway
+  URL instead.
 - **`LLM_PROXY_API_KEY` unset** (gateway authenticates by network position) —
   rotation works and is left alone, because litellm reads the provider env var
   that `_rotate_key` rewrites. Suppressing it here would abort a trial with

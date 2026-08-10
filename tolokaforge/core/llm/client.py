@@ -723,24 +723,29 @@ class LLMClient:
 
         Routes through ``tolokaforge.secrets.get_default()`` so behaviour stays
         identical between host and runner-container processes (the runner
-        bootstraps a SecretManager from ``TOLOKAFORGE_SECRETS_JSON``).
-        ``OPENROUTER_KEY_FILE`` is *not* a secret — only the key file's *path*
-        is a config knob, so it stays as a non-credential env var. The keys
-        themselves are read from disk by this code.
+        bootstraps a SecretManager from ``TOLOKAFORGE_SECRETS_JSON``). The
+        rotation-list and primary env-var names come from the provider's
+        binding (:attr:`ProviderBinding.api_keys_env` /
+        :attr:`ProviderBinding.api_key_env`). ``OPENROUTER_KEY_FILE`` is *not*
+        a secret — only the key file's *path* is a config knob, so it stays
+        as a non-credential env var. The keys themselves are read from disk
+        by this code.
         """
         from tolokaforge.secrets import get_default
 
         secrets = get_default()
+        binding = self._provider_binding
 
-        keys_str = secrets.get_secret("OPENROUTER_API_KEYS") or ""
-        if keys_str:
-            keys = [k.strip() for k in keys_str.split(",") if k.strip()]
-            if keys:
-                self.logger.info(
-                    "Loaded API keys from OPENROUTER_API_KEYS",
-                    key_count=len(keys),
-                )
-                return keys
+        if binding.api_keys_env:
+            keys_str = secrets.get_secret(binding.api_keys_env) or ""
+            if keys_str:
+                keys = [k.strip() for k in keys_str.split(",") if k.strip()]
+                if keys:
+                    self.logger.info(
+                        f"Loaded API keys from {binding.api_keys_env}",
+                        key_count=len(keys),
+                    )
+                    return keys
 
         # OPENROUTER_KEY_FILE is a path, not a credential — env-var read OK.
         key_file = os.environ.get("OPENROUTER_KEY_FILE", "keys.txt")
@@ -762,17 +767,26 @@ class LLMClient:
                 )
                 return keys
 
-        key = secrets.get_secret("OPENROUTER_API_KEY") or ""
-        if key:
-            return [key]
+        if binding.api_key_env:
+            key = secrets.get_secret(binding.api_key_env) or ""
+            if key:
+                return [key]
         return []
 
     def _rotate_key(self) -> bool:
-        """Rotate to the next available API key."""
+        """Rotate to the next available API key.
+
+        Republishes the fresh key into the environment under
+        :attr:`ProviderBinding.api_key_env` so a provider that reads the env
+        var per call (litellm's default path when no ``api_key`` kwarg is
+        pinned) picks the rotated value on the next attempt.
+        """
+        binding = self._provider_binding
         if self._current_key_index + 1 < len(self._api_keys):
             self._current_key_index += 1
             new_key = self._api_keys[self._current_key_index]
-            os.environ["OPENROUTER_API_KEY"] = new_key
+            if binding.api_key_env:
+                os.environ[binding.api_key_env] = new_key
             self.logger.info(
                 "Rotated to API key",
                 key_suffix=new_key[-6:] if len(new_key) >= 6 else "***",
@@ -1732,7 +1746,10 @@ class LLMClient:
             if isinstance(existing_extra, dict):
                 extra_headers.update(existing_extra)
             kwargs["extra_headers"] = extra_headers
-            kwargs.setdefault("custom_llm_provider", self.provider.split("/")[0])
+            kwargs.setdefault(
+                "custom_llm_provider",
+                self._provider_binding.custom_llm_provider or self.provider.split("/")[0],
+            )
             or_cfg = self.config.openrouter
             if or_cfg and or_cfg.provider_order:
                 kwargs.setdefault("extra_body", {})["provider"] = {
@@ -1943,15 +1960,14 @@ class LLMClient:
                 ):
                     if self._proxy is not None and self._proxy.api_key:
                         # Rotation cannot help *when a gateway key is pinned*:
-                        # ``_rotate_key`` republishes ``OPENROUTER_API_KEY``
-                        # into the environment, but the pinned ``api_key``
-                        # kwarg takes precedence in litellm. Rotating would
-                        # resend byte-identical requests and then report an
-                        # exhausted key chain that was never in play. The
-                        # condition mirrors exactly where ``_build_kwargs``
-                        # pins the key — without a gateway key litellm reads
-                        # the provider env var, so rotation still works and
-                        # must be left alone.
+                        # ``_rotate_key`` republishes the provider's
+                        # ``api_key_env`` into the environment, but the pinned
+                        # ``api_key`` kwarg takes precedence in litellm.
+                        # Rotating would resend byte-identical requests and
+                        # then report an exhausted key chain that was never in
+                        # play. Without a gateway key litellm reads the
+                        # provider env var, so rotation still works and must
+                        # be left alone.
                         self.logger.error(
                             "Gateway rejected the request as over quota or unauthorized",
                             base_url=self._proxy.base_url,
