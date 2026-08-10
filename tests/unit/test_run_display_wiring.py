@@ -483,7 +483,12 @@ def test_orchestrator_stores_events_from_deps() -> None:
 
 
 def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bool = False) -> Any:
-    """Build a bare :class:`Orchestrator` for pending-trial construction tests."""
+    """Build a bare :class:`Orchestrator` for pending-trial construction tests.
+
+    Its tasks seed a table because the grading block written beside them asserts a
+    ``path:`` over the trial's database, which is authorable only on a task that
+    provisions one.
+    """
     from tolokaforge.core.models import (
         ActorSpec,
         EvaluationConfig,
@@ -513,7 +518,7 @@ def _make_orchestrator_with_tasks(task_ids: list[str], repeats: int, shuffle: bo
             name=task_id,
             category="tool_use",
             description="d",
-            initial_state=InitialStateConfig(),
+            initial_state=InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
             tools=ToolsConfig(),
             actors={"user": ActorSpec(mode="scripted")},
             grading="grading.yaml",
@@ -715,6 +720,11 @@ def test_build_trial_executor_threads_events_into_provisioning_executor() -> Non
 
 
 def _make_task_for_run(task_id: str) -> Any:
+    """The task the full-run ordering tests drive, seeding what its grading reads.
+
+    It seeds a table because the grading block beside it asserts a ``path:`` over
+    the trial's database, which is authorable only on a task that provisions one.
+    """
     from tolokaforge.core.models import (
         ActorSpec,
         InitialStateConfig,
@@ -727,7 +737,7 @@ def _make_task_for_run(task_id: str) -> Any:
         name=task_id,
         category="tool_use",
         description="d",
-        initial_state=InitialStateConfig(),
+        initial_state=InitialStateConfig(json_db={"items": [{"id": "I1"}]}),
         tools=ToolsConfig(),
         actors={"user": ActorSpec(mode="scripted")},
         grading="grading.yaml",
