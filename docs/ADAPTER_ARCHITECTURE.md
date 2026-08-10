@@ -65,7 +65,9 @@ For contributor-facing contract details, see `docs/ADAPTER_INTERFACE.md`.
 
 External adapters are separate Python packages that register themselves via
 `importlib.metadata` entry-points. The core `tolokaforge` package discovers
-them automatically at import time.
+them lazily on the first `available_adapters()` (or `get_adapter(<non-native>)`)
+call through the shared fail-loud primitive — see § Discovery Mechanism and
+§ Fail-loud registry pattern below.
 
 ### Entry-Point Registration
 

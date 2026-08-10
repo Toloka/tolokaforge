@@ -40,7 +40,7 @@ subsection in ``docs/ADAPTER_ARCHITECTURE.md`` for the required shape.
 from __future__ import annotations
 
 import importlib.metadata
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, cast
 
@@ -203,8 +203,8 @@ def _distribution_name(ep: EntryPoint) -> str:
     return dist.name if dist is not None else "<unknown distribution>"
 
 
-def discover_entry_points(group: str) -> dict[str, EntryPoint]:
-    """Return a cached ``name → EntryPoint`` map for ``group``.
+def discover_entry_points(group: str) -> Mapping[str, EntryPoint]:
+    """Return a cached ``name → EntryPoint`` read-only mapping for ``group``.
 
     Enumerates names and distributions without importing any target
     (``ep.load()`` is deferred to the caller). Raises
@@ -213,7 +213,9 @@ def discover_entry_points(group: str) -> dict[str, EntryPoint]:
 
     This is the canonical fail-loud discovery primitive for every engine-side
     ``importlib.metadata`` entry-point registry; consumers iterate the returned
-    map and load each entry point at their own point of use.
+    mapping and load each entry point at their own point of use. The return is
+    the internal cache by reference — callers must not mutate it; copy first
+    (``dict(mapping)``) if a mutable view is needed.
     """
     cached = _discovery_cache.get(group)
     if cached is not None:

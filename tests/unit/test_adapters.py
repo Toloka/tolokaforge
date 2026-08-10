@@ -27,9 +27,7 @@ class _FakeEntryPoint:
 
     Discovery in :func:`plugin_registry.discover_entry_points` reads
     ``ep.name`` / ``ep.dist`` (for the duplicate message); ``ep.load()`` is
-    invoked by ``_discover_adapters`` per surviving entry point. Copied
-    locally instead of imported from ``test_plugin_registry.py`` — the tests
-    remain self-contained.
+    invoked by ``_discover_adapters`` per surviving entry point.
     """
 
     def __init__(
@@ -58,9 +56,7 @@ def _isolate_adapter_discovery(monkeypatch: pytest.MonkeyPatch):
     Tests that inject entry-points under ``tolokaforge.adapters`` must clear
     the per-group cache so the next scan re-reads their injection instead of
     a stale prior map, and must reset ``_ADAPTERS`` / ``_FAILED_ADAPTERS`` so
-    lazy rediscovery fires. Mirrors the pattern in
-    ``test_plugin_registry.py::_isolate_registry`` but kept local per the
-    plan's no-cross-test-import rule.
+    lazy rediscovery fires.
     """
     import tolokaforge.adapters as adapters_module
 
