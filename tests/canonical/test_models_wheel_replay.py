@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import re
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -23,7 +24,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-def _build_metric() -> dict:
+def _build_metric() -> dict[str, Any]:
     commits = enumerate_integration_commits(_REPO_ROOT)
     integrations = []
     for c in commits:

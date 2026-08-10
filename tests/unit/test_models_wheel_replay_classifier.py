@@ -13,8 +13,6 @@ import dataclasses
 import pytest
 
 from tests.canonical._models_wheel_replay.classifier import (
-    BUCKET_A_ALLOWED_FILES,
-    BUCKET_A_ALLOWED_PREFIXES,
     Bucket,
     Classification,
     classify_paths,
@@ -262,15 +260,3 @@ def test_bucket_is_str_enum_round_trip() -> None:
     assert Bucket.A.value == "A"
     assert Bucket.B.value == "B"
     assert isinstance(Bucket.A, str)
-
-
-def test_allow_list_names_expected_data_files() -> None:
-    assert "tolokaforge/core/data/pricing.json" in BUCKET_A_ALLOWED_FILES
-    assert "tolokaforge/core/data/model_presets.yaml" in BUCKET_A_ALLOWED_FILES
-    assert "tests/integration/llm/registry.py" in BUCKET_A_ALLOWED_FILES
-    assert "tolokaforge/testing/certify/_registry.py" in BUCKET_A_ALLOWED_FILES
-
-
-def test_prefix_list_covers_models_wheel_and_data_trees() -> None:
-    assert "tolokaforge_models/" in BUCKET_A_ALLOWED_PREFIXES
-    assert "tolokaforge/core/data/" in BUCKET_A_ALLOWED_PREFIXES

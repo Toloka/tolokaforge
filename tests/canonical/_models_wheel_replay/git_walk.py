@@ -1,4 +1,4 @@
-"""Thin subprocess helpers around ``git log`` / ``git show`` for the
+"""Thin subprocess helpers around ``git log`` / ``git diff-tree`` for the
 models-wheel replay acceptance test.
 
 The helpers surface every ``integrate: <slug> (#N)`` commit reachable
@@ -16,7 +16,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 _SUBJECT_PREFIX = "^integrate: "
-_MODEL_RE = re.compile(r"^integrate: (\S+)")
+_MODEL_RE = re.compile(r"^integrate: (\S+?)(?:\s|$)")
 _PR_RE = re.compile(r"\(#(\d+)\)$")
 _FIELD_SEP = "\x1f"
 _LOG_FORMAT = f"%H{_FIELD_SEP}%cs{_FIELD_SEP}%s"
@@ -63,10 +63,17 @@ def enumerate_integration_commits(repo_root: Path) -> list[IntegrationCommit]:
 
     Chronological, oldest-first (``git log --reverse`` over committer-
     date order). One ``git log`` call across all matching commits, plus
-    one ``git show --name-only`` per commit for the touched-file set.
-    Raises ``RuntimeError`` if ``git`` is not on ``PATH`` or if any git
-    subprocess exits non-zero (e.g. ``repo_root`` is not a git working
-    tree).
+    one ``git diff-tree --no-commit-id --name-only -r`` per commit for
+    the touched-file set — ``diff-tree -r`` lists paths across all
+    parents on a merge commit, whereas ``git show --name-only`` reports
+    a combined diff that returns the empty set for a conflict-free
+    merge and would silently misclassify. Raises ``RuntimeError`` if
+    ``git`` is not on ``PATH``, if any git subprocess exits non-zero
+    (e.g. ``repo_root`` is not a git working tree), if a subject
+    matches the log filter but not the model-slug regex, if a subject
+    has neither a trailing ``(#N)`` group nor terminates immediately
+    after the slug, or if the touched-file set for an ``^integrate: ``
+    commit is empty.
     """
     if shutil.which("git") is None:
         raise RuntimeError("git is not on PATH; enumerate_integration_commits requires git")
@@ -93,9 +100,22 @@ def enumerate_integration_commits(repo_root: Path) -> list[IntegrationCommit]:
                 "may have changed"
             )
         pr_match = _PR_RE.search(subject)
+        if pr_match is None and subject.rstrip() != f"integrate: {model_match.group(1)}":
+            raise RuntimeError(
+                f"commit {sha}: subject '{subject}' has neither a trailing "
+                "'(#N)' group nor terminates immediately after the model slug"
+            )
         pr = int(pr_match.group(1)) if pr_match is not None else None
-        touched_output = _run_git(repo_root, ["show", "--name-only", "--format=", sha])
+        touched_output = _run_git(
+            repo_root, ["diff-tree", "--no-commit-id", "--name-only", "-r", sha]
+        )
         touched = tuple(sorted({p for p in touched_output.splitlines() if p}))
+        if not touched:
+            raise RuntimeError(
+                f"commit {sha}: 'git diff-tree' returned an empty touched-file "
+                "set for an '^integrate: ' commit — implausible and worth "
+                "failing loud on"
+            )
         commits.append(
             IntegrationCommit(
                 sha=sha,
