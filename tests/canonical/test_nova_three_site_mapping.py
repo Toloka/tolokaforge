@@ -1,97 +1,108 @@
 """Nova's three sites, computed from the ``providers.yaml`` record.
 
 Locks the *interpretation* of a :class:`ProviderBinding` at the three
-places the client applies it: constructor env-set, ``_format_model_name``,
-and the per-attempt kwargs mutation in ``_call_with_key_rotation``. The
-snapshot is a pure function of the record — no LLMClient construction,
-no wire I/O — so a client-implementation refactor cannot silently drift
-from what the schema says the transport should look like.
+places the client applies it: constructor env-set of ``NOVA_API_BASE``,
+:meth:`LLMClient._format_model_name` bare-name return, and the per-attempt
+kwargs mutation in :meth:`LLMClient._call_with_key_rotation` (endpoint pin,
+``api_key`` from ``NOVA_API_KEY``, ``custom_llm_provider`` hint, slug
+rewrite). Drives a real :class:`LLMClient` and intercepts litellm's
+``completion`` to capture the exact kwargs the transport sees — a client
+refactor that breaks the client's application of the Nova binding cannot
+stay green by editing a hand-copied paraphrase.
 """
 
 from __future__ import annotations
 
+import os
+from collections.abc import Iterator
 from typing import Any
 
 import pytest
 
-from tolokaforge.core.llm.providers import ProviderBinding, get_provider_binding
+from tolokaforge.core.llm import client as client_module
+from tolokaforge.core.llm.client import LLMClient
+from tolokaforge.core.models import ModelConfig
+from tolokaforge.secrets import DictProvider, SecretManager
+from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = pytest.mark.canonical
 
 
-def _site1_init_env_set(binding: ProviderBinding) -> dict[str, str | None]:
-    """Reproduce ``LLMClient.__init__``'s post-lookup env-set for this binding.
+class _CapturedCompletion(RuntimeError):
+    """Sentinel raised inside the mocked ``completion`` to abort the call.
 
-    Mirrors the block that runs when neither the gateway nor OpenRouter
-    claims the provider: ``os.environ.setdefault(api_base_env, endpoint)``
-    when both are populated, no-op otherwise.
+    The rotation loop unwraps this as a generic provider error and rewraps it
+    into ``RuntimeError("LLM API call failed: ...")``; the test consumes only
+    the captured kwargs dict, so response-shape assembly is deliberately
+    skipped.
     """
-    if binding.endpoint and binding.api_base_env:
-        return {"env_var": binding.api_base_env, "value": binding.endpoint}
-    return {"env_var": None, "value": None}
 
 
-def _site2_format_model_name(binding: ProviderBinding, config_name: str) -> str:
-    """Reproduce ``LLMClient._format_model_name`` for a binding + config name.
-
-    The ``self.config.name.startswith(f"{provider}/")`` short-circuit is
-    covered elsewhere; here the input is the bare configured name and the
-    only behaviour under test is the ``format_model_name_bare`` branch.
-    """
-    if binding.format_model_name_bare:
-        return config_name
-    # Placeholder used only inside this test's snapshot; the real client
-    # composes ``f"{config.provider}/{config.name}"`` at the callsite.
-    return f"<provider>/{config_name}"
-
-
-def _site3_call_with_key_rotation_kwargs(
-    binding: ProviderBinding,
-    starting_model: str,
-    resolved_api_key: str,
-) -> dict[str, Any]:
-    """Reproduce the per-attempt kwargs mutation for a binding.
-
-    ``resolved_api_key`` stands in for what ``SecretManager.get_secret``
-    would return; the client's fail-loud on empty is a separate contract.
-    """
-    kwargs: dict[str, Any] = {"model": starting_model, "messages": []}
-
-    if binding.kwargs_pin_transport:
-        kwargs["api_base"] = binding.endpoint
-        kwargs["api_key"] = resolved_api_key
-
-    if binding.custom_llm_provider is not None:
-        kwargs["custom_llm_provider"] = binding.custom_llm_provider
-
-    if binding.slug_rewrite is not None:
-        model = kwargs["model"]
-        if binding.slug_rewrite.strip_prefix and model.startswith(
-            binding.slug_rewrite.strip_prefix
-        ):
-            model = model[len(binding.slug_rewrite.strip_prefix) :]
-        if binding.slug_rewrite.ensure_prefix and not model.startswith(
-            binding.slug_rewrite.ensure_prefix
-        ):
-            model = binding.slug_rewrite.ensure_prefix + model
-        kwargs["model"] = model
-
-    return kwargs
+@pytest.fixture
+def isolate_env() -> Iterator[None]:
+    """Snapshot ``os.environ`` so ``NOVA_API_BASE`` / ``NOVA_API_KEY`` do not leak."""
+    original_env = dict(os.environ)
+    os.environ.pop("NOVA_API_BASE", None)
+    os.environ.pop("NOVA_API_KEY", None)
+    try:
+        yield
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)
 
 
-def test_nova_three_site_mapping_from_binding(canon_snapshot) -> None:
-    binding = get_provider_binding("nova")
+@pytest.fixture
+def install_nova_secret() -> Iterator[None]:
+    """Install a dict-backed SecretManager holding the Nova test key."""
+    original_manager = secrets_manager._default_manager
+    secrets_manager._default_manager = SecretManager(
+        [DictProvider({"NOVA_API_KEY": "nova-test-key"})]
+    )
+    try:
+        yield
+    finally:
+        secrets_manager._default_manager = original_manager
+
+
+def test_nova_three_site_mapping_drives_real_client(
+    canon_snapshot,
+    isolate_env: None,
+    install_nova_secret: None,
+) -> None:
+    captured: dict[str, Any] = {}
+
+    def _fake_completion(**kwargs: Any) -> Any:
+        captured["kwargs"] = kwargs
+        raise _CapturedCompletion("kwargs captured; skip _assemble_result")
+
+    original = client_module.completion
+    client_module.completion = _fake_completion  # type: ignore[assignment]
+    try:
+        client = LLMClient(ModelConfig(provider="nova", name="busan-v1"))
+        env_nova_api_base = os.environ.get("NOVA_API_BASE")
+        formatted_name = client._format_model_name()
+        with pytest.raises(RuntimeError):
+            client._call_with_key_rotation({"model": formatted_name, "messages": []})
+    finally:
+        client_module.completion = original  # type: ignore[assignment]
+
+    call_kwargs = captured["kwargs"]
     payload = {
-        "site_1_init_env_set": _site1_init_env_set(binding),
+        "site_1_init_env_set": {
+            "env_var": "NOVA_API_BASE",
+            "value": env_nova_api_base,
+        },
         "site_2_format_model_name": {
             "input_config_name": "busan-v1",
-            "output": _site2_format_model_name(binding, "busan-v1"),
+            "output": formatted_name,
         },
-        "site_3_call_with_key_rotation_kwargs": _site3_call_with_key_rotation_kwargs(
-            binding,
-            starting_model="nova/busan-v1",
-            resolved_api_key="nova-test-key",
-        ),
+        "site_3_call_with_key_rotation_kwargs": {
+            "api_base": call_kwargs.get("api_base"),
+            "api_key": call_kwargs.get("api_key"),
+            "custom_llm_provider": call_kwargs.get("custom_llm_provider"),
+            "messages": call_kwargs.get("messages"),
+            "model": call_kwargs.get("model"),
+        },
     }
 
     snap = canon_snapshot("nova_three_site_mapping")

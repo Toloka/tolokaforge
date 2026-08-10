@@ -26,15 +26,16 @@ from tolokaforge.core.llm.proxy import (
     ProxyConfigError,
     resolve_proxy_config,
 )
-
-_UNROUTABLE_PROVIDERS = frozenset(
-    name for name in ("mock", "nova") if get_provider_binding(name).unroutable
-)
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
 from tolokaforge.secrets import DictProvider, SecretManager
 from tolokaforge.secrets import manager as secrets_manager
 
 pytestmark = pytest.mark.unit
+
+
+_UNROUTABLE_PROVIDERS = frozenset(
+    name for name in ("mock", "nova") if get_provider_binding(name).unroutable
+)
 
 
 @pytest.fixture

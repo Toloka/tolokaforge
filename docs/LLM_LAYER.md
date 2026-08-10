@@ -685,7 +685,8 @@ the first `/`-separated segment of `ModelConfig.provider`, lower-cased;
 unknown names resolve to a default `ProviderBinding()` with every field inert.
 
 `LLMClient.__init__` loads the binding into `self._provider_binding` once and
-consults it wherever transport behaviour used to branch on provider name.
+consults it at every provider-specific transport branch — endpoint pinning,
+credential lookup, key rotation, slug rewrite, rate-limit text.
 
 ### What is data-driven
 

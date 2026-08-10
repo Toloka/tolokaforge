@@ -258,6 +258,7 @@ class ToolCallingLoop:
     metrics: MetricsSink
     should_terminate: TerminationPolicy
     logger: StructuredLogger
+    classify_error: ErrorClassifier
     user_turn: UserTurn | None = None
     # The trial's ordered tool-call record. Injected rather than owned: the
     # rubric judge runs this same loop over its own read-only tools, and a
@@ -267,19 +268,11 @@ class ToolCallingLoop:
     normalize_tool_arguments: Callable[[str, dict[str, Any] | None, str], dict[str, Any]] | None = (
         None
     )
-    classify_error: ErrorClassifier | None = None
     call_observation: LLMCallObservation | None = None
 
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
-
-    def __post_init__(self) -> None:
-        if self.classify_error is None:
-            raise RuntimeError(
-                "ToolCallingLoop.classify_error is required; callers pass "
-                "classify_error=llm_client.classify_loop_error"
-            )
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.

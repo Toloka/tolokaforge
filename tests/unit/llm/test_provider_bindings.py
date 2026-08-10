@@ -2,8 +2,7 @@
 :mod:`tolokaforge.core.llm.providers`.
 
 Locks the shape of every shipped ``providers.yaml`` entry, the unknown-provider
-fall-through, and the frozen-model contract. The engine consumers migrate in
-later stages of #935 — Stage 1 only lands the data seam.
+fall-through, and the frozen-model contract.
 """
 
 from __future__ import annotations
@@ -11,10 +10,13 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
+from tolokaforge.core.llm.client import matches_rate_limit_text
 from tolokaforge.core.llm.providers import (
+    DEFAULT_RATE_LIMIT_PATTERNS,
     ProviderBinding,
     SlugRewrite,
     _load_bundled_providers,
+    compile_rate_limit_patterns,
     get_provider_binding,
 )
 
@@ -104,6 +106,20 @@ def test_unknown_provider_falls_through_to_default() -> None:
     default = ProviderBinding()
     assert get_provider_binding("wat") == default
     assert get_provider_binding("") == default
+
+
+def test_default_binding_carries_shipped_rate_limit_patterns() -> None:
+    """The unknown-provider fall-through inherits the shipped 429 shapes.
+
+    An unknown provider name resolves to ``ProviderBinding()``; before
+    ``rate_limit_patterns`` defaulted to :data:`DEFAULT_RATE_LIMIT_PATTERNS`
+    the tier-3 text-tier classifier was silently disabled for every
+    out-of-tree provider name.
+    """
+    binding = ProviderBinding()
+    assert binding.rate_limit_patterns == DEFAULT_RATE_LIMIT_PATTERNS
+    patterns = compile_rate_limit_patterns(binding.rate_limit_patterns)
+    assert matches_rate_limit_text("Error code: 429", patterns) is True
 
 
 def test_lookup_key_is_first_slash_segment_lowercased() -> None:

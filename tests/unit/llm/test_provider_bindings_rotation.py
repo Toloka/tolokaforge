@@ -1,7 +1,7 @@
 """Rotation env vars are provider-binding data, not engine hardcodes.
 
-Locks the "new provider needing rotation is a data change" property from
-#935's AC: a synthetic provider whose :class:`ProviderBinding` names
+Locks the "new provider needing rotation is a data change" property:
+a synthetic provider whose :class:`ProviderBinding` names
 ``api_keys_env`` / ``api_key_env`` env vars other than OpenRouter's works
 without any client-code edit — the loop loads its comma-separated list
 from the named env var, and ``_rotate_key`` republishes into the named
@@ -159,3 +159,33 @@ def test_binding_without_either_env_var_disables_all_credential_lookup(
     client = LLMClient(ModelConfig(provider="acme", name="widget-v1"))
 
     assert client._api_keys == []
+
+
+def test_non_openrouter_provider_ignores_stray_key_file(
+    tmp_path,
+    install_secrets: InstallSecrets,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A stray ``keys.txt`` in cwd is a credentials-leak vector for non-OpenRouter bindings.
+
+    ``_load_api_keys`` used to read ``keys.txt`` for every provider whose
+    ``api_keys_env`` env var was empty; a Nova client with an OpenRouter
+    ``keys.txt`` alongside would then populate ``self._api_keys`` with
+    OpenRouter keys, and the first :meth:`_rotate_key` would write one of
+    them into ``NOVA_API_KEY`` — cross-provider credential contamination.
+    """
+    original_env = dict(os.environ)
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "keys.txt").write_text("openrouter-key-1\nopenrouter-key-2\n")
+    os.environ.pop("OPENROUTER_KEY_FILE", None)
+    os.environ.pop("NOVA_API_KEY", None)
+    install_secrets({})
+
+    try:
+        client = LLMClient(ModelConfig(provider="nova", name="busan-v1"))
+        assert client._api_keys == []
+        assert not client._rotate_key()
+        assert "openrouter-key" not in (os.environ.get("NOVA_API_KEY") or "")
+    finally:
+        os.environ.clear()
+        os.environ.update(original_env)

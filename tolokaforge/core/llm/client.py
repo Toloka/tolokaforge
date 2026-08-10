@@ -718,7 +718,10 @@ class LLMClient:
         :attr:`ProviderBinding.api_key_env`). ``OPENROUTER_KEY_FILE`` is *not*
         a secret — only the key file's *path* is a config knob, so it stays
         as a non-credential env var. The keys themselves are read from disk
-        by this code.
+        by this code, and only for the OpenRouter binding: a stray ``keys.txt``
+        in cwd would otherwise leak OpenRouter keys into every provider's
+        rotation list and, on the next :meth:`_rotate_key`, into that
+        provider's ``api_key_env`` env var.
         """
         from tolokaforge.secrets import get_default
 
@@ -736,25 +739,25 @@ class LLMClient:
                     )
                     return keys
 
-        # OPENROUTER_KEY_FILE is a path, not a credential — env-var read OK.
-        key_file = os.environ.get("OPENROUTER_KEY_FILE", "keys.txt")
-        if os.path.exists(key_file):
-            keys = []
-            with open(key_file) as f:
-                for line in f:
-                    line = line.split("#")[0].strip()
-                    if line:
-                        # Take first field (before comma) as OpenRouter key
-                        or_key = line.split(",")[0].strip()
-                        if or_key:
-                            keys.append(or_key)
-            if keys:
-                self.logger.info(
-                    "Loaded API keys from file",
-                    key_file=key_file,
-                    key_count=len(keys),
-                )
-                return keys
+        if binding.api_keys_env == "OPENROUTER_API_KEYS":
+            key_file = os.environ.get("OPENROUTER_KEY_FILE", "keys.txt")
+            if os.path.exists(key_file):
+                keys = []
+                with open(key_file) as f:
+                    for line in f:
+                        line = line.split("#")[0].strip()
+                        if line:
+                            # Take first field (before comma) as OpenRouter key
+                            or_key = line.split(",")[0].strip()
+                            if or_key:
+                                keys.append(or_key)
+                if keys:
+                    self.logger.info(
+                        "Loaded API keys from file",
+                        key_file=key_file,
+                        key_count=len(keys),
+                    )
+                    return keys
 
         if binding.api_key_env:
             key = secrets.get_secret(binding.api_key_env) or ""

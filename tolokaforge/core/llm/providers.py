@@ -111,7 +111,7 @@ class ProviderBinding(BaseModel):
     api_keys_env: str | None = None
     unroutable: bool = False
     custom_llm_provider: str | None = None
-    rate_limit_patterns: tuple[str, ...] = ()
+    rate_limit_patterns: tuple[str, ...] = DEFAULT_RATE_LIMIT_PATTERNS
     format_model_name_bare: bool = False
     kwargs_pin_transport: bool = False
     slug_rewrite: SlugRewrite | None = None
