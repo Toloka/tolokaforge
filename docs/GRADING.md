@@ -3346,12 +3346,23 @@ ERRORS:` sentence makes for the hash verdict. A suite that reached verdicts repo
 its score, how many checks reached one, and every check that reached one and lost, by
 name and message — the way `Transcript:` and `Trace check <id>:` name theirs; a skipped
 check reached no verdict, so it is counted and not named. A suite that reached none
-says so rather than quoting an aggregate over nothing, and a suite that could not run
+says so rather than quoting an aggregate over nothing, and a suite that failed to run
 names the error it failed with, which is the only thing separating it from a suite
-whose every check failed. Naming only the losing checks is load-bearing past
-readability: `failure_attribution` splits `reasons` on `|` and keeps every segment
-matching `FAIL` case-insensitively, so a failing suite contributes that evidence and a
-passing one — whatever its checks are called — contributes none.
+whose every check failed.
+
+The wording is load-bearing past readability. `failure_attribution` splits `reasons`
+on `|` and keeps every segment matching `FAIL` case-insensitively as a failed trial's
+evidence, so which of the four shapes counts is decided by the sentence rather than
+by the component score beside it. The two the fold reads as a failed component — a
+suite with a losing check, and one that failed to run — carry the substring in words
+the renderer writes: the failing sentence in `N of M checks failed`, and the
+could-not-run sentence in `the suite failed to run`, which does **not** inherit it
+from the error it quotes. That matters because the error texts disagree with each
+other: the executor's `Failed to load/run checks: …` carries `fail` and
+`checks file not found: checks.py` does not, so a sentence borrowing the substring
+from them would answer one state two ways. The other two shapes carry none: a suite
+that reached no verdict is unscored rather than failed, and a passing suite names no
+check — so a check called `no_failures_logged` cannot manufacture the evidence.
 
 ```yaml
 custom_checks:

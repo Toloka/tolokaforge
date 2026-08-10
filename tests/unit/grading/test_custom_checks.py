@@ -773,7 +773,7 @@ class TestCustomChecksReason:
         """The error is the whole account: a suite that never ran has no verdicts."""
         reason = custom_checks_reason(CheckResultSet(error="module load failed: syntax error"))
 
-        assert reason == "Custom checks: the suite could not run — module load failed: syntax error"
+        assert reason == "Custom checks: the suite failed to run — module load failed: syntax error"
 
     @pytest.mark.parametrize(
         ("results", "expected"),
@@ -818,6 +818,35 @@ class TestCustomChecksReason:
         )
 
         assert reason == "Custom checks: score=1.00, all 1 checks passed, 1 skipped"
+
+    def test_an_errored_check_moves_the_score_and_the_sentence_together(self) -> None:
+        """One predicate decides both, so neither can move without the other.
+
+        ``decided`` is what the component score averages over and what the sentence
+        counts and names. Narrowing it to exclude an errored check — a plausible
+        reading, since a check that crashed arguably reached no verdict — would leave
+        the fold reporting the component unscored while the grade said it failed,
+        which is this component's own defect one level down. Asserted as a pair for
+        that reason: either half alone passes under the narrowing.
+        """
+        errored = CheckResultSet(
+            results=[
+                CheckResult(check_name="c1", status=CheckStatus.PASSED, score=1.0, message="ok"),
+                CheckResult(
+                    check_name="balanced",
+                    status=CheckStatus.ERROR,
+                    score=0.0,
+                    message="KeyError: 'ledger'",
+                ),
+            ]
+        )
+
+        assert [r.check_name for r in errored.decided] == ["c1", "balanced"]
+        assert errored.decided_something is True
+        assert errored.aggregate_score == 0.5
+        assert custom_checks_reason(errored) == (
+            "Custom checks: score=0.50, 1 of 2 checks failed — balanced: KeyError: 'ledger'"
+        )
 
     def test_a_losing_suites_sentence_carries_fail_and_a_passing_ones_does_not(self) -> None:
         """Two literal rules, because a downstream heuristic reads this text.

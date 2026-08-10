@@ -886,7 +886,7 @@ component that took a verdict names itself in it:
 | `transcript_rules` | `Transcript: all N rules passed`, or the failing rules by message |
 | `trace_checks` | `Trace checks: score=…`, then `FAILED trace gates: …` and one `Trace check <id>: …` per failing constraint |
 | `llm_judge` | `Judge: score=… (…)` |
-| `custom_checks` | `Custom checks: …` — the suite's score, its counts and every check that did not pass by name and message; or the error a suite that could not run failed with |
+| `custom_checks` | `Custom checks: …` — the suite's score, its counts and every check that did not pass by name and message; `no check reached a verdict — …` where every check skipped or the file declared none; or `the suite failed to run — <error>` |
 
 A component the trial did not score contributes nothing, with one deliberate
 exception: the `custom_checks` segment is emitted whenever the evaluator had
@@ -894,9 +894,9 @@ something to say rather than on the component's score, because a suite that fail
 run under `fail_on_error: false` is left unscored and its error is the only account of
 why the trial earned nothing. The segment is the same text on both substrates.
 
-A trial that scored **no** component therefore contributes no component segment, and
-carries no placeholder in their place: the fold decided that grade without reading a
-score, so the fold's own sentence — `no component was configured and no weight names
+A trial that scored **no** component therefore contributes no component segment —
+apart from that one exception — and carries no placeholder in their place: the fold
+decided that grade without reading a score, so the fold's own sentence — `no component was configured and no weight names
 one, so nothing was scored and nothing was owed` for a task declaring no grading, or
 the sentence naming what was asked for and not counted — is the whole account, beside
 any skip note the ledger filed. The segments are joined once rather than appended to

@@ -40,6 +40,12 @@ from tolokaforge.core.grading.checks_interface import (
 #: and ``Trace checks:`` name theirs. Both substrates emit segments under it.
 CUSTOM_CHECKS_REASON_PREFIX = "Custom checks:"
 
+#: Opens the sentence for a suite that never ran. It carries ``failed`` itself rather
+#: than inheriting it from the error it quotes: the same state — a component the fold
+#: reads as failed — must not be read one way when the executor says "Failed to
+#: load/run checks" and another when it says "checks file not found".
+CUSTOM_CHECKS_FAILED_TO_RUN = f"{CUSTOM_CHECKS_REASON_PREFIX} the suite failed to run —"
+
 # =============================================================================
 # Framework-internal: shared gate + CheckContext builder (both grading paths)
 # =============================================================================
@@ -126,7 +132,7 @@ def custom_checks_reason(result: CheckResultSet) -> str:
     ``custom_checks`` block, or one that disabled it — does not call this.
 
     Four shapes, and which one a set falls into is the set's own answer rather than
-    the caller's. A suite carrying ``error`` could not run, and the error is the only
+    the caller's. A suite carrying ``error`` failed to run, and the error is the only
     thing that says why. A suite that reached no verdict says so instead of reporting
     an aggregate over nothing, which is ``0.0`` and indistinguishable from having
     failed. A suite that reached verdicts reports its score, how many checks reached
@@ -134,17 +140,20 @@ def custom_checks_reason(result: CheckResultSet) -> str:
     ``Transcript:`` and ``Trace check <id>:`` name theirs. A skipped check reached no
     verdict, so it is counted and not named.
 
-    Only the checks that did not pass are named, which is what keeps a downstream
-    reader honest: :func:`~tolokaforge.core.failure_attribution.attribute_failure`
-    keeps the segments of ``reasons`` matching ``"FAIL"`` case-insensitively, so a
-    sentence describing a suite with a losing check contains ``fail`` and one
-    describing a suite without carries no check name that could supply it.
+    Which of the four a reader downstream treats as a failure is decided here rather
+    than by the text this quotes. :func:`~tolokaforge.core.failure_attribution.attribute_failure`
+    keeps the segments of ``reasons`` matching ``"FAIL"`` case-insensitively, so the
+    two shapes the fold reads as a failed component — a suite with a losing check, and
+    one that never ran — carry ``fail`` in words this function writes, and the two it
+    does not carry none. A suite that reached no verdict is unscored rather than
+    failed, and a passing suite names no check, so neither can supply the substring by
+    accident.
     """
     if result.error:
-        return f"{CUSTOM_CHECKS_REASON_PREFIX} the suite could not run — {result.error}"
+        return f"{CUSTOM_CHECKS_FAILED_TO_RUN} {result.error}"
 
-    decided = [r for r in result.results if r.status != CheckStatus.SKIPPED]
-    skipped = len(result.results) - len(decided)
+    decided = result.decided
+    skipped = result.skipped
     if not decided:
         nothing = "the file declared no check" if not result.results else f"all {skipped} skipped"
         return f"{CUSTOM_CHECKS_REASON_PREFIX} no check reached a verdict — {nothing}"

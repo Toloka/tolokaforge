@@ -3795,9 +3795,10 @@ def test_the_compared_custom_checks_segments_are_this_packs_two_verdicts(
     cannot diverge follows from there being one renderer, which is an argument rather
     than a measurement, and this pack cannot make it one.
 
-    The violating segment is asserted by content, not only by difference: the check's
-    name and its message are what the issue was about, and a segment that merely
-    differed from the passing one could differ by a score alone.
+    Both segments are pinned to their exact text rather than to each other: the
+    check's name and its message are what the issue was about, and an inequality
+    between the two would hold for a pair differing by a score alone — and, once both
+    are pinned, could not fail on its own at all.
     """
     satisfying_core, satisfying_runner = custom_checks_grades["satisfying"]
     violating_core, violating_runner = custom_checks_grades["violating"]
@@ -3805,7 +3806,6 @@ def test_the_compared_custom_checks_segments_are_this_packs_two_verdicts(
     satisfying = _custom_checks_segment(satisfying_core.reasons)
     violating = _custom_checks_segment(violating_core.reasons)
 
-    assert satisfying != violating
     assert violating == (
         "Custom checks: score=0.00, 1 of 1 checks failed — "
         "order_was_shipped: order O1 is not shipped"

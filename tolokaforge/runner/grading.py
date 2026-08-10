@@ -772,7 +772,7 @@ def build_grade_reasons(
         custom_checks_reasons: The custom-checks suite's own account, rendered by
             :func:`~tolokaforge.core.grading.checks_helpers.custom_checks_reason`.
             Passed on the strength of the evaluator having something to say rather
-            than on the component's score, so a suite that could not run says why
+            than on the component's score, so a suite that failed to run says why
             even though it scored nothing.
 
     Returns:

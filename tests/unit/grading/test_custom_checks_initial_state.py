@@ -13,7 +13,7 @@ The check reports what it was handed rather than only whether it liked it, so th
 compare *evidence* across shapes instead of comparing two scores that could agree for
 unrelated reasons.
 
-A suite that could not run at all is the same component reporting a different fact, and the
+A suite that failed to run at all is the same component reporting a different fact, and the
 grade has to say which. Every pre-run failure the host can meet — no checks file, a declared
 state no reader can resolve, a module the executor could not load — reaches ``Grade.reasons``
 through the one renderer both substrates share, so the account does not depend on which of
@@ -151,7 +151,7 @@ def test_a_declared_path_that_does_not_resolve_fails_the_component_naming_the_ke
 
     assert grade.components.custom_checks == 0.0
     assert grade.custom_checks_details is None, grade.custom_checks_details
-    assert grade.reasons.startswith("Custom checks: the suite could not run — "), grade.reasons
+    assert grade.reasons.startswith("Custom checks: the suite failed to run — "), grade.reasons
     assert "context build error" in grade.reasons, grade.reasons
     assert "initial_state.json_db" in grade.reasons, grade.reasons
     assert _JSON_DB in grade.reasons, grade.reasons
@@ -193,7 +193,7 @@ def test_a_missing_checks_file_fails_the_component_naming_the_file_the_pack_decl
 
     assert grade.components.custom_checks == 0.0
     assert grade.reasons == (
-        "Custom checks: the suite could not run — checks file not found: checks.py"
+        "Custom checks: the suite failed to run — checks file not found: checks.py"
     )
 
 
@@ -212,7 +212,7 @@ def test_a_checks_module_the_executor_cannot_load_reports_the_error_it_failed_wi
     grade = _grade(task_dir, None)
 
     assert grade.components.custom_checks == 0.0
-    assert grade.reasons.startswith("Custom checks: the suite could not run — "), grade.reasons
+    assert grade.reasons.startswith("Custom checks: the suite failed to run — "), grade.reasons
     assert "Failed to load/run checks" in grade.reasons, grade.reasons
     assert "SyntaxError" in grade.reasons, grade.reasons
 

@@ -46,7 +46,7 @@ from tolokaforge.runner.service import RunnerServiceImpl
 pytestmark = pytest.mark.unit
 
 #: What every sentence describing a suite that never ran opens with.
-_COULD_NOT_RUN = "Custom checks: the suite could not run — "
+_FAILED_TO_RUN = "Custom checks: the suite failed to run — "
 
 
 class _StubDBClient:
@@ -112,7 +112,7 @@ class TestGradeCustomChecksExecutorErrors:
             assert "no artifacts_dir" in entry.message
             assert trial_id in entry.message
             # The wire entry preserves the audit; the sentence is what the grade reads.
-            assert reason == f"{_COULD_NOT_RUN}{entry.message}"
+            assert reason == f"{_FAILED_TO_RUN}{entry.message}"
         finally:
             servicer.shutdown()
 
@@ -139,7 +139,7 @@ class TestGradeCustomChecksExecutorErrors:
             assert wire[0].status == "error"
             # Unscored and still accounted for: the fold names the component that
             # produced no verdict, and this is what says why it produced none.
-            assert reason == f"{_COULD_NOT_RUN}{wire[0].message}"
+            assert reason == f"{_FAILED_TO_RUN}{wire[0].message}"
         finally:
             servicer.shutdown()
 
@@ -171,7 +171,7 @@ class TestGradeCustomChecksExecutorErrors:
             assert entry.check_name == "__executor__"
             assert entry.status == "error"
             assert "module load failed" in entry.message
-            assert reason == f"{_COULD_NOT_RUN}module load failed: syntax error at :12"
+            assert reason == f"{_FAILED_TO_RUN}module load failed: syntax error at :12"
             # The executor was actually dispatched.
             assert len(executor.call_log.runs) == 1
         finally:
@@ -209,7 +209,7 @@ class TestGradeCustomChecksExecutorErrors:
             assert entry.check_name == "__executor__"
             assert entry.status == "error"
             assert "timeout after 30s" in entry.message
-            assert reason == f"{_COULD_NOT_RUN}timeout after 30s"
+            assert reason == f"{_FAILED_TO_RUN}timeout after 30s"
             assert len(executor.call_log.runs) == 1
         finally:
             servicer.shutdown()
@@ -245,7 +245,7 @@ class TestGradeCustomChecksExecutorErrors:
             assert entry.check_name == "__executor__"
             assert entry.status == "error"
             assert "boom: executor crashed mid-run" in entry.message
-            assert reason == f"{_COULD_NOT_RUN}boom: executor crashed mid-run"
+            assert reason == f"{_FAILED_TO_RUN}boom: executor crashed mid-run"
             # Dispatch happened; the call is recorded even though it raised.
             assert len(executor.call_log.runs) == 1
         finally:
@@ -363,7 +363,7 @@ class TestGradeCustomChecksExecutorErrors:
             assert entry.check_name == "__executor__"
             assert entry.status == "error"
             assert "boom: executor crashed mid-run" in entry.message
-            assert reason == f"{_COULD_NOT_RUN}boom: executor crashed mid-run"
+            assert reason == f"{_FAILED_TO_RUN}boom: executor crashed mid-run"
             assert len(executor.call_log.runs) == 1
         finally:
             servicer.shutdown()

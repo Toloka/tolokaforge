@@ -439,7 +439,7 @@ class GradingEngine:
             Tuple of (score, reason, detailed_results). The score is ``None``
             where the suite decided nothing — every check skipped, or the file declared
             none — so the component is left unscored rather than folded as a ``0.0``
-            nothing earned. A suite that could not run at all is a different answer and
+            nothing earned. A suite that failed to run at all is a different answer and
             keeps its ``0.0``: the checks the author declared were meant to decide the
             trial and could not, which is a failure rather than an absence.
 

@@ -472,6 +472,42 @@ def test_a_custom_checks_segment_contributes_evidence_exactly_when_a_check_lost(
     assert _patterns(won) == []
 
 
+#: Every error text either substrate hands the renderer, from the site that writes it:
+#: the executor's module-load failure (``check_runner.py``), the host's missing-file and
+#: absent-task-directory paths (``combine.py``), and the runner's undelivered-artifacts
+#: path (``service.py``). Written out rather than derived, because the point is that
+#: they are unlike each other.
+_SUITE_ERRORS = (
+    "Failed to load/run checks: invalid syntax (checks.py, line 1)",
+    "checks file not found: checks.py",
+    "task_dir not available",
+    "custom_checks.enabled but no artifacts_dir for trial 'reconcile:0'",
+)
+
+
+@pytest.mark.parametrize("error", _SUITE_ERRORS)
+def test_a_suite_that_failed_to_run_contributes_evidence_whatever_the_error_says(error):
+    """One state, one classification — not one per wording.
+
+    A suite that never ran is a component the fold reads as failed, whichever site
+    wrote the error. The sentence carries ``failed`` in the renderer's own words, so
+    the classification is a function of the state rather than of prose written in
+    another module: three of these four texts contain no ``fail`` of their own, and
+    a rule inheriting the substring from them would answer the same state four
+    different ways.
+    """
+    traj = _base_trajectory()
+    assert traj.grade is not None
+    traj.grade.reasons = custom_checks_reason(CheckResultSet(error=error))
+
+    evidence = [
+        ev for ev in attribute_failure(traj)["evidence"] if ev["kind"] == "grade_fail_patterns"
+    ]
+
+    assert len(evidence) == 1, f"{error!r} produced {evidence!r}"
+    assert evidence[0]["patterns"] == [traj.grade.reasons]
+
+
 def test_missing_write_file_tool_when_grading_expected_files():
     traj = _base_trajectory()
     assert traj.grade is not None

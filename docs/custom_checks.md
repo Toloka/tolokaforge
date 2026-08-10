@@ -214,7 +214,7 @@ rendered by the same function whichever substrate graded the trial:
 Custom checks: score=0.50, 1 of 2 checks failed — order_was_shipped: order O1 is not shipped
 Custom checks: score=1.00, all 2 checks passed, 1 skipped
 Custom checks: no check reached a verdict — all 3 skipped
-Custom checks: the suite could not run — checks file not found: checks.py
+Custom checks: the suite failed to run — checks file not found: checks.py
 ```
 
 Only the checks that did not pass are named. A skipped check reached no
@@ -222,6 +222,11 @@ verdict, so it is counted and not named, and a passing suite names no check
 at all — which is what keeps a check called `no_failures_logged` from
 manufacturing failure evidence downstream: the harness keeps the `reasons`
 segments matching `FAIL` case-insensitively as a failing trial's evidence.
+The two shapes that *are* a failed component say so in the sentence's own
+words — `N of M checks failed`, and `the suite failed to run` — rather than
+borrowing the substring from the error being quoted, so a suite that could
+not start is classified the same way whatever the executor called the
+problem.
 
 `Grade.components.custom_checks` is `null` under three conditions, on both
 substrates: the pack declares no `custom_checks` block, the block sets
