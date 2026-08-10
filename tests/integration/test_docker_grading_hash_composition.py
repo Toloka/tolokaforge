@@ -1,12 +1,14 @@
 """The runner folds its own hash verdict with its JSONPath score, over real services.
 
-``tests/canonical/test_grading_substrate_parity.py`` drives the same fold at the
-canonical tier, but it *hands* the runner's composer a hash score: the runner's hash
-evaluator replays golden actions against db-service over HTTP, so no in-process
-differential can reach it, and mocking the DB client on the one test whose job is to
-detect substrate drift would defeat that test (#687). This suite closes the gap on the
-production path — ``RegisterTrial`` over real gRPC, golden replay against the real
-db-service, and the ``state_checks`` component read back off the wire — with no LLM.
+``tests/canonical/test_grading_substrate_parity.py`` reaches the runner's hash
+evaluator in process, against an in-process ``json_db_service``. What it cannot reach
+is *this* discrimination: its replayed golden action mutates no database, so the golden
+world it leaves is the reset initial state and the verdict is a match either way —
+``_drive_hash_family``'s own docstring calls that a hollow evaluation, and re-measuring
+the golden-replay basis canonically is #1018. This suite is where a matching final state
+is told apart from a diverging one, on the production path — ``RegisterTrial`` over real
+gRPC, golden replay against the real db-service, and the ``state_checks`` component read
+back off the wire — with no LLM.
 
 Across the four fold cells the trial's database is the registered ``initial_state``:
 nothing runs an agent, so the only thing that moves between cells is what the golden
@@ -31,6 +33,12 @@ The four cells are ``0.625`` and ``0.8`` for a matching hash at weights ``0.25``
 ``0.6``, and ``0.375`` and ``0.2`` for a diverging one. A rule that multiplied the two
 sources rather than blending them returns ``0.5``, ``0.5``, ``0.0``, ``0.0`` — no cell
 agrees, so every cell discriminates.
+
+Three folding cells sit beside them on a task of their own — their own ``task_id``,
+schema and single tool — so the cells above are driven byte-identically by a builder
+this file no longer shares. They ask a different question of the same wire: whether the
+*deployed* db-service honours the ``numeric_string_fields`` query parameter the runner
+sends it.
 """
 
 from __future__ import annotations
@@ -173,6 +181,107 @@ def _task_description(
                     }
                 ],
                 "jsonpath_checks": _JSONPATH_CHECKS,
+            },
+        },
+    }
+
+
+_FOLDING_TASK_ID = "hash_composition_folding_wire"
+_FOLDING_TOOL_ARTIFACT_PATH = "hash_composition_tools/order_amount.py"
+_FOLDING_TOOL_SOURCE = (
+    Path(__file__).resolve().parents[1] / "data" / "tool_artifacts" / _FOLDING_TOOL_ARTIFACT_PATH
+)
+
+# Not a suffix of anything the folding task registers, and nothing registered is a
+# suffix of it, so the runner's ``…_<name>`` golden-action rescue rule stays inert here.
+_FOLDING_TOOL_NAME = "set_order_amount"
+
+# The amount the folding task seeds, and the amount its golden action replays: one
+# value, two representations. The trial runs no agent, so its database still holds the
+# first at grade time and the whole difference between the two hashed states is a
+# trailing zero.
+_DECLARED_AMOUNT = "130.00"
+_REPLAYED_AMOUNT = "130.0"
+
+_FOLDING_FIELD = "amount"
+
+# A second numeric-looking string field the same record declares, which the golden
+# replay never touches. Listing it is a request to fold something that does not differ.
+_FOLDING_CONTROL_FIELD = "quantity"
+
+
+def _folding_tool_artifacts() -> dict[str, str]:
+    """The amount-writing tool, base64'd onto the wire field the runner extracts."""
+    encoded = base64.b64encode(_FOLDING_TOOL_SOURCE.read_bytes()).decode()
+    return {_FOLDING_TOOL_ARTIFACT_PATH: encoded}
+
+
+def _folding_task_description(numeric_string_fields: tuple[str, ...]) -> dict[str, Any]:
+    """A hash-graded trial whose golden action rewrites one amount's representation.
+
+    No JSONPath check and no ``hash_weight``: the hash is the only source scoring
+    ``state_checks``, so the wire's component *is* the verdict. Declaring a weight here
+    would be inert and the grade would say so — the weight is consulted only when a hash
+    verdict and a non-empty ``state_checks.jsonpaths`` are both scored.
+    """
+    return {
+        "task_id": _FOLDING_TASK_ID,
+        "name": "Numeric string folding over gRPC",
+        "category": "test",
+        "description": "Grade a representation difference against the folding list an author wrote",
+        "adapter_type": "native",
+        "system_prompt": "You are a test assistant.",
+        "initial_state": {
+            "tables": {"orders": [{"id": _ORDER_ID, "amount": _DECLARED_AMOUNT, "quantity": "2"}]},
+            "schemas": [
+                {
+                    "table_name": "orders",
+                    "fields": {"id": "string", "amount": "string", "quantity": "string"},
+                    "primary_key": "id",
+                }
+            ],
+            "unstable_fields": [],
+        },
+        "agent_tools": [
+            {
+                "name": _FOLDING_TOOL_NAME,
+                "description": "Set an order's amount",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "order_id": {"type": "string"},
+                        "amount": {"type": "string"},
+                    },
+                    "required": ["order_id", "amount"],
+                    "additionalProperties": False,
+                },
+                "category": "write",
+                "source": {
+                    "toolset": "hash_composition_tools",
+                    "module_path": "order_amount",
+                    "class_name": "SetOrderAmount",
+                    "invocation_style": "tau_sync",
+                },
+            }
+        ],
+        "user_tools": [],
+        "tool_artifacts": _folding_tool_artifacts(),
+        "grading": {
+            "combine_method": "weighted",
+            "weights": {"state_checks": 1.0},
+            "pass_threshold": 0.99,
+            "state_checks": {
+                "hash_enabled": True,
+                "numeric_string_fields": list(numeric_string_fields),
+                "golden_actions": [
+                    {
+                        "tool_name": _FOLDING_TOOL_NAME,
+                        "arguments": {
+                            "order_id": _ORDER_ID,
+                            "amount": _REPLAYED_AMOUNT,
+                        },
+                    }
+                ],
             },
         },
     }
@@ -385,3 +494,76 @@ def test_the_two_weights_score_the_same_trial_differently(graded_cells) -> None:
             f"the runner scored {case} identically at weights {interior}: {components}. "
             "The author's state_checks.hash.weight does not reach the fold"
         )
+
+
+@pytest.mark.parametrize(
+    ("numeric_string_fields", "hash_score"),
+    [
+        pytest.param((), 0.0, id="nothing_listed"),
+        pytest.param((_FOLDING_FIELD,), 1.0, id="amount_listed"),
+        pytest.param((_FOLDING_CONTROL_FIELD,), 0.0, id="quantity_listed"),
+    ],
+)
+def test_the_deployed_db_service_folds_a_listed_numeric_string_field(
+    numeric_string_fields: tuple[str, ...],
+    hash_score: float,
+    runner_client: GrpcRunnerClient,
+) -> None:
+    """One representation difference, three field lists, graded over real services.
+
+    The golden action rewrites ``130.00`` as ``130.0``, so the two hashed states differ
+    in a trailing zero and nothing else. Listing ``amount`` collapses that difference;
+    listing ``quantity`` — a field the same record declares and the replay never
+    touches — does not, which is the cell that separates a runner reading the list *by
+    name* from one folding whenever the author wrote a non-empty list.
+
+    These cells declare one state source and no weight, which is why this module's
+    argument that only an interior weight discriminates does not reach them. That
+    argument is about the **fold**: at ``0.0`` and ``1.0`` a rule merely selecting the
+    dominant source reproduces the blend, so the cells above need an interior weight to
+    tell a blend from a selection. These cells prove the fold's **input** instead, where
+    a second source would add only arithmetic this test would have to restate. The
+    reasons string is read beside the component regardless, so the verdict is observed
+    rather than inferred from a number two sources could have produced.
+
+    What these cells cannot express: the runner and db-service containers execute the
+    code baked into their images, so **a source patch does not reach them**. The
+    canonical differential's falsifiers — dropping the query parameter, folding
+    unconditionally, keying the fold off the list's length — have no counterpart here
+    short of rebuilding an image. What is falsifiable here is configuration: point the
+    matching cell's list at ``quantity``, or give the empty cell ``amount``, and it
+    reds. What that buys over the canonical tier is the one thing no in-process test can
+    speak for — that the *deployed* db-service parses and honours the
+    ``numeric_string_fields`` query parameter the runner sends it.
+    """
+    listed = "_".join(numeric_string_fields) or "none"
+    trial_id = f"{_FOLDING_TASK_ID}_{listed}:0"
+    task = _folding_task_description(numeric_string_fields)
+    registered = runner_client.register_trial(
+        trial_id=trial_id, trial_spec_json=_trial_spec_json(trial_id, task)
+    )
+    assert registered["success"] is True, registered["error"]
+
+    try:
+        result = runner_client.grade_trial(trial_id=trial_id)
+    finally:
+        runner_client.cleanup_trial(trial_id=trial_id)
+
+    assert result["success"] is True, result["error"]
+    grade = result["grade"]
+    reasons = grade["reasons"]
+
+    assert "GOLDEN REPLAY ERRORS" not in reasons, (
+        "the golden replay did not run whole, so the amount the hash compared against is "
+        f"not the one the action wrote and this cell measures nothing (#734): {reasons!r}"
+    )
+    if hash_score == 1.0:
+        assert "State: hash match" in reasons, reasons
+    else:
+        assert "State: hash match" not in reasons, reasons
+
+    component = grade["components"]["state_checks"]
+    assert component == pytest.approx(hash_score), (
+        f"with {list(numeric_string_fields)} declared, the runner scored {_DECLARED_AMOUNT!r} "
+        f"against a replayed {_REPLAYED_AMOUNT!r} as {component}, not {hash_score}"
+    )
