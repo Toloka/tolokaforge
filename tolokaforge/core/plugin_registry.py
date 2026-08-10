@@ -31,6 +31,10 @@ policy into two shapes:
 * **Broken import** fails only when its own name is requested; a broken
   plug-in never breaks resolution of a healthy sibling, and the import
   error propagates loudly rather than being swallowed.
+
+External code and other engine registries reuse this fail-loud discovery
+through :func:`discover_entry_points`; see the § Fail-loud registry pattern
+subsection in ``docs/ADAPTER_ARCHITECTURE.md`` for the required shape.
 """
 
 from __future__ import annotations
@@ -73,6 +77,7 @@ __all__ = [
     "available_runtime_backends",
     "available_trial_graders",
     "available_turn_policies",
+    "discover_entry_points",
     "load_conductor",
     "load_readiness_probe",
     "load_runtime_backend",
@@ -187,7 +192,7 @@ TurnPolicyFactory = Callable[[TurnPolicyContext], TurnPolicy]
 
 
 # ---------------------------------------------------------------------------
-# Discovery internals — one generic scan + resolve shared across the groups
+# Discovery — one generic scan + resolve shared across the groups
 # ---------------------------------------------------------------------------
 
 _discovery_cache: dict[str, dict[str, EntryPoint]] = {}
@@ -198,13 +203,17 @@ def _distribution_name(ep: EntryPoint) -> str:
     return dist.name if dist is not None else "<unknown distribution>"
 
 
-def _discover(group: str) -> dict[str, EntryPoint]:
+def discover_entry_points(group: str) -> dict[str, EntryPoint]:
     """Return a cached ``name → EntryPoint`` map for ``group``.
 
     Enumerates names and distributions without importing any target
-    (``ep.load()`` is deferred to :func:`_load`). Raises
+    (``ep.load()`` is deferred to the caller). Raises
     :class:`DuplicateRegistrationError` before caching, so a group with a
     duplicate re-raises on every lookup rather than caching a partial map.
+
+    This is the canonical fail-loud discovery primitive for every engine-side
+    ``importlib.metadata`` entry-point registry; consumers iterate the returned
+    map and load each entry point at their own point of use.
     """
     cached = _discovery_cache.get(group)
     if cached is not None:
@@ -231,7 +240,7 @@ def _load(group: str, name: str) -> object:
     An unknown name raises :class:`UnknownImplementationError`; a target that
     raises on ``.load()`` propagates that exception unchanged.
     """
-    mapping = _discover(group)
+    mapping = discover_entry_points(group)
     ep = mapping.get(name)
     if ep is None:
         raise UnknownImplementationError(name, group, sorted(mapping))
@@ -279,24 +288,24 @@ def load_turn_policy(name: str) -> TurnPolicyFactory:
 
 def available_runtime_backends() -> list[str]:
     """Sorted names registered in the ``tolokaforge.runtime_backends`` group."""
-    return sorted(_discover(RUNTIME_BACKENDS_GROUP))
+    return sorted(discover_entry_points(RUNTIME_BACKENDS_GROUP))
 
 
 def available_trial_graders() -> list[str]:
     """Sorted names registered in the ``tolokaforge.trial_graders`` group."""
-    return sorted(_discover(TRIAL_GRADERS_GROUP))
+    return sorted(discover_entry_points(TRIAL_GRADERS_GROUP))
 
 
 def available_conductors() -> list[str]:
     """Sorted names registered in the ``tolokaforge.conductors`` group."""
-    return sorted(_discover(CONDUCTORS_GROUP))
+    return sorted(discover_entry_points(CONDUCTORS_GROUP))
 
 
 def available_readiness_probes() -> list[str]:
     """Sorted kinds registered in the ``tolokaforge.service_readiness_probes`` group."""
-    return sorted(_discover(SERVICE_READINESS_PROBES_GROUP))
+    return sorted(discover_entry_points(SERVICE_READINESS_PROBES_GROUP))
 
 
 def available_turn_policies() -> list[str]:
     """Sorted names registered in the ``tolokaforge.turn_policies`` group."""
-    return sorted(_discover(TURN_POLICIES_GROUP))
+    return sorted(discover_entry_points(TURN_POLICIES_GROUP))

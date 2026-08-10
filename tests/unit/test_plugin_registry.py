@@ -30,6 +30,7 @@ from tolokaforge.core.plugin_registry import (
     available_conductors,
     available_runtime_backends,
     available_trial_graders,
+    discover_entry_points,
     load_conductor,
     load_runtime_backend,
     load_trial_grader,
@@ -159,6 +160,50 @@ def test_duplicate_name_fails_naming_both_distributions(
     # including the name listing.
     with pytest.raises(DuplicateRegistrationError):
         available()
+
+
+# --- (b') public helper is the same fail-loud scan --------------------------
+
+
+def test_discover_entry_points_public_helper(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``discover_entry_points`` is the canonical fail-loud primitive.
+
+    Distinct names return a full map without loading any target; a duplicate
+    inside the same group raises :class:`DuplicateRegistrationError` naming
+    both providing distributions. Any future engine-side entry-point registry
+    routes through this helper instead of open-coding its own scan.
+    """
+    arbitrary_group = "tolokaforge.tests.arbitrary_group"
+
+    _install_entry_points(
+        monkeypatch,
+        {
+            arbitrary_group: [
+                _FakeEntryPoint("alpha", factory=object(), dist="pkg-alpha"),
+                _FakeEntryPoint("beta", factory=object(), dist="pkg-beta"),
+            ]
+        },
+    )
+    mapping = discover_entry_points(arbitrary_group)
+    assert sorted(mapping) == ["alpha", "beta"]
+    assert mapping["alpha"].dist.name == "pkg-alpha"
+    assert mapping["beta"].dist.name == "pkg-beta"
+
+    plugin_registry._clear_discovery_cache()
+    _install_entry_points(
+        monkeypatch,
+        {
+            arbitrary_group: [
+                _FakeEntryPoint("collide", factory=object(), dist="pkg-first"),
+                _FakeEntryPoint("collide", factory=object(), dist="pkg-second"),
+            ]
+        },
+    )
+    with pytest.raises(DuplicateRegistrationError) as excinfo:
+        discover_entry_points(arbitrary_group)
+    assert "pkg-first" in str(excinfo.value)
+    assert "pkg-second" in str(excinfo.value)
+    assert excinfo.value.distributions == ("pkg-first", "pkg-second")
 
 
 # --- (c) broken import propagates -------------------------------------------
