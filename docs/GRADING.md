@@ -3331,6 +3331,20 @@ for anything the agent did. The fold then decides and says so, naming
 not *run* is a different answer and keeps its `0.0` under `fail_on_error: true` —
 checks meant to decide the trial and unable to are a failure, not an absence.
 
+**What the grade says about the suite.** `Grade.reasons` carries one `Custom checks:`
+segment for this component, rendered by the same function on both substrates so the
+account does not depend on which one graded the trial — the claim the `GOLDEN REPLAY
+ERRORS:` sentence makes for the hash verdict. A suite that reached verdicts reports
+its score, how many checks reached one, and every check that reached one and lost, by
+name and message — the way `Transcript:` and `Trace check <id>:` name theirs; a skipped
+check reached no verdict, so it is counted and not named. A suite that reached none
+says so rather than quoting an aggregate over nothing, and a suite that could not run
+names the error it failed with, which is the only thing separating it from a suite
+whose every check failed. Naming only the losing checks is load-bearing past
+readability: `failure_attribution` splits `reasons` on `|` and keeps every segment
+matching `FAIL` case-insensitively, so a failing suite contributes that evidence and a
+passing one — whatever its checks are called — contributes none.
+
 ```yaml
 custom_checks:
   enabled: true

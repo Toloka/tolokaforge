@@ -13,6 +13,13 @@ The check reports what it was handed rather than only whether it liked it, so th
 compare *evidence* across shapes instead of comparing two scores that could agree for
 unrelated reasons.
 
+A suite that could not run at all is the same component reporting a different fact, and the
+grade has to say which. Every pre-run failure the host can meet — no checks file, a declared
+state no reader can resolve, a module the executor could not load — reaches ``Grade.reasons``
+through the one renderer both substrates share, so the account does not depend on which of
+them graded the trial. A pack whose engine holds no task directory never reaches the suite
+at all, and is asserted here as the gate it is.
+
 A declared path that does not resolve is a check's evidence missing rather than empty, so it
 fails the component with a reason naming the key — post-trial, and deliberately a backstop:
 a live native run refuses the same pack before the trial is paid for, when the adapter builds
@@ -144,6 +151,7 @@ def test_a_declared_path_that_does_not_resolve_fails_the_component_naming_the_ke
 
     assert grade.components.custom_checks == 0.0
     assert grade.custom_checks_details is None, grade.custom_checks_details
+    assert grade.reasons.startswith("Custom checks: the suite could not run — "), grade.reasons
     assert "context build error" in grade.reasons, grade.reasons
     assert "initial_state.json_db" in grade.reasons, grade.reasons
     assert _JSON_DB in grade.reasons, grade.reasons
@@ -168,3 +176,70 @@ def test_an_empty_declared_state_reaches_the_check_exactly_as_no_declaration_doe
     assert _reported(inline) == _reported(from_file)
     assert _reported(undeclared) == _reported(from_file)
     assert {grade.components.custom_checks for grade in (from_file, inline, undeclared)} == {0.0}
+
+
+def test_a_missing_checks_file_fails_the_component_naming_the_file_the_pack_declared(
+    tmp_path,
+) -> None:
+    """A pack promising a suite and shipping none is a failure the author has to see.
+
+    The name it declared is what reaches the grade, rather than the resolved absolute
+    path, because that name is the thing they can compare against their pack.
+    """
+    task_dir = tmp_path / "no_checks_file"
+    task_dir.mkdir()
+
+    grade = _grade(task_dir, None)
+
+    assert grade.components.custom_checks == 0.0
+    assert grade.reasons == (
+        "Custom checks: the suite could not run — checks file not found: checks.py"
+    )
+
+
+def test_a_checks_module_the_executor_cannot_load_reports_the_error_it_failed_with(
+    tmp_path,
+) -> None:
+    """The traceback is the only thing that distinguishes this from a suite that failed.
+
+    A module that cannot be imported produces no verdicts, so the component's ``0.0``
+    is indistinguishable from every check failing until the sentence says otherwise.
+    """
+    task_dir = tmp_path / "broken_checks"
+    task_dir.mkdir()
+    (task_dir / "checks.py").write_text("def broken(:\n")
+
+    grade = _grade(task_dir, None)
+
+    assert grade.components.custom_checks == 0.0
+    assert grade.reasons.startswith("Custom checks: the suite could not run — "), grade.reasons
+    assert "Failed to load/run checks" in grade.reasons, grade.reasons
+    assert "SyntaxError" in grade.reasons, grade.reasons
+
+
+def test_an_engine_holding_no_task_directory_never_reaches_the_suite(tmp_path) -> None:
+    """The gate, not a verdict: with nowhere to read ``checks.py`` from, none runs.
+
+    The component is left unscored rather than failed, and the grade carries no
+    custom-checks segment at all — which is why the sentence for a host with no task
+    directory is not among the accounts this module pins.
+    """
+    grade = GradingEngine(
+        GradingConfig(
+            combine={"method": "weighted", "weights": {"custom_checks": 1.0}},
+            custom_checks={"enabled": True, "file": "checks.py"},
+        ),
+        task_dir=None,
+    ).grade_trajectory(
+        Trajectory(
+            task_id="no_task_dir",
+            trial_index=0,
+            start_ts=_TIMESTAMP,
+            end_ts=_TIMESTAMP,
+            messages=[],
+        ),
+        {},
+    )
+
+    assert grade.components.custom_checks is None
+    assert "Custom checks:" not in grade.reasons, grade.reasons

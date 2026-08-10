@@ -5,9 +5,14 @@ from pathlib import Path
 from typing import Any
 
 from tolokaforge.core.grading.check_runner import CheckRunner
-from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
+from tolokaforge.core.grading.checks_helpers import (
+    build_check_context,
+    custom_checks_enabled,
+    custom_checks_reason,
+)
 from tolokaforge.core.grading.checks_interface import (
     CheckContext,
+    CheckResultSet,
     CustomChecksConfig,
     TaskContext,
     ToolCallStatus,
@@ -190,7 +195,7 @@ class GradingEngine:
             if custom_score is not None:
                 components.custom_checks = custom_score
             if custom_reasons:
-                reasons_parts.append(f"Custom: {custom_reasons}")
+                reasons_parts.append(custom_reasons)
 
         folded = self._combine(components)
         if folded.reason:
@@ -431,16 +436,21 @@ class GradingEngine:
             custom_config: Custom checks configuration from grading.yaml
 
         Returns:
-            Tuple of (score, reasons_string, detailed_results). The score is ``None``
+            Tuple of (score, reason, detailed_results). The score is ``None``
             where the suite decided nothing — every check skipped, or the file declared
             none — so the component is left unscored rather than folded as a ``0.0``
             nothing earned. A suite that could not run at all is a different answer and
             keeps its ``0.0``: the checks the author declared were meant to decide the
             trial and could not, which is a failure rather than an absence.
+
+            The reason is the sentence :func:`custom_checks_reason` renders, on every
+            path — a pre-run failure builds the :class:`CheckResultSet` it would have
+            produced, so this component's account reads the same whichever substrate
+            graded the trial and whether or not the suite got as far as running.
         """
         if not self.task_dir:
             logger.warning("Cannot run custom checks: task_dir not set")
-            return 0.0, "task_dir not available", None
+            return 0.0, custom_checks_reason(CheckResultSet(error="task_dir not available")), None
 
         # Parse config
         config = CustomChecksConfig(**custom_config)
@@ -448,14 +458,22 @@ class GradingEngine:
 
         if not checks_file.exists():
             logger.warning(f"Custom checks file not found: {checks_file}")
-            return 0.0, f"checks file not found: {config.file}", None
+            return (
+                0.0,
+                custom_checks_reason(CheckResultSet(error=f"checks file not found: {config.file}")),
+                None,
+            )
 
         # Build CheckContext
         try:
             ctx = self._build_check_context(trajectory, final_env_state)
         except Exception as e:
             logger.error(f"Error building CheckContext: {e}")
-            return 0.0, f"context build error: {e}", None
+            return (
+                0.0,
+                custom_checks_reason(CheckResultSet(error=f"context build error: {e}")),
+                None,
+            )
 
         # Run checks
         logger.info(f"Running custom checks from {checks_file}")
@@ -496,22 +514,11 @@ class GradingEngine:
 
         if result.error:
             logger.error(f"Custom checks error: {result.error}")
-            return 0.0, f"execution error: {result.error}", detailed_results
-
-        # Build reasons string
-        reasons = []
-        if result.passed > 0:
-            reasons.append(f"{result.passed} passed")
-        if result.failed > 0:
-            reasons.append(f"{result.failed} failed")
-        if result.errors > 0:
-            reasons.append(f"{result.errors} errors")
-        if result.skipped > 0:
-            reasons.append(f"{result.skipped} skipped")
+            return 0.0, custom_checks_reason(result), detailed_results
 
         return (
             result.aggregate_score if result.decided_something else None,
-            ", ".join(reasons) if reasons else "no checks",
+            custom_checks_reason(result),
             detailed_results,
         )
 

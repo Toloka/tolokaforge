@@ -126,6 +126,7 @@ from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.grading import (
+    NO_COMPONENTS_EVALUATED,
     combine_grade_components,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
@@ -861,7 +862,7 @@ def _runner_custom_checks_score(
         trial_id = f"{task_description.task_id}:0"
         servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
         context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
-        score, _ = servicer._run_async(
+        score, _, _ = servicer._run_async(
             servicer._grade_custom_checks(trial_id, context, case.runner_messages)
         )
         return score
@@ -2552,6 +2553,42 @@ def test_a_state_reading_pack_grades_through_the_runners_own_registration(
         f"{getattr(response.grade.components, component)}: the runner graded against "
         "a database RegisterTrial did not provision from initial_state"
     )
+
+
+def test_a_custom_checks_grade_names_the_check_that_decided_the_trial(
+    test_data_dir, runner_service, mock_grpc_context
+):
+    """The issue: a suite that decided the verdict, and a grade that said nothing.
+
+    ``grading_parity/custom_checks`` declares one author key, so ``custom_checks`` is
+    the only component with anything to report — and the trial's whole account of why
+    it failed is whatever this segment carries.
+
+    The violating case is reachable only because the case's state is written into the
+    trial's database before ``GradeTrial``: ``RegisterTrial`` provisions the database
+    from the pack's ``initial_state``, which seeds ``orders[0].status: shipped``, so
+    the reachability cell above scores ``1.0`` on both cases. With the write, the check
+    reads ``pending`` and loses — which is what makes the name and the message it
+    contributes assertable rather than absent from a passing sentence by construction.
+    """
+    adapter = _parity_adapter(test_data_dir)
+    task_description = adapter.to_task_description("custom_checks")
+    case = _load_case(test_data_dir / "grading_parity" / "custom_checks", "violating")
+    trial_id = "custom_checks_reasons:0"
+
+    _register_pack(runner_service, mock_grpc_context, task_description, trial_id)
+    _replay_authored_calls(runner_service, mock_grpc_context, trial_id, case)
+    _write_case_state_into_the_trial_database(runner_service, trial_id, case.state["db"])
+    response = _grade_registered_trial(
+        runner_service, mock_grpc_context, trial_id, json.dumps(case.runner_messages)
+    )
+
+    assert response.success is True, response.error
+    grade = response.grade
+    assert grade.components.custom_checks == pytest.approx(0.0), grade.reasons
+    assert NO_COMPONENTS_EVALUATED not in grade.reasons, grade.reasons
+    assert "order_was_shipped" in grade.reasons, grade.reasons
+    assert "order O1 is not shipped" in grade.reasons, grade.reasons
 
 
 # --------------------------------------------------------------------------

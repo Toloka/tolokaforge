@@ -207,6 +207,22 @@ The host parses that list into `Grade.custom_checks_details`
 follows `fail_on_error`: `0.0` when true, excluded from the combine when
 false.
 
+`Grade.reasons` carries one `Custom checks:` segment describing the suite,
+rendered by the same function whichever substrate graded the trial:
+
+```
+Custom checks: score=0.50, 1 of 2 checks failed — order_was_shipped: order O1 is not shipped
+Custom checks: score=1.00, all 2 checks passed, 1 skipped
+Custom checks: no check reached a verdict — all 3 skipped
+Custom checks: the suite could not run — checks file not found: checks.py
+```
+
+Only the checks that did not pass are named. A skipped check reached no
+verdict, so it is counted and not named, and a passing suite names no check
+at all — which is what keeps a check called `no_failures_logged` from
+manufacturing failure evidence downstream: the harness keeps the `reasons`
+segments matching `FAIL` case-insensitively as a failing trial's evidence.
+
 `Grade.components.custom_checks` is `null` under three conditions, on both
 substrates: the pack declares no `custom_checks` block, the block sets
 `enabled: false`, or an enabled suite decided nothing — every check returned
@@ -225,7 +241,8 @@ and the fold decides on what was actually decided.
   is where a suite's score is read: `decided_something` first — a suite
   whose every check skipped reached no verdict — then `aggregate_score`
   over the verdicts it did reach, with `passed` / `failed` / `errors` /
-  `skipped` / `total` beside them.
+  `skipped` / `total` beside them. `custom_checks_reason` turns the same
+  object into the sentence the grade carries.
 - **Canonical** (`tests/canonical/`) — pin the *seam*
   (`test_check_executor_contract.py` pins the `CheckExecutor` Protocol
   boundary + `InMemoryCheckExecutor` semantics per ADR-0012).
