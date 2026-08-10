@@ -11,6 +11,7 @@ import pytest
 
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
+from tolokaforge.core.loop import classify_loop_error
 from tolokaforge.core.models import (
     MessageRole,
     Metrics,
@@ -49,7 +50,13 @@ def _make_user_simulator() -> MagicMock:
 
 
 def _make_agent_client(responses: list[GenerationResult] | None = None) -> MagicMock:
-    """Create a mock LLMClient for the agent."""
+    """Create a mock LLMClient for the agent.
+
+    Populates ``classify_loop_error`` so ``TrialRunner`` — which wires it into
+    the loop's ``classify_error`` seam — sees the real classifier instead of a
+    Mock whose ``.reason`` is another Mock. Empty patterns mean the text tier
+    never fires; only the typed and default branches decide.
+    """
     client = MagicMock()
     if responses:
         client.generate.side_effect = responses
@@ -60,6 +67,7 @@ def _make_agent_client(responses: list[GenerationResult] | None = None) -> Magic
             usage=Usage(prompt_tokens=100, completion_tokens=50),
             cost_usd=0.01,
         )
+    client.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
     return client
 
 
@@ -653,16 +661,28 @@ class TestTrialRunnerRun:
 
     def test_rate_limit_error_classification(self) -> None:
         """A provider's typed 429 → RATE_LIMIT, reached through the wrapper the
-        client re-raises it inside."""
+        client re-raises it inside.
+
+        The classifier consults the shipped default patterns, so the assertion
+        pins the mock agent's ``classify_loop_error`` to the module helper with
+        the default HTTP-429 pattern list — the client's real closure shape.
+        """
         from litellm.exceptions import RateLimitError
+
+        from tolokaforge.core.llm.providers import (
+            DEFAULT_RATE_LIMIT_PATTERNS,
+            compile_rate_limit_patterns,
+        )
 
         inner = RateLimitError(
             message="Rate limit exceeded", llm_provider="openrouter", model="anthropic/claude"
         )
         wrapped = RuntimeError(f"LLM API call failed: {inner}")
         wrapped.__cause__ = inner
+        patterns = compile_rate_limit_patterns(DEFAULT_RATE_LIMIT_PATTERNS)
         agent = MagicMock()
         agent.generate.side_effect = wrapped
+        agent.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, patterns)
 
         runner = _make_runner(agent_client=agent)
         traj = runner.run("System", "Task")
@@ -675,8 +695,15 @@ class TestTrialRunnerRun:
         not excused: ``RATE_LIMIT`` takes the trial out of every rate, and prose
         cannot tell a provider's throttle from a transcript that discusses one.
         The trial records why it was not treated as one."""
+        from tolokaforge.core.llm.providers import (
+            DEFAULT_RATE_LIMIT_PATTERNS,
+            compile_rate_limit_patterns,
+        )
+
+        patterns = compile_rate_limit_patterns(DEFAULT_RATE_LIMIT_PATTERNS)
         agent = MagicMock()
         agent.generate.side_effect = Exception("429 Too Many Requests")
+        agent.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, patterns)
 
         runner = _make_runner(agent_client=agent)
         traj = runner.run("System", "Task")
@@ -693,6 +720,7 @@ class TestTrialRunnerRun:
         agent.generate.side_effect = LLMApiTimeoutError(
             "LLM API call timed out after 6 attempts (timeout=120.0s)"
         )
+        agent.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         runner = _make_runner(agent_client=agent)
         traj = runner.run("System", "Task")
@@ -704,6 +732,7 @@ class TestTrialRunnerRun:
         """API-related errors get correct termination reason."""
         agent = MagicMock()
         agent.generate.side_effect = Exception("OpenAI API returned 500")
+        agent.classify_loop_error.side_effect = lambda exc: classify_loop_error(exc, ())
 
         runner = _make_runner(agent_client=agent)
         traj = runner.run("System", "Task")

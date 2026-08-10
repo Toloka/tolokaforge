@@ -79,8 +79,10 @@ Only the first two produce an OpenAI-envelope request, which is why
 provider in ``LLM_PROXY_PROVIDERS`` is allowed but means "my gateway also
 serves this provider's native route" — true for a LiteLLM proxy's
 ``/v1/messages`` passthrough, false for a plain OpenAI-compatible gateway.
-:data:`UNROUTABLE_PROVIDERS` cannot be opted in at all and are rejected
-loudly, because no gateway can serve them (see that constant).
+Providers whose ``providers.yaml`` binding declares ``unroutable: true``
+cannot be opted in at all and are rejected loudly, because no gateway can
+serve them (``mock`` never reaches the wire; ``nova`` needs a model-name
+rewrite the gateway path does not perform).
 
 Widening the default to *every* provider would need this module to force the
 OpenAI envelope (``custom_llm_provider="openai"`` on routed calls, as the Nova
@@ -109,6 +111,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from tolokaforge.core.llm.providers import get_provider_binding
 from tolokaforge.secrets.expand import UnresolvedReferenceError, expand_secret_refs
 
 if TYPE_CHECKING:
@@ -133,16 +136,6 @@ ENV_PROVIDERS = "LLM_PROXY_PROVIDERS"
 #: that changes a provider's transport fails that test rather than silently
 #: posting to a route the gateway does not serve.
 DEFAULT_ROUTED_PROVIDERS = frozenset({"openrouter", "openai"})
-
-#: Providers that can never be routed, even explicitly.
-#:
-#: ``mock`` never reaches the wire, so routing it is meaningless. ``nova``
-#: relies on :meth:`LLMClient._call_with_key_rotation` rewriting its bare model
-#: name into ``openai/<name>`` alongside its own hardcoded ``api_base``; a
-#: gateway replaces the base URL but not the rewrite, leaving litellm with a
-#: provider-less model string that raises ``BadRequestError`` before any
-#: request is sent. Rejected at config time rather than failing per trial.
-UNROUTABLE_PROVIDERS = frozenset({"mock", "nova"})
 
 
 class ProxyConfigError(RuntimeError):
@@ -189,7 +182,7 @@ class ProxyConfig:
         """
         normalized = (provider or "").strip().lower()
         base_segment = normalized.split("/")[0]
-        if not base_segment or base_segment in UNROUTABLE_PROVIDERS:
+        if not base_segment or get_provider_binding(base_segment).unroutable:
             return False
         allowed = self.providers if self.providers is not None else DEFAULT_ROUTED_PROVIDERS
         return normalized in allowed or base_segment in allowed
@@ -261,7 +254,7 @@ def _parse_providers(raw: str | None) -> frozenset[str] | None:
             f"unset it to use the default ({', '.join(sorted(DEFAULT_ROUTED_PROVIDERS))}), "
             f"or list at least one"
         )
-    unroutable = sorted(entries & UNROUTABLE_PROVIDERS)
+    unroutable = sorted(name for name in entries if get_provider_binding(name).unroutable)
     if unroutable:
         raise ProxyConfigError(
             f"{ENV_PROVIDERS} names {', '.join(unroutable)}, which cannot be routed "

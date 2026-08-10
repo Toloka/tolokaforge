@@ -544,12 +544,14 @@ is exactly `{openrouter, openai}`. Naming another provider in
 provider's native route" — true of a LiteLLM proxy's `/v1/messages`
 passthrough, false of a plain OpenAI-compatible gateway.
 
-`mock` and `nova` are in `UNROUTABLE_PROVIDERS` and are rejected even when
-named explicitly. `mock` never reaches the wire. `nova` depends on
-`_call_with_key_rotation` rewriting its bare model name into `openai/<name>`
-next to its own hardcoded base URL; a gateway replaces the base URL but not the
-rewrite, so litellm would get a provider-less model string and raise
-`BadRequestError` before sending anything.
+The `providers.yaml` entry for a provider carries `unroutable: bool`. `mock`
+and `nova` declare `unroutable: true` and are rejected even when named
+explicitly in `LLM_PROXY_PROVIDERS`. `mock` never reaches the wire. `nova`
+depends on `_call_with_key_rotation` rewriting its bare model name into
+`openai/<name>` next to the endpoint its `ProviderBinding` pins per attempt;
+a gateway replaces the base URL but not the rewrite, so litellm would get a
+provider-less model string and raise `BadRequestError` before sending
+anything.
 
 ### The model name must be the gateway's route name
 
@@ -649,16 +651,17 @@ testing nothing.
 
 ### Key rotation under a gateway
 
-Rotation stays bound to the provider key chain (`OPENROUTER_API_KEYS` and
-friends), and whether it still applies depends on **one** thing: is a gateway
-key pinned?
+Rotation binds to the provider record's `api_keys_env`
+(OpenRouter's is `OPENROUTER_API_KEYS`); the rotation logic republishes into
+`api_key_env` (OpenRouter's `OPENROUTER_API_KEY`). Whether rotation still
+applies depends on **one** thing: is a gateway key pinned?
 
 - **`LLM_PROXY_API_KEY` set** — rotation is skipped. `_rotate_key` republishes
-  `OPENROUTER_API_KEY` into the environment, but the pinned `api_key` kwarg
-  takes precedence in litellm, so rotating would resend byte-identical requests
-  and then report an exhausted key chain that was never in play. A gateway
-  quota or authorization rejection raises an error naming the gateway URL
-  instead.
+  the provider's `api_key_env` into the environment, but the pinned `api_key`
+  kwarg takes precedence in litellm, so rotating would resend byte-identical
+  requests and then report an exhausted key chain that was never in play. A
+  gateway quota or authorization rejection raises an error naming the gateway
+  URL instead.
 - **`LLM_PROXY_API_KEY` unset** (gateway authenticates by network position) —
   rotation works and is left alone, because litellm reads the provider env var
   that `_rotate_key` rewrites. Suppressing it here would abort a trial with
@@ -666,6 +669,79 @@ key pinned?
 
 The guard mirrors exactly the condition under which `_build_kwargs` pins the
 key, so the two can't drift.
+
+## Provider bindings
+
+Provider-specific transport knobs (endpoint URL, credential env-var names,
+routability under a gateway, rotation env-var, `custom_llm_provider` litellm
+routing hint, per-provider rate-limit text patterns, and Nova-shaped slug /
+transport pinning) live in
+[`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+The schema is
+[`tolokaforge.core.llm.providers.ProviderBinding`](../tolokaforge/core/llm/providers.py)
+— a frozen Pydantic model, `extra="forbid"`, one entry per shipped provider
+(`openrouter`, `openai`, `anthropic`, `gemini`, `nova`, `mock`). Lookup key is
+the first `/`-separated segment of `ModelConfig.provider`, lower-cased;
+unknown names resolve to a default `ProviderBinding()` with every field inert.
+
+`LLMClient.__init__` loads the binding into `self._provider_binding` once and
+consults it at every provider-specific transport branch — endpoint pinning,
+credential lookup, key rotation, slug rewrite, rate-limit text.
+
+### What is data-driven
+
+| Field | Consumer | Effect |
+|---|---|---|
+| `endpoint` + `api_base_env` | `LLMClient.__init__` and `_call_with_key_rotation` | When both are set the client `os.environ.setdefault(api_base_env, endpoint)` at construction, publishing the default base URL a deployment may override. When `kwargs_pin_transport=true` the endpoint is also pinned into `kwargs["api_base"]` per attempt. Nova's `NOVA_API_BASE` covers both roles. |
+| `api_key_env` | `_call_with_key_rotation`; `_rotate_key`; `_load_api_keys` | Primary key env-var name. When `kwargs_pin_transport=true` the client reads it fresh per attempt via `SecretManager` and pins it into `kwargs["api_key"]`, failing loud (`RuntimeError`) if it resolves empty. Also the env var `_rotate_key` republishes into `os.environ` after picking the next key for the direct-provider path (OpenRouter's `OPENROUTER_API_KEY`). |
+| `api_keys_env` | `_load_api_keys` | Rotation-list env-var name (comma-separated). `None` disables rotation. OpenRouter's `OPENROUTER_API_KEYS`; a second provider needing rotation is one YAML edit. |
+| `unroutable` | `ProxyConfig.applies_to`, `_parse_providers` | The proxy rejects providers whose binding declares `unroutable: true` even when named in `LLM_PROXY_PROVIDERS`. `mock` and `nova` — see § proxy above. |
+| `custom_llm_provider` | `_call_with_key_rotation` | Value pinned into `kwargs["custom_llm_provider"]`. Nova: `"openai"`. OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`; simple providers let litellm default. |
+| `rate_limit_patterns` | `LLMClient._is_rate_limit_exception` (tier-3 text fallback), `LLMClient.classify_loop_error` | Regex strings compiled once at construction. `DEFAULT_RATE_LIMIT_PATTERNS` in [`providers.py`](../tolokaforge/core/llm/providers.py) is the shipped default every non-mock provider declares verbatim; each entry is a shape an *engine wrapper* produces (`Error code: 429`, `HTTP/1.1 429`, `too many requests`, rate-limit prose in an error construction), not provider quota prose. |
+| `slug_rewrite` | `_call_with_key_rotation` | Two-step rewrite of `kwargs["model"]` per attempt: strip `strip_prefix`, then ensure `ensure_prefix`. Nova's binding declares `strip_prefix: "nova/"` and `ensure_prefix: "openai/"` — turning `nova/busan-v1` into `openai/busan-v1` on the wire without a Python conditional on provider name. |
+| `format_model_name_bare` | `LLMClient._format_model_name` | When `true`, `_format_model_name` returns `config.name` as-is (no `{provider}/` prefix). Nova only; preserves current log content. |
+| `kwargs_pin_transport` | `_call_with_key_rotation` | When `true`, the client reads `endpoint` and `api_key_env` fresh per attempt and pins them into `kwargs["api_base"]` / `kwargs["api_key"]`. Fires the `NOVA_API_KEY is required for nova provider` fail-loud when `api_key_env` resolves empty. Nova only. |
+
+Nova's three sites (init `NOVA_API_BASE` `os.environ.setdefault`,
+`_format_model_name` bare-name return, `_call_with_key_rotation` per-attempt
+`api_base` / `api_key` / `custom_llm_provider` / slug rewrite) are expressed
+entirely through the fields above — a provider whose transport matches Nova's
+shape is a `providers.yaml` entry, not a `client.py` edit.
+
+The `LLMClient.classify_loop_error(exc)` bound method closes over the
+compiled `binding.rate_limit_patterns` and is what
+[`tolokaforge.core.loop.ToolCallingLoop`](../tolokaforge/core/loop.py)
+and the grading judge loop consume — the public seam threads the per-provider
+patterns to `loop.py` without exposing the compiled tuple across the module
+boundary.
+
+### What stays engine code
+
+Not every provider knob is data-shaped, and the schema is deliberately narrow
+where the mechanism is genuinely per-provider:
+
+- **`_configure_openrouter_base_url`** reconciles *two* env-var names
+  (`OPENROUTER_BASE_URL` and `OPENROUTER_API_BASE`) into one pinned value. The
+  single-field `api_base_env` schema cannot express dual-env coordination; a
+  schema addition just for one provider is over-engineering.
+- **`_openrouter_headers`** (`HTTP-Referer` / `X-Title`) and
+  **`provider_order`** (upstream pinning) consume config off
+  `ModelConfig.openrouter`, not transport bindings. They stay engine code.
+- **Mock's `if self.provider == "mock": return self._mock_generate(...)`
+  early-return** — mock's binding declares `unroutable: true` (captures the
+  proxy behaviour), but the branch that never constructs kwargs stays
+  engine-side. Half of mock is data (routability), half is code (the
+  short-circuit); eliminating the last string would require a
+  `dispatch_stub: Callable | None` field whose only consumer is mock.
+
+### Fingerprint
+
+The provider-binding table ships inside the engine wheel pre-cutover, so
+`engine_run_state.json`'s `models_fingerprint.content_sha256` does **not**
+include `providers.yaml` yet — see ADR-0030 § "Fingerprinting for
+auditability". The cutover PR ([#938](https://github.com/Toloka/tolokaforge/issues/938))
+moves the file to `tolokaforge_models/data/providers.yaml` and widens the
+hashed payload.
 
 ## `cache_policy`
 
@@ -1145,34 +1221,43 @@ because `_call_with_key_rotation` re-raises provider errors as
    the walk and returns `False`, so the condition takes the ordinary
    five-attempt exponential branch instead. `_should_retry_exception` is
    deliberately unchanged, so a probe-off run retries it exactly as before.
-3. **Anchored text** (`_RATE_LIMIT_TEXT_PATTERNS`), last resort: a 429 must sit
-   in a status position (`Error code: 429`, `status_code=429`, `HTTP/1.1 429`),
-   or the message must carry the HTTP reason phrase or rate-limit prose in an
-   error construction. An unanchored `"429" in str(exc)` matched token counts
-   (`you requested 4429`), request ids (`req_8f429ab2`) and JSON bodies. This
-   tier runs **only when no link in the chain carried an HTTP status at all** —
-   i.e. for the shape it exists for, a wrapper that stringified the provider
-   error instead of chaining it. An authoritative non-429 status beats prose,
-   because the outermost message is `RuntimeError(f"LLM API call failed: {e}")`
-   and `e`'s message can embed a response body that echoes request content: a
-   task conversation about rate limiting would otherwise hand a deterministic 400
-   the multi-hour budget. Untyped chains still text-match — under-matching a real
-   429 is the more expensive direction, since the absorption is the whole feature.
+3. **Anchored text** (`binding.rate_limit_patterns` — see § Provider bindings),
+   last resort: a 429 must sit in a status position (`Error code: 429`,
+   `status_code=429`, `HTTP/1.1 429`), or the message must carry the HTTP reason
+   phrase or rate-limit prose in an error construction. An unanchored
+   `"429" in str(exc)` matched token counts (`you requested 4429`), request ids
+   (`req_8f429ab2`) and JSON bodies. This tier runs **only when no link in the
+   chain carried an HTTP status at all** — i.e. for the shape it exists for, a
+   wrapper that stringified the provider error instead of chaining it. An
+   authoritative non-429 status beats prose, because the outermost message is
+   `RuntimeError(f"LLM API call failed: {e}")` and `e`'s message can embed a
+   response body that echoes request content: a task conversation about rate
+   limiting would otherwise hand a deterministic 400 the multi-hour budget.
+   Untyped chains still text-match — under-matching a real 429 is the more
+   expensive direction, since the absorption is the whole feature. Every shipped
+   provider carries the same anchored default list (`DEFAULT_RATE_LIMIT_PATTERNS`
+   in [`providers.py`](../tolokaforge/core/llm/providers.py)); the field is
+   per-provider so onboarding a provider whose rate-limit prose differs is a
+   `providers.yaml` edit.
 
 The text tier is a catalogue of *engine-wrapper* shapes, not of provider quota
 prose. Vertex `RESOURCE_EXHAUSTED`, OpenAI `insufficient_quota`, `TPM limit
 reached` and Anthropic `overloaded_error` match nothing there on purpose: they
 arrive typed through litellm, so tier 1 catches them.
 
-`core/loop.py`'s `classify_loop_error` shares the type tiers through
-`is_typed_rate_limit_exception`, because `TerminationReason.RATE_LIMIT` excludes
-a trial from every benchmark rate and prose is not evidence strong enough to
-spend that (see [`docs/GRADING.md`](GRADING.md:1) § Infrastructure aborts produce
-no grade). It uses `matches_rate_limit_text` only as a diagnostic: a
-rate-limit-shaped message with no typed exception behind it terminates as a
-*counted* reason, not as an abort. The remaining text-matching classifiers
-(`core/runner.py`'s user-simulator retry, `core/resume.py`) are separate and
-unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
+`core/loop.py`'s `classify_loop_error(exc, patterns)` shares the type tiers
+through `is_typed_rate_limit_exception`, because `TerminationReason.RATE_LIMIT`
+excludes a trial from every benchmark rate and prose is not evidence strong
+enough to spend that (see [`docs/GRADING.md`](GRADING.md:1) § Infrastructure
+aborts produce no grade). It uses `matches_rate_limit_text` only as a
+diagnostic: a rate-limit-shaped message with no typed exception behind it
+terminates as a *counted* reason, not as an abort. The public seam callers use
+is `LLMClient.classify_loop_error(exc)` — a bound method that closes over the
+compiled `binding.rate_limit_patterns` so the compiled tuple never crosses a
+module boundary. `ToolCallingLoop` receives it via
+`classify_error=llm_client.classify_loop_error`. The remaining text-matching
+classifiers (`core/runner.py`'s user-simulator retry, `core/resume.py`) are
+separate and unaffected — `AllApiKeysExhaustedError` subclasses `RuntimeError`.
 
 ### Probe telemetry recording sites
 

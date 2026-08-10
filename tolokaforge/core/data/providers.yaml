@@ -1,0 +1,126 @@
+# Provider transport bindings — one entry per shipped provider.
+#
+# Schema: tolokaforge.core.llm.providers.ProviderBinding (frozen, extra="forbid").
+# Look-up key is the first "/"-separated segment of ModelConfig.provider,
+# lower-cased. An unknown provider resolves to a default ProviderBinding
+# with every field at its inert default.
+#
+# Fields:
+#   endpoint                — provider base URL (informational; may be pinned
+#                              per-attempt via kwargs_pin_transport).
+#   api_base_env            — env-var name a deployment may set to override
+#                              endpoint. Nova's NOVA_API_BASE.
+#   api_key_env             — primary key env-var name. Read fresh per attempt
+#                              when kwargs_pin_transport is true.
+#   api_keys_env            — rotation-list env-var name (comma-separated).
+#                              None disables rotation.
+#   unroutable              — the proxy rejects this provider at config time
+#                              (rewriting the base URL would break its wire
+#                              contract). mock and nova.
+#   custom_llm_provider     — value pinned into kwargs["custom_llm_provider"]
+#                              (litellm routing hint).
+#   rate_limit_patterns     — regex strings for last-resort rate-limit text
+#                              classification. Inline (?i) flag = case-
+#                              insensitive; each pattern is compiled with
+#                              re.compile as-is.
+#   format_model_name_bare  — LLMClient._format_model_name returns the model
+#                              name without a "{provider}/" prefix. Nova only.
+#   kwargs_pin_transport    — read endpoint + api_key_env fresh per attempt
+#                              and pin them into kwargs["api_base"] /
+#                              kwargs["api_key"]. Nova only.
+#   slug_rewrite            — two-step per-attempt rewrite of kwargs["model"]:
+#                              strip strip_prefix, then ensure ensure_prefix.
+
+nova:
+  endpoint: "https://api.nova.amazon.com/v1"
+  api_base_env: "NOVA_API_BASE"
+  api_key_env: "NOVA_API_KEY"
+  api_keys_env: null
+  unroutable: true
+  custom_llm_provider: "openai"
+  rate_limit_patterns:
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: true
+  kwargs_pin_transport: true
+  slug_rewrite:
+    strip_prefix: "nova/"
+    ensure_prefix: "openai/"
+
+openrouter:
+  endpoint: null
+  api_base_env: null
+  api_key_env: "OPENROUTER_API_KEY"
+  api_keys_env: "OPENROUTER_API_KEYS"
+  unroutable: false
+  custom_llm_provider: "openrouter"
+  rate_limit_patterns:
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null
+
+openai:
+  endpoint: null
+  api_base_env: null
+  api_key_env: null
+  api_keys_env: null
+  unroutable: false
+  custom_llm_provider: null
+  rate_limit_patterns:
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null
+
+anthropic:
+  endpoint: null
+  api_base_env: null
+  api_key_env: null
+  api_keys_env: null
+  unroutable: false
+  custom_llm_provider: null
+  rate_limit_patterns:
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null
+
+gemini:
+  endpoint: null
+  api_base_env: null
+  api_key_env: null
+  api_keys_env: null
+  unroutable: false
+  custom_llm_provider: null
+  rate_limit_patterns:
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null
+
+mock:
+  endpoint: null
+  api_base_env: null
+  api_key_env: null
+  api_keys_env: null
+  unroutable: true
+  custom_llm_provider: null
+  rate_limit_patterns: []
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null

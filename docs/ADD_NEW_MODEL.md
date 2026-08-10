@@ -317,19 +317,52 @@ If the model exposes reasoning in a new format (not OpenAI
 If the model lives on a provider that isn't already routed through
 `LLMClient` (not OpenRouter, not Anthropic direct, not OpenAI direct):
 
-1. Add any extra routing branches in `LLMClient._prepare_request` (if
-   needed). **Never** branch on literal model-name substrings outside
-   the preset registry — per
+1. **Add a `providers.yaml` entry — no `client.py` / `proxy.py` edit
+   required.** Provider transport knobs (endpoint, credential env-var
+   names, routability under a gateway, rotation env-var, per-provider
+   rate-limit patterns, `custom_llm_provider` litellm hint, and
+   Nova-shaped slug rewrite / per-attempt transport pinning) are
+   declared in
+   [`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+   See [`docs/LLM_LAYER.md` § Provider bindings](LLM_LAYER.md#provider-bindings)
+   and [`docs/CONFIG.md` § Provider bindings](CONFIG.md#provider-bindings-providersyaml)
+   for the full `ProviderBinding` schema. A hypothetical new provider
+   is onboarded by adding a `providers.yaml` entry only — the ADR-0030
+   acceptance criterion.
+2. **Never** branch on literal model-name / provider-name substrings
+   outside the preset registry and `providers.yaml` — per
    [`AGENTS.md`](../AGENTS.md) § "Adding a new model / provider" rule #3.
-2. Declare the new `env_key` on the certificate (e.g.
+3. Declare the new `env_key` on the certificate (e.g.
    `env_key="NOVA_API_KEY"`). The shared `live_client` fixture reads
    this at test-collection time.
-3. Add a `@pytest.mark.<provider>` marker to the capability tests you
+4. Add a `@pytest.mark.<provider>` marker to the capability tests you
    expect to run against that provider only — optional.
-4. Consider whether the provider deserves its own bespoke test file
+5. Consider whether the provider deserves its own bespoke test file
    alongside the capability suite (see
    [`tests/integration/llm/test_nova_api.py`](../tests/integration/llm/test_nova_api.py)
    for the Nova precedent — provider-scoped, NOT capability-scoped).
+
+Example `providers.yaml` entry for a hypothetical `acme` provider that
+publishes an OpenAI-compatible endpoint, uses rotation, and needs no
+slug rewrite:
+
+```yaml
+acme:
+  endpoint: "https://api.acme.example.com/v1"
+  api_base_env: "ACME_API_BASE"
+  api_key_env: "ACME_API_KEY"
+  api_keys_env: "ACME_API_KEYS"       # comma-separated; enables rotation
+  unroutable: false                    # gateway may route it
+  custom_llm_provider: null            # let litellm default
+  rate_limit_patterns:                 # anchored shapes (see DEFAULT_RATE_LIMIT_PATTERNS)
+    - '\bRateLimitError\b'
+    - '(?i)(?:error\s+code|status(?:[\s_-]*code)?|http(?:/[\d.]+)?)\s*[:=]?\s*429(?!\d)'
+    - '(?i)\btoo\s+many\s+requests\b'
+    - '(?i)\brate[\s_-]?limit(?:s|ed|ing)?[\s:;,.-]*(?:error|exceeded|reached|hit)\b'
+  format_model_name_bare: false
+  kwargs_pin_transport: false
+  slug_rewrite: null
+```
 
 ## Capability definitions
 

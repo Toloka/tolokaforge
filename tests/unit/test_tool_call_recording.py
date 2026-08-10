@@ -18,7 +18,13 @@ import pytest
 from tolokaforge.core.llm import GenerationResult
 from tolokaforge.core.llm.usage import Usage
 from tolokaforge.core.logging import get_logger
-from tolokaforge.core.loop import LoopConfig, MetricsSink, ToolCallingLoop
+from tolokaforge.core.loop import (
+    LoopConfig,
+    MetricsSink,
+    TerminationDecision,
+    ToolCallingLoop,
+    classify_loop_error,
+)
 from tolokaforge.core.models import (
     Message,
     ToolCall,
@@ -148,6 +154,9 @@ class _ScriptedClient:
         self.calls += 1
         return self._results.pop(0)
 
+    def classify_loop_error(self, exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())
+
 
 class _CountingSink(MetricsSink):
     def record_generation(self, result: GenerationResult) -> None:
@@ -155,6 +164,10 @@ class _CountingSink(MetricsSink):
 
     def record_tool_call(self) -> None:
         pass
+
+
+def _classify_no_patterns(exc: Exception) -> TerminationDecision:
+    return classify_loop_error(exc, ())
 
 
 def _drive_loop(
@@ -174,6 +187,7 @@ def _drive_loop(
         config=LoopConfig(max_turns=len(results), episode_timeout_s=10_000),
         metrics=_CountingSink(),
         should_terminate=lambda result, turn, messages: None,
+        classify_error=_classify_no_patterns,
         logger=get_logger("recording-test", strict=False),
         recorder=recorder,
     ).run("sys", [], time.time())
@@ -521,6 +535,7 @@ def test_messages_are_unaffected_by_recording() -> None:
         config=LoopConfig(max_turns=1, episode_timeout_s=10_000),
         metrics=_CountingSink(),
         should_terminate=lambda result, turn, messages: None,
+        classify_error=_classify_no_patterns,
         logger=get_logger("recording-test", strict=False),
         recorder=recorder,
     ).run("sys", messages, time.time())

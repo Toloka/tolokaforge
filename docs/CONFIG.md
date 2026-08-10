@@ -377,6 +377,43 @@ to a preset overlay that declares
 The legacy keys stay accepted through v0.17.x and go away in v0.18.0
 alongside `_RECOGNISED_OVERRIDE_KEYS`.
 
+### Provider bindings (`providers.yaml`)
+
+Provider transport knobs — endpoint URL, credential env-var names, routability
+under an `LLM_PROXY_BASE_URL` gateway, rotation env-var, rate-limit text
+patterns, and Nova-shaped slug rewrite / per-attempt transport pinning —
+ship as data in
+[`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+Six entries today: `openrouter`, `openai`, `anthropic`, `gemini`, `nova`,
+`mock`. Loaded once at `LLMClient` construction via
+[`get_provider_binding`](../tolokaforge/core/llm/providers.py). Onboarding a
+new provider or adjusting a shipped provider's transport is one YAML edit —
+no `client.py` / `proxy.py` change.
+
+Schema fields (see
+[`ProviderBinding`](../tolokaforge/core/llm/providers.py) and
+[`docs/LLM_LAYER.md`](LLM_LAYER.md#provider-bindings) for the full contract):
+
+| Field | Meaning |
+|---|---|
+| `endpoint` | Provider base URL (informational; may be pinned per-attempt when `kwargs_pin_transport=true`). |
+| `api_base_env` | Env-var name a deployment may set to override `endpoint` — the client `os.environ.setdefault(api_base_env, endpoint)` at init. Nova's `NOVA_API_BASE`. |
+| `api_key_env` | Primary credential env-var name; read via `SecretManager`. The env var `_rotate_key` republishes into `os.environ` after picking the next key on the direct-provider path (OpenRouter's `OPENROUTER_API_KEY`). |
+| `api_keys_env` | Rotation-list env-var name (comma-separated). `None` disables rotation. OpenRouter's `OPENROUTER_API_KEYS`. |
+| `unroutable` | The `LLM_PROXY_*` gateway rejects the provider at config time even when named explicitly in `LLM_PROXY_PROVIDERS`. `mock` and `nova`. |
+| `custom_llm_provider` | Value pinned into `kwargs["custom_llm_provider"]` — Nova: `"openai"`; OpenRouter: `"openrouter"`. When `None`, compound providers (`openrouter/google`) fall back to `provider.split("/")[0]`. |
+| `rate_limit_patterns` | Regex strings compiled once at construction and consulted by `LLMClient._is_rate_limit_exception`'s tier-3 text fallback and by `LLMClient.classify_loop_error`. Every shipped non-mock provider carries the same `DEFAULT_RATE_LIMIT_PATTERNS` list; onboarding a provider whose rate-limit prose differs is a YAML edit. |
+| `slug_rewrite` | Two-step per-attempt rewrite of `kwargs["model"]`: `strip_prefix` then `ensure_prefix`. Nova: `nova/` → `openai/`. |
+| `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
+| `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
+
+`providers.yaml` lives at `tolokaforge/core/data/providers.yaml` under the
+engine wheel. The cutover PR
+([#938](https://github.com/Toloka/tolokaforge/issues/938)) moves the file to
+`tolokaforge_models/data/providers.yaml` alongside the other data artifacts,
+and widens `engine_run_state.json`'s `models_fingerprint.content_sha256` to
+cover it.
+
 ### Preset overlay file (no engine release required)
 
 For models that reuse existing policy classes, you don't need to release the
