@@ -1633,6 +1633,13 @@ _HASH_FLAGS_NEITHER_SUBSTRATE_GRADES_ON = (
     pytest.param({"enabled": 0}, id="written_zero"),
     pytest.param({"enabled": None}, id="written_null"),
     pytest.param({}, id="no_enabled_key_at_all"),
+    # The four YAML spellings a raw truthiness read gets backwards: every one of them is
+    # a non-empty string, and every one of them is the ``False`` Pydantic hands both
+    # substrates before either evaluator branches on the flag.
+    pytest.param({"enabled": "false"}, id="written_false_quoted"),
+    pytest.param({"enabled": "no"}, id="written_no"),
+    pytest.param({"enabled": "off"}, id="written_off"),
+    pytest.param({"enabled": "0"}, id="written_zero_quoted"),
 )
 
 
@@ -1642,12 +1649,13 @@ def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
 ) -> None:
     """The mirror of the truthy spellings, over the source that used to escape.
 
-    However the flag is written, neither substrate reads a source behind one that is not
-    truthy, so every spelling is the same defect and draws the same finding — a block
-    omitting ``enabled`` altogether included, which is what an author reaches by deleting
-    the flag rather than the source. The message quotes the value the rule read, because
-    ``enabled: 0`` and ``enabled: null`` are fixed by writing ``true`` where a reader
-    told "the flag is off" would go looking for a ``false`` that is not there.
+    However the flag is written, neither substrate reads a source behind one a run
+    switches off, so every spelling is the same defect and draws the same finding — a
+    block omitting ``enabled`` altogether included, which is what an author reaches by
+    deleting the flag rather than the source. The message quotes the author's own text
+    rather than the coerced flag the rule branched on, because ``enabled: 0`` and
+    ``enabled: null`` are fixed by writing ``true`` where a reader told "the flag is
+    off" would go looking for a ``false`` that is not there.
     """
     grading = {"state_checks": {"hash": {**flag, "golden_actions": [{"name": "write_file"}]}}}
 
@@ -1660,6 +1668,31 @@ def test_every_flag_spelling_that_reads_no_source_refuses_the_one_declared(
 
     assert [finding.where for finding in report.errors] == ["state_checks.hash.golden_actions"]
     assert f"hash.enabled is {flag.get('enabled')!r}" in report.errors[0].message
+
+
+@pytest.mark.parametrize("flag", _HASH_FLAGS_NEITHER_SUBSTRATE_GRADES_ON)
+def test_a_flag_no_run_switches_on_reads_no_database_the_task_must_seed(
+    flag: dict[str, Any],
+) -> None:
+    """The falsy mirror of the truthy standing lock, over the rule that costs a pack.
+
+    A block a run reads as off grades no hash, so it reaches no DB service and the task
+    beneath it needs to seed nothing. Refusing it would reject a pack that loads and
+    grades cleanly — the failure this rule's own remedy cannot repair, since seeding
+    tables for a hash nobody computes buys the author nothing.
+
+    The block declares a source so it is the shape an author writes, and the hash-source
+    layer is left unresolved so the sibling rule above skips rather than answering here:
+    this cell speaks for the seeded-tables rule alone.
+    """
+    grading = {"state_checks": {"hash": {**flag, "expect_initial_state": True}}}
+
+    report = inspect_grading_authoring(
+        grading, _inventory(_HELPDESK), seeded_tables=_THE_TASK_SEEDS_NO_TABLES
+    )
+
+    assert report.errors == ()
+    assert [skip.where for skip in report.unchecked] == ["state_checks.hash.expect_initial_state"]
 
 
 #: Every row's verdict is written here rather than derived from either side, so a row

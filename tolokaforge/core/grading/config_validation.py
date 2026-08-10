@@ -903,7 +903,7 @@ def _state_checks_has_a_source(state_checks: Mapping[str, Any]) -> bool:
     return bool(
         state_checks.get("jsonpaths")
         or state_checks.get("db_probes")
-        or hash_block.get("enabled")
+        or _hash_is_enabled(hash_block)
         or any(hash_block.get(key) for key in HASH_SOURCE_KEYS)
     )
 
@@ -1126,12 +1126,13 @@ def _check_hash_source_declared(
     tuple names first. What the message claims of both substrates is only what holds of
     both: the flag is read before any source.
 
-    Both halves read the flag for truth rather than for ``True``, because that is
-    what decides the grade: core branches on its truthiness and the runner coerces
-    it, so a pack written ``enabled: 1`` does read the hash and rejecting it here
-    would be stricter than either substrate. A source is read the same way — an
-    empty ``golden_actions`` list replays nothing, which is why both substrates
-    treat it as no source at all and why such a block is
+    Both halves read the flag through :func:`_hash_is_enabled`, which is the
+    value that decides the grade: both substrates build the block into a
+    ``StateHashConfig`` before either evaluator branches, so ``enabled: 1`` does read
+    the hash and ``enabled: "false"`` does not, and reading either off the key would
+    speak for a substrate neither of them is. A source is read for truth the same way —
+    an empty ``golden_actions`` list replays nothing, which is why both substrates treat
+    it as no source at all and why such a block is
     :func:`_check_sections_declare_something`'s rather than this rule's.
 
     Both halves also hold only where the authored block is the whole layer, which is
@@ -1151,7 +1152,7 @@ def _check_hash_source_declared(
     hash_block = authored_hash_block(grading)
     if hash_block is None:
         return AuthoringReport()
-    enabled = hash_block.get("enabled")
+    enabled = _hash_is_enabled(hash_block)
     declared = next((key for key in HASH_SOURCE_KEYS if hash_block.get(key)), None)
     if enabled and declared is None:
         return _an_enabled_block_declaring_no_source(hash_sources)
@@ -1165,7 +1166,9 @@ def _check_hash_source_declared(
         errors=(
             Finding(
                 f"state_checks.hash.{declared}",
-                _A_HASH_SOURCE_NOTHING_READS.format(key=declared, enabled=enabled),
+                _A_HASH_SOURCE_NOTHING_READS.format(
+                    key=declared, enabled=hash_block.get("enabled")
+                ),
             ),
         )
     )
@@ -1229,6 +1232,42 @@ def authored_hash_block(grading: Mapping[str, Any]) -> Mapping[str, Any] | None:
     return hash_block if isinstance(hash_block, Mapping) else None
 
 
+def _hash_is_enabled(hash_block: object) -> bool:
+    """Whether an authored ``state_checks.hash`` block switches hash grading on.
+
+    Every gate rule reading the flag reads it here, and the answer is
+    :class:`StateHashConfig`'s rather than the key's, because the coercion is part of
+    what the flag means: ``enabled: "false"`` is the ``False`` both substrates grade on,
+    and a rule reading the truthy string speaks for neither. Anything that is no mapping
+    declares no flag — the block's own shape validation owns that.
+
+    A block the model refuses is read off the key instead. That pack does not load, and
+    the one answer these rules may not give is the lenient one — a rule that blessed it
+    would pass an authoring defect through on the strength of a second one.
+    """
+    if not isinstance(hash_block, Mapping):
+        return False
+    try:
+        return StateHashConfig.model_validate(hash_block).enabled
+    except ValidationError:
+        return bool(hash_block.get("enabled"))
+
+
+def state_sources_as_a_run_reads_them(state_checks: Mapping[str, Any]) -> dict[str, Any]:
+    """This block's state sources, with ``hash.enabled`` read the way a run reads it.
+
+    The authored counterpart of
+    :meth:`~tolokaforge.runner.models.RunnerStateChecksConfig.authored_state_sources`,
+    for a caller holding YAML rather than a config it has already built. Both hand
+    :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`
+    the same flag, so the gate cannot refuse a block the runtime grades cleanly.
+
+    Only the flag is rewritten: every other key is the author's, which is the vocabulary
+    that predicate reads.
+    """
+    return {**state_checks, "hash": {"enabled": _hash_is_enabled(state_checks.get("hash"))}}
+
+
 def _authored_hash_is_a_state_source(grading: Mapping[str, Any]) -> bool:
     """Whether the authored block is enabled with something to compare against.
 
@@ -1262,7 +1301,8 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     so a shape defect is refused for a pack whose adapter can report neither rather than
     skipped with the rules that do need them.
 
-    Read under a truthy ``hash.enabled`` and then **whatever else the block declares**,
+    Read under a ``hash.enabled`` a run switches on and then **whatever else the block
+    declares**,
     unlike :func:`_check_golden_replay_world` beside it, which reads the source the
     replay needs a world for: ``NativeAdapter.to_task_description`` iterates the authored
     value whatever else the block says, so a shape no replay can iterate leaves the pack
@@ -1281,7 +1321,7 @@ def _check_golden_actions_are_a_list(grading: Mapping[str, Any]) -> AuthoringRep
     declares no other source, and nothing at all where it declares one.
     """
     hash_block = authored_hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return AuthoringReport()
     reason = unreplayable_golden_source(hash_block.get("golden_actions"))
     if reason is None:
@@ -1397,7 +1437,9 @@ def _check_state_reads_a_database_the_task_seeds(
     An enabled ``hash`` block counts with or without a declared source, because the
     stable hash is fetched before any source is consulted — see
     :func:`~tolokaforge.core.grading.jsonpath_addressing.block_addresses_the_database`,
-    which both halves read so that neither can drift from the other.
+    the one predicate this rule and its runtime half both read. The flag reaching it is
+    :func:`_hash_is_enabled`'s, not the authored key's, so that the two halves
+    read one value as well as one predicate.
 
     ``relaxed_validation`` does not downgrade this, unlike
     :func:`_check_id_fields_against_seeded_tables`. That escape hatch exists for a
@@ -1408,7 +1450,8 @@ def _check_state_reads_a_database_the_task_seeds(
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
         return AuthoringReport()
-    if not block_addresses_the_database(state_checks):
+    state_sources = state_sources_as_a_run_reads_them(state_checks)
+    if not block_addresses_the_database(state_sources):
         return AuthoringReport()
     if not seeded_tables.known:
         return AuthoringReport(
@@ -1417,8 +1460,7 @@ def _check_state_reads_a_database_the_task_seeds(
     if seeded_tables.tables:
         return AuthoringReport()
 
-    hash_block = authored_hash_block(grading) or {}
-    if hash_block.get("enabled"):
+    if state_sources["hash"]["enabled"]:
         where = _HASH_ENABLED_ADDRESS
         declares = "state_checks.hash is enabled"
     else:
@@ -1508,7 +1550,8 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
     """A pack replaying golden actions is authored against a task that gives them a world.
 
     The block is read the way core reads it — the flag, then ``golden_actions``, the one
-    source needing a world at all. A falsy ``hash.enabled`` is a source nobody resolves,
+    source needing a world at all. A ``hash.enabled`` a run reads as off is a source
+    nobody resolves,
     for the reason :func:`_check_hash_source_declared` gives at length. The actions are
     then read for truthiness and never for shape: a truthy non-list value is refused
     here for the world it lacks and by :func:`_check_golden_actions_are_a_list` for being
@@ -1527,7 +1570,7 @@ def _check_golden_replay_world(grading: Mapping[str, Any], world: ReplayWorld) -
     skip for a rule that had nothing to check.
     """
     hash_block = authored_hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return AuthoringReport()
     if not hash_block.get("golden_actions"):
         return AuthoringReport()
@@ -1565,7 +1608,8 @@ def _check_golden_action_names(
     core raises out of the grading engine, the runner answers ``GradeTrial`` with
     ``success=false``. The gate is where that costs nothing.
 
-    Read only under a truthy ``hash.enabled``, the flag both substrates test before
+    Read only under a ``hash.enabled`` a run switches on, the flag both substrates test
+    before
     they read any source, for the reason :func:`_check_hash_source_declared` gives at
     length: a name under a disabled flag is never resolved, so refusing it would be
     stricter than the grade. That block is refused there instead, at the source key the
@@ -1594,14 +1638,14 @@ def _check_golden_action_names(
 def _authored_golden_action_names(grading: Mapping[str, Any]) -> Iterator[Any]:
     """Each golden action's name as written, in the order the replay would run them.
 
-    Nothing at all where the flag is falsy, so the caller reads only the source a
+    Nothing at all where a run reads the flag as off, so the caller reads only the source a
     substrate would read. An action that is not a mapping, and one carrying no ``name``,
     both yield ``None``: ``golden_actions`` leaves its elements unclaimed (#907), so there
     is no load error to defer to, and the index of the offending action is what an author
     acts on.
     """
     hash_block = authored_hash_block(grading)
-    if hash_block is None or not hash_block.get("enabled"):
+    if hash_block is None or not _hash_is_enabled(hash_block):
         return
     actions = hash_block.get("golden_actions")
     if not isinstance(actions, list):

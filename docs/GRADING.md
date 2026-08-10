@@ -1170,7 +1170,7 @@ reads is the author's defect whatever lies beside it. Where no adapter answers, 
 shapes are reported unchecked at the same address. See the hash rows in
 [What is validated before a run](#what-is-validated-before-a-run):
 
-- **Either source under a falsy `enabled`** is a comparison that never runs. Both
+- **Either source under an `enabled` a run reads as off** is a comparison that never runs. Both
   substrates test the flag before reading any source, so the pack grades its state
   without the hash its author asked for and says nothing — a golden path there replays
   on neither substrate, and an initial-state comparison runs on neither. The refusal is
@@ -1187,10 +1187,14 @@ shapes are reported unchecked at the same address. See the hash rows in
   translation of its own flattened fields. The message names both keys, either being
   the author's to drop.
 
-Both halves read for truth rather than for `true`/absence: core branches on the
-flag's truthiness and the runner coerces it, so `enabled: 1` grades and loads, and an
-empty `golden_actions` list replays nothing, so it is no more a source than an absent
-one. The rules' class and the rest of the pre-run gate are in
+**Both halves read `enabled` the way a run reads it.** Every surface builds the block into
+a `StateHashConfig` before any evaluator branches, so the flag the gate tests is the
+coerced one: `enabled: 1` and `enabled: "yes"` grade and load, `enabled: "false"`,
+`enabled: "no"`, `enabled: "off"` and `enabled: "0"` are the `false` a run grades on
+however truthy the YAML string reads, and a value the model refuses is a load error
+before any of this. A source is read for truth instead — an empty `golden_actions` list
+replays nothing, so it is no more a source than an absent one. The rules' class and the
+rest of the pre-run gate are in
 [What is validated before a run](#what-is-validated-before-a-run).
 
 **The block is closed, and both of the adapter's reads of it refuse the same key.** A key
@@ -1211,7 +1215,7 @@ read a trial there passes through, and a key dropped at that read reaches
 
 | key | what it declares |
 |---|---|
-| `enabled` | whether the hash is compared at all. A source under a falsy flag, or a truthy flag with no source, is refused rather than graded |
+| `enabled` | whether the hash is compared at all, read as the block's own model coerces it. A source under a flag a run reads as off, or a flag it reads as on with no source, is refused rather than graded |
 | `golden_actions` | the actions to replay for an expected state |
 | `expect_initial_state` | that the expected final state *is* the state the task starts in — the refusal-task shape, read from `initial_state.json_db` in either shape a task writes it. Refused beside `golden_actions`, which names a different expected state |
 | `weight` | the hash's share of the `state_checks` component where `jsonpaths` is non-empty too. No default — the shape that needs one and declares none is refused |
@@ -2638,14 +2642,14 @@ Findings come in three classes:
 | a `state_checks.id_fields` entry naming a table absent from the seeded `initial_state`, a key component absent from every seeded record of its table, or a key that does not uniquely identify those records — where the caller resolved the seeded tables (a native pack, at `validate` and at the pre-run gate) | error | `state_checks.id_fields` |
 | a `transcript_rules` block declaring no rule at all — every list empty, both turn bounds absent, and a `tool_expectations` expecting neither tool | error | `transcript_rules` |
 | a `custom_checks` block with no `enabled` key, which the component's own default leaves unrun | error | `custom_checks` |
-| any hash source declared under a `hash.enabled` that is not truthy — written `false`, `0`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
-| a truthy `state_checks.hash.enabled` with no source — no non-empty `golden_actions`, no truthy `expect_initial_state` — where the adapter reports that nothing lies beneath the authored block, which is what `adapter_type: native` means | error | `state_checks.hash.enabled` |
+| any hash source declared under a `hash.enabled` a run reads as off — written `false`, `"false"`, `0`, `"0"`, `"no"`, `"off"`, `null`, or absent — wherever the adapter answers at all, whatever it answers: a source the block declares and nothing reads is the author's defect regardless | error, one for the block | `state_checks.hash.<the declared source>` |
+| a `state_checks.hash.enabled` a run reads as on with no source — no non-empty `golden_actions`, no truthy `expect_initial_state` — where the adapter reports that nothing lies beneath the authored block, which is what `adapter_type: native` means | error | `state_checks.hash.enabled` |
 | the same shape where the adapter reports the source it supplies beneath the block and that source is **usable** — the frozen-core convention, a golden-actions fixture the block never names | no finding: checked and passed | — |
 | the same shape where the adapter reports that source **missing or empty** — the trial would be paid for and take no hash verdict — the message naming the fixture in the adapter's own vocabulary | error | `state_checks.hash.enabled` |
 | a truthy `expect_initial_state` beside another hash source — raised as a config load error wherever the block is constructed, so it is reported alone | error | `state_checks.hash.expect_initial_state` |
 | either hash flag/source mismatch above, where **no** adapter answers — the declared `adapter_type` names an adapter this environment has not installed, or one that has not implemented the hook | unchecked | the address the error would have carried |
-| a truthy `golden_actions` that is not a list of actions, under a truthy `hash.enabled` and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
-| a golden action naming a tool outside the task's declared set, under a truthy `hash.enabled` | error | `state_checks.hash.golden_actions[i].name` |
+| a truthy `golden_actions` that is not a list of actions, under a `hash.enabled` a run reads as on and whatever else the block declares — the description build raises on the same shape, so a run's pre-flight aborts on it before the gate is reached and only `tolokaforge validate` reports it as a finding | error | `state_checks.hash.golden_actions` |
+| a golden action naming a tool outside the task's declared set, under a `hash.enabled` a run reads as on | error | `state_checks.hash.golden_actions[i].name` |
 | a golden action declaring no usable name — the key absent, `""`, `null`, or a value that is no string — under the same flag | error | as above |
 | a task giving its golden replay no world to be built in — no `initial_state.json_db` naming a JSON file, or no `tools.agent.mcp_server` — where `golden_actions` is the effective hash source | error, one per withheld fact | `state_checks.hash.golden_actions` |
 | a component the pack configures with no weight in the **effective** `combine.weights` | error | `combine.weights.<component>` |
@@ -2756,9 +2760,9 @@ pack's server module. A native pack whose golden action names a `TOOLS` entry it
 no actor therefore replays but is refused here; no pack in the repository has that
 shape, and #815 owns unifying the three namespaces.
 
-Like the source rule beside it, this one reads only a hash block whose flag is truthy,
-because a source under a falsy flag is resolved by nobody and refusing it would be
-stricter than the grade. Such a block is refused by that rule instead, at the flag
+Like the source rule beside it, this one reads only a hash block a run switches on,
+because a source under a flag a run reads as off is resolved by nobody and refusing it
+would be stricter than the grade. Such a block is refused by that rule instead, at the flag
 rather than at the name: a `golden_actions` list under `hash.enabled: false` replays on
 neither substrate whatever its names are, so what an author fixes is the flag or the
 source, and naming an action nothing was ever going to run would send them to the wrong

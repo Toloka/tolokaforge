@@ -125,6 +125,7 @@ from tolokaforge.core.grading.config_validation import (
     SeededTablesLayer,
     ToolInventory,
     inspect_grading_authoring,
+    state_sources_as_a_run_reads_them,
 )
 from tolokaforge.core.grading.grade_components import (
     COMPONENT_BY_NAME,
@@ -605,7 +606,10 @@ def _states_a_pack_addresses_but_cannot_reach(
         if isinstance(assertion, Mapping) and unreachable_target(assertion) is not None
     ]
     reads_a_database_it_does_not_seed = (
-        bool(block_addresses_the_database(state_checks) and seeded_tables.known)
+        bool(
+            block_addresses_the_database(state_sources_as_a_run_reads_them(state_checks))
+            and seeded_tables.known
+        )
         and not seeded_tables.tables
     )
     return beyond_the_runner, reads_a_database_it_does_not_seed
