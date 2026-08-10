@@ -1,7 +1,18 @@
 """Generation-parameter adaptation for a target model.
 
-:class:`GenerationParams` is the :class:`ParamPolicy` implementation shipped
+:class:`GenerationParams` is the :class:`ParamsPolicy` implementation shipped
 today — it composes temperature / seed / reasoning kwargs per-model.
+
+Extension contract
+------------------
+:class:`ParamsPolicy` is the base class for every generation-parameter
+policy the engine dispatches to via the ``params_policy`` preset slot.
+Every subclass **must** declare ``KNOWN_KEYS: ClassVar[frozenset[str]]``
+enumerating the construction kwargs it accepts — this is the authoritative
+source of truth for overlay preset-params validation (see
+:func:`tolokaforge.core.llm.presets._params_slot_known_keys`). A subclass
+that omits ``KNOWN_KEYS`` raises :class:`TypeError` at class-body
+evaluation.
 
 Reasoning routing
 -----------------
@@ -44,11 +55,13 @@ See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) § ``params_policy``.
 
 from __future__ import annotations
 
-from typing import Any, Protocol, runtime_checkable
+from abc import ABC, abstractmethod
+from typing import Any, ClassVar
 
 from tolokaforge.core.llm.reasoning import ReasoningConfig
 
 __all__ = [
+    "ParamsPolicy",
     "ParamPolicy",
     "GenerationParams",
 ]
@@ -56,10 +69,30 @@ __all__ = [
 _SAMPLING_KEYS: tuple[str, ...] = ("temperature", "top_p", "top_k")
 
 
-@runtime_checkable
-class ParamPolicy(Protocol):
-    """Adapts generation parameters for the target model."""
+class ParamsPolicy(ABC):
+    """Adapts generation parameters for the target model.
 
+    Subclasses declare ``KNOWN_KEYS`` — a frozen set of the construction
+    kwargs they accept. The overlay validator reads the union of every
+    registered subclass's ``KNOWN_KEYS`` to decide which preset ``params:``
+    keys are legal, so adding a knob is a one-line declarative change on
+    the subclass rather than an engine-wide inspection point.
+    """
+
+    KNOWN_KEYS: ClassVar[frozenset[str]]
+
+    def __init_subclass__(cls, **kwargs: Any) -> None:
+        super().__init_subclass__(**kwargs)
+        if "KNOWN_KEYS" not in cls.__dict__:
+            raise TypeError(
+                f"{cls.__name__} must declare KNOWN_KEYS: ClassVar[frozenset[str]] "
+                f"listing the construction kwargs it accepts. KNOWN_KEYS is the "
+                f"authoritative source of truth for overlay preset-params "
+                f"validation; a silent omission would let unknown YAML keys "
+                f"reach __init__ and raise TypeError far from the operator."
+            )
+
+    @abstractmethod
     def adapt(
         self,
         kwargs: dict[str, Any],
@@ -72,12 +105,27 @@ class ParamPolicy(Protocol):
     ) -> dict[str, Any]: ...
 
 
-class GenerationParams:
+ParamPolicy = ParamsPolicy
+
+
+class GenerationParams(ParamsPolicy):
     """Adapts generation kwargs based on model constraints.
 
     Configurable once at construction; ``adapt()`` applies the rules on every
     ``generate()`` call.
     """
+
+    KNOWN_KEYS: ClassVar[frozenset[str]] = frozenset(
+        {
+            "fixed_temperature",
+            "supports_seed",
+            "reasoning_via_extra_body",
+            "reasoning_via_thinking_kwarg",
+            "drop_sampling_when_thinking",
+            "reasoning_budget_default",
+            "unsupported_effort_levels",
+        }
+    )
 
     def __init__(
         self,

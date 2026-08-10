@@ -779,10 +779,20 @@ that silently drop `additionalProperties` parameters).
 
 ## `params_policy`
 
-Generation-parameter adaptation.
+Generation-parameter adaptation. `ParamsPolicy` is the abstract base class;
+every subclass declares `KNOWN_KEYS: ClassVar[frozenset[str]]` enumerating
+the construction kwargs it accepts. The overlay validator reads the union of
+every registered subclass's `KNOWN_KEYS` (`_params_slot_known_keys()` in
+[`presets.py`](../tolokaforge/core/llm/presets.py)) to decide which preset
+`params:` keys are legal — a subclass that forgets `KNOWN_KEYS` raises
+`TypeError` at class-body evaluation, so silent drift between the constructor
+and the validator is impossible.
 
 ```python
-class ParamPolicy(Protocol):
+class ParamsPolicy(ABC):
+    KNOWN_KEYS: ClassVar[frozenset[str]]
+
+    @abstractmethod
     def adapt(
         self,
         kwargs: dict,
@@ -795,7 +805,7 @@ class ParamPolicy(Protocol):
     ) -> dict: ...
 ```
 
-`GenerationParams` reads six preset-driven flags:
+`GenerationParams` declares its `KNOWN_KEYS` — the preset-driven flags below:
 
 | Flag | Default | Effect |
 |---|---|---|

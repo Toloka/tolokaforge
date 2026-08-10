@@ -11,7 +11,6 @@ from __future__ import annotations
 
 import copy
 import fnmatch
-import inspect
 import logging
 from collections.abc import Iterator
 from pathlib import Path
@@ -31,7 +30,7 @@ from tolokaforge.core.llm.content_policy import (
     OpenAIContent,
     ToolContentPolicy,
 )
-from tolokaforge.core.llm.params_policy import GenerationParams
+from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
@@ -123,6 +122,10 @@ _CACHE_POLICIES: dict[str, type[CachePolicy]] = {
     "anthropic_ephemeral": AnthropicEphemeralCache,
 }
 
+_PARAMS_POLICIES: dict[str, type[ParamsPolicy]] = {
+    "generation_params": GenerationParams,
+}
+
 
 #: Mapping from preset *slot name* to the in-engine registry of allowed
 #: classes. Single source of truth used both by :func:`_validate_overlay`
@@ -137,6 +140,7 @@ _POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
     "response_policy": _RESPONSE_POLICIES,
     "reasoning_codec": _REASONING_CODECS,
     "cache_policy": _CACHE_POLICIES,
+    "params_policy": _PARAMS_POLICIES,
 }
 
 
@@ -161,12 +165,19 @@ _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers
 #: Top-level keys allowed in an overlay (and the bundled file).
 _OVERLAY_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"default", "presets", "providers"})
 
-#: Valid ``params:`` block keys — introspected from ``GenerationParams.__init__``
-#: so adding a new kwarg to ``GenerationParams`` automatically extends overlay
-#: validation. Keep ``GenerationParams`` the authoritative source.
-_VALID_PARAMS_KEYS: frozenset[str] = frozenset(
-    p for p in inspect.signature(GenerationParams.__init__).parameters if p != "self"
-)
+
+def _params_slot_known_keys() -> frozenset[str]:
+    """Union of every registered :class:`ParamsPolicy` subclass's ``KNOWN_KEYS``.
+
+    The overlay validator consults this to decide which preset ``params:``
+    keys are legal. Adding a knob is a one-line declarative change on the
+    subclass — no engine-wide introspection point to maintain.
+    """
+    keys: set[str] = set()
+    for cls in _PARAMS_POLICIES.values():
+        keys.update(cls.KNOWN_KEYS)
+    return frozenset(keys)
+
 
 #: Module-level overlay path. ``None`` → bundled-only (today's behaviour).
 #: Mutated only via :func:`set_overlay_path` so cache invalidation has one
@@ -325,12 +336,13 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                     f"Preset overlay {path!r} at {where}.params: "
                     f"expected a mapping, got {type(params).__name__}."
                 )
-            unknown_params = set(params) - _VALID_PARAMS_KEYS
+            valid_keys = _params_slot_known_keys()
+            unknown_params = set(params) - valid_keys
             if unknown_params:
                 raise ValueError(
                     f"Preset overlay {path!r} at {where}.params: "
                     f"unknown keys {sorted(unknown_params)}. "
-                    f"Allowed: {sorted(_VALID_PARAMS_KEYS)}."
+                    f"Allowed: {sorted(valid_keys)}."
                 )
 
     if "default" in data:

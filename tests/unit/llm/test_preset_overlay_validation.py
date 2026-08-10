@@ -19,9 +19,11 @@ from pathlib import Path
 import pytest
 
 from tolokaforge.core.llm import presets as presets_module
+from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
 from tolokaforge.core.llm.presets import (
     _CACHE_POLICIES,
     _CONTENT_POLICIES,
+    _PARAMS_POLICIES,
     _POLICY_REGISTRIES,
     _PROMPT_POLICIES,
     _REASONING_CODECS,
@@ -29,8 +31,10 @@ from tolokaforge.core.llm.presets import (
     _SCHEMA_SANITIZERS,
     _load_overlay_file,
     _load_presets,
+    _params_slot_known_keys,
     set_overlay_path,
 )
+from tolokaforge.core.llm.reasoning import ReasoningConfig
 
 pytestmark = pytest.mark.unit
 
@@ -125,6 +129,113 @@ class TestOverlayParamsValidation:
         with pytest.raises(ValueError, match=r"params.*expected a mapping"):
             _load_overlay_file(str(path))
 
+    def test_known_keys_seam_accepts_generation_params_kwargs(self) -> None:
+        # KNOWN_KEYS on the shipped GenerationParams is the source of truth
+        # for the overlay validator. Removing an inspect-derived kwarg would
+        # break this — the assertion locks the current wire kwargs.
+        assert _params_slot_known_keys() == GenerationParams.KNOWN_KEYS
+        for key in GenerationParams.KNOWN_KEYS:
+            assert key in _params_slot_known_keys()
+
+    def test_known_keys_seam_picks_up_registered_subclass(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # A ParamsPolicy subclass declaring its own KNOWN_KEYS extends the
+        # accepted overlay keys without editing GenerationParams.__init__.
+        class ExtraKnobParams(ParamsPolicy):
+            KNOWN_KEYS = frozenset({"custom_knob"})
+
+            def adapt(
+                self,
+                kwargs: dict,
+                config_temperature: float | None,
+                config_seed: int | None,
+                config_reasoning: ReasoningConfig,
+                temperature: float | None,
+                seed: int | None,
+                reasoning: ReasoningConfig | None,
+            ) -> dict:
+                return kwargs
+
+        monkeypatch.setitem(_PARAMS_POLICIES, "extra_knob", ExtraKnobParams)
+        assert "custom_knob" in _params_slot_known_keys()
+
+        path = tmp_path / "extra_knob.yaml"
+        path.write_text(
+            "presets:\n  extended:\n    match: ['x/*']\n    params:\n      custom_knob: 1\n"
+        )
+        # Overlay validation now accepts the extended key.
+        _load_overlay_file(str(path))
+
+    def test_known_keys_seam_still_rejects_typos(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # Extending KNOWN_KEYS via a subclass must not weaken typo rejection
+        # for keys outside the union.
+        class ExtraKnobParams(ParamsPolicy):
+            KNOWN_KEYS = frozenset({"custom_knob"})
+
+            def adapt(
+                self,
+                kwargs: dict,
+                config_temperature: float | None,
+                config_seed: int | None,
+                config_reasoning: ReasoningConfig,
+                temperature: float | None,
+                seed: int | None,
+                reasoning: ReasoningConfig | None,
+            ) -> dict:
+                return kwargs
+
+        monkeypatch.setitem(_PARAMS_POLICIES, "extra_knob", ExtraKnobParams)
+        path = tmp_path / "still_bad.yaml"
+        path.write_text(
+            "presets:\n  bad:\n    match: ['x/*']\n    params:\n      not_a_real_kwarg: 1\n"
+        )
+        with pytest.raises(ValueError, match=r"unknown keys.*not_a_real_kwarg"):
+            _load_overlay_file(str(path))
+
+
+class TestParamsPolicyKnownKeysContract:
+    """A ``ParamsPolicy`` subclass without ``KNOWN_KEYS`` fails loud at
+    class-body evaluation — the point of removing the ``inspect.signature``
+    fallback is that ``KNOWN_KEYS`` becomes the only source of truth.
+    """
+
+    def test_subclass_without_known_keys_raises(self) -> None:
+        with pytest.raises(TypeError, match=r"must declare KNOWN_KEYS"):
+
+            class MissingKnownKeys(ParamsPolicy):
+                def adapt(
+                    self,
+                    kwargs: dict,
+                    config_temperature: float | None,
+                    config_seed: int | None,
+                    config_reasoning: ReasoningConfig,
+                    temperature: float | None,
+                    seed: int | None,
+                    reasoning: ReasoningConfig | None,
+                ) -> dict:
+                    return kwargs
+
+    def test_subclass_with_known_keys_evaluates(self) -> None:
+        class WithKnownKeys(ParamsPolicy):
+            KNOWN_KEYS = frozenset({"knob"})
+
+            def adapt(
+                self,
+                kwargs: dict,
+                config_temperature: float | None,
+                config_seed: int | None,
+                config_reasoning: ReasoningConfig,
+                temperature: float | None,
+                seed: int | None,
+                reasoning: ReasoningConfig | None,
+            ) -> dict:
+                return kwargs
+
+        assert frozenset({"knob"}) == WithKnownKeys.KNOWN_KEYS
+
 
 def _discover_policy_registries() -> dict[str, dict]:
     """Find every module-level ``dict[str, type]`` in ``presets`` — i.e. every
@@ -171,10 +282,10 @@ class TestValidatorRegistrySync:
             f"becomes a silent overlay-validation gap."
         )
 
-    def test_baseline_six_registries_are_present(self) -> None:
+    def test_baseline_seven_registries_are_present(self) -> None:
         # Belt-and-braces: pin the known-as-of-this-PR set so a *removal* also
-        # surfaces, not just an addition. Six registries today; if you
-        # consolidate or rename one, update this set.
+        # surfaces, not just an addition. If you consolidate or rename one,
+        # update this set.
         baseline_names = {
             "_SCHEMA_SANITIZERS",
             "_PROMPT_POLICIES",
@@ -182,12 +293,12 @@ class TestValidatorRegistrySync:
             "_RESPONSE_POLICIES",
             "_REASONING_CODECS",
             "_CACHE_POLICIES",
+            "_PARAMS_POLICIES",
         }
         discovered = set(_discover_policy_registries().keys())
         missing = baseline_names - discovered
-        assert not missing, (
-            f"baseline registries missing from the presets module: " f"{sorted(missing)}"
-        )
+        message = f"baseline registries missing from the presets module: {sorted(missing)}"
+        assert not missing, message
 
     def test_policy_registries_keys_match_slot_names(self) -> None:
         # The string keys in _POLICY_REGISTRIES are the YAML slot names
@@ -200,6 +311,7 @@ class TestValidatorRegistrySync:
             "response_policy",
             "reasoning_codec",
             "cache_policy",
+            "params_policy",
         }
         assert set(_POLICY_REGISTRIES.keys()) == expected_slots
 
