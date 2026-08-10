@@ -26,7 +26,7 @@ not checked in).
 | Quirk | Affects | Status |
 |---|---|---|
 | `reasoning_details` `id`/`format`/`index` must round-trip | All Gemini via OpenRouter | **Fixed** in [`GeminiReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py) |
-| Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`content_policy.OpenAIContent`](../tolokaforge/core/llm/content_policy.py) (filler off by default) |
+| Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` opts into the filler) |
 | `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge/core/llm/schema_sanitizer.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
 | `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) |
@@ -54,10 +54,13 @@ the symmetric fix made it provider-scoped.
 `"I'll help you with that."` verbatim despite the system prompt asking
 for substantive content.
 
-**Harness mitigation**: [`content_policy.OpenAIContent`](../tolokaforge/core/llm/content_policy.py)
-declares `inject_empty_assistant_filler = False`. Only the `nova`
-preset opts in to the filler. The Gemini preset routes through
-`OpenAIContent` ([`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)).
+**Harness mitigation**: the Gemini preset (like every non-Nova preset)
+carries [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py),
+which declares `inject_empty_assistant_filler = False`. Only the `aws_nova`
+and `aws_nova_openrouter` presets opt in via `NovaMessageAssembly`
+(`empty_assistant_filler = "I'll help you with that."`); the filler string
+is data on the policy instance so a future preset overlay can override it
+without engine changes ([`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)).
 
 ### 1.2 `reasoning_details` `id`/`format`/`index` must round-trip
 

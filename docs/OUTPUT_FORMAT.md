@@ -199,7 +199,7 @@ model_config:
       effort_hint: null
       display: null
     capabilities: {...}
-    resolved:                               # Stage 7 — preset fingerprint
+    resolved:                               # preset fingerprint
       effective_preset: "anthropic_claude_4_7"
       schema_sanitizer: "passthrough"
       prompt_policy: "none"
@@ -207,6 +207,8 @@ model_config:
       response_policy: "standard"
       reasoning_codec: "anthropic"
       cache_policy: "anthropic_ephemeral"
+      message_assembly_policy: "null"
+      assistant_text_policy: "passthrough"
   user:
     provider: "openai"
     name: "gpt-4o-mini"
@@ -219,6 +221,8 @@ model_config:
       response_policy: "standard"
       reasoning_codec: "none"
       cache_policy: "none"
+      message_assembly_policy: "null"
+      assistant_text_policy: "passthrough"
   judge: null                               # run-level rubric judge (models.judge);
                                             # null when unconfigured, else a full
                                             # role block with its own resolved.*
@@ -239,11 +243,14 @@ Computed by the orchestrator at trial-start via
 | `response_policy` | `standard` \| `unwrap_input` \| `array_dict_map` | policy registry |
 | `reasoning_codec` | `none` \| `anthropic` \| `openai` | policy registry |
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
+| `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
+| `assistant_text_policy` | `passthrough` (every shipped preset today; out-of-tree subclasses land via the `--presets-file` overlay) | policy registry |
 
 `params_policy` is intentionally omitted from `resolved.*` — it is a
 stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)
-dataclass, not a single-named policy. Callers needing the full parameter
-block read the `agent.capabilities` block directly.
+dataclass whose constructor kwargs already serialise alongside the
+fingerprint via `agent.capabilities`, not a single-named policy.
+Callers needing the full parameter block read that block directly.
 
 The `judge` role (the run-level read-only rubric judge, `models.judge`) is
 recorded symmetrically with `agent` / `user` — its own role block plus a

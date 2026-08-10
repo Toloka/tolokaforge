@@ -12,8 +12,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 
+from tolokaforge.core.llm.assistant_text_policy import (
+    AssistantTextPolicy,
+    PassthroughAssistantText,
+)
 from tolokaforge.core.llm.cache_policy import CachePolicy, NoCache
 from tolokaforge.core.llm.content_policy import OpenAIContent, ToolContentPolicy
+from tolokaforge.core.llm.message_assembly_policy import (
+    MessageAssemblyPolicy,
+    NullMessageAssembly,
+)
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.prompt_policy import NoPromptEnrichment, SystemPromptPolicy
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec, ReasoningCodec
@@ -54,6 +62,23 @@ class ModelCapabilities:
 
     cache_policy: CachePolicy = field(default_factory=NoCache)
     """Attaches cache-control markers to cacheable request prefixes."""
+
+    message_assembly_policy: MessageAssemblyPolicy = field(default_factory=NullMessageAssembly)
+    """Empty-assistant-content substitution on tool-call turns.
+
+    ``NullMessageAssembly`` leaves empty content empty (every preset except
+    Nova). ``NovaMessageAssembly`` substitutes a filler string for
+    Bedrock/Nova, which rejects empty ``content`` alongside ``tool_calls``.
+    """
+
+    assistant_text_policy: AssistantTextPolicy = field(default_factory=PassthroughAssistantText)
+    """Reshapes assistant text on ``message.content`` before it lands in
+    :class:`GenerationResult.text`.
+
+    ``PassthroughAssistantText`` returns the text unchanged (every shipped
+    preset). A subclass strips provider-specific markers (e.g. Cohere's
+    ``<|START_TEXT|>…<|END_TEXT|>`` delimiters) without engine edits.
+    """
 
     api_call_timeout_s: float | None = None
     """Per-call upstream API timeout, in seconds.

@@ -10,6 +10,7 @@ resolution order.
 from __future__ import annotations
 
 import copy
+import difflib
 import fnmatch
 import inspect
 import logging
@@ -19,6 +20,10 @@ from typing import Any
 
 import yaml
 
+from tolokaforge.core.llm.assistant_text_policy import (
+    AssistantTextPolicy,
+    PassthroughAssistantText,
+)
 from tolokaforge.core.llm.cache_policy import (
     AnthropicEphemeralCache,
     CachePolicy,
@@ -31,7 +36,12 @@ from tolokaforge.core.llm.content_policy import (
     OpenAIContent,
     ToolContentPolicy,
 )
-from tolokaforge.core.llm.params_policy import GenerationParams
+from tolokaforge.core.llm.message_assembly_policy import (
+    MessageAssemblyPolicy,
+    NovaMessageAssembly,
+    NullMessageAssembly,
+)
+from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
@@ -123,6 +133,19 @@ _CACHE_POLICIES: dict[str, type[CachePolicy]] = {
     "anthropic_ephemeral": AnthropicEphemeralCache,
 }
 
+_PARAMS_POLICIES: dict[str, type[ParamsPolicy]] = {
+    "generation_params": GenerationParams,
+}
+
+_MESSAGE_ASSEMBLY_POLICIES: dict[str, type[MessageAssemblyPolicy]] = {
+    "null": NullMessageAssembly,
+    "nova": NovaMessageAssembly,
+}
+
+_ASSISTANT_TEXT_POLICIES: dict[str, type[AssistantTextPolicy]] = {
+    "passthrough": PassthroughAssistantText,
+}
+
 
 #: Mapping from preset *slot name* to the in-engine registry of allowed
 #: classes. Single source of truth used both by :func:`_validate_overlay`
@@ -137,6 +160,9 @@ _POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
     "response_policy": _RESPONSE_POLICIES,
     "reasoning_codec": _REASONING_CODECS,
     "cache_policy": _CACHE_POLICIES,
+    "params_policy": _PARAMS_POLICIES,
+    "message_assembly_policy": _MESSAGE_ASSEMBLY_POLICIES,
+    "assistant_text_policy": _ASSISTANT_TEXT_POLICIES,
 }
 
 
@@ -161,12 +187,107 @@ _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers
 #: Top-level keys allowed in an overlay (and the bundled file).
 _OVERLAY_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"default", "presets", "providers"})
 
-#: Valid ``params:`` block keys — introspected from ``GenerationParams.__init__``
-#: so adding a new kwarg to ``GenerationParams`` automatically extends overlay
-#: validation. Keep ``GenerationParams`` the authoritative source.
-_VALID_PARAMS_KEYS: frozenset[str] = frozenset(
-    p for p in inspect.signature(GenerationParams.__init__).parameters if p != "self"
-)
+
+def _extract_known_keys(cls: type[Any]) -> frozenset[str]:
+    """Return the construction kwargs a policy class accepts.
+
+    Prefers a class-body ``KNOWN_KEYS`` declaration (the authoritative source
+    of truth for :class:`ParamsPolicy` subclasses per
+    :mod:`tolokaforge.core.llm.params_policy`); falls back to
+    :func:`inspect.signature` on ``cls.__init__`` for policy classes that do
+    not declare it. Inherited ``KNOWN_KEYS`` are ignored — only class-body
+    declarations count, so a subclass that widens the accepted set must say
+    so explicitly.
+
+    Variadic ``*args`` / ``**kwargs`` parameters are excluded from the result:
+    a policy class without an explicit ``__init__`` inherits
+    ``object.__init__``, whose signature is ``(self, /, *args, **kwargs)``.
+    Including those literal parameter names would let ``params: {kwargs: [1]}``
+    pass overlay validation and fail later at ``cls(**kwargs)``.
+    """
+    declared = cls.__dict__.get("KNOWN_KEYS")
+    if declared is not None:
+        return frozenset(declared)
+    try:
+        sig = inspect.signature(cls.__init__)
+    except (ValueError, TypeError):
+        return frozenset()
+    return frozenset(
+        name
+        for name, param in sig.parameters.items()
+        if name != "self"
+        and param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    )
+
+
+def _models_declared_extra_params_keys() -> frozenset[str]:
+    """Extra ``params:`` keys declared by an installed models wheel.
+
+    Empty today; the union with :func:`_params_slot_known_keys` keeps overlay
+    validation strict on typos while staying silent on legitimate models-wheel
+    version skew.
+    """
+    # TODO(#645): populate from tolokaforge.core.model_data.
+    return frozenset()
+
+
+def _params_slot_known_keys() -> frozenset[str]:
+    """Union of every registered :class:`ParamsPolicy` subclass's ``KNOWN_KEYS``.
+
+    The overlay validator consults this to decide which preset ``params:``
+    keys are legal at the top-level shorthand (a bare ``params: {...}``
+    block, which today's presets all use). Adding a knob is a one-line
+    declarative change on the subclass — no engine-wide introspection point
+    to maintain. The union widens with ``_models_declared_extra_params_keys``
+    to keep overlays silent on legitimate models-wheel skew.
+    """
+    keys: set[str] = set()
+    for cls in _PARAMS_POLICIES.values():
+        keys.update(_extract_known_keys(cls))
+    keys.update(_models_declared_extra_params_keys())
+    return frozenset(keys)
+
+
+def _normalize_slot_value(
+    value: Any,
+    *,
+    slot: str,
+    where: str,
+) -> tuple[str, dict[str, Any]]:
+    """Coerce a preset slot value into ``(name, params)`` for uniform dispatch.
+
+    Detection:
+
+    * ``type(value) is str`` — legacy bare-name shape; ``params`` empty.
+    * ``type(value) is dict`` with a ``name`` key — new shape; ``params`` is
+      the nested mapping (defaulting to ``{}``).
+    * ``dict`` without ``name`` — raises :class:`ValueError` naming the
+      preset, block, and slot; silent no-op would produce hard-to-debug
+      drift between the fingerprint and the actual dispatch.
+    * Anything else — raises :class:`ValueError` with the observed type.
+    """
+    if type(value) is str:
+        return value, {}
+    if type(value) is dict:
+        if "name" not in value:
+            raise ValueError(
+                f"Preset {where} slot {slot!r}: dict shape is missing the "
+                f"required 'name' key; got keys={sorted(value.keys())}. "
+                f"Expected either a bare name string or "
+                f"{{name: str, params: dict}}."
+            )
+        raw_params = value.get("params") or {}
+        if not isinstance(raw_params, dict):
+            raise ValueError(
+                f"Preset {where} slot {slot!r}.params: expected a mapping, "
+                f"got {type(raw_params).__name__}."
+            )
+        return value["name"], dict(raw_params)
+    raise ValueError(
+        f"Preset {where} slot {slot!r}: expected a bare name string or "
+        f"{{name, params}} mapping, got {type(value).__name__}."
+    )
+
 
 #: Module-level overlay path. ``None`` → bundled-only (today's behaviour).
 #: Mutated only via :func:`set_overlay_path` so cache invalidation has one
@@ -307,10 +428,25 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                 f"Preset overlay {path!r} at {where}: expected a mapping, "
                 f"got {type(block).__name__}."
             )
+        # Mutex: legacy top-level ``params:`` shorthand and the new
+        # slot-nested ``params_policy:`` shape must not coexist. Silently
+        # merging or dropping either source would produce hard-to-debug
+        # drift between the resolved fingerprint and the actual constructor
+        # kwargs handed to ``ParamsPolicy.__init__``.
+        if "params_policy" in block and "params" in block:
+            raise ValueError(
+                f"Preset overlay {path!r} at {where}: conflicting "
+                f"'params' and 'params_policy' keys. The top-level 'params' "
+                f"shorthand and the slot-nested 'params_policy' shape are "
+                f"mutually exclusive — pick one so the constructor kwargs "
+                f"resolved for GenerationParams (or its subclass) are "
+                f"unambiguous."
+            )
         for slot, registry in _POLICY_REGISTRIES.items():
             if slot not in block:
                 continue
-            name = block[slot]
+            slot_where = f"{where}.{slot}"
+            name, nested_params = _normalize_slot_value(block[slot], slot=slot, where=slot_where)
             if name not in registry:
                 raise ValueError(
                     f"Preset overlay {path!r} at {where}: unknown "
@@ -318,6 +454,11 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                     f"New policy classes require an engine release; "
                     f"overlays can only reference existing ones."
                 )
+            if nested_params:
+                allowed = _extract_known_keys(registry[name])
+                if slot == "params_policy":
+                    allowed = allowed | _models_declared_extra_params_keys()
+                _reject_unknown_params(nested_params, allowed, f"{slot_where}.params")
         params = block.get("params")
         if params:
             if not isinstance(params, dict):
@@ -325,13 +466,29 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
                     f"Preset overlay {path!r} at {where}.params: "
                     f"expected a mapping, got {type(params).__name__}."
                 )
-            unknown_params = set(params) - _VALID_PARAMS_KEYS
-            if unknown_params:
-                raise ValueError(
-                    f"Preset overlay {path!r} at {where}.params: "
-                    f"unknown keys {sorted(unknown_params)}. "
-                    f"Allowed: {sorted(_VALID_PARAMS_KEYS)}."
-                )
+            _reject_unknown_params(params, _params_slot_known_keys(), f"{where}.params")
+
+    def _reject_unknown_params(
+        params: dict[str, Any],
+        allowed: frozenset[str],
+        where: str,
+    ) -> None:
+        """Fail loud on unknown ``params:`` keys with closest-match hints."""
+        unknown = set(params) - allowed
+        if not unknown:
+            return
+        hints: list[str] = []
+        for key in sorted(unknown):
+            close = difflib.get_close_matches(key, allowed, n=3, cutoff=0.6)
+            if close:
+                hints.append(f"{key!r} (did you mean: {close})")
+            else:
+                hints.append(repr(key))
+        raise ValueError(
+            f"Preset overlay {path!r} at {where}: unknown keys "
+            f"{sorted(unknown)} — {'; '.join(hints)}. "
+            f"Allowed: {sorted(allowed)}."
+        )
 
     if "default" in data:
         _check_block(data["default"] or {}, "default")
@@ -582,13 +739,23 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         elif not overrides["supports_tool_images"] and current != "openai":
             cfg["content_policy"] = "openai"
 
-    # Reasoning-codec-level overrides land at the top of *cfg* so
-    # ``build_capabilities`` can hand them to the codec constructor
-    # (``_REASONING_CODECS[name](**codec_kwargs)``). Currently only the
-    # Gemini codec consumes a kwarg here; future codecs can extend the
-    # pattern without touching the dispatch table.
+    # Reasoning-codec constructor kwargs flow through the ordinary
+    # ``{name, params}`` slot shape; this reroutes the legacy top-level
+    # ``gemini_drop_placeholder_signature`` capability override into the
+    # slot's ``params`` block so dispatch stays uniform in
+    # ``build_capabilities`` — no model-name conditional required.
     if "gemini_drop_placeholder_signature" in overrides:
-        cfg["gemini_drop_placeholder_signature"] = overrides["gemini_drop_placeholder_signature"]
+        existing = cfg.get("reasoning_codec", "none")
+        name, params = _normalize_slot_value(
+            existing, slot="reasoning_codec", where="<capabilities-override>"
+        )
+        cfg["reasoning_codec"] = {
+            "name": name,
+            "params": {
+                **params,
+                "drop_placeholder_signature": bool(overrides["gemini_drop_placeholder_signature"]),
+            },
+        }
 
     # Params-level overrides — every key below lands on ``GenerationParams``
     # (see tolokaforge/core/llm/params_policy.py).
@@ -607,6 +774,47 @@ def _apply_config_overrides(cfg: dict[str, Any], overrides: dict[str, Any]) -> N
         params["reasoning_budget_default"] = overrides["reasoning_budget_default"]
 
 
+#: Per-slot default policy name used when a preset block omits the slot.
+_SLOT_DEFAULTS: dict[str, str] = {
+    "schema_sanitizer": "passthrough",
+    "prompt_policy": "none",
+    "content_policy": "openai",
+    "response_policy": "standard",
+    "reasoning_codec": "none",
+    "cache_policy": "none",
+    "params_policy": "generation_params",
+    "message_assembly_policy": "null",
+    "assistant_text_policy": "passthrough",
+}
+
+
+def _instantiate_slot(
+    cfg: dict[str, Any],
+    slot: str,
+    where: str,
+    *,
+    extra_params: dict[str, Any] | None = None,
+) -> Any:
+    """Resolve ``cfg[slot]`` to a policy instance via the uniform ``{name, params}`` shape.
+
+    ``extra_params`` merges into the resolved constructor kwargs (rightmost
+    wins) so callers can layer additional kwargs on top of the preset —
+    used by ``params_policy`` to route the legacy top-level ``params:``
+    shorthand through the same dispatch as ``{name, params}``. The MUTEX
+    at overlay-load time guarantees the two sources never overlap.
+    """
+    value = cfg.get(slot, _SLOT_DEFAULTS[slot])
+    name, params = _normalize_slot_value(value, slot=slot, where=where)
+    registry = _POLICY_REGISTRIES[slot]
+    if name not in registry:
+        raise ValueError(
+            f"Preset for {where} slot {slot!r}: unknown policy {name!r}. "
+            f"Available: {sorted(registry.keys())}."
+        )
+    kwargs = {**params, **(extra_params or {})}
+    return registry[name](**kwargs)
+
+
 def build_capabilities(
     model_name: str,
     provider: str = "",
@@ -621,20 +829,40 @@ def build_capabilities(
     if overrides:
         _apply_config_overrides(cfg, overrides)
 
-    schema = _SCHEMA_SANITIZERS.get(cfg.get("schema_sanitizer", "passthrough"), PassthroughSchema)()
-    prompt = _PROMPT_POLICIES.get(cfg.get("prompt_policy", "none"), NoPromptEnrichment)()
-    content = _CONTENT_POLICIES.get(cfg.get("content_policy", "openai"), OpenAIContent)()
-    response = _RESPONSE_POLICIES.get(cfg.get("response_policy", "standard"), StandardResponse)()
-    reasoning_name = cfg.get("reasoning_codec", "none")
-    reasoning_cls = _REASONING_CODECS.get(reasoning_name, NoReasoningCodec)
-    reasoning_kwargs: dict[str, Any] = {}
-    if reasoning_name == "gemini" and "gemini_drop_placeholder_signature" in cfg:
-        reasoning_kwargs["drop_placeholder_signature"] = bool(
-            cfg["gemini_drop_placeholder_signature"]
+    where = f"model={model_name!r} provider={provider!r}"
+
+    # MUTEX re-check on the effective merged config. ``_check_block`` fires
+    # only when both keys appear in the same overlay-file block; a bundled
+    # ``params: {...}`` and an overlay ``params_policy: {name, params}`` can
+    # still land side-by-side after per-key merge. Route ambiguity surfaces
+    # loud here rather than silently favouring one source.
+    if "params_policy" in cfg and cfg.get("params"):
+        raise ValueError(
+            f"Effective preset for {where} carries both 'params' and "
+            f"'params_policy'. The top-level 'params' shorthand and the "
+            f"slot-nested 'params_policy' shape are mutually exclusive — one "
+            f"landed via the bundled preset and the other via an overlay. "
+            f"Remove one so the constructor kwargs resolved for "
+            f"GenerationParams (or its subclass) are unambiguous."
         )
-    reasoning = reasoning_cls(**reasoning_kwargs)
-    cache = _CACHE_POLICIES.get(cfg.get("cache_policy", "none"), NoCache)()
-    params = GenerationParams(**cfg.get("params", {}))
+
+    # ``params_policy`` accepts a slot-nested ``{name, params}`` OR a
+    # top-level ``params:`` shorthand (every shipped preset uses the
+    # shorthand). MUTEX-enforced at overlay-load; here we route the
+    # shorthand into ``extra_params`` so both paths land through the same
+    # registry dispatch.
+    legacy_params = cfg.get("params") or {}
+    params_extra: dict[str, Any] | None = dict(legacy_params) if legacy_params else None
+
+    schema = _instantiate_slot(cfg, "schema_sanitizer", where)
+    prompt = _instantiate_slot(cfg, "prompt_policy", where)
+    content = _instantiate_slot(cfg, "content_policy", where)
+    response = _instantiate_slot(cfg, "response_policy", where)
+    reasoning = _instantiate_slot(cfg, "reasoning_codec", where)
+    cache = _instantiate_slot(cfg, "cache_policy", where)
+    params = _instantiate_slot(cfg, "params_policy", where, extra_params=params_extra)
+    message_assembly = _instantiate_slot(cfg, "message_assembly_policy", where)
+    assistant_text = _instantiate_slot(cfg, "assistant_text_policy", where)
 
     api_call_timeout_s = cfg.get("api_call_timeout_s")
     api_call_retries = cfg.get("api_call_retries")
@@ -648,6 +876,8 @@ def build_capabilities(
         response_policy=response,
         reasoning_codec=reasoning,
         cache_policy=cache,
+        message_assembly_policy=message_assembly,
+        assistant_text_policy=assistant_text,
         api_call_timeout_s=float(api_call_timeout_s) if api_call_timeout_s is not None else None,
         api_call_retries=int(api_call_retries) if api_call_retries is not None else None,
         api_call_wall_timeout_s=(
@@ -699,12 +929,14 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
     consumption::
 
         {
-            "schema_sanitizer": "strict" | "passthrough",
-            "prompt_policy":   "dict_map_hints" | "none",
-            "content_policy":  "anthropic" | "openai" | "nova",
-            "response_policy": "standard" | "array_dict_map" | "unwrap_input",
-            "reasoning_codec": "anthropic" | "openai" | "none",
-            "cache_policy":    "anthropic_ephemeral" | "none",
+            "schema_sanitizer":        "strict" | "passthrough",
+            "prompt_policy":           "dict_map_hints" | "none",
+            "content_policy":          "anthropic" | "openai" | "nova",
+            "response_policy":         "standard" | "array_dict_map" | "unwrap_input",
+            "reasoning_codec":         "anthropic" | "openai" | "none",
+            "cache_policy":            "anthropic_ephemeral" | "none",
+            "message_assembly_policy": "null" | "nova",
+            "assistant_text_policy":   "passthrough",
         }
 
     ``params_policy`` is omitted — it is a stateful dataclass, not a single
@@ -735,6 +967,16 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
             capabilities.reasoning_codec, _REASONING_CODECS, "reasoning_codec"
         ),
         "cache_policy": _reverse_lookup(capabilities.cache_policy, _CACHE_POLICIES, "cache_policy"),
+        "message_assembly_policy": _reverse_lookup(
+            capabilities.message_assembly_policy,
+            _MESSAGE_ASSEMBLY_POLICIES,
+            "message_assembly_policy",
+        ),
+        "assistant_text_policy": _reverse_lookup(
+            capabilities.assistant_text_policy,
+            _ASSISTANT_TEXT_POLICIES,
+            "assistant_text_policy",
+        ),
     }
 
 
