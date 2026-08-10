@@ -218,27 +218,6 @@ class TestMinimalCustomChecks:
         # Aggregate score should be high
         assert result.aggregate_score >= 0.9
 
-    def test_result_to_score(
-        self, checks_file: Path, task_dir: Path, default_config: CustomChecksConfig
-    ):
-        """Test converting results to score and reason."""
-        runner = CheckRunner()
-
-        ctx = create_context(
-            initial_state={"counter": 0, "operations": []},
-            final_state={"counter": 5, "operations": ["op1"]},
-            tool_calls=[{"name": "update_counter"}],
-        )
-
-        result = runner.run(checks_file, task_dir, ctx, default_config)
-        score, reason = runner.result_to_score(result, default_config)
-
-        # Should have a reasonable score
-        assert 0.0 <= score <= 1.0
-
-        # Reason should contain check names
-        assert "counter_was_incremented" in reason or "✓" in reason
-
     def test_timeout_enforcement(
         self, task_dir: Path, default_config: CustomChecksConfig, tmp_path: Path
     ):

@@ -116,6 +116,14 @@ evaluator's decision, the audit or the combine. A key the manifest enforces at t
 integration tier for its **score** is still driven here for its **recording site**;
 the two are orthogonal.
 
+The same suite drives one real trial per **component** and asserts the grade names
+it. Every component the registry carries — `state_checks`, `transcript_rules`,
+`trace_checks`, `llm_judge`, `custom_checks` — contributes its own segment to
+`Grade.reasons` under the marker it emits, so a trial that scored a component and
+said nothing about it is a red test rather than a grade a reader has to notice is
+incomplete. The fold enumerates the registry; this is what holds the renderer,
+which enumerates by hand, to the same list.
+
 Three properties keep the ledger from rejecting configs that grade correctly:
 
 - **It covers `kind: SCORED_CHECK` only.** `CONFIG_INPUT` keys (`id_fields`,
@@ -3340,6 +3348,31 @@ for anything the agent did. The fold then decides and says so, naming
 `custom_checks` among the components that produced no verdict. A suite that could
 not *run* is a different answer and keeps its `0.0` under `fail_on_error: true` —
 checks meant to decide the trial and unable to are a failure, not an absence.
+
+**What the grade says about the suite.** `Grade.reasons` carries one `Custom checks:`
+segment for this component, rendered by the same function on both substrates so the
+account does not depend on which one graded the trial — the claim the `GOLDEN REPLAY
+ERRORS:` sentence makes for the hash verdict. A suite that reached verdicts reports
+its score, how many checks reached one, and every check that reached one and lost, by
+name and message — the way `Transcript:` and `Trace check <id>:` name theirs; a skipped
+check reached no verdict, so it is counted and not named. A suite that reached none
+says so rather than quoting an aggregate over nothing, and a suite that failed to run
+names the error it failed with, which is the only thing separating it from a suite
+whose every check failed.
+
+The wording is load-bearing past readability. `failure_attribution` splits `reasons`
+on `|` and keeps every segment matching `FAIL` case-insensitively as a failed trial's
+evidence, so which of the four shapes counts is decided by the sentence rather than
+by the component score beside it. The two the fold reads as a failed component — a
+suite with a losing check, and one that failed to run — carry the substring in words
+the renderer writes: the failing sentence in `N of M checks failed`, and the
+could-not-run sentence in `the suite failed to run`, which does **not** inherit it
+from the error it quotes. That matters because the error texts disagree with each
+other: the executor's `Failed to load/run checks: …` carries `fail` and
+`checks file not found: checks.py` does not, so a sentence borrowing the substring
+from them would answer one state two ways. The other two shapes carry none: a suite
+that reached no verdict is unscored rather than failed, and a passing suite names no
+check — so a check called `no_failures_logged` cannot manufacture the evidence.
 
 ```yaml
 custom_checks:

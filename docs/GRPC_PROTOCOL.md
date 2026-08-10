@@ -881,6 +881,34 @@ written only inside a `trace_checks.alternatives` path is covered by the
 for the block rather than leaf by leaf there (#772). See
 [`GRADING.md`](GRADING.md#the-runtime-ledger) for the manifest behind it.
 
+**The component segments.** `Grade.reasons` is a `" | "`-joined list, and every
+component that took a verdict names itself in it:
+
+| Component | Segment |
+|---|---|
+| `state_checks` — hash | `State: hash match`, or `State: <diff summary>` / `State: hash mismatch` |
+| `state_checks` — jsonpath | `JSONPath: …` |
+| `state_checks` — db probes | `DB probes: …` |
+| `transcript_rules` | `Transcript: all N rules passed`, or the failing rules by message |
+| `trace_checks` | `Trace checks: score=…`, then `FAILED trace gates: …` and one `Trace check <id>: …` per failing constraint |
+| `llm_judge` | `Judge: score=… (…)` |
+| `custom_checks` | `Custom checks: …` — the suite's score, its counts and every check that did not pass by name and message; `no check reached a verdict — …` where every check skipped or the file declared none; or `the suite failed to run — <error>` |
+
+A component the trial did not score contributes nothing, with one deliberate
+exception: the `custom_checks` segment is emitted whenever the evaluator had
+something to say rather than on the component's score, because a suite that failed to
+run under `fail_on_error: false` is left unscored and its error is the only account of
+why the trial earned nothing. The segment is the same text on both substrates.
+
+A trial that scored **no** component therefore contributes no component segment —
+apart from that one exception — and carries no placeholder in their place: the fold
+decided that grade without reading a score, so the fold's own sentence — `no component was configured and no weight names
+one, so nothing was scored and nothing was owed` for a task declaring no grading, or
+the sentence naming what was asked for and not counted — is the whole account, beside
+any skip note the ledger filed. The segments are joined once rather than appended to
+each other, so a grade whose components said nothing opens with its first real
+sentence rather than with a separator.
+
 **The recorded skips.** A trial can legitimately reach `GradeTrial` with a
 populated key whose evaluator cannot run. Each such site records a skip rather
 than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:

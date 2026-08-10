@@ -1,6 +1,10 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Fifteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
+Eighteen locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+what each grading key is, which substrate scores it, and whether the two agree.
+Locks 16-18 are over what a grade *does* and *says*, which the manifest does not
+describe — the proposition a hash source compares against, and what
+``Grade.reasons`` carries for a component that took a verdict:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves; a position below a claimed
@@ -54,17 +58,38 @@ Fifteen locks over :mod:`tolokaforge.core.grading.key_manifest`:
     evaluator run, and the outcome the ledger reports is the one the manifest
     implies. Editing a declaration cannot satisfy it — deleting a recording site,
     downgrading it to a skip, filing ``EVALUATED`` over an evaluation that never
-    ran, or driving a config that never populated the key each fail it.
+    ran, or driving a config that never populated the key each fail it;
+16. both substrates score ``state_checks.hash.expect_initial_state`` alike — the
+    proposition "the trial left the state as it found it", with each substrate
+    computing both sides of the comparison in its own hash algebra, because the two
+    label the same equivalence classes under different digests and no stored digest
+    is readable in both (#915);
+17. the ``custom_checks`` segment of ``Grade.reasons`` names the check that decided
+    the trial, and is one text on both substrates — extracted from each substrate's
+    ``reasons`` by splitting on the segment separator rather than compared whole,
+    because the two legitimately differ elsewhere in that string (#994);
+18. every component :data:`GRADE_COMPONENTS` registers narrates itself in a real
+    grade: a trial driven through ``RegisterTrial → GradeTrial`` on a config
+    populating that component carries the marker production emits for it. The fold
+    enumerates the registry and the renderer enumerates by hand, so this is what
+    holds the second list to the first — and the row names the marker rather than
+    asking whether the grade said anything, because a component whose branch went or
+    whose marker was renamed leaves the grade just as full either way.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10, 11 and 15 drive a real trial, and each reads it through one
-fixture loader, so what a ``grading_parity`` pack can express bounds what they can
-prove — for lock 15 that bound covers the keys its driver table sends to a parity
-pack, the hash family, the probes and the judge being driven from tasks written out
-in this module instead.
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17 and 18 drive a real trial, and each reads it
+through one fixture loader, so what a ``grading_parity`` pack can express bounds what
+they can prove — for locks 15 and 18 that bound covers the keys their driver tables
+send to a parity pack, the hash family, the probes and the judge being driven from
+tasks written out in this module instead, and for lock 17 it is one pack declaring one
+check, so the shapes it reaches are all-passed and all-failed. Lock 18's
+``state_checks`` row drives one of that component's three sources; the sub-source
+counterpart is three unit locks — ``test_runner_jsonpath_grading.py`` on the JSONPath
+and db-probe sentences, and ``test_grading_correctness.py`` on the hash verdict — so
+this module's table is not the whole guarantee for that slot.
 That loader's contract — a tool call belongs to the message that requested it, and
 carries that call's own result text — is locked at the end of this module.
 """
@@ -94,10 +119,12 @@ from tests.utils.combine_method_verdicts import (
 from tests.utils.runner_requests import execute_request, register_request, trial_spec_json
 from tolokaforge.adapters.native import NativeAdapter
 from tolokaforge.core import models as core_models
+from tolokaforge.core.grading.checks_helpers import CUSTOM_CHECKS_REASON_PREFIX
 from tolokaforge.core.grading.combine import GradingEngine
 from tolokaforge.core.grading.combine_method import COMBINE_METHODS
 from tolokaforge.core.grading.combine_weights import MissingComponentWeight
 from tolokaforge.core.grading.golden_replay import GoldenReplayRecord, resolve_initial_state
+from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, JudgeUsage
 from tolokaforge.core.grading.key_manifest import (
     GRADING_KEYS,
@@ -861,7 +888,7 @@ def _runner_custom_checks_score(
         trial_id = f"{task_description.task_id}:0"
         servicer._extract_tool_artifacts(trial_id, task_description.tool_artifacts)
         context = TrialContextRuntime(trial_id=trial_id, task_description=task_description)
-        score, _ = servicer._run_async(
+        score, _, _ = servicer._run_async(
             servicer._grade_custom_checks(trial_id, context, case.runner_messages)
         )
         return score
@@ -3642,6 +3669,250 @@ def test_both_substrates_score_a_comparison_against_the_initial_state_alike(
     assert response.success is True, response.error
     assert response.grade.components.state_checks == pytest.approx(expected)
     assert _core_expect_initial_state_verdict(final_db) == pytest.approx(expected)
+
+
+# --------------------------------------------------------------------------
+# 17. The custom_checks segment names the check that decided the trial, and is
+#     one text on both substrates
+# --------------------------------------------------------------------------
+
+_CUSTOM_CHECKS_TASK = "custom_checks"
+
+
+def _custom_checks_segment(reasons: str) -> str:
+    """The one ``Custom checks:`` segment of a ``reasons`` string.
+
+    Extracted rather than compared whole. The two substrates legitimately differ
+    elsewhere in ``reasons`` — a passing trial's account is core's ``All checks
+    passed`` against the runner's per-component sentences (#994) — so a whole-string
+    comparison would fail for a reason this lock is not about, and weakening it until
+    it passed would leave it proving nothing.
+    """
+    segments = [
+        segment
+        for segment in reasons.split(" | ")
+        if segment.startswith(CUSTOM_CHECKS_REASON_PREFIX)
+    ]
+    assert len(segments) == 1, (
+        f"expected exactly one {CUSTOM_CHECKS_REASON_PREFIX!r} segment, "
+        f"found {len(segments)} in {reasons!r}"
+    )
+    return segments[0]
+
+
+def _runner_custom_checks_grade(
+    servicer: RunnerServiceImpl,
+    context: Any,
+    task_description: runner_models.TaskDescription,
+    case: _TrialCase,
+    trial_id: str,
+) -> pb2.Grade:
+    """The runner's own ``GradeTrial`` verdict, over the case's state.
+
+    ``RegisterTrial`` provisions the trial's database from the pack's
+    ``initial_state``, which seeds ``orders[0].status: shipped`` — the very state the
+    pack's one check asks about. Writing the case's own rows over it is what makes the
+    violating case violate; without that write both cases score ``1.0`` and every
+    assertion below would be about the passing branch twice.
+    """
+    _register_pack(servicer, context, task_description, trial_id)
+    _replay_authored_calls(servicer, context, trial_id, case)
+    _write_case_state_into_the_trial_database(servicer, trial_id, case.state["db"])
+    response = _grade_registered_trial(
+        servicer, context, trial_id, json.dumps(case.runner_messages)
+    )
+    assert response.success is True, response.error
+    return response.grade
+
+
+@pytest.fixture
+def custom_checks_grades(
+    request, test_data_dir, tmp_path, runner_service, mock_grpc_context
+) -> dict[str, tuple[core_models.Grade, pb2.Grade]]:
+    """``(core, runner)`` grades for both cases of the custom-checks parity pack.
+
+    Each substrate takes its own path — the core engine's ``grade_trajectory`` and the
+    runner's real ``RegisterTrial → ExecuteTool → GradeTrial`` — so a substrate that
+    never reaches the shared renderer, or re-wraps what it returns, differs here.
+
+    The trial id carries both the case and the requesting test: the two cases must not
+    share one, because a runner arm that registers a trial mutates its database, and
+    the db-service behind the servicer outlives a single test, so a fixture keyed on
+    the case alone re-registers an id that already exists.
+    """
+    pack = test_data_dir / "grading_parity" / _CUSTOM_CHECKS_TASK
+    adapter = _parity_adapter(test_data_dir)
+    core_config = adapter.get_grading_config(_CUSTOM_CHECKS_TASK)
+    task_description = adapter.to_task_description(_CUSTOM_CHECKS_TASK)
+    initial_state = adapter.get_task(_CUSTOM_CHECKS_TASK).initial_state
+    # The core engine imports the pack's ``checks.py`` from its task dir, which writes
+    # ``__pycache__`` beside the fixture; grade from a copy so a run leaves the repo clean.
+    core_task_dir = tmp_path / "core_task_dir"
+    shutil.copytree(pack, core_task_dir)
+
+    caller = re.sub(r"[^0-9a-zA-Z_]", "_", request.node.name)
+    grades: dict[str, tuple[core_models.Grade, pb2.Grade]] = {}
+    for case_name in ("satisfying", "violating"):
+        case = _load_case(pack, case_name)
+        core_grade = GradingEngine(
+            core_config, task_dir=core_task_dir, task_initial_state=initial_state
+        ).grade_trajectory(case.core_trajectory, case.state)
+        runner_grade = _runner_custom_checks_grade(
+            runner_service,
+            mock_grpc_context,
+            task_description,
+            case,
+            f"{caller}_{case_name}:0",
+        )
+        grades[case_name] = (core_grade, runner_grade)
+    return grades
+
+
+@pytest.mark.parametrize("case_name", ("satisfying", "violating"))
+def test_the_custom_checks_segment_is_one_text_on_both_substrates(
+    case_name, custom_checks_grades
+) -> None:
+    """One renderer, two call sites, and neither re-wraps what it returns.
+
+    The claim is about the call sites rather than about the shared function: a
+    substrate prefixing its own wrapper around the sentence, or building its own text
+    beside it, produces a different segment here while both still call the renderer.
+    """
+    core_grade, runner_grade = custom_checks_grades[case_name]
+
+    assert _custom_checks_segment(core_grade.reasons) == _custom_checks_segment(
+        runner_grade.reasons
+    )
+
+
+def test_the_compared_custom_checks_segments_are_this_packs_two_verdicts(
+    custom_checks_grades,
+) -> None:
+    """Without this the equality above would hold for two identical passing sentences.
+
+    The pack declares one ``@check`` reading ``ctx.final_state``, so the two cases are
+    the only shapes it can express — all-passed and all-failed. That a *mixed* suite
+    cannot diverge follows from there being one renderer, which is an argument rather
+    than a measurement, and this pack cannot make it one.
+
+    Both segments are pinned to their exact text rather than to each other: the
+    check's name and its message are what the issue was about, and an inequality
+    between the two would hold for a pair differing by a score alone — and, once both
+    are pinned, could not fail on its own at all.
+    """
+    satisfying_core, satisfying_runner = custom_checks_grades["satisfying"]
+    violating_core, violating_runner = custom_checks_grades["violating"]
+
+    satisfying = _custom_checks_segment(satisfying_core.reasons)
+    violating = _custom_checks_segment(violating_core.reasons)
+
+    assert violating == (
+        "Custom checks: score=0.00, 1 of 1 checks failed — "
+        "order_was_shipped: order O1 is not shipped"
+    )
+    assert satisfying == "Custom checks: score=1.00, all 1 checks passed"
+
+    # The verdicts the segments describe, so neither is a sentence about a component
+    # that scored the other way round.
+    assert (satisfying_core.components.custom_checks, violating_core.components.custom_checks) == (
+        1.0,
+        0.0,
+    )
+    assert satisfying_runner.components.custom_checks == pytest.approx(1.0)
+    assert violating_runner.components.custom_checks == pytest.approx(0.0)
+
+    # The pack declares one component, so the segment is the runner's whole account of
+    # the trial — asserted as the equality it is, which also pins that a grade carries
+    # no separator at either end.
+    assert violating_runner.reasons == violating
+
+
+# --------------------------------------------------------------------------
+# 18. Every registered component narrates itself in a real grade
+# --------------------------------------------------------------------------
+
+_COMPONENT_NARRATION: Mapping[str, tuple[str, str]] = MappingProxyType(
+    {
+        "state_checks": ("state_checks.jsonpaths", "JSONPath:"),
+        "transcript_rules": ("transcript_rules.must_contain", "Transcript:"),
+        "trace_checks": ("trace_checks.constraints", "Trace checks:"),
+        "llm_judge": ("llm_judge", "Judge:"),
+        "custom_checks": ("custom_checks", "Custom checks:"),
+    }
+)
+"""Per registry component: an author key that populates it, and the marker it emits.
+
+The key half is an **author** key rather than the bare registry name, because
+:func:`_drive_the_key` keys on author keys and :func:`_drive_parity_pack` resolves a
+pack as ``grading_parity/<author key, dots to underscores>``; no pack exists under
+``state_checks`` or ``transcript_rules``.
+
+The marker half is the whole of what a row asserts about the text. Every pack these
+rows drive declares one component, so deleting that component's branch from
+``build_grade_reasons`` leaves the grade carrying the fold's own sentence and nothing
+else — measured on all five rows — and a marker that was merely *renamed* leaves the
+grade just as full. Neither is visible to a check that only asks whether the grade
+said anything, which is why a row names the marker production emits.
+
+Both halves are written out rather than derived. Comprehended from
+:data:`GRADE_COMPONENTS` the totality assertion below would compare a set against
+itself, and read from the production constants the marker would follow a rename
+instead of catching one — the same reason ``accountable_author_keys()`` and lock 15's
+driver table are written out.
+"""
+
+
+def test_every_registered_component_has_a_narration_row():
+    """A component absent from the table would drop out of the sweep, not fail it."""
+    unnarrated = sorted({spec.name for spec in GRADE_COMPONENTS} - set(_COMPONENT_NARRATION))
+    stale = sorted(set(_COMPONENT_NARRATION) - {spec.name for spec in GRADE_COMPONENTS})
+
+    assert not unnarrated and not stale, (
+        f"the component narration table names no row for {unnarrated or 'nothing'} and "
+        f"names {stale or 'nothing'} that is not a registered grade component. A "
+        "component without a row is one whose verdict may reach no grade at all"
+    )
+
+
+@pytest.mark.parametrize(
+    ("author_key", "marker"),
+    tuple(
+        pytest.param(author_key, marker, id=component)
+        for component, (author_key, marker) in _COMPONENT_NARRATION.items()
+    ),
+)
+def test_every_registered_component_narrates_itself_in_a_real_grade(
+    author_key, marker, test_data_dir, runner_service, mock_grpc_context, monkeypatch
+):
+    """The fold enumerates the registry; the renderer enumerated by hand.
+
+    Nothing held the second list to the first, which is how ``custom_checks`` came to
+    score a trial and contribute no sentence to its grade. This is the registry
+    holding the renderer: a component added to :data:`GRADE_COMPONENTS` without a
+    branch that names it fails here rather than shipping a grade that says the
+    component was never evaluated.
+
+    Driven through the same real ``RegisterTrial → GradeTrial`` as lock 15, so what is
+    read is a grade the runner built rather than a call to the renderer with a
+    hand-made component dict — the renderer was always *reachable*; the caller never
+    gave it anything, and a unit lock over ``build_grade_reasons`` would have been
+    green through the whole defect.
+    """
+    _, response = _drive_the_key(
+        author_key,
+        test_data_dir,
+        runner_service,
+        mock_grpc_context,
+        monkeypatch,
+        label="narration",
+    )
+
+    assert response.success is True, response.error
+    reasons = response.grade.reasons
+    assert marker in reasons, (
+        f"{author_key} scored its component and the grade never named it: no "
+        f"{marker!r} in {reasons!r}"
+    )
 
 
 # --------------------------------------------------------------------------
