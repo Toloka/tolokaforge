@@ -3,20 +3,29 @@
 #
 # Merge order: default → matched model preset → provider override → config.capabilities
 #
-# Policy names map to implementations in tolokaforge.core.llm.*:
-#   schema_sanitizer: passthrough | strict
-#   prompt_policy:    none | dict_map_hints
-#   content_policy:   openai | anthropic | nova
-#   response_policy:  standard | unwrap_input | array_dict_map
-#   reasoning_codec:  none | anthropic | openai
-#   cache_policy:     none | anthropic_ephemeral
-#   params:           dict of GenerationParams kwargs
+# Slot values are either a bare policy name (``content_policy: nova``) or a
+# ``{name, params}`` mapping when the class takes construction kwargs
+# (``message_assembly_policy: {name: nova, params: {empty_assistant_filler: ...}}``).
 #
-# ``content_policy`` also gates ``inject_empty_assistant_filler``:
-#   ``nova`` → True (Bedrock rejects empty assistant content on tool
-#   turns); every other policy → False. Injecting the filler elsewhere
-#   creates a few-shot pattern that Gemini echoes back as its own
-#   response (2026-04-30 OTS regression).
+# Policy names map to implementations in tolokaforge.core.llm.*:
+#   schema_sanitizer:        passthrough | strict | gemini | gemini_recursive
+#   prompt_policy:            none | dict_map_hints | dict_map_hints_ref
+#   content_policy:           openai | anthropic | nova
+#   response_policy:          standard | unwrap_input | json_coerce
+#                             | array_dict_map | scalar_array_dict_map
+#                             | minimax_m3_tags
+#   reasoning_codec:          none | anthropic | openai
+#                             | openai_summary_replay | gemini
+#   cache_policy:             none | anthropic_ephemeral
+#   params_policy:            generation_params (default; ``params:`` on the
+#                             preset are the ``GenerationParams`` kwargs)
+#   message_assembly_policy:  null (default) | nova
+#     ``nova`` substitutes ``empty_assistant_filler`` (default
+#     ``"I'll help you with that."``) for empty assistant content on
+#     tool-call turns — Bedrock rejects the empty shape. Every other
+#     preset stays on ``null``: injecting the filler elsewhere creates
+#     a few-shot pattern that Gemini echoes back as its own response
+#     (2026-04-30 OTS regression).
 
 default:
   schema_sanitizer: passthrough
@@ -320,16 +329,17 @@ presets:
       - "nova"
     content_policy: nova
     response_policy: unwrap_input
+    message_assembly_policy: nova
 
   # Amazon Nova via OpenRouter arrives org-prefixed as ``amazon/nova-*``
   # (e.g. ``amazon/nova-2-lite-v1``) with provider ``openrouter``, which
   # matches NEITHER ``aws_nova``'s ``nova*`` name glob NOR its
-  # ``match_provider: [nova]``, so it fell through to ``default``
-  # (``content_policy: openai`` -> ``inject_empty_assistant_filler`` OFF).
-  # Bedrock-behind-OpenRouter then 400s on blank-content assistant tool
-  # turns ("The text field in the ContentBlock ... is blank"), crashing
-  # multi-turn domains (ots_08_travel_internal scored 0%). Turn the filler
-  # ON via ``content_policy: nova`` while KEEPING ``response_policy:
+  # ``match_provider: [nova]``, so it would fall through to ``default``
+  # (``message_assembly_policy: null`` — no filler). Bedrock-behind-OpenRouter
+  # then 400s on blank-content assistant tool turns ("The text field in the
+  # ContentBlock ... is blank"), crashing multi-turn domains
+  # (ots_08_travel_internal scored 0%). Turn the filler ON via
+  # ``message_assembly_policy: nova`` while KEEPING ``response_policy:
   # standard``: the OpenRouter route emits clean native-dict tool args that
   # round-trip under ``standard``; ``unwrap_input`` (used by direct
   # ``aws_nova``) is not a no-op on them. Declared AFTER ``aws_nova`` so the
@@ -339,6 +349,7 @@ presets:
       - "*amazon/nova*"
     content_policy: nova
     response_policy: standard
+    message_assembly_policy: nova
 
   # google/gemini-3.5-flash — model-specific overlay landed via
   # auto-resolve (Slack-requested integration, PR #560). Declared BEFORE the

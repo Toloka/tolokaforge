@@ -20,6 +20,7 @@ for the design rationale and the canonical litellm surface.
 | [`prompt_policy.py`](../tolokaforge/core/llm/prompt_policy.py) | System-prompt enrichment (`DictMapHints`) |
 | [`params_policy.py`](../tolokaforge/core/llm/params_policy.py) | Generation parameter adaptation |
 | [`content_policy.py`](../tolokaforge/core/llm/content_policy.py) | Tool-result content format (OpenAI / Anthropic) |
+| [`message_assembly_policy.py`](../tolokaforge/core/llm/message_assembly_policy.py) | Empty-assistant-content filler injection (Nova-only) |
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
@@ -864,32 +865,54 @@ class ToolContentPolicy(Protocol):
     def format(self) -> str: ...               # "openai" | "anthropic"
     @property
     def supports_images(self) -> bool: ...
-    @property
-    def inject_empty_assistant_filler(self) -> bool: ...
 ```
 
 Three implementations, selected via preset:
 
-* `OpenAIContent` (default) — text-only tool result blocks; `supports_images=False`;
-  `inject_empty_assistant_filler=False`. Used by the `default`, `openai_gpt5`,
-  `xai_grok`, `qwen`, and `gemini` presets.
+* `OpenAIContent` (default) — text-only tool result blocks;
+  `supports_images=False`. Used by the `default`, `openai_gpt5`, `xai_grok`,
+  `qwen`, and `gemini` presets.
 * `AnthropicContent` — Anthropic native content with image block support;
-  `supports_images=True`; `inject_empty_assistant_filler=False`. Used by both
-  Anthropic presets.
+  `supports_images=True`. Used by both Anthropic presets.
 * `NovaContent` — OpenAI-shape wire format (no native image blocks on the
-  Bedrock OpenAI-passthrough path); `inject_empty_assistant_filler=True`.
-  The only preset that opts into the filler. Used by `aws_nova`.
+  Bedrock OpenAI-passthrough path). Used by `aws_nova`.
 
-`inject_empty_assistant_filler` gates a single substitution in
-`LLMClient._convert_messages`: when an assistant turn carries `tool_calls`
-but `content` is empty / whitespace, replace it with the literal string
-`"I'll help you with that."`. Bedrock/Nova rejects empty assistant content
-in that shape, so the filler is necessary there. Every other provider
-accepts empty content alongside `tool_calls`, so the filler stays off —
-injecting it elsewhere creates a few-shot pattern that some models
-(notably Gemini) echo back as their own response content (2026-04-30 OTS
-regression). Routing pinned by
-[`tests/canonical/test_content_policy_filler_routing.py`](../tests/canonical/test_content_policy_filler_routing.py).
+## `message_assembly_policy`
+
+```python
+class MessageAssemblyPolicy(Protocol):
+    @property
+    def inject_empty_assistant_filler(self) -> bool: ...
+    @property
+    def empty_assistant_filler(self) -> str: ...
+```
+
+Decides whether empty / whitespace-only assistant `content` on tool-call
+turns is substituted with a non-empty filler string, and what that string
+is. Wired into `LLMClient._convert_messages`: when
+`inject_empty_assistant_filler` is `True`, the assistant dict's `content`
+becomes `empty_assistant_filler`; otherwise it stays `""`.
+
+Two implementations ship:
+
+* `NullMessageAssembly` (default) — `inject_empty_assistant_filler=False`,
+  `empty_assistant_filler=""`. Every non-Nova preset carries this. The
+  provider APIs accept empty assistant content alongside `tool_calls`.
+* `NovaMessageAssembly(empty_assistant_filler="I'll help you with that.")`
+  — `inject_empty_assistant_filler=True`; the filler string is data on the
+  instance. Used by `aws_nova` and `aws_nova_openrouter`. Bedrock/Nova
+  rejects empty assistant content on tool-call turns ("The text field in
+  the ContentBlock ... is blank").
+
+The filler string is per-instance data rather than an engine constant
+because a universal filler caused the 2026-04-30 Gemini regression: Gemini
+Pro pattern-matched the substituted string in past assistant turns and
+echoed `"I'll help you with that."` back as its own response content
+(~26-38 % of trials on ots_19_airlines). A future provider that needs a
+different filler declares it at the preset overlay layer via
+`message_assembly_policy: {name: nova, params: {empty_assistant_filler: "..."}}`,
+without touching engine code. Routing pinned by
+[`tests/canonical/test_message_assembly_filler_routing.py`](../tests/canonical/test_message_assembly_filler_routing.py).
 
 ## `response_policy`
 
@@ -947,13 +970,14 @@ sees it.
 ```python
 @dataclass(frozen=True)
 class ModelCapabilities:
-    schema_sanitizer: ToolSchemaSanitizer = field(default_factory=PassthroughSchema)
-    prompt_policy:    SystemPromptPolicy  = field(default_factory=NoPromptEnrichment)
-    content_policy:   ToolContentPolicy   = field(default_factory=OpenAIContent)
-    params_policy:    GenerationParams    = field(default_factory=GenerationParams)
-    response_policy:  ResponsePolicy      = field(default_factory=StandardResponse)
-    reasoning_codec:  ReasoningCodec      = field(default_factory=NoReasoningCodec)
-    cache_policy:     CachePolicy         = field(default_factory=NoCache)
+    schema_sanitizer:        ToolSchemaSanitizer   = field(default_factory=PassthroughSchema)
+    prompt_policy:           SystemPromptPolicy    = field(default_factory=NoPromptEnrichment)
+    content_policy:          ToolContentPolicy     = field(default_factory=OpenAIContent)
+    params_policy:           GenerationParams      = field(default_factory=GenerationParams)
+    response_policy:         ResponsePolicy        = field(default_factory=StandardResponse)
+    reasoning_codec:         ReasoningCodec        = field(default_factory=NoReasoningCodec)
+    cache_policy:            CachePolicy           = field(default_factory=NoCache)
+    message_assembly_policy: MessageAssemblyPolicy = field(default_factory=NullMessageAssembly)
 ```
 
 ## `presets`

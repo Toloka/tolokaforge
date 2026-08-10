@@ -239,6 +239,7 @@ Computed by the orchestrator at trial-start via
 | `response_policy` | `standard` \| `unwrap_input` \| `array_dict_map` | policy registry |
 | `reasoning_codec` | `none` \| `anthropic` \| `openai` | policy registry |
 | `cache_policy` | `none` \| `anthropic_ephemeral` | policy registry |
+| `message_assembly_policy` | `null` \| `nova` (only `aws_nova` / `aws_nova_openrouter` carry `nova`; every other preset resolves to `null`) | policy registry |
 
 `params_policy` is intentionally omitted from `resolved.*` — it is a
 stateful [`GenerationParams`](../tolokaforge/core/llm/params_policy.py)

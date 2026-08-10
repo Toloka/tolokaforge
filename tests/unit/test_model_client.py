@@ -425,7 +425,8 @@ class TestConvertMessages:
         """Bedrock compat: blank assistant content with tool_calls gets placeholder
         ONLY on the Nova preset. Every other preset leaves content empty —
         injecting the filler universally is what created the Gemini echo
-        regression (2026-04-30 OTS eval). See `ToolContentPolicy.inject_empty_assistant_filler`."""
+        regression (2026-04-30 OTS eval). See
+        `MessageAssemblyPolicy.inject_empty_assistant_filler`."""
         tc = ToolCall(id="tc1", name="fn", arguments={})
         msgs = [Message(role=MessageRole.ASSISTANT, content="  ", tool_calls=[tc])]
 

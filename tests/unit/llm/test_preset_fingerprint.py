@@ -1,10 +1,9 @@
-"""Stage 7 (P6) — fingerprint helpers on
-:mod:`tolokaforge.core.llm.presets`.
+"""Fingerprint helpers on :mod:`tolokaforge.core.llm.presets`.
 
 Covers:
 
-* :func:`resolve_policy_names` — reverse-lookup returns the six policy
-  registry names for every preset defined in
+* :func:`resolve_policy_names` — reverse-lookup returns the named policy
+  registry entries for every preset defined in
   [`model_presets.yaml`](../../../tolokaforge/core/data/model_presets.yaml).
 * :func:`resolve_effective_preset` — name-glob routing returns the preset
   identifier (or ``"default"`` on fallthrough).
@@ -43,6 +42,7 @@ _PRESET_CASES = [
             "response_policy": "standard",
             "reasoning_codec": "anthropic",
             "cache_policy": "anthropic_ephemeral",
+            "message_assembly_policy": "null",
         },
     ),
     (
@@ -55,6 +55,7 @@ _PRESET_CASES = [
             "response_policy": "standard",
             "reasoning_codec": "anthropic",
             "cache_policy": "anthropic_ephemeral",
+            "message_assembly_policy": "null",
         },
     ),
     (
@@ -67,6 +68,7 @@ _PRESET_CASES = [
             "response_policy": "array_dict_map",
             "reasoning_codec": "openai",
             "cache_policy": "none",
+            "message_assembly_policy": "null",
         },
     ),
     (
@@ -79,6 +81,7 @@ _PRESET_CASES = [
             "response_policy": "array_dict_map",
             "reasoning_codec": "openai",
             "cache_policy": "none",
+            "message_assembly_policy": "null",
         },
     ),
     (
@@ -91,6 +94,7 @@ _PRESET_CASES = [
             "response_policy": "json_coerce",
             "reasoning_codec": "openai",
             "cache_policy": "none",
+            "message_assembly_policy": "null",
         },
     ),
     (
@@ -103,6 +107,7 @@ _PRESET_CASES = [
             "response_policy": "unwrap_input",
             "reasoning_codec": "none",
             "cache_policy": "none",
+            "message_assembly_policy": "nova",
         },
     ),
     (
@@ -115,6 +120,7 @@ _PRESET_CASES = [
             "response_policy": "standard",
             "reasoning_codec": "none",
             "cache_policy": "none",
+            "message_assembly_policy": "null",
         },
     ),
 ]

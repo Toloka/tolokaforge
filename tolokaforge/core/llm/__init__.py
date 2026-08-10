@@ -22,6 +22,11 @@ from tolokaforge.core.llm.content_policy import (
     OpenAIContent,
     ToolContentPolicy,
 )
+from tolokaforge.core.llm.message_assembly_policy import (
+    MessageAssemblyPolicy,
+    NovaMessageAssembly,
+    NullMessageAssembly,
+)
 from tolokaforge.core.llm.params_policy import GenerationParams, ParamPolicy, ParamsPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
@@ -144,6 +149,9 @@ __all__ = [
     "ParamsPolicy",
     "ParamPolicy",
     "GenerationParams",
+    "MessageAssemblyPolicy",
+    "NullMessageAssembly",
+    "NovaMessageAssembly",
     # Capabilities + presets (lazy)
     "ModelCapabilities",
     "build_capabilities",

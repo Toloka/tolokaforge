@@ -1201,16 +1201,16 @@ class LLMClient:
             elif msg.role == MessageRole.ASSISTANT and msg.tool_calls:
                 content = msg.content or ""
                 if not content or content.strip() == "":
-                    # Empty assistant content alongside ``tool_calls`` is
-                    # legal on most provider APIs (OpenAI, Anthropic,
-                    # Gemini-via-OpenRouter), but Bedrock/Nova rejects it.
-                    # ``ToolContentPolicy.inject_empty_assistant_filler``
-                    # gates the substitution per preset — only Nova
-                    # opts in. Injecting it elsewhere creates a few-shot
-                    # pattern that Gemini echoes back as its own content
-                    # (2026-04-30 OTS regression). See content_policy.py.
-                    if self.capabilities.content_policy.inject_empty_assistant_filler:
-                        content = "I'll help you with that."
+                    # Bedrock/Nova rejects empty assistant content alongside
+                    # ``tool_calls`` while every other provider accepts it.
+                    # ``MessageAssemblyPolicy`` decides both whether to
+                    # substitute and which string to substitute; the filler
+                    # is data on the policy instance because a universal
+                    # string poisoned Gemini via few-shot echo-back on
+                    # 2026-04-30. See message_assembly_policy.py.
+                    policy = self.capabilities.message_assembly_policy
+                    if policy.inject_empty_assistant_filler:
+                        content = policy.empty_assistant_filler
                     else:
                         content = ""
                 litellm_msg["content"] = content

@@ -14,6 +14,10 @@ from dataclasses import dataclass, field
 
 from tolokaforge.core.llm.cache_policy import CachePolicy, NoCache
 from tolokaforge.core.llm.content_policy import OpenAIContent, ToolContentPolicy
+from tolokaforge.core.llm.message_assembly_policy import (
+    MessageAssemblyPolicy,
+    NullMessageAssembly,
+)
 from tolokaforge.core.llm.params_policy import GenerationParams
 from tolokaforge.core.llm.prompt_policy import NoPromptEnrichment, SystemPromptPolicy
 from tolokaforge.core.llm.reasoning_codec import NoReasoningCodec, ReasoningCodec
@@ -54,6 +58,14 @@ class ModelCapabilities:
 
     cache_policy: CachePolicy = field(default_factory=NoCache)
     """Attaches cache-control markers to cacheable request prefixes."""
+
+    message_assembly_policy: MessageAssemblyPolicy = field(default_factory=NullMessageAssembly)
+    """Empty-assistant-content substitution on tool-call turns.
+
+    ``NullMessageAssembly`` leaves empty content empty (every preset except
+    Nova). ``NovaMessageAssembly`` substitutes a filler string for
+    Bedrock/Nova, which rejects empty ``content`` alongside ``tool_calls``.
+    """
 
     api_call_timeout_s: float | None = None
     """Per-call upstream API timeout, in seconds.

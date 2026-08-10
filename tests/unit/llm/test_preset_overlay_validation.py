@@ -282,7 +282,7 @@ class TestValidatorRegistrySync:
             f"becomes a silent overlay-validation gap."
         )
 
-    def test_baseline_seven_registries_are_present(self) -> None:
+    def test_baseline_eight_registries_are_present(self) -> None:
         # Belt-and-braces: pin the known-as-of-this-PR set so a *removal* also
         # surfaces, not just an addition. If you consolidate or rename one,
         # update this set.
@@ -294,6 +294,7 @@ class TestValidatorRegistrySync:
             "_REASONING_CODECS",
             "_CACHE_POLICIES",
             "_PARAMS_POLICIES",
+            "_MESSAGE_ASSEMBLY_POLICIES",
         }
         discovered = set(_discover_policy_registries().keys())
         missing = baseline_names - discovered
@@ -312,6 +313,7 @@ class TestValidatorRegistrySync:
             "reasoning_codec",
             "cache_policy",
             "params_policy",
+            "message_assembly_policy",
         }
         assert set(_POLICY_REGISTRIES.keys()) == expected_slots
 

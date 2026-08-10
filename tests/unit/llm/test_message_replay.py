@@ -225,7 +225,7 @@ def test_thinking_blocks_present_alongside_tool_calls() -> None:
 
 
 # ---------------------------------------------------------------------------
-# Empty-content filler is gated by ``ToolContentPolicy.inject_empty_assistant_filler``
+# Empty-content filler is gated by ``MessageAssemblyPolicy.inject_empty_assistant_filler``
 # ---------------------------------------------------------------------------
 
 
@@ -233,8 +233,8 @@ def test_gemini_empty_assistant_content_with_tool_calls_stays_empty() -> None:
     """Regression: harness used to inject ``"I'll help you with that."`` for
     every empty assistant-with-tool_calls turn. Gemini pattern-matches it and
     echoes it back as its own content (~26-38% of trials in the 2026-04-30 OTS
-    eval). The Gemini preset's ``ToolContentPolicy`` now declares
-    ``inject_empty_assistant_filler=False`` so the wire content stays empty.
+    eval). The Gemini preset carries ``NullMessageAssembly`` so the wire
+    content stays empty.
     """
     client = LLMClient(ModelConfig(provider="openrouter", name="google/gemini-3.1-pro-preview"))
     messages = [
@@ -279,8 +279,9 @@ def test_openai_default_empty_assistant_content_with_tool_calls_stays_empty() ->
 
 def test_nova_empty_assistant_content_with_tool_calls_gets_filler() -> None:
     """Nova/Bedrock validation rejects empty assistant content alongside
-    ``tool_calls``. The Nova preset's ``ToolContentPolicy`` declares
-    ``inject_empty_assistant_filler=True`` so the original Bedrock fix
+    ``tool_calls``. The Nova preset carries ``NovaMessageAssembly``
+    (inject_empty_assistant_filler=True, empty_assistant_filler=
+    ``"I'll help you with that."``) so the original Bedrock fix
     (commit 73e01e9e6) is preserved exactly where it's needed."""
     client = LLMClient(ModelConfig(provider="nova", name="nova-pro"))
     messages = [

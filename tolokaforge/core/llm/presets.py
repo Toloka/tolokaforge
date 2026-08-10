@@ -32,6 +32,11 @@ from tolokaforge.core.llm.content_policy import (
     OpenAIContent,
     ToolContentPolicy,
 )
+from tolokaforge.core.llm.message_assembly_policy import (
+    MessageAssemblyPolicy,
+    NovaMessageAssembly,
+    NullMessageAssembly,
+)
 from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
@@ -128,6 +133,11 @@ _PARAMS_POLICIES: dict[str, type[ParamsPolicy]] = {
     "generation_params": GenerationParams,
 }
 
+_MESSAGE_ASSEMBLY_POLICIES: dict[str, type[MessageAssemblyPolicy]] = {
+    "null": NullMessageAssembly,
+    "nova": NovaMessageAssembly,
+}
+
 
 #: Mapping from preset *slot name* to the in-engine registry of allowed
 #: classes. Single source of truth used both by :func:`_validate_overlay`
@@ -143,6 +153,7 @@ _POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
     "reasoning_codec": _REASONING_CODECS,
     "cache_policy": _CACHE_POLICIES,
     "params_policy": _PARAMS_POLICIES,
+    "message_assembly_policy": _MESSAGE_ASSEMBLY_POLICIES,
 }
 
 
@@ -754,6 +765,7 @@ _SLOT_DEFAULTS: dict[str, str] = {
     "reasoning_codec": "none",
     "cache_policy": "none",
     "params_policy": "generation_params",
+    "message_assembly_policy": "null",
 }
 
 
@@ -815,6 +827,7 @@ def build_capabilities(
     reasoning = _instantiate_slot(cfg, "reasoning_codec", where)
     cache = _instantiate_slot(cfg, "cache_policy", where)
     params = _instantiate_slot(cfg, "params_policy", where, extra_params=params_extra)
+    message_assembly = _instantiate_slot(cfg, "message_assembly_policy", where)
 
     api_call_timeout_s = cfg.get("api_call_timeout_s")
     api_call_retries = cfg.get("api_call_retries")
@@ -828,6 +841,7 @@ def build_capabilities(
         response_policy=response,
         reasoning_codec=reasoning,
         cache_policy=cache,
+        message_assembly_policy=message_assembly,
         api_call_timeout_s=float(api_call_timeout_s) if api_call_timeout_s is not None else None,
         api_call_retries=int(api_call_retries) if api_call_retries is not None else None,
         api_call_wall_timeout_s=(
@@ -879,12 +893,13 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
     consumption::
 
         {
-            "schema_sanitizer": "strict" | "passthrough",
-            "prompt_policy":   "dict_map_hints" | "none",
-            "content_policy":  "anthropic" | "openai" | "nova",
-            "response_policy": "standard" | "array_dict_map" | "unwrap_input",
-            "reasoning_codec": "anthropic" | "openai" | "none",
-            "cache_policy":    "anthropic_ephemeral" | "none",
+            "schema_sanitizer":        "strict" | "passthrough",
+            "prompt_policy":           "dict_map_hints" | "none",
+            "content_policy":          "anthropic" | "openai" | "nova",
+            "response_policy":         "standard" | "array_dict_map" | "unwrap_input",
+            "reasoning_codec":         "anthropic" | "openai" | "none",
+            "cache_policy":            "anthropic_ephemeral" | "none",
+            "message_assembly_policy": "null" | "nova",
         }
 
     ``params_policy`` is omitted — it is a stateful dataclass, not a single
@@ -915,6 +930,11 @@ def resolve_policy_names(capabilities: ModelCapabilities) -> dict[str, str]:
             capabilities.reasoning_codec, _REASONING_CODECS, "reasoning_codec"
         ),
         "cache_policy": _reverse_lookup(capabilities.cache_policy, _CACHE_POLICIES, "cache_policy"),
+        "message_assembly_policy": _reverse_lookup(
+            capabilities.message_assembly_policy,
+            _MESSAGE_ASSEMBLY_POLICIES,
+            "message_assembly_policy",
+        ),
     }
 
 

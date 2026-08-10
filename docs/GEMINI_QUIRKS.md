@@ -54,10 +54,13 @@ the symmetric fix made it provider-scoped.
 `"I'll help you with that."` verbatim despite the system prompt asking
 for substantive content.
 
-**Harness mitigation**: [`content_policy.OpenAIContent`](../tolokaforge/core/llm/content_policy.py)
-declares `inject_empty_assistant_filler = False`. Only the `nova`
-preset opts in to the filler. The Gemini preset routes through
-`OpenAIContent` ([`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)).
+**Harness mitigation**: the Gemini preset (like every non-Nova preset)
+carries [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py),
+which declares `inject_empty_assistant_filler = False`. Only the `aws_nova`
+and `aws_nova_openrouter` presets opt in via `NovaMessageAssembly`
+(`empty_assistant_filler = "I'll help you with that."`); the filler string
+is data on the policy instance so a future preset overlay can override it
+without engine changes ([`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)).
 
 ### 1.2 `reasoning_details` `id`/`format`/`index` must round-trip
 

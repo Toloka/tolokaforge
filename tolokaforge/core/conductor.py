@@ -141,8 +141,8 @@ def _build_resolved_block(model_config: ModelConfig) -> dict[str, Any]:
 
     Shape: ``{"effective_preset": ..., "schema_sanitizer": ..., ...}``.
     See :func:`tolokaforge.core.llm.presets.resolve_policy_names` for the
-    six policy slots included in the fingerprint. Analytics tools diff this
-    across runs to detect preset / capability drift.
+    named policy slots included in the fingerprint. Analytics tools diff
+    this across runs to detect preset / capability drift.
     """
     capabilities = build_capabilities(
         model_config.name,
