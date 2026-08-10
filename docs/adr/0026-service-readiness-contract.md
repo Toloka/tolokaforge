@@ -68,7 +68,7 @@ canonical contract test — the full ADR-0011 Pattern-A shape.
 
 The probes are discovered through a **new entry-point group**
 `tolokaforge.service_readiness_probes`, keyed by endpoint kind (`grpc` / `http`
-/ `tcp`), reusing the existing fail-loud `_discover` / `_load` machinery in
+/ `tcp`), reusing the existing fail-loud `discover_entry_points` / `_load` machinery in
 `plugin_registry.py`. This is the **fourth entry-point-registry-backed seam**:
 three registry groups ship today in `pyproject.toml` (`runtime_backends`,
 `trial_graders`, `conductors`); this adds the fourth, validating that the

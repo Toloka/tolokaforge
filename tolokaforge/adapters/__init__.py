@@ -9,7 +9,6 @@ installed.
 
 from __future__ import annotations
 
-import importlib.metadata
 import logging
 from typing import Any
 
@@ -38,22 +37,33 @@ _FAILED_ADAPTERS: dict[str, Exception] = {}
 
 
 def _discover_adapters() -> dict[str, type]:
-    """Discover adapter plugins via importlib.metadata entry-points.
+    """Discover adapter plugins via the fail-loud entry-point primitive.
 
-    NativeAdapter is the only built-in adapter; all others are entry-point
-    plugins loaded from the ``tolokaforge.adapters`` group.
+    ``NativeAdapter`` is the only built-in adapter; all others are entry-point
+    plugins in the ``tolokaforge.adapters`` group. Discovery routes through
+    :func:`tolokaforge.core.plugin_registry.discover_entry_points`, so a
+    duplicate name across two installed distributions raises
+    :class:`~tolokaforge.core.plugin_registry.DuplicateRegistrationError`
+    before any adapter class is loaded. Each surviving entry point is eager-
+    loaded; load failures are stashed in ``_FAILED_ADAPTERS`` and surface only
+    when ``get_adapter(<broken_name>)`` asks for that specific adapter.
     """
+    # Imported lazily: plugin_registry pulls in tolokaforge.core.conductor,
+    # which in turn imports BaseAdapter from this package. Deferring the
+    # import until discovery time avoids the circular resolution at package
+    # import while keeping the fail-loud primitive as the single entry point.
     from tolokaforge.adapters.native import NativeAdapter
+    from tolokaforge.core.plugin_registry import discover_entry_points
 
     adapters: dict[str, type] = {_NATIVE: NativeAdapter}
 
-    for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
+    for name, ep in discover_entry_points("tolokaforge.adapters").items():
         try:
-            adapters[ep.name] = ep.load()
-            logger.debug("Loaded adapter entry-point: %s", ep.name)
+            adapters[name] = ep.load()
+            logger.debug("Loaded adapter entry-point: %s", name)
         except Exception as exc:  # noqa: BLE001
-            _FAILED_ADAPTERS[ep.name] = exc
-            logger.warning("Adapter entry-point %r failed to load: %s", ep.name, exc, exc_info=True)
+            _FAILED_ADAPTERS[name] = exc
+            logger.warning("Adapter entry-point %r failed to load: %s", name, exc, exc_info=True)
 
     return adapters
 
