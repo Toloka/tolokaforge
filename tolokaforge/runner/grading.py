@@ -756,6 +756,7 @@ def build_grade_reasons(
     judge_reasons: str | None = None,
     trace_checks_result: dict[str, Any] | None = None,
     golden_replay: GoldenReplayRecord | None = None,
+    custom_checks_reasons: str | None = None,
 ) -> str:
     """
     Build human-readable reasons string for the grade.
@@ -768,9 +769,18 @@ def build_grade_reasons(
         golden_replay: The golden replay behind the hash verdict, when one ran. An
             incomplete replay is named beside the verdict it produced, in the sentence
             the core engine emits too.
+        custom_checks_reasons: The custom-checks suite's own account, rendered by
+            :func:`~tolokaforge.core.grading.checks_helpers.custom_checks_reason`.
+            Passed on the strength of the evaluator having something to say rather
+            than on the component's score, so a suite that failed to run says why
+            even though it scored nothing.
 
     Returns:
-        Human-readable reasons string
+        The scored components' segments, joined — and empty where the trial scored
+        none of them. A grade for such a trial is not silent: the fold decides it
+        without reading a score and its own sentence says why, which the caller
+        appends. A placeholder here would state the opposite of what a renderer
+        omission means, and would be a second producer of the same account.
     """
     reasons = []
 
@@ -863,4 +873,9 @@ def build_grade_reasons(
         else:
             reasons.append(f"Judge: score={llm_judge_score:.2f}")
 
-    return " | ".join(reasons) if reasons else "No grading components evaluated"
+    # Custom checks reason — registry order puts it last, and the segment is the
+    # shared renderer's output verbatim so the two substrates carry one text.
+    if custom_checks_reasons:
+        reasons.append(custom_checks_reasons)
+
+    return " | ".join(reasons)

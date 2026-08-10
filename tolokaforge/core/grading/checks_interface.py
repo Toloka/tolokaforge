@@ -342,8 +342,15 @@ class CheckResultSet(BaseModel):
         return len(self.results)
 
     @property
-    def _scored(self) -> list[CheckResult]:
-        """The results that reached a verdict, which is every one that did not skip."""
+    def decided(self) -> list[CheckResult]:
+        """The results that reached a verdict, which is every one that did not skip.
+
+        Public because it is the predicate that has to be shared: both substrates
+        score the component off it, and the sentence the grade carries about the
+        suite names the checks it holds. A second copy would let a narrowing here —
+        excluding an errored check, say — move the score without moving the sentence,
+        and the grade would then report a component unscored while saying it failed.
+        """
         return [r for r in self.results if r.status != CheckStatus.SKIPPED]
 
     @property
@@ -357,7 +364,7 @@ class CheckResultSet(BaseModel):
         ran and failed — a component scored against nothing, which is the vacuous
         ``1.0`` sign-flipped.
         """
-        return bool(self._scored)
+        return bool(self.decided)
 
     @property
     def aggregate_score(self) -> float:
@@ -366,15 +373,15 @@ class CheckResultSet(BaseModel):
         ``0.0`` where none did, so a caller turning this into a component score has to
         consult :attr:`decided_something` first.
         """
-        scored = self._scored
-        if not scored:
+        decided = self.decided
+        if not decided:
             return 0.0
-        return sum(r.score for r in scored) / len(scored)
+        return sum(r.score for r in decided) / len(decided)
 
     @property
     def all_passed(self) -> bool:
         """True if all checks passed (ignoring skipped)"""
-        return all(r.status == CheckStatus.PASSED for r in self._scored)
+        return all(r.status == CheckStatus.PASSED for r in self.decided)
 
 
 # =============================================================================

@@ -16,6 +16,8 @@ from tolokaforge.core.failure_attribution import (
     is_failed_trajectory,
     summarize_failure_attributions,
 )
+from tolokaforge.core.grading.checks_helpers import custom_checks_reason
+from tolokaforge.core.grading.checks_interface import CheckResult, CheckResultSet, CheckStatus
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -404,6 +406,106 @@ def test_grade_fail_patterns_extracted_from_reasons_string():
     fail_evidence = [ev for ev in attribution["evidence"] if ev["kind"] == "grade_fail_patterns"]
     assert len(fail_evidence) == 1
     assert any("compliance escalation" in p for p in fail_evidence[0]["patterns"])
+
+
+def test_a_custom_checks_segment_contributes_evidence_exactly_when_a_check_lost():
+    """A custom-checks trial now contributes what its transcript-graded siblings do.
+
+    The two sentences are produced rather than typed: this reads the same renderer
+    both grading substrates emit, so a rewording that stopped the failing sentence
+    matching ``"FAIL"`` — or started the passing one matching it — reds here.
+
+    The evidence block is gated on nothing earlier having filled ``evidence``, so the
+    fixture carries no failed tool call, no state diff and no connection-error message;
+    the assertions above the call are what keep this cell from passing for one of
+    those reasons instead.
+    """
+    losing_check = custom_checks_reason(
+        CheckResultSet(
+            results=[
+                CheckResult(
+                    check_name="order_was_shipped",
+                    status=CheckStatus.FAILED,
+                    score=0.0,
+                    message="order O1 is not shipped",
+                )
+            ]
+        )
+    )
+    # The passing check is named for the thing it did not find, which is the shape a
+    # sentence enumerating every check rather than only the losing ones would turn
+    # into evidence of a failure the trial never had.
+    winning_check = custom_checks_reason(
+        CheckResultSet(
+            results=[
+                CheckResult(
+                    check_name="no_failures_logged",
+                    status=CheckStatus.PASSED,
+                    score=1.0,
+                    message="no failure rows in the ledger",
+                )
+            ]
+        )
+    )
+
+    lost = _base_trajectory()
+    won = _base_trajectory()
+    assert lost.grade is not None and won.grade is not None
+    lost.grade.reasons = losing_check
+    won.grade.reasons = winning_check
+
+    assert (lost.tool_log, won.tool_log) == ([], [])
+    assert (lost.grade.state_diff, won.grade.state_diff) == (None, None)
+
+    def _patterns(trajectory):
+        return [
+            ev
+            for ev in attribute_failure(trajectory)["evidence"]
+            if ev["kind"] == "grade_fail_patterns"
+        ]
+
+    lost_evidence = _patterns(lost)
+    assert len(lost_evidence) == 1
+    assert lost_evidence[0]["patterns"] == [losing_check]
+    assert "order_was_shipped" in lost_evidence[0]["patterns"][0]
+
+    assert _patterns(won) == []
+
+
+#: Every error text either substrate hands the renderer, from the site that writes it:
+#: the executor's module-load failure (``check_runner.py``), the host's missing-file and
+#: absent-task-directory paths (``combine.py``), and the runner's undelivered-artifacts
+#: path (``service.py``). Written out rather than derived, because the point is that
+#: they are unlike each other.
+_SUITE_ERRORS = (
+    "Failed to load/run checks: invalid syntax (checks.py, line 1)",
+    "checks file not found: checks.py",
+    "task_dir not available",
+    "custom_checks.enabled but no artifacts_dir for trial 'reconcile:0'",
+)
+
+
+@pytest.mark.parametrize("error", _SUITE_ERRORS)
+def test_a_suite_that_failed_to_run_contributes_evidence_whatever_the_error_says(error):
+    """One state, one classification — not one per wording.
+
+    A suite that never ran is a component the fold reads as failed, whichever site
+    wrote the error. The sentence carries ``failed`` in the renderer's own words, so
+    the classification is a function of the state rather than of prose written in
+    another module: three of these four texts contain no ``fail`` of their own, and
+    a rule inheriting the substring from them would answer the same state four
+    different ways.
+    """
+    traj = _base_trajectory()
+    assert traj.grade is not None
+    traj.grade.reasons = custom_checks_reason(CheckResultSet(error=error))
+
+    evidence = [
+        ev for ev in attribute_failure(traj)["evidence"] if ev["kind"] == "grade_fail_patterns"
+    ]
+
+    assert len(evidence) == 1, f"{error!r} produced {evidence!r}"
+    assert evidence[0]["patterns"] == [traj.grade.reasons]
 
 
 def test_missing_write_file_tool_when_grading_expected_files():

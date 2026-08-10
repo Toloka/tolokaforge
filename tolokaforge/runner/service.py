@@ -39,7 +39,11 @@ from tolokaforge.core.grading.check_runner import (
     CheckRunner,
     validate_checks_module,
 )
-from tolokaforge.core.grading.checks_helpers import build_check_context, custom_checks_enabled
+from tolokaforge.core.grading.checks_helpers import (
+    build_check_context,
+    custom_checks_enabled,
+    custom_checks_reason,
+)
 from tolokaforge.core.grading.checks_interface import (
     CheckResult,
     CheckResultSet,
@@ -1671,9 +1675,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # when ``grading.custom_checks.enabled``; the aggregate score fills
         # ``components.custom_checks`` and the per-check breakdown rides
         # ``Grade.custom_checks`` (see ADR-0012).
-        custom_checks_score, custom_check_wire_results = await self._grade_custom_checks(
-            trial_id, trial_context, llm_messages
-        )
+        (
+            custom_checks_score,
+            custom_check_wire_results,
+            custom_checks_reasons,
+        ) = await self._grade_custom_checks(trial_id, trial_context, llm_messages)
         components.custom_checks_score = custom_checks_score
         # A pack that wrote the block but left it off never reaches the executor,
         # so the key is populated with nothing consuming it — the same shape as
@@ -1724,31 +1730,39 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None
         transcript_result_dict = transcript_result.model_dump() if transcript_result else None
-        reasons = build_grade_reasons(
-            components_dict,
-            state_diff_dict,
-            transcript_result_dict,
-            judge_reasons=judge_reasons or None,
-            trace_checks_result=trace_checks_result.model_dump(mode="json"),
-            golden_replay=hash_result.golden_replay if hash_result is not None else None,
-        )
+        # Collected and joined once. The components' renderer contributes nothing for a
+        # trial that scored nothing, and appending to its output would open that grade
+        # with a separator.
+        reason_segments = [
+            build_grade_reasons(
+                components_dict,
+                state_diff_dict,
+                transcript_result_dict,
+                judge_reasons=judge_reasons or None,
+                trace_checks_result=trace_checks_result.model_dump(mode="json"),
+                golden_replay=hash_result.golden_replay if hash_result is not None else None,
+                custom_checks_reasons=custom_checks_reasons,
+            )
+        ]
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
-            reasons += f" | JUDGE ERRORED: {judge_reasons}"
+            reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
 
         # A populated key whose evaluator was skipped scored nothing; say so on the
         # grade rather than letting the trial look fully evaluated.
         if audit.skip_notes:
-            reasons += " | " + "; ".join(audit.skip_notes)
+            reason_segments.append("; ".join(audit.skip_notes))
 
         # The ledger's skip notes cover populated SCORED_CHECK keys; hash.weight is a
         # CONFIG_INPUT the fold can skip on its own, so it reports itself.
         if state_checks_slot.inert_weight_reason:
-            reasons += f" | {state_checks_slot.inert_weight_reason}"
+            reason_segments.append(state_checks_slot.inert_weight_reason)
 
         # A fold that counted nothing is not described by any component's reasons, so its
         # own sentence is what stops a 0.0 arriving beside components that all read as passing.
         if verdict.reason:
-            reasons += f" | {verdict.reason}"
+            reason_segments.append(verdict.reason)
+
+        reasons = " | ".join(segment for segment in reason_segments if segment)
 
         logger.info(
             f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
@@ -2032,11 +2046,18 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         trial_id: str,
         trial_context: TrialContextRuntime,
         llm_messages: list[dict[str, Any]],
-    ) -> tuple[float, list["pb2.CustomCheckResult"]]:
+    ) -> tuple[float, list["pb2.CustomCheckResult"], str | None]:
         """Run the pack's ``checks.py`` against the trial's evidence.
 
-        Returns ``(score, wire_results)``. A missing/disabled config returns
-        ``(-1.0, [])`` so :func:`combine_grade_components` treats the
+        Returns ``(score, wire_results, reason)``. The reason is the sentence
+        :func:`custom_checks_reason` renders and is what ``Grade.reasons`` carries
+        for this component; every return that ran or tried to run supplies one, so a
+        suite that failed before it started still says why. ``None`` is reserved for
+        the one case with no suite to describe: a pack that declared no
+        ``custom_checks`` block or disabled the one it declared.
+
+        A missing/disabled config returns
+        ``(-1.0, [], None)`` so :func:`combine_grade_components` treats the
         component as not-evaluated (the empty-active-set guard then fires
         for a custom-checks-only pack instead of silently passing).
 
@@ -2055,7 +2076,7 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         grading_config = trial_context.grading_config
         custom_config_raw = grading_config.custom_checks if grading_config else None
         if not custom_checks_enabled(custom_config_raw):
-            return -1.0, []
+            return -1.0, [], None
 
         config = CustomChecksConfig(**custom_config_raw)
 
@@ -2067,7 +2088,11 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             logger.error("GradeTrial: %s - %s", trial_id, error_msg)
             score = 0.0 if config.fail_on_error else -1.0
-            return score, [_executor_error_to_wire(error_msg)]
+            return (
+                score,
+                [_executor_error_to_wire(error_msg)],
+                custom_checks_reason(CheckResultSet(error=error_msg)),
+            )
         checks_file = artifacts_dir / config.file
 
         task_description = trial_context.task_description
@@ -2132,9 +2157,14 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
                 trial_id,
             )
             score = 0.0 if config.fail_on_error else -1.0
-            return score, [_executor_error_to_wire(str(exc))]
+            return (
+                score,
+                [_executor_error_to_wire(str(exc))],
+                custom_checks_reason(CheckResultSet(error=str(exc))),
+            )
 
         wire_results = [_check_result_to_wire(r) for r in result.results]
+        reason = custom_checks_reason(result)
 
         if result.error:
             logger.error(
@@ -2144,15 +2174,15 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             wire_results.append(_executor_error_to_wire(result.error))
             score = 0.0 if config.fail_on_error else -1.0
-            return score, wire_results
+            return score, wire_results, reason
 
         logger.info(
             f"GradeTrial: {trial_id} - custom checks: "
             f"{result.passed}/{result.total} passed, score={result.aggregate_score:.2f}"
         )
         if not result.decided_something:
-            return -1.0, wire_results
-        return result.aggregate_score, wire_results
+            return -1.0, wire_results, reason
+        return result.aggregate_score, wire_results, reason
 
     async def _build_judge_state_diff(
         self, trial_id: str, trial_context: TrialContextRuntime
