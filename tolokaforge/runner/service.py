@@ -66,9 +66,10 @@ from tolokaforge.core.grading.golden_replay import (
 )
 from tolokaforge.core.grading.grade_components import GRADE_COMPONENTS
 from tolokaforge.core.grading.jsonpath_addressing import (
+    JsonPathTarget,
     addresses_the_database,
-    addresses_the_filesystem,
     block_addresses_the_database,
+    unreachable_target,
 )
 from tolokaforge.core.grading.judge import JudgeResult, JudgeStatus, LLMJudge
 from tolokaforge.core.grading.judge_tools import DelegatingReadTool
@@ -441,22 +442,23 @@ def _unreachable_state_checks_refusal(
             f"initial_state.json_db, or drop {where} from the pack."
         )
 
-    addressed_to_the_filesystem = [
-        assertion
-        for assertion in state_checks.jsonpath_checks
-        if addresses_the_filesystem(assertion)
-    ]
-    if addressed_to_the_filesystem:
-        assertion = addressed_to_the_filesystem[0]
+    for assertion in state_checks.jsonpath_checks:
+        target = unreachable_target(assertion)
+        if target is None:
+            continue
         described = assertion.get("description")
+        remedy = (
+            "Address a file with path_glob: and contains_ci:, which both substrates read "
+            "the same way."
+            if target is JsonPathTarget.FILESYSTEM
+            else "Address the trial's database, which is rooted at db or tables."
+        )
         return (
             f"state_checks.jsonpaths declares path {assertion.get('path')!r}"
             + (f" ({described})" if described else "")
-            + ", which addresses the agent's filesystem. A path: resolves against the "
-            "JSONPath state the runner composes from the trial's database — db and "
-            "tables and nothing else — so this assertion can never match. Address a "
-            "file with path_glob: and contains_ci:, which both substrates read the "
-            "same way."
+            + ", which addresses state the runner's JSONPath grading does not carry: it "
+            "composes db and tables from the trial's database and nothing else, so this "
+            f"assertion can never match there. {remedy}"
         )
     return None
 

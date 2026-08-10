@@ -55,9 +55,10 @@ from tolokaforge.core.grading.grade_components import (
     component_requested,
 )
 from tolokaforge.core.grading.jsonpath_addressing import (
+    JsonPathTarget,
     addresses_the_database,
-    addresses_the_filesystem,
     block_addresses_the_database,
+    unreachable_target,
 )
 from tolokaforge.core.grading.predicates import JSON_TYPES, ever_satisfiable
 from tolokaforge.core.grading.state_composition import (
@@ -710,12 +711,18 @@ _READS_A_DATABASE_THE_TASK_SEEDS_NONE_OF = (
     "{where} from the pack."
 )
 
-_A_PATH_ROOTED_AT_THE_FILESYSTEM = (
-    "path {path!r} is rooted at 'filesystem', which the runner's JSONPath state does not "
-    "carry: it composes db and tables from the trial's database and nothing else, so this "
-    "assertion can never match there. Address a file with path_glob: and contains_ci:, the "
-    "pairing both substrates read the same way."
+_A_PATH_BEYOND_THE_RUNNERS_STATE = (
+    "path {path!r} addresses state the runner's JSONPath grading does not carry: it "
+    "composes db and tables from the trial's database and nothing else, while the core "
+    "engine also composes agent, user and filesystem — so this assertion scores on one "
+    "substrate and can never match on the other. {remedy}"
 )
+
+_ADDRESS_A_FILE_BY_GLOB = (
+    "Address a file with path_glob: and contains_ci:, the pairing both substrates read."
+)
+
+_ADDRESS_THE_DATABASE = "Address the trial's database, which is rooted at db or tables."
 
 _A_PATH_GLOB_OPERATOR_THE_RUNNER_CANNOT_READ = (
     "path_glob {glob!r} is compared with {operator}, which the runner's file-content "
@@ -1442,16 +1449,25 @@ def _check_jsonpaths_address_a_reachable_state(grading: Mapping[str, Any]) -> Au
     filesystem and the runner cannot, and without one ``GradeTrial`` refuses the trial
     outright. Neither outcome is a score its author would recognise.
     """
-    return AuthoringReport(
-        errors=tuple(
-            Finding(_JSONPATHS_ADDRESS, _A_PATH_ROOTED_AT_THE_FILESYSTEM.format(path=path))
-            for path in (
-                assertion.get("path")
-                for assertion in _jsonpath_assertions(grading)
-                if addresses_the_filesystem(assertion)
+    findings: list[Finding] = []
+    for assertion in _jsonpath_assertions(grading):
+        target = unreachable_target(assertion)
+        if target is None:
+            continue
+        findings.append(
+            Finding(
+                _JSONPATHS_ADDRESS,
+                _A_PATH_BEYOND_THE_RUNNERS_STATE.format(
+                    path=assertion.get("path"),
+                    remedy=(
+                        _ADDRESS_A_FILE_BY_GLOB
+                        if target is JsonPathTarget.FILESYSTEM
+                        else _ADDRESS_THE_DATABASE
+                    ),
+                ),
             )
         )
-    )
+    return AuthoringReport(errors=tuple(findings))
 
 
 def _check_path_glob_is_compared_the_way_the_runner_reads_it(

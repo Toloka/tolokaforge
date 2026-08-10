@@ -2539,14 +2539,16 @@ def test_an_undecided_verdict_crosses_the_wire_as_the_fact_it_is(
 # The runner's own registration path reaches the DB-reading packs
 # --------------------------------------------------------------------------
 
-_STATE_READING_PACKS = (
+_PACKS_WITH_A_REACHABILITY_ROW = (
     ("state_checks_jsonpaths", "state_checks", "satisfying", 1.0),
     ("custom_checks", "custom_checks", "satisfying", 1.0),
     ("combine_method", "state_checks", "split_components", 0.0),
 )
 
 
-@pytest.mark.parametrize(("task_id", "component", "case_name", "expected"), _STATE_READING_PACKS)
+@pytest.mark.parametrize(
+    ("task_id", "component", "case_name", "expected"), _PACKS_WITH_A_REACHABILITY_ROW
+)
 def test_a_state_reading_pack_grades_through_the_runners_own_registration(
     task_id, component, case_name, expected, test_data_dir, runner_service, mock_grpc_context
 ):
@@ -2718,6 +2720,30 @@ def test_a_filesystem_rooted_path_is_refused_rather_than_scored_against_the_agen
     assert response.success is False, response.grade.reasons
     assert "path_glob" in response.error
     assert _A_FILESYSTEM_PATH in response.error
+    assert "DB state unavailable" not in response.grade.reasons
+
+
+def test_a_path_rooted_where_only_the_core_engine_composes_is_refused(
+    runner_service, mock_grpc_context
+):
+    """``agent`` is a root core composes and the runner does not — the same divergence.
+
+    Its remedy differs from the filesystem's: the state is in the trial's database, so
+    the path is rooted at ``db``, not rewritten as a file assertion.
+    """
+    task = _in_memory_task(
+        "refusal_agent_root",
+        state_checks=runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": "$.agent.customers[0].balance", "equals": "10"}]
+        ),
+        seeds_a_database=True,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_agent_root:0")
+
+    assert response.success is False, response.grade.reasons
+    assert "$.agent.customers[0].balance" in response.error
+    assert "rooted at db or tables" in response.error
     assert "DB state unavailable" not in response.grade.reasons
 
 

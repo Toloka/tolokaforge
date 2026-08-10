@@ -1,13 +1,12 @@
-"""What a ``state_checks`` assertion addresses, and what a task provisions.
+"""What state a ``state_checks`` assertion addresses.
 
-The two questions are separate on purpose. ``path:`` is not a synonym for
-"DB-targeting" — a ``$.filesystem`` root resolves against state only the core engine
-composes — and "this task provisions a database" is not ``bool(tables)``: a task
-declaring only ``schemas`` or only ``unstable_fields`` gets a DB service too.
+``path:`` is not a synonym for "DB-targeting". The core engine composes ``agent``,
+``user``, ``db`` and ``filesystem``; the runner composes ``db`` and ``tables`` and
+nothing else. So a path is classified by what the *runner* carries — the narrower
+substrate — and one it cannot reach is one the two substrates score differently.
 """
 
 from collections.abc import Mapping
-from itertools import product
 from typing import Any
 
 import pytest
@@ -15,25 +14,12 @@ import pytest
 from tolokaforge.core.grading.jsonpath_addressing import (
     JsonPathTarget,
     addresses_the_database,
-    addresses_the_filesystem,
     block_addresses_the_database,
     jsonpath_target,
-)
-from tolokaforge.runner.models import (
-    RunnerInitialStateConfig,
-    TableSchema,
-    UnstableFieldSpec,
-    provisions_database,
+    unreachable_target,
 )
 
 pytestmark = pytest.mark.unit
-
-_A_TABLE = {"orders": [{"id": "O1", "status": "pending"}]}
-_A_SCHEMA = [TableSchema(table_name="orders", fields={"id": "string", "status": "string"})]
-_AN_UNSTABLE_FIELD = [UnstableFieldSpec(table_name="orders", field_name="created_at")]
-_A_PROVISIONED_FILE = {
-    "/env/fs/agent-visible/buggy_math.py": "def divide(a, b):\n    return a / b\n"
-}
 
 _A_DATABASE_ASSERTION = {"path": "$.db.orders[0].status", "equals": "shipped"}
 _A_FILESYSTEM_ASSERTION = {
@@ -50,18 +36,23 @@ _A_PROBE = {
 @pytest.mark.parametrize(
     ("path", "expected"),
     [
-        ("$.db.orders[0].status", JsonPathTarget.DATABASE),
-        ('$["db"].orders', JsonPathTarget.DATABASE),
-        ("$.tables.widgets[0].status", JsonPathTarget.DATABASE),
+        ("$.db.orders[0].status", JsonPathTarget.TRIAL_DATABASE),
+        ('$["db"].orders', JsonPathTarget.TRIAL_DATABASE),
+        ("$.tables.widgets[0].status", JsonPathTarget.TRIAL_DATABASE),
         ("$.filesystem['/env/fs/agent-visible/x.py']", JsonPathTarget.FILESYSTEM),
-        ("$..status", JsonPathTarget.DATABASE),
-        ("$.*", JsonPathTarget.DATABASE),
-        ("$", JsonPathTarget.DATABASE),
+        # The two roots only the core engine composes. Classified apart from the
+        # database because the runner resolves neither, and apart from the filesystem
+        # because their remedy is to root the path at db, not to write a path_glob.
+        ("$.agent.customers[0].balance", JsonPathTarget.BEYOND_THE_RUNNERS_STATE),
+        ("$.user.device.mode", JsonPathTarget.BEYOND_THE_RUNNERS_STATE),
+        ("$..status", JsonPathTarget.TRIAL_DATABASE),
+        ("$.*", JsonPathTarget.TRIAL_DATABASE),
+        ("$", JsonPathTarget.TRIAL_DATABASE),
         # A field named for the filesystem, under the database root: what a
         # substring reading of the written expression gets wrong, and what a
         # reading of any segment rather than the first gets wrong.
-        ("$.db.notes[0].filesystem_path", JsonPathTarget.DATABASE),
-        ("$.db.notes[0].filesystem", JsonPathTarget.DATABASE),
+        ("$.db.notes[0].filesystem_path", JsonPathTarget.TRIAL_DATABASE),
+        ("$.db.notes[0].filesystem", JsonPathTarget.TRIAL_DATABASE),
         # The root is still the first segment where the author leaves ``$`` off,
         # which both evaluators accept.
         ("filesystem['/env/fs/agent-visible/x.py']", JsonPathTarget.FILESYSTEM),
@@ -80,46 +71,29 @@ def test_an_unparseable_path_is_refused_by_name() -> None:
 
 
 @pytest.mark.parametrize(
-    ("assertion", "reads_the_database", "reads_the_filesystem"),
+    ("assertion", "reads_the_database", "beyond_the_runner"),
     [
-        (_A_DATABASE_ASSERTION, True, False),
-        (_A_FILESYSTEM_ASSERTION, False, True),
+        (_A_DATABASE_ASSERTION, True, None),
+        (_A_FILESYSTEM_ASSERTION, False, JsonPathTarget.FILESYSTEM),
+        ({"path": "$.agent.customers[0].balance"}, False, JsonPathTarget.BEYOND_THE_RUNNERS_STATE),
         # A file assertion in its authored form addresses neither: it is not a
         # JSONPath expression at all.
-        ({"path_glob": "/env/fs/agent-visible/x.py", "contains_ci": "ok"}, False, False),
+        ({"path_glob": "/env/fs/agent-visible/x.py", "contains_ci": "ok"}, False, None),
         # Neither of these can be shown to address the filesystem, so both stay in the
         # database-reading population: the state is still fetched and each evaluator
         # names the defect per assertion. Read as addressing nothing, they would be
         # dropped from the fetch and scored against a state never read.
-        ({"path": "$.db[[", "equals": "x"}, True, False),
-        ({"path": 5, "equals": "x"}, True, False),
+        ({"path": "$.db[[", "equals": "x"}, True, None),
+        ({"path": 5, "equals": "x"}, True, None),
     ],
 )
 def test_an_assertion_is_classified_by_the_state_it_reads(
-    assertion: Mapping[str, Any], reads_the_database: bool, reads_the_filesystem: bool
+    assertion: Mapping[str, Any],
+    reads_the_database: bool,
+    beyond_the_runner: JsonPathTarget | None,
 ) -> None:
     assert addresses_the_database(assertion) is reads_the_database
-    assert addresses_the_filesystem(assertion) is reads_the_filesystem
-
-
-@pytest.mark.parametrize(
-    ("seeds_tables", "declares_schemas", "declares_unstable_fields", "provisions_files"),
-    list(product((False, True), repeat=4)),
-)
-def test_provisions_database_reads_every_field_the_db_service_is_initialised_from(
-    seeds_tables: bool,
-    declares_schemas: bool,
-    declares_unstable_fields: bool,
-    provisions_files: bool,
-) -> None:
-    initial_state = RunnerInitialStateConfig(
-        tables=_A_TABLE if seeds_tables else {},
-        schemas=_A_SCHEMA if declares_schemas else [],
-        unstable_fields=_AN_UNSTABLE_FIELD if declares_unstable_fields else [],
-        filesystem=_A_PROVISIONED_FILE if provisions_files else {},
-    )
-    declares_db_state = seeds_tables or declares_schemas or declares_unstable_fields
-    assert provisions_database(initial_state) is declares_db_state
+    assert unreachable_target(assertion) is beyond_the_runner
 
 
 @pytest.mark.parametrize(

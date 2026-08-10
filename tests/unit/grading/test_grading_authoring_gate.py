@@ -304,7 +304,7 @@ _RULES: tuple[_Rule, ...] = (
         grading={"state_checks": {"jsonpaths": [_A_FILESYSTEM_ROOTED_ASSERTION]}},
         checker="_check_jsonpaths_address_a_reachable_state",
         channel="errors",
-        message="is rooted at 'filesystem'",
+        message="addresses state the runner's JSONPath grading does not carry",
     ),
     _Rule(
         label="a_path_glob_the_runner_cannot_read",
@@ -1330,7 +1330,7 @@ def test_an_unresolvable_layer_skips_the_seeded_read_and_still_refuses_the_path(
     assert [skip.where for skip in report.unchecked] == ["state_checks"]
     assert "not checkable here" in report.unchecked[0].reason
     assert [finding.where for finding in report.errors] == ["state_checks.jsonpaths"]
-    assert "is rooted at 'filesystem'" in report.errors[0].message
+    assert "does not carry" in report.errors[0].message
 
 
 def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused() -> None:
@@ -1377,6 +1377,36 @@ def test_relaxed_validation_does_not_downgrade_a_block_that_cannot_grade() -> No
     )
 
     assert [finding.where for finding in report.errors] == ["state_checks.jsonpaths"]
+
+
+def test_a_probe_expectation_is_not_addressed_against_the_trials_jsonpath_state() -> None:
+    """The new rules read ``jsonpaths`` and nothing else — a check on their domain.
+
+    A ``db_probes`` expectation writes ``path:`` too, but against the probe's own query
+    result — ``{rows, row_count}``, fetched over the probe's ``dsn`` with no trial id.
+    Ten such assertions ship in two packs that grade correctly, and every one of them is
+    rooted where the trial's JSONPath state carries nothing. A rule helpfully widened to
+    walk expectations would refuse them all.
+    """
+    report = inspect_grading_authoring(
+        {
+            "state_checks": {
+                "db_probes": [
+                    {
+                        "name": "orders_shipped",
+                        "dsn": "postgresql://grader@app-db:5432/app",
+                        "query": "SELECT status FROM orders",
+                        "expect": [{"path": "$.rows[0].status", "equals": "shipped"}],
+                    }
+                ]
+            }
+        },
+        _inventory(_HELPDESK),
+        seeded_tables=_THE_TASK_SEEDS_NO_TABLES,
+    )
+
+    assert report.errors == ()
+    assert report.advisories == ()
 
 
 def test_a_seeded_tables_layer_is_resolved_or_it_is_not() -> None:

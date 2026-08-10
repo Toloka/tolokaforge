@@ -132,8 +132,8 @@ from tolokaforge.core.grading.grade_components import (
     component_requested,
 )
 from tolokaforge.core.grading.jsonpath_addressing import (
-    addresses_the_filesystem,
     block_addresses_the_database,
+    unreachable_target,
 )
 from tolokaforge.core.grading.rubric import aggregate_rubric, parse_submit_report
 from tolokaforge.core.grading.state_composition import HASH_SOURCE_KEYS
@@ -582,13 +582,14 @@ def _gate_reports(
 
 
 _A_FILESYSTEM_ROOTED_PATH = "$.filesystem['/env/fs/agent-visible/x.py']"
+_AN_AGENT_ROOTED_PATH = "$.agent.customers[0].balance"
 _A_DATABASE_ROOTED_PATH = "$.db.orders[0].status"
 
 
 def _states_a_pack_addresses_but_cannot_reach(
     grading: Mapping[str, Any], seeded_tables: SeededTablesLayer
 ) -> tuple[list[str], bool]:
-    """The filesystem-rooted paths this pack writes, and whether it reads an absent DB.
+    """The paths this pack writes that the runner cannot resolve, and its absent-DB read.
 
     An unresolvable ``seeded_tables`` answers ``False`` for the second reading: what a
     task seeds is the one input it needs, and no pack is held to a fact nobody could
@@ -598,16 +599,16 @@ def _states_a_pack_addresses_but_cannot_reach(
     state_checks = grading.get("state_checks")
     if not isinstance(state_checks, Mapping):
         return [], False
-    filesystem_rooted = [
+    beyond_the_runner = [
         assertion["path"]
         for assertion in state_checks.get("jsonpaths") or ()
-        if isinstance(assertion, Mapping) and addresses_the_filesystem(assertion)
+        if isinstance(assertion, Mapping) and unreachable_target(assertion) is not None
     ]
     reads_a_database_it_does_not_seed = (
         bool(block_addresses_the_database(state_checks) and seeded_tables.known)
         and not seeded_tables.tables
     )
-    return filesystem_rooted, reads_a_database_it_does_not_seed
+    return beyond_the_runner, reads_a_database_it_does_not_seed
 
 
 def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
@@ -615,9 +616,10 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
 
     Two readings over the whole authored corpus — both task roots and the parity,
     project and migration packs outside them — because a pack failing either cannot be
-    graded at all: a ``path:`` rooted at ``filesystem`` resolves against a JSONPath
-    state composed from the database alone, and a block reading the database of a task
-    that seeds none reaches a DB service ``RegisterTrial`` never registered.
+    graded at all: a ``path:`` rooted anywhere but ``db`` or ``tables`` — ``filesystem``,
+    ``agent``, ``user`` — resolves on the core engine and not on the runner, and a block
+    reading the database of a task that seeds none reaches a DB service ``RegisterTrial``
+    never registered.
 
     The examined population is printed rather than counted silently, and asserted
     non-empty: both residues are lists that a walk selecting nothing would leave empty
@@ -626,7 +628,7 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
     about the corpus rather than about a predicate that stopped discriminating.
     """
     examined: list[str] = []
-    filesystem_rooted: dict[str, list[str]] = {}
+    beyond_the_runner: dict[str, list[str]] = {}
     reading_an_absent_database: list[str] = []
 
     for task_yaml in sorted({t for t, _ in _gated_packs()} | set(_packs_outside_the_gate_walk())):
@@ -645,17 +647,17 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
             grading, seeded_tables_under_adapter(task, task_dir, task.adapter_type)
         )
         if paths:
-            filesystem_rooted[pack] = paths
+            beyond_the_runner[pack] = paths
         if absent_database:
             reading_an_absent_database.append(pack)
 
     print(f"packs declaring a state_checks source ({len(examined)}):\n  " + "\n  ".join(examined))
     assert examined, "the walk selected no pack declaring a state_checks source"
 
-    assert not filesystem_rooted, (
-        "a state_checks.jsonpaths path addresses the filesystem, which resolves only "
-        "on the core engine — write it as path_glob: + contains_ci:, which both "
-        f"substrates read: {filesystem_rooted}"
+    assert not beyond_the_runner, (
+        "a state_checks.jsonpaths path addresses state the runner does not compose, so "
+        "it resolves only on the core engine — root it at db or tables, or write a file "
+        f"assertion as path_glob: + contains_ci:: {beyond_the_runner}"
     )
     assert not reading_an_absent_database, (
         "a state_checks block reads the trial's database on a task whose initial_state "
@@ -664,10 +666,17 @@ def test_no_shipped_pack_addresses_a_state_its_substrate_cannot_reach() -> None:
     )
 
     probed_paths, _ = _states_a_pack_addresses_but_cannot_reach(
-        {"state_checks": {"jsonpaths": [{"path": _A_FILESYSTEM_ROOTED_PATH}]}},
+        {
+            "state_checks": {
+                "jsonpaths": [
+                    {"path": _A_FILESYSTEM_ROOTED_PATH},
+                    {"path": _AN_AGENT_ROOTED_PATH},
+                ]
+            }
+        },
         SeededTablesLayer.unresolvable(),
     )
-    assert probed_paths == [_A_FILESYSTEM_ROOTED_PATH]
+    assert probed_paths == [_A_FILESYSTEM_ROOTED_PATH, _AN_AGENT_ROOTED_PATH]
     _, probed_absent_database = _states_a_pack_addresses_but_cannot_reach(
         {"state_checks": {"jsonpaths": [{"path": _A_DATABASE_ROOTED_PATH}]}},
         SeededTablesLayer(tables={}),
