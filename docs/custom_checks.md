@@ -221,6 +221,11 @@ and the fold decides on what was actually decided.
   against a hand-built `CheckContext` and the in-process `CheckRunner`
   (see `test_custom_checks_runner.py`). This is where per-check
   arithmetic lives; the executor runs in-process, no runner needed.
+  `CheckRunner.run(...)` hands back a `CheckResultSet`, and that object
+  is where a suite's score is read: `decided_something` first — a suite
+  whose every check skipped reached no verdict — then `aggregate_score`
+  over the verdicts it did reach, with `passed` / `failed` / `errors` /
+  `skipped` / `total` beside them.
 - **Canonical** (`tests/canonical/`) — pin the *seam*
   (`test_check_executor_contract.py` pins the `CheckExecutor` Protocol
   boundary + `InMemoryCheckExecutor` semantics per ADR-0012).

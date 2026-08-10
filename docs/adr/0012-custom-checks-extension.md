@@ -208,5 +208,5 @@ pattern AGENTS Rule 5 rejects.
 - External references: GH #669 (finish runner-side custom checks — this ADR
   is Stage 1 of that PR), #406 (finish or delete the custom-checks seam),
   #217 (dead-plumbing follow-up), #673 (subprocess-isolated executor —
-  first named second variant), #674 (remove dead `run_custom_checks` /
-  `result_to_score` convenience helpers).
+  first named second variant), #674 (remove the dead `run_custom_checks`
+  convenience helper).

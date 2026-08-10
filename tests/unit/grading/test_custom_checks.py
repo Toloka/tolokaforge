@@ -710,36 +710,3 @@ def test_import():
 
         assert result.error is None
         assert result.passed == 1
-
-
-class TestResultToScore:
-    """Tests for result_to_score conversion"""
-
-    def test_result_to_score(self):
-        runner = CheckRunner()
-        config = CustomChecksConfig(enabled=True, fail_on_error=True)
-
-        result = CheckResultSet(
-            results=[
-                CheckResult(check_name="c1", status=CheckStatus.PASSED, score=1.0, message="ok"),
-                CheckResult(check_name="c2", status=CheckStatus.FAILED, score=0.0, message="fail"),
-            ]
-        )
-        score, reason = runner.result_to_score(result, config)
-        assert score == 0.5
-        assert "✓ c1" in reason
-        assert "✗ c2" in reason
-
-    def test_result_to_score_with_error(self):
-        runner = CheckRunner()
-
-        config = CustomChecksConfig(enabled=True, fail_on_error=True)
-        result = CheckResultSet(error="Module failed to load")
-        score, reason = runner.result_to_score(result, config)
-        assert score == 0.0
-        assert "error" in reason.lower()
-
-        config = CustomChecksConfig(enabled=True, fail_on_error=False)
-        score, reason = runner.result_to_score(result, config)
-        assert score == 0.5
-        assert "non-fatal" in reason.lower()
