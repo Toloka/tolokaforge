@@ -198,6 +198,12 @@ def _extract_known_keys(cls: type[Any]) -> frozenset[str]:
     not declare it. Inherited ``KNOWN_KEYS`` are ignored — only class-body
     declarations count, so a subclass that widens the accepted set must say
     so explicitly.
+
+    Variadic ``*args`` / ``**kwargs`` parameters are excluded from the result:
+    a policy class without an explicit ``__init__`` inherits
+    ``object.__init__``, whose signature is ``(self, /, *args, **kwargs)``.
+    Including those literal parameter names would let ``params: {kwargs: [1]}``
+    pass overlay validation and fail later at ``cls(**kwargs)``.
     """
     declared = cls.__dict__.get("KNOWN_KEYS")
     if declared is not None:
@@ -206,19 +212,22 @@ def _extract_known_keys(cls: type[Any]) -> frozenset[str]:
         sig = inspect.signature(cls.__init__)
     except (ValueError, TypeError):
         return frozenset()
-    return frozenset(name for name in sig.parameters if name != "self")
+    return frozenset(
+        name
+        for name, param in sig.parameters.items()
+        if name != "self"
+        and param.kind not in (inspect.Parameter.VAR_POSITIONAL, inspect.Parameter.VAR_KEYWORD)
+    )
 
 
 def _models_declared_extra_params_keys() -> frozenset[str]:
-    """Extra ``params:`` keys declared by the installed models wheel.
+    """Extra ``params:`` keys declared by an installed models wheel.
 
-    Pre-cutover seam — returns ``frozenset()`` today. Post-cutover this will
-    read from ``tolokaforge.core.model_data.declared_extra_params_keys()``
-    per ADR-0030 § "Overlay validator extension". The seam keeps overlay
-    validation strict on typos while staying silent on legitimate
-    models-wheel version skew: a knob the wheel declares but the installed
-    engine does not consume yet stays accepted, a genuine typo fails loud.
+    Empty today; the union with :func:`_params_slot_known_keys` keeps overlay
+    validation strict on typos while staying silent on legitimate models-wheel
+    version skew.
     """
+    # TODO(#645): populate from tolokaforge.core.model_data.
     return frozenset()
 
 
@@ -821,6 +830,21 @@ def build_capabilities(
         _apply_config_overrides(cfg, overrides)
 
     where = f"model={model_name!r} provider={provider!r}"
+
+    # MUTEX re-check on the effective merged config. ``_check_block`` fires
+    # only when both keys appear in the same overlay-file block; a bundled
+    # ``params: {...}`` and an overlay ``params_policy: {name, params}`` can
+    # still land side-by-side after per-key merge. Route ambiguity surfaces
+    # loud here rather than silently favouring one source.
+    if "params_policy" in cfg and cfg.get("params"):
+        raise ValueError(
+            f"Effective preset for {where} carries both 'params' and "
+            f"'params_policy'. The top-level 'params' shorthand and the "
+            f"slot-nested 'params_policy' shape are mutually exclusive — one "
+            f"landed via the bundled preset and the other via an overlay. "
+            f"Remove one so the constructor kwargs resolved for "
+            f"GenerationParams (or its subclass) are unambiguous."
+        )
 
     # ``params_policy`` accepts a slot-nested ``{name, params}`` OR a
     # top-level ``params:`` shorthand (every shipped preset uses the

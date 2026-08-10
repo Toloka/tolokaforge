@@ -66,13 +66,21 @@ Available policy slots (see
 
 | Slot | Default | Alternatives |
 |---|---|---|
-| `schema_sanitizer` | `passthrough` | `strict` |
-| `prompt_policy` | `none` | `dict_map_hints` |
-| `content_policy` | `openai` | `anthropic` |
-| `response_policy` | `standard` | `unwrap_input`, `array_dict_map` |
-| `reasoning_codec` | `none` | `anthropic`, `openai` |
+| `schema_sanitizer` | `passthrough` | `strict`, `gemini`, `gemini_recursive` |
+| `prompt_policy` | `none` | `dict_map_hints`, `dict_map_hints_ref` |
+| `content_policy` | `openai` | `anthropic`, `nova` |
+| `response_policy` | `standard` | `unwrap_input`, `json_coerce`, `array_dict_map`, `scalar_array_dict_map`, `minimax_m3_tags` |
+| `reasoning_codec` | `none` | `anthropic`, `openai`, `openai_summary_replay`, `gemini` |
 | `cache_policy` | `none` | `anthropic_ephemeral` |
-| `params` | — | arbitrary dict — see `GenerationParams` |
+| `params_policy` | `generation_params` | arbitrary `{name, params}` — see `GenerationParams.KNOWN_KEYS` |
+| `message_assembly_policy` | `null` | `nova` (only `aws_nova*` presets opt in — the filler string is data on the policy instance) |
+| `assistant_text_policy` | `passthrough` | out-of-tree via subclass (e.g. Cohere `<|START_TEXT|>…<|END_TEXT|>` marker stripper) |
+
+If a new provider needs a lifecycle stage not covered by the nine slots,
+that is Bucket B per [ADR-0030](adr/0030-tolokaforge-models-split.md) —
+extending the engine with a new slot type rather than a new policy class.
+Bucket A additions (new policy class for an existing slot) reuse the slot
+mechanism and require only a class definition plus a preset entry.
 
 > **Rate-limited model?** If OpenRouter's default provider 429s the eval
 > (`is_byok:false`, "rate-limited upstream"), pin the model to a provider that

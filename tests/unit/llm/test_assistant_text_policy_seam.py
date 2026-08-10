@@ -20,6 +20,7 @@ The seam threads all the way from YAML → :func:`build_capabilities` →
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -158,11 +159,7 @@ class TestCohereShapeAtAssembleResult:
     def _client_with_policy(self, policy: AssistantTextPolicy) -> LLMClient:
         config = ModelConfig(provider="mock", name="cohere/command-a-plus")
         client = LLMClient(config)
-        object.__setattr__(
-            client.capabilities,
-            "assistant_text_policy",
-            policy,
-        )
+        client.capabilities = replace(client.capabilities, assistant_text_policy=policy)
         return client
 
     def test_markers_stripped_from_generation_result_text(self) -> None:
