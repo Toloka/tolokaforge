@@ -1,0 +1,132 @@
+{
+  "bucket_a_count": 3,
+  "bucket_b_count": 4,
+  "integrations": [
+    {
+      "bucket": "B",
+      "date": "2026-07-17",
+      "engine_paths": [
+        "tests/integration/llm/test_implicit_prompt_caching_unsupported_ratchet.py"
+      ],
+      "model": "meta/muse-spark-1.1",
+      "pr": 474,
+      "reason": "1 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "3c26098ca30965740d1fbd882c327e34a4ebbd81",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tests/integration/llm/test_implicit_prompt_caching_unsupported_ratchet.py",
+        "tolokaforge/core/data/pricing.json"
+      ]
+    },
+    {
+      "bucket": "A",
+      "date": "2026-07-17",
+      "engine_paths": [],
+      "model": "moonshotai/kimi-k3",
+      "pr": 475,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "f06d1c442303008450ea444cc4dc5fcdcff5e64f",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tolokaforge/core/data/pricing.json"
+      ]
+    },
+    {
+      "bucket": "B",
+      "date": "2026-07-22",
+      "engine_paths": [
+        "tolokaforge/core/llm/__init__.py",
+        "tolokaforge/core/llm/presets.py",
+        "tolokaforge/core/llm/response_policy.py",
+        "tolokaforge/core/llm/schema_sanitizer.py"
+      ],
+      "model": "google/gemini-3.5-flash",
+      "pr": 560,
+      "reason": "4 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "e074af811177f63544d12727ddb4d29fde8729df",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tolokaforge/core/data/model_presets.yaml",
+        "tolokaforge/core/data/pricing.json",
+        "tolokaforge/core/llm/__init__.py",
+        "tolokaforge/core/llm/presets.py",
+        "tolokaforge/core/llm/response_policy.py",
+        "tolokaforge/core/llm/schema_sanitizer.py"
+      ]
+    },
+    {
+      "bucket": "A",
+      "date": "2026-07-27",
+      "engine_paths": [],
+      "model": "anthropic/claude-opus-5",
+      "pr": 614,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "0fd18013ddef3081af5e12be5c5822e5921dc5d2",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tolokaforge/core/data/model_presets.yaml",
+        "tolokaforge/core/data/pricing.json"
+      ]
+    },
+    {
+      "bucket": "B",
+      "date": "2026-07-31",
+      "engine_paths": [
+        "tolokaforge/core/llm/__init__.py",
+        "tolokaforge/core/llm/presets.py",
+        "tolokaforge/core/llm/prompt_policy.py"
+      ],
+      "model": "thinkingmachines/inkling",
+      "pr": 719,
+      "reason": "3 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "482c8195416ab9d1230a85b4b659948924012267",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tolokaforge/core/data/model_presets.yaml",
+        "tolokaforge/core/data/pricing.json",
+        "tolokaforge/core/llm/__init__.py",
+        "tolokaforge/core/llm/presets.py",
+        "tolokaforge/core/llm/prompt_policy.py"
+      ]
+    },
+    {
+      "bucket": "B",
+      "date": "2026-08-04",
+      "engine_paths": [
+        "tests/unit/llm/fixtures/openrouter_deepseek_v4_reasoning_response.json",
+        "tests/unit/llm/test_reasoning_codec_openai_summary_replay.py",
+        "tolokaforge/core/llm/__init__.py",
+        "tolokaforge/core/llm/presets.py",
+        "tolokaforge/core/llm/reasoning_codec.py"
+      ],
+      "model": "deepseek/deepseek-v4-flash-0731",
+      "pr": 846,
+      "reason": "5 engine-side path(s) outside Bucket-A allow-list",
+      "sha": "c09824e140cce842bdd1977c2f5672ef4c951935",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tests/unit/llm/fixtures/openrouter_deepseek_v4_reasoning_response.json",
+        "tests/unit/llm/test_reasoning_codec_openai_summary_replay.py",
+        "tolokaforge/core/data/model_presets.yaml",
+        "tolokaforge/core/data/pricing.json",
+        "tolokaforge/core/llm/__init__.py",
+        "tolokaforge/core/llm/presets.py",
+        "tolokaforge/core/llm/reasoning_codec.py"
+      ]
+    },
+    {
+      "bucket": "A",
+      "date": "2026-08-04",
+      "engine_paths": [],
+      "model": "qwen/qwen3.8-max",
+      "pr": 845,
+      "reason": "all touched paths in Bucket-A allow-list",
+      "sha": "fb4daef31766a4754304fdce078901ad2f5aca4a",
+      "touched_files": [
+        "tests/integration/llm/registry.py",
+        "tolokaforge/core/data/model_presets.yaml",
+        "tolokaforge/core/data/pricing.json"
+      ]
+    }
+  ]
+}

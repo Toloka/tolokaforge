@@ -138,6 +138,7 @@ jobs:
       with:
         token: ${{ github.token }}
         lfs: true
+        fetch-depth: 0
 
 
     - name: Install uv
@@ -224,6 +225,7 @@ jobs:
       with:
         token: ${{ github.token }}
         lfs: true
+        fetch-depth: 0
 
 
     - name: Install uv
@@ -328,6 +330,7 @@ jobs:
       with:
         token: ${{ github.token }}
         lfs: true
+        fetch-depth: 0
 
 
     - name: Install uv
