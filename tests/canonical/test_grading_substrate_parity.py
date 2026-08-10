@@ -72,8 +72,9 @@ describe — the proposition a hash source compares against, and what
     grade: a trial driven through ``RegisterTrial → GradeTrial`` on a config
     populating that component carries the marker production emits for it. The fold
     enumerates the registry and the renderer enumerates by hand, so this is what
-    holds the second list to the first — and the per-component marker is what a row
-    asserts beyond the fallback's absence, which a renamed segment satisfies.
+    holds the second list to the first — and the row names the marker rather than
+    asking whether the grade said anything, because a component whose branch went or
+    whose marker was renamed leaves the grade just as full either way.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
@@ -152,7 +153,6 @@ from tolokaforge.runner import models as runner_models
 from tolokaforge.runner import runner_pb2 as pb2
 from tolokaforge.runner import service as runner_service_module
 from tolokaforge.runner.grading import (
-    NO_COMPONENTS_EVALUATED,
     combine_grade_components,
     evaluate_db_probes,
     evaluate_jsonpath_checks,
@@ -3820,7 +3820,11 @@ def test_the_compared_custom_checks_segments_are_this_packs_two_verdicts(
     )
     assert satisfying_runner.components.custom_checks == pytest.approx(1.0)
     assert violating_runner.components.custom_checks == pytest.approx(0.0)
-    assert NO_COMPONENTS_EVALUATED not in violating_runner.reasons, violating_runner.reasons
+
+    # The pack declares one component, so the segment is the runner's whole account of
+    # the trial — asserted as the equality it is, which also pins that a grade carries
+    # no separator at either end.
+    assert violating_runner.reasons == violating
 
 
 # --------------------------------------------------------------------------
@@ -3843,15 +3847,12 @@ The key half is an **author** key rather than the bare registry name, because
 pack as ``grading_parity/<author key, dots to underscores>``; no pack exists under
 ``state_checks`` or ``transcript_rules``.
 
-The marker half is what a row asserts beyond the absence of
-:data:`NO_COMPONENTS_EVALUATED`. Every pack these rows drive declares one component,
-so deleting that component's branch from ``build_grade_reasons`` empties ``reasons``
-and the trial falls to the fallback — measured on all five rows, and the absence
-clause catches each. What it cannot catch is a marker that *changed*: a renamed
-segment leaves ``reasons`` non-empty and the absence clause true, so the marker is
-the only half that reds. It is also the half that would discriminate a deletion on a
-multi-component trial, where the other components' segments keep the absence clause
-true — a shape no pack in this table reaches.
+The marker half is the whole of what a row asserts about the text. Every pack these
+rows drive declares one component, so deleting that component's branch from
+``build_grade_reasons`` leaves the grade carrying the fold's own sentence and nothing
+else — measured on all five rows — and a marker that was merely *renamed* leaves the
+grade just as full. Neither is visible to a check that only asks whether the grade
+said anything, which is why a row names the marker production emits.
 
 Both halves are written out rather than derived. Comprehended from
 :data:`GRADE_COMPONENTS` the totality assertion below would compare a set against
@@ -3912,7 +3913,6 @@ def test_every_registered_component_narrates_itself_in_a_real_grade(
         f"{author_key} scored its component and the grade never named it: no "
         f"{marker!r} in {reasons!r}"
     )
-    assert NO_COMPONENTS_EVALUATED not in reasons, reasons
 
 
 # --------------------------------------------------------------------------

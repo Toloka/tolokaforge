@@ -894,6 +894,15 @@ something to say rather than on the component's score, because a suite that fail
 run under `fail_on_error: false` is left unscored and its error is the only account of
 why the trial earned nothing. The segment is the same text on both substrates.
 
+A trial that scored **no** component therefore contributes no component segment, and
+carries no placeholder in their place: the fold decided that grade without reading a
+score, so the fold's own sentence — `no component was configured and no weight names
+one, so nothing was scored and nothing was owed` for a task declaring no grading, or
+the sentence naming what was asked for and not counted — is the whole account, beside
+any skip note the ledger filed. The segments are joined once rather than appended to
+each other, so a grade whose components said nothing opens with its first real
+sentence rather than with a separator.
+
 **The recorded skips.** A trial can legitimately reach `GradeTrial` with a
 populated key whose evaluator cannot run. Each such site records a skip rather
 than nothing, and the reason lands in `Grade.reasons` so the outcome is visible:

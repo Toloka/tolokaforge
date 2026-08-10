@@ -50,11 +50,6 @@ from tolokaforge.runner.models import (
 
 logger = logging.getLogger(__name__)
 
-#: What ``build_grade_reasons`` returns when no component gave it anything to say.
-#: A test asserting its absence reads it from here, so the assertion cannot drift
-#: from the string production emits.
-NO_COMPONENTS_EVALUATED = "No grading components evaluated"
-
 
 def compute_state_diff(trial_state: dict[str, Any], golden_state: dict[str, Any]) -> StateDiff:
     """
@@ -781,7 +776,11 @@ def build_grade_reasons(
             even though it scored nothing.
 
     Returns:
-        Human-readable reasons string
+        The scored components' segments, joined — and empty where the trial scored
+        none of them. A grade for such a trial is not silent: the fold decides it
+        without reading a score and its own sentence says why, which the caller
+        appends. A placeholder here would state the opposite of what a renderer
+        omission means, and would be a second producer of the same account.
     """
     reasons = []
 
@@ -879,4 +878,4 @@ def build_grade_reasons(
     if custom_checks_reasons:
         reasons.append(custom_checks_reasons)
 
-    return " | ".join(reasons) if reasons else NO_COMPONENTS_EVALUATED
+    return " | ".join(reasons)

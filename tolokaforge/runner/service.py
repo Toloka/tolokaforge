@@ -1730,32 +1730,39 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
         # Build reasons string
         state_diff_dict = state_diff.model_dump() if state_diff else None
         transcript_result_dict = transcript_result.model_dump() if transcript_result else None
-        reasons = build_grade_reasons(
-            components_dict,
-            state_diff_dict,
-            transcript_result_dict,
-            judge_reasons=judge_reasons or None,
-            trace_checks_result=trace_checks_result.model_dump(mode="json"),
-            golden_replay=hash_result.golden_replay if hash_result is not None else None,
-            custom_checks_reasons=custom_checks_reasons,
-        )
+        # Collected and joined once. The components' renderer contributes nothing for a
+        # trial that scored nothing, and appending to its output would open that grade
+        # with a separator.
+        reason_segments = [
+            build_grade_reasons(
+                components_dict,
+                state_diff_dict,
+                transcript_result_dict,
+                judge_reasons=judge_reasons or None,
+                trace_checks_result=trace_checks_result.model_dump(mode="json"),
+                golden_replay=hash_result.golden_replay if hash_result is not None else None,
+                custom_checks_reasons=custom_checks_reasons,
+            )
+        ]
         if judge_status == pb2.JUDGE_STATUS_ERRORED:
-            reasons += f" | JUDGE ERRORED: {judge_reasons}"
+            reason_segments.append(f"JUDGE ERRORED: {judge_reasons}")
 
         # A populated key whose evaluator was skipped scored nothing; say so on the
         # grade rather than letting the trial look fully evaluated.
         if audit.skip_notes:
-            reasons += " | " + "; ".join(audit.skip_notes)
+            reason_segments.append("; ".join(audit.skip_notes))
 
         # The ledger's skip notes cover populated SCORED_CHECK keys; hash.weight is a
         # CONFIG_INPUT the fold can skip on its own, so it reports itself.
         if state_checks_slot.inert_weight_reason:
-            reasons += f" | {state_checks_slot.inert_weight_reason}"
+            reason_segments.append(state_checks_slot.inert_weight_reason)
 
         # A fold that counted nothing is not described by any component's reasons, so its
         # own sentence is what stops a 0.0 arriving beside components that all read as passing.
         if verdict.reason:
-            reasons += f" | {verdict.reason}"
+            reason_segments.append(verdict.reason)
+
+        reasons = " | ".join(segment for segment in reason_segments if segment)
 
         logger.info(
             f"GradeTrial: {trial_id} - score={score:.2f}, pass={binary_pass}, "
