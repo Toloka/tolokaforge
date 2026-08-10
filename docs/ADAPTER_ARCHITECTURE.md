@@ -81,17 +81,47 @@ tau = "tolokaforge_adapter_tau:TauAdapter"
 
 ```python
 # tolokaforge/adapters/__init__.py
-import importlib.metadata
+from tolokaforge.core.plugin_registry import discover_entry_points
 
 def _discover_adapters() -> dict[str, type]:
     adapters = {"native": NativeAdapter}  # Always built-in
-    for ep in importlib.metadata.entry_points(group="tolokaforge.adapters"):
+    for name, ep in discover_entry_points("tolokaforge.adapters").items():
         try:
-            adapters[ep.name] = ep.load()
-        except Exception as e:
-            logger.debug("Adapter %s not available: %s", ep.name, e)
+            adapters[name] = ep.load()
+        except Exception as exc:
+            _FAILED_ADAPTERS[name] = exc
+            logger.warning("Adapter %r failed to load: %s", name, exc, exc_info=True)
     return adapters
 ```
+
+`discover_entry_points` raises `DuplicateRegistrationError` before any
+adapter class is loaded when two installed distributions register the same
+adapter name; a broken adapter is stashed in `_FAILED_ADAPTERS` and only
+surfaces when `get_adapter(<broken_name>)` asks for that specific adapter,
+so one broken plug-in never poisons resolution of a healthy sibling.
+
+### Fail-loud registry pattern
+
+Every engine-side `importlib.metadata` entry-point registry — `tolokaforge.adapters`,
+the five plugin-registry seams (`tolokaforge.runtime_backends`,
+`tolokaforge.trial_graders`, `tolokaforge.conductors`,
+`tolokaforge.service_readiness_probes`, `tolokaforge.turn_policies`), and any
+future group added under [ADR-0030](adr/0030-tolokaforge-models-split.md) —
+routes discovery through `tolokaforge.core.plugin_registry.discover_entry_points`.
+The primitive splits fail-loud into two shapes:
+
+- **Duplicate name — an unresolvable ambiguity.** Two entry points with the
+  same `name` in the same group raise `DuplicateRegistrationError` before any
+  class is loaded, before any budget is spent. The message names both
+  providing distributions so the operator can uninstall one to resolve.
+- **Broken import — a per-name defect.** A target that raises on `.load()`
+  propagates its original exception only when its own name is requested; a
+  healthy sibling in the same group stays resolvable.
+
+New engine registries reuse this primitive rather than open-coding their own
+scan. The [ADR-0030 follow-up 5 / 11 model-data
+registry](adr/0030-tolokaforge-models-split.md#follow-ups) is the next
+planned consumer.
 
 ### Installation
 

@@ -1,5 +1,6 @@
 """Unit tests for harness adapters."""
 
+import importlib.metadata
 import logging
 from pathlib import Path
 
@@ -8,10 +9,66 @@ import pytest
 from tolokaforge.adapters import available_adapters, get_adapter
 from tolokaforge.adapters.base import AdapterEnvironment
 from tolokaforge.adapters.native import NativeAdapter
+from tolokaforge.core import plugin_registry
 from tolokaforge.core.models import RunConfig
 from tolokaforge.core.orchestrator import Orchestrator
+from tolokaforge.core.plugin_registry import DuplicateRegistrationError
 
 pytestmark = pytest.mark.unit
+
+
+class _FakeDist:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+class _FakeEntryPoint:
+    """Duck-typed stand-in for :class:`importlib.metadata.EntryPoint`.
+
+    Discovery in :func:`plugin_registry.discover_entry_points` reads
+    ``ep.name`` / ``ep.dist`` (for the duplicate message); ``ep.load()`` is
+    invoked by ``_discover_adapters`` per surviving entry point. Copied
+    locally instead of imported from ``test_plugin_registry.py`` — the tests
+    remain self-contained.
+    """
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        target: object = None,
+        load_error: Exception | None = None,
+        dist: str = "pkg",
+    ) -> None:
+        self.name = name
+        self.dist = _FakeDist(dist)
+        self._target = target
+        self._load_error = load_error
+
+    def load(self) -> object:
+        if self._load_error is not None:
+            raise self._load_error
+        return self._target
+
+
+@pytest.fixture
+def _isolate_adapter_discovery(monkeypatch: pytest.MonkeyPatch):
+    """Reset the plugin_registry discovery cache and adapter dicts around a case.
+
+    Tests that inject entry-points under ``tolokaforge.adapters`` must clear
+    the per-group cache so the next scan re-reads their injection instead of
+    a stale prior map, and must reset ``_ADAPTERS`` / ``_FAILED_ADAPTERS`` so
+    lazy rediscovery fires. Mirrors the pattern in
+    ``test_plugin_registry.py::_isolate_registry`` but kept local per the
+    plan's no-cross-test-import rule.
+    """
+    import tolokaforge.adapters as adapters_module
+
+    plugin_registry._clear_discovery_cache()
+    monkeypatch.setattr(adapters_module, "_ADAPTERS", {})
+    monkeypatch.setattr(adapters_module, "_FAILED_ADAPTERS", {})
+    yield
+    plugin_registry._clear_discovery_cache()
 
 
 class TestGetAdapter:
@@ -35,23 +92,17 @@ class TestGetAdapter:
         with pytest.raises(ValueError, match="Unknown adapter type"):
             get_adapter("unknown_type", {})
 
-    def test_failed_entry_point_is_reported(self, monkeypatch, caplog):
+    def test_failed_entry_point_is_reported(self, monkeypatch, caplog, _isolate_adapter_discovery):
         """A failing adapter entry-point surfaces its original import error via get_adapter()."""
-        import tolokaforge.adapters as adapters_module
-
-        class BrokenEntryPoint:
-            name = "broken_adapter"
-
-            def load(self):
-                raise ImportError("missing dependency for broken_adapter")
-
-        monkeypatch.setattr(
-            adapters_module.importlib.metadata,
-            "entry_points",
-            lambda group: [BrokenEntryPoint()],
+        broken = _FakeEntryPoint(
+            "broken_adapter",
+            load_error=ImportError("missing dependency for broken_adapter"),
         )
-        monkeypatch.setattr(adapters_module, "_ADAPTERS", {})
-        monkeypatch.setattr(adapters_module, "_FAILED_ADAPTERS", {})
+        monkeypatch.setattr(
+            importlib.metadata,
+            "entry_points",
+            lambda *, group: [broken] if group == "tolokaforge.adapters" else [],
+        )
 
         caplog.set_level(logging.WARNING, logger="tolokaforge.adapters")
 
@@ -68,6 +119,27 @@ class TestGetAdapter:
         names = available_adapters()
         assert "native" in names
         assert "broken_adapter" not in names
+
+    def test_duplicate_adapter_entry_points_fail_loud(
+        self, monkeypatch, _isolate_adapter_discovery
+    ):
+        """Two adapter entry-points with the same name fail loud before any class loads."""
+        first = _FakeEntryPoint("colliding_id", target=object(), dist="pkg-first")
+        second = _FakeEntryPoint("colliding_id", target=object(), dist="pkg-second")
+        monkeypatch.setattr(
+            importlib.metadata,
+            "entry_points",
+            lambda *, group: [first, second] if group == "tolokaforge.adapters" else [],
+        )
+
+        with pytest.raises(DuplicateRegistrationError) as excinfo:
+            available_adapters()
+
+        message = str(excinfo.value)
+        assert "colliding_id" in message
+        assert "pkg-first" in message
+        assert "pkg-second" in message
+        assert excinfo.value.distributions == ("pkg-first", "pkg-second")
 
     def test_available_adapters_lists_builtins(self):
         """available_adapters() returns built-ins on a cold call without monkeypatching."""
