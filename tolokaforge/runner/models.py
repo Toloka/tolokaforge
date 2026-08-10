@@ -448,6 +448,20 @@ class RunnerStateChecksConfig(BaseModel):
             weight=self.hash_weight,
         )
 
+    def authored_state_sources(self) -> dict[str, Any]:
+        """This block's state sources under the author's key names.
+
+        The same translation :meth:`_authored_hash_block` performs, one level up, for a
+        rule that reads the whole block rather than the hash alone. Only the three keys
+        declaring a source are carried: the rest of the block configures how a source is
+        scored, not whether one is read.
+        """
+        return {
+            "hash": self._authored_hash_block().model_dump(),
+            "jsonpaths": self.jsonpath_checks,
+            "db_probes": [probe.model_dump() for probe in self.db_probes],
+        }
+
     def hash_comparison_basis(self) -> HashComparisonBasis:
         """Which state a hash comparison over this config compares the trial against.
 

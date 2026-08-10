@@ -584,6 +584,22 @@ what it replaced: such a trial stays inside the measured denominator, so the zer
 would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
 failure reported against evidence that was never read.
 
+**A `state_checks` block the trial cannot answer fails the RPC for the same reason.**
+Before any grading branch reads the database, `GradeTrial` refuses two authoring
+shapes by name, each with the key, the offending assertion and the way out:
+
+| shape | why it cannot be graded |
+|---|---|
+| a block reading the database — a `path:` addressing it, or `hash` enabled with or without a source — on a task whose `initial_state` provisions no tables, schemas or unstable fields | no DB service was registered for the trial, so there is no state to read |
+| a `state_checks.jsonpaths` entry whose `path:` is rooted at `filesystem` | the runner composes its JSONPath state from the trial's database alone, so the assertion can never match; `path_glob:` + `contains_ci:` is the form both substrates read |
+
+Neither is scored. Evaluating either against the state it lacks yields `0.0` and a
+reason about state the grader never read — a number indistinguishable from an agent
+that failed the assertion, entering every rate above as its failure. The authoring gate
+states the same rule before a trial is scheduled; `GradeTrial` states it because that
+gate does not reach every trial — it is skipped wholesale for a task whose grading
+source cannot be interrogated, and it does not ship inside the runner image.
+
 The consequence is that such a trial is **counted but unscored**. The conductor's
 grading phase catches the exception, records the reason on
 `Trajectory.grading_error`, and lets the trial finish its normal path: its

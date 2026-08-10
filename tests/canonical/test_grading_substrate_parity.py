@@ -2590,6 +2590,138 @@ def test_a_state_reading_pack_grades_through_the_runners_own_registration(
 
 
 # --------------------------------------------------------------------------
+# A state_checks block the trial cannot answer is refused, never scored
+# --------------------------------------------------------------------------
+
+_A_SEEDED_TABLE = {"orders": [{"id": "O1", "status": "pending"}]}
+_A_FILESYSTEM_PATH = "$.filesystem['/env/fs/agent-visible/x.py']"
+_A_DATABASE_PATH = "$.db.orders[0].status"
+
+
+def _in_memory_task(
+    task_id: str,
+    *,
+    state_checks: runner_models.RunnerStateChecksConfig,
+    seeds_a_database: bool,
+) -> runner_models.TaskDescription:
+    """A task carrying nothing but the ``state_checks`` block under test.
+
+    Built in memory rather than committed as a fixture pack, because every shape here
+    is one the corpus sweeps refuse on disk. It is also the population these cells
+    stand for: a task from an adapter maintained outside this repository, whose
+    authoring gate was skipped or whose seeded tables could not be resolved.
+    """
+    return runner_models.TaskDescription(
+        task_id=task_id,
+        name=task_id,
+        category="test",
+        description=task_id,
+        adapter_type="native",
+        system_prompt="s",
+        initial_state=runner_models.RunnerInitialStateConfig(
+            tables=_A_SEEDED_TABLE if seeds_a_database else {}
+        ),
+        grading=runner_models.RunnerGradingConfig(
+            weights={"state_checks": 1.0}, state_checks=state_checks
+        ),
+    )
+
+
+def _refusal_for(
+    servicer, context, task_description: runner_models.TaskDescription, trial_id: str
+) -> pb2.GradeTrialResponse:
+    _register_pack(servicer, context, task_description, trial_id)
+    return _grade_registered_trial(
+        servicer, context, trial_id, json.dumps([{"role": "user", "content": "hi"}])
+    )
+
+
+def test_a_database_reading_block_on_a_task_that_seeds_nothing_is_refused_by_name(
+    runner_service, mock_grpc_context
+):
+    """The author hears which key and which assertion, not that a trial went missing.
+
+    ``TrialNotFoundError`` is asserted absent rather than merely unmentioned: it is
+    what this shape produced while the read happened before anything checked whether
+    there was a database to read, and it names the runner's own bookkeeping instead of
+    the pack.
+    """
+    task = _in_memory_task(
+        "refusal_jsonpaths",
+        state_checks=runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[
+                {"path": _A_DATABASE_PATH, "equals": "shipped", "description": "order O1 shipped"}
+            ]
+        ),
+        seeds_a_database=False,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_jsonpaths:0")
+
+    assert response.success is False
+    assert "state_checks.jsonpaths" in response.error
+    assert _A_DATABASE_PATH in response.error
+    assert "order O1 shipped" in response.error
+    assert "TrialNotFoundError" not in response.error
+
+
+def test_a_source_less_hash_block_on_a_task_that_seeds_nothing_is_refused_by_name(
+    runner_service, mock_grpc_context
+):
+    """The hash block declaring no source at all — the shape that reads the DB first.
+
+    ``_execute_hash_grading`` fetches the trial's stable hash before it consults
+    ``expect_initial_state`` or ``golden_actions``, so a block declaring neither
+    reaches the database exactly as one declaring both does. Its basis is named in the
+    refusal, so the author can tell which of the three hash shapes was refused.
+    """
+    task = _in_memory_task(
+        "refusal_hash",
+        state_checks=runner_models.RunnerStateChecksConfig(hash_enabled=True),
+        seeds_a_database=False,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_hash:0")
+
+    assert response.success is False
+    assert "state_checks.hash" in response.error
+    assert runner_models.HashComparisonBasis.UNDECLARED_INITIAL_STATE.value in response.error
+    assert "TrialNotFoundError" not in response.error
+
+
+def test_a_filesystem_rooted_path_is_refused_rather_than_scored_against_the_agent(
+    runner_service, mock_grpc_context
+):
+    """The refusal that stops a narrowed state fetch becoming a zero the agent earned.
+
+    The task seeds a database, so nothing here is about a missing DB service. The
+    assertion addresses a root the runner's JSONPath state does not carry, and the
+    outcome that must not happen is a scored ``0.0``: dropping such an assertion out
+    of the fetch and evaluating it against no state reports
+    ``DB state unavailable for JSONPath checks`` and grades the agent for it.
+
+    ``success is False`` is what carries that claim. The reason text is asserted absent
+    beside it, and on a refusal there is no reason text to search — that assertion
+    speaks only against a build which scores this pack instead of refusing it, which is
+    the build it exists for.
+    """
+    task = _in_memory_task(
+        "refusal_filesystem",
+        state_checks=runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": _A_FILESYSTEM_PATH, "contains": "def divide"}]
+        ),
+        seeds_a_database=True,
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, "refusal_filesystem:0")
+
+    assert response.success is False, response.grade.reasons
+    assert "path_glob" in response.error
+    assert _A_FILESYSTEM_PATH in response.error
+    assert "DB state unavailable" not in response.grade.reasons
+
+
+# --------------------------------------------------------------------------
 # 11. Both substrates read every per-constraint config input
 # --------------------------------------------------------------------------
 
