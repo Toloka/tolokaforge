@@ -1,10 +1,11 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Eighteen locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+Nineteen locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
 what each grading key is, which substrate scores it, and whether the two agree.
-Locks 16-18 are over what a grade *does* and *says*, which the manifest does not
-describe — the proposition a hash source compares against, and what
-``Grade.reasons`` carries for a component that took a verdict:
+Locks 16-19 are over what a grade *does* and *says*, which the manifest does not
+describe — the proposition a hash source compares against, what the hash reads a
+record's numeric-looking strings as, and what ``Grade.reasons`` carries for a
+component that took a verdict:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves; a position below a claimed
@@ -12,8 +13,9 @@ describe — the proposition a hash source compares against, and what
 2. the exemption sets are frozen here — in the test module, never beside the
    manifest data they guard — so widening one is a reviewable edit, every entry
    matching lock 3's predicate names both evaluators and owns a fixture, and every
-   ``DIFFERENTIAL_INTEGRATION`` claim's ``enforcing_test`` nodeid resolves to a test
-   function pytest would collect;
+   entry carrying an ``enforcing_test`` — at any tier, since a canonically proven
+   claim may still record where it was observed in production — has that nodeid
+   resolve to a test function pytest would collect;
 3. every key claiming both substrates at ``DIFFERENTIAL_CANONICAL`` demonstrably
    moves both substrates' component scores, through each substrate's real
    production evaluator and its real combine;
@@ -32,8 +34,10 @@ describe — the proposition a hash source compares against, and what
    inside it — which is what makes lock 6's canonical-tier hash inputs the only
    values that path yields rather than a stand-in for it;
 8. every ``DIFFERENTIAL_CANONICAL`` claim lock 3's predicate cannot reach is
-   enumerated here, and the two tables those claims rest on — lock 6's weight sweep
-   and lock 9's method answers — stay substantive;
+   enumerated here, and the tables those claims rest on — lock 6's weight sweep,
+   lock 9's method answers, lock 19's folding matrix — stay substantive; lock 19's
+   own nodeid is resolved besides, so that one differential cannot be deleted or
+   renamed with the set unchanged;
 9. both substrates aggregate one split pair of deterministic components by the
    author's ``combine.method``, each method pinned to a score written out here;
 10. both substrates score one ``trace_checks`` pack to the same component through
@@ -74,13 +78,19 @@ describe — the proposition a hash source compares against, and what
     enumerates the registry and the renderer enumerates by hand, so this is what
     holds the second list to the first — and the row names the marker rather than
     asking whether the grade said anything, because a component whose branch went or
-    whose marker was renamed leaves the grade just as full either way.
+    whose marker was renamed leaves the grade just as full either way;
+19. a record field's numeric-looking string folds on both substrates when — and only
+    when — ``state_checks.numeric_string_fields`` names that field: a matrix pairing a
+    representation difference against a genuine one, under the empty list, the list
+    naming the field that differs and a list of the same length naming another
+    declared field, so a build reading the list's length rather than the names it
+    holds fails one row alone.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10, 11, 15, 16, 17 and 18 drive a real trial, and each reads it
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18 and 19 drive a real trial, and each reads it
 through one fixture loader, so what a ``grading_parity`` pack can express bounds what
 they can prove — for locks 15 and 18 that bound covers the keys their driver tables
 send to a parity pack, the hash family, the probes and the judge being driven from
@@ -238,6 +248,7 @@ whatever the ledger recorded for the keys that feed it.
 _HASH_FAMILY_ROOT = "state_checks.hash"
 _EXPECT_INITIAL_STATE_KEY = "state_checks.hash.expect_initial_state"
 _GOLDEN_ACTIONS_KEY = "state_checks.hash.golden_actions"
+_NUMERIC_STRING_FIELDS_KEY = "state_checks.numeric_string_fields"
 
 # The one in-repo pack that both declares golden actions and gives them a world to be
 # replayed in — a JSON initial-state file and an ``mcp_server`` whose tools they call.
@@ -300,6 +311,7 @@ _NON_DIFFERENTIAL_SCORED_KEYS = frozenset(
 _CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3 = frozenset(
     {
         "state_checks.hash.weight",
+        "state_checks.numeric_string_fields",
         "combine.method",
         "combine.weights",
         "trace_checks",
@@ -509,23 +521,23 @@ def _differential_entries() -> tuple[GradingKey, ...]:
     )
 
 
-def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
-    """The named integration test exists as a function pytest would collect.
+def _assert_nodeid_is_collectable(label: str, nodeid: str) -> None:
+    """The nodeid names a module-level function pytest would collect.
 
     Resolved by parsing the module, never by importing it: the integration tier
     pulls testcontainers and a docker daemon, neither of which the canonical tier
     has. That is also the limit of what this can prove — the nodeid resolves and is
-    collectable; whether it *passes* is what running the integration tier answers.
+    collectable; whether it *passes* is what running that tier answers.
     """
-    module_path, separator, function_name = item.enforcing_test.partition("::")
+    module_path, separator, function_name = nodeid.partition("::")
     assert separator, (
-        f"{item.author_key}: enforcing_test {item.enforcing_test!r} is a module path, not a "
-        "pytest nodeid, so it names no test function"
+        f"{label} {nodeid!r} is a module path, not a pytest nodeid, so it names a file that "
+        "may hold no test function at all"
     )
     module_file = _REPO_ROOT / module_path
     assert module_file.is_file(), (
-        f"{item.author_key}: enforcing_test module {module_path!r} does not exist on disk, "
-        "so nothing proves the integration differential"
+        f"{label} names module {module_path!r}, which does not exist on disk, so nothing "
+        "proves the differential"
     )
     declared = {
         node.name
@@ -534,13 +546,18 @@ def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
     }
     collectable = sorted(name for name in declared if name.startswith("test_"))
     assert function_name in declared, (
-        f"{item.author_key}: enforcing_test names {function_name!r}, which {module_path} does "
-        f"not declare at module level. It declares {collectable}"
+        f"{label} names {function_name!r}, which {module_path} does not declare at module "
+        f"level. It declares {collectable}"
     )
     assert function_name.startswith("test_"), (
-        f"{item.author_key}: enforcing_test names {function_name!r}, which pytest does not "
-        "collect as a test"
+        f"{label} names {function_name!r}, which pytest does not collect as a test — the nodeid "
+        "resolves to a function no run of that module would execute"
     )
+
+
+def _assert_enforcing_test_is_collectable(item: GradingKey) -> None:
+    """The integration test the entry names exists as a function pytest would collect."""
+    _assert_nodeid_is_collectable(f"{item.author_key}: enforcing_test", item.enforcing_test)
 
 
 def _split_dotted(path: str) -> tuple[Any, list[str]]:
@@ -1144,7 +1161,7 @@ def test_exemption_sets_are_frozen_and_classified(test_data_dir):
     )
 
     for item in GRADING_KEYS:
-        if item.enforcement is Enforcement.DIFFERENTIAL_INTEGRATION:
+        if item.enforcing_test:
             _assert_enforcing_test_is_collectable(item)
         for evaluator in (item.core_evaluator, item.runner_evaluator):
             if evaluator is None:
@@ -1872,6 +1889,86 @@ def test_the_hash_verdict_is_binary_on_both_substrates(test_data_dir):
 # --------------------------------------------------------------------------
 
 
+def _assert_the_folding_matrix_discriminates() -> None:
+    """The property lock 19's differential rests on, read off its matrix.
+
+    Folding is per-field, so the rows have to differ in the places that make that
+    question askable: a representation difference a fold may collapse beside a genuine
+    difference it must refuse, and two field lists of one name each — the field that
+    differs, and another the record declares.
+
+    The differential is then bound to *this* matrix, because the clauses below and the
+    rows lock 19 actually drives are otherwise two lists nothing holds together: slicing
+    the parametrisation would drop the control rows while every clause here still read
+    the whole constant. What that binding reaches is the decorator naming the constant
+    whole; a helper filtering rows at call time would still escape it.
+    """
+    module_path, _, function_name = _FOLDING_DIFFERENTIAL_NODEID.partition("::")
+    differential = next(
+        (
+            node
+            for node in ast.parse((_REPO_ROOT / module_path).read_text()).body
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            and node.name == function_name
+        ),
+        None,
+    )
+    assert differential is not None, (
+        f"{module_path} declares no module-level {function_name!r}, so the matrix below "
+        "is asserted over and driven by nothing"
+    )
+    parametrisation = [
+        node for decorator in differential.decorator_list for node in ast.walk(decorator)
+    ]
+    assert any(
+        isinstance(node, ast.Name) and node.id == _FOLDING_MATRIX_NAME for node in parametrisation
+    ), (
+        f"{function_name} is not parametrised over {_FOLDING_MATRIX_NAME}, so the rows this "
+        "test asserts the discrimination of and the rows that differential drives are two "
+        "separate lists"
+    )
+    assert not any(isinstance(node, ast.Subscript) for node in parametrisation), (
+        f"{function_name}'s parametrisation subscripts its source, so it can drive a subset "
+        f"of {_FOLDING_MATRIX_NAME} while every clause here still reads the whole constant. "
+        "Dropping the control rows that way reopens the per-field question in silence"
+    )
+
+    record = _FOLDING_INITIAL_ORDERS["orders"][0]
+    assert {_FOLDING_FIELD, _FOLDING_CONTROL_FIELD} <= set(record), (
+        f"the folding record {record} does not declare both {_FOLDING_FIELD!r} and "
+        f"{_FOLDING_CONTROL_FIELD!r}, so a row listing the second names a field no state "
+        "carries and the per-field rule is never asked a question"
+    )
+
+    amounts = {cell.final_amount for cell in _NUMERIC_STRING_FOLDING_MATRIX}
+    assert len(amounts) == 2 and _FOLDING_DECLARED_AMOUNT not in amounts, (
+        f"the matrix leaves the trial's {_FOLDING_FIELD} at {sorted(amounts)} against a declared "
+        f"{_FOLDING_DECLARED_AMOUNT!r}. It needs exactly two, neither the declared string itself, "
+        "or there is no representation difference for a fold to collapse"
+    )
+    folds = {amount for amount in amounts if float(amount) == float(_FOLDING_DECLARED_AMOUNT)}
+    assert len(folds) == 1, (
+        f"{sorted(folds)} of the matrix's amounts are numerically equal to "
+        f"{_FOLDING_DECLARED_AMOUNT!r}, not one. With none there is nothing a fold may collapse; "
+        "with both there is no genuine difference a fold must refuse"
+    )
+
+    listed = {cell.numeric_string_fields for cell in _NUMERIC_STRING_FOLDING_MATRIX}
+    assert listed == {(), (_FOLDING_FIELD,), (_FOLDING_CONTROL_FIELD,)}, (
+        f"the matrix's field lists are {sorted(listed)}, not the empty list beside two lists of "
+        f"one name each — {_FOLDING_FIELD!r}, which differs, and {_FOLDING_CONTROL_FIELD!r}, "
+        "which does not. Drop the second and a build folding whenever the list is non-empty "
+        "answers every remaining row correctly"
+    )
+
+    matched = [cell for cell in _NUMERIC_STRING_FOLDING_MATRIX if cell.state_checks == 1.0]
+    assert matched == [_FoldingCell((_FOLDING_FIELD,), next(iter(folds)), 1.0)], (
+        f"the matrix expects a match on {matched}, not on the one row pairing the listed "
+        "differing field with the amount that is the declared one written another way. Every "
+        "other row is a refusal, so a table agreeing everywhere proves no discrimination"
+    )
+
+
 def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive():
     """Lock 3 selects ``kind: SCORED_CHECK``, so ``CONFIG_INPUT`` and ``AGGREGATION`` escape it.
 
@@ -1880,10 +1977,18 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
     names asserted nothing. So this asserts the property each escaped claim depends
     on instead: that lock 6's sweep still spans the weights where a fold rule is
     distinguishable at all, that lock 9's answer table still spans the declared
-    combine methods with one distinct score each, and that lock 14's weight maps still
+    combine methods with one distinct score each, that lock 14's weight maps still
     span the pair a membership rule is distinguishable over while its zero-share table
-    still answers ``all``/``any`` differently from ``weighted``. Membership alone
-    enforces nothing: a differential deleted wholesale leaves the escaped set unchanged.
+    still answers ``all``/``any`` differently from ``weighted``, and that lock 19's
+    folding matrix still pairs a representation difference against a genuine one under
+    field lists that differ by name rather than by length. Membership alone enforces
+    nothing: a differential deleted wholesale leaves the escaped set unchanged.
+
+    Lock 19 is the one entry here that does not rest on membership: its nodeid is
+    resolved through the same parse the ``enforcing_test`` claims use, and its
+    parametrisation is read out of the same AST, so deleting the function, renaming it,
+    or pointing it at a *subset* of the matrix asserted here all fail this test. The
+    other entries keep the weaker guarantee.
     """
     reached = {item.author_key for item in _differential_entries()}
     escaped = {
@@ -1945,6 +2050,11 @@ def test_canonical_differentials_outside_lock_3_are_enumerated_and_substantive()
         "_ZERO_WEIGHT_VERDICTS pins the same verdicts under all/any as under weighted, so the "
         "zero-total-weight rule scoped to every method would satisfy the whole table"
     )
+
+    _assert_nodeid_is_collectable(
+        f"{_NUMERIC_STRING_FIELDS_KEY}: its differential", _FOLDING_DIFFERENTIAL_NODEID
+    )
+    _assert_the_folding_matrix_discriminates()
 
 
 # --------------------------------------------------------------------------
@@ -4156,6 +4266,205 @@ def test_every_registered_component_narrates_itself_in_a_real_grade(
         f"{author_key} scored its component and the grade never named it: no "
         f"{marker!r} in {reasons!r}"
     )
+
+
+# --------------------------------------------------------------------------
+# 19. Both substrates fold a listed numeric-string field alike
+# --------------------------------------------------------------------------
+
+_FOLDING_TASK_ID = "parity_numeric_string_folding"
+_FOLDING_FIELD = "amount"
+_FOLDING_CONTROL_FIELD = "quantity"
+_FOLDING_DECLARED_AMOUNT = "130.00"
+
+#: The record the folding task seeds. Its money field is the one a row may list, its
+#: quantity the declared field a row may list *instead* — same list length, different
+#: name, so a build reading the list's length rather than the names it holds cannot
+#: tell the two rows apart.
+_FOLDING_INITIAL_ORDERS: dict[str, Any] = {
+    "orders": [{"order_id": "O1", "amount": _FOLDING_DECLARED_AMOUNT, "quantity": "2"}]
+}
+
+
+@dataclass(frozen=True)
+class _FoldingCell:
+    """One row: what the pack listed, what the trial left, what both substrates owe."""
+
+    numeric_string_fields: tuple[str, ...]
+    final_amount: str
+    state_checks: float
+
+
+#: ``"130.0"`` is the declared amount written another way; ``"131.0"`` is a different
+#: amount. Folding is representational, so only the first can collapse, and only for a
+#: row that named the field it sits under.
+_NUMERIC_STRING_FOLDING_MATRIX: tuple[_FoldingCell, ...] = (
+    _FoldingCell((), "130.0", 0.0),
+    _FoldingCell((), "131.0", 0.0),
+    _FoldingCell((_FOLDING_FIELD,), "130.0", 1.0),
+    _FoldingCell((_FOLDING_FIELD,), "131.0", 0.0),
+    _FoldingCell((_FOLDING_CONTROL_FIELD,), "130.0", 0.0),
+    _FoldingCell((_FOLDING_CONTROL_FIELD,), "131.0", 0.0),
+)
+
+_FOLDING_MATRIX_NAME = "_NUMERIC_STRING_FOLDING_MATRIX"
+"""The matrix constant's own name, so lock 8 can read it out of the differential's AST."""
+
+_FOLDING_DIFFERENTIAL_NODEID = (
+    "tests/canonical/test_grading_substrate_parity.py"
+    "::test_both_substrates_fold_a_listed_numeric_string_field_alike"
+)
+"""The differential the matrix above exists for, named so lock 8 can resolve it.
+
+Membership in :data:`_CANONICAL_DIFFERENTIALS_OUTSIDE_LOCK_3` says the claim needs a
+differential in this module; this says which function it is, and lock 8 holds the
+module to declaring it.
+"""
+
+#: What the runner's ``Grade.reasons`` carries for each verdict the matrix pins. Read
+#: beside the component so a row scoring 0.0 is a hash verdict rather than a component
+#: that took no verdict at all and left the wire's default behind.
+_FOLDING_HASH_SENTENCE = {1.0: "State: hash match", 0.0: "State mismatch"}
+
+
+def _folding_label(cell: _FoldingCell) -> str:
+    """One row's inputs as a name — never the verdict it is asserted against."""
+    listed = "_".join(cell.numeric_string_fields) or "nothing"
+    return f"{listed}_listed_{cell.final_amount.replace('.', '_')}"
+
+
+def _folding_task(numeric_string_fields: tuple[str, ...]) -> dict[str, Any]:
+    """The folding task as the runner takes it, listing ``numeric_string_fields``."""
+    return {
+        "task_id": _FOLDING_TASK_ID,
+        "name": "Numeric string folding",
+        "category": "test",
+        "description": "A trial whose money field ends in another representation",
+        "adapter_type": "native",
+        "system_prompt": "You are a test assistant.",
+        "initial_state": {
+            "tables": _FOLDING_INITIAL_ORDERS,
+            "schemas": [
+                {
+                    "table_name": "orders",
+                    "fields": {"order_id": "string", "amount": "string", "quantity": "string"},
+                    "primary_key": "order_id",
+                }
+            ],
+        },
+        "agent_tools": [],
+        "user_tools": [],
+        "grading": {
+            "combine_method": "weighted",
+            "weights": {"state_checks": 1.0},
+            "pass_threshold": 0.5,
+            "state_checks": {
+                "hash_enabled": True,
+                "expect_initial_state": True,
+                "numeric_string_fields": list(numeric_string_fields),
+            },
+        },
+    }
+
+
+def _folding_core_grading(numeric_string_fields: tuple[str, ...]) -> dict[str, Any]:
+    """The same declaration as core takes it, in the authored block's own naming."""
+    return {
+        "combine": {"method": "weighted", "weights": {"state_checks": 1.0}, "pass_threshold": 0.5},
+        "state_checks": {
+            "hash": {"enabled": True, "expect_initial_state": True},
+            "numeric_string_fields": list(numeric_string_fields),
+        },
+    }
+
+
+def _folding_final_orders(final_amount: str) -> dict[str, Any]:
+    """The trial's database with its money field rewritten and nothing else moved."""
+    return {"orders": [{**_FOLDING_INITIAL_ORDERS["orders"][0], "amount": final_amount}]}
+
+
+def _drive_numeric_string_folding(
+    servicer: RunnerServiceImpl, context: Any, *, trial_id: str, cell: _FoldingCell
+) -> pb2.GradeTrialResponse:
+    """Grade a trial whose money field ends in ``cell.final_amount``.
+
+    The mutation crosses the trial's own db-service and the evaluator hashes both
+    sides back through it, so what the fold reads is the record that service stored
+    rather than a mapping this module handed a hasher.
+    """
+    task_description = runner_models.TaskDescription.model_validate(
+        _folding_task(cell.numeric_string_fields)
+    )
+    _register_pack(servicer, context, task_description, trial_id)
+    servicer._run_async(
+        servicer.db_client.mutate(
+            trial_id,
+            "orders",
+            [
+                {
+                    "op": "upsert",
+                    "record": _folding_final_orders(cell.final_amount)["orders"][0],
+                    "key": "order_id",
+                }
+            ],
+        )
+    )
+    return _grade_registered_trial(servicer, context, trial_id, _HASH_TRANSCRIPT)
+
+
+def _core_numeric_string_folding_verdict(cell: _FoldingCell) -> float:
+    """Core's ``state_checks`` for the same row, built from the row and nothing else."""
+    grade = GradingEngine(
+        core_models.GradingConfig(**_folding_core_grading(cell.numeric_string_fields)),
+        task_initial_state=core_models.InitialStateConfig(json_db=_FOLDING_INITIAL_ORDERS),
+    ).grade_trajectory(
+        _messageless_trajectory(_FOLDING_TASK_ID),
+        {"db": _folding_final_orders(cell.final_amount)},
+    )
+    return grade.components.state_checks
+
+
+@pytest.mark.parametrize(
+    "cell",
+    tuple(pytest.param(cell, id=_folding_label(cell)) for cell in _NUMERIC_STRING_FOLDING_MATRIX),
+)
+def test_both_substrates_fold_a_listed_numeric_string_field_alike(
+    cell, runner_service, mock_grpc_context
+):
+    """``state_checks.numeric_string_fields``'s ``BOTH_SCORE_PARITY`` claim.
+
+    The declared hash source is ``expect_initial_state``, because the key is read once
+    per grade before the runner picks a basis and in every one of core's three
+    branches — so the source costs the claim nothing, and it is the one both substrates
+    can drive in process with no golden world to replay an action in.
+
+    Each arm reaches the trial's final state its own way and neither reads what the
+    other computed: the runner mutates its own db-service and grades over its real
+    handlers, core hashes the row's final mapping against the task's declared initial
+    state in its own algebra. Six cells of agreement are therefore six measurements
+    rather than one taken twice.
+
+    What the matrix cannot express: one table, one record depth, one declared field and
+    one hash source. ``canonicalize_numbers=False`` and the guards ``hash.py`` documents
+    separately — booleans never folding to ints, leading-zero ids never equating — carry
+    their own unit coverage in ``tests/unit/grading/test_hash.py``, which this does not
+    extend. A folding field nested under a differently named record key at greater depth
+    is outside both.
+    """
+    response = _drive_numeric_string_folding(
+        runner_service,
+        mock_grpc_context,
+        trial_id=_ledger_trial_id(_folding_label(cell), _NUMERIC_STRING_FIELDS_KEY),
+        cell=cell,
+    )
+
+    assert response.success is True, response.error
+    assert response.grade.components.state_checks == pytest.approx(cell.state_checks)
+    assert _FOLDING_HASH_SENTENCE[cell.state_checks] in response.grade.reasons, (
+        f"the runner scored {cell.state_checks} for {_folding_label(cell)} without its "
+        f"grade naming the hash verdict that score restates: {response.grade.reasons!r}"
+    )
+    assert _core_numeric_string_folding_verdict(cell) == pytest.approx(cell.state_checks)
 
 
 # --------------------------------------------------------------------------
