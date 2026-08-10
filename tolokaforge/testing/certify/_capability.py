@@ -1,13 +1,13 @@
-"""Capability enum + :class:`ModelCertificate` dataclass for the per-model
-capability-driven integration suite.
+"""Capability enum for the per-model capability-driven integration suite.
 
-Every LLM integration test in this directory parametrises over
-:data:`tests.integration.llm.registry.ALL_MODELS`. Each test file asserts
-ONE capability — when the certificate's ``required`` set includes the
-capability, the test must pass against the live provider; when
-``known_unsupported`` includes it, the test auto-skips with an explanatory
-message; when neither mentions it, the test ALSO auto-skips with
-``capability not declared`` — forcing honest certificates.
+Every LLM capability probe parametrises over
+:data:`tolokaforge.testing.certify._registry.ALL_MODELS`. Each probe
+asserts ONE :class:`Capability` — when the certificate's ``required``
+set includes the capability, the probe must pass against the live
+provider; when ``known_unsupported`` includes it, the probe auto-skips
+with an explanatory message; when neither mentions it, the probe ALSO
+auto-skips with ``capability not declared`` — forcing honest
+certificates.
 
 Design goals:
 
@@ -15,24 +15,22 @@ Design goals:
    hard-code provider / model strings.
 2. **Honest declarations.** Overlap between ``required`` and
    ``known_unsupported`` is a config bug — caught at dataclass
-   construction time (:meth:`ModelCertificate.__post_init__`).
+   construction time (see :meth:`~tolokaforge.testing.certify.certificate.ModelCertificate.__post_init__`).
 3. **No leaked abstractions.** Tests built on top of this module speak
    :class:`~tolokaforge.core.llm.client.LLMClient` +
    :class:`~tolokaforge.core.llm.reasoning.ReasoningConfig` +
    :class:`~tolokaforge.core.llm.usage.Usage` only — never raw provider
    payloads.
 
-See also :mod:`tests.integration.llm.registry` for the concrete
-``ALL_MODELS`` tuple and :mod:`tests.integration.llm.conftest` for the
-shared fixtures.
+See also :mod:`tolokaforge.testing.certify._registry` for the concrete
+``ALL_MODELS`` tuple.
 """
 
 from __future__ import annotations
 
-from dataclasses import dataclass, field
 from enum import Enum
 
-__all__ = ["Capability", "ModelCertificate"]
+__all__ = ["Capability"]
 
 
 class Capability(str, Enum):
@@ -348,58 +346,3 @@ class Capability(str, Enum):
     Distinct from :attr:`MULTI_TURN_ERROR_RECOVERY` because the prior
     turn did NOT fail — there's no error feedback to react to. The
     pathology is "treat success as a non-event"."""
-
-
-@dataclass(frozen=True)
-class ModelCertificate:
-    """Declares which capabilities a model is contractually bound to
-    support (``required``) and which it is known *not* to support
-    (``known_unsupported``).
-
-    Fields
-    ------
-    model_id:
-        Stable filesystem-safe slug — MUST equal
-        ``tolokaforge.core.output.artifacts.model_id_slug(provider, name)``
-        so per-trial ``results/tools_schemas/<task>__<model_id>.json``
-        sidecars and the capability tests share the same identifier.
-        Validated by the canonical capability-registry test.
-    provider:
-        litellm-style provider key — e.g. ``"openrouter"``, ``"nova"``.
-    name:
-        Full litellm model identifier — e.g.
-        ``"anthropic/claude-opus-4.7"``, ``"Nova Pro v3"``.
-    env_key:
-        Environment variable that must be set for this provider's live
-        tests to run. The shared ``live_client`` fixture skips the test
-        when it's missing.
-    required:
-        Capabilities that MUST pass — failures block the PR.
-    known_unsupported:
-        Capabilities that are deliberately out of scope for this model —
-        the matching capability test auto-skips with a friendly message.
-
-    Invariants enforced at construction time
-    ----------------------------------------
-    ``required`` and ``known_unsupported`` MUST be disjoint; listing the
-    same capability in both is dishonest (the test would both be expected
-    to pass AND expected to skip) and raises :class:`ValueError`.
-    """
-
-    model_id: str
-    provider: str
-    name: str
-    env_key: str
-    required: frozenset[Capability] = field(default_factory=frozenset)
-    known_unsupported: frozenset[Capability] = field(default_factory=frozenset)
-
-    def __post_init__(self) -> None:
-        overlap = self.required & self.known_unsupported
-        if overlap:
-            shared = sorted(c.value for c in overlap)
-            raise ValueError(
-                f"Certificate {self.model_id!r} lists the same capability in "
-                f"both `required` and `known_unsupported`: {shared}. Pick one — "
-                "either the model supports the capability (required) or it "
-                "doesn't (known_unsupported)."
-            )

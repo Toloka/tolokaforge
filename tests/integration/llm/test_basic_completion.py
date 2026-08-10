@@ -2,7 +2,7 @@
 
 Every registered model must return non-empty text for a trivial user
 turn. Migrated from legacy ``tests/integration/test_llm_client_models.py::TestBasicCompletion``
-and generalised over :data:`tests.integration.llm.registry.ALL_MODELS`.
+and generalised over :data:`tolokaforge.testing.certify.ALL_MODELS`.
 
 Assertions
 ----------
@@ -18,9 +18,7 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 @pytest.mark.parametrize("cert", ALL_MODELS, ids=lambda c: c.model_id)

@@ -13,9 +13,7 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 @pytest.mark.parametrize("cert", ALL_MODELS, ids=lambda c: c.model_id)

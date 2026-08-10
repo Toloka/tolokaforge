@@ -32,8 +32,7 @@ import pytest
 
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import ModelConfig
-
-from ._capability import Capability, ModelCertificate
+from tolokaforge.testing.certify import Capability, ModelCertificate
 
 # ---------------------------------------------------------------------------
 # Auto-marking — every test under tests/integration/llm/ is marker-gated

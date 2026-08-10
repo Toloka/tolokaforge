@@ -9,7 +9,7 @@ Decimal-bearing tool schema because OpenAI's RE2 validator rejected the
 ``anyOf`` idiom to ``{"type": "number"}`` and strips every ``pattern`` /
 ``format`` key — see [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md).
 
-Parametrised over :data:`tests.integration.llm.registry.ALL_MODELS`;
+Parametrised over :data:`tolokaforge.testing.certify.ALL_MODELS`;
 certificates that declare the capability in ``known_unsupported``
 (currently the Anthropic family, which uses passthrough schema
 sanitisation) auto-skip with an explanatory message.
@@ -27,9 +27,7 @@ from pydantic import BaseModel, Field, TypeAdapter
 
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 class _Amount(BaseModel):

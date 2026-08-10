@@ -35,9 +35,7 @@ import pytest
 
 from tolokaforge.core.llm.schema_sanitizer import PassthroughSchema
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 # Pydantic-Decimal-string idiom pattern. Lookahead-bearing → RE2-
 # incompatible. Embedded in an ``Optional[str]`` (anyOf string + null)

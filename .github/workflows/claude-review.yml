@@ -15,7 +15,7 @@ on:
     paths-ignore:
       - tolokaforge/core/data/model_presets.yaml
       - tolokaforge/core/data/pricing.json
-      - tests/integration/llm/registry.py
+      - tolokaforge/testing/certify/_registry.py
       - uv.lock
       - docs/**
       - CHANGELOG.md

@@ -28,9 +28,8 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
 from .test_re2_pattern_tolerance import (
     _SYSTEM,
     _TOOL_WITH_RE2_INCOMPAT_PATTERN,
@@ -60,7 +59,7 @@ def test_known_unsupported_routes_still_reject_re2_incompatible_pattern(
     ``RE2_PATTERN_TOLERANCE`` in ``known_unsupported`` — ie upstream
     silently fixed the validator quirk. The fix path is to move the
     capability from ``known_unsupported`` to ``required`` in
-    :mod:`tests.integration.llm.registry`, then consider retiring the
+    :mod:`tolokaforge.testing.certify._registry`, then consider retiring the
     ``StrictSchema.strip_re2_incompatible_patterns`` flag entirely
     (it would no longer be load-bearing anywhere).
     """
@@ -107,7 +106,7 @@ def test_known_unsupported_routes_still_reject_re2_incompatible_pattern(
         f"schema that the cert claims it rejects (RE2_PATTERN_TOLERANCE "
         f"in known_unsupported). The upstream validator has been relaxed; "
         f"move the capability to ``required`` in "
-        f"tests/integration/llm/registry.py and consider retiring the "
+        f"tolokaforge/testing/certify/_registry.py and consider retiring the "
         f"``strip_re2_incompatible_patterns`` flag. Reference response: "
         f"tool_calls={bool(result.tool_calls)}, "
         f"text={(result.text or '')[:120]!r}."

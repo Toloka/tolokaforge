@@ -29,9 +29,7 @@ import uuid
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 # Anthropic routes legitimately serve cache reads under the
 # ``IMPLICIT_PROMPT_CACHING`` skip path because the *explicit* cache
@@ -60,7 +58,7 @@ def _is_anthropic(cert: ModelCertificate) -> bool:
 # meta/muse-spark-1.1 (verified live 2026-07-17, US Codespaces): a 19,585-token
 # unique prompt returned ``cached=19,581`` on call 1; the discount is real
 # (cached input billed at the cache_read rate) but "caching" cannot be
-# certified. See tests/integration/llm/registry.py for the full evidence.
+# certified. See tolokaforge/testing/certify/_registry.py for the full evidence.
 # NB: this is a targeted exclusion, not a real fix — the ratchet cannot yet
 # distinguish "always-reports-cached" routes from genuine auto-cache. Tracked
 # in #484 (teach the ratchet to send a cold probe before trusting the count).
@@ -152,7 +150,7 @@ def test_known_unsupported_routes_do_not_auto_cache(
     the cert declaring ``IMPLICIT_PROMPT_CACHING`` in ``known_unsupported``
     — i.e. upstream silently started auto-caching this route. The fix is
     to move the capability from ``known_unsupported`` to ``required``
-    in :mod:`tests.integration.llm.registry` and remove the
+    in :mod:`tolokaforge.testing.certify._registry` and remove the
     diagnostic-skip comment alongside.
     """
     client = live_client(cert)
@@ -182,7 +180,7 @@ def test_known_unsupported_routes_do_not_auto_cache(
             f"cache_read_input_tokens={observed_read}, "
             f"cached_tokens={observed_cached} (above the "
             f"{_NOISE_FLOOR_TOKENS}-token noise floor). The cert in "
-            f"tests/integration/llm/registry.py claims this is "
+            f"tolokaforge/testing/certify/_registry.py claims this is "
             f"`known_unsupported` for IMPLICIT_PROMPT_CACHING; the cert "
             f"is now wrong. Move IMPLICIT_PROMPT_CACHING from "
             f"``known_unsupported`` to ``required`` for this model and "

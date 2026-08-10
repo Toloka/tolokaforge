@@ -32,9 +32,7 @@ import pytest
 from pydantic import BaseModel, Field, TypeAdapter
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 class _LineItem(BaseModel):

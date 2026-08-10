@@ -22,9 +22,7 @@ from __future__ import annotations
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 # The forbidden lexical family. Anything starting with
 # ``knowledge_base_`` is the documented Gemini 3.1 Pro fabrication;

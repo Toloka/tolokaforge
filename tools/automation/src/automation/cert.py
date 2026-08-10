@@ -22,8 +22,6 @@ below are unit-tested without importing the engine registry.
 from __future__ import annotations
 
 import json
-import pathlib
-import sys
 
 HARD_PASS = 0.9
 SOFT_PASS = 0.8
@@ -115,14 +113,8 @@ def reconcile(
 
 
 def _load_cert(model_id: str) -> tuple[set[str], set[str], list[str]]:
-    """Import the (staged) registry; return ``(required, known_unsupported, cap_values)``.
-
-    Inserts the repo root on ``sys.path`` so ``tests`` imports regardless of cwd. The
-    repo root is four levels up from this file (tools/automation/src/automation).
-    """
-    sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
-    from tests.integration.llm._capability import Capability
-    from tests.integration.llm.registry import ALL_MODELS
+    """Import the (staged) registry; return ``(required, known_unsupported, cap_values)``."""
+    from tolokaforge.testing.certify import ALL_MODELS, Capability
 
     cap_values = [c.value for c in Capability]
     for mc in ALL_MODELS:

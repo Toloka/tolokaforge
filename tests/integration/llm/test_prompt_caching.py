@@ -16,7 +16,7 @@ otherwise OpenRouter's automatic caching across test runs would have
 served the second run from a warm cache and zeroed the cache_creation
 counter.
 
-Parametrised over :data:`tests.integration.llm.registry.ALL_MODELS`;
+Parametrised over :data:`tolokaforge.testing.certify.ALL_MODELS`;
 non-Anthropic certificates declare the capability in
 ``known_unsupported`` (OpenAI / Qwen / Grok presets carry
 :class:`NoCache`). A canonical test pins that scoping.
@@ -29,9 +29,7 @@ import uuid
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 def _large_system_prompt() -> str:

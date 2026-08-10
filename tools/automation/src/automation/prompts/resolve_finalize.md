@@ -17,7 +17,7 @@ normal synchronous Claude Code run; nothing to await.
    under `presets:` with the overlay's `match` + axes. Leave every other preset untouched (do
    NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
    the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
-2. Add the candidate cert to `tests/integration/llm/registry.py`: an `MC(...)` entry in `_ALL`
+2. Add the candidate cert to `tolokaforge/testing/certify/_registry.py`: an `MC(...)` entry in `_ALL`
    with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="OPENROUTER_API_KEY"`,
    `required=frozenset({...})` from decision.json `required`, and
    `known_unsupported=frozenset({...})` from decision.json `ceilings`. Match the surrounding

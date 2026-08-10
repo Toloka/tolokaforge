@@ -7,8 +7,8 @@ is not available in environment.
 Stage 8 context (P10) — this file is **provider-scoped**, NOT
 capability-scoped. It lives alongside the capability-driven suite under
 ``tests/integration/llm/`` for locality, but it deliberately skips the
-``tests.integration.llm.registry.ModelCertificate`` /
-``tests.integration.llm._capability.Capability`` parametrisation because
+:class:`tolokaforge.testing.certify.ModelCertificate` /
+:class:`tolokaforge.testing.certify.Capability` parametrisation because
 Nova is a non-OpenRouter provider with its own bespoke quirks (empty
 content fallback, assistant-message ordering, custom_llm_provider
 wiring). Capability parametrisation is the registry's contract; Nova's

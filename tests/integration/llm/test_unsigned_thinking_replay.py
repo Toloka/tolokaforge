@@ -38,9 +38,7 @@ import pytest
 
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 def _first_assistant(messages: list[dict[str, Any]]) -> dict[str, Any]:

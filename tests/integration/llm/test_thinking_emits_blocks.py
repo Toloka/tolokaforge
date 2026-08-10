@@ -13,7 +13,7 @@ For Claude 4.7 specifically this also guards the
 wired to litellm's canonical top-level ``thinking={"type":"enabled",...}``
 kwarg — see [`AGENTS.md`](../../../AGENTS.md) gotcha #15.
 
-Parametrised over :data:`tests.integration.llm.registry.ALL_MODELS`;
+Parametrised over :data:`tolokaforge.testing.certify.ALL_MODELS`;
 non-Anthropic certificates declare this capability in
 ``known_unsupported`` (OpenAI / Qwen / Grok expose only a summary via
 ``reasoning_content``, not structured blocks).
@@ -27,9 +27,7 @@ import pytest
 
 from tolokaforge.core.llm import LLMClient, ReasoningConfig
 from tolokaforge.core.models import Message, MessageRole, ModelConfig
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 def _reasoning_for(cert: ModelCertificate) -> ReasoningConfig:

@@ -1,8 +1,8 @@
 """Single source of truth for which models are under integration test.
 
-To add a new model: append a :class:`~tests.integration.llm._capability.ModelCertificate`
+To add a new model: append a :class:`~tolokaforge.testing.certify.certificate.ModelCertificate`
 to :data:`ALL_MODELS`. Capability tests auto-pick it up via parametrisation.
-See [`docs/ADD_NEW_MODEL.md`](../../../docs/ADD_NEW_MODEL.md) for the full
+See [`docs/ADD_NEW_MODEL.md`](../../../../docs/ADD_NEW_MODEL.md) for the full
 contributor walkthrough.
 
 Invariants enforced at module-import time:
@@ -28,7 +28,7 @@ from __future__ import annotations
 import os
 
 from ._capability import Capability as C
-from ._capability import ModelCertificate as MC
+from .certificate import ModelCertificate as MC
 
 __all__ = ["ALL_MODELS"]
 
@@ -136,7 +136,7 @@ _ALL: list[MC] = [
     # capability postures, so they share the posture below.
     #
     # Live-certified 2026-07-10 via
-    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k gpt-5.6``
+    # ``scripts/with_env.sh uv run pytest --pyargs tolokaforge.testing.certify.suite -k gpt-5.6``
     # (first pass: 28 passed, 8 skipped, 6 failed — the 6 fails are the same
     # 3 capabilities on each variant; final posture 13 required /
     # 7 known_unsupported per variant). Posture set by the ADD_NEW_MODEL.md
@@ -347,7 +347,7 @@ _ALL: list[MC] = [
         ),
     ),
     # Opus 4.8 — Anthropic adaptive thinker. Live-certified 2026-05-29 via
-    # ``pytest tests/integration/llm/ -k claude-opus-4.8`` (OpenRouter route).
+    # ``pytest --pyargs tolokaforge.testing.certify.suite -k claude-opus-4.8`` (OpenRouter route).
     # This is NOT a copy of the 4.7 posture: per the runbook anti-pattern
     # (docs/ADD_NEW_MODEL.md § "copying a sibling cert verbatim"), every 4.7
     # ``known_unsupported`` entry was flipped to ``required`` and re-run live.
@@ -421,7 +421,7 @@ _ALL: list[MC] = [
         ),
     ),
     # claude-fable-5 - Anthropic adaptive thinker. Live-certified 2026-06-10 via
-    # ``pytest tests/integration/llm/ -k claude-fable-5`` (OpenRouter route;
+    # ``pytest --pyargs tolokaforge.testing.certify.suite -k claude-fable-5`` (OpenRouter route;
     # final posture 16 required / 4 known_unsupported). This is NOT a copy of
     # the opus-4.8 posture: per docs/ADD_NEW_MODEL.md § "copying a sibling cert
     # verbatim", every opus-4.8 ``known_unsupported`` entry was flipped to
@@ -912,7 +912,7 @@ _ALL: list[MC] = [
     # ``resolve_policy_names``, so no new preset is required.
     #
     # Live-certified 2026-07-09 via
-    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k grok-4.5``
+    # ``scripts/with_env.sh uv run pytest --pyargs tolokaforge.testing.certify.suite -k grok-4.5``
     # (17 passed, 5 skipped; final posture 15 required / 5 known_unsupported).
     # Posture set by the ADD_NEW_MODEL.md § 3 disciplined flow — NOT copied
     # from a sibling: the grok-4.3 sibling's three non-structural
@@ -1465,7 +1465,7 @@ _ALL: list[MC] = [
     # DeepSeek V4-Flash — lighter/cheaper sibling of deepseek-v4-pro on
     # the OpenRouter route, shares the existing ``*deepseek-v4*`` preset
     # (openrouter_dict_stringify_recovery). Live-certified 2026-06-05 via
-    # ``pytest tests/integration/llm/ -k deepseek-v4-flash`` (16 required,
+    # ``pytest --pyargs tolokaforge.testing.certify.suite -k deepseek-v4-flash`` (16 required,
     # 4 known_unsupported). Stronger than the v4-pro sibling on
     # DECIMAL_FIELD_TOOL_CALL and THINKING_EMITS_BLOCKS (both pass reliably
     # here, both known_unsupported on v4-pro) — re-tested per
@@ -1642,7 +1642,7 @@ _ALL: list[MC] = [
     # -----------------------------------------------------------------
     # DeepSeek V3.2-Exp experimental V3.2 reasoning line on
     # the OpenRouter route. Live-certified 2026-06-03 via
-    # ``pytest tests/integration/llm/ -k deepseek-v3.2-exp`` (14 passed,
+    # ``pytest --pyargs tolokaforge.testing.certify.suite -k deepseek-v3.2-exp`` (14 passed,
     # 6 skipped). Routes through the dedicated ``deepseek_v32`` preset
     # (OpenAI reasoning codec only): unlike the deepseek-v4-pro sibling it
     # round-trips dict-map and discriminated-union calls on the *standard*
@@ -1853,7 +1853,7 @@ _ALL: list[MC] = [
     ),
     # =================================================================
     # Arena lineup refresh (2026-06). Six models, live-certified
-    # 2026-06-05 via ``pytest tests/integration/llm/ -k <model>``.
+    # 2026-06-05 via ``pytest --pyargs tolokaforge.testing.certify.suite -k <model>``.
     # Per-model preset routing lives in model_presets.yaml; each entry
     # documents which capabilities were demoted to ``known_unsupported``
     # and why. The universal demotions across this cohort are PROMPT_
@@ -2217,7 +2217,7 @@ _ALL: list[MC] = [
     # preset is required.
     #
     # Live-certified 2026-07-10 via
-    # ``scripts/with_env.sh uv run pytest tests/integration/llm/ -k 'hy3 and not preview'``
+    # ``scripts/with_env.sh uv run pytest --pyargs tolokaforge.testing.certify.suite -k 'hy3 and not preview'``
     # (18 passed, 3 skipped; final posture 17 required / 3 known_unsupported).
     # Posture set by the ADD_NEW_MODEL.md § 3 disciplined flow — NOT copied
     # from the preview sibling: the three non-structural ``known_unsupported``
@@ -2355,7 +2355,7 @@ _ALL: list[MC] = [
     # known_unsupported rather than being papered over. 15 required / 5
     # known_unsupported. Live-certified 2026-06-08 (codec-only preset);
     # re-certified 2026-06-15 on the PR #55 branch with the
-    # ``minimax_m3_tags`` policy active (pytest tests/integration/llm/ -k
+    # ``minimax_m3_tags`` policy active (pytest --pyargs tolokaforge.testing.certify.suite -k
     # minimax-m3: 15 passed, 6 skipped on two consecutive runs; the 5
     # known_unsupported caps yield 6 skips since discriminated_union has 2
     # parametrisations). Posture identical to the 2026-06-08 cert.

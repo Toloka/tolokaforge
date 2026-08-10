@@ -20,7 +20,7 @@ Empirical motivation: OpenRouter routes to ``openai/*`` and
 usage) while ``xiaomi/mimo*`` reports 0. The split makes the
 route-specific contract testable in CI.
 
-Parametrised over :data:`tests.integration.llm.registry.ALL_MODELS`.
+Parametrised over :data:`tolokaforge.testing.certify.ALL_MODELS`.
 Routes that genuinely don't auto-cache (mimo, kimi, anthropic — which
 caches explicitly — qwen, grok, gemini, nova) declare the capability in
 ``known_unsupported``; the live test then skips.
@@ -33,9 +33,7 @@ import uuid
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 
 def _large_system_prompt() -> str:

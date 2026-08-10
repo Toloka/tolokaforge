@@ -37,9 +37,7 @@ from typing import Any
 import pytest
 
 from tolokaforge.core.models import Message, MessageRole
-
-from ._capability import Capability, ModelCertificate
-from .registry import ALL_MODELS
+from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 # Minimal tool whose `enum` shape reproduces the eval failure. Single
 # property, single enum value containing `/` — anything beyond this is
