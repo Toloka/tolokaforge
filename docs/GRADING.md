@@ -584,14 +584,17 @@ what it replaced: such a trial stays inside the measured denominator, so the zer
 would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
 failure reported against evidence that was never read.
 
-**A `state_checks` block the trial cannot answer fails the RPC for the same reason.**
-Before any grading branch reads the database, `GradeTrial` refuses two authoring
-shapes by name, each with the key, the offending assertion and the way out:
+#### A `state_checks` block the trial cannot answer
+
+This fails the RPC for the same reason. Before any grading branch reads the database,
+`GradeTrial` refuses two authoring shapes by name, each error opening `Trial '<id>'
+cannot be graded as authored:` and then naming the key, the offending assertion and the
+way out:
 
 | shape | why it cannot be graded |
 |---|---|
 | a block reading the database — a `path:` addressing it, or `hash` enabled with or without a source — on a task whose `initial_state` provisions no tables, schemas or unstable fields | no DB service was registered for the trial, so there is no state to read |
-| a `state_checks.jsonpaths` entry whose `path:` is rooted at `filesystem` | the runner composes its JSONPath state from the trial's database alone, so the assertion can never match; `path_glob:` + `contains_ci:` is the form both substrates read |
+| a `state_checks.jsonpaths` entry whose `path:` is rooted where the runner composes nothing — `filesystem`, `agent`, `user`, `mock_web_url` or `rag_corpus_dir`, the roots the core engine composes and the runner does not | the runner builds its JSONPath state from the trial's database alone, so the assertion resolves on one substrate and can never match on the other. A file is addressed with `path_glob:` + `contains_ci:`, the pairing both read; anything else the trial holds is rooted at `db` or `tables` |
 
 Neither is scored. Evaluating either against the state it lacks yields `0.0` and a
 reason about state the grader never read — a number indistinguishable from an agent

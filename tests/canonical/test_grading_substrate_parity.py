@@ -2747,6 +2747,54 @@ def test_a_path_rooted_where_only_the_core_engine_composes_is_refused(
     assert "DB state unavailable" not in response.grade.reasons
 
 
+_REFUSALS_THAT_NAME_THE_TRIAL = (
+    pytest.param(
+        runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": _A_DATABASE_PATH, "equals": "shipped"}]
+        ),
+        False,
+        id="a_database_read_the_task_seeds_nothing_for",
+    ),
+    pytest.param(
+        runner_models.RunnerStateChecksConfig(hash_enabled=True),
+        False,
+        id="a_source_less_hash_block",
+    ),
+    pytest.param(
+        runner_models.RunnerStateChecksConfig(
+            jsonpath_checks=[{"path": _A_FILESYSTEM_PATH, "contains": "def divide"}]
+        ),
+        True,
+        id="a_path_the_runner_composes_no_root_for",
+    ),
+)
+
+
+@pytest.mark.parametrize(("state_checks", "seeds_a_database"), _REFUSALS_THAT_NAME_THE_TRIAL)
+def test_every_state_checks_refusal_names_the_trial_it_refused(
+    state_checks, seeds_a_database, runner_service, mock_grpc_context
+):
+    """One opening for the whole family, because one call site writes it.
+
+    ``GradeTrialResponse.error`` is enumerated row by row in ``docs/GRPC_PROTOCOL.md``,
+    and every other row there identifies the trial. These two are built before the
+    ``try`` whose handler prefixes ``Grading error:``, so nothing else would put the id
+    on them and a host reading a batch of failures could not say which trial it held.
+
+    The sibling cells above assert what each refusal *says*; this one asserts how all of
+    them open, so a fourth refusal added to the family cannot arrive anonymous.
+    """
+    trial_id = "refusal_names_its_trial:0"
+    task = _in_memory_task(
+        "refusal_names_its_trial", state_checks=state_checks, seeds_a_database=seeds_a_database
+    )
+
+    response = _refusal_for(runner_service, mock_grpc_context, task, trial_id)
+
+    assert response.success is False, response.grade.reasons
+    assert response.error.startswith(f"Trial {trial_id!r} cannot be graded as authored: ")
+
+
 # --------------------------------------------------------------------------
 # 11. Both substrates read every per-constraint config input
 # --------------------------------------------------------------------------

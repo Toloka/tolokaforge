@@ -405,12 +405,16 @@ def _unreachable_state_checks_refusal(
 ) -> str | None:
     """Why this ``state_checks`` block cannot be graded against this trial, if it cannot.
 
+    The sentence alone; the caller names the trial it refused, so one call site decides
+    how every refusal in this family opens on the wire.
+
     Two authoring defects leave ``GradeTrial`` with no state to read, and each is
     refused by name rather than scored, because the score either would produce is a
     component value the agent did not earn. A block reading the database of a task that
     provisions none reaches the DB client for a trial ``RegisterTrial`` never registered
-    there; a ``path:`` addressing the filesystem resolves against a JSONPath state
-    composed from the database alone, and scores ``0.0`` for a state never read.
+    there; a ``path:`` rooted outside what the runner composes resolves against a
+    JSONPath state built from the database alone, and scores ``0.0`` for a state never
+    read.
 
     The authoring gate states the same rule before a trial is paid for, and neither
     point makes the other redundant: ``core.grading.config_validation`` is named in
@@ -1588,7 +1592,13 @@ class RunnerServiceImpl(runner_pb2_grpc.RunnerServiceServicer):
             )
             if state_checks_refusal is not None:
                 logger.error(f"GradeTrial: {trial_id} - {state_checks_refusal}")
-                return pb2.GradeTrialResponse(success=False, error=state_checks_refusal)
+                return pb2.GradeTrialResponse(
+                    success=False,
+                    error=(
+                        f"Trial {trial_id!r} cannot be graded as authored: "
+                        f"{state_checks_refusal}"
+                    ),
+                )
 
         # A) HASH-BASED GRADING
         # Run hash grading when hash_enabled is set (even with no source, which
