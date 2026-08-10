@@ -43,7 +43,8 @@ from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
-from tolokaforge.core.llm.proxy import UNROUTABLE_PROVIDERS, resolve_proxy_config
+from tolokaforge.core.llm.providers import get_provider_binding
+from tolokaforge.core.llm.proxy import resolve_proxy_config
 from tolokaforge.core.llm.reasoning import ReasoningConfig, StructuredReasoning
 from tolokaforge.core.llm.usage import CostSource, Usage, UsageExtractor
 from tolokaforge.core.logging import get_logger
@@ -624,13 +625,14 @@ class LLMClient:
         rate_limit_probe: RateLimitProbeConfig | None = None,
     ):
         self.config = config
+        self.provider = (config.provider or "").lower()
+        self._provider_binding = get_provider_binding(self.provider)
         self.model_name = self._format_model_name()
         self.capabilities = build_capabilities(
             self.config.name,
             self.config.provider,
             overrides=self.config.capabilities,
         )
-        self.provider = (config.provider or "").lower()
         self.logger = get_logger("llm_client")
         if self.config.capabilities:
             self.logger.info(
@@ -653,7 +655,7 @@ class LLMClient:
         # ``is None`` test. See ``tolokaforge/core/llm/proxy.py``.
         self._proxy = resolve_proxy_config()
         if self._proxy is not None and not self._proxy.applies_to(self.provider):
-            if self.provider.split("/")[0] not in UNROUTABLE_PROVIDERS:
+            if not self._provider_binding.unroutable:
                 # Warn rather than drop quietly: a deployment that configured a
                 # gateway for compliance reasons needs to see which roles still
                 # reach providers directly.
@@ -685,8 +687,10 @@ class LLMClient:
                 )
         elif self.provider.startswith("openrouter"):
             self._configure_openrouter_base_url()
-        elif self.provider == "nova":
-            self._configure_nova_base_url()
+        elif self._provider_binding.endpoint and self._provider_binding.api_base_env:
+            os.environ.setdefault(
+                self._provider_binding.api_base_env, self._provider_binding.endpoint
+            )
 
         self._api_call_timeout_s = self._load_api_timeout()
         self._api_timeout_retries = self._load_api_timeout_retries()
@@ -926,16 +930,12 @@ class LLMClient:
         os.environ.setdefault("OPENROUTER_API_BASE", base_url)
         self._openrouter_base_url = base_url
 
-    def _configure_nova_base_url(self) -> None:
-        """Configure Nova API base URL for LiteLLM (informational only)."""
-        os.environ.setdefault("NOVA_API_BASE", "https://api.nova.amazon.com/v1")
-
     def _format_model_name(self) -> str:
         """Format model name for LiteLLM."""
         if self.config.name.startswith(f"{self.config.provider}/"):
             return self.config.name
 
-        if self.config.provider.lower() == "nova":
+        if self._provider_binding.format_model_name_bare:
             return self.config.name
 
         return f"{self.config.provider}/{self.config.name}"
@@ -1694,8 +1694,9 @@ class LLMClient:
         (``top_p`` / ``max_tokens`` / ``tool_choice`` / ``tools``), provider
         routing (OpenRouter headers + ``custom_llm_provider``), and
         :meth:`_convert_messages` (content policy + reasoning-codec replay).
-        Nova's special-casing is deferred to :meth:`_call_with_key_rotation`
-        because it needs ``NOVA_API_KEY`` read fresh per attempt.
+        Providers whose binding declares ``kwargs_pin_transport`` defer their
+        transport pinning to :meth:`_call_with_key_rotation` so the API key
+        is read fresh per attempt.
         """
         kwargs: dict[str, Any] = {"model": self.model_name}
 
@@ -1875,17 +1876,17 @@ class LLMClient:
     def _call_with_key_rotation(self, kwargs: dict[str, Any]) -> Any:
         """Call litellm ``completion`` with OpenRouter key rotation.
 
-        Nova's special-casing is applied inline here (the ``NOVA_API_KEY``
-        must be read fresh on every attempt — key rotation may clear it).
-        On "Key limit exceeded" / 402 / 403 errors we rotate to the next
-        OpenRouter key and retry; timeout failures are retried locally with
-        a bounded backoff before the trial is aborted.
+        Providers whose binding declares ``kwargs_pin_transport`` read the
+        endpoint and API key fresh per attempt (key rotation may have cleared
+        them). On "Key limit exceeded" / 402 / 403 errors we rotate to the
+        next OpenRouter key and retry; timeout failures are retried locally
+        with a bounded backoff before the trial is aborted.
 
         Raises
         ------
         RuntimeError
-            - ``"NOVA_API_KEY environment variable is required for Nova
-               provider"`` when the Nova path fires without a key.
+            - ``f"{binding.api_key_env} is required for {provider} provider"``
+               when a ``kwargs_pin_transport`` provider's key resolves empty.
             - :class:`AllApiKeysExhaustedError` (``"All API keys exhausted"``)
                after the last OpenRouter key hit a quota error. A dedicated
                subclass because the condition is terminal — see the class
@@ -1895,31 +1896,34 @@ class LLMClient:
         """
         kwargs = dict(kwargs)
         kwargs.setdefault("timeout", self._api_call_timeout_s)
+        binding = self._provider_binding
 
         while True:
             try:
-                if self.provider == "nova":
+                if binding.kwargs_pin_transport:
                     from tolokaforge.secrets import get_default
 
-                    kwargs["api_base"] = "https://api.nova.amazon.com/v1"
-                    kwargs["api_key"] = get_default().get_secret("NOVA_API_KEY")
+                    kwargs["api_base"] = binding.endpoint
+                    kwargs["api_key"] = get_default().get_secret(binding.api_key_env)
                     if not kwargs["api_key"]:
                         raise RuntimeError(
-                            "NOVA_API_KEY is required for Nova provider — set it in .env "
-                            "or the environment so SecretManager can resolve it"
+                            f"{binding.api_key_env} is required for {self.provider} provider — "
+                            f"set it in .env or the environment so SecretManager can resolve it"
                         )
 
-                    kwargs["custom_llm_provider"] = "openai"
-
-                    if kwargs["model"].startswith("nova/"):
-                        kwargs["model"] = kwargs["model"][5:]
-
-                    if not kwargs["model"].startswith("openai/"):
-                        kwargs["model"] = f"openai/{kwargs['model']}"
-
+                if binding.custom_llm_provider is not None:
+                    kwargs["custom_llm_provider"] = binding.custom_llm_provider
                 elif "/" in self.config.provider:
-                    base_provider = self.config.provider.split("/")[0]
-                    kwargs["custom_llm_provider"] = base_provider
+                    kwargs["custom_llm_provider"] = self.config.provider.split("/")[0]
+
+                if binding.slug_rewrite is not None:
+                    rewrite = binding.slug_rewrite
+                    model = kwargs["model"]
+                    if rewrite.strip_prefix and model.startswith(rewrite.strip_prefix):
+                        model = model[len(rewrite.strip_prefix) :]
+                    if rewrite.ensure_prefix and not model.startswith(rewrite.ensure_prefix):
+                        model = rewrite.ensure_prefix + model
+                    kwargs["model"] = model
 
                 return self._call_completion_with_timeout_retry(kwargs)
             except LLMApiTimeoutError:

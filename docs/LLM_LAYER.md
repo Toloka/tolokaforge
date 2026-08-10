@@ -544,12 +544,13 @@ is exactly `{openrouter, openai}`. Naming another provider in
 provider's native route" — true of a LiteLLM proxy's `/v1/messages`
 passthrough, false of a plain OpenAI-compatible gateway.
 
-`mock` and `nova` are in `UNROUTABLE_PROVIDERS` and are rejected even when
-named explicitly. `mock` never reaches the wire. `nova` depends on
-`_call_with_key_rotation` rewriting its bare model name into `openai/<name>`
-next to its own hardcoded base URL; a gateway replaces the base URL but not the
-rewrite, so litellm would get a provider-less model string and raise
-`BadRequestError` before sending anything.
+The `providers.yaml` entry for a provider carries `unroutable: bool`. `mock`
+and `nova` declare `unroutable: true` and are rejected even when named
+explicitly in `LLM_PROXY_PROVIDERS`. `mock` never reaches the wire. `nova`
+depends on `_call_with_key_rotation` rewriting its bare model name into
+`openai/<name>` next to its own hardcoded base URL; a gateway replaces the
+base URL but not the rewrite, so litellm would get a provider-less model
+string and raise `BadRequestError` before sending anything.
 
 ### The model name must be the gateway's route name
 

@@ -1,0 +1,17 @@
+{
+  "site_1_init_env_set": {
+    "env_var": "NOVA_API_BASE",
+    "value": "https://api.nova.amazon.com/v1"
+  },
+  "site_2_format_model_name": {
+    "input_config_name": "busan-v1",
+    "output": "busan-v1"
+  },
+  "site_3_call_with_key_rotation_kwargs": {
+    "api_base": "https://api.nova.amazon.com/v1",
+    "api_key": "nova-test-key",
+    "custom_llm_provider": "openai",
+    "messages": [],
+    "model": "openai/busan-v1"
+  }
+}
