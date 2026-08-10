@@ -106,7 +106,10 @@ class GradingKey:
 
     ``enforcing_test`` is a pytest nodeid — ``<module path>::<test function>`` —
     so the claim names the function that runs the differential rather than a file
-    that merely contains one.
+    that merely contains one. It is required at ``DIFFERENTIAL_INTEGRATION`` and
+    permitted at any tier, and it is resolved wherever it is present: on an entry
+    proven canonically it records where the same claim was additionally observed in
+    production, which is a pointer rather than the enforcement.
     """
 
     author_key: str
@@ -187,6 +190,18 @@ A matching and a diverging final state, at two weights strictly inside ``(0, 1)`
 it alone covers is the transport the verdict crosses: a real ``GradeTrial`` over gRPC
 against a real db-service, where the canonical differentials drive the servicer and its
 db-service in process.
+"""
+
+_NUMERIC_STRING_FOLDING_WIRE_TEST = (
+    "tests/integration/test_docker_grading_hash_composition.py"
+    "::test_the_deployed_db_service_folds_a_listed_numeric_string_field"
+)
+"""Where the per-field folding claim was additionally observed in production.
+
+One representation difference under three field lists, graded over real gRPC against
+the containerised db-service. The enforcement itself is canonical — this records that
+the deployed service honours the query parameter the runner sends it, which no
+in-process differential can speak for.
 """
 
 _HASH_SOURCE_SHAPE_REASON = (
@@ -456,12 +471,12 @@ GRADING_KEYS: tuple[GradingKey, ...] = (
         author_key="state_checks.numeric_string_fields",
         kind=KeyKind.CONFIG_INPUT,
         coverage=SubstrateCoverage.BOTH_SCORE_PARITY,
-        enforcement=Enforcement.FIELD_RESOLUTION_ONLY,
+        enforcement=Enforcement.DIFFERENTIAL_CANONICAL,
         core_field="StateChecksConfig.numeric_string_fields",
         runner_field="RunnerStateChecksConfig.numeric_string_fields",
         core_evaluator="tolokaforge.core.hash.compute_stable_hash",
         runner_evaluator=RUNNER_HASH_EVALUATOR,
-        tracking_issue=687,
+        enforcing_test=_NUMERIC_STRING_FOLDING_WIRE_TEST,
     ),
     GradingKey(
         author_key="state_checks.id_fields",

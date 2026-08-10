@@ -172,7 +172,8 @@ Compare output against committed golden snapshots in `snapshots/`.
   `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
   it, addresses a position below a claimed field by something other than an element
   path — the manifest's one mechanism for that — no longer survives adapter
-  translation, or names a `runner_field` the runtime ledger cannot resolve. Fix the
+  translation, names a `runner_field` the runtime ledger cannot resolve, or stopped
+  folding a listed numeric-string field by name on one of the two substrates. Fix the
   manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
@@ -379,10 +380,12 @@ testcontainer fixtures pin, so retag after building:
 
 Some suites in this tier are the `enforcing_test` a grading-key manifest entry
 names — `test_docker_grading_hash_composition.py` for the `state_checks.hash`
-family, `test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
+family and for `state_checks.numeric_string_fields`,
+`test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
 `test_rubric_judge_live.py` for `llm_judge`. `test_grading_substrate_parity.py`
-resolves each nodeid without importing it, so renaming one of those test functions
-fails the canonical tier naming the manifest entry.
+resolves each nodeid without importing it — every entry carrying one, whatever its
+enforcement tier — so renaming one of those test functions fails the canonical tier
+naming the manifest entry.
 
 `tests/integration/docker/test_terminal_bench_per_trial.py` is the end-to-end
 lock for the terminal-bench per-trial substrate: it materialises the
