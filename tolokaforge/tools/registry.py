@@ -343,9 +343,9 @@ class ToolExecutor:
         Args:
             tool_name: Name of the tool to execute
             arguments: Tool arguments
-            call_id: Provider tool-call id, carried by the caller onto the
-                trial's tool-call record so the call can be joined to the
-                tool result it produced
+            call_id: The trial's episode-unique tool-call id, carried by the
+                caller onto the trial's tool-call record so the call can be
+                joined to the tool result it produced
 
         Returns:
             ToolResult with output and metadata

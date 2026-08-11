@@ -313,6 +313,15 @@ model's. Four of its fields are unreachable from a message trace: `status`,
 is the tool's own text, untruncated — on a failed call, its own failure text,
 which the agent-facing `role: tool` message carries behind an `Error: ` prefix.
 
+`call_id` is the trial's **episode-unique** tool-call id — the same value the
+matching `tool_calls` entry and `role: tool` message in `trajectory.yaml` carry,
+since the agent loop assigns it before any of the three is written. For a
+provider that mints a unique id per call it is that provider's own id; for one
+that numbers its calls within a turn, and so emits the same id in two turns, the
+second occurrence is written `<id>#2` ([GRADING.md
+G3](GRADING.md#guarantees)). Nothing parses it — it is compared for equality —
+so `#` is inert wherever the id travels.
+
 A **sidecar** rather than a key on `trajectory.yaml`: the record repeats every
 tool's output, which on a tool-heavy trial is most of the bundle, so whoever
 reads only the message trace pays nothing for it.

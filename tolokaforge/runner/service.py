@@ -568,7 +568,8 @@ class TrialContextRuntime:
         ``sequence`` is stamped here, so no caller can supply a wrong index.
 
         Args:
-            call_id: Provider tool-call id joining this call to its result
+            call_id: The trial's episode-unique tool-call id, joining this call
+                to its result
             tool_name: Name of the tool called
             arguments: Tool arguments, verbatim
             executor: Which side of the dialogue made the call

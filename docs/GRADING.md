@@ -501,7 +501,7 @@ check over tool calls sees the same fields whichever substrate grades it:
 
 | Field | Meaning |
 | --- | --- |
-| `call_id` | the id the call was recorded under; grading joins on the episode-unique key derived from it (G3), never on the raw value |
+| `call_id` | the trial's episode-unique tool-call id, assigned by the agent loop before the call is executed or recorded (G3) |
 | `sequence` | trial-wide, 0-based, execution order across **every** executor |
 | `tool_name` | the tool the call named |
 | `arguments` | the arguments the caller passed, verbatim |
@@ -741,6 +741,18 @@ initial user prompt precedes the first assistant message and carries index 0.
   call (G7), a `role: tool` result whose key matches no declared call (G6b), and a
   record whose `tool_name` disagrees with the declaration its key joined it to
   (G7).
+
+  **The runtime assigns the same key, so a recorded id is already unique.**
+  `ToolCallingLoop` holds one assigner per episode — it is constructed per trial
+  and per judge run — and applies it to every parsed tool call between the
+  generation and the assistant message, which is the single point upstream of all
+  four consumers: the assistant message, the tool executor (hence the runner's own
+  record over gRPC), the trial's recorder, and the `role: tool` message's
+  `tool_call_id`. A reassignment is a `logger.warning` naming the tool, the raw id
+  and the assigned one, so the run log says which providers need the
+  disambiguation. Deriving at grading time is therefore the identity on anything
+  this engine recorded; it is what makes a bundle recorded *before* this rule —
+  the one case where a duplicate reached disk — joinable without a rerun.
 - **G4 — an attempted call is always an event, and "attempted" is not
   "executed".** A `tool_call` is **never** dropped, because dropping one makes an
   `absent` or `count` constraint wrong in the agent's favour. Three states:

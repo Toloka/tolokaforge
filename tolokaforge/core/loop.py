@@ -52,11 +52,13 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     TerminationReason,
+    ToolCall,
     ToolCallRecorder,
     ToolExecutorIdentity,
     TrialStatus,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.tool_call_ids import EpisodeUniqueCallIds
 from tolokaforge.tools.registry import ToolExecutor, resolve_tool_output, resolve_tool_status
 
 
@@ -261,6 +263,10 @@ class ToolCallingLoop:
     # Captured from the first generation's effective system prompt.
     _captured_effective_prompt: str | None = field(default=None, init=False)
     _captured: bool = field(default=False, init=False)
+    # One assigner per loop instance, which is one per episode: the loop is
+    # constructed per trial and per judge run, so a judge's own calls never
+    # disambiguate against the trial's.
+    _call_ids: EpisodeUniqueCallIds = field(default_factory=EpisodeUniqueCallIds, init=False)
 
     def run(self, system_prompt: str, messages: list[Message], start_time: float) -> LoopOutcome:
         """Run the turn loop, mutating ``messages`` in place.
@@ -324,6 +330,7 @@ class ToolCallingLoop:
         classified by the caller.
         """
         result = self._generate(turn, system_prompt, messages)
+        self._assign_call_ids(result)
         self._capture_effective_prompt(result)
         self.metrics.record_generation(result)
         self._log_generation(turn, result)
@@ -339,6 +346,31 @@ class ToolCallingLoop:
             return None, None, False
 
         return self._advance_user_turn(messages)
+
+    def _assign_call_ids(self, result: GenerationResult) -> None:
+        """Give every parsed call the episode-unique id, before anything reads it.
+
+        Placed between the generation and the assistant message so all four
+        consumers downstream — the assistant message, the executor (hence the
+        runner's own record), the trial recorder and the ``role: tool`` message —
+        carry one id per call. A provider that already mints unique ids sees its
+        own ids back, so this is a no-op for all but the providers that number
+        their calls per turn.
+        """
+        assigned: list[ToolCall] = []
+        for call in result.tool_calls:
+            key = self._call_ids.assign(call.id)
+            if key == call.id:
+                assigned.append(call)
+                continue
+            self.logger.warning(
+                "Provider reused a tool-call id within the episode; assigned a unique one",
+                tool=call.name,
+                provider_call_id=call.id,
+                assigned_call_id=key,
+            )
+            assigned.append(call.model_copy(update={"id": key}))
+        result.tool_calls = assigned
 
     def _generate(self, turn: int, system_prompt: str, messages: list[Message]) -> GenerationResult:
         self.logger.debug("Requesting agent response", turn=turn)

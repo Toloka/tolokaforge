@@ -192,10 +192,11 @@ message ExecuteToolRequest {
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
 
-  // The provider's tool-call id (ToolCall.id) — the key that joins this call
-  // to the tool-result message it produced. Required: the runner rejects an
-  // empty value, because two calls to the same tool with identical arguments
-  // are otherwise indistinguishable in the recorded history.
+  // The trial's episode-unique tool-call id (ToolCall.id, after the agent loop
+  // has assigned it) — the key that joins this call to the tool-result message
+  // it produced. Required: the runner rejects an empty value, because two calls
+  // to the same tool with identical arguments are otherwise indistinguishable
+  // in the recorded history.
   string call_id = 6;
 }
 
@@ -272,8 +273,8 @@ message GradeTrialRequest {
   // result crosses as role "tool" carrying its tool_call_id.
   // An assistant or user turn that called tools also carries
   // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
-  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
-  // the only key joining a call to its result — parallel calls to one tool with
+  // trial's episode-unique tool-call id and "arguments" is a JSON-encoded string.
+  // That id is what joins a call to its result — parallel calls to one tool with
   // identical arguments are otherwise indistinguishable — and
   // decode_transcript_wire rejects a payload whose tool_calls carry none.
   // The leading "system" message is the agent's policy, lifted out by
@@ -637,7 +638,7 @@ The tool execution flow:
    - Records the call in the trial's history under `call_id`, stamped with a trial-wide 0-based `sequence`
 4. Runner returns `ExecuteToolResponse` with output string
 
-**`call_id` is required.** It is the provider's `ToolCall.id`, and it is what grading derives a recorded call's join key from — position does not resolve the same tool called twice with identical arguments, and an empty value leaves the call with no key at all. The derivation is [GRADING.md G3](GRADING.md#guarantees): the raw id where the provider kept it unique within the episode, disambiguated by occurrence where it did not. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
+**`call_id` is required.** It is the trial's episode-unique tool-call id — the agent loop assigns it before the call reaches this RPC, so what the runner records is already unambiguous ([GRADING.md G3](GRADING.md#guarantees): the provider's own id where the provider kept it unique within the episode, `<id>#<n>` for the n-th further occurrence where it did not). It is what joins a call to its result: position does not resolve the same tool called twice with identical arguments, and an empty value leaves the call with no key at all. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
 
 **Error Handling:**
 
@@ -674,7 +675,8 @@ Three properties a consumer can rely on:
 - **Tool results are on the wire.** A result is a `role: tool` message carrying the
   `tool_call_id` of the call that produced it, positioned where it happened.
 - **Calls are joined to results by `id`, never by position.** Every `tool_calls`
-  entry carries the provider's tool-call id; `arguments` is a JSON-encoded string.
+  entry carries the trial's episode-unique tool-call id; `arguments` is a
+  JSON-encoded string.
   Parallel calls to one tool with identical arguments are distinguishable only by
   that id, so a payload whose `tool_calls` carry none is rejected rather than
   degraded — see `tolokaforge.core.grading.transcript_wire`.
