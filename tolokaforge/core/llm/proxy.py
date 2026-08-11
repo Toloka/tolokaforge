@@ -82,24 +82,20 @@ serves this provider's native route" — true for a LiteLLM proxy's
 :data:`UNROUTABLE_PROVIDERS` cannot be opted in at all and are rejected
 loudly, because no gateway can serve them (see that constant).
 
-Widening the default to *every* provider would need this module to force the
-OpenAI envelope (``custom_llm_provider="openai"`` on routed calls, as the Nova
-path already does) rather than only swapping the base URL. That is a larger
-change than a transport swap — it collides with the ``custom_llm_provider`` the
-OpenRouter branch sets — and is deliberately not attempted here.
+Routed calls force the OpenAI envelope, because that is the gateway's own
+protocol; see ``docs/LLM_LAYER.md`` § "Speaking to the gateway". Widening
+``LLM_PROXY_PROVIDERS`` to a provider whose gateway route is a native passthrough
+rather than an OpenAI-compatible one is not supported.
 
-Why the model name is left alone
---------------------------------
+The model name on the wire
+--------------------------
 
-:meth:`LLMClient._build_kwargs` applies this transport by setting ``api_base``
-and ``api_key`` only. The litellm model string keeps its original
-``<provider>/<name>`` shape. Only one thing depends on that string:
-:func:`tolokaforge.core.pricing.normalize_model_name` keys off it, and it
-returns any second-prefixed name verbatim, guaranteeing a pricing-table miss
-that degrades ``cost_source`` to ``"unknown"``. Presets are *not* coupled to it
-— ``build_capabilities`` resolves off ``ModelConfig.name`` / ``.provider``
-directly — but renaming *those* to gateway-specific values does drop the
-matched preset and the ``providers:`` overlay. See ``docs/LLM_LAYER.md`` § proxy.
+Routed calls are addressed by the gateway's route name, resolved from its catalog
+(:mod:`tolokaforge.core.llm.gateway_route`). ``ModelConfig.provider`` / ``.name`` are
+untouched, so preset resolution and
+:func:`tolokaforge.core.pricing.normalize_model_name` are unaffected: both key off
+the config, not off the wire name. See ``docs/LLM_LAYER.md`` § "Speaking to the
+gateway" for the three catalog outcomes.
 """
 
 from __future__ import annotations
@@ -119,6 +115,7 @@ ENV_API_KEY = "LLM_PROXY_API_KEY"
 ENV_HEADERS = "LLM_PROXY_HEADERS"
 ENV_REQUEST_ID_HEADER = "LLM_PROXY_REQUEST_ID_HEADER"
 ENV_PROVIDERS = "LLM_PROXY_PROVIDERS"
+ENV_PREFERRED_ROUTE = "LLM_PROXY_PREFERRED_ROUTE"
 
 #: Providers routed when ``LLM_PROXY_PROVIDERS`` is unset.
 #:
@@ -179,6 +176,7 @@ class ProxyConfig:
     headers: dict[str, str] = field(default_factory=dict)
     request_id_header: str | None = None
     providers: frozenset[str] | None = None
+    preferred_route: str | None = None
 
     def applies_to(self, provider: str) -> bool:
         """Return whether ``provider`` should be routed through the gateway.
@@ -300,7 +298,13 @@ def resolve_proxy_config() -> ProxyConfig | None:
         # direct provider access.
         orphans = sorted(
             name
-            for name in (ENV_API_KEY, ENV_HEADERS, ENV_REQUEST_ID_HEADER, ENV_PROVIDERS)
+            for name in (
+                ENV_API_KEY,
+                ENV_HEADERS,
+                ENV_REQUEST_ID_HEADER,
+                ENV_PROVIDERS,
+                ENV_PREFERRED_ROUTE,
+            )
             if (secrets.get_secret(name) or "").strip()
         )
         if orphans:
@@ -317,4 +321,5 @@ def resolve_proxy_config() -> ProxyConfig | None:
         headers=_parse_headers(secrets.get_secret(ENV_HEADERS), secrets),
         request_id_header=(secrets.get_secret(ENV_REQUEST_ID_HEADER) or "").strip() or None,
         providers=_parse_providers(secrets.get_secret(ENV_PROVIDERS)),
+        preferred_route=(secrets.get_secret(ENV_PREFERRED_ROUTE) or "").strip() or None,
     )

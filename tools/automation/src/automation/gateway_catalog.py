@@ -14,14 +14,12 @@ a transport detail. The automaton surfaces the option; a human picks it.
 Which name reaches the gateway
 ------------------------------
 
-The name that reaches the gateway is **not** the engine's litellm model string.
-litellm strips exactly one provider prefix, so the integration's ``provider:
-openrouter`` + ``name: x-ai/grok-4.5`` sends the bare ``x-ai/grok-4.5`` — an
-``openrouter/x-ai/grok-4.5`` entry is a route this run cannot reach without the
-gateway-named config in ``docs/LLM_LAYER.md`` § "The model name must be the
-gateway's route name". So the lookup is keyed on the bare slug, and the wildcard
-that counts is one covering the slug's own namespace (``x-ai/*``), not
-``openrouter/*``.
+The engine resolves the gateway's route name from this same catalog and addresses
+the gateway by it, trying ``openrouter/<slug>`` and then the bare ``<slug>``
+(``tolokaforge.core.llm.gateway_route``). So both shapes are reachable and this
+lookup checks both, in the same order. The wildcard that counts is still one
+covering the slug's own namespace (``x-ai/*``), because a wildcard says the
+gateway will forward the request, not that the model exists behind it.
 
 An exact entry and a wildcard are **not** equally strong evidence, so they are
 reported separately: an exact entry means someone configured this model; a
@@ -131,20 +129,18 @@ def fetch_configured_catalog(timeout: int = 15) -> list[str] | None:
 def lookup(slug: str, catalog: list[str] | None) -> Availability:
     """Classify how (or whether) ``slug`` is reachable on the gateway.
 
-    The name checked is the one that actually reaches the gateway. litellm strips
-    exactly one provider prefix, so the integration's ``provider: openrouter`` +
-    ``name: <slug>`` config puts the BARE ``<slug>`` on the wire -- an
-    ``openrouter/<slug>`` catalog entry is NOT evidence for this run. Reaching a
-    prefixed route needs the gateway-named config in ``docs/LLM_LAYER.md`` under
-    "The model name must be the gateway's route name", which the integration
-    workflow does not use.
+    Both names the engine can reach are checked, in its order: the prefixed
+    ``openrouter/<slug>`` first, then the bare ``<slug>``. The engine resolves the
+    route name from this same catalog and addresses the gateway by it, so a
+    prefixed-only entry IS reachable. See ``tolokaforge.core.llm.gateway_route``.
     """
     if catalog is None:
         return Availability(slug=slug, status=STATUS_UNKNOWN)
 
     entries = set(catalog)
-    if slug in entries:
-        return Availability(slug=slug, status=STATUS_EXACT, route=slug)
+    for candidate in (f"openrouter/{slug}", slug):
+        if candidate in entries:
+            return Availability(slug=slug, status=STATUS_EXACT, route=candidate)
     namespace = slug.split("/", 1)[0]
     if f"{namespace}/*" in entries or "*" in entries:
         return Availability(slug=slug, status=STATUS_WILDCARD, route=slug)
