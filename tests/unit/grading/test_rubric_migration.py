@@ -27,6 +27,7 @@ import pytest
 import yaml
 
 from tests.utils.migration_packs import write_migration_pack
+from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.grading.migration_declaration import (
     MIGRATION_FILENAME,
     MigratedCriterion,
@@ -1397,6 +1398,71 @@ def test_a_declaration_that_will_not_load_is_a_named_refusal_and_not_a_traceback
 
     assert "does not load" in str(raised.value)
     assert names in str(raised.value)
+
+
+def test_a_trial_that_never_ran_is_excluded_by_name_and_the_corpus_still_reconciles(
+    tmp_path: Path,
+) -> None:
+    """A provisioning failure in the run is not a defect in the corpus.
+
+    Such a bundle records no ``task.yaml``, so nothing names the pack whose migration
+    it could speak to — but it is discovered now, and a corpus that reconciled fine
+    yesterday must not start blocking because one trial's environment did not come
+    up. It is named in its own list, absent from ``unreadable_trials``, and does not
+    block. The remaining trials are reconciled exactly as before.
+    """
+    packs = _packs(tmp_path)
+    without = _reconcile(_corpus(tmp_path / "without"), packs)
+    corpus = _corpus(tmp_path / "with")
+    aborted = write_provision_failure_bundle(corpus / "never_ran", task_id="notes")
+
+    report = _reconcile(corpus, packs)
+
+    (excluded,) = report.excluded_bundles
+    assert excluded.bundle == str(aborted)
+    assert "aborted before it was measured" in excluded.reason
+    assert report.unreadable_trials == []
+    assert report.entries[0].observations == without.entries[0].observations
+    # Whatever this corpus's verdict is, the trial that never ran does not change it.
+    assert report.blocking == without.blocking
+    assert not any(str(aborted) in reason for reason in report.blocking)
+
+
+def test_a_task_less_bundle_that_recorded_an_episode_still_blocks(tmp_path: Path) -> None:
+    """The exclusion is narrow: only a trial that never ran is excused the file.
+
+    A bundle whose trajectory records a real episode and whose ``task.yaml`` is gone
+    has lost what it was graded against — a defect in the corpus, so it stays in
+    ``unreadable_trials`` and keeps blocking. A rule that excused every missing
+    ``task.yaml`` would trade a silent exclusion for a silent excuse.
+    """
+    corpus = _corpus(tmp_path)
+    stripped = sorted(corpus.iterdir())[0]
+    (stripped / "task.yaml").unlink()
+
+    report = _reconcile(corpus, _packs(tmp_path))
+
+    assert report.excluded_bundles == []
+    (unreadable,) = report.unreadable_trials
+    assert unreadable.trial == str(stripped)
+    assert "task.yaml" in unreadable.reason
+    assert any(str(stripped) in reason for reason in report.blocking)
+
+
+def test_a_corpus_of_nothing_but_trials_that_never_ran_says_so(tmp_path: Path) -> None:
+    """The degenerate case names the exclusions rather than the pack search.
+
+    "No pack behind the trials declares a migration (task ids: [])" is a message
+    about packs for a corpus that had no trial to resolve one from.
+    """
+    corpus = tmp_path / "corpus"
+    write_provision_failure_bundle(corpus, task_id="notes")
+
+    with pytest.raises(ReconcileError) as raised:
+        _reconcile(corpus, _packs(tmp_path))
+
+    assert "excluded from the corpus" in str(raised.value)
+    assert "no pack behind the trials" not in str(raised.value)
 
 
 def test_a_bundle_that_cannot_be_read_is_named_and_blocks_the_migration(tmp_path: Path) -> None:

@@ -9,8 +9,8 @@ view, ``tool_log.yaml`` for the tool-call record — and scores the pack's
 
 Nothing here runs an agent, an environment or a judge, so a replay costs no
 tokens and starts no container. That is a structural property of the imports, not
-a promise: this module reaches the evaluator, the bundle reader and the authoring
-gate, and stops there.
+a promise: this module reaches the evaluator, the bundle reader, the authoring
+gate and the outcome classifier a run's own attribution uses, and stops there.
 
 Constraints can come from a supplied file instead of the bundle, which is how an
 author iterates on one without editing the pack. Such a block is checked against
@@ -38,10 +38,15 @@ import yaml
 from pydantic import BaseModel, ValidationError
 from pydantic_core import ErrorDetails
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
     ToolInventory,
     inspect_grading_authoring,
+)
+from tolokaforge.core.grading.replay_layout import (
+    TRACE_REPLAY_DIRNAME,
+    discover_trial_bundles,
 )
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
@@ -59,10 +64,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.artifacts import read_recorded_tool_log
 
 __all__ = [
-    "JUDGE_REPLAY_DIRNAME",
-    "RESERVED_DIRNAMES",
     "TRACE_CHECKS_RESULT_FILENAME",
-    "TRACE_REPLAY_DIRNAME",
     "TRACE_REPLAY_REPORT_FILENAME",
     "BundleEvidence",
     "ConstraintDiscrimination",
@@ -81,10 +83,10 @@ __all__ = [
     "TraceReplayReportError",
     "TrialTraceReplay",
     "TrialTraceReplayOutcome",
+    "aborted_without_a_task_snapshot",
     "build_trace_replay_report",
     "classify_trace_trial",
     "declared_trace_checks",
-    "discover_trace_bundles",
     "emit_trace_replay_report",
     "load_trace_checks_override",
     "read_trace_replay_inputs",
@@ -97,28 +99,12 @@ __all__ = [
     "trace_replay_root",
 ]
 
-#: Subdirectory replay artifacts are written under; excluded from discovery so a
-#: source pointed at a previous run's output never re-checks bundles nested there.
-TRACE_REPLAY_DIRNAME = "trace_replay"
-#: Judge replay's output subtree, excluded from discovery beside this command's own.
-#: A local literal rather than an import of ``replay.REPLAYS_DIRNAME``: that module
-#: loads the judge and its LLM client at import time, and the import boundary that
-#: makes this one incapable of spending forbids reaching it. A shared leaf module
-#: carrying the layout for both is #787.
-JUDGE_REPLAY_DIRNAME = "replays"
-#: Directory names reserved anywhere under a source: a bundle sitting beneath one is
-#: not discovered, at any depth, because a previously-replayed subtree can be nested
-#: arbitrarily. The trade is deliberate — a *task* named ``replays`` would hide its
-#: own trials — and it is what keeps the two replay commands from reading each
-#: other's output whatever either one writes into its tree.
-RESERVED_DIRNAMES = frozenset({TRACE_REPLAY_DIRNAME, JUDGE_REPLAY_DIRNAME})
 #: Per-bundle artifact name. Deliberately one no trial bundle already holds, so a
 #: write that escaped the output subtree creates a file rather than clobbering one.
 TRACE_CHECKS_RESULT_FILENAME = "trace_checks_result.yaml"
 #: Run-level artifact name, beside the per-bundle results under the same subtree.
 TRACE_REPLAY_REPORT_FILENAME = "trace_replay_report.yaml"
 
-_BUNDLE_MARKERS = ("task.yaml", "trajectory.yaml")
 _TOOLS_SCHEMAS_FILENAME = "tools_schemas.yaml"
 #: The denominator a route-scoped row is read against, carried in the report so a
 #: reader never takes a route's unanimity for a corpus-wide claim.
@@ -141,7 +127,10 @@ class TraceReplayOutcomeStatus(str, Enum):
     ``REPLAYED`` — recomputed and the artifact written. ``WOULD_REPLAY`` — a
     ``dry_run`` trial that is eligible and reconstructable. ``SKIPPED_NOT_APPLICABLE``
     — the bundle declares no ``trace_checks`` and no override was supplied, which is
-    a declared skip, never a silent one. ``FAILED`` — the bundle could not be
+    a declared skip, never a silent one. ``SKIPPED_NO_TASK`` — the bundle carries no
+    ``task.yaml``, so nothing says what the trial was graded against; it is kept
+    apart from ``SKIPPED_NOT_APPLICABLE``, which asserts something about the pack
+    that a bundle without one cannot support. ``FAILED`` — the bundle could not be
     classified or reconstructed; ``reason`` names the file and the defect, and the
     batch continues.
     """
@@ -149,6 +138,7 @@ class TraceReplayOutcomeStatus(str, Enum):
     REPLAYED = "replayed"
     WOULD_REPLAY = "would_replay"
     SKIPPED_NOT_APPLICABLE = "skipped_not_applicable"
+    SKIPPED_NO_TASK = "skipped_no_task"
     FAILED = "failed"
 
 
@@ -466,8 +456,9 @@ def _load_yaml_mapping(path: Path) -> dict[str, Any] | None:
     """A mapping off *path*, ``None`` where the file is absent *or* holds anything else.
 
     For the inputs whose absence and whose wrong shape are one refusal at the call
-    site: a bundle with no ``task.yaml`` and one whose ``task.yaml`` is a list are
-    both "not a trial bundle", and the caller names both possibilities.
+    site: a bundle with no ``task.yaml`` and one whose ``task.yaml`` is a list have
+    both lost what the trial was graded against, and the caller names both
+    possibilities.
     """
     if not path.exists():
         return None
@@ -496,33 +487,25 @@ def _carried_mapping(path: Path) -> dict[str, Any] | None:
     )
 
 
-def _is_bundle(path: Path) -> bool:
-    return path.is_dir() and all((path / marker).exists() for marker in _BUNDLE_MARKERS)
+def aborted_without_a_task_snapshot(bundle: Path) -> str | None:
+    """The termination reason of a task-less bundle the substrate killed, else ``None``.
 
+    The one rule every command applies to a bundle carrying no ``task.yaml``. A
+    trial whose environment never came up is written by the executor alone — the
+    trajectory and the metrics, no task snapshot — so refusing every task-less
+    bundle would report the most common abort shape as a defective input. ``None``
+    says the trial recorded a real episode and lost what it was measured against,
+    which *is* a defective input, and each caller refuses it in its own words.
 
-def discover_trace_bundles(source: Path) -> list[Path]:
-    """Discover re-checkable trial bundles under ``source``, layout-agnostic.
-
-    A directory is a bundle iff it directly contains ``task.yaml`` +
-    ``trajectory.yaml``. Not ``grade.yaml``: a trial is worth re-checking whether
-    or not it was ever graded. Handles the three recorded layouts uniformly — a run
-    dir with a ``trials/<task>/<idx>/`` subtree, a flat collection of bundle dirs,
-    or a single bundle dir. Returned sorted for stable batches.
-
-    Nothing beneath a :data:`RESERVED_DIRNAMES` directory is discovered, at any
-    depth: a source re-pointed at a run that already holds either replay command's
-    output re-checks the trials, never the artifacts.
+    Public because ``reconcile`` asks the same question of a corpus that
+    ``retrace`` asks of a batch. Raises :class:`MissingTraceReplayInputError` when
+    the trajectory cannot be read: a bundle that cannot say what happened to it is
+    a defective input whoever is asking.
     """
-    source = Path(source)
-    if _is_bundle(source):
-        return [source]
-    bundles = {
-        marker.parent
-        for marker in source.rglob("trajectory.yaml")
-        if RESERVED_DIRNAMES.isdisjoint(marker.relative_to(source).parts)
-        and _is_bundle(marker.parent)
-    }
-    return sorted(bundles)
+    trajectory, _ = _load_trajectory(bundle)
+    if classify_trial_outcome(trajectory) is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+        return None
+    return trajectory.termination_reason.value if trajectory.termination_reason else "none"
 
 
 def recorded_task(bundle: Path) -> dict[str, Any]:
@@ -537,7 +520,8 @@ def recorded_task(bundle: Path) -> dict[str, Any]:
     task = _load_yaml_mapping(bundle / "task.yaml")
     if task is None:
         raise MissingTraceReplayInputError(
-            f"not a trial bundle: {bundle / 'task.yaml'} is missing or not a mapping"
+            f"{bundle / 'task.yaml'} is missing or not a mapping, so nothing says what "
+            "the trial recorded here was graded against"
         )
     return task
 
@@ -551,7 +535,8 @@ def classify_trace_trial(
     block, or an override supplies one — an override replaces the block wholesale,
     so it makes a trial that declared none re-checkable. Raises
     :class:`MissingTraceReplayInputError` when ``task.yaml`` is missing or is not a
-    mapping: that is not a constraint-less trial, it is not a trial bundle.
+    mapping: that is not a constraint-less trial, it is a bundle that lost what it
+    was graded against.
     """
     bundle = Path(bundle)
     return _classify_trace_trial(recorded_task(bundle), override)
@@ -884,6 +869,31 @@ def _refuse_mis_authored_override(
         )
 
 
+def _task_less_disposition(bundle: Path) -> TrialTraceReplayOutcome:
+    """What a bundle carrying no ``task.yaml`` is, read off its own trajectory.
+
+    The reason names the outcome class, not the operational cause — for a provision
+    failure that is ``error_reason`` in the same bundle's ``metrics.yaml``, which
+    replay does not read. Raises :class:`MissingTraceReplayInputError` for both
+    failing arms, so the batch's per-bundle net reports them.
+    """
+    termination = aborted_without_a_task_snapshot(bundle)
+    if termination is None:
+        raise MissingTraceReplayInputError(
+            f"{bundle / 'task.yaml'} is missing, so nothing says what the trial recorded "
+            "here was graded against"
+        )
+    return TrialTraceReplayOutcome(
+        bundle=bundle,
+        status=TraceReplayOutcomeStatus.SKIPPED_NO_TASK,
+        reason=(
+            "the trial was aborted before it was measured "
+            f"(termination_reason: {termination}), so it recorded no task.yaml and "
+            "there are no trace checks to re-check it against"
+        ),
+    )
+
+
 def _replay_one_bundle(
     source: Path,
     bundle: Path,
@@ -894,6 +904,8 @@ def _replay_one_bundle(
     authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
+        if not (bundle / "task.yaml").exists():
+            return _task_less_disposition(bundle)
         task = recorded_task(bundle)
         if _classify_trace_trial(task, override) is TraceReplayEligibility.NOT_APPLICABLE:
             return TrialTraceReplayOutcome(
@@ -950,15 +962,17 @@ def run_trace_replay_batch(
     trials. What the gate could not check travels on each outcome.
 
     A bundle declaring no ``trace_checks`` and given no override is reported
-    skipped; one that cannot be read or reconstructed is a named per-trial failure
-    and the batch continues. With ``dry_run`` the inputs are still resolved — the
+    skipped, and so is one carrying no ``task.yaml`` whose own trajectory calls it
+    an infrastructure abort; one that cannot be read or reconstructed — including a
+    task-less bundle that did record an episode — is a named per-trial failure and
+    the batch continues. With ``dry_run`` the inputs are still resolved — the
     reconstruction is the thing worth checking for free — and nothing is written.
     Otherwise each bundle's recomputed result is written to
     ``<source>/trace_replay/<replay_id>/…``; no file the source already held is
     opened for write.
     """
     source = Path(source)
-    bundles = [Path(trial)] if trial is not None else discover_trace_bundles(source)
+    bundles = [Path(trial)] if trial is not None else discover_trial_bundles(source)
     reports: dict[Path, AuthoringReport] = {}
     unreadable: dict[Path, str] = {}
     if override is not None:
@@ -1062,11 +1076,18 @@ class TraceReplayEvidence(BaseModel):
     ``schema_versions`` — the bundles whose inputs were reconstructed, which a dry
     run also does. ``schema_versions`` counts the stamps seen, under ``unstamped``
     where a bundle predates the stamp; it is evidence and never a gate.
+
+    ``bundles_skipped`` counts the bundles that declared no ``trace_checks`` and
+    nothing else. A bundle carrying no ``task.yaml`` is counted by
+    ``bundles_no_task`` instead: what an aborted trial could not say about a pack
+    and what a pack chose not to declare are two facts, and one number carrying
+    both is a number nobody can act on.
     """
 
     bundles_read: int
     bundles_with_tool_log: int
     bundles_skipped: int
+    bundles_no_task: int
     bundles_failed: int
     bundles_predating_call_ids: int
     schema_versions: dict[str, int]
@@ -1302,6 +1323,9 @@ def _replay_evidence(outcomes: Sequence[TrialTraceReplayOutcome]) -> TraceReplay
             1
             for outcome in outcomes
             if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
+        ),
+        bundles_no_task=sum(
+            1 for outcome in outcomes if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NO_TASK
         ),
         bundles_failed=sum(
             1 for outcome in outcomes if outcome.status is TraceReplayOutcomeStatus.FAILED

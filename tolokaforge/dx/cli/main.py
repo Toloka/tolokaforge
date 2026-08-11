@@ -29,6 +29,7 @@ from tolokaforge.core.grading.replay import (
     load_grading_override,
     run_replay_batch,
 )
+from tolokaforge.core.grading.replay_layout import JUDGE_REPLAY_DIRNAME
 from tolokaforge.core.grading.rubric_migration import (
     DEFAULT_PACKS_ROOT,
     ReconcileError,
@@ -864,15 +865,28 @@ def run(
     _fail_on_ungradeable_trials(orchestrator.grading_completeness)
 
 
+def _relative_bundle(bundle: Path, source: Path) -> str:
+    """A bundle's path as the operator named the source, or its own name from outside it."""
+    try:
+        return str(bundle.relative_to(source))
+    except ValueError:
+        return bundle.name
+
+
 def _print_rejudge_summary(
     outcomes: list[TrialReplayOutcome], *, replay_id: str, source: Path, dry_run: bool
 ) -> None:
-    """Print the batch disposition per trial + the aggregate counts."""
+    """Print one line per discovered bundle, then the census over the whole batch."""
     label = "Would re-judge" if dry_run else "Re-judged"
     for outcome in outcomes:
-        rel = outcome.bundle
+        rel = _relative_bundle(outcome.bundle, source)
         if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
             console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
+        elif outcome.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE:
+            # The reason embeds recorded grading_error free text; escape it so a
+            # bracketed fragment prints rather than vanishing as console markup.
+            reason = escape(outcome.reason or "")
+            console.print(f"[yellow]skip (no grade)[/yellow] {rel} — {reason}")
         elif outcome.status is ReplayOutcomeStatus.FAILED:
             console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
         else:
@@ -890,13 +904,14 @@ def _print_rejudge_summary(
         for o in outcomes
     )
     skipped = sum(o.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE for o in outcomes)
+    no_grade = sum(o.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE for o in outcomes)
     failed = sum(o.status is ReplayOutcomeStatus.FAILED for o in outcomes)
     console.print(
-        f"\n[bold]{label}:[/bold] {eligible} eligible, "
-        f"{skipped} skipped-not-applicable, {failed} failed-with-reason"
+        f"\n[bold]{label}:[/bold] {len(outcomes)} discovered: {eligible} eligible, "
+        f"{skipped} not-applicable, {no_grade} no-grade, {failed} failed"
     )
     if not dry_run and eligible:
-        console.print(f"Replay artifacts: {source / 'replays' / replay_id}")
+        console.print(f"Replay artifacts: {source / JUDGE_REPLAY_DIRNAME / replay_id}")
 
 
 def _print_replay_report(report: ReplayReport) -> None:
@@ -927,8 +942,9 @@ def _print_replay_report(report: ReplayReport) -> None:
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
-        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
-        "grade.yaml + task.yaml."
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it directly "
+        "contains trajectory.yaml; a trial that produced no grade is discovered and "
+        "reported as a no-grade skip."
     ),
 )
 @click.option(
@@ -989,8 +1005,10 @@ def rejudge(
     Re-executes only the rubric judge over recorded trajectories — no agent re-run,
     no live services — so judge changes (schema, prompt, wording, model) can be
     A/B-tested against a recorded run. Execution is sequential with no concurrency
-    cap; inspect --dry-run first. Exits non-zero when any trial fails to classify
-    or reconstruct (the report for the replayed subset is still written). See
+    cap; inspect --dry-run first. Every discovered bundle gets a line and the batch
+    closes with a census over all of them. Exits non-zero when any trial fails to
+    classify or reconstruct (the report for the replayed subset is still written),
+    and when --source discovers no bundle at all. A skip never does. See
     docs/JUDGE_REPLAY.md.
     """
     source_path = Path(source)
@@ -1007,6 +1025,11 @@ def rejudge(
         knowledge_search=KnowledgeSearchMode(knowledge_search),
         dry_run=dry_run,
     )
+    if not outcomes:
+        raise click.ClickException(
+            f"no trial bundle under {source_path} — a batch that discovered nothing "
+            "re-judges nothing. A bundle is a directory holding trajectory.yaml"
+        )
     _print_rejudge_summary(outcomes, replay_id=replay_id, source=source_path, dry_run=dry_run)
 
     if not dry_run:
@@ -1046,9 +1069,9 @@ def _checked_replay_id(ctx: click.Context, param: click.Parameter, value: str | 
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
-        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
-        "task.yaml + trajectory.yaml — a trial is worth re-checking whether or not it "
-        "was graded."
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it directly "
+        "contains trajectory.yaml — a trial is worth re-checking whether or not it was "
+        "graded, and one that never ran is reported rather than dropped."
     ),
 )
 @click.option(
@@ -1137,7 +1160,7 @@ def retrace(
     if report is None:
         raise click.ClickException(
             f"no trial bundle under {source_path} — a selector matching nothing validates "
-            "nothing. A bundle is a directory holding task.yaml + trajectory.yaml"
+            "nothing. A bundle is a directory holding trajectory.yaml"
         )
 
     render_trace_replay_report(
