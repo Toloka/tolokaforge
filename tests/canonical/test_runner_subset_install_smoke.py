@@ -39,10 +39,21 @@ The six surfaces the smoke covers, in order:
    closure ``python -m tolokaforge.runner`` would trigger at container boot.
    A subset that omits any module the boot path reaches fails here with the
    real Python traceback, before it can fail at runtime inside the container.
-6. **Bundled data files (GitHub #830)** — the pricing table and preset
-   registry are non-Python files ``importlib.resources`` reads at first use.
-   A subset that ships Python only would boot with an empty pricing table
-   (silent cost regression); assert the pricing dictionary is populated.
+6. **Bundled data files** — the pricing table, preset registry, and
+   provider bindings are non-Python files
+   :mod:`tolokaforge.core.model_data` reads at first use via
+   ``importlib.resources``. A subset that ships Python only would boot
+   with an empty pricing table (silent cost regression), an empty preset
+   table (misrouted LLM calls), or a ``FileNotFoundError`` at the first
+   LLM-judge grading call; the accessor probe covers all three.
+
+7. **Fingerprint sibling exclusion** — the orchestrator-only
+   :mod:`tolokaforge.core.model_data_fingerprint` companion carries
+   heavy first-party imports (``presets``, ``pricing``, ``certify``)
+   and is intentionally not shipped with the subset. Importing it from
+   the subset venv must raise :class:`ModuleNotFoundError`; any other
+   outcome means the module leaked into the wheel or a partition edit
+   forgot to keep it out.
 
 The wheel is built once per pytest session (reuses ``dist/`` if present,
 otherwise invokes ``python -m hatchling build -t custom``, matching the
@@ -470,28 +481,72 @@ def test_subset_venv_runner_boot_import_graph(scratch_venv_python: Path) -> None
 
 
 def test_subset_venv_bundled_data_files_are_populated(scratch_venv_python: Path) -> None:
-    """The pricing table and preset registry must be non-empty from the venv.
+    """Every model-data accessor must resolve to a non-empty file from the venv.
 
-    GitHub #830 folded these into the subset build; before the fix the
-    runner container booted with an empty pricing table (silent cost
-    telemetry regression). The subset wheel's ``force-include`` /
-    ``only-include`` entries have to survive both the hatch build and the
-    pip install — this probes the end result inside the venv rather than
-    inspecting the wheel archive, so a broken install path (data file
-    landing outside ``site-packages/``) still surfaces here."""
+    The three bundled model-data files (``pricing.json``,
+    ``model_presets.yaml``, ``providers.yaml``) are shipped via the
+    subset wheel's ``only-include`` entries; the subset-native runner
+    reads them at first use via
+    :mod:`tolokaforge.core.model_data`'s accessors. A subset image that
+    dropped any one would surface as an empty pricing table (silent cost
+    telemetry regression), an empty preset table (misrouted LLM calls),
+    or a `FileNotFoundError` at the first LLM-judge grading call. This
+    probes the end result inside the venv rather than inspecting the
+    wheel archive, so a broken install path (data file landing outside
+    ``site-packages/``) still surfaces here."""
     probe = (
+        "from tolokaforge.core.model_data import (\n"
+        "    bundled_pricing_path, bundled_presets_path, bundled_providers_path,\n"
+        ")\n"
+        "for accessor in (bundled_pricing_path, bundled_presets_path, bundled_providers_path):\n"
+        "    p = accessor()\n"
+        "    assert p.exists(), f'{p} missing from subset install'\n"
+        "    assert p.stat().st_size > 0, f'{p} empty in subset install'\n"
         "from tolokaforge.core.pricing import MODEL_PRICING\n"
         "assert len(MODEL_PRICING) > 100, f'pricing table shrunk to {len(MODEL_PRICING)}'\n"
         "print(len(MODEL_PRICING))\n"
     )
     result = _run_in_venv(scratch_venv_python, ["-c", probe])
     assert result.returncode == 0, (
-        "pricing-table probe failed inside the subset venv — "
-        "``tolokaforge/core/data/pricing.json`` did not land in the "
-        f"installed site-packages:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+        "bundled-data probe failed inside the subset venv — one of "
+        "``pricing.json``/``model_presets.yaml``/``providers.yaml`` did "
+        f"not land in the installed site-packages:\nstdout:\n{result.stdout}\n"
+        f"stderr:\n{result.stderr}"
     )
     pricing_count = int(result.stdout.strip())
     assert pricing_count > 100, (
-        f"pricing table populated with only {pricing_count} entries — GitHub "
-        "#830's data-files fix has regressed"
+        f"pricing table populated with only {pricing_count} entries — "
+        "runner-subset data-files build has regressed"
+    )
+
+
+def test_subset_venv_model_data_fingerprint_module_is_absent(
+    scratch_venv_python: Path,
+) -> None:
+    """The orchestrator-only fingerprint sibling must NOT be installed.
+
+    :mod:`tolokaforge.core.model_data_fingerprint` carries the heavy
+    first-party imports (``presets``, ``pricing``, ``certify``) that
+    would drag orchestrator-only surfaces into the runner subset. The
+    module is intentionally excluded from ``RUNNER_SUBSET_LOOSE_FILES``
+    and from the pyproject ``only-include`` list; importing it inside
+    the subset venv must raise :class:`ModuleNotFoundError`."""
+    probe = (
+        "try:\n"
+        "    import tolokaforge.core.model_data_fingerprint\n"
+        "except ModuleNotFoundError:\n"
+        "    print('OK')\n"
+        "else:\n"
+        "    raise SystemExit('model_data_fingerprint leaked into subset venv')\n"
+    )
+    result = _run_in_venv(scratch_venv_python, ["-c", probe])
+    assert result.returncode == 0, (
+        "model_data_fingerprint leaked into the subset venv — the module "
+        "carries heavy first-party imports (presets, pricing, certify) that "
+        "would drag orchestrator-only surfaces along:\n"
+        f"stdout:\n{result.stdout}\nstderr:\n{result.stderr}"
+    )
+    assert result.stdout.strip() == "OK", (
+        f"model_data_fingerprint negative probe exited 0 but produced "
+        f"unexpected stdout: {result.stdout!r}"
     )

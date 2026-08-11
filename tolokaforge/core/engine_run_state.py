@@ -42,7 +42,8 @@ def write_engine_run_state(
     persisted so workers read the same canonical identifier the
     orchestrator stamped on every ``TrialSpec``. ``models_fingerprint``
     is required and records the resolved model-data snapshot; it is
-    populated by :func:`tolokaforge.core.model_data.compute_models_fingerprint`
+    populated by
+    :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
     at each write site so a completed run identifies both the resolved
     bundle and any operator overlay folded on top.
     """

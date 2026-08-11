@@ -17,10 +17,11 @@ from __future__ import annotations
 import re
 from collections.abc import Iterable
 from functools import cache
-from importlib import resources
 
 import yaml
 from pydantic import BaseModel, ConfigDict
+
+from tolokaforge.core.model_data import bundled_providers_path
 
 __all__ = [
     "DEFAULT_RATE_LIMIT_PATTERNS",
@@ -119,11 +120,7 @@ class ProviderBinding(BaseModel):
 
 @cache
 def _load_bundled_providers() -> dict[str, ProviderBinding]:
-    raw = (
-        resources.files("tolokaforge.core")
-        .joinpath("data/providers.yaml")
-        .read_text(encoding="utf-8")
-    )
+    raw = bundled_providers_path().read_text(encoding="utf-8")
     payload = yaml.safe_load(raw) or {}
     if not isinstance(payload, dict):
         raise ValueError(

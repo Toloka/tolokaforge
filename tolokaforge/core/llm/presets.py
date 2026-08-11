@@ -72,6 +72,7 @@ from tolokaforge.core.llm.schema_sanitizer import (
     StrictSchema,
     ToolSchemaSanitizer,
 )
+from tolokaforge.core.model_data import bundled_presets_path
 
 __all__ = [
     "build_capabilities",
@@ -346,12 +347,26 @@ def resolve_overlay_path(
 
 
 def _load_bundled_presets() -> dict[str, Any]:
-    """Load the bundled ``model_presets.yaml`` from inside the wheel."""
-    preset_path = Path(__file__).parent.parent / "data" / "model_presets.yaml"
-    if not preset_path.exists():
-        return _DEFAULT_PRESET_DATA
+    """Load the bundled ``model_presets.yaml`` via the model-data seam.
+
+    Raises
+    ------
+    FileNotFoundError
+        The bundled preset file is absent — propagated from the accessor.
+    ValueError
+        The YAML parsed to ``None`` (empty file) or a non-mapping payload.
+        A corrupted install shape must surface as a loud startup failure.
+    """
+    preset_path = bundled_presets_path()
     with open(preset_path) as f:
-        return yaml.safe_load(f) or _DEFAULT_PRESET_DATA
+        data = yaml.safe_load(f)
+    if data is None:
+        raise ValueError(f"bundled preset table {preset_path} is empty")
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"bundled preset table {preset_path} must be a mapping, got {type(data).__name__}"
+        )
+    return data
 
 
 def _load_overlay_file(path: str) -> dict[str, Any]:
@@ -592,7 +607,7 @@ def get_resolved_presets() -> dict[str, Any]:
 
     Public accessor for callers that need the merged preset state as data
     — the model-data fingerprint (see
-    :func:`tolokaforge.core.model_data.compute_models_fingerprint`),
+    :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`),
     diagnostics tools, and any other caller that needs the merged data
     snapshot without re-reading YAML. Returns a fresh ``dict`` on every
     call so callers cannot mutate the module cache.

@@ -1,51 +1,122 @@
-"""Public engine seam for model-data fingerprinting.
+"""Public engine seam for bundled model-data resources.
 
-The fingerprint identifies the resolved model-data surface a completed run
-was scored against: the preset table (bundled ⊕ overlay), the pricing
-table (bundled ⊕ overlay), and the certificate registry. Consumers store
-:class:`ModelsFingerprint` alongside a run's engine state to reproduce
-which model-data snapshot was in effect at run start.
+The module exposes two related surfaces:
 
-The module is a *pure* seam — no I/O, no subprocess, no orchestrator
-imports. It reads the resolved-preset accessor
-(:func:`tolokaforge.core.llm.presets.get_resolved_presets`), the
-runtime pricing dict (:data:`tolokaforge.core.pricing.MODEL_PRICING`),
-and the certificate tuple
-(:data:`tolokaforge.testing.certify.ALL_MODELS`) — every one of which
-is already resolved by the CLI startup path before an orchestrator write
-site invokes :func:`compute_models_fingerprint`.
+* Three path accessors — :func:`bundled_pricing_path`,
+  :func:`bundled_presets_path`, :func:`bundled_providers_path` — that
+  return the on-disk location of the engine's bundled model-data files
+  (``pricing.json``, ``model_presets.yaml``, ``providers.yaml``).
+  Consumers parse and validate the file's contents themselves; the
+  accessors only guarantee the file exists.
+* The fingerprint schema types (:class:`ModelsFingerprint`,
+  :data:`MODELS_PACKAGE_VERSION`, :data:`MODELS_MINIMUM_ENGINE_VERSION`,
+  :data:`MODELS_FINGERPRINT_API_VERSION`) plus
+  :func:`decode_models_fingerprint`, the read-side decoder used by
+  :mod:`tolokaforge.core.engine_run_state`.
 
-See ADR-0030 § "Fingerprinting for auditability" for the wheel-split
-context. While the model data still ships in the engine wheel,
-:data:`MODELS_PACKAGE_VERSION` is the literal ``"in-tree"`` sentinel and
-the three module constants (:data:`MODELS_PACKAGE_VERSION`,
-:data:`MODELS_MINIMUM_ENGINE_VERSION`,
-:data:`MODELS_FINGERPRINT_API_VERSION`) are sourced here; when the
-``tolokaforge-models`` wheel-split lands they will be sourced from that
-wheel's ``__init__``.
+The module has **no first-party imports** — it is safe to import from
+runner-subset code. The fingerprint compute path (which needs the
+resolved preset table, pricing dict, and certificate registry) lives in
+the orchestrator-only sibling :mod:`tolokaforge.core.model_data_fingerprint`.
+
+``_DATA_ROOT`` is the internal seam pointing at the bundled data
+directory. Tests monkey-patch this constant to redirect the accessors at
+a scratch tree.
+
+See ADR-0030 § "The one seam" and § "Fingerprinting for auditability"
+for the wheel-split context. While the model data still ships in the
+engine wheel, :data:`MODELS_PACKAGE_VERSION` is the literal ``"in-tree"``
+sentinel; when the ``tolokaforge-models`` wheel-split lands the three
+module constants will be sourced from that wheel's ``__init__``.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
+import importlib.resources
+from pathlib import Path
 from typing import Annotated, Any, Final, Literal
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
-
-from tolokaforge.core.llm.presets import get_resolved_presets
-from tolokaforge.core.pricing import MODEL_PRICING
-from tolokaforge.testing.certify import ALL_MODELS, Capability, ModelCertificate
 
 __all__ = [
     "MODELS_FINGERPRINT_API_VERSION",
     "MODELS_MINIMUM_ENGINE_VERSION",
     "MODELS_PACKAGE_VERSION",
     "ModelsFingerprint",
-    "compute_models_fingerprint",
+    "bundled_presets_path",
+    "bundled_pricing_path",
+    "bundled_providers_path",
     "decode_models_fingerprint",
 ]
+
+
+_DATA_ROOT: Final[Path] = Path(str(importlib.resources.files("tolokaforge.core") / "data"))
+"""Internal seam pointing at the directory holding the bundled model-data
+files. The three accessors resolve their targets under this root; tests
+monkey-patch this constant to redirect them at a scratch tree. The
+future ``tolokaforge-models`` wheel-split flips this single line to
+``importlib.resources.files("tolokaforge_models") / "data"`` — accessor
+bodies stay the same and consumers see no change."""
+
+
+def bundled_pricing_path() -> Path:
+    """Return the on-disk path of the bundled ``pricing.json`` table.
+
+    Raises :class:`FileNotFoundError` when the file is absent — a
+    corrupted install shape the caller must surface, not swallow. The
+    accessor does **not** open, parse, or validate the file; the
+    consumer (``tolokaforge.core.pricing._load_pricing``) is responsible
+    for rejecting empty / malformed content with its own loud failure.
+
+    Public API. Stable within v0.17.x — downstream code that reads the
+    engine's bundled pricing table should use this accessor instead of
+    reaching into ``tolokaforge/core/data/`` directly.
+    """
+    path = _DATA_ROOT / "pricing.json"
+    if not path.is_file():
+        raise FileNotFoundError(f"Bundled pricing table not found at {path} — corrupted install?")
+    return path
+
+
+def bundled_presets_path() -> Path:
+    """Return the on-disk path of the bundled ``model_presets.yaml`` table.
+
+    Raises :class:`FileNotFoundError` when the file is absent — a
+    corrupted install shape the caller must surface, not swallow. The
+    accessor does **not** open, parse, or validate the file; the
+    consumer (``tolokaforge.core.llm.presets._load_bundled_presets``) is
+    responsible for rejecting empty / malformed content with its own
+    loud failure.
+
+    Public API. Stable within v0.17.x — downstream code that reads the
+    engine's bundled preset table should use this accessor instead of
+    reaching into ``tolokaforge/core/data/`` directly.
+    """
+    path = _DATA_ROOT / "model_presets.yaml"
+    if not path.is_file():
+        raise FileNotFoundError(f"Bundled preset table not found at {path} — corrupted install?")
+    return path
+
+
+def bundled_providers_path() -> Path:
+    """Return the on-disk path of the bundled ``providers.yaml`` table.
+
+    Raises :class:`FileNotFoundError` when the file is absent — a
+    corrupted install shape the caller must surface, not swallow. The
+    accessor does **not** open, parse, or validate the file; the
+    consumer (``tolokaforge.core.llm.providers._load_bundled_providers``)
+    is responsible for rejecting empty / malformed content with its own
+    loud failure.
+
+    Public API. Stable within v0.17.x — downstream code that reads the
+    engine's bundled provider table should use this accessor instead of
+    reaching into ``tolokaforge/core/data/`` directly.
+    """
+    path = _DATA_ROOT / "providers.yaml"
+    if not path.is_file():
+        raise FileNotFoundError(f"Bundled provider table not found at {path} — corrupted install?")
+    return path
 
 
 #: Sentinel used while model data ships in the engine wheel; a real
@@ -58,8 +129,9 @@ MODELS_PACKAGE_VERSION: Final[str] = "in-tree"
 MODELS_MINIMUM_ENGINE_VERSION: Final[str] = ">=0.16,<0.17"
 
 #: Integer version of the fingerprint payload contract; bumped whenever
-#: :func:`compute_models_fingerprint` changes the shape of the hashed
-#: payload in a way readers must know about.
+#: :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
+#: changes the shape of the hashed payload in a way readers must know
+#: about.
 MODELS_FINGERPRINT_API_VERSION: Final[int] = 1
 
 
@@ -99,95 +171,6 @@ class ModelsFingerprint(BaseModel):
         except InvalidSpecifier as exc:
             raise ValueError(f"not a valid PEP 440 specifier: {value!r}") from exc
         return value
-
-
-def _capability_key(capability: Capability) -> str:
-    """Return the snake_case string representation of a :class:`Capability`.
-
-    :class:`Capability` is a ``str, Enum`` subclass; ``.value`` is the
-    canonical serialisation and the rest of the tree already uses it
-    (see ``certificate.py``'s overlap-error message). Using ``.name``
-    would create a lone inconsistency a future consumer would eventually
-    hit.
-    """
-    return capability.value
-
-
-def _certificate_to_dict(cert: ModelCertificate) -> dict[str, Any]:
-    """Serialise one :class:`ModelCertificate` to a JSON-safe dict.
-
-    :class:`ModelCertificate` freezes ``known_unsupported_reasons``,
-    ``probe_params``, and ``capability_extras`` as
-    :class:`types.MappingProxyType` in ``__post_init__``. Those wrappers
-    are not deepcopyable, which rules out :func:`dataclasses.asdict`
-    (probed live: ``TypeError: cannot pickle 'mappingproxy' object``).
-    This helper unwraps each mapping field by hand and expresses every
-    :class:`Capability` via ``.value`` (snake_case).
-
-    The ``probe_params`` values must remain JSON-safe (``str`` / ``int``
-    / ``float`` / ``bool`` / ``None`` / nested dicts). A future
-    certificate that adds a non-JSON-serialisable inner value would
-    break :func:`compute_models_fingerprint` at run start with a loud
-    ``TypeError`` at ``json.dumps`` — easy to diagnose.
-    """
-    return {
-        "model_id": cert.model_id,
-        "provider": cert.provider,
-        "name": cert.name,
-        "env_key": cert.env_key,
-        "required": sorted(_capability_key(c) for c in cert.required),
-        "known_unsupported": sorted(_capability_key(c) for c in cert.known_unsupported),
-        "excluded_capabilities": sorted(_capability_key(c) for c in cert.excluded_capabilities),
-        "known_unsupported_reasons": {
-            _capability_key(cap): reason
-            for cap, reason in sorted(
-                cert.known_unsupported_reasons.items(),
-                key=lambda kv: _capability_key(kv[0]),
-            )
-        },
-        "probe_params": {
-            _capability_key(cap): dict(params)
-            for cap, params in sorted(
-                cert.probe_params.items(),
-                key=lambda kv: _capability_key(kv[0]),
-            )
-        },
-        "capability_extras": dict(cert.capability_extras),
-    }
-
-
-def compute_models_fingerprint() -> ModelsFingerprint:
-    """Compute the resolved model-data fingerprint for the current engine.
-
-    Reads three module-level surfaces — all resolved before any
-    orchestrator write site is reached:
-
-    * :func:`~tolokaforge.core.llm.presets.get_resolved_presets` — the
-      bundled preset table merged with the operator overlay (if any).
-    * :data:`~tolokaforge.core.pricing.MODEL_PRICING` — the pricing
-      table with the operator overlay merged in via
-      :func:`~tolokaforge.core.pricing.reload_pricing`.
-    * :data:`~tolokaforge.testing.certify.ALL_MODELS` — the certificate
-      registry.
-
-    The hash is sha256 over the UTF-8 bytes of
-    ``json.dumps(payload, sort_keys=True, ensure_ascii=True,
-    separators=(",", ":"))`` — deterministic, whitespace-free, and
-    order-independent.
-    """
-    payload: dict[str, Any] = {
-        "presets": get_resolved_presets(),
-        "pricing": dict(MODEL_PRICING),
-        "certificates": [_certificate_to_dict(cert) for cert in ALL_MODELS],
-    }
-    canonical = json.dumps(payload, sort_keys=True, ensure_ascii=True, separators=(",", ":"))
-    digest = hashlib.sha256(canonical.encode("utf-8")).hexdigest()
-    return ModelsFingerprint(
-        package_version=MODELS_PACKAGE_VERSION,
-        content_sha256=digest,
-        api_version=MODELS_FINGERPRINT_API_VERSION,
-        minimum_engine_version=MODELS_MINIMUM_ENGINE_VERSION,
-    )
 
 
 def decode_models_fingerprint(state: dict[str, Any]) -> ModelsFingerprint | None:

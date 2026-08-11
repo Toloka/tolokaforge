@@ -1,4 +1,4 @@
-"""Unit tests for :mod:`tolokaforge.core.model_data`.
+"""Unit tests for the model-data fingerprint schema and compute path.
 
 Locks the fingerprint contract behaviour:
 
@@ -10,6 +10,9 @@ Locks the fingerprint contract behaviour:
   :data:`MODELS_MINIMUM_ENGINE_VERSION` parses as a PEP 440 specifier.
 * Decoder — absence returns ``None``; a well-formed dict round-trips;
   a malformed dict raises :class:`pydantic.ValidationError`.
+
+Schema types live in :mod:`tolokaforge.core.model_data`; the compute
+path lives in :mod:`tolokaforge.core.model_data_fingerprint`.
 """
 
 from __future__ import annotations
@@ -24,6 +27,7 @@ from packaging.specifiers import SpecifierSet
 from pydantic import ValidationError
 
 from tolokaforge.core import model_data as md
+from tolokaforge.core import model_data_fingerprint as mdf
 from tolokaforge.core.llm.presets import set_overlay_path
 from tolokaforge.core.pricing import MODEL_PRICING, reload_pricing
 from tolokaforge.testing import certify as certify_pkg
@@ -46,7 +50,7 @@ def _restore_pricing() -> Any:
 
 
 def test_field_shape_and_sentinel_defaults() -> None:
-    fp = md.compute_models_fingerprint()
+    fp = mdf.compute_models_fingerprint()
 
     assert fp.package_version == "in-tree"
     assert fp.api_version == 1
@@ -64,15 +68,15 @@ def test_minimum_engine_version_parses_as_pep440_specifier() -> None:
 
 
 def test_determinism_same_state_same_digest() -> None:
-    first = md.compute_models_fingerprint()
-    second = md.compute_models_fingerprint()
+    first = mdf.compute_models_fingerprint()
+    second = mdf.compute_models_fingerprint()
 
     assert first.content_sha256 == second.content_sha256
     assert first.model_dump() == second.model_dump()
 
 
 def test_preset_overlay_changes_digest(write_overlay: Any) -> None:
-    baseline = md.compute_models_fingerprint().content_sha256
+    baseline = mdf.compute_models_fingerprint().content_sha256
 
     overlay_path = write_overlay(
         {
@@ -86,13 +90,13 @@ def test_preset_overlay_changes_digest(write_overlay: Any) -> None:
     )
     set_overlay_path(overlay_path)
 
-    after = md.compute_models_fingerprint().content_sha256
+    after = mdf.compute_models_fingerprint().content_sha256
 
     assert after != baseline
 
 
 def test_pricing_overlay_changes_digest(tmp_path: Path) -> None:
-    baseline = md.compute_models_fingerprint().content_sha256
+    baseline = mdf.compute_models_fingerprint().content_sha256
 
     overlay = tmp_path / "pricing_overlay.json"
     overlay.write_text(
@@ -100,7 +104,7 @@ def test_pricing_overlay_changes_digest(tmp_path: Path) -> None:
     )
     reload_pricing(overlay_path=overlay)
 
-    after = md.compute_models_fingerprint().content_sha256
+    after = mdf.compute_models_fingerprint().content_sha256
 
     assert after != baseline
 
@@ -113,7 +117,7 @@ def test_certificate_registry_changes_digest(monkeypatch: pytest.MonkeyPatch) ->
     so the tweak is minimal and unambiguous — and asserts the digest
     shifts.
     """
-    baseline = md.compute_models_fingerprint().content_sha256
+    baseline = mdf.compute_models_fingerprint().content_sha256
 
     first = certify_pkg.ALL_MODELS[0]
     tweaked_first = ModelCertificate(
@@ -129,9 +133,9 @@ def test_certificate_registry_changes_digest(monkeypatch: pytest.MonkeyPatch) ->
         capability_extras={**dict(first.capability_extras), "fingerprint_probe": "1"},
     )
     replacement = (tweaked_first, *certify_pkg.ALL_MODELS[1:])
-    monkeypatch.setattr(md, "ALL_MODELS", replacement)
+    monkeypatch.setattr(mdf, "ALL_MODELS", replacement)
 
-    after = md.compute_models_fingerprint().content_sha256
+    after = mdf.compute_models_fingerprint().content_sha256
 
     assert after != baseline
 
@@ -157,12 +161,12 @@ def test_capability_serialisation_uses_value_not_name(
         known_unsupported_reasons={Capability.SIMPLE_TOOL_CALL: "probe fixture"},
         probe_params={Capability.BASIC_COMPLETION: {"prompt_tokens": 10}},
     )
-    monkeypatch.setattr(md, "ALL_MODELS", (cert,))
+    monkeypatch.setattr(mdf, "ALL_MODELS", (cert,))
 
-    fp = md.compute_models_fingerprint()
+    fp = mdf.compute_models_fingerprint()
 
     # Rebuild the payload the compute function hashed to inspect it.
-    serialised = md._certificate_to_dict(cert)
+    serialised = mdf._certificate_to_dict(cert)
 
     assert "basic_completion" in serialised["required"]
     assert "BASIC_COMPLETION" not in serialised["required"]
@@ -179,7 +183,7 @@ def test_decode_returns_none_when_field_absent() -> None:
 
 
 def test_decode_round_trip_with_valid_payload() -> None:
-    fp = md.compute_models_fingerprint()
+    fp = mdf.compute_models_fingerprint()
     payload = {"models_fingerprint": fp.model_dump()}
 
     decoded = md.decode_models_fingerprint(payload)
