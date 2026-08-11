@@ -1170,6 +1170,92 @@ parametrises over every preset in
 [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
 
+## Public helper API
+
+Every engine-general helper and base-class hook a per-model policy subclass
+composes with is documented public API. Each name below carries the compat
+guarantee **"stable within the v0.17.x minor series; removal or signature
+change requires a deprecation announcement."** — the same guarantee ADR-0030
+§ Requirements (4) makes the seam meet for out-of-tree per-model classes.
+The [ADR-0030](adr/0030-tolokaforge-models-split.md) cutover
+([#938](https://github.com/Toloka/tolokaforge/issues/938)) relocates the
+per-model subclasses on top of exactly this surface.
+
+### Engine-general helpers
+
+Free functions, re-exported from `tolokaforge.core.llm`:
+
+| Helper | Module | What it does |
+|---|---|---|
+| [`coerce_json_strings`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Decode stringified JSON arrays / objects in tool-call arguments back to native values. Heuristic: a `str` whose first non-whitespace character is `[` or `{` and whose `json.loads` returns a `list` / `dict`. Scalar JSON literals (`"42"` → `42`) are never promoted — string IDs would silently corrupt. |
+| [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
+| [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
+
+All three are consumed by shipped per-model policies (`JsonCoerceResponse`,
+`ArrayDictMapResponse`, `MinimaxM3TagRecoveryResponse` compose the first two;
+`RefResolvingDictMapHints` composes the third) and are the intended entry
+points for out-of-tree recovery classes.
+
+### `StrictSchema` public hooks
+
+`StrictSchema` is the extensible base for strict-validator sanitisers
+(`openai_gpt5`, `xai_grok`, `qwen`, `gemini` presets). Two hook shapes:
+
+**Overridable classmethod:**
+
+* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (`GeminiRecursiveSchema` is the shipped example — it substitutes a permissive open-object schema at any point of cyclic re-entry).
+
+**Class-attribute hooks** — six flags on the class body, declared with
+`ClassVar[…]` so a subclass method that mis-writes `self.<hook> = ...`
+surfaces as a type-checker error rather than a silent instance-attribute
+shadow:
+
+| Attribute | Type | Default | Effect when overridden |
+|---|---|---|---|
+| `KEY_FIELD` | `ClassVar[str]` | `"key"` | Name of the synthetic key field on dict-map → array conversion. |
+| `VALUE_FIELD` | `ClassVar[str]` | `"value"` | Name of the synthetic scalar-value field (only emitted when `carry_scalar_dict_map_value` is `True`). |
+| `carry_scalar_dict_map_value` | `ClassVar[bool]` | `False` | Emit a synthetic `value` field for scalar-valued dict-maps (pair with `ScalarArrayDictMapResponse` on the response side). |
+| `flatten_oneof_discriminator` | `ClassVar[bool]` | `False` | Flatten `oneOf` discriminated unions into a single object schema — Gemini needs this because its tool spec is a JSON-Schema subset that does not document `oneOf` / `discriminator`. |
+| `strip_parameters_root_description` | `ClassVar[bool]` | `True` | Strip Pydantic's class-docstring artefact at the parameters root (redundant with `function.description` for strict validators). Gemini sets `False` — evidence shows the strip hurts on some flat tool schemas. |
+| `strip_re2_incompatible_patterns` | `ClassVar[bool]` | `True` | Remove `pattern` values containing lookarounds / backreferences (OpenAI / xAI / Qwen-strict raise 500 on these). Gemini appears to pass RE2-incompatible patterns through unchanged and overrides to `False`. |
+
+The defaults preserve the shipped OpenAI / xAI Grok behaviour. `GeminiSchema`
+subclasses `StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
+`GeminiRecursiveSchema` subclasses `GeminiSchema` and additionally overrides
+`inline_refs_in_tool`. Neither reaches into any `_`-prefixed symbol.
+
+### `DictMapHints` public hook
+
+`DictMapHints.build_hints(self, tools)` — public overridable instance method
+on [`prompt_policy.py`](../tolokaforge/core/llm/prompt_policy.py). Called
+by `enrich` when both `system` and `tools` are non-empty; returns the hint
+text to append to the system prompt. Subclasses that need to close over
+instance state (e.g. `RefResolvingDictMapHints` — the `$ref`-resolving +
+one-level-nested variant used by the `thinkingmachines/inkling` route)
+override the method directly; the shape is an instance method so the
+override needs no `# type: ignore[override]` marker.
+
+### Public-API boundary guardrail
+
+[`tests/unit/llm/test_public_api_boundary.py`](../tests/unit/llm/test_public_api_boundary.py)
+locks the invariant that every currently-shipped per-model subclass /
+composite class reaches the engine through public API only. Four static /
+runtime checks parse each entry's source via `ast` and walk
+`_POLICY_REGISTRIES`:
+
+* **`test_no_private_symbol_imports`** — rejects any `from tolokaforge.core.llm.<mod> import _<name>` in the subclass module.
+* **`test_no_private_base_method_override`** — rejects a subclass method starting with `_` that shadows a base-class method of the same name (via `inspect.getmembers` on the concrete base).
+* **`test_no_private_attribute_access_on_self_or_super`** — rejects `self._<attr>` / `cls._<attr>` / `super()._<attr>` reads whose `<attr>` is not defined locally in the subclass body.
+* **`test_per_model_subclasses_covers_registered_non_base_classes`** — walks `_POLICY_REGISTRIES` and asserts every registered class inheriting from another in-registry class appears in the guardrail's `PER_MODEL_SUBCLASSES` list. Composite classes that inherit only from `object` (e.g. `MinimaxM3TagRecoveryResponse`) carry no automatic audit and must be added manually to `PER_MODEL_SUBCLASSES` when a new composite lands.
+
+A per-model subclass added to a preset registry that regresses into a
+`_`-prefixed name fails one of the four checks at test-import time — before
+the [#938](https://github.com/Toloka/tolokaforge/issues/938) cutover can
+bake the violation into `tolokaforge_models/policies/`. When adding a new
+per-model subclass, list it in `PER_MODEL_SUBCLASSES` and either compose the
+public helpers above or promote the private you need to public API in the
+same PR (see [ADR-0030 § Follow-ups (8)](adr/0030-tolokaforge-models-split.md)).
+
 ## `client`
 
 `LLMClient(config: ModelConfig, *, rate_limit_probe: RateLimitProbeConfig | None = None)`
