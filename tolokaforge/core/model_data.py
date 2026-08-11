@@ -126,7 +126,7 @@ MODELS_PACKAGE_VERSION: Final[str] = "in-tree"
 #: PEP 440 specifier naming the engine floor the current bundled model
 #: data (tracking #931's widened :class:`ModelCertificate`) is compatible
 #: with.
-MODELS_MINIMUM_ENGINE_VERSION: Final[str] = ">=0.16,<0.17"
+MODELS_MINIMUM_ENGINE_VERSION: Final[str] = ">=0.17,<0.18"
 
 #: Integer version of the fingerprint payload contract; bumped whenever
 #: :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`

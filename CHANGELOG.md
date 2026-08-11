@@ -4,6 +4,8 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+## v0.17.0 (2026-08-11)
+
 ### Feat
 
 - **core**: new public path accessors on [`tolokaforge.core.model_data`](tolokaforge/core/model_data.py) — `bundled_pricing_path()`, `bundled_presets_path()`, `bundled_providers_path()`. Each returns a `pathlib.Path` when the resource exists and raises `FileNotFoundError` when it does not. Stable within v0.17.x; removal or signature change requires a deprecation announcement. Downstream consumers should reach for these instead of raw `importlib.resources` — see [`docs/RELEASING.md § Downstream data-resource consumers`](docs/RELEASING.md#downstream-data-resource-consumers). The pre-cutover `_DATA_ROOT` constant points at `tolokaforge/core/data/`; the models-wheel cutover ([#938](https://github.com/Toloka/tolokaforge/issues/938)) will flip that one line to `tolokaforge_models/data/` with no consumer-side edits. `tolokaforge/core/model_data.py` split into a light seam module + orchestrator-only `model_data_fingerprint.py` sibling so the seam is safe to include in the runner subset. Runner-subset registration for `tolokaforge/core/data/providers.yaml` — a #935 bycatch fix so LLM-judge grading inside a runner-subset image resolves the provider bindings at first use. (#937)
