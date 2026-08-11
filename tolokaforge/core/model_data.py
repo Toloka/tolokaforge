@@ -93,10 +93,21 @@ _ENGINE_DISTRIBUTION_CANDIDATES: Final[tuple[str, ...]] = (
 POLICIES_GROUP: Final[str] = "tolokaforge.policies"
 
 
-_DATA_ROOT: Final[Path] = Path(str(importlib.resources.files("tolokaforge_models") / "data"))
+try:
+    _DATA_ROOT: Final[Path] = Path(str(importlib.resources.files("tolokaforge_models") / "data"))
+except ModuleNotFoundError as _exc:
+    raise RuntimeError(
+        "tolokaforge requires tolokaforge-models >= 1.0.0. "
+        "Install with `pip install tolokaforge-models`."
+    ) from _exc
 """Internal seam pointing at the ``tolokaforge_models`` wheel's ``data/``
 directory. The three accessors resolve their targets under this root;
-tests monkey-patch this constant to redirect them at a scratch tree."""
+tests monkey-patch this constant to redirect them at a scratch tree.
+
+The ``ModuleNotFoundError`` guard raises the same actionable message
+:func:`_check_minimum_engine_version` uses at the gate. Both fail-loud
+paths converge: this catches "models wheel not installed at all";
+the gate catches "installed but version-incompatible"."""
 
 
 def bundled_pricing_path() -> Path:
@@ -325,6 +336,24 @@ def _check_minimum_engine_version() -> None:
             "tolokaforge requires tolokaforge-models >= 1.0.0. "
             "Install with `pip install tolokaforge-models`."
         ) from exc
+
+    # ``import tolokaforge_models`` succeeds even when the wheel is absent
+    # if Python's sys.path contains a bare ``tolokaforge_models/`` directory
+    # (e.g. running the engine from the repo checkout, which has such a
+    # directory at repo root as the models-wheel workspace member). Python 3
+    # treats such a directory as an implicit namespace package. The module
+    # object has no attributes and ``__file__`` is ``None`` — surface that as
+    # the same actionable message rather than a downstream ``AttributeError``.
+    if getattr(tolokaforge_models, "__file__", None) is None or not hasattr(
+        tolokaforge_models, "minimum_engine_version"
+    ):
+        raise RuntimeError(
+            "tolokaforge requires tolokaforge-models >= 1.0.0. "
+            "Install with `pip install tolokaforge-models` (the currently-"
+            "resolved `tolokaforge_models` module is an empty namespace "
+            "package, not the installed wheel — a bare `tolokaforge_models/` "
+            "directory on `sys.path` is shadowing the real package)."
+        )
 
     floor = SpecifierSet(tolokaforge_models.minimum_engine_version)
     installed = Version(_resolve_engine_version())

@@ -47,3 +47,30 @@ def test_present_models_wheel_does_not_raise() -> None:
     """The happy path — the installed models wheel version satisfies the
     engine floor, so the check is silent."""
     _check_minimum_engine_version()
+
+
+def test_namespace_package_shadow_raises_actionable_runtime_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Real-world failure mode: running the engine from a checkout dir with
+    a bare ``tolokaforge_models/`` directory on ``sys.path`` causes Python
+    3 to resolve ``import tolokaforge_models`` as an implicit namespace
+    package — the import succeeds silently, but the module object has no
+    attributes. The gate must catch that shape and surface the same
+    actionable message, not let it degrade into an ``AttributeError`` at
+    the first ``.minimum_engine_version`` access.
+    """
+    import types
+
+    shadow = types.ModuleType("tolokaforge_models")
+    # __file__ is None on implicit namespace packages; the check keys on
+    # that plus the missing ``minimum_engine_version`` attribute.
+    shadow.__file__ = None  # type: ignore[assignment]
+    monkeypatch.setitem(sys.modules, "tolokaforge_models", shadow)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        _check_minimum_engine_version()
+
+    message = str(excinfo.value)
+    assert "pip install tolokaforge-models" in message, message
+    assert "namespace package" in message, message
