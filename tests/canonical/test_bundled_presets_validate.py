@@ -11,18 +11,14 @@ test rather than a downstream capability-construction call.
 
 from __future__ import annotations
 
-from pathlib import Path
-
 import pytest
 
 from tolokaforge.core.llm.presets import _load_bundled_presets, _validate_overlay
+from tolokaforge.core.model_data import bundled_presets_path
 
 pytestmark = pytest.mark.canonical
 
 
 def test_bundled_model_presets_pass_overlay_validation() -> None:
-    bundled_path = (
-        Path(__file__).parent.parent.parent / "tolokaforge" / "core" / "data" / "model_presets.yaml"
-    )
     data = _load_bundled_presets()
-    _validate_overlay(data, str(bundled_path))
+    _validate_overlay(data, str(bundled_presets_path()))
