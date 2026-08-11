@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ast
 import itertools
+import re
 from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
@@ -1306,7 +1307,8 @@ _INTEGER_DELIVERY_BINDING = {
     "match": _call_of("open_delivery"),
     "values": {"delivery": {"field": "args.delivery_id"}},
 }
-"""A binding whose value is an ``int``, referenced below from a text field."""
+"""A binding whose value is an ``int``, referenced below from a text field and from
+arguments the trajectory carries at several types."""
 
 
 def _integer_delivery_timeline() -> TrialTimeline:
@@ -1366,6 +1368,170 @@ def test_a_type_mismatched_equals_binding_says_the_comparison_was_not_made():
 
     assert result.passed is False
     _assert_names_the_unmakeable_comparison(result.message, "equals_binding")
+
+
+_UNMAKEABLE_SENTENCE = re.compile(r"the (\S+) comparison was not made")
+
+
+def _comparisons_the_message_names(message: str) -> tuple[str, ...]:
+    """Every comparison the grade reports as unmade, in the order it names them."""
+    return tuple(_UNMAKEABLE_SENTENCE.findall(message))
+
+
+def _delivery_trajectory(calls: Sequence[tuple[str, dict[str, Any]]]) -> TrialTimeline:
+    """The binder's call in turn 0, then one call of ``calls`` per turn from turn 1 on.
+
+    One call per turn because a ``within`` window is the only way to ask what the
+    constraint's window does to a comparison read outside it, and a window addresses
+    turns.
+    """
+    return build_turn_timeline(
+        [
+            Turn("user", "Open delivery 4021 and log it."),
+            Turn(
+                "assistant",
+                "Opening it.",
+                recorded=[
+                    recorded_call("open_delivery", sequence=0, arguments={"delivery_id": 4021})
+                ],
+            ),
+            *(
+                Turn(
+                    "assistant",
+                    f"Calling {tool}.",
+                    recorded=[recorded_call(tool, sequence=index, arguments=arguments)],
+                )
+                for index, (tool, arguments) in enumerate(calls, start=1)
+            ),
+        ]
+    )
+
+
+@dataclass(frozen=True)
+class _MakeabilityCell:
+    """One trajectory read under one constraint kind, and what the grade says of it.
+
+    ``references`` are the argument paths the matcher correlates against the integer
+    binding, and ``reported`` the comparisons the message says were not made, in the
+    order it names them. The verdict and the report are separate claims and every
+    cell asserts both.
+    """
+
+    calls: tuple[tuple[str, dict[str, Any]], ...]
+    kind: str
+    passed: bool
+    reported: tuple[str, ...]
+    references: tuple[str, ...] = ("code",)
+    within: dict[str, int] | None = None
+
+
+_MATCHING_CALL = ("log", {"code": 4021})
+
+_MAKEABILITY_CELLS = (
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL,), "present", True, ()),
+        id="a_call_that_made_the_comparison",
+    ),
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL, ("log", {"code": "4021"})), "present", True, ()),
+        id="a_sibling_carrying_the_same_value_as_text",
+    ),
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL, ("log", {"code": "x"})), "present", True, ()),
+        id="a_junk_sibling_on_the_same_tool",
+    ),
+    pytest.param(
+        _MakeabilityCell((_MATCHING_CALL, ("audit", {"code": "x"})), "present", True, ()),
+        id="a_junk_call_on_a_tool_the_matcher_rejects",
+    ),
+    pytest.param(
+        _MakeabilityCell((("audit", {"code": "x"}),), "present", False, ()),
+        id="only_a_call_on_a_tool_the_matcher_rejects",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "4021"}),), "present", False, ("args.code",)),
+        id="the_residue_alone",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": 99}),), "present", False, ()),
+        id="a_comparison_made_and_come_out_false",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "x"}),), "absent", False, ("args.code",)),
+        id="absent_over_the_residue_alone",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": 99}),), "absent", True, ()),
+        id="absent_over_a_comparison_made_and_come_out_false",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "x"}), ("log", {})), "absent", False, ("args.code",)),
+        id="absent_over_the_residue_beside_a_call_omitting_the_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell((("log", {"code": "x"}), ("log", {})), "present", False, ("args.code",)),
+        id="the_residue_beside_a_call_omitting_the_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"a": "x", "b": "y"}),),
+            "present",
+            False,
+            ("args.a", "args.b"),
+            references=("a", "b"),
+        ),
+        id="two_references_neither_of_which_could_be_made",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"a": "x"}),), "present", False, ("args.a",), references=("a", "b")
+        ),
+        id="two_references_one_of_them_over_an_absent_argument",
+    ),
+    pytest.param(
+        _MakeabilityCell(
+            (("log", {"code": "x"}),),
+            "absent",
+            True,
+            (),
+            within={"first_turn": 0, "last_turn": 0},
+        ),
+        id="the_only_residue_outside_the_window",
+    ),
+)
+
+
+@pytest.mark.parametrize("cell", _MAKEABILITY_CELLS)
+def test_an_unmakeable_comparison_fails_the_candidate_it_was_read_on(
+    cell: _MakeabilityCell,
+) -> None:
+    """The report fires where no candidate made the comparison, and only there.
+
+    A candidate is an event the matcher's *other* readings admit, so a call to a tool
+    the matcher does not name, and a call the constraint's window excludes, speak for
+    no comparison at all — while a sibling call that made it is the standing proof
+    that the reference is reachable, and silences the report the residue would
+    otherwise earn.
+
+    The two claims move independently, which is why every cell asserts both: a
+    comparison that was made and came out false fails silently as the agent's miss,
+    an `absent` constraint over a residue fails *because* the comparison was
+    reported, and a call that simply omitted the argument made nothing and so
+    silences nothing.
+    """
+    fields: dict[str, Any] = {"bind": _INTEGER_DELIVERY_BINDING}
+    if cell.within is not None:
+        fields["within"] = cell.within
+    matcher = _call_of(
+        "log", args={name: {"equals_binding": "delivery"} for name in cell.references}
+    )
+
+    result = evaluate_constraint(
+        _delivery_trajectory(cell.calls), {cell.kind: {"match": matcher}}, **fields
+    )
+
+    assert result.passed is cell.passed
+    assert _comparisons_the_message_names(result.message) == cell.reported
 
 
 # Every extraction the load rules admit, and the value it reads off the trajectory

@@ -2184,12 +2184,24 @@ holds against any scalar **needle** by descent — and against no container one,
 because the descent never compares a container to what it is looking for.
 
 A **binding reference** between a text field and a value bound out of an integer
-argument is therefore false on **every** trajectory, `equals_binding` exactly as much
+argument is therefore false wherever it is read, `equals_binding` exactly as much
 as `contains_binding`. That is not scored as an agent failure: the constraint fails
 with a message saying the comparison was not made, naming the binding, its value, its
 type, the operator that could not make the comparison, and two ways to write the
 intent — "a reference on an args predicate, which compares two arguments as they were
 written, or a regex capture, which is always text".
+
+**The message speaks for the events the comparison was read on, and fires only where
+none of them made it.** A *candidate* for a reference is an event the matcher's other
+predicates admit and the constraint's [`within`](#negate-and-within) window keeps — so
+a call to a tool the matcher does not name, a call in an excluded turn, and a call that
+carried no such argument at all speak for no comparison, while a single sibling call
+whose argument the reference *could* compare is standing proof that the reference is
+reachable, and the constraint is scored on what the agent did rather than reported as
+an authoring mistake. The comparison a reference could not make still fails the event
+it was read on, so a constraint no candidate could satisfy fails whichever kind it is
+written as: an `absent` whose reference could compare nothing does not pass vacuously
+on the strength of having matched nothing.
 
 **The gate states both of those more narrowly than the evaluator's sentence does**,
 and the gate is the one that answers first: an `args` predicate is only a repair
