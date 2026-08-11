@@ -1,11 +1,11 @@
 """Substrate-parity guard rail for the grading key manifest.
 
-Nineteen locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
+Twenty locks. Locks 1-15 are over :mod:`tolokaforge.core.grading.key_manifest`:
 what each grading key is, which substrate scores it, and whether the two agree.
-Locks 16-19 are over what a grade *does* and *says*, which the manifest does not
+Locks 16-20 are over what a grade *does* and *says*, which the manifest does not
 describe — the proposition a hash source compares against, what the hash reads a
-record's numeric-looking strings as, and what ``Grade.reasons`` carries for a
-component that took a verdict:
+record's numeric-looking strings as, what ``Grade.reasons`` carries for a component
+that took a verdict, and whose mistake a comparison no trajectory could make is:
 
 1. every field either substrate's grading config declares is claimed by exactly
    one manifest entry, and every claimed field resolves; a position below a claimed
@@ -85,17 +85,25 @@ component that took a verdict:
     naming the field that differs and a list of the same length naming another
     declared field, so a build reading the list's length rather than the names it
     holds fails one row alone.
+20. a binding reference whose two runtime types the operator can never satisfy fails
+    the call it was read on rather than the constraint, on both substrates: a pack
+    addressing an argument the gate types at its first segment only scores ``1.0``
+    where one candidate made the comparison beside one that could not, and ``0.0``
+    where none could — with the sentence naming the reference on the verdict that
+    crosses the wire, since a diagnostic the author never reads leaves an authoring
+    mistake looking like the agent's.
 
 The exemption sets and the differential fixtures are the enforcement mechanism:
 adding a grading key to one substrate only cannot pass this suite without an
 explicit, reviewable edit to one of the frozen constants below.
 
-Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18 and 19 drive a real trial, and each reads it
-through one fixture loader, so what a ``grading_parity`` pack can express bounds what
+Locks 3, 6, 7, 9, 10, 11, 15, 16, 17, 18, 19 and 20 drive a real trial, and each reads
+it through one fixture loader, so what a ``grading_parity`` pack can express bounds what
 they can prove — for locks 15 and 18 that bound covers the keys their driver tables
 send to a parity pack, the hash family, the probes and the judge being driven from
-tasks written out in this module instead, and for lock 17 it is one pack declaring one
-check, so the shapes it reaches are all-passed and all-failed. Lock 18's
+tasks written out in this module instead, for lock 17 it is one pack declaring one
+check, so the shapes it reaches are all-passed and all-failed, and lock 20 reads a pack
+under ``tests/data/tasks`` because the shape it needs is one no parity pack may declare. Lock 18's
 ``state_checks`` row drives one of that component's three sources; the sub-source
 counterpart is three unit locks — ``test_runner_jsonpath_grading.py`` on the JSONPath
 and db-probe sentences, and ``test_grading_correctness.py`` on the hash verdict — so
@@ -4465,6 +4473,86 @@ def test_both_substrates_fold_a_listed_numeric_string_field_alike(
         f"grade naming the hash verdict that score restates: {response.grade.reasons!r}"
     )
     assert _core_numeric_string_folding_verdict(cell) == pytest.approx(cell.state_checks)
+
+
+_NESTED_BINDING_PACK = "nested_binding_grading"
+"""The one in-repo pack whose binding reference sits where the gate cannot type it.
+
+The reference addresses ``args.json.q``, below the tool schema's first segment, which
+the authoring gate checks at its first segment only (#765) — so the evaluator's own
+reading of the two runtime types is the last thing between the author and a
+comparison no trajectory can make. It sits under ``tests/data/tasks/`` rather than in
+the parity corpus because that corpus is one pack per author key with every addressed
+argument precisely typed, and this fixture needs the key already taken and the type
+deliberately unreadable.
+"""
+
+_UNMAKEABLE_SENTENCE_OPENING = "the args.json.q comparison was not made"
+
+
+def test_an_unmakeable_comparison_fails_its_own_call_on_both_substrates(
+    test_data_dir, tmp_path, runner_service, mock_grpc_context
+):
+    """A reference no candidate could compare is the author's mistake, and says so.
+
+    Both trials bind the same reason code out of the report they read and both search
+    the policy corpus by the lot number, an integer where the binding holds text —
+    a pair the operator can never satisfy. The satisfying trial also searches by the
+    code, so one candidate made the comparison and the constraint is scored on what
+    the agent did; the violating trial has only the unmakeable call, and fails
+    carrying the sentence that names the reference. The two scores are asserted as a
+    pair, so a build that charges the whole constraint for the unmakeable call — or
+    one that reports nothing anywhere — moves one of them and fails here.
+
+    The core engine's ``grade_trajectory`` and the runner's real gRPC ``GradeTrial``
+    are driven separately, and the sentence is read off the verdict that crossed the
+    wire, because a diagnostic that reaches only the in-process substrate is not the
+    one an author reads in ``grade.yaml``.
+    """
+    pack = test_data_dir / "tasks" / _NESTED_BINDING_PACK
+    adapter = _adapter_for(test_data_dir, _TASKS_GLOB)
+    core_config = adapter.get_grading_config(_NESTED_BINDING_PACK)
+    task_description = adapter.to_task_description(_NESTED_BINDING_PACK)
+    initial_state = adapter.get_task(_NESTED_BINDING_PACK).initial_state
+    satisfying = _load_case(pack, "satisfying")
+    violating = _load_case(pack, "violating")
+
+    core_ok, _ = _core_verdict(
+        "trace_checks", core_config, satisfying, tmp_path, task_initial_state=initial_state
+    )
+    core_bad, _ = _core_verdict(
+        "trace_checks", core_config, violating, tmp_path, task_initial_state=initial_state
+    )
+    runner_ok = _runner_trace_checks_grade(
+        runner_service, task_description, satisfying, "nested_binding_ok:0", mock_grpc_context
+    )
+    runner_bad = _runner_trace_checks_grade(
+        runner_service, task_description, violating, "nested_binding_bad:0", mock_grpc_context
+    )
+
+    assert (core_ok, core_bad) == (1.0, 0.0), (
+        "the core engine does not discriminate the call the comparison was unmakeable "
+        f"on from the one that made it: satisfying {core_ok} vs violating {core_bad}"
+    )
+    assert runner_ok.components.HasField("trace_checks"), (
+        "the runner produced no trace_checks component, so the parity comparison below "
+        "would hold on a component neither substrate scored"
+    )
+    assert runner_ok.components.trace_checks == pytest.approx(core_ok)
+    assert runner_bad.components.trace_checks == pytest.approx(core_bad)
+
+    (reported,) = runner_bad.trace_checks
+    assert reported.passed is False
+    assert _UNMAKEABLE_SENTENCE_OPENING in reported.message, (
+        "the verdict that crossed the wire does not name the reference no candidate "
+        f"could compare, so the author reads it as the agent's miss: {reported.message!r}"
+    )
+    assert "binding 'code' holds 'CAPA-01', a JSON string" in reported.message
+    (silent,) = runner_ok.trace_checks
+    assert (silent.passed, _UNMAKEABLE_SENTENCE_OPENING in silent.message) == (True, False), (
+        "the trial whose sibling call made the comparison is reported as an authoring "
+        f"mistake anyway: {silent.message!r}"
+    )
 
 
 # --------------------------------------------------------------------------

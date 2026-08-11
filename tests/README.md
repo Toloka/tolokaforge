@@ -171,9 +171,11 @@ Compare output against committed golden snapshots in `snapshots/`.
   `grading.yaml` key is unaccounted for, claims a substrate that does not evaluate
   it, addresses a position below a claimed field by something other than an element
   path — the manifest's one mechanism for that — no longer survives adapter
-  translation, names a `runner_field` the runtime ledger cannot resolve, or stopped
-  folding a listed numeric-string field by name on one of the two substrates. Fix the
-  manifest entry in
+  translation, names a `runner_field` the runtime ledger cannot resolve, stopped
+  folding a listed numeric-string field by name on one of the two substrates, or an
+  unmakeable binding comparison stopped failing the candidate it was read on — or
+  its sentence stopped crossing the wire. For that last one, fix the reduction in
+  `tolokaforge/core/grading/trace_checks.py`; for the rest, fix the manifest entry in
   `tolokaforge/core/grading/key_manifest.py` or the drift it exposed; widening a
   frozen exemption set in the test module is the deliberate last resort.
   A **lock 15** failure is narrower: one ledger key's recording site was deleted,
@@ -185,7 +187,7 @@ Compare output against committed golden snapshots in `snapshots/`.
   missing from the lock's driver table fails
   `test_every_ledger_key_names_a_driver_that_can_populate_it` instead, which means a
   new ledger key arrived with no way to drive it: add a driver, never drop the row.
-  **Locks 16-18 are not about the manifest at all** — they are about what a grade
+  **Locks 16-20 are not about the manifest at all** — they are about what a grade
   *does* and *says*, which the manifest does not describe, so neither the manifest
   entry nor an exemption set is ever the repair. A **lock 16** failure means the two
   substrates disagreed on `state_checks.hash.expect_initial_state` — the proposition
