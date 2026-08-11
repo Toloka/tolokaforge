@@ -93,6 +93,14 @@ _RUNNER_SOURCE_CONTEXT_FILES: list[str] = [
     ".python-version",
     "scripts/hatch/",
     "tolokaforge/",
+    # The runner-subset wheel declares ``tolokaforge-models>=1.0.0,<2.0.0``
+    # as a Requires-Dist. Before the first ``models-vX.Y.Z`` PyPI publish
+    # that pin resolves against no upstream, so the runner Dockerfile
+    # builds the models wheel from source in the same wheel-builder stage
+    # and installs both wheels together. Post-publish this remains the
+    # bit-for-bit source of truth (docker installs the freshly-built wheel
+    # from the checked-out tree, not whatever PyPI currently ships).
+    "tolokaforge_models/",
 ]
 
 #: Where the base wheel's ``force-include`` table lands the repo-root files
