@@ -11,6 +11,7 @@ import typer
 
 from automation import (
     cert,
+    classgate,
     gateway_catalog,
     greencheck,
     model_resolver,
@@ -48,6 +49,17 @@ def reconcile_cert(
     raise typer.Exit(cert.run(model_id, findings))
 
 
+@app.command("check-new-classes")
+def check_new_classes(
+    overlay: str | None = typer.Option(
+        None, "--overlay", help="path to the resolve overlay.yaml (for the reference check)"
+    ),
+    tests_dir: str = typer.Option(classgate.DEFAULT_TESTS_DIR, "--tests-dir"),
+) -> None:
+    """Require a unit test + an overlay reference for every newly registered policy class."""
+    raise typer.Exit(classgate.run(overlay_path=overlay, tests_dir=tests_dir))
+
+
 @app.command("ensure-pricing")
 def ensure_pricing(
     name: str = typer.Option(..., "--name", help="litellm model name, e.g. xiaomi/mimo-v2.5-pro"),
@@ -65,6 +77,16 @@ def greencheck_cmd(
 ) -> None:
     """Print the resolve fix-loop green-check token (CONVERGED / RED:... / NO_TARGETS)."""
     raise typer.Exit(greencheck.run(decision, reprobe_findings))
+
+
+@app.command("decision-targets")
+def decision_targets_cmd(
+    decision: str = typer.Argument(..., help="path to the compose step's decision.json"),
+) -> None:
+    """Print the decision's target token: PARSE_FAIL (malformed -> stall, never a verdict),
+    NO_TARGETS (a well-formed empty fix_targets = the all-ceiling convergence), or
+    TARGETS:<comma-joined>. Always exits 0; the workflow branches on stdout."""
+    raise typer.Exit(greencheck.run_decision_targets(decision))
 
 
 @app.command("run-probes")
@@ -103,9 +125,22 @@ def reprobe_cmd(
     skip_wire: bool = typer.Option(
         False, "--skip-wire", help="capability-only (the agent's inner loop)"
     ),
+    wire_only: bool = typer.Option(
+        False,
+        "--wire-only",
+        help="NO capability probes; re-run only the baseline's rejecting wire tasks "
+        "(the final wire-verification pass after the fix loop converges)",
+    ),
     run_url: str | None = typer.Option(None, "--run-url"),
 ) -> None:
     """Re-run only the failed probes under a policy overlay and emit findings (RESOLVE)."""
+    # Pre-check ONLY the flag combination: a conflict is a usage error (exit 2, no
+    # traceback), while anything run() itself raises - e.g. an unreadable baseline
+    # file - is a real failure that must traceback loudly, not read as a CLI mistake.
+    try:
+        reprobe.validate_selection_flags(targets, wire_only, skip_wire)
+    except ValueError as exc:
+        raise typer.BadParameter(str(exc)) from exc
     raise typer.Exit(
         reprobe.run(
             baseline=baseline,
@@ -120,9 +155,21 @@ def reprobe_cmd(
             cap_parallel=cap_parallel,
             targets=targets,
             skip_wire=skip_wire,
+            wire_only=wire_only,
             run_url=run_url,
         )
     )
+
+
+@app.command("observe-gate")
+def observe_gate(
+    findings: str = typer.Argument(..., help="path to the observe findings.json"),
+) -> None:
+    """Print the observe cleanliness token: `clean` (resolve may run) or `dirty: <reason>`.
+
+    Always exits 0 - the workflow branches on stdout, and a missing/unreadable findings file
+    prints a dirty token rather than raising (observe crashed before aggregation)."""
+    raise typer.Exit(observe.gate(findings))
 
 
 @app.command("observe-findings")

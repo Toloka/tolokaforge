@@ -92,3 +92,212 @@ def test_render_summary_shows_verdict_and_failing_probe():
     assert "failures present" in summary
     assert "`vendor/m`" in summary
     assert "`test_b`: 1/2 passed" in summary
+
+
+def test_render_summary_wire_only_reprobe_verdict_is_the_wire_result():
+    # The final wire-verification artifact has NO capability section by design; its
+    # summary must lead with the wire result, not "capability suite did NOT run -
+    # infra failure" (which is the right verdict only for an observe artifact).
+    findings = {
+        "stage": "reprobe",
+        "candidate": {"name": "vendor/m"},
+        "preset": "overlay",
+        "capability_ran": False,
+        "all_passed": False,
+        "capability": {"report_present": False},
+        "variants": {"report_present": False},
+        "wire": {
+            "trials": 40,
+            "tool_call_count": 120,
+            "tool_arg_rejections": {
+                "rejecting_trials": 3,
+                "trial_rate": 0.075,
+                "by_task_trial_rate": {},
+            },
+            "rejected_examples": [],
+            "infra": {},
+        },
+    }
+    summary = observe.render_summary(findings)
+    assert "### Auto-integration reprobe:" in summary
+    assert "wire-only pass: 3/40 trials with a tool-arg rejection" in summary
+    assert "infra failure" not in summary
+
+
+def test_render_summary_infra_line_shows_every_gate_key():
+    # The PR-visible summary must show the same counters the gate dirties on: an
+    # all-timeout observe used to render an all-zero infra line while the gate marked
+    # the PR needs-human for api_timeout, leaving Slack as the only place with the reason.
+    findings = {
+        "candidate": {"name": "vendor/m"},
+        "preset": "default",
+        "capability_ran": True,
+        "all_passed": False,
+        "capability": {"report_present": False},
+        "variants": {"report_present": False},
+        "wire": {
+            "trials": 40,
+            "tool_call_count": 0,
+            "tool_arg_rejections": {
+                "rejecting_trials": 0,
+                "trial_rate": 0,
+                "by_task_trial_rate": {},
+            },
+            "rejected_examples": [],
+            "infra": {"api_timeout": 40, "api_error": 2, "status_error": 1},
+        },
+    }
+    summary = observe.render_summary(findings)
+    assert "api_timeout=40" in summary
+    assert "api_error=2" in summary
+    assert "status_error=1" in summary
+    assert "rate_limit=0" in summary
+    assert "max_turns=0" in summary and "stuck=0" in summary
+
+
+def test_render_summary_wire_only_reprobe_with_no_trials_says_the_run_failed():
+    # Unreachable from the workflow (the rejections>0 guard implies wire tasks exist), but
+    # a wire run that crashes at startup - or a manual CLI invocation - lands here and must
+    # not read as a wire-clean pass.
+    findings = {
+        "stage": "reprobe",
+        "candidate": {"name": "vendor/m"},
+        "preset": "overlay",
+        "capability_ran": False,
+        "all_passed": False,
+        "capability": {"report_present": False},
+        "variants": {"report_present": False},
+        "wire": {
+            "trials": 0,
+            "tool_call_count": 0,
+            "tool_arg_rejections": {
+                "rejecting_trials": 0,
+                "trial_rate": 0,
+                "by_task_trial_rate": {},
+            },
+            "rejected_examples": [],
+            "infra": {},
+        },
+    }
+    summary = observe.render_summary(findings)
+    assert "wire-only pass produced no trials" in summary
+
+
+def test_build_findings_carries_reprobe_stage_into_wire_only_summary(tmp_path):
+    # End to end through the real artifact shape: a wire_verify-style out dir (reprobe
+    # manifest, no capability junit, one wire trajectory) must yield stage=reprobe, no
+    # infra-failure note, and a wire-only summary verdict. Pins the manifest -> findings
+    # -> summary path so re-hardcoding stage in build_findings cannot pass the suite.
+    import json
+
+    import yaml
+
+    (tmp_path / "manifest.json").write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "stage": "reprobe",
+                "candidate": {"name": "vendor/m"},
+                "preset": "overlay",
+            }
+        )
+    )
+    trial = tmp_path / "wire_probes_1" / "trials" / "task_w" / "1"
+    trial.mkdir(parents=True)
+    (trial / "trajectory.yaml").write_text(
+        yaml.safe_dump({"task_id": "task_w", "status": "completed", "messages": []})
+    )
+
+    findings = observe.build_findings(tmp_path)
+    assert findings["stage"] == "reprobe"
+    assert findings["capability_ran"] is False
+    assert not any("did NOT execute" in note for note in findings["notes"])
+    assert findings["wire"]["trials"] == 1
+
+    summary = observe.render_summary(findings)
+    assert "### Auto-integration reprobe:" in summary
+    assert "wire-only pass: 0/1 trials with a tool-arg rejection" in summary
+    assert "infra failure" not in summary
+
+
+def _gate_findings(**overrides):
+    """A clean-observe findings skeleton the gate tests mutate per case."""
+    findings = {
+        "capability_ran": True,
+        "wire": {
+            "trials": 40,
+            "infra": {
+                "rate_limit": 0,
+                "status_error": 0,
+                "max_turns": 0,
+                "stuck": 0,
+                "api_error": 0,
+                "api_timeout": 0,
+            },
+        },
+    }
+    findings.update(overrides)
+    return findings
+
+
+def test_gate_clean_when_both_suites_ran_and_infra_zero():
+    clean, reason = observe.evaluate_gate(_gate_findings())
+    assert clean is True
+    assert reason == ""
+
+
+def test_gate_dirty_when_capability_did_not_run():
+    clean, reason = observe.evaluate_gate(_gate_findings(capability_ran=False))
+    assert clean is False
+    assert "capability suite did not run" in reason
+
+
+def test_gate_dirty_when_wire_never_ran():
+    # The wire step is `|| true`-guarded in the workflow: a run that failed at startup
+    # produces 0 trials and would otherwise read as clean (no rejections, all-zero infra).
+    clean, reason = observe.evaluate_gate(_gate_findings(wire={"trials": 0, "infra": {}}))
+    assert clean is False
+    assert "wire probes did not run" in reason
+
+
+@pytest.mark.parametrize("key", sorted(observe.GATE_INFRA_KEYS))
+def test_gate_dirty_on_each_infra_key(key):
+    # Every key is pinned individually so a gate that drops one (an all-timeout wire
+    # run chaining into resolve) cannot pass the suite.
+    findings = _gate_findings()
+    findings["wire"]["infra"][key] = 3
+    clean, reason = observe.evaluate_gate(findings)
+    assert clean is False
+    assert f"{key}=3" in reason
+
+
+@pytest.mark.parametrize("key", ["max_turns", "stuck"])
+def test_gate_ignores_model_attributable_terminations(key):
+    # max_turns / stuck can be genuine model behaviour (four-bucket taxonomy) - they are
+    # resolve-agent data, not contamination, and must not block the chain into resolve.
+    findings = _gate_findings()
+    findings["wire"]["infra"][key] = 7
+    clean, _reason = observe.evaluate_gate(findings)
+    assert clean is True
+
+
+def test_gate_cli_prints_dirty_token_for_missing_file(tmp_path, capsys):
+    assert observe.gate(str(tmp_path / "absent.json")) == 0
+    out = capsys.readouterr().out
+    assert out.startswith("dirty: findings unreadable")
+
+
+def test_gate_cli_prints_dirty_token_for_malformed_json(tmp_path, capsys):
+    path = tmp_path / "findings.json"
+    path.write_text("{truncated")
+    assert observe.gate(str(path)) == 0
+    assert capsys.readouterr().out.startswith("dirty: findings unreadable")
+
+
+def test_gate_cli_prints_clean_token(tmp_path, capsys):
+    import json
+
+    path = tmp_path / "findings.json"
+    path.write_text(json.dumps(_gate_findings()))
+    assert observe.gate(str(path)) == 0
+    assert capsys.readouterr().out.strip() == "clean"

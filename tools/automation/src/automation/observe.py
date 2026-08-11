@@ -278,7 +278,10 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         " failure_attribution.json and metrics.tool_success_rate do NOT reflect"
         " tool-argument rejections; wire.tool_arg_rejections is the faithful signal.",
     ]
-    if not capability_ran:
+    # For the observe stage, 0 capability probes is an infra failure worth flagging; on a
+    # reprobe artifact a missing capability section can be the deliberate wire-only pass,
+    # so the note would mislabel it.
+    if not capability_ran and manifest.get("stage", "observe") == "observe":
         notes.insert(
             0,
             "capability suite did NOT execute (0 probes ran - report absent or every"
@@ -287,7 +290,11 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
         )
     return {
         "schema_version": SCHEMA_VERSION,
-        "stage": "observe",
+        # The reprobe stage writes its own manifest (stage=reprobe) before calling this;
+        # carrying it through keeps the artifact self-describing and lets the summary
+        # renderer tell a deliberate wire-only pass from an observe whose capability
+        # suite failed to run.
+        "stage": manifest.get("stage", "observe"),
         "candidate": manifest.get("candidate", {}),
         "preset": manifest.get("preset", "default"),
         # The single yes/no the deterministic layer commits to. Everything else is
@@ -301,6 +308,51 @@ def build_findings(obs_dir: Path) -> dict[str, Any]:
     }
 
 
+# The wire termination reasons that make an observe run untrustworthy. max_turns and stuck are
+# deliberately NOT here: both can be genuine model behaviour (see the four-bucket taxonomy in
+# prompts/_shared_context.md), so they are data for the resolve agent, not contamination.
+GATE_INFRA_KEYS = ("rate_limit", "api_error", "api_timeout", "status_error")
+
+
+def evaluate_gate(findings: dict[str, Any]) -> tuple[bool, str]:
+    """Observe cleanliness gate: may a clean observe chain into resolve?
+
+    Lives here rather than inline in the workflow because an inline check cannot be
+    unit-tested and silently drifts from :data:`GATE_INFRA_KEYS`. Both suites must have
+    RUN (the wire step is ``|| true``-guarded in the workflow, so a startup crash shows
+    up only as 0 trials). Returns ``(clean, reason)``; ``reason`` is empty when clean.
+    """
+    if not findings.get("capability_ran"):
+        return False, "capability suite did not run (0 probes)"
+    wire = findings.get("wire") or {}
+    if not wire.get("trials"):
+        return False, "wire probes did not run (0 trials)"
+    infra = wire.get("infra") or {}
+    contaminated = {key: infra.get(key, 0) for key in GATE_INFRA_KEYS if infra.get(key, 0)}
+    if contaminated:
+        detail = ", ".join(f"{key}={count}" for key, count in sorted(contaminated.items()))
+        return False, f"wire infra contamination ({detail})"
+    return True, ""
+
+
+def gate(findings_path: str) -> int:
+    """Print the observe gate token and return 0 (the workflow branches on stdout).
+
+    ``clean`` when resolve may run; ``dirty: <reason>`` otherwise, the reason surfacing
+    verbatim in the needs-human notification. A missing/unreadable findings file is dirty
+    (the observe crashed before aggregation), never an exception - the gate must always
+    hand the workflow a token it can route on.
+    """
+    try:
+        findings = json.loads(Path(findings_path).read_text())
+    except (OSError, ValueError) as exc:
+        print(f"dirty: findings unreadable - observe crashed before aggregation ({exc})")
+        return 0
+    clean, reason = evaluate_gate(findings)
+    print("clean" if clean else f"dirty: {reason}")
+    return 0
+
+
 def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     """Render a short human-readable markdown summary of the raw stats."""
     cap = findings.get("capability", {})
@@ -309,15 +361,27 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
     rej = wire.get("tool_arg_rejections", {})
     candidate = (findings.get("candidate") or {}).get("name", "?")
     preset = findings.get("preset", "default")
+    stage = findings.get("stage", "observe")
 
-    if not findings.get("capability_ran", True):
+    # A reprobe artifact with no capability section is the deliberate wire-only pass, not a
+    # capability suite that failed to run - its verdict is the wire result.
+    wire_only = stage == "reprobe" and not cap.get("report_present")
+    if wire_only:
+        if wire.get("trials"):
+            verdict = (
+                f"wire-only pass: {rej.get('rejecting_trials', 0)}/{wire.get('trials', 0)} "
+                "trials with a tool-arg rejection"
+            )
+        else:
+            verdict = "wire-only pass produced no trials (the wire run failed to start)"
+    elif not findings.get("capability_ran", True):
         verdict = "capability suite did NOT run (0 probes) - infra failure, not a pass"
     elif findings.get("all_passed"):
         verdict = "all probes passed"
     else:
         verdict = "failures present"
     lines = [
-        f"### Auto-integration observe: `{candidate}` on the `{preset}` preset",
+        f"### Auto-integration {stage}: `{candidate}` on the `{preset}` preset",
         "",
         f"**{verdict}** (raw stats only; the agent analyzes the errors).",
         "",
@@ -348,10 +412,11 @@ def render_summary(findings: dict[str, Any], run_url: str | None = None) -> str:
         rate_str = f", {rate} of trials" if rate is not None else ""
         lines.append(f"  - `{task}` / `{shape['tool']}` rejected{rate_str}")
     infra = wire.get("infra", {})
-    lines.append(
-        f"- Infra: rate_limit={infra.get('rate_limit', 0)}, "
-        f"max_turns={infra.get('max_turns', 0)}, stuck={infra.get('stuck', 0)}."
-    )
+    # Every gate key plus the model-attributable pair: the PR-visible summary must show
+    # the same counters the gate dirties on, or an api_timeout needs-human reads as
+    # "all-zero infra" here and the reason only ever appears in Slack.
+    infra_keys = (*GATE_INFRA_KEYS, "max_turns", "stuck")
+    lines.append("- Infra: " + ", ".join(f"{key}={infra.get(key, 0)}" for key in infra_keys) + ".")
     lines.append("")
     tail = "Full artifact (capability reports + trajectories + `findings.json`) for the next step."
     if run_url:

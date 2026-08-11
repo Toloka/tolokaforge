@@ -1,14 +1,19 @@
 # Resolve finalize: land the proven policy as the integration
 
-The fix loop CONVERGED: `{{OBS_DIR}}/resolve/overlay.yaml` is proven (the last reprobe went
-green on every fix-target). Land it as the model's integration ON THIS BRANCH. Do NOT commit,
+The fix loop CONVERGED: either `{{OBS_DIR}}/resolve/overlay.yaml` is proven (the last reprobe
+went green on every fix-target), or the decision is all-ceiling (`NO_TARGETS`: empty
+fix_targets, no overlay, nothing to prove - the integration is cert + pricing only). Land it
+as the model's integration ON THIS BRANCH. Do NOT commit,
 push, or comment - the WORKFLOW does that after you. Write files only, then stop. This is a
 normal synchronous Claude Code run; nothing to await.
 
 ## Inputs
-- `{{OBS_DIR}}/resolve/overlay.yaml` - the proven preset (one model-specific entry).
+- `{{OBS_DIR}}/resolve/overlay.yaml` - the proven preset (one model-specific entry; ABSENT on
+  an all-ceiling convergence).
 - `{{OBS_DIR}}/resolve/decision.json` - `fix_targets`, `ceilings` (known_unsupported), `required`.
-- `{{OBS_DIR}}/resolve/last_reprobe.json` - the final reprobe evidence (per-probe passed/runs).
+- `{{OBS_DIR}}/resolve/last_reprobe.json` - the final reprobe evidence (per-probe passed/runs;
+  absent when no reprobe ran, e.g. an all-ceiling convergence - findings.json is then the
+  only evidence).
 - `{{OBS_DIR}}/findings.json` - the observe baseline (before -> after comparison).
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`, PR #`{{PR}}`.
 
@@ -16,7 +21,9 @@ normal synchronous Claude Code run; nothing to await.
 1. Fold the overlay preset into `tolokaforge/core/data/model_presets.yaml`: add ONE new entry
    under `presets:` with the overlay's `match` + axes. Leave every other preset untouched (do
    NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
-   the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
+   the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it. If `overlay.yaml` is ABSENT
+   (an all-ceiling convergence: every failure was a genuine limit, no policy needed), skip this
+   step - the integration is then cert + pricing only, and the model runs on the default preset.
 2. Add the candidate cert to `tests/integration/llm/registry.py`: an `MC(...)` entry in `_ALL`
    with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="OPENROUTER_API_KEY"`,
    `required=frozenset({...})` from decision.json `required`, and

@@ -5,7 +5,8 @@ quirks, propose and PROVE a policy fix (or classify a genuine ceiling), and land
 capability cert on the PR for human review. A SINGLE GitHub Actions workflow
 (`.github/workflows/integrate-model.yml`) runs OBSERVE and, on a clean observe, RESOLVE in the
 SAME run - one job, not two workflows, because a `GITHUB_TOKEN` label add cannot trigger a
-second workflow. It NEVER merges: the draft PR is the human review gate.
+second workflow. By default it never merges - the draft PR is the human review gate; the only
+exception is the explicit auto-merge opt-in (see the AUTO-MERGE note under "Notes").
 
 ## Trigger
 
@@ -37,9 +38,10 @@ flowchart TD
     I --> J{"all fix-targets green? (or none -> NO_TARGETS)"}
     J -- "no, iter < MAX_ITER (refine)" --> G
     J -- "no, iter = MAX_ITER" --> H
-    J -- "yes / all-ceiling (converged)" --> K["finalize agent (Opus): fold preset + write cert + PR report"]
+    J -- "yes / all-ceiling (converged)" --> W["workflow: final wire verification under the overlay (evidence-only)"]
+    W --> K["finalize agent (Opus): fold preset + write cert + PR report"]
     K --> L["workflow: commit to PR branch + comment + automation:integrate-done"]
-    L --> M["human review gate: draft PR, NEVER auto-merge"]
+    L --> M["human review gate: draft PR (auto-merge only via the explicit opt-in)"]
 ```
 
 ## Stage 1 - Observe
@@ -48,11 +50,16 @@ Deterministic detection on the DEFAULT (raw) preset. Runs the capability integra
 shape variants (report-only, K repeats) and the NON-SCORING wire-probe task-pack, then
 `automation observe-findings` emits `findings.json` (raw pass counts + the
 tool-arg rejections that graded metrics are blind to). Posts a summary comment. A `gate` step
-then decides:
+then decides, via the tested `automation observe-gate` command:
 
-- Clean (capability suite ran AND no infra contamination) -> the resolve steps below run in the
-  SAME job (label flips to `automation:resolve-running`).
-- Infra-dirty / did-not-run -> `automation:integrate-needs-human` (re-run needed); resolve skipped.
+- Clean (capability suite ran, wire probes ran, and no rate-limit / API-error / API-timeout /
+  status-error contamination) -> the resolve steps below run in the SAME job (label flips to
+  `automation:resolve-running`). `max_turns` and `stuck` deliberately do NOT dirty the gate:
+  both can be genuine model behaviour (the four-bucket taxonomy), so they are resolve-agent
+  data, not contamination.
+- Not clean (infra-dirty, a suite that never ran, or a missing `findings.json`) ->
+  `automation:integrate-needs-human` with the exact reason in the notification (re-run needed);
+  resolve skipped.
 
 ## Stage 2 - Resolve (same workflow, `if: gate.clean == 'yes'`)
 
@@ -71,9 +78,27 @@ a correct policy from the observe data (a data-bound quirk whose correct scope n
 evidence the observe never surfaced), it sets `needs_human: true` in `decision.json` and the loop
 breaks IMMEDIATELY to `automation:integrate-needs-human` with the agent's reason - no wasted
 iterations, no fabricated fix. (Distinct from `data_scope_review`, which commits a fix the agent
-DID produce and routes it for a post-hoc human scope-check.)
+DID produce and routes it for a post-hoc human scope-check.) On the all-ceiling path the overlay
+itself is OPTIONAL: an honest all-ceiling decision (`fix_targets` empty, `needs_human` false)
+converges as `NO_TARGETS` without one, and the integration lands as cert + pricing on the
+default preset.
 
-- Converged -> a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
+Each iteration's `overlay.yaml` + `decision.json` are archived as
+`overlay_iter<N>.yaml` / `decision_iter<N>.json` before the next iteration deletes them: the
+compose agent starts every iteration with a fresh context, so these files are how it knows
+which axes it already tried (the prompt's "materially different axis" rule is judged against
+them), and they are what the needs-human artifacts hand a human. Everything under
+`observation/resolve/` uploads as the `integration-resolve-pr<N>` run artifact (the observe
+bundle uploads separately, before the gate, as `integration-observation-pr<N>`).
+
+- Converged -> first, when the observe wire had tool-arg rejections and an overlay exists, the
+  workflow re-runs exactly those wire tasks under the proven overlay
+  (`automation reprobe --wire-only`, `RESOLVE_WIRE_K` reps); the finalize step posts the fresh
+  wire stats on the PR after its commit lands (a failed finalize leaves them in the
+  `integration-resolve-pr<N>` artifact instead). EVIDENCE for the human gate, never a
+  convergence gate: the fix loop reprobes capability probes only (`--skip-wire`), so this pass
+  is the only post-fix measurement a wire-evidenced fix gets - and a still-rejecting wire task
+  can be a genuine model miss (a ceiling, not a blocker). Then a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
   `model_presets.yaml` and writes the cert into `registry.py`. Before committing, the workflow
   VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`): it must
   import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the
@@ -81,11 +106,30 @@ DID produce and routes it for a post-hoc human scope-check.)
   round-trips against the tool's Pydantic schema (`test_policy_array_recovery`). The cert itself is
   reconciled against the observe baseline (`automation reconcile-cert`, run before the stash so
   `findings.json` is still present): every probed capability must be declared (no silent auto-skip),
-  and no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
-  free-form cert's under-declaration and false-pessimism.
+  no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
+  free-form cert's under-declaration and false-pessimism - and a PAYLOAD-ONLY capability
+  (`thinking_replay_roundtrip` / `unsigned_thinking_replay`, whose probes mock the provider turn
+  and assert only our own outgoing payload) may be `required` only on a MEASURED passing native
+  baseline: promotion off a failing or absent baseline is SELF-REFERENTIAL and hard-fails, and any
+  other `required` with no probe result warns as UNBACKED. A newly registered policy class must
+  additionally be wired and covered (`automation check-new-classes`, an AST set-diff of the STAGED
+  `presets.py` registry against HEAD): referenced from the overlay or the staged
+  `model_presets.yaml` (by key in a value position, or by name), and mentioned by a unit test under
+  `tests/unit/llm/` as staged in the INDEX - the finalize commit stages that directory, so the
+  test the gate credits is the test that ships. Before any of these gates run, the workflow
+  refuses a moved HEAD and re-pins `tools/automation/` to the CHECKOUT-TIME commit (a step
+  output captured before any agent ran - symbolic HEAD could be moved by a local agent commit),
+  and requires `observation/findings.json` to hash-match the value captured at aggregation time,
+  both at the wire-verification step and at finalize; the wire-verification summary is published
+  only byte-identical to the hash that step sealed. The resolve/finalize agents run earlier, with
+  Bash, in the same workspace, and must not be able to weaken the gates or the evidence without
+  it showing in the PR diff. On the same fail-closed principle, a malformed `decision.json`
+  (`automation decision-targets` prints `PARSE_FAIL`) is a stall to retry, never the all-ceiling
+  `NO_TARGETS` convergence.
   Only then does it commit to the PR branch, comment the record, and label
   `automation:integrate-done`. A broken / over-reaching / divergent fix (or a cert that does not
-  reconcile) fails verification here and goes to `automation:integrate-needs-human`. NEVER merges.
+  reconcile) fails verification here and goes to `automation:integrate-needs-human`. Never
+  merges by default (auto-merge is the explicit opt-in; see the AUTO-MERGE note).
 - Not converged within `MAX_ITER` (or staged verification failed) -> `automation:integrate-needs-human`.
 
 ## Auth
@@ -109,7 +153,7 @@ Both the AGENT and the CANDIDATE run on the OpenRouter budget (`ARENA_AUTOMATION
 | `RESOLVE_AGENT_OR_MODEL` | openrouter/anthropic/claude-opus-4.8 | the OpenRouter model the LiteLLM gateway routes the agent to |
 | `RESOLVE_CAPABILITY_K` | 5 | resolve per-iteration capability reprobe (cheap inner loop) |
 | `RESOLVE_CAP_PARALLEL` | 10 | resolve reprobe width (flat probe x rep pool; keep >= `RESOLVE_CAPABILITY_K`, <= ~16 for the rate limit) |
-| `RESOLVE_WIRE_K` | 10 | reserved for the final wire-verification pass (not yet wired) |
+| `RESOLVE_WIRE_K` | 10 | final wire-verification reps (evidence-only; runs on convergence when the observe wire had rejections and an overlay exists) |
 | `ARENA_AUTOMATION_AUTO_MERGE_ENABLED` | (unset = off) | When `true` (case-insensitive), squash-merge the integration PR on a clean success. Never merges a `test/*` de-integration branch; a data-scope needs-human path never merges; any merge error (branch protection, draft, perms, conflict) leaves the PR open. `false` / missing / error => nothing merges. |
 
 Two **secrets** gate the optional gateway route (both, or neither — a base URL without a key
@@ -340,14 +384,20 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 
 - `automation observe-findings` - deterministic raw-stat facts emitter (no banding,
   no verdict; interpretation is the agent's job).
+- `automation observe-gate` - the tested cleanliness verdict over `findings.json`: prints
+  `clean` (resolve may run) or `dirty: <reason>`; the reason surfaces verbatim in the
+  needs-human notification. Requires BOTH suites to have run and gates on
+  rate_limit / api_error / api_timeout / status_error (not max_turns / stuck, which can be
+  genuine model behaviour).
 - `automation run-probes` - flat (node x rep) parallel runner for the observe
   capability + variant steps: collects the candidate's nodes once, then runs each node x rep as
   its own single-node pytest at `OBSERVE_CAP_PARALLEL` width (so nodes AND repeats parallelize,
   not `W` long serial reps - the fix for a slow reasoning model spending hours on the variants).
 - `automation reprobe` - targeted re-probe under a policy overlay; re-runs ONLY the
   named `--targets` (the agent's fix-targets), or all failed probes if none given, as a flat
-  (probe x rep) pool parallelized at `--cap-parallel`; capability-only inner loop, plus a final
-  wire pass on failed wire tasks.
+  (probe x rep) pool parallelized at `--cap-parallel`. `--skip-wire` is the capability-only
+  inner loop; `--wire-only` is the final wire-verification pass (no capability probes, only the
+  baseline's rejecting wire tasks).
 - `automation greencheck` - fix-target convergence check.
 - `automation ensure-pricing` - best-effort, run before observe: if the candidate's
   litellm name is missing from `pricing.json`, fetch its OpenRouter pricing and insert one key
@@ -355,9 +405,17 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
   auto-merge price gate.
 - `automation reconcile-cert` - reconciles the finalized cert against the observe
   `findings.json`: fails if any probed capability is undeclared, if a capability the baseline shows
-  passing (>= 0.9) is marked `known_unsupported`, or if any CORE capability (e.g.
-  `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap). Runs in the finalize gate
+  passing (>= 0.9) is marked `known_unsupported`, if any CORE capability (e.g.
+  `cost_usd_populated`) is `known_unsupported` (a laundered pricing gap), or if a PAYLOAD-ONLY
+  capability is `required` against a failing or absent native baseline (SELF-REFERENTIAL); any
+  other `required` with no probe result warns as UNBACKED. Runs in the finalize gate
   before the stash.
+- `automation check-new-classes` - finalize gate for newly registered policy classes: an AST
+  set-diff of the STAGED `presets.py` registry against HEAD (so quoting, wrapping, moves and
+  binding style cannot hide or fake an addition), requiring each new binding's class to be
+  mentioned by a unit test under `tests/unit/llm/` as staged in the INDEX and referenced from the
+  overlay or the staged `model_presets.yaml`. Fails loud on any git/parse error - a guard that
+  cannot see the registry must not skip.
 - `automation slack` - Slack thread notifier (`ensure-root` / `reply` / `post-thread`
   subcommands); dry-run no-op without a token. See "Slack notifications" above. `post-thread`
   posts a plain threaded reply under an arbitrary message ts (the poller's per-request

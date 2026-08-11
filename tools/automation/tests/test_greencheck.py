@@ -74,3 +74,50 @@ def test_red_list_is_sorted_and_capped_at_eight():
     reds = token[len("RED:") :].split(";")
     assert reds == sorted(targets)[:8]
     assert len(reds) == 8
+
+
+class TestDecisionTargets:
+    """PARSE_FAIL vs NO_TARGETS is the loop's convergence boundary: a malformed decision
+    must be a stall to retry, never the all-ceiling verdict nobody actually made."""
+
+    def test_named_targets_join(self):
+        decision = {"fix_targets": [" test_a[x] ", "test_b[y]"]}
+        assert greencheck.decision_targets(decision) == "TARGETS:test_a[x],test_b[y]"
+
+    def test_well_formed_empty_list_is_the_all_ceiling_verdict(self):
+        assert greencheck.decision_targets({"fix_targets": []}) == "NO_TARGETS"
+
+    @pytest.mark.parametrize(
+        "decision",
+        [
+            {},  # fix_targets missing entirely (schema deviation)
+            {"fix_targets": None},
+            {"fix_targets": "test_a[x]"},  # string, not a list
+            {"fix_targets": [42]},  # non-string element
+            {"fix_targets": [""]},  # empty element
+            {"fix_targets": ["a,b"]},  # a comma would corrupt the joined form
+        ],
+        ids=["missing", "null", "string", "non-str", "empty-str", "comma"],
+    )
+    def test_malformed_shapes_are_parse_fail_not_no_targets(self, decision):
+        assert greencheck.decision_targets(decision) == "PARSE_FAIL"
+
+    def test_run_prints_parse_fail_for_truncated_json(self, tmp_path, capsys):
+        path = tmp_path / "decision.json"
+        path.write_text('{"fix_targets": ["test_a[x]"')  # died mid-write
+        assert greencheck.run_decision_targets(str(path)) == 0
+        assert capsys.readouterr().out.strip() == "PARSE_FAIL"
+
+    def test_run_prints_parse_fail_for_a_non_object_document(self, tmp_path, capsys):
+        path = tmp_path / "decision.json"
+        path.write_text('["not", "an", "object"]')
+        assert greencheck.run_decision_targets(str(path)) == 0
+        assert capsys.readouterr().out.strip() == "PARSE_FAIL"
+
+    def test_run_prints_the_token_for_a_valid_decision(self, tmp_path, capsys):
+        import json
+
+        path = tmp_path / "decision.json"
+        path.write_text(json.dumps({"fix_targets": ["test_a[x]"]}))
+        assert greencheck.run_decision_targets(str(path)) == 0
+        assert capsys.readouterr().out.strip() == "TARGETS:test_a[x]"

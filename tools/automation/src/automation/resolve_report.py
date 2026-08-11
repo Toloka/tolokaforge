@@ -18,19 +18,38 @@ from __future__ import annotations
 
 import json
 import pathlib
+import re
 
 import typer
 
 
+def has_converged(summary_text: str) -> bool:
+    """True when the loop reached a terminal CONVERGED / NO_TARGETS verdict.
+
+    The needs-human step also fires when the loop CONVERGED but finalize then failed
+    its gates (reconcile-cert, class gate, staged verification, push) - a report headed
+    "why the loop did not converge" would point the human at the wrong layer there.
+    """
+    return any(
+        "verdict = CONVERGED" in line or "verdict = NO_TARGETS" in line
+        for line in summary_text.splitlines()
+    )
+
+
 def counts(summary_text: str) -> tuple[int, int, int]:
-    """(total, no_overlay, red) iteration counts from the appended summary lines."""
+    """(total, no_overlay, red) iteration counts from the appended summary lines.
+
+    A stalled iteration is logged as "no decision produced" (nothing at all) or "no
+    overlay was produced" (a decision that named fix-targets but no policy); both are
+    the same stalled class for the diagnosis.
+    """
     total = no_overlay = red = 0
     for line in summary_text.splitlines():
         if "Iter " not in line:
             continue
         total += 1
         low = line.lower()
-        if "no overlay" in low:
+        if "no overlay" in low or "no decision" in low:
             no_overlay += 1
         elif "red" in low:
             red += 1
@@ -46,9 +65,10 @@ def diagnose(total: int, no_overlay: int, red: int, max_iter: int) -> str:
         )
     if no_overlay == total:
         return (
-            f"The agent produced NO overlay in any of the {total} iteration(s): it stalled or "
-            "exhausted its per-iteration turn budget every time. That is almost always an "
-            "upstream THROTTLE or error on the agent's model calls, which now route through the "
+            f"The agent produced no usable attempt in any of the {total} iteration(s) (no "
+            "decision, or fix-targets without an overlay): it stalled or exhausted its "
+            "per-iteration turn budget every time. That is almost always an "
+            "upstream THROTTLE or error on the agent's model calls, which route through the "
             "LiteLLM -> OpenRouter gateway (HTTP 429 / gateway down / bad model slug) - not a model "
             "or observe problem, since observe was clean and there was never a candidate fix to "
             "verify. Check the gateway startup + OpenRouter status in the run log; re-running when "
@@ -79,14 +99,25 @@ def build_report(summary_text: str, decision: dict | None, max_iter: int) -> str
     """Markdown block: header + per-iteration list + diagnosis + the agent's last decision."""
     total, no_overlay, red = counts(summary_text)
     body = summary_text.strip() or "- (no per-iteration outcome was recorded)"
+    if has_converged(summary_text):
+        header = f"### The resolve loop CONVERGED, but finalize failed its gates (ran {total}/{max_iter} iterations)"
+        diagnosis = (
+            "The fix loop reached a terminal verdict (see the last iteration below); the "
+            "failure is in the FINALIZE layer - the compose/verify gates (cert reconcile, "
+            "class gate, evidence hash, staged verification) or the commit/push. Inspect "
+            "the finalize step log; the loop itself does not need a re-run."
+        )
+    else:
+        header = f"### Why the resolve loop did not converge (ran {total}/{max_iter} iterations)"
+        diagnosis = diagnose(total, no_overlay, red, max_iter)
     out = [
-        f"### Why the resolve loop did not converge (ran {total}/{max_iter} iterations)",
+        header,
         "",
         "**Per-iteration outcome:**",
         "",
         body,
         "",
-        f"**Diagnosis.** {diagnose(total, no_overlay, red, max_iter)}",
+        f"**Diagnosis.** {diagnosis}",
     ]
     if decision:
         targets = decision.get("fix_targets") or []
@@ -105,6 +136,29 @@ def _load_decision(path: pathlib.Path) -> dict | None:
         return None
 
 
+def latest_decision(resolve_dir: pathlib.Path) -> dict | None:
+    """The agent's most recent decision, surviving a stalled final iteration.
+
+    ``decision.json`` is rm'd at the top of every loop iteration, so when the LAST
+    iteration stalls (no overlay, no decision) the live file is gone and the report
+    would say nothing about what the agent last tried. The workflow archives each
+    produced attempt as ``decision_iter<N>.json``; fall back to the highest N.
+    """
+    live = _load_decision(resolve_dir / "decision.json")
+    if live is not None:
+        return live
+
+    def iter_no(path: pathlib.Path) -> int:
+        match = re.search(r"decision_iter(\d+)", path.stem)
+        return int(match.group(1)) if match else -1
+
+    for path in sorted(resolve_dir.glob("decision_iter*.json"), key=iter_no, reverse=True):
+        archived = _load_decision(path)
+        if archived is not None:
+            return archived
+    return None
+
+
 def run(resolve_dir: str, max_iter: int) -> int:
     d = pathlib.Path(resolve_dir)
     summary = ""
@@ -114,7 +168,7 @@ def run(resolve_dir: str, max_iter: int) -> int:
             summary = sp.read_text()
         except OSError:
             summary = ""
-    decision = _load_decision(d / "decision.json")
+    decision = latest_decision(d)
     print(build_report(summary, decision, max_iter))
     return 0
 

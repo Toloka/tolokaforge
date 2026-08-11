@@ -8,9 +8,9 @@ import pytest
 pytestmark = pytest.mark.unit
 
 STALLED_ALL = """\
-- Iter 1: no overlay produced (agent stalled or hit its turn limit / throttled)
-- Iter 2: no overlay produced (agent stalled or hit its turn limit / throttled)
-- Iter 3: no overlay produced (agent stalled or hit its turn limit / throttled)
+- Iter 1: no decision produced (agent stalled or hit its turn limit / throttled)
+- Iter 2: no overlay was produced (stalled mid-attempt / turn limit)
+- Iter 3: no decision produced (agent stalled or hit its turn limit / throttled)
 """
 
 MIXED = """\
@@ -23,6 +23,9 @@ ALL_RED = """\
 - Iter 1: fix produced, reprobe verdict = RED:dict_map
 - Iter 2: fix produced, reprobe verdict = RED:dict_map
 """
+
+# The overlay-less all-ceiling convergence line: neither a stall nor a red.
+NO_TARGETS_LINE = "- Iter 1: all-ceiling decision (empty fix-targets), verdict = NO_TARGETS\n"
 
 
 class TestCounts:
@@ -38,11 +41,14 @@ class TestCounts:
     def test_empty(self):
         assert rr.counts("") == (0, 0, 0)
 
+    def test_no_targets_line_is_neither_stall_nor_red(self):
+        assert rr.counts(NO_TARGETS_LINE) == (1, 0, 0)
+
 
 class TestDiagnose:
-    def test_all_stalled_points_at_anthropic_throttle(self):
+    def test_all_stalled_points_at_gateway_throttle(self):
         msg = rr.diagnose(3, 3, 0, 8)
-        assert "NO overlay" in msg and "THROTTLE" in msg.upper()
+        assert "no usable attempt" in msg and "THROTTLE" in msg.upper()
 
     def test_mixed_mentions_both(self):
         msg = rr.diagnose(3, 1, 2, 8)
@@ -56,12 +62,67 @@ class TestDiagnose:
         assert "did not run" in rr.diagnose(0, 0, 0, 8)
 
 
+class TestHasConverged:
+    def test_converged_and_no_targets_lines_are_terminal(self):
+        assert rr.has_converged("- Iter 3: fix produced, reprobe verdict = CONVERGED\n")
+        assert rr.has_converged(NO_TARGETS_LINE)
+
+    def test_stalls_and_reds_are_not(self):
+        assert not rr.has_converged(STALLED_ALL)
+        assert not rr.has_converged(ALL_RED)
+
+
+class TestConvergedButFinalizeFailed:
+    def test_header_and_diagnosis_point_at_the_finalize_layer(self):
+        # The needs-human step also fires when the loop CONVERGED but a finalize gate
+        # rejected the result; "why the loop did not converge" would send the human to
+        # the wrong layer.
+        summary = ALL_RED + "- Iter 3: fix produced, reprobe verdict = CONVERGED\n"
+        out = rr.build_report(summary, None, 8)
+        assert "CONVERGED, but finalize failed its gates" in out
+        assert "did not converge" not in out
+        assert "finalize step log" in out
+
+    def test_non_converged_report_is_unchanged(self):
+        out = rr.build_report(ALL_RED, None, 8)
+        assert "Why the resolve loop did not converge" in out
+
+
+class TestLatestDecision:
+    def test_live_decision_wins(self, tmp_path):
+        import json
+
+        (tmp_path / "decision.json").write_text(json.dumps({"notes": "live"}))
+        (tmp_path / "decision_iter3.json").write_text(json.dumps({"notes": "archived"}))
+        assert rr.latest_decision(tmp_path) == {"notes": "live"}
+
+    def test_falls_back_to_highest_archived_iteration(self, tmp_path):
+        # decision.json is rm'd at the top of every iteration, so a stalled FINAL
+        # iteration leaves only the archives; numeric order, not lexicographic
+        # (iter10 > iter2).
+        import json
+
+        (tmp_path / "decision_iter2.json").write_text(json.dumps({"notes": "iter2"}))
+        (tmp_path / "decision_iter10.json").write_text(json.dumps({"notes": "iter10"}))
+        assert rr.latest_decision(tmp_path) == {"notes": "iter10"}
+
+    def test_unreadable_archive_falls_through_to_older(self, tmp_path):
+        import json
+
+        (tmp_path / "decision_iter1.json").write_text(json.dumps({"notes": "iter1"}))
+        (tmp_path / "decision_iter2.json").write_text("{not json")
+        assert rr.latest_decision(tmp_path) == {"notes": "iter1"}
+
+    def test_nothing_anywhere_is_none(self, tmp_path):
+        assert rr.latest_decision(tmp_path) is None
+
+
 class TestBuildReport:
     def test_includes_header_summary_diagnosis(self):
         out = rr.build_report(STALLED_ALL, None, 8)
         assert "did not converge (ran 3/8 iterations)" in out
         assert "Per-iteration outcome:" in out
-        assert "Iter 1: no overlay" in out
+        assert "Iter 1: no decision" in out
         assert "Diagnosis." in out
 
     def test_includes_agent_decision_when_present(self):

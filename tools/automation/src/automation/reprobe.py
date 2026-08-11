@@ -53,6 +53,44 @@ def failed_wire_tasks(findings: dict[str, Any]) -> list[str]:
     return sorted((by_task or {}).keys())
 
 
+def validate_selection_flags(targets: str | None, wire_only: bool, skip_wire: bool) -> None:
+    """Reject conflicting selection flags; raises ``ValueError`` naming the conflict.
+
+    One rule, two callers: the CLI pre-checks so a flag conflict is a usage error (exit 2,
+    no traceback), and :func:`select_reprobe_targets` enforces it for library callers.
+    """
+    if wire_only and skip_wire:
+        raise ValueError("--wire-only and --skip-wire are mutually exclusive")
+    if wire_only and targets:
+        raise ValueError(
+            "--wire-only re-runs the baseline's rejecting wire tasks; --targets selects "
+            "capability probes - pass one or the other"
+        )
+
+
+def select_reprobe_targets(
+    baseline: dict[str, Any],
+    targets: str | None,
+    wire_only: bool,
+    skip_wire: bool,
+) -> tuple[list[str], list[str]]:
+    """The ``(probes, wire_tasks)`` a reprobe run should re-run. Pure, fail-fast.
+
+    ``wire_only`` is the final wire-verification pass: NO capability probes, only the
+    baseline's rejecting wire tasks (the fix loop iterates with ``skip_wire``, so without
+    this pass a fix whose only live evidence was the wire would ship unmeasured).
+    Conflicting flags raise instead of guessing.
+    """
+    validate_selection_flags(targets, wire_only, skip_wire)
+    if wire_only:
+        return [], failed_wire_tasks(baseline)
+    if targets:
+        probes = [t.strip() for t in targets.split(",") if t.strip()]
+    else:
+        probes = failed_probes(baseline.get("capability")) + failed_probes(baseline.get("variants"))
+    return probes, ([] if skip_wire else failed_wire_tasks(baseline))
+
+
 def k_group(probe_name: str) -> str:
     """Turn a junit probe name ``func[param]`` into a precise ``-k`` group.
 
@@ -187,6 +225,7 @@ def run(
     cap_parallel: int = 10,
     targets: str | None = None,
     skip_wire: bool = False,
+    wire_only: bool = False,
     run_url: str | None = None,
 ) -> int:
     """Re-run only the failed probes under a policy overlay and emit findings. Returns 0."""
@@ -198,15 +237,10 @@ def run(
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # Which probes to reprobe: the agent's fix_targets if given (skips the slow, un-fixable
-    # ceiling probes), else ALL failed probes from the baseline (capability + variants).
-    if targets:
-        probes = [t.strip() for t in targets.split(",") if t.strip()]
-    else:
-        probes = failed_probes(baseline_findings.get("capability")) + failed_probes(
-            baseline_findings.get("variants")
-        )
+    # ceiling probes), else ALL failed probes from the baseline (capability + variants) -
+    # or, for the final wire-verification pass, no probes and only the rejecting wire tasks.
+    probes, wire_tasks = select_reprobe_targets(baseline_findings, targets, wire_only, skip_wire)
     n_var = sum(1 for p in probes if p.startswith("test_variant"))
-    wire_tasks = [] if skip_wire else failed_wire_tasks(baseline_findings)
     print(
         f"re-probe targets: {len(probes) - n_var} capability, {n_var} variant, "
         f"{len(wire_tasks)} wire task(s) under overlay {overlay} "

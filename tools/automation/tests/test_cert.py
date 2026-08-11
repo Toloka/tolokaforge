@@ -120,6 +120,131 @@ def test_core_capability_can_never_be_known_unsupported():
     assert not any("CORE-UNSUPPORTED" in v for v in v2)
 
 
+def _deepseek_0731_probed():
+    """The real PR #846 observe baseline (abridged): unsigned replay 0/15 NATIVE."""
+    return {
+        "basic_completion": 1.0,
+        "dict_map_tool_call": 1.0,
+        "thinking_emits_blocks": 1.0,
+        "implicit_prompt_caching": 1.0,
+        "unsigned_thinking_replay": 0.0,
+        "thinking_replay_roundtrip": 0.0,
+        "prompt_caching": 0.0,
+    }
+
+
+def test_self_referential_promotion_is_a_violation():
+    """PR #846 shipped `unsigned_thinking_replay` as required off an 0/15 native baseline.
+
+    The reprobe went 5/5, but that probe mocks the provider turn and asserts our own
+    outgoing payload, so a new codec satisfies it by construction.
+    """
+    violations, _ = cert.reconcile(
+        required={
+            "basic_completion",
+            "dict_map_tool_call",
+            "thinking_emits_blocks",
+            "implicit_prompt_caching",
+            "unsigned_thinking_replay",
+        },
+        known_unsupported={"thinking_replay_roundtrip", "prompt_caching"},
+        probed=_deepseek_0731_probed(),
+    )
+    assert any(
+        "SELF-REFERENTIAL" in v and "unsigned_thinking_replay" in v for v in violations
+    ), violations
+    # The honest posture for the same baseline reconciles clean.
+    ok, _ = cert.reconcile(
+        required={
+            "basic_completion",
+            "dict_map_tool_call",
+            "thinking_emits_blocks",
+            "implicit_prompt_caching",
+        },
+        known_unsupported={
+            "unsigned_thinking_replay",
+            "thinking_replay_roundtrip",
+            "prompt_caching",
+        },
+        probed=_deepseek_0731_probed(),
+    )
+    assert ok == []
+
+
+def test_payload_only_cap_required_on_a_passing_native_baseline_is_fine():
+    """A model that round-trips WITHOUT our overlay has genuinely earned the cap."""
+    violations, _ = cert.reconcile(
+        required={"unsigned_thinking_replay"},
+        known_unsupported=set(),
+        probed={"unsigned_thinking_replay": 1.0},
+    )
+    assert violations == []
+
+
+def test_non_payload_cap_promoted_off_a_failing_baseline_is_allowed():
+    """A real formatting fix legitimately turns a red probe green - not this gate's business."""
+    violations, _ = cert.reconcile(
+        required={"dict_map_tool_call"},
+        known_unsupported=set(),
+        probed={"dict_map_tool_call": 0.0},
+    )
+    assert violations == []
+
+
+def test_unbacked_required_capability_warns():
+    _, warnings = cert.reconcile(
+        required={"basic_completion", "never_probed_cap"},
+        known_unsupported=set(),
+        probed={"basic_completion": 1.0},
+    )
+    assert any("UNBACKED" in w and "never_probed_cap" in w for w in warnings)
+
+
+def test_payload_only_cap_required_with_no_probe_result_is_a_violation():
+    """An all-unparseable-junit run must not smuggle a payload-only cap to `required`
+    through the soft UNBACKED path: with no measurement there is by definition no
+    passing native baseline, which is the only admissible promotion evidence."""
+    violations, warnings = cert.reconcile(
+        required={"unsigned_thinking_replay"},
+        known_unsupported=set(),
+        probed={},
+    )
+    assert any("SELF-REFERENTIAL" in v and "unsigned_thinking_replay" in v for v in violations)
+    assert not any("unsigned_thinking_replay" in w for w in warnings)
+
+
+def test_payload_only_set_matches_the_probes_that_mock_the_provider():
+    """Drift guard, keyed on a STRUCTURAL fact rather than prose.
+
+    A probe can only assert our own outgoing payload by stubbing the transport, and the
+    single seam for that is ``client.completion`` - so "stubs that seam" is exactly
+    "does not observe the provider". The match covers the seam's known patch SPELLINGS:
+    any quoted dotted path ending in ``.completion`` (the canonical
+    ``patch("tolokaforge.core.llm.client.completion")`` and the use-site form
+    ``patch("tests....test_x.completion")`` alike) plus the object forms
+    (``patch.object(client, "completion")`` / ``monkeypatch.setattr(client,
+    "completion", ...)``) - keying on one literal would let the guard pass vacuously
+    for the others. A genuinely novel indirection (aliasing the function under another
+    name before stubbing it) is still invisible here and stays a review concern. If one
+    of these probes starts making a real second call, it must come out of the set.
+    """
+    import pathlib
+    import re
+
+    provider_mock = re.compile(
+        r"""['"][A-Za-z0-9_.]+\.completion['"]"""
+        r"""|patch\.object\(\s*(?:\w+\.)*client\s*,\s*['"]completion['"]"""
+        r"""|setattr\(\s*(?:\w+\.)*client\s*,\s*['"]completion['"]"""
+    )
+    root = pathlib.Path(cert.__file__).resolve().parents[4] / "tests" / "integration" / "llm"
+    mocked = {
+        path.stem[len("test_") :]
+        for path in root.glob("test_*.py")
+        if provider_mock.search(path.read_text())
+    }
+    assert mocked == cert.PAYLOAD_ONLY_CAPABILITIES, cert.PAYLOAD_ONLY_CAPABILITIES ^ mocked
+
+
 def test_core_capabilities_mirror_canon():
     # Guard against drift: the hardcoded set MUST equal the canonical one (7 caps incl.
     # progress_after_success) - a missing entry would reopen the laundering loophole.

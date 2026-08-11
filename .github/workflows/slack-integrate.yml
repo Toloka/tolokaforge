@@ -128,13 +128,23 @@ jobs:
           # logs a warning and returns non-zero so the caller continues to the next model.
           bootstrap () {
             SLUG="$1"; REQUESTER="$2"; TS="$3"
-            # EXACT open-PR check (grep -Fx, not the fuzzy `--search in:title`): the fuzzy form
-            # would let "integrate: x-ai/grok-4.5" match an open "integrate: x-ai/grok-4" (skip)
-            # or miss on `/`.`-tokenization (duplicate). -F makes SLUG a literal, not a pattern.
-            EXISTING="$(gh pr list -R "$REPO" --state open --json title --jq '.[].title' 2>/dev/null \
-              | grep -Fxc "integrate: $SLUG" || true)"
-            if [ "${EXISTING:-0}" != "0" ]; then
-              echo "open integration PR already exists for '$SLUG' -> skip"; return 0
+            BOOT_PR_URL=""
+            # EXACT open-PR check (jq string equality, not the fuzzy `--search in:title`): the
+            # fuzzy form would let "integrate: x-ai/grok-4.5" match an open "integrate: x-ai/grok-4"
+            # (skip) or miss on `/`.`-tokenization (duplicate). SLUG is catalog-resolved and
+            # charset-guarded upstream, so splicing it into the jq program is safe.
+            EXISTING_URL="$(gh pr list -R "$REPO" --state open --json title,url \
+              --jq ".[] | select(.title == \"integrate: ${SLUG}\") | .url" 2>/dev/null | head -1)"
+            if [ -n "$EXISTING_URL" ]; then
+              echo "open integration PR already exists for '$SLUG' -> skip (${EXISTING_URL})"
+              # Not silent: the poll-step reply just confirmed this model to the requester, so a
+              # bare skip leaves them waiting on a run that will never start (the reply is the
+              # dedup marker - re-requesting cannot revive an orphaned PR either, it lands here
+              # again). Point at the existing PR and at the label, which is the designed
+              # re-trigger when the earlier dispatch died after PR creation.
+              uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+                --icon pr_exists --text "An integration PR is already open for ${SLUG}: <${EXISTING_URL}|its status lives there>. I am not starting a second run. If that PR shows no activity (no automation label, no run), a maintainer can re-trigger it by adding the automation:integrate-model label to it." || true
+              return 0
             fi
             SAFE="$(printf '%s' "$SLUG" | tr '/ ' '--' | tr -cd 'A-Za-z0-9._-')"
             BRANCH="automation/slack-integrate/${SAFE}-${RUN_ID}"
@@ -146,6 +156,10 @@ jobs:
             PR_URL="$(gh pr create -R "$REPO" --draft --base "$BASE_REF" --head "$BRANCH" \
               --title "integrate: ${SLUG}" \
               --body "Auto-opened from a Slack request by <@${REQUESTER}> (message ts ${TS}). The poller resolved the model deterministically (OpenRouter catalog first, then the LLM gateway's); this draft PR is the human review gate. The integration engine runs via workflow_dispatch on this PR." )" || return 1
+            # From here the PR exists: remember it so the failure reply below can say "start it
+            # via the label" instead of the re-request advice, which the exact-title skip above
+            # would turn into a silent dead end.
+            BOOT_PR_URL="$PR_URL"
             PR_NUM="$(printf '%s' "$PR_URL" | grep -oE '[0-9]+$')"
             [ -n "$PR_NUM" ] || { echo "could not parse PR number from '$PR_URL'"; return 1; }
             echo "opened PR #${PR_NUM} for ${SLUG} (${PR_URL})"
@@ -172,10 +186,17 @@ jobs:
             if ! bootstrap "$SLUG" "$REQUESTER" "$TS"; then
               echo "::warning title=Integration bootstrap failed::could not start integration for ${SLUG} (see log); continuing"
               # Not silent: the poll-step reply already said this model was starting, so tell the
-              # requester in-thread that it did NOT, and to re-request (the reply marker means it
-              # will not auto-retry).
-              uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
-                --icon dispatch_failed --text "I could not start the integration for ${SLUG} (a transient error opening the PR or dispatching). Please re-request it by tagging me with that model again." || true
+              # requester in-thread that it did NOT - and tell them the recovery that actually
+              # works. Re-requesting only helps while NO PR exists; once the PR was opened (the
+              # dispatch died after `gh pr create`), a re-request hits the exact-title skip, so
+              # the label on that PR is the re-trigger.
+              if [ -n "${BOOT_PR_URL:-}" ]; then
+                uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+                  --icon dispatch_failed --text "I opened <${BOOT_PR_URL}|the integration PR> for ${SLUG} but could not start the engine on it (the dispatch failed). Re-requesting here will NOT restart it - a maintainer can start it by adding the automation:integrate-model label to that PR." || true
+              else
+                uv run automation slack post-thread --channel "$SLACK_CHANNEL" --thread-ts "$TS" \
+                  --icon dispatch_failed --text "I could not start the integration for ${SLUG} (a transient error before the PR existed). Please re-request it by tagging me with that model again." || true
+              fi
               FAIL=1
             fi
           done
