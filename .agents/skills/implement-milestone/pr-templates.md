@@ -27,6 +27,13 @@ Discipline shared by both templates (modelled on [Toloka/tolokaforge#121](https:
 ## Concepts introduced
 <One short paragraph naming any new abstraction, contract, policy slot, or vocabulary the reader will encounter. Enough for a future agent scanning stacked PRs to say "ah, this is where FailureKind came from" without opening the diff. If the change is mechanical, write "None — mechanical change." and move on.>
 
+## Concepts glossary (for the PM reader)
+<Three to six bullets. Each: **term** — one sentence on *why this matters at product level*, in language a data-labelling PM without deep runtime knowledge can follow. Complements `Concepts introduced` (which is for future agents scanning the diff); this section is for the PM audience that will read the milestone consolidation without cracking open code. Omit only for pure-mechanical PRs.>
+
+- **<term>** — <why this matters, one sentence>
+- **<term>** — <one sentence>
+- ...
+
 ## Plan
 <the staged plan, pasted from ~/.claude/plans/toloka-tolokaforge/issue-<N>-<short-name>.md — plans have no in-repo home, so the PR body is the plan's durable record>
 
@@ -82,6 +89,9 @@ flowchart LR
 |---|---|
 | <Choice> | <"X because Y — and here is what we deliberately rejected"> |
 | <Choice> | <one row per accepted decision, sourced from each per-issue PR's Design choices section> |
+
+## Concept map
+<One short paragraph tying every new concept this milestone introduced (drawn from the per-issue `Concepts introduced` + `Concepts glossary` sections) to earlier ADRs under `docs/adr/` and, when relevant, to entries in the roadmap release table. The goal: a reader landing here can trace *why now* — this milestone extends decision X (ADR-0Y) to enable roadmap release Z. If no prior work is cited, write "First appearance — no prior ADR linkage." One paragraph, not a graph.>
 
 ## Industry precedents
 <Include only when the milestone was informed by prior art. For each precedent: a link, one sentence of what was borrowed, one sentence of what was deliberately rejected. Reversibility framing — "this choice can be revisited if X changes" — is welcome. Omit the section when N/A rather than filling it with hand-waves.>

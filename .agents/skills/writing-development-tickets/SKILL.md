@@ -144,3 +144,54 @@ labels: ["enhancement", "P2"]
 | Epic disguised as ticket | 3+ weeks, 5+ independent deliverables = split it |
 | Stale implementation notes | Endpoint specs from 2 months ago are wrong now |
 | Priority mismatch | P3 ticket for a P0 area = something is wrong |
+
+## Umbrella issue template
+
+An **umbrella issue** is the GitHub-side companion to a milestone. One umbrella per milestone, titled `[umbrella] <milestone-slug> — <name>`. It hosts the milestone's scope, sub-issue list, sequencing constraints, and — after the milestone runs — the merge log that `/implement-milestone` appends to. Feature tickets are children; the umbrella is the parent.
+
+Use this template when creating a new umbrella:
+
+```markdown
+## Problem
+<2–4 sentences. What is broken, missing, or awkward that this milestone exists to fix. Concrete enough that a reader who never worked on the codebase can hold the picture.>
+
+## Product outcome
+<One paragraph. What changes for users (data-labelling teams, adapter authors, or contributors) when this milestone lands. User-facing, not implementation-facing.>
+
+## Key decisions surfaced
+<Enumerate the yes/no or fork-in-the-road choices this milestone forces. One line each with a leaning. These are the decisions a PM must settle before the pipeline runs — they map 1-to-1 with the `## Decisions needed before implementation` block the architect will emit at plan time. Surface them here so the milestone can be scheduled with fewer mid-run stalls.>
+
+- **<Decision label>** — <question>. Leaning: <default>. Impact if reversed: <one line>.
+- ...
+- Or: "None — mechanical execution of a settled design."
+
+## Sub-issues (phases)
+<Group child issues by phase. Each phase is a slice you could ship in a single per-issue pipeline pass. Sequencing constraints go here, not in the individual tickets.>
+
+### Phase 1 — <name>
+- [ ] #<N> <title>
+- [ ] #<N> <title>
+
+### Phase 2 — <name>
+- [ ] #<N> <title>
+
+## Sequencing constraints
+<Bullets. "Phase 2 depends on Phase 1's <specific contract>", "issue #X must land before #Y because …". Explicit — don't rely on issue order.>
+
+## Out of scope
+<Bullets. Anything a reader might reasonably expect to be part of this milestone but isn't. Include a one-line "why not now" for each.>
+
+## Definition of done
+<Bullets. What is true when this milestone is closed. Test-tier evidence where possible (unit / canonical / integration coverage). One clear closure criterion per bullet.>
+
+## Educative hook
+<One sentence. What a reader following the milestone's consolidation PR will *learn* — the concept, pattern, or design principle this milestone teaches. This is the seed the consolidation PR body's `Concept map` will grow into. Skip only if the milestone is purely mechanical.>
+```
+
+**Umbrella-specific rules:**
+
+- Title format: `[umbrella] <milestone-slug> — <name>`. GitHub has no umbrella label; the title convention is the marker.
+- Attach the umbrella issue to the GitHub milestone the same way as any feature ticket.
+- Umbrella body updates during the milestone: `/implement-milestone` appends `#<issue> → PR #<pr> → <sha> — <outcome>` lines as issues merge. That log is load-bearing — treat the umbrella body as a running document, not a static one.
+- Sub-issues are created with the atomic-feature template above. They reference the umbrella (`Part of #<umbrella>`).
+- Priority label is required on the umbrella itself (usually `P1` or `P2`); child priorities can vary.
