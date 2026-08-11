@@ -313,6 +313,15 @@ model's. Four of its fields are unreachable from a message trace: `status`,
 is the tool's own text, untruncated — on a failed call, its own failure text,
 which the agent-facing `role: tool` message carries behind an `Error: ` prefix.
 
+`call_id` is the trial's **episode-unique** tool-call id — the same value the
+matching `tool_calls` entry and `role: tool` message in `trajectory.yaml` carry,
+since the agent loop assigns it before any of the three is written. For a
+provider that mints a unique id per call it is that provider's own id; for one
+that numbers its calls within a turn, and so emits the same id in two turns, the
+second occurrence is written `<id>#2` ([GRADING.md
+G3](GRADING.md#guarantees)). Nothing parses it — it is compared for equality —
+so `#` is inert wherever the id travels.
+
 A **sidecar** rather than a key on `trajectory.yaml`: the record repeats every
 tool's output, which on a tool-heavy trial is most of the bundle, so whoever
 reads only the message trace pays nothing for it.
@@ -1324,7 +1333,7 @@ to be readable:
 | `scored_trials` | The measured attempts that produced a grade — `avg_score`'s denominator, and the weight `avg_score_micro` uses |
 | `infrastructure_aborts` | Per reason, the attempts excluded from that denominator: `{"api_timeout": 0, "provision_error": 0, "rate_limit": 3}`. All three keys are always present |
 | `harness_errors` | Attempts that failed on a defect of ours. Counted **inside** `measured_trials`; a non-zero value is a run-health signal |
-| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error` |
+| `ungradeable` | Attempts whose grading refused. Also **inside** `measured_trials`, and a non-pass in `success_rate` / `pass@k`; the cause is in that trial's `trajectory.yaml` under `grading_error`. A non-zero count makes `tolokaforge run` / `worker` exit `1` ([CLI.md § Run and worker exit codes](CLI.md#run-and-worker-exit-codes)), so this is the number to read when a completed run failed its CI step |
 | `outcomes_by_reason` | Every termination reason observed, with the class it was counted as: `{"max_turns": {"class": "measured", "count": 7}}`. An ungradeable attempt terminates the way a graded one does, so it is keyed `ungradeable_<reason>`: `{"ungradeable_agent_done": {"class": "ungradeable", "count": 1}}` |
 
 `measured_trials + sum(infrastructure_aborts.values()) == total_trials`,

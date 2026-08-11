@@ -83,9 +83,11 @@ def register_collided_trial(
 ) -> str:
     """Register *trial_id* and record two tool calls sharing one ``call_id``.
 
-    Nothing rejects a duplicate at record time, so the collision reaches grade
-    time and the timeline cannot join a call to its result — ``GradeTrial``
-    then refuses without a live provider or a hand-written error string.
+    Nothing rejects a duplicate at record time, so the record holds two
+    occurrences of an id :func:`collided_trajectory`'s message view declares
+    once. The timeline keys the second occurrence ``<id>#2``, which matches no
+    declaration, and refuses to reconcile the two views — so ``GradeTrial``
+    refuses without a live provider or a hand-written error string.
     Returns *trial_id*.
     """
     registered = service.RegisterTrial(
@@ -137,8 +139,10 @@ def produce_grading_refusal(service: Any, context: Any) -> str:
 
 def collided_trajectory(*, task_id: str, trial_index: int = 0) -> Trajectory:
     """The transcript half of the collision staged by
-    :func:`register_collided_trial` — one assistant turn whose tool call carries
-    :data:`DUPLICATE_CALL_ID`, against two recorded results."""
+    :func:`register_collided_trial` — one assistant turn declaring
+    :data:`DUPLICATE_CALL_ID` **once**, against two recorded results. The
+    asymmetry is what makes the two views irreconcilable; a view declaring it
+    twice would join cleanly."""
     return make_trajectory(
         task_id=task_id,
         trial_index=trial_index,

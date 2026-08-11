@@ -119,6 +119,7 @@ tests/
     ├── networks.py           # Docker network/volume fixtures
     ├── containers.py         # Docker container fixtures
     ├── docker_helpers.py     # Compose/daemon helpers for the Docker tiers
+    ├── orchestrator_stubs.py  # GradingCompleteness a stub Orchestrator publishes — the CLI reads the attribute with no default
     ├── recorded_calls.py     # RecordedToolCall builders
     ├── runner_requests.py    # gRPC request + TaskDescription builders
     ├── servicer_runtime.py   # RuntimeBackend over the in-process servicer + the duplicate-call_id refusal
@@ -218,7 +219,11 @@ Compare output against committed golden snapshots in `snapshots/`.
   so a trace check would mean different things depending on which substrate graded
   the trial. Both substrates then *grade* off that timeline, so a failure here also
   means both substrates' transcript rules are reading a trial the two views no
-  longer agree on. Build a coherent message-view/record pair for a grading fixture
+  longer agree on. One lock reads the ids as recorded, before any timeline: its
+  failure means the loop stopped assigning episode-unique ids at ingestion
+  (`ToolCallingLoop._assign_call_ids`), not that a substrate drifted — the
+  runner half executes the ids the loop produced, as production does.
+  Build a coherent message-view/record pair for a grading fixture
   with `tests/utils/timelines.py`; a record naming a call no message asked for is a
   reconciliation failure, not a shortcut. `build_timeline` lands every call on the
   last assistant turn, while `build_turn_timeline` takes the calls per turn — which

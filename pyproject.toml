@@ -258,6 +258,7 @@ only-include = [
     "tolokaforge/core/netpolicy_constants.py",
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/run_display_events.py",
+    "tolokaforge/core/tool_call_ids.py",
     "tolokaforge/core/trial.py",
     # RUNNER_SUBSET_DATA_FILES — non-Python assets runtime code reads at
     # import time. Ship them into the subset wheel so the runner image's
