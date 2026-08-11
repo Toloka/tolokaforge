@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import re
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -61,8 +62,10 @@ from tolokaforge.core.models import (
     JudgeStatus,
     Message,
     MessageRole,
+    TerminationReason,
     ToolCall,
     Trajectory,
+    TrialStatus,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 
@@ -76,15 +79,24 @@ _RUBRIC = {
     ],
 }
 _JUDGE_MODEL = {"provider": "openrouter", "name": "openai/gpt-4.1-mini", "temperature": 0.0}
+_GRADING_REFUSAL = "judge returned no verdict after 3 attempts"
 
 
-def _trajectory() -> Trajectory:
+def _trajectory(
+    *,
+    status: TrialStatus = TrialStatus.COMPLETED,
+    termination_reason: TerminationReason | None = None,
+    grading_error: str | None = None,
+) -> Trajectory:
     now = datetime.now(UTC)
     return Trajectory(
         task_id="refund_task",
         trial_index=0,
         start_ts=now,
         end_ts=now,
+        status=status,
+        termination_reason=termination_reason,
+        grading_error=grading_error,
         messages=[
             Message(role=MessageRole.USER, content="I want a refund for order O-1."),
             Message(
@@ -98,19 +110,16 @@ def _trajectory() -> Trajectory:
     )
 
 
-def _write_bundle(
+def _write_recorded_inputs(
     trial_dir: Path,
+    trajectory: Trajectory,
     *,
-    judge_status: JudgeStatus,
-    judge_inputs: JudgeInputs | None,
     with_rubric: bool = True,
-    kb_gating: JudgeKbGating | None = None,
     recorded_system_prompt: str | None = None,
     recorded_include_agent_system_prompt: bool | None = None,
-) -> Trajectory:
-    """Write a new-shape bundle via the real writer; return the source trajectory."""
+) -> None:
+    """Write everything a bundle records except its grade, via the real writer."""
     writer = FileArtifactWriter()
-    trajectory = _trajectory()
     writer.write_trajectory(trial_dir, trajectory)
     writer.write_prompts(trial_dir, _AGENT_PROMPT, "user-sim prompt")
 
@@ -135,7 +144,28 @@ def _write_bundle(
             "model_config": {"judge": _JUDGE_MODEL},
         },
     )
-    writer.write_grade(
+
+
+def _write_bundle(
+    trial_dir: Path,
+    *,
+    judge_status: JudgeStatus,
+    judge_inputs: JudgeInputs | None,
+    with_rubric: bool = True,
+    kb_gating: JudgeKbGating | None = None,
+    recorded_system_prompt: str | None = None,
+    recorded_include_agent_system_prompt: bool | None = None,
+) -> Trajectory:
+    """Write a new-shape bundle via the real writer; return the source trajectory."""
+    trajectory = _trajectory()
+    _write_recorded_inputs(
+        trial_dir,
+        trajectory,
+        with_rubric=with_rubric,
+        recorded_system_prompt=recorded_system_prompt,
+        recorded_include_agent_system_prompt=recorded_include_agent_system_prompt,
+    )
+    FileArtifactWriter().write_grade(
         trial_dir,
         Grade(
             binary_pass=True,
@@ -212,22 +242,96 @@ def test_eligible_bundle_without_rubric_raises_named_missing_input(tmp_path: Pat
         read_replay_inputs(trial_dir)
 
 
-@pytest.mark.parametrize(
-    "grade_content", [None, "- not\n- a\n- mapping\n"], ids=["missing", "corrupt"]
-)
-def test_classify_trial_fails_loud_when_grade_yaml_unreadable(
-    tmp_path: Path, grade_content: str | None
+def test_classify_trial_fails_loud_when_grade_yaml_is_present_but_unreadable(
+    tmp_path: Path,
 ) -> None:
-    """A dir without a readable ``grade.yaml`` is not a judge-less trial — it is
-    not a trial bundle at all, and classifying it as NOT_APPLICABLE would silently
-    drop it from the batch."""
-    trial_dir = tmp_path / "not_a_bundle"
+    """A ``grade.yaml`` that is present and holds something other than a mapping
+    cannot say what the run concluded — a different state from a bundle that
+    carries no grade at all. Reading it as NO_GRADE would skip it at exit 0, and
+    classifying it as NOT_APPLICABLE would silently drop it from the batch."""
+    trial_dir = tmp_path / "unreadable_grade"
     trial_dir.mkdir()
-    if grade_content is not None:
-        (trial_dir / "grade.yaml").write_text(grade_content)
+    (trial_dir / "grade.yaml").write_text("- not\n- a\n- mapping\n")
 
     with pytest.raises(MissingReplayInputError, match="not a trial bundle"):
         classify_trial(trial_dir)
+
+
+def _grade_less_bundle(
+    trial_dir: Path,
+    *,
+    status: TrialStatus = TrialStatus.COMPLETED,
+    termination_reason: TerminationReason | None = None,
+    grading_error: str | None = None,
+) -> None:
+    """A trial the run recorded without a grade: what a trial grading refused, or
+    one the infrastructure aborted, leaves on disk."""
+    _write_recorded_inputs(
+        trial_dir,
+        _trajectory(
+            status=status, termination_reason=termination_reason, grading_error=grading_error
+        ),
+    )
+
+
+def _aborted_bundle(trial_dir: Path) -> None:
+    _grade_less_bundle(
+        trial_dir, status=TrialStatus.ERROR, termination_reason=TerminationReason.API_TIMEOUT
+    )
+
+
+def test_grade_less_bundles_are_skips_that_say_which_grade_less_shape_they_are(
+    tmp_path: Path,
+) -> None:
+    """A bundle carrying no ``grade.yaml`` is a declared skip, not a failure, and
+    its reason comes from its own recorded trajectory: the trial grading refused
+    carries the recorded ``grading_error``, the aborted one carries its termination
+    reason, and the two sentences DIFFER — one hardcoded "(infrastructure abort)"
+    for both would mislabel half the population. Classification precedes input
+    reconstruction, so the judge is never reached and nothing is written."""
+    source = tmp_path / "run"
+    ungradeable = source / "trials" / "ungradeable" / "0"
+    aborted = source / "trials" / "aborted" / "0"
+    _grade_less_bundle(ungradeable, grading_error=_GRADING_REFUSAL)
+    _aborted_bundle(aborted)
+    client = _submit_report_client()
+
+    assert classify_trial(ungradeable) is TrialEligibility.NO_GRADE
+    outcomes = [
+        run_replay_batch(source, replay_id="r1", trial=bundle, judge_client=client)[0]
+        for bundle in (ungradeable, aborted)
+    ]
+
+    assert [o.status for o in outcomes] == [ReplayOutcomeStatus.SKIPPED_NO_GRADE] * 2
+    ungradeable_reason, aborted_reason = (o.reason or "" for o in outcomes)
+    assert _GRADING_REFUSAL in ungradeable_reason
+    assert _GRADING_REFUSAL not in aborted_reason
+    assert TerminationReason.API_TIMEOUT.value in aborted_reason
+    assert ungradeable_reason != aborted_reason
+    assert client.calls == 0
+    assert not (source / "replays").exists()
+
+
+@pytest.mark.parametrize(
+    "trajectory_content", [None, '{"messages": ['], ids=["absent", "unparseable"]
+)
+def test_grade_less_bundle_that_cannot_say_what_happened_is_a_named_failure(
+    tmp_path: Path, trajectory_content: str | None
+) -> None:
+    """A bundle with no grade whose ``trajectory.yaml`` is absent or unreadable is
+    FAILED naming that file — it cannot say why it has no grade, which is a
+    different state from saying nothing was graded."""
+    source = tmp_path / "run"
+    bundle = source / "trials" / "aborted" / "0"
+    _aborted_bundle(bundle)
+    (bundle / "trajectory.yaml").unlink()
+    if trajectory_content is not None:
+        (bundle / "trajectory.yaml").write_text(trajectory_content)
+
+    outcomes = run_replay_batch(source, replay_id="r1", trial=bundle, dry_run=True)
+
+    assert [o.status for o in outcomes] == [ReplayOutcomeStatus.FAILED]
+    assert "trajectory.yaml" in (outcomes[0].reason or "")
 
 
 def test_missing_prompts_yaml_fails_loud_and_null_prompt_is_faithful(tmp_path: Path) -> None:
@@ -743,6 +847,56 @@ def test_rejudge_cli_dry_run_spends_nothing(tmp_path: Path) -> None:
     assert "1 eligible" in result.output
     # Dry-run spends nothing and writes nothing.
     assert not (source / "replays").exists()
+
+
+_TOTALS_LINE = re.compile(
+    r"(?P<eligible>\d+) eligible, "
+    r"(?P<skipped_not_applicable>\d+) skipped-not-applicable, "
+    r"(?P<skipped_no_grade>\d+) skipped-no-grade, "
+    r"(?P<failed>\d+) failed-with-reason"
+)
+_PER_TRIAL_MARKERS = ("re-judged", "would re-judge", "skip (not applicable)", "skip (no grade)")
+
+
+def _totals_and_lines(output: str) -> tuple[dict[str, int], int]:
+    """The totals line's counts, and how many per-trial lines were printed above it.
+
+    Whitespace-normalised because Rich wraps both the totals line and the reasons.
+    """
+    per_trial, totals = output.split("Re-judged:")
+    match = _TOTALS_LINE.search(" ".join(totals.split()))
+    assert match is not None, output
+    printed = sum(" ".join(per_trial.split()).count(marker) for marker in _PER_TRIAL_MARKERS)
+    return {key: int(value) for key, value in match.groupdict().items()}, printed
+
+
+def test_rejudge_cli_reports_a_grade_less_bundle_and_exits_zero(tmp_path: Path) -> None:
+    """A grade-less bundle named with ``--trial`` is a reported skip at exit 0, not
+    a failure: the same disposition the batch gives it, through the other entry
+    point. Its count sits on the totals line, which therefore accounts for every
+    per-trial line printed above it — a totals line omitting a disposition the same
+    function prints is arithmetically incomplete."""
+    from tolokaforge.dx.cli.main import cli
+
+    source = tmp_path / "run"
+    bundle = source / "trials" / "aborted" / "0"
+    _aborted_bundle(bundle)
+
+    result = CliRunner().invoke(cli, ["rejudge", "--source", str(source), "--trial", str(bundle)])
+
+    assert result.exit_code == 0, result.output
+    assert "skip (no grade)" in result.output
+    assert TerminationReason.API_TIMEOUT.value in " ".join(result.output.split())
+    assert not (source / "replays").exists()
+
+    totals, per_trial_lines = _totals_and_lines(result.output)
+    assert totals == {
+        "eligible": 0,
+        "skipped_not_applicable": 0,
+        "skipped_no_grade": 1,
+        "failed": 0,
+    }
+    assert sum(totals.values()) == per_trial_lines
 
 
 def test_rejudge_cli_exits_nonzero_when_a_trial_fails(tmp_path: Path) -> None:

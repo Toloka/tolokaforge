@@ -77,23 +77,40 @@ Each recorded trial is classified:
   judged**, even when `--grading` supplies a rubric — a rubric override never
   conjures a judge stage onto a trial that never had one (that would spend tokens
   on a task that was never rubric-graded).
+- **No-grade** — the bundle carries no `grade.yaml` at all, so there is no judge
+  stage to replay. Also **skipped and never judged**, and classified before any
+  input is reconstructed, so such a bundle resolves no rubric and no judge model
+  and cannot spend. The skip's reason names which grade-less shape it is, read
+  from the bundle's own `trajectory.yaml` through the same outcome classification
+  the run uses: a trial grading refused (`grading_error` recorded — see
+  [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `trajectory.yaml`), a trial the
+  infrastructure aborted before it was measured (`termination_reason` — see
+  [`GRADING.md`](GRADING.md#infrastructure-aborts-produce-no-grade)), or —
+  reported as the anomaly it is — a grade-less trial that is neither. The
+  reason names the outcome **class**; for a provisioning
+  failure, *why* the environment did not come up is `error_reason` in the same
+  bundle's `metrics.yaml`. Discovery keys on `grade.yaml`, so a grade-less bundle
+  is reached by naming it with `--trial` (see below).
 
 A judge-eligible trial that cannot be reconstructed (a judge ran, but the bundle
 records no rubric and no `--grading` was given; or no transcript; or no
 `prompts.yaml` agent policy; or no judge model and no `--judge-model`) is reported
 as a **named per-trial failure** — the batch continues, and no discovered trial is
 ever silently skipped. The same applies to a bundle whose `grade.yaml` is present
-but unreadable (it cannot be classified) and to recorded inputs that fail
-validation (a corrupt `trajectory.yaml`, rubric, or model config). When any trial
+but unreadable (it cannot be classified), to a bundle with no grade whose
+`trajectory.yaml` is absent or unreadable (it cannot say why it has none), and to
+recorded inputs that fail validation (a corrupt `trajectory.yaml`, rubric, or
+model config). When any trial
 fails, `rejudge` still writes the comparison report for the replayed subset and
 then **exits non-zero**, so a scripted caller never reads a partially-failed
 replay as clean.
 
-**A trial that produced no grade is outside the batch entirely.** Discovery keys on
-`grade.yaml`, and a trial the infrastructure aborted has no verdict to write
-(`docs/GRADING.md` § Infrastructure aborts produce no grade), so its directory is
-never recognised as a bundle and never appears in the report — not as a failure,
-not as a skip. Nothing was lost: there is no judge stage to replay. What is lost is
+**A trial that produced no grade is outside the discovered batch.** Discovery keys
+on `grade.yaml`, and a trial the infrastructure aborted has no verdict to write
+([`GRADING.md`](GRADING.md#infrastructure-aborts-produce-no-grade)), so its
+directory is not recognised as a bundle under `--source` and does not appear in
+the batch's output; naming it with `--trial` reports it as a no-grade skip.
+Nothing was lost: there is no judge stage to replay. What is lost is
 **legibility of the batch's size**: a run that hit provider throttling yields a
 smaller eligible count than the same suite on a clean run, with nothing in the
 replay report saying why. Read `per_task_metrics.json`'s `infrastructure_aborts`

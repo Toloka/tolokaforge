@@ -873,6 +873,8 @@ def _print_rejudge_summary(
         rel = outcome.bundle
         if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
             console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
+        elif outcome.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE:
+            console.print(f"[yellow]skip (no grade)[/yellow] {rel} — {outcome.reason}")
         elif outcome.status is ReplayOutcomeStatus.FAILED:
             console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
         else:
@@ -890,10 +892,12 @@ def _print_rejudge_summary(
         for o in outcomes
     )
     skipped = sum(o.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE for o in outcomes)
+    no_grade = sum(o.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE for o in outcomes)
     failed = sum(o.status is ReplayOutcomeStatus.FAILED for o in outcomes)
     console.print(
         f"\n[bold]{label}:[/bold] {eligible} eligible, "
-        f"{skipped} skipped-not-applicable, {failed} failed-with-reason"
+        f"{skipped} skipped-not-applicable, {no_grade} skipped-no-grade, "
+        f"{failed} failed-with-reason"
     )
     if not dry_run and eligible:
         console.print(f"Replay artifacts: {source / 'replays' / replay_id}")

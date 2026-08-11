@@ -10,9 +10,11 @@ not inspect — never a silent empty result. See docs/JUDGE_REPLAY.md.
 
 Trial classification is the batch-selection predicate: a trial is *judge-eligible*
 iff its recorded ``grade.yaml`` carried a judge stage (``judge_status`` not
-``unspecified``). Trials that never had a judge are *not-applicable* and are never
-judged and never fail-loud — not even under a rubric override, which would spend
-real tokens on a task that never had a judge stage.
+``unspecified``). Trials that never had a judge are *not-applicable*, and a bundle
+carrying no ``grade.yaml`` at all is *no-grade*, named with the grade-less shape
+its own trajectory says it is. Neither is ever judged and neither ever fails loud
+— not even under a rubric override, which would spend real tokens on a task that
+never had a judge stage.
 """
 
 from __future__ import annotations
@@ -27,6 +29,7 @@ from typing import Any
 import yaml
 from pydantic import BaseModel, ValidationError, model_validator
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.judge import (
     DBReader,
     JudgeResult,
@@ -104,10 +107,16 @@ class KnowledgeSearchMode(str, Enum):
 
 
 class TrialEligibility(str, Enum):
-    """Whether a recorded trial is in scope for re-judging."""
+    """Whether a recorded trial is in scope for re-judging.
+
+    ``NO_GRADE`` — the bundle carries no ``grade.yaml``, so nothing recorded a
+    verdict to re-derive. Distinct from ``NOT_APPLICABLE``, which asserts that the
+    recorded grade declared no judge stage.
+    """
 
     ELIGIBLE = "eligible"
     NOT_APPLICABLE = "not_applicable"
+    NO_GRADE = "no_grade"
 
 
 class FidelityMode(str, Enum):
@@ -282,14 +291,37 @@ class ReplayInputs:
     workspace_dir: Path | None = None
 
 
-def _load_yaml(path: Path) -> dict[str, Any] | None:
-    if not path.exists():
-        return None
+def _parse_yaml(path: Path) -> Any:
     try:
-        loaded = yaml.safe_load(path.read_text())
+        return yaml.safe_load(path.read_text())
     except yaml.YAMLError as exc:
         raise MissingReplayInputError(f"unreadable YAML at {path}: {exc}") from exc
+
+
+def _load_yaml(path: Path) -> dict[str, Any] | None:
+    """A mapping off *path*, ``None`` where the file is absent *or* holds anything else."""
+    if not path.exists():
+        return None
+    loaded = _parse_yaml(path)
     return loaded if isinstance(loaded, dict) else None
+
+
+def _carried_mapping(path: Path) -> dict[str, Any] | None:
+    """The mapping a bundle carries at *path*, ``None`` only where it carries none.
+
+    The strict reading, for the inputs whose absence the caller answers for: a trial
+    the run never graded carries no ``grade.yaml``. Folding a wrong-shaped file into
+    that ``None`` would report a bundle that cannot say what the run concluded as
+    one nobody graded, and skip it at exit 0.
+    """
+    if not path.exists():
+        return None
+    loaded = _parse_yaml(path)
+    if isinstance(loaded, dict):
+        return loaded
+    raise MissingReplayInputError(
+        f"not a trial bundle: {path} holds {type(loaded).__name__} where a mapping belongs"
+    )
 
 
 @dataclass(frozen=True)
@@ -344,19 +376,19 @@ def load_grading_override(grading_path: Path) -> GradingOverride:
 
 
 def classify_trial(trial_dir: Path) -> TrialEligibility:
-    """Classify a recorded trial as judge-eligible or not-applicable.
+    """Classify a recorded trial as judge-eligible, not-applicable, or grade-less.
 
     Eligible iff the recorded ``grade.yaml`` carried a judge stage
     (``judge_status`` not ``unspecified``). Independent of any rubric override — a
-    trial that never had a judge is never conjured into one. Raises
-    :class:`MissingReplayInputError` when ``grade.yaml`` is missing or not a
-    mapping — that is not a judge-less trial, it is not a trial bundle at all.
+    trial that never had a judge is never conjured into one. A bundle with no
+    ``grade.yaml`` is :attr:`TrialEligibility.NO_GRADE`; a ``grade.yaml`` that is
+    present and unreadable raises :class:`MissingReplayInputError`, because a
+    bundle that cannot say what the run concluded is a different state from one
+    that says nothing was graded.
     """
-    grade = _load_yaml(trial_dir / "grade.yaml")
+    grade = _carried_mapping(trial_dir / "grade.yaml")
     if grade is None:
-        raise MissingReplayInputError(
-            f"not a trial bundle: {trial_dir / 'grade.yaml'} is missing or not a mapping"
-        )
+        return TrialEligibility.NO_GRADE
     status_value = grade.get("judge_status") or JudgeStatus.UNSPECIFIED.value
     status = JudgeStatus(status_value)
     if status is JudgeStatus.UNSPECIFIED:
@@ -637,14 +669,17 @@ class ReplayOutcomeStatus(str, Enum):
     ``REPLAYED`` — the judge ran and replay artifacts were written. ``WOULD_REPLAY``
     — a ``--dry-run`` trial that is eligible and reconstructable (nothing spent).
     ``SKIPPED_NOT_APPLICABLE`` — the trial never had a judge stage (never judged,
-    never a failure). ``FAILED`` — a trial that could not be classified or
-    reconstructed; ``reason`` names the missing or invalid input (never a silent
+    never a failure). ``SKIPPED_NO_GRADE`` — the bundle carries no ``grade.yaml``,
+    so there is no judge stage to replay; ``reason`` names which grade-less shape
+    it is. Also never a failure. ``FAILED`` — a trial that could not be classified
+    or reconstructed; ``reason`` names the missing or invalid input (never a silent
     skip).
     """
 
     REPLAYED = "replayed"
     WOULD_REPLAY = "would_replay"
     SKIPPED_NOT_APPLICABLE = "skipped_not_applicable"
+    SKIPPED_NO_GRADE = "skipped_no_grade"
     FAILED = "failed"
 
 
@@ -757,6 +792,46 @@ def _write_replay_artifacts(
         )
 
 
+def _no_grade_reason(trial_dir: Path) -> str:
+    """One sentence saying which grade-less shape the bundle at *trial_dir* is.
+
+    Derived from the recorded trajectory through :func:`classify_trial_outcome`, so
+    the skip is named in the vocabulary of the run that wrote the bundle rather than
+    by a second classifier. The sentence names the outcome class, not the
+    operational cause — for a provision failure that is ``error_reason`` in the same
+    bundle's ``metrics.yaml``, which replay does not read.
+
+    Raises :class:`MissingReplayInputError` when the trajectory cannot be read — a
+    bundle that cannot say what happened to it is a different state from one that
+    says nothing was graded.
+    """
+    recorded = _carried_mapping(trial_dir / "trajectory.yaml")
+    if recorded is None:
+        raise MissingReplayInputError(
+            f"no recorded outcome: {trial_dir / 'trajectory.yaml'} is missing, so a bundle "
+            "carrying no grade cannot say why it carries none"
+        )
+    trajectory = Trajectory.model_validate(recorded)
+    outcome = classify_trial_outcome(trajectory)
+    termination = trajectory.termination_reason.value if trajectory.termination_reason else "none"
+    tail = "so there is no judge stage to replay"
+    if outcome is TrialOutcomeClass.UNGRADEABLE:
+        return (
+            "the run measured this trial and refused to grade it "
+            f"({trajectory.grading_error}), {tail}"
+        )
+    if outcome is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+        return (
+            "the trial was aborted before it was measured "
+            f"(termination_reason: {termination}), {tail}"
+        )
+    return (
+        f"the run recorded no grade for a trial it classified {outcome.value} "
+        f"(termination_reason: {termination}), which is neither grade-less shape the "
+        f"harness writes, {tail}"
+    )
+
+
 def run_replay_batch(
     source: Path,
     *,
@@ -771,9 +846,12 @@ def run_replay_batch(
 ) -> list[TrialReplayOutcome]:
     """Replay every judge-eligible trial under ``source`` sequentially.
 
-    Execution is sequential with no concurrency cap. Not-applicable trials
-    (no recorded judge stage) are reported skipped, never judged — even with a
-    rubric override. A trial that cannot be classified (no readable ``grade.yaml``)
+    Execution is sequential with no concurrency cap. Not-applicable trials (no
+    recorded judge stage) and grade-less bundles (no ``grade.yaml`` at all) are
+    reported skipped with the reason they are skipped, never judged — even with a
+    rubric override, and both before any input is reconstructed, so neither can
+    spend. A trial that cannot be classified (a ``grade.yaml`` present and
+    unreadable, or a grade-less bundle whose ``trajectory.yaml`` cannot be read)
     or reconstructed — a missing input, or a recorded input that fails validation
     (a corrupt ``trajectory.yaml``, rubric, or model config) — is a named
     per-trial failure and the batch continues (no silent skips). With ``dry_run``,
@@ -789,7 +867,17 @@ def run_replay_batch(
     outcomes: list[TrialReplayOutcome] = []
     for bundle in bundles:
         try:
-            if classify_trial(bundle) is TrialEligibility.NOT_APPLICABLE:
+            eligibility = classify_trial(bundle)
+            if eligibility is TrialEligibility.NO_GRADE:
+                outcomes.append(
+                    TrialReplayOutcome(
+                        bundle=bundle,
+                        status=ReplayOutcomeStatus.SKIPPED_NO_GRADE,
+                        reason=_no_grade_reason(bundle),
+                    )
+                )
+                continue
+            if eligibility is TrialEligibility.NOT_APPLICABLE:
                 outcomes.append(
                     TrialReplayOutcome(
                         bundle=bundle, status=ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
