@@ -1970,21 +1970,25 @@ class LLMClient:
                             f"set it in .env or the environment so SecretManager can resolve it"
                         )
 
-                if binding.custom_llm_provider is not None:
-                    kwargs["custom_llm_provider"] = binding.custom_llm_provider
-                elif self._gateway_route is None and "/" in self.config.provider:
-                    # Not when routed: _build_kwargs already set the gateway's dialect
-                    # and overwriting it here reverts the name AND the body shape.
-                    kwargs["custom_llm_provider"] = self.config.provider.split("/")[0]
+                # Not when routed: _build_kwargs already set the gateway's dialect
+                # (renamed via PR #942 so the gateway sees its own protocol) and
+                # overwriting either the custom_llm_provider or the model slug
+                # here reverts the name AND the body shape. Skip both provider-
+                # binding steps under a gateway route; the gateway owns them.
+                if self._gateway_route is None:
+                    if binding.custom_llm_provider is not None:
+                        kwargs["custom_llm_provider"] = binding.custom_llm_provider
+                    elif "/" in self.config.provider:
+                        kwargs["custom_llm_provider"] = self.config.provider.split("/")[0]
 
-                if binding.slug_rewrite is not None:
-                    rewrite = binding.slug_rewrite
-                    model = kwargs["model"]
-                    if rewrite.strip_prefix and model.startswith(rewrite.strip_prefix):
-                        model = model[len(rewrite.strip_prefix) :]
-                    if rewrite.ensure_prefix and not model.startswith(rewrite.ensure_prefix):
-                        model = rewrite.ensure_prefix + model
-                    kwargs["model"] = model
+                    if binding.slug_rewrite is not None:
+                        rewrite = binding.slug_rewrite
+                        model = kwargs["model"]
+                        if rewrite.strip_prefix and model.startswith(rewrite.strip_prefix):
+                            model = model[len(rewrite.strip_prefix) :]
+                        if rewrite.ensure_prefix and not model.startswith(rewrite.ensure_prefix):
+                            model = rewrite.ensure_prefix + model
+                        kwargs["model"] = model
 
                 return self._call_completion_with_timeout_retry(kwargs)
             except LLMApiTimeoutError:

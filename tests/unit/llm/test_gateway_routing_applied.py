@@ -187,3 +187,46 @@ class TestOpenRouterOnlyBodyFieldsAreDropped:
         )
         kwargs = _kwargs(LLMClient(config))
         assert kwargs["extra_body"]["provider"]["order"] == ["anthropic"]
+
+
+class TestKeyRotationPathPreservesGatewayDialect:
+    """The dialect rename lands in ``_build_kwargs``; ``_call_with_key_rotation``
+    must not undo it. ``binding.custom_llm_provider = "openrouter"`` and
+    ``binding.slug_rewrite`` are per-provider data (``providers.yaml``) that
+    apply to the direct-provider path only — the gateway owns the wire when
+    routed.
+    """
+
+    def test_gateway_route_survives_binding_custom_llm_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        def _capture(self: LLMClient, kwargs: dict[str, Any]) -> Any:
+            captured.update(kwargs)
+            return type("R", (), {"choices": []})()
+
+        client = _client(frozenset({FULL}), monkeypatch)
+        # After _build_kwargs the dialect is "openai" (gateway). _call_with_key_rotation
+        # must not overwrite it back to binding.custom_llm_provider ("openrouter").
+        monkeypatch.setattr(LLMClient, "_call_completion_with_timeout_retry", _capture)
+        client._call_with_key_rotation({"model": FULL, "custom_llm_provider": "openai"})
+        assert captured["custom_llm_provider"] == "openai"
+
+    def test_direct_provider_still_gets_binding_custom_llm_provider(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        captured: dict[str, Any] = {}
+
+        def _capture(self: LLMClient, kwargs: dict[str, Any]) -> Any:
+            captured.update(kwargs)
+            return type("R", (), {"choices": []})()
+
+        secrets_manager._default_manager = SecretManager(
+            [DictProvider({"OPENROUTER_API_KEY": "sk"})]
+        )
+        client = LLMClient(ModelConfig(provider="openrouter", name=MODEL))
+        assert client._gateway_route is None
+        monkeypatch.setattr(LLMClient, "_call_completion_with_timeout_retry", _capture)
+        client._call_with_key_rotation({"model": FULL, "custom_llm_provider": "openai"})
+        assert captured["custom_llm_provider"] == "openrouter"
