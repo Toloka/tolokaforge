@@ -60,7 +60,7 @@ class TestOverlayLoadErrors:
         path = tmp_path / "empty.yaml"
         path.write_text("")
         data = _load_overlay_file(str(path))
-        assert data == {"default": {}, "presets": {}, "providers": {}}
+        assert data == {"default": {}, "presets": {}, "providers": {}, "litellm_models": {}}
 
     def test_unknown_top_level_key_rejected(self, tmp_path: Path) -> None:
         path = tmp_path / "typo.yaml"

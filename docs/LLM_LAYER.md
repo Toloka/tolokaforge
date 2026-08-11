@@ -23,6 +23,7 @@ for the design rationale and the canonical litellm surface.
 | [`response_policy.py`](../tolokaforge/core/llm/response_policy.py) | Tool-call argument post-processing |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
+| [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
 
@@ -419,6 +420,92 @@ unchanged — litellm's native `_remove_additional_properties` only runs for
 Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
+
+## When litellm has never heard of the model
+
+litellm decides which OpenAI parameters a provider may be sent by looking the
+model up in its own map. For most providers that decision is generic, but a
+**vendor-native** provider answers from the entry alone. A model the map does
+not carry is therefore read as supporting NO parameters, and the request is
+refused inside our process, before anything is sent:
+
+```
+litellm.UnsupportedParamsError: meta does not support parameters:
+['tools', 'tool_choice'], for model=muse-spark-1.2
+```
+
+Measured 2026-08-10 across litellm versions with an identical request: 1.83.14
+passes the tools through, 1.93.0 and 1.96.0 refuse them. The strictness arrived
+in a patch release, so a routine dependency bump can turn a working
+vendor-native model into one that cannot make a single tool call — and the
+error names the provider rather than the missing data, so it reads as "this
+vendor does not do tool calls".
+
+It says nothing about the model. The identical request driven through litellm's
+`openai` transport against the same `api_base` returns a correct tool call —
+the gap is upstream DATA, and the fix is to supply the entry rather than to
+wait on someone else's release.
+
+litellm's own answer to this is `allowed_openai_params`, a per-call kwarg
+naming the parameters to admit past the map gating for that one request; its
+error message says so. `litellm_params.py` turns an operator's declaration into
+that list, and it ships with **no list of models**. A model missing from a
+third-party map is not a fact about an engine release, and a list in the wheel
+would tie every future gap to the release cadence — the argument
+[ADR 0002](adr/0002-external-model-registry.md) already
+made for preset data. So the entries are operator data, declared in the same
+preset overlay (`--presets-file` / `RunConfig.engine.presets_file`):
+
+```yaml
+litellm_models:
+  meta/muse-spark-1.2:
+    supports_function_calling: true
+    supports_reasoning: true       # the config sets models.agent.reasoning
+    evidence: "2026-08-10, litellm 1.96.0: no entry, so meta refused tools
+      before sending; the same request through litellm's openai transport
+      against api.meta.ai returned a correct tool call."
+```
+
+The key is the litellm model id, because that is the lookup litellm performs.
+An entry **declares**; it does not copy. Only the parameters its flags name are
+admitted, so a capability nothing observed is never asserted on the model's
+behalf.
+
+Two rules keep it honest:
+
+- **The flags are an allow-list.** A parameter stays refused until someone
+  declares the capability with evidence, and extending the map is a decision
+  about what we are willing to assert. `supports_reasoning` is on it because a
+  config that sets `models.agent.reasoning` sends `reasoning_effort`, which
+  litellm refuses for an unmapped model exactly as it refuses `tools`.
+- **Nothing is written into litellm's global map.** The kwarg is per call, so
+  our own price can never end up labelled `cost_source="litellm"` (the label
+  meaning provider-authoritative), no entry of ours can outlive the day
+  upstream ships a richer one, and there is no process-global mutation to
+  synchronise across the trial thread pool. Once upstream carries the model,
+  the allow-list is a harmless no-op.
+
+An undeclared capability is **refused**, not dropped: the allow-list only ever
+ADDS to what litellm already permits, so a config that sets
+`models.agent.reasoning` against an entry that does not declare
+`supports_reasoning` fails per call rather than quietly running without it. An
+entry has to cover what its config asks for.
+
+Validation is at overlay load and is louder than the preset blocks beside it: a
+preset that fails to apply changes how a request is shaped, while a dropped
+entry here decides whether a request is sent at all.
+
+Three things that look like fixes and are not:
+
+- **`drop_params: true`** silences the error by stripping `tools`, turning
+  every tool-use trial into a no-tool trial. The eval then measures a
+  configuration mistake and reports it as model capability.
+- **A preset `params:` block** cannot reach this. They validate against a
+  closed set introspected from `GenerationParams.__init__`, and the refusal
+  happens upstream of every policy slot.
+- **`extra_body`** passes ungated, so smuggling a refused parameter through it
+  works — and a provider that silently ignores the key is then invisible,
+  which is the same failure wearing a different hat.
 
 ## `proxy` — routing calls through an LLM gateway
 

@@ -295,3 +295,92 @@ class TestValidationResult:
             ]
         )
         assert r.ok
+
+
+class TestPreflightConsultsTheOverlay:
+    """`config validate` loads the `litellm_models:` block, so it has to use it.
+
+    Otherwise the command that schema-validates the declaration turns around
+    and reports the model unable to call functions, while the run works. The
+    test drives the real CLI: an earlier version of this passed by calling
+    `set_overlay_path` itself, which is exactly the step the CLI was missing.
+    """
+
+    def _tree(self, tmp_path, *, declared: bool, provider: str = "meta"):
+        import yaml
+
+        overlay = tmp_path / "overlay.yaml"
+        entry = {"evidence": "2026-08-10, litellm 1.96.0: measured"}
+        if declared:
+            entry["supports_function_calling"] = True
+        else:
+            entry["supports_reasoning"] = True
+        overlay.write_text(yaml.safe_dump({"litellm_models": {"meta/muse-spark-1.2": entry}}))
+
+        config = tmp_path / "run.yaml"
+        config.write_text(
+            yaml.safe_dump(
+                {
+                    "evaluation": {
+                        "tasks_glob": "tasks/**/task.yaml",
+                        "output_dir": "output",
+                        "harness_adapter": {"type": "frozen_mcp_core"},
+                    },
+                    "orchestrator": {"workers": 1, "repeats": 1},
+                    "models": {
+                        "agent": {"provider": provider, "name": "muse-spark-1.2"},
+                        "user": {"provider": "openrouter", "name": "anthropic/claude-sonnet-4.6"},
+                    },
+                    "engine": {"presets_file": str(overlay)},
+                }
+            )
+        )
+        return config
+
+    def _validate(self, config):
+        from click.testing import CliRunner
+
+        from tolokaforge.dx.cli.main import cli
+
+        return CliRunner().invoke(cli, ["config", "validate", "--config", str(config)])
+
+    def test_a_declared_model_is_not_reported_unable(self, tmp_path):
+        result = self._validate(self._tree(tmp_path, declared=True))
+        assert "does not appear to support function calling" not in result.output
+
+    @pytest.mark.parametrize("provider", ["meta", "Meta", "META"])
+    def test_the_preflight_lookup_is_case_symmetric_like_the_run(self, provider, tmp_path):
+        """Asserted on the lookup, not on the CLI output.
+
+        A capitalised provider makes litellm raise, so the wrapper answers
+        `None` and no issue is emitted whatever the overlay says - a CLI-level
+        case test would pass without the symmetry existing.
+        """
+        import yaml
+
+        from tolokaforge.core import config_validator as cv
+        from tolokaforge.core.llm.presets import set_overlay_path
+
+        overlay = tmp_path / "overlay.yaml"
+        overlay.write_text(
+            yaml.safe_dump(
+                {
+                    "litellm_models": {
+                        "meta/muse-spark-1.2": {
+                            "supports_function_calling": True,
+                            "evidence": "2026-08-10, litellm 1.96.0: measured",
+                        }
+                    }
+                }
+            )
+        )
+        set_overlay_path(str(overlay))
+        try:
+            assert cv._declared_function_calling("muse-spark-1.2", provider) is True
+        finally:
+            set_overlay_path(None)
+
+    def test_and_one_the_overlay_does_not_declare_still_is(self, tmp_path):
+        """The check still fails closed - the overlay is not a blanket pass."""
+        result = self._validate(self._tree(tmp_path, declared=False))
+        assert "does not appear to support function calling" in result.output

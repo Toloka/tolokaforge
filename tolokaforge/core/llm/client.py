@@ -42,6 +42,7 @@ from tenacity.wait import wait_base
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
+from tolokaforge.core.llm.litellm_params import allowed_openai_params
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.proxy import UNROUTABLE_PROVIDERS, resolve_proxy_config
@@ -626,6 +627,9 @@ class LLMClient:
     ):
         self.config = config
         self.model_name = self._format_model_name()
+        # Parameters an overlay admits for a model litellm's map does not carry.
+        # Empty for every model it does: the kwarg is then omitted entirely.
+        self.allowed_openai_params = allowed_openai_params(self.model_name, self.config.provider)
         self.capabilities = build_capabilities(
             self.config.name,
             self.config.provider,
@@ -1727,6 +1731,12 @@ class LLMClient:
         because it needs ``NOVA_API_KEY`` read fresh per attempt.
         """
         kwargs: dict[str, Any] = {"model": self.model_name}
+        if self.allowed_openai_params:
+            # litellm's own escape hatch for a model its map does not carry: the
+            # named parameters are admitted past the gating for this call, and
+            # stripped before the request body is built. Anything NOT named is
+            # still refused, so the declaration stays the boundary.
+            kwargs["allowed_openai_params"] = list(self.allowed_openai_params)
 
         # Adapt model-specific parameters (temperature, seed, reasoning)
         kwargs = self.capabilities.params_policy.adapt(
