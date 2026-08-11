@@ -5,7 +5,7 @@ These tests pin the dataclass's honesty invariants, enum roundtrip
 semantics, and per-certificate slug consistency with
 :func:`tolokaforge.core.output.artifacts.model_id_slug`. They run as
 plain unit tests (no live provider calls) so they catch contributor
-errors in :mod:`tolokaforge.testing.certify._registry` at PR time —
+errors in :mod:`tolokaforge_models.certificates.registry` at PR time —
 before a live-provider sweep would even be attempted.
 """
 

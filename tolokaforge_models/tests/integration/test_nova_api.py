@@ -4,9 +4,9 @@ Tests Nova API integration including authentication, model availability,
 and basic completion functionality. Tests are skipped if Nova API key
 is not available in environment.
 
-Stage 8 context (P10) — this file is **provider-scoped**, NOT
-capability-scoped. It lives alongside the capability-driven suite under
-``tests/integration/llm/`` for locality, but it deliberately skips the
+This file is **provider-scoped**, NOT capability-scoped. It ships with
+the ``tolokaforge-models`` wheel — the same place model data + the cert
+registry live — and deliberately skips the
 :class:`tolokaforge.testing.certify.ModelCertificate` /
 :class:`tolokaforge.testing.certify.Capability` parametrisation because
 Nova is a non-OpenRouter provider with its own bespoke quirks (empty

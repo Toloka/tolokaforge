@@ -59,7 +59,7 @@ def test_known_unsupported_routes_still_reject_re2_incompatible_pattern(
     ``RE2_PATTERN_TOLERANCE`` in ``known_unsupported`` — ie upstream
     silently fixed the validator quirk. The fix path is to move the
     capability from ``known_unsupported`` to ``required`` in
-    :mod:`tolokaforge.testing.certify._registry`, then consider retiring the
+    :mod:`tolokaforge_models.certificates.registry`, then consider retiring the
     ``StrictSchema.strip_re2_incompatible_patterns`` flag entirely
     (it would no longer be load-bearing anywhere).
     """
@@ -106,7 +106,7 @@ def test_known_unsupported_routes_still_reject_re2_incompatible_pattern(
         f"schema that the cert claims it rejects (RE2_PATTERN_TOLERANCE "
         f"in known_unsupported). The upstream validator has been relaxed; "
         f"move the capability to ``required`` in "
-        f"tolokaforge/testing/certify/_registry.py and consider retiring the "
+        f"tolokaforge_models/src/tolokaforge_models/certificates/registry.py and consider retiring the "
         f"``strip_re2_incompatible_patterns`` flag. Reference response: "
         f"tool_calls={bool(result.tool_calls)}, "
         f"text={(result.text or '')[:120]!r}."

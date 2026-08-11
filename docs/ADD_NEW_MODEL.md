@@ -16,7 +16,7 @@ curl -s https://openrouter.ai/api/v1/models | \
 | File / dir | Branch | Reason |
 |---|---|---|
 | `tolokaforge/core/data/pricing.json` | **main** | Shared cost catalog |
-| `tolokaforge/testing/certify/_registry.py` | **main** | Capability certificate is shared |
+| `tolokaforge_models/src/tolokaforge_models/certificates/registry.py` | **main** | Capability certificate is shared |
 | `tolokaforge/core/data/model_presets.yaml` | **main** | Only if new preset needed |
 
 Evaluation-specific configs **must not land on `main`** — see
@@ -133,7 +133,7 @@ invocations pick it up automatically without re-specifying `--presets-file`.
 ## 3. Add a ModelCertificate
 
 Append to `ALL_MODELS` in
-[`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py).
+[`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py).
 Pick `required` and `known_unsupported` from the
 [`Capability`](../tolokaforge/testing/certify/_capability.py) enum.
 
@@ -392,7 +392,7 @@ acme:
 - [`docs/LLM_LAYER.md`](LLM_LAYER.md) — policy slot contracts +
   implementation notes.
 - The Gemini certificates in
-  [`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py)
+  [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   are a worked example of an entire model family registered with
   asymmetric postures across variants (Flash `required` vs Pro
   `known_unsupported` for the same capability) — useful when a new

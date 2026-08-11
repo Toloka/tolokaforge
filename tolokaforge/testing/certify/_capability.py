@@ -1,7 +1,7 @@
 """Capability enum for the per-model capability-driven integration suite.
 
 Every LLM capability probe parametrises over
-:data:`tolokaforge.testing.certify._registry.ALL_MODELS`. Each probe
+:data:`tolokaforge.testing.certify.ALL_MODELS`. Each probe
 asserts ONE :class:`Capability` — when the certificate's ``required``
 set includes the capability, the probe must pass against the live
 provider; when ``known_unsupported`` includes it, the probe auto-skips
@@ -22,8 +22,8 @@ Design goals:
    :class:`~tolokaforge.core.llm.usage.Usage` only — never raw provider
    payloads.
 
-See also :mod:`tolokaforge.testing.certify._registry` for the concrete
-``ALL_MODELS`` tuple.
+See also :mod:`tolokaforge_models.certificates.registry` for the concrete
+``ALL_MODELS`` tuple, exposed at :data:`tolokaforge.testing.certify.ALL_MODELS`.
 """
 
 from __future__ import annotations

@@ -268,8 +268,8 @@ class TestAllModels:
         assert len(ALL_MODELS) > 0
 
     def test_repeated_import_preserves_order(self) -> None:
-        from tolokaforge.testing.certify import _registry
+        from tolokaforge_models.certificates import registry
 
         first = [c.model_id for c in ALL_MODELS]
-        reloaded = [c.model_id for c in importlib.reload(_registry).ALL_MODELS]
+        reloaded = [c.model_id for c in importlib.reload(registry).ALL_MODELS]
         assert reloaded == first

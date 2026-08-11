@@ -1,6 +1,6 @@
 """ModelCertificate dataclass — declares one model's capability contract.
 
-Every certificate in :data:`tolokaforge.testing.certify._registry.ALL_MODELS`
+Every certificate in :data:`tolokaforge.testing.certify.ALL_MODELS`
 is a frozen :class:`ModelCertificate`. The five required fields
 (``model_id`` / ``provider`` / ``name`` / ``env_key`` / ``required``)
 plus ``known_unsupported`` form the *honesty contract*: for a given

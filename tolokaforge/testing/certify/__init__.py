@@ -12,7 +12,9 @@ Consumers reach for:
   capabilities are required, which are known-unsupported, and per-model
   exclusions / rationales / probe parameter overrides.
 * :data:`ALL_MODELS` — the tuple of certificates the shared suite
-  parametrises over.
+  parametrises over. Resolved on first access from
+  :func:`tolokaforge.core.model_data.bundled_certificates`, which reads
+  the tuple out of the installed :mod:`tolokaforge_models` wheel.
 * :func:`register_probe`, :func:`get_probe` — per-capability probe
   registry for out-of-tree probe bodies scoped to one ``model_id`` or
   used as the capability-wide default.
@@ -26,8 +28,9 @@ importing the submodule directly as
 ``from tolokaforge.testing.certify.fixtures import live_client``.
 """
 
+from typing import Any
+
 from ._capability import Capability
-from ._registry import ALL_MODELS
 from .certificate import ModelCertificate
 from .probes import get_probe, register_probe
 
@@ -38,3 +41,13 @@ __all__ = [
     "get_probe",
     "register_probe",
 ]
+
+
+def __getattr__(name: str) -> Any:
+    if name == "ALL_MODELS":
+        from tolokaforge.core.model_data import bundled_certificates
+
+        value = bundled_certificates()
+        globals()["ALL_MODELS"] = value
+        return value
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")

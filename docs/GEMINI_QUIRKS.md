@@ -223,7 +223,7 @@ none, hence no exposure).
 [`tolokaforge/testing/certify/suite/test_tool_name_discipline.py`](../tolokaforge/testing/certify/suite/test_tool_name_discipline.py)
 captures the symptom. Pro is declared `TOOL_NAME_DISCIPLINE`
 known_unsupported in
-[`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py).
+[`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py).
 
 **Harness response**: known_unsupported declaration. Not silently
 worked around — the eval correctly measures the cost.
@@ -462,7 +462,7 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
   (config-error retry filter),
   [#151](https://github.com/Toloka/tolokaforge/issues/151)
   (api_error follow-up).
-- Capability registry: [`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py)
+- Capability registry: [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   (`TOOL_NAME_DISCIPLINE`, `LEXICAL_TOOL_INVENTION` declared
   `known_unsupported` for Pro).
 - Codec fix commits: `c394409a0` (extras round-trip), `8b1511d67`

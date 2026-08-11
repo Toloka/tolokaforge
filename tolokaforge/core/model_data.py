@@ -1,6 +1,6 @@
 """Public engine seam for bundled model-data resources.
 
-The module exposes two related surfaces:
+The module exposes three related surfaces:
 
 * Three path accessors — :func:`bundled_pricing_path`,
   :func:`bundled_presets_path`, :func:`bundled_providers_path` — that
@@ -8,6 +8,11 @@ The module exposes two related surfaces:
   (``pricing.json``, ``model_presets.yaml``, ``providers.yaml``).
   Consumers parse and validate the file's contents themselves; the
   accessors only guarantee the file exists.
+* :func:`bundled_certificates` — the tuple of
+  :class:`~tolokaforge.testing.certify.ModelCertificate` instances the
+  installed :mod:`tolokaforge_models` wheel ships. The accessor is the
+  single entry point the certify seam re-exposes as
+  :data:`tolokaforge.testing.certify.ALL_MODELS`.
 * The fingerprint schema types (:class:`ModelsFingerprint`,
   :data:`MODELS_PACKAGE_VERSION`, :data:`MODELS_MINIMUM_ENGINE_VERSION`,
   :data:`MODELS_FINGERPRINT_API_VERSION`) plus
@@ -19,9 +24,11 @@ runner-subset code. :func:`load_policy_registrations` inlines its
 ``importlib.metadata`` enumeration (rather than routing through
 :mod:`tolokaforge.core.plugin_registry`) so this module's import graph stays
 light and free of the presets-side circular reach the plugin registry has via
-:mod:`tolokaforge.core.loop`. The fingerprint compute path (which needs the
-resolved preset table, pricing dict, and certificate registry) lives in the
-orchestrator-only sibling :mod:`tolokaforge.core.model_data_fingerprint`.
+:mod:`tolokaforge.core.loop`. :func:`bundled_certificates` defers its
+``tolokaforge_models.certificates`` import into the function body for the
+same reason. The fingerprint compute path (which needs the resolved preset
+table, pricing dict, and certificate registry) lives in the orchestrator-only
+sibling :mod:`tolokaforge.core.model_data_fingerprint`.
 
 ``_DATA_ROOT`` is the internal seam pointing at the bundled data
 directory. Tests monkey-patch this constant to redirect the accessors at
@@ -39,16 +46,20 @@ from __future__ import annotations
 import importlib.metadata
 import importlib.resources
 from pathlib import Path
-from typing import Annotated, Any, Final, Literal
+from typing import TYPE_CHECKING, Annotated, Any, Final, Literal
 
 from packaging.specifiers import InvalidSpecifier, SpecifierSet
 from pydantic import BaseModel, ConfigDict, StringConstraints, field_validator
+
+if TYPE_CHECKING:
+    from tolokaforge.testing.certify import ModelCertificate
 
 __all__ = [
     "MODELS_FINGERPRINT_API_VERSION",
     "MODELS_MINIMUM_ENGINE_VERSION",
     "MODELS_PACKAGE_VERSION",
     "ModelsFingerprint",
+    "bundled_certificates",
     "bundled_presets_path",
     "bundled_pricing_path",
     "bundled_providers_path",
@@ -127,6 +138,23 @@ def bundled_providers_path() -> Path:
     if not path.is_file():
         raise FileNotFoundError(f"Bundled provider table not found at {path} — corrupted install?")
     return path
+
+
+def bundled_certificates() -> tuple[ModelCertificate, ...]:
+    """Return the certificate tuple shipped by the installed ``tolokaforge-models`` wheel.
+
+    Raises :class:`ImportError` when no ``tolokaforge-models`` is installed
+    — the certify seam surfaces that as a startup failure. The accessor
+    performs no validation of the tuple's contents; the models wheel
+    enforces uniqueness and slug-agreement at its own import time.
+
+    Public API. Stable within v0.17.x — downstream code that needs the
+    full certificate table should reach for this accessor rather than
+    importing the private registry module directly.
+    """
+    from tolokaforge_models.certificates import ALL_MODELS
+
+    return ALL_MODELS
 
 
 #: Sentinel used while model data ships in the engine wheel; a real

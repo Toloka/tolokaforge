@@ -1,11 +1,14 @@
 """Registry of :class:`tolokaforge.testing.certify.ModelCertificate` instances.
 
-Later stages populate this package with the full certificate table
-consumed by the engine through
-:func:`tolokaforge.core.model_data.bundled_certificates` (added when the
-registry moves off the engine's ``testing/certify/_registry`` module).
+The engine reaches this tuple through
+:func:`tolokaforge.core.model_data.bundled_certificates`, which is
+re-exposed as :data:`tolokaforge.testing.certify.ALL_MODELS` at the
+public certify seam. Adding a new certificate is an edit to
+:mod:`tolokaforge_models.certificates.registry`.
 """
 
 from __future__ import annotations
 
-__all__: list[str] = []
+from tolokaforge_models.certificates.registry import ALL_MODELS
+
+__all__ = ["ALL_MODELS"]
