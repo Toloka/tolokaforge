@@ -26,7 +26,7 @@ import pytest
 from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
-from tolokaforge.core.model_data import compute_models_fingerprint
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 
 pytestmark = pytest.mark.integration
 

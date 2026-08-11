@@ -52,7 +52,7 @@ from tolokaforge.core.metrics import (
     calculate_latency_percentiles,
     calculate_task_metrics,
 )
-from tolokaforge.core.model_data import compute_models_fingerprint
+from tolokaforge.core.model_data_fingerprint import compute_models_fingerprint
 from tolokaforge.core.models import (
     ComputeConfig,
     GradingFindingSeverity,
