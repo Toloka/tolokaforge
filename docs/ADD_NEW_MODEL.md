@@ -1,34 +1,60 @@
 # Adding a New Model
 
 Six-step process. No PR merges a model change without all six passing.
+The non-negotiable rules live in
+[`AGENTS.md` § "Adding a new model / provider"](../AGENTS.md#adding-a-new-model--provider);
+this document walks a contributor through the six steps in the order they
+land in a PR.
 
-## Bucket A vs Bucket B — which wheel does your change target?
+## Bucket A: the models-wheel is the default target
 
-Tolokaforge ships two PyPI wheels — see
-[ADR-0030](adr/0030-tolokaforge-models-split.md). A model addition lands
-in exactly one of two buckets:
+Tolokaforge publishes two PyPI wheels from one monorepo — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md) and
+[`docs/LLM_LAYER.md` § Two-wheel architecture](LLM_LAYER.md#two-wheel-architecture).
+Every step in this document lands in
+[`tolokaforge_models/`](../tolokaforge_models/), which ships on the
+`models-vX.Y.Z` tag axis independent of the engine's `vX.Y.Z` cadence:
 
-- **Bucket A — [`tolokaforge_models/`](../tolokaforge_models/).** New
-  preset routing that composes existing policy classes, a new pricing
-  entry, a new certificate, a per-model policy subclass of a stable
-  engine base that reaches only public API, a new provider binding, or
-  a per-model certification body. Ships on the `models-vX.Y.Z` tag
-  axis independent of the engine's `vX.Y.Z` cadence.
-- **Bucket B — [`tolokaforge/`](../tolokaforge/) (engine).** A new base
-  class, a new lifecycle stage (a new `_POLICY_REGISTRIES` slot), a
-  new `Capability` enum category whose probe pattern differs from
-  every shipped probe, or a change to an existing base class's
-  *shape* (a new abstract method, a new required kwarg). Ships on the
-  engine's `vX.Y.Z` tag axis. Land a Bucket-B PR first when the model
-  needs a hook the engine does not yet expose, then land a follow-up
-  Bucket-A PR for the model itself.
+- a new pricing entry ([step 1](#1-add-pricing)),
+- a new preset composing shipped policy classes ([step 2](#2-add-a-preset-or-confirm-fallthrough-is-ok)),
+- a new `ModelCertificate` ([step 3](#3-add-a-modelcertificate)),
+- a per-model policy subclass of a stable engine base
+  ([step 5 for reasoning codecs](#5-for-new-reasoning-models)), and
+- a new provider binding ([step 6](#6-for-new-non-openrouter-providers)).
 
-Every step below routes to the correct wheel for the file it touches.
+The finalize agent behind [auto-integration](AUTO_INTEGRATION.md) writes
+directly into
+[`tolokaforge_models/src/tolokaforge_models/`](../tolokaforge_models/src/tolokaforge_models/),
+and the file-path classifier at
+[`tools/automation/src/automation/bucket_classifier.py`](../tools/automation/src/automation/bucket_classifier.py)
+tags the resulting commit `Bucket A: preset + cert (models-wheel only, no engine change)`
+so the taxonomy is visible on the PR without opening the run log.
+
+## Bucket B: escalate to the engine only when Bucket A cannot express your change
+
+An engine-side change ([`tolokaforge/`](../tolokaforge/)) is required when
+the models wheel's public API cannot host the addition:
+
+- a new abstract method on an existing base class in
+  [`tolokaforge/core/llm/`](../tolokaforge/core/llm/) — the models wheel
+  cannot ship a subclass of a method that does not exist upstream;
+- a new lifecycle stage (a new slot in `_POLICY_REGISTRIES`) — see
+  [`docs/LLM_LAYER.md` § Startup validation](LLM_LAYER.md#startup-validation);
+- a new `Capability` enum category whose probe pattern differs from every
+  shipped probe under
+  [`tolokaforge/testing/certify/suite/`](../tolokaforge/testing/certify/suite/); or
+- a change to an existing base class's *shape* (a new required kwarg, a
+  renamed hook, a widened return type).
+
+A Bucket B change ships on the engine's `vX.Y.Z` tag axis. Land the Bucket B
+PR first when the model needs a hook the engine does not yet expose, then land
+a follow-up Bucket A PR for the model itself.
 
 ## Pre-flight: 30-second checklist
 
-Before writing any code, verify the model exists and decide where each
-change belongs:
+Before writing any code, verify the model exists and decide which files
+to touch. Almost every file below is under `tolokaforge_models/`; the
+one engine-side row is the ESCALATE case:
 
 ```bash
 # 1. Confirm the OpenRouter slug actually exists.
@@ -36,18 +62,20 @@ curl -s https://openrouter.ai/api/v1/models | \
   python3 -c "import json, sys; print('\n'.join(m['id'] for m in json.load(sys.stdin)['data'] if '<vendor>' in m['id']))"
 ```
 
-| File / dir | Branch | Reason |
+| File / dir | Wheel / release cadence | Reason |
 |---|---|---|
-| `tolokaforge_models/data/pricing.json` | **main** | Shared cost catalog |
-| `tolokaforge_models/src/tolokaforge_models/certificates/registry.py` | **main** | Capability certificate is shared |
-| `tolokaforge_models/data/model_presets.yaml` | **main** | Only if new preset needed |
+| [`tolokaforge_models/src/tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json) | `tolokaforge-models` (independent tag) | Shared cost catalog. |
+| [`tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) | `tolokaforge-models` (independent tag) | Only if a new preset is needed. |
+| [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py) | `tolokaforge-models` (independent tag) | Capability certificate. |
+| [`tolokaforge_models/src/tolokaforge_models/policies/<family>.py`](../tolokaforge_models/src/tolokaforge_models/policies/) | `tolokaforge-models` (independent tag) | Per-model policy subclass of a stable engine base. |
+| [`tolokaforge/core/llm/`](../tolokaforge/core/llm/) | `tolokaforge` (engine) | ESCALATE HERE only for a new base class, a new `_POLICY_REGISTRIES` slot, or a new `Capability` category. |
 
 Evaluation-specific configs **must not land on `main`** — see
 `AGENTS.md` § "No Project-Specific Content on main".
 
 ## 1. Add pricing
 
-Append an entry to [`tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json).
+Append an entry to [`tolokaforge_models/src/tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json).
 Use current OpenRouter / Nova / direct-provider pricing; document the
 capture date in the adjacent comment. Schema: `{input, output}` per
 1M tokens, USD.
@@ -73,7 +101,7 @@ API response verbatim (it's per-token, scientific notation, e.g.
 `"0.0000015"`) and forget the ×1,000,000 conversion.
 ## 2. Add a preset (or confirm fallthrough is OK)
 
-[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
+[`tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 owns every **non-default** policy combination. If the model needs
 specialised schema sanitisation / cache policy / reasoning codec /
 prompt hints, add a new entry with explicit `match:` globs. If the
@@ -348,7 +376,7 @@ If the model lives on a provider that isn't already routed through
    rate-limit patterns, `custom_llm_provider` litellm hint, and
    Nova-shaped slug rewrite / per-attempt transport pinning) are
    declared in
-   [`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
+   [`tolokaforge_models/src/tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
    See [`docs/LLM_LAYER.md` § Provider bindings](LLM_LAYER.md#provider-bindings)
    and [`docs/CONFIG.md` § Provider bindings](CONFIG.md#provider-bindings-providersyaml)
    for the full `ProviderBinding` schema. A hypothetical new provider
@@ -364,7 +392,7 @@ If the model lives on a provider that isn't already routed through
    expect to run against that provider only — optional.
 5. Consider whether the provider deserves its own bespoke test file
    alongside the capability suite (see
-   [`tests/integration/llm/test_nova_api.py`](../tests/integration/llm/test_nova_api.py)
+   [`tests/canonical/test_nova_three_site_mapping.py`](../tests/canonical/test_nova_three_site_mapping.py)
    for the Nova precedent — provider-scoped, NOT capability-scoped).
 
 Example `providers.yaml` entry for a hypothetical `acme` provider that

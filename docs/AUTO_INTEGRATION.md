@@ -73,17 +73,37 @@ breaks IMMEDIATELY to `automation:integrate-needs-human` with the agent's reason
 iterations, no fabricated fix. (Distinct from `data_scope_review`, which commits a fix the agent
 DID produce and routes it for a post-hoc human scope-check.)
 
-- Converged -> a finalize agent (`prompts/resolve_finalize.md`) folds the preset into
-  `model_presets.yaml` and writes the cert into `registry.py`. Before committing, the workflow
-  VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`): it must
-  import, must not turn any already-valid tool-call arg invalid (`test_policy_no_regression`, the
-  anti-over-reach gate), and must recover the array-corruption shapes so the result validates +
-  round-trips against the tool's Pydantic schema (`test_policy_array_recovery`). The cert itself is
-  reconciled against the observe baseline (`automation reconcile-cert`, run before the stash so
-  `findings.json` is still present): every probed capability must be declared (no silent auto-skip),
-  and no capability the baseline shows passing (>= 0.9) may be `known_unsupported` - catching the
-  free-form cert's under-declaration and false-pessimism.
-  Only then does it commit to the PR branch, comment the record, and label
+- Converged -> a finalize agent (`prompts/resolve_finalize.md`) writes the preset into
+  [`tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml),
+  the cert into
+  [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py),
+  pricing (when a new price entry is needed) into
+  [`tolokaforge_models/src/tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json),
+  and any new per-model policy subclass into
+  [`tolokaforge_models/src/tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/)
+  (plus the `[project.entry-points."tolokaforge.policies"]` line in
+  [`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml)). A Bucket B fix
+  additionally writes into [`tolokaforge/core/llm/`](../tolokaforge/core/llm/). Before committing,
+  the workflow VERIFIES the staged tree (what it is about to commit, via `git stash --keep-index`):
+  it must import, must not turn any already-valid tool-call arg invalid
+  (`test_policy_no_regression`, the anti-over-reach gate), and must recover the array-corruption
+  shapes so the result validates + round-trips against the tool's Pydantic schema
+  (`test_policy_array_recovery`). The cert itself is reconciled against the observe baseline
+  (`automation reconcile-cert`, run before the stash so `findings.json` is still present): every
+  probed capability must be declared (no silent auto-skip), and no capability the baseline shows
+  passing (>= 0.9) may be `known_unsupported` - catching the free-form cert's under-declaration and
+  false-pessimism.
+- The workflow then classifies the staged tree via `automation classify-paths --paths-from-cached`
+  (see [`tools/automation/src/automation/bucket_classifier.py`](../tools/automation/src/automation/bucket_classifier.py))
+  and tags the commit accordingly: a Bucket A result (models-wheel only) commits with
+  `(Bucket A: preset + cert)` after the model slug and the Slack notification names
+  `Bucket A: preset + cert (models-wheel only, no engine change)`; a Bucket B result (engine
+  change touched) commits with `(Bucket B: engine + models-wheel)` and the Slack notification
+  names `Bucket B: engine + models-wheel (engine paths touched: <csv>)`. Both buckets flow through
+  the same commit + push code path — the taxonomy is informational, not gating. See
+  [ADR-0030](adr/0030-tolokaforge-models-split.md) for the release-cadence implication (Bucket A
+  ships on the `tolokaforge-models` tag axis; Bucket B forces an engine release).
+- Only then does it commit to the PR branch, comment the record, and label
   `automation:integrate-done`. A broken / over-reaching / divergent fix (or a cert that does not
   reconcile) fails verification here and goes to `automation:integrate-needs-human`. NEVER merges.
 - Not converged within `MAX_ITER` (or staged verification failed) -> `automation:integrate-needs-human`.
@@ -334,7 +354,7 @@ sub-agent); the resolve prompts drive the fix loop. `index.yaml` is the machine-
 | `consistency_passk.md` | analysis | pass@1 / pass@5 / pass^5 + consistency tax; is the model consistency-limited or capability-limited. |
 | `task_design_oracle.md` | analysis (eval only) | Find FALSE failures (correct action graded fail) + unwinnable/ambiguous tasks; footnote vs regrade. |
 | `resolve_agent.md` | resolve (per iteration) | Compose or refine the model's preset overlay from reusable adapter axes (or write a new small adapter class), and write `decision.json` (fix_targets / ceilings / required). Does NOT run reprobe or commit. |
-| `resolve_finalize.md` | resolve (on convergence) | Fold the proven overlay into `model_presets.yaml` + write the cert into `registry.py`, and write the PR comment/description. Does NOT commit. |
+| `resolve_finalize.md` | resolve (on convergence) | Fold the proven overlay into [`tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) + write the cert into [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py), and write the PR comment/description. Does NOT commit. |
 
 ## Key files
 
