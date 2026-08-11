@@ -114,11 +114,12 @@ Dockerfiles and wheel still build.
 
 ## Downstream data-resource consumers
 
-Tolokaforge ships three bundled data files that external tooling reads at
-runtime: `pricing.json`, `model_presets.yaml`, `providers.yaml`. Downstream
-consumers (leaderboards, cost analysers, integration scripts) must reach
-these through the public accessor API on `tolokaforge.core.model_data`
-rather than through raw `importlib.resources` lookups:
+The `tolokaforge-models` wheel ships three bundled data files external
+tooling reads at runtime: `pricing.json`, `model_presets.yaml`,
+`providers.yaml`. Downstream consumers (leaderboards, cost analysers,
+integration scripts) must reach these through the public accessor API
+on `tolokaforge.core.model_data` rather than through raw
+`importlib.resources` lookups:
 
 ```python
 from tolokaforge.core.model_data import (
@@ -156,16 +157,13 @@ zero-cost columns in leaderboards — a silent-wrong outcome AGENTS.md Core
 Rule 1 rejects. Downstream consumers must let the raise propagate to
 startup, not translate it into an empty mapping.
 
-### Post-cutover
+### Resource location
 
-The accessors abstract the resource location. When ADR-0030's cutover
-(#938) moves the bundled data to the `tolokaforge-models` wheel, exactly
-one line changes — the module-level `_DATA_ROOT` constant in
+The accessors abstract the resource location. The module-level
+`_DATA_ROOT` constant in
 [`tolokaforge/core/model_data.py`](../tolokaforge/core/model_data.py)
-flips from `tolokaforge.core.data` to `tolokaforge_models.data`. The
-three accessor bodies do not change. Consumer code stays unchanged: the
-return type is still a `Path`, the `FileNotFoundError` semantics are
-still the same, and the compat guarantee still applies.
+points at `tolokaforge_models.data`; consumer code depends only on the
+`Path` returned and the `FileNotFoundError` semantics.
 
 See [ADR-0030 § "Downstream data-resource consumers"](adr/0030-tolokaforge-models-split.md#downstream-data-resource-consumers-new--widening-revised-2026-08-07)
 for the rationale ADR-0030 chose fixing consumers up-front over shipping a

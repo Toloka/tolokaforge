@@ -329,10 +329,10 @@ class TestPricingDataLoading:
         assert len(MODEL_PRICING) > 0
 
     def test_pricing_json_exists(self):
-        """The bundled pricing.json file should exist."""
-        pricing_path = (
-            Path(__file__).resolve().parents[2] / "tolokaforge" / "core" / "data" / "pricing.json"
-        )
+        """The bundled ``pricing.json`` must resolve through the model-data seam."""
+        from tolokaforge.core.model_data import bundled_pricing_path
+
+        pricing_path = bundled_pricing_path()
         assert pricing_path.exists(), f"pricing.json not found at {pricing_path}"
 
     def test_reload_from_custom_file(self):

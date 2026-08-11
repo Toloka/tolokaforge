@@ -4779,12 +4779,6 @@ requires-dist = [
 name = "tolokaforge-models"
 version = "1.0.0"
 source = { editable = "tolokaforge_models" }
-dependencies = [
-    { name = "tolokaforge" },
-]
-
-[package.metadata]
-requires-dist = [{ name = "tolokaforge", editable = "." }]
 
 [[package]]
 name = "toml"

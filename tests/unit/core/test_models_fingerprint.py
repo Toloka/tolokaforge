@@ -5,9 +5,11 @@ Locks the fingerprint contract behaviour:
 * Determinism — same resolved state, byte-identical sha.
 * Overlay sensitivity — preset overlay, pricing overlay, and certificate
   registry mutations each change the sha.
-* Field shape — every field is populated, the sentinel + api_version are
-  fixed, the digest is 64-char lowercase hex, and
-  :data:`MODELS_MINIMUM_ENGINE_VERSION` parses as a PEP 440 specifier.
+* Field shape — every field is populated, the api_version is fixed, the
+  digest is 64-char lowercase hex, ``package_version`` matches
+  :data:`tolokaforge_models.__version__`, and ``minimum_engine_version``
+  matches :data:`tolokaforge_models.minimum_engine_version` and parses
+  as a PEP 440 specifier.
 * Decoder — absence returns ``None``; a well-formed dict round-trips;
   a malformed dict raises :class:`pydantic.ValidationError`.
 
@@ -26,6 +28,7 @@ import pytest
 from packaging.specifiers import SpecifierSet
 from pydantic import ValidationError
 
+import tolokaforge_models
 from tolokaforge.core import model_data as md
 from tolokaforge.core import model_data_fingerprint as mdf
 from tolokaforge.core.llm.presets import set_overlay_path
@@ -49,17 +52,17 @@ def _restore_pricing() -> Any:
     MODEL_PRICING.update(snapshot)
 
 
-def test_field_shape_and_sentinel_defaults() -> None:
+def test_field_shape_reflects_installed_models_wheel() -> None:
     fp = mdf.compute_models_fingerprint()
 
-    assert fp.package_version == "in-tree"
+    assert fp.package_version == tolokaforge_models.__version__
     assert fp.api_version == 1
     assert _HEX64.match(fp.content_sha256), fp.content_sha256
-    assert fp.minimum_engine_version == ">=0.17,<0.18"
+    assert fp.minimum_engine_version == tolokaforge_models.minimum_engine_version
 
 
 def test_minimum_engine_version_parses_as_pep440_specifier() -> None:
-    spec = SpecifierSet(md.MODELS_MINIMUM_ENGINE_VERSION)
+    spec = SpecifierSet(tolokaforge_models.minimum_engine_version)
 
     assert "0.17.0" in spec
     assert "0.17.5" in spec
@@ -200,7 +203,7 @@ def test_decode_raises_validation_error_on_malformed_payload() -> None:
 def test_minimum_engine_version_rejects_invalid_pep440_specifier() -> None:
     with pytest.raises(ValidationError):
         md.ModelsFingerprint(
-            package_version="in-tree",
+            package_version="1.0.0",
             content_sha256="a" * 64,
             api_version=1,
             minimum_engine_version="not a specifier",
@@ -210,7 +213,7 @@ def test_minimum_engine_version_rejects_invalid_pep440_specifier() -> None:
 def test_api_version_rejects_unknown_contract_version() -> None:
     with pytest.raises(ValidationError):
         md.ModelsFingerprint(
-            package_version="in-tree",
+            package_version="1.0.0",
             content_sha256="a" * 64,
             api_version=99,
             minimum_engine_version=">=0.16,<0.17",
@@ -220,7 +223,7 @@ def test_api_version_rejects_unknown_contract_version() -> None:
 def test_content_sha256_rejects_non_hex_or_truncated_digest() -> None:
     with pytest.raises(ValidationError):
         md.ModelsFingerprint(
-            package_version="in-tree",
+            package_version="1.0.0",
             content_sha256="not_hex_valid_content",
             api_version=1,
             minimum_engine_version=">=0.16,<0.17",

@@ -4,20 +4,24 @@ The module exposes three related surfaces:
 
 * Three path accessors — :func:`bundled_pricing_path`,
   :func:`bundled_presets_path`, :func:`bundled_providers_path` — that
-  return the on-disk location of the engine's bundled model-data files
-  (``pricing.json``, ``model_presets.yaml``, ``providers.yaml``).
-  Consumers parse and validate the file's contents themselves; the
-  accessors only guarantee the file exists.
+  return the on-disk location of the bundled model-data files
+  (``pricing.json``, ``model_presets.yaml``, ``providers.yaml``) shipped
+  by the installed :mod:`tolokaforge_models` wheel. Consumers parse and
+  validate the file's contents themselves; the accessors only guarantee
+  the file exists.
 * :func:`bundled_certificates` — the tuple of
   :class:`~tolokaforge.testing.certify.ModelCertificate` instances the
   installed :mod:`tolokaforge_models` wheel ships. The accessor is the
   single entry point the certify seam re-exposes as
   :data:`tolokaforge.testing.certify.ALL_MODELS`.
 * The fingerprint schema types (:class:`ModelsFingerprint`,
-  :data:`MODELS_PACKAGE_VERSION`, :data:`MODELS_MINIMUM_ENGINE_VERSION`,
   :data:`MODELS_FINGERPRINT_API_VERSION`) plus
   :func:`decode_models_fingerprint`, the read-side decoder used by
-  :mod:`tolokaforge.core.engine_run_state`.
+  :mod:`tolokaforge.core.engine_run_state`. The package version and
+  minimum-engine-version strings persisted on the fingerprint are
+  sourced from :data:`tolokaforge_models.__version__` and
+  :data:`tolokaforge_models.minimum_engine_version` at compute time —
+  see :mod:`tolokaforge.core.model_data_fingerprint`.
 
 The module has **no first-party imports** — it is safe to import from
 runner-subset code. :func:`load_policy_registrations` inlines its
@@ -27,18 +31,15 @@ light and free of the presets-side circular reach the plugin registry has via
 :mod:`tolokaforge.core.loop`. :func:`bundled_certificates` defers its
 ``tolokaforge_models.certificates`` import into the function body for the
 same reason. The fingerprint compute path (which needs the resolved preset
-table, pricing dict, and certificate registry) lives in the orchestrator-only
-sibling :mod:`tolokaforge.core.model_data_fingerprint`.
+table, pricing dict, provider bindings, and certificate registry) lives in
+the orchestrator-only sibling :mod:`tolokaforge.core.model_data_fingerprint`.
 
-``_DATA_ROOT`` is the internal seam pointing at the bundled data
-directory. Tests monkey-patch this constant to redirect the accessors at
-a scratch tree.
+``_DATA_ROOT`` is the internal seam pointing at the ``tolokaforge_models``
+wheel's ``data/`` directory. Tests monkey-patch this constant to redirect
+the accessors at a scratch tree.
 
 See ADR-0030 § "The one seam" and § "Fingerprinting for auditability"
-for the wheel-split context. While the model data still ships in the
-engine wheel, :data:`MODELS_PACKAGE_VERSION` is the literal ``"in-tree"``
-sentinel; when the ``tolokaforge-models`` wheel-split lands the three
-module constants will be sourced from that wheel's ``__init__``.
+for the wheel-split context.
 """
 
 from __future__ import annotations
@@ -56,8 +57,6 @@ if TYPE_CHECKING:
 
 __all__ = [
     "MODELS_FINGERPRINT_API_VERSION",
-    "MODELS_MINIMUM_ENGINE_VERSION",
-    "MODELS_PACKAGE_VERSION",
     "ModelsFingerprint",
     "bundled_certificates",
     "bundled_presets_path",
@@ -72,13 +71,10 @@ __all__ = [
 POLICIES_GROUP: Final[str] = "tolokaforge.policies"
 
 
-_DATA_ROOT: Final[Path] = Path(str(importlib.resources.files("tolokaforge.core") / "data"))
-"""Internal seam pointing at the directory holding the bundled model-data
-files. The three accessors resolve their targets under this root; tests
-monkey-patch this constant to redirect them at a scratch tree. The
-future ``tolokaforge-models`` wheel-split flips this single line to
-``importlib.resources.files("tolokaforge_models") / "data"`` — accessor
-bodies stay the same and consumers see no change."""
+_DATA_ROOT: Final[Path] = Path(str(importlib.resources.files("tolokaforge_models") / "data"))
+"""Internal seam pointing at the ``tolokaforge_models`` wheel's ``data/``
+directory. The three accessors resolve their targets under this root;
+tests monkey-patch this constant to redirect them at a scratch tree."""
 
 
 def bundled_pricing_path() -> Path:
@@ -91,8 +87,8 @@ def bundled_pricing_path() -> Path:
     for rejecting empty / malformed content with its own loud failure.
 
     Public API. Stable within v0.17.x — downstream code that reads the
-    engine's bundled pricing table should use this accessor instead of
-    reaching into ``tolokaforge/core/data/`` directly.
+    bundled pricing table should use this accessor instead of reaching
+    into ``tolokaforge_models/data/`` directly.
     """
     path = _DATA_ROOT / "pricing.json"
     if not path.is_file():
@@ -111,8 +107,8 @@ def bundled_presets_path() -> Path:
     loud failure.
 
     Public API. Stable within v0.17.x — downstream code that reads the
-    engine's bundled preset table should use this accessor instead of
-    reaching into ``tolokaforge/core/data/`` directly.
+    bundled preset table should use this accessor instead of reaching
+    into ``tolokaforge_models/data/`` directly.
     """
     path = _DATA_ROOT / "model_presets.yaml"
     if not path.is_file():
@@ -131,8 +127,8 @@ def bundled_providers_path() -> Path:
     loud failure.
 
     Public API. Stable within v0.17.x — downstream code that reads the
-    engine's bundled provider table should use this accessor instead of
-    reaching into ``tolokaforge/core/data/`` directly.
+    bundled provider table should use this accessor instead of reaching
+    into ``tolokaforge_models/data/`` directly.
     """
     path = _DATA_ROOT / "providers.yaml"
     if not path.is_file():
@@ -157,15 +153,6 @@ def bundled_certificates() -> tuple[ModelCertificate, ...]:
     return ALL_MODELS
 
 
-#: Sentinel used while model data ships in the engine wheel; a real
-#: PEP 440 version string replaces it when the wheel-split lands.
-MODELS_PACKAGE_VERSION: Final[str] = "in-tree"
-
-#: PEP 440 specifier naming the engine floor the current bundled model
-#: data (tracking #931's widened :class:`ModelCertificate`) is compatible
-#: with.
-MODELS_MINIMUM_ENGINE_VERSION: Final[str] = ">=0.17,<0.18"
-
 #: Integer version of the fingerprint payload contract; bumped whenever
 #: :func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
 #: changes the shape of the hashed payload in a way readers must know
@@ -179,19 +166,20 @@ class ModelsFingerprint(BaseModel):
     Fields
     ------
     package_version:
-        The ``tolokaforge-models`` PEP 440 version, or the literal
-        ``"in-tree"`` sentinel while the data still ships in the engine
-        wheel.
+        The ``tolokaforge-models`` PEP 440 version — sourced from
+        :data:`tolokaforge_models.__version__` at compute time.
     content_sha256:
         Lowercase hex sha256 over the canonicalised
-        ``{presets, pricing, certificates}`` triple. Same inputs →
-        byte-identical digest; any overlay tweak → different digest.
+        ``{presets, pricing, providers, certificates}`` payload. Same
+        inputs → byte-identical digest; any overlay tweak → different
+        digest.
     api_version:
         Contract version of the hashed payload — see
         :data:`MODELS_FINGERPRINT_API_VERSION`.
     minimum_engine_version:
         PEP 440 specifier the model-data snapshot requires the engine to
-        satisfy — see :data:`MODELS_MINIMUM_ENGINE_VERSION`.
+        satisfy — sourced from
+        :data:`tolokaforge_models.minimum_engine_version` at compute time.
     """
 
     model_config = ConfigDict(extra="forbid")

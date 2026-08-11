@@ -19,7 +19,7 @@ arguments). Hints, schema, and task docs now all agree on dict shape.
 
 This test pins the corrected declarative routing. It does NOT introduce a
 Python-level ``qwen`` conditional — it asserts that
-[`tolokaforge/core/data/model_presets.yaml`](../../../tolokaforge/core/data/model_presets.yaml)
+[`tolokaforge_models/data/model_presets.yaml`](../../../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 contains a ``qwen`` preset that picks up every Qwen alias we expect.
 """
 

@@ -15,16 +15,16 @@ curl -s https://openrouter.ai/api/v1/models | \
 
 | File / dir | Branch | Reason |
 |---|---|---|
-| `tolokaforge/core/data/pricing.json` | **main** | Shared cost catalog |
+| `tolokaforge_models/data/pricing.json` | **main** | Shared cost catalog |
 | `tolokaforge_models/src/tolokaforge_models/certificates/registry.py` | **main** | Capability certificate is shared |
-| `tolokaforge/core/data/model_presets.yaml` | **main** | Only if new preset needed |
+| `tolokaforge_models/data/model_presets.yaml` | **main** | Only if new preset needed |
 
 Evaluation-specific configs **must not land on `main`** — see
 `AGENTS.md` § "No Project-Specific Content on main".
 
 ## 1. Add pricing
 
-Append an entry to [`tolokaforge/core/data/pricing.json`](../tolokaforge/core/data/pricing.json).
+Append an entry to [`tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json).
 Use current OpenRouter / Nova / direct-provider pricing; document the
 capture date in the adjacent comment. Schema: `{input, output}` per
 1M tokens, USD.
@@ -50,7 +50,7 @@ API response verbatim (it's per-token, scientific notation, e.g.
 `"0.0000015"`) and forget the ×1,000,000 conversion.
 ## 2. Add a preset (or confirm fallthrough is OK)
 
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 owns every **non-default** policy combination. If the model needs
 specialised schema sanitisation / cache policy / reasoning codec /
 prompt hints, add a new entry with explicit `match:` globs. If the
@@ -325,7 +325,7 @@ If the model lives on a provider that isn't already routed through
    rate-limit patterns, `custom_llm_provider` litellm hint, and
    Nova-shaped slug rewrite / per-attempt transport pinning) are
    declared in
-   [`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+   [`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
    See [`docs/LLM_LAYER.md` § Provider bindings](LLM_LAYER.md#provider-bindings)
    and [`docs/CONFIG.md` § Provider bindings](CONFIG.md#provider-bindings-providersyaml)
    for the full `ProviderBinding` schema. A hypothetical new provider

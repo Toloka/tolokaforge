@@ -244,7 +244,7 @@ caps = ModelCapabilities.for_model(name="openai/gpt-5.4", provider="openai")
 # Returns resolved capabilities with schema/prompt policies
 ```
 
-`tolokaforge.core.model_policies` — Model capability policies (Strategy Pattern) and YAML preset loader. Presets are defined in `tolokaforge/core/data/model_presets.yaml`. Key public symbols:
+`tolokaforge.core.model_policies` — Model capability policies (Strategy Pattern) and YAML preset loader. Presets are defined in `tolokaforge_models/data/model_presets.yaml`. Key public symbols:
 
 - `ModelCapabilities` — resolved capability set for a model (schema/prompt policies, feature flags)
 - `DictMapParam` — dataclass describing a detected dict-map parameter (tool name, param name, value schema)

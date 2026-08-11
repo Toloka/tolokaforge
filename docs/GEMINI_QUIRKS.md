@@ -29,7 +29,7 @@ not checked in).
 | Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` opts into the filler) |
 | `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge_models/policies/gemini.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
-| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) |
+| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) |
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
 | Doubled-prefix tool name mangling (`a_a_foo` → `a:a_foo`) | Pro 3.1 | Known_unsupported `TOOL_NAME_DISCIPLINE` |
 | Lexical tool invention (`knowledge_base_search_policy`) | Pro 3.1 | Known_unsupported `LEXICAL_TOOL_INVENTION` |
@@ -60,7 +60,7 @@ which declares `inject_empty_assistant_filler = False`. Only the `aws_nova`
 and `aws_nova_openrouter` presets opt in via `NovaMessageAssembly`
 (`empty_assistant_filler = "I'll help you with that."`); the filler string
 is data on the policy instance so a future preset overlay can override it
-without engine changes ([`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)).
+without engine changes ([`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)).
 
 ### 1.2 `reasoning_details` `id`/`format`/`index` must round-trip
 
@@ -148,7 +148,7 @@ whenever `reasoning_effort=medium` is combined with `tool_choice`.
 because it sends `extra_body.reasoning.effort=medium`, which OpenRouter
 translates upstream into Google's `thinking_level=medium`.
 
-**Harness mitigation**: [`unsupported_effort_levels: ["medium"]`](../tolokaforge/core/data/model_presets.yaml)
+**Harness mitigation**: [`unsupported_effort_levels: ["medium"]`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 on the `providers.gemini` overlay. Per AGENTS.md rule #1, the harness
 **fails loud** rather than silently mapping to `high`:
 

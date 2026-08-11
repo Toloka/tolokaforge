@@ -77,6 +77,7 @@ pytestmark = pytest.mark.canonical
 REPO_ROOT = Path(__file__).resolve().parents[2]
 
 _SUBSET_WHEEL_GLOB = "tolokaforge_runner_subset-*.whl"
+_MODELS_WHEEL_GLOB = "tolokaforge_models-*.whl"
 
 # Subprocess wall-clock caps. Enough headroom for a cold pip download of ~30
 # runtime deps on a busy CI runner; a wedged venv install would otherwise
@@ -125,6 +126,14 @@ def _find_subset_wheel() -> Path | None:
     return wheels[-1] if wheels else None
 
 
+def _find_models_wheel() -> Path | None:
+    dist_dir = REPO_ROOT / "dist"
+    if not dist_dir.is_dir():
+        return None
+    wheels = sorted(dist_dir.glob(_MODELS_WHEEL_GLOB))
+    return wheels[-1] if wheels else None
+
+
 def _build_subset_wheel() -> Path:
     """Build the subset wheel via ``python -m hatchling build -t custom``.
 
@@ -149,6 +158,40 @@ def _build_subset_wheel() -> Path:
     return wheel
 
 
+def _build_models_wheel() -> Path:
+    """Build the ``tolokaforge-models`` wheel via ``python -m hatchling build``.
+
+    The subset wheel's ``Requires-Dist: tolokaforge-models`` cannot resolve
+    from PyPI in this repo's dev / CI environment (the wheel isn't published
+    yet), so the install smoke builds a local copy and passes it alongside
+    the subset wheel to ``uv pip install``."""
+    build_result = subprocess.run(
+        [sys.executable, "-m", "hatchling", "build", "-t", "wheel"],
+        cwd=REPO_ROOT / "tolokaforge_models",
+        capture_output=True,
+        text=True,
+        timeout=_INSTALL_TIMEOUT_S,
+    )
+    if build_result.returncode != 0:
+        pytest.fail(
+            f"tolokaforge-models wheel build failed (exit {build_result.returncode}):\n"
+            f"stdout:\n{build_result.stdout}\nstderr:\n{build_result.stderr}"
+        )
+    # Hatchling drops the models wheel next to its own pyproject; the CI
+    # workflow later moves it into repo-root ``dist/``. Locate it under
+    # either root.
+    for candidate_dir in (REPO_ROOT / "dist", REPO_ROOT / "tolokaforge_models" / "dist"):
+        if not candidate_dir.is_dir():
+            continue
+        matches = sorted(candidate_dir.glob(_MODELS_WHEEL_GLOB))
+        if matches:
+            return matches[-1]
+    pytest.fail(
+        "tolokaforge-models wheel build reported success but produced no artifact "
+        "under dist/ or tolokaforge_models/dist/"
+    )
+
+
 @pytest.fixture(scope="session")
 def scratch_venv_python() -> Path:
     """Path to the Python interpreter of a scratch venv with the subset wheel
@@ -165,6 +208,7 @@ def scratch_venv_python() -> Path:
     project's ``requires-python`` floor without needing an external
     interpreter matrix."""
     wheel = _find_subset_wheel() or _build_subset_wheel()
+    models_wheel = _find_models_wheel() or _build_models_wheel()
 
     venv_dir = Path(tempfile.mkdtemp(prefix="subset_smoke_", dir=REPO_ROOT / "dist"))
     venv_result = subprocess.run(
@@ -207,6 +251,7 @@ def scratch_venv_python() -> Path:
             str(venv_python),
             "--quiet",
             str(wheel),
+            str(models_wheel),
         ]
     else:
         install_cmd = [
@@ -217,6 +262,7 @@ def scratch_venv_python() -> Path:
             "--quiet",
             "--disable-pip-version-check",
             str(wheel),
+            str(models_wheel),
         ]
     install_result = subprocess.run(
         install_cmd,
@@ -481,16 +527,16 @@ def test_subset_venv_runner_boot_import_graph(scratch_venv_python: Path) -> None
 
 
 def test_subset_venv_bundled_data_files_are_populated(scratch_venv_python: Path) -> None:
-    """Every model-data accessor must resolve to a non-empty file from the venv.
+    """Every model-data accessor must resolve to a non-empty file under
+    ``tolokaforge_models/data/`` inside the subset venv.
 
     The three bundled model-data files (``pricing.json``,
-    ``model_presets.yaml``, ``providers.yaml``) are shipped via the
-    subset wheel's ``only-include`` entries; the subset-native runner
-    reads them at first use via
-    :mod:`tolokaforge.core.model_data`'s accessors. A subset image that
-    dropped any one would surface as an empty pricing table (silent cost
-    telemetry regression), an empty preset table (misrouted LLM calls),
-    or a `FileNotFoundError` at the first LLM-judge grading call. This
+    ``model_presets.yaml``, ``providers.yaml``) are shipped by the
+    :mod:`tolokaforge_models` wheel and reached from the subset via
+    :mod:`tolokaforge.core.model_data`'s accessors. A subset image whose
+    ``Requires-Dist: tolokaforge-models`` failed to resolve, or whose
+    ``_DATA_ROOT`` was wired at the wrong package, would surface here as
+    a `FileNotFoundError` at the first LLM-judge grading call. This
     probes the end result inside the venv rather than inspecting the
     wheel archive, so a broken install path (data file landing outside
     ``site-packages/``) still surfaces here."""
@@ -502,6 +548,10 @@ def test_subset_venv_bundled_data_files_are_populated(scratch_venv_python: Path)
         "    p = accessor()\n"
         "    assert p.exists(), f'{p} missing from subset install'\n"
         "    assert p.stat().st_size > 0, f'{p} empty in subset install'\n"
+        "    parts = p.resolve().parts\n"
+        "    assert parts[-3:-1] == ('tolokaforge_models', 'data'), (\n"
+        "        f'{p} does not resolve under tolokaforge_models/data/'\n"
+        "    )\n"
         "from tolokaforge.core.pricing import MODEL_PRICING\n"
         "assert len(MODEL_PRICING) > 100, f'pricing table shrunk to {len(MODEL_PRICING)}'\n"
         "print(len(MODEL_PRICING))\n"
@@ -510,8 +560,8 @@ def test_subset_venv_bundled_data_files_are_populated(scratch_venv_python: Path)
     assert result.returncode == 0, (
         "bundled-data probe failed inside the subset venv — one of "
         "``pricing.json``/``model_presets.yaml``/``providers.yaml`` did "
-        f"not land in the installed site-packages:\nstdout:\n{result.stdout}\n"
-        f"stderr:\n{result.stderr}"
+        "not land under ``tolokaforge_models/data/`` in the installed "
+        f"site-packages:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}"
     )
     pricing_count = int(result.stdout.strip())
     assert pricing_count > 100, (

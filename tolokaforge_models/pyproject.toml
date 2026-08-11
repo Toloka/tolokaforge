@@ -25,9 +25,18 @@ classifiers = [
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 
-dependencies = [
-    "tolokaforge>=0.17,<0.18",
-]
+# No hard ``Requires-Dist: tolokaforge`` on purpose. The
+# ``tolokaforge`` Python package this wheel imports at load time is
+# provided by two independent PyPI distributions in different install
+# contexts: the ``tolokaforge`` engine wheel on host installs, and the
+# Docker-only ``tolokaforge-runner-subset`` wheel inside the runner
+# container. A hard pip-level dep on ``tolokaforge`` would refuse to
+# resolve in the subset context (subset's distribution name is
+# ``tolokaforge-runner-subset``). Version pairing is enforced by
+# ``tolokaforge.core.model_data._check_minimum_engine_version`` at import
+# time against :data:`tolokaforge_models.minimum_engine_version` — that
+# gate is fail-loud, actionable, and independent of the pip resolver.
+dependencies = []
 
 [project.entry-points."tolokaforge.policies"]
 # key = "<slot>.<policy-name>" ; value = "<module>:<class>"

@@ -65,7 +65,9 @@ SUBSET_ENTRY_POINTS: str = "[console_scripts]\ntolokaforge = tolokaforge.runner.
 #
 # Union of:
 #   - the base wheel's ``[project.dependencies]`` — every entry the runner
-#     subset's import graph reaches at runtime;
+#     subset's import graph reaches at runtime, including
+#     ``tolokaforge-models`` which supplies the pricing / preset / provider
+#     binding data files the runner's model-data accessors resolve;
 #   - the base wheel's ``[project.optional-dependencies].runner`` — the
 #     domain-tool runtime deps (fastapi/uvicorn/sqlalchemy/asyncpg/...)
 #     the runner image previously pulled via ``tolokaforge[runner]``.
@@ -76,6 +78,7 @@ SUBSET_ENTRY_POINTS: str = "[console_scripts]\ntolokaforge = tolokaforge.runner.
 # which live in the base wheel and are not shipped inside the subset.
 SUBSET_DEPENDENCIES: tuple[str, ...] = (
     # Reachable from the runner subset (subset of ``[project.dependencies]``).
+    "tolokaforge-models>=1.0.0,<2.0.0",
     "litellm>=1.83.14,!=1.92.0,<2.0.0",
     "pydantic>=2.0.0",
     "pydantic[email]>=2.0.0",

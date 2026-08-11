@@ -150,10 +150,10 @@ class TestEngineRunStatePersistence:
         # ``model_dump(mode="json")`` shape against the reader's
         # ``model_validate`` shape.
         fingerprint = ModelsFingerprint(
-            package_version="in-tree",
+            package_version="1.0.0",
             content_sha256="0" * 64,
             api_version=1,
-            minimum_engine_version=">=0.16,<0.17",
+            minimum_engine_version=">=0.17,<0.18",
         )
         write_engine_run_state(
             tmp_path,

@@ -4,7 +4,7 @@ Covers:
 
 * :func:`resolve_policy_names` — reverse-lookup returns the named policy
   registry entries for every preset defined in
-  [`model_presets.yaml`](../../../tolokaforge/core/data/model_presets.yaml).
+  [`model_presets.yaml`](../../../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 * :func:`resolve_effective_preset` — name-glob routing returns the preset
   identifier (or ``"default"`` on fallthrough).
 * Surfacing failures: planting a rogue policy instance on

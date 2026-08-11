@@ -1,10 +1,10 @@
 """Declarative preset loader — YAML → :class:`ModelCapabilities`.
 
-Presets live in
-[`tolokaforge/core/data/model_presets.yaml`](../../data/model_presets.yaml)
-and are composed from a default block, per-model matches, and a per-provider
-overlay. See [`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) for the full
-resolution order.
+Presets live at ``tolokaforge_models/data/model_presets.yaml`` inside the
+installed :mod:`tolokaforge_models` wheel and are composed from a default
+block, per-model matches, and a per-provider overlay. See
+[`docs/LLM_LAYER.md`](../../../docs/LLM_LAYER.md) for the full resolution
+order.
 """
 
 from __future__ import annotations

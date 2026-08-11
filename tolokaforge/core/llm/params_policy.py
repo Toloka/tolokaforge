@@ -276,7 +276,7 @@ class GenerationParams(ParamsPolicy):
                 f"Use one of {list(supported)!r}, or route through a transport "
                 f"that supports this effort level (e.g. OpenRouter rather than "
                 f"the direct provider, when available). See "
-                f"tolokaforge/core/data/model_presets.yaml for the declarations."
+                f"tolokaforge_models/data/model_presets.yaml for the declarations."
             )
         if self._reasoning_via_extra_body:
             self._emit_extra_body_reasoning(kwargs, {"effort": effort})

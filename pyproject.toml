@@ -271,15 +271,6 @@ only-include = [
     "tolokaforge/core/pricing.py",
     "tolokaforge/core/run_display_events.py",
     "tolokaforge/core/trial.py",
-    # RUNNER_SUBSET_DATA_FILES — non-Python assets runtime code reads at
-    # first use via :mod:`tolokaforge.core.model_data`. Ship them into the
-    # subset wheel so the runner image's pricing / preset / provider
-    # binding tables are non-empty. The ``.python-version`` dotfile lands
-    # via the ``force-include`` table below (source path differs from
-    # destination path).
-    "tolokaforge/core/data/pricing.json",
-    "tolokaforge/core/data/model_presets.yaml",
-    "tolokaforge/core/data/providers.yaml",
 ]
 exclude = [
     # RUNNER_SUBSET_EXCLUDED_FILES — orchestrator-only files inside an

@@ -119,7 +119,9 @@ def test_overlay_changes_persisted_fingerprint(
     )
     baseline_state = read_engine_run_state(tmp_path)
 
-    assert baseline_state["models_fingerprint"]["package_version"] == "in-tree"
+    import tolokaforge_models
+
+    assert baseline_state["models_fingerprint"]["package_version"] == tolokaforge_models.__version__
     assert baseline_state["models_fingerprint"]["api_version"] == 1
     persisted_baseline = read_persisted_models_fingerprint(tmp_path)
     assert persisted_baseline == baseline_fp

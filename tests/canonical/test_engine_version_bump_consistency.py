@@ -1,5 +1,5 @@
-"""Locks agreement between the engine wheel version and the pre-cutover
-``MODELS_MINIMUM_ENGINE_VERSION`` sentinel range.
+"""Locks agreement between the engine wheel version and the installed
+:mod:`tolokaforge_models` wheel's ``minimum_engine_version``.
 
 Two invariants:
 
@@ -7,9 +7,8 @@ Two invariants:
   minor-series floor (``0.17.0``) — the engine cannot drift below the
   version the models-wheel cutover targets.
 * The engine version satisfies
-  :data:`tolokaforge.core.model_data.MODELS_MINIMUM_ENGINE_VERSION` — a
-  models-wheel installed against this engine's declared sentinel range
-  must resolve at ``uv sync``.
+  :data:`tolokaforge_models.minimum_engine_version` — the installed
+  models wheel and engine wheel must agree at ``uv sync`` time.
 """
 
 from __future__ import annotations
@@ -20,7 +19,7 @@ import pytest
 from packaging.specifiers import SpecifierSet
 from packaging.version import Version
 
-from tolokaforge.core.model_data import MODELS_MINIMUM_ENGINE_VERSION
+import tolokaforge_models
 
 pytestmark = pytest.mark.canonical
 
@@ -50,13 +49,13 @@ def test_engine_version_meets_minor_series_floor() -> None:
     )
 
 
-def test_engine_version_satisfies_minimum_engine_version_sentinel() -> None:
+def test_engine_version_satisfies_models_wheel_floor() -> None:
     engine_version = _load_engine_version()
-    sentinel = SpecifierSet(MODELS_MINIMUM_ENGINE_VERSION)
+    floor = SpecifierSet(tolokaforge_models.minimum_engine_version)
 
-    assert engine_version in sentinel, (
+    assert engine_version in floor, (
         f"engine [project].version {engine_version} does not satisfy "
-        f"MODELS_MINIMUM_ENGINE_VERSION={MODELS_MINIMUM_ENGINE_VERSION!r}; "
-        f"a models-wheel pinning this sentinel would refuse to resolve "
-        f"against the engine wheel"
+        f"tolokaforge_models.minimum_engine_version="
+        f"{tolokaforge_models.minimum_engine_version!r}; the installed "
+        f"models wheel would refuse to resolve against the engine wheel"
     )

@@ -284,7 +284,7 @@ see [`docs/LLM_LAYER.md`](LLM_LAYER.md) for the full translation table.
 
 ### Model Capability Presets
 
-Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge/core/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
+Model capabilities are auto-detected from model name/provider using preset definitions in `tolokaforge_models/data/model_presets.yaml`. Override auto-detected capabilities via the `capabilities` field in model config:
 
 ```yaml
 models:
@@ -310,13 +310,13 @@ a `capabilities:` override in Stage 6. Anthropic-family presets
 (`anthropic`, `anthropic_claude_4_7`) default to
 `cache_policy: anthropic_ephemeral`; every other preset carries `cache_policy: none`.
 To disable caching for an ablation study, edit
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml:22)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 and set `cache_policy: none` on the preset. Observe cache-hit rates via
 `Metrics.usage.cache_read_input_tokens` + `cache_creation_input_tokens` in
 `metrics.yaml`.
 
 To add support for a new model, add an entry to
-`tolokaforge/core/data/model_presets.yaml`. Nine slots exist today —
+`tolokaforge_models/data/model_presets.yaml`. Nine slots exist today —
 `schema_sanitizer`, `prompt_policy`, `content_policy`, `response_policy`,
 `reasoning_codec`, `cache_policy`, `params_policy`,
 `message_assembly_policy`, `assistant_text_policy` — each mapping 1:1 to
@@ -383,7 +383,7 @@ Provider transport knobs — endpoint URL, credential env-var names, routability
 under an `LLM_PROXY_BASE_URL` gateway, rotation env-var, rate-limit text
 patterns, and Nova-shaped slug rewrite / per-attempt transport pinning —
 ship as data in
-[`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
 Six entries today: `openrouter`, `openai`, `anthropic`, `gemini`, `nova`,
 `mock`. Loaded once at `LLMClient` construction via
 [`get_provider_binding`](../tolokaforge/core/llm/providers.py). Onboarding a
@@ -407,7 +407,7 @@ Schema fields (see
 | `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
 | `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
 
-`providers.yaml` lives at `tolokaforge/core/data/providers.yaml` under the
+`providers.yaml` lives at `tolokaforge_models/data/providers.yaml` under the
 engine wheel. The cutover PR
 ([#938](https://github.com/Toloka/tolokaforge/issues/938)) moves the file to
 `tolokaforge_models/data/providers.yaml` alongside the other data artifacts,

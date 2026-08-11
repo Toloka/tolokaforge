@@ -160,7 +160,7 @@ reasoning on subsequent turns.
 ### Preset wiring
 
 ```yaml
-# tolokaforge/core/data/model_presets.yaml
+# tolokaforge_models/data/model_presets.yaml
 presets:
   anthropic:
     match: ["anthropic/*", "*claude*"]
@@ -677,7 +677,7 @@ Provider-specific transport knobs (endpoint URL, credential env-var names,
 routability under a gateway, rotation env-var, `custom_llm_provider` litellm
 routing hint, per-provider rate-limit text patterns, and Nova-shaped slug /
 transport pinning) live in
-[`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
 The schema is
 [`tolokaforge.core.llm.providers.ProviderBinding`](../tolokaforge/core/llm/providers.py)
 — a frozen Pydantic model, `extra="forbid"`, one entry per shipped provider
@@ -846,7 +846,7 @@ list-of-blocks back to text.
 
 `cache_policy` is preset-driven, not user-overridable via `ModelConfig.capabilities`
 in Stage 6. To disable caching for an ablation study, override the preset in
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml:22)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 with `cache_policy: none`. The override path contract is documented in
 `docs/ADD_NEW_MODEL.md` (Stage 8).
 
@@ -1110,7 +1110,7 @@ class ModelCapabilities:
 `build_capabilities(model_name, provider, overrides)` walks the merge order
 `default → matched preset → provider overlay → overrides` and constructs a
 fresh `ModelCapabilities`. Presets live in
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 ### Preset coverage
 
@@ -1118,7 +1118,7 @@ Per-preset policy wiring as shipped today. The three `StrictSchema` presets
 all cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
 Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
 the same three policies. Keep this table in sync with
-[`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 | Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
 |-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
@@ -1170,7 +1170,7 @@ Both helpers raise `ValueError` on unknown inputs rather than returning
 placeholders — per AGENTS.md rule #1 we surface drift immediately. Unit
 guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_preset_fingerprint.py)
 parametrises over every preset in
-[`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) and
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
 
 ## Public helper API

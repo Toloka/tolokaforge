@@ -250,7 +250,7 @@ wheel is a Docker-only artifact and is never uploaded to PyPI.
 
 **Data files in the subset:**
 
-- `tolokaforge/core/data/pricing.json`, `tolokaforge/core/data/model_presets.yaml`
+- `tolokaforge_models/data/pricing.json`, `tolokaforge_models/data/model_presets.yaml`
   — non-Python payloads `tolokaforge.core.pricing` and
   `tolokaforge.core.llm.presets` read at import time via
   `importlib.resources`. Shipped as `RUNNER_SUBSET_DATA_FILES` inside

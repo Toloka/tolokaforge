@@ -220,7 +220,7 @@ class Capability(str, Enum):
     then the bundled ``pricing.json`` fallback. A live call that comes back
     with ``cost_usd is None`` means none of the three sources knew this
     model, which is a benchmarking-blocking pricing gap (fix by adding the
-    model to ``tolokaforge/core/data/pricing.json`` or by upgrading
+    model to ``tolokaforge_models/data/pricing.json`` or by upgrading
     litellm). Treated as a core capability — every benchmarked call MUST
     report cost."""
 
