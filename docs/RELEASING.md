@@ -169,6 +169,26 @@ See [ADR-0030 § "Downstream data-resource consumers"](adr/0030-tolokaforge-mode
 for the rationale ADR-0030 chose fixing consumers up-front over shipping a
 forwarding stub in the engine.
 
+### Bumping `minimum_engine_version` on the models wheel
+
+The `tolokaforge_models.minimum_engine_version` PEP 440 specifier
+(declared on
+[`tolokaforge_models/__init__.py`](../tolokaforge_models/src/tolokaforge_models/__init__.py))
+is a hard install-time constraint. The engine reads it at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
+import via
+[`_check_minimum_engine_version()`](../tolokaforge/core/model_data.py)
+and refuses to boot when the installed engine version does not satisfy
+the specifier — see
+[`docs/LLM_LAYER.md` § "Startup validation"](LLM_LAYER.md#startup-validation).
+
+A release that widens the floor (for example
+`>=0.17,<0.18` → `>=0.18,<0.19`) forces every consumer to either upgrade
+the engine wheel or downgrade the models wheel; users on the older
+engine see a startup `RuntimeError` naming both versions. Land the
+matching engine minor bump in the same release cycle, and call the
+migration out in the CHANGELOG.
+
 ## See also
 
 - [Standalone Runner Guide](STANDALONE_RUNNER.md#published-images) — the published

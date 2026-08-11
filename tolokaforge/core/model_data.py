@@ -38,8 +38,17 @@ the orchestrator-only sibling :mod:`tolokaforge.core.model_data_fingerprint`.
 wheel's ``data/`` directory. Tests monkey-patch this constant to redirect
 the accessors at a scratch tree.
 
-See ADR-0030 § "The one seam" and § "Fingerprinting for auditability"
-for the wheel-split context.
+:func:`_check_minimum_engine_version` is the install-time gate the engine
+fires at :mod:`tolokaforge.core.llm.presets` import — refuses to boot when
+:mod:`tolokaforge_models` is missing or when the installed engine version
+falls outside :data:`tolokaforge_models.minimum_engine_version`. The engine
+version is resolved via :func:`_resolve_engine_version`, which tries the
+``tolokaforge`` distribution first and falls back to
+``tolokaforge-runner-subset`` so the same gate fires unmodified inside the
+runner subset image.
+
+See ADR-0030 § "The one seam", § "Fingerprinting for auditability", and
+§ "Install-time validation" for the wheel-split context.
 """
 
 from __future__ import annotations
@@ -65,6 +74,19 @@ __all__ = [
     "decode_models_fingerprint",
     "load_policy_registrations",
 ]
+
+#: Distribution names the engine is known to ship under. The base wheel is
+#: ``tolokaforge``; the Docker-only runner subset is
+#: ``tolokaforge-runner-subset`` (both install the same top-level package but
+#: register different distribution metadata). :func:`_check_minimum_engine_version`
+#: probes them in order so the install-time gate works in both wheels — a
+#: subset image where ``importlib.metadata.version("tolokaforge")`` would raise
+#: ``PackageNotFoundError`` still resolves to the subset wheel's declared
+#: version, and the check fires against that.
+_ENGINE_DISTRIBUTION_CANDIDATES: Final[tuple[str, ...]] = (
+    "tolokaforge",
+    "tolokaforge-runner-subset",
+)
 
 #: Entry-point group each installed models wheel declares its per-model policy
 #: subclasses under. See :func:`load_policy_registrations`.
@@ -251,6 +273,68 @@ def load_policy_registrations() -> dict[str, dict[str, type]]:
 def _distribution_name(ep: importlib.metadata.EntryPoint) -> str:
     dist = ep.dist
     return dist.name if dist is not None else "<unknown distribution>"
+
+
+def _resolve_engine_version() -> str:
+    """Return the PEP 440 version of the installed engine distribution.
+
+    Tries every name in :data:`_ENGINE_DISTRIBUTION_CANDIDATES` in order; the
+    first ``importlib.metadata.version`` call that succeeds wins. The base
+    wheel ships as ``tolokaforge`` and the Docker-only runner subset ships as
+    ``tolokaforge-runner-subset``; either satisfies the check.
+
+    Raises :class:`RuntimeError` when none of the candidates resolve — a
+    corrupted install shape the caller must surface, not swallow.
+    """
+    for name in _ENGINE_DISTRIBUTION_CANDIDATES:
+        try:
+            return importlib.metadata.version(name)
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    raise RuntimeError(
+        f"engine version cannot be resolved: none of "
+        f"{list(_ENGINE_DISTRIBUTION_CANDIDATES)} report a distribution "
+        f"version via importlib.metadata. Reinstall the engine wheel."
+    )
+
+
+def _check_minimum_engine_version() -> None:
+    """Refuse to boot without ``tolokaforge-models``, or on an engine below its floor.
+
+    Called at ``tolokaforge.core.llm.presets`` import time — before any
+    ``RunConfig`` load — so a bad install pair surfaces as a startup
+    ``RuntimeError`` rather than a silent-wrong first LLM call. Two failure
+    branches:
+
+    * ``tolokaforge_models`` is not importable → raises with the
+      ``pip install tolokaforge-models`` install instruction, chained from the
+      underlying :class:`ImportError`.
+    * The installed engine version does not satisfy
+      :data:`tolokaforge_models.minimum_engine_version` → raises naming both
+      the resolved engine version and the models-wheel floor specifier.
+
+    See ADR-0030 § "Install-time validation".
+    """
+    from packaging.specifiers import SpecifierSet
+    from packaging.version import Version
+
+    try:
+        import tolokaforge_models
+    except ImportError as exc:
+        raise RuntimeError(
+            "tolokaforge requires tolokaforge-models >= 1.0.0. "
+            "Install with `pip install tolokaforge-models`."
+        ) from exc
+
+    floor = SpecifierSet(tolokaforge_models.minimum_engine_version)
+    installed = Version(_resolve_engine_version())
+    if installed not in floor:
+        raise RuntimeError(
+            f"tolokaforge-models {tolokaforge_models.__version__} requires "
+            f"tolokaforge {tolokaforge_models.minimum_engine_version}; "
+            f"installed {installed}. Upgrade the engine or downgrade the "
+            f"models wheel."
+        )
 
 
 def decode_models_fingerprint(state: dict[str, Any]) -> ModelsFingerprint | None:

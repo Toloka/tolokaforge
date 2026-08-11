@@ -1173,6 +1173,53 @@ parametrises over every preset in
 [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
 
+### Startup validation
+
+Two install-time gates fire at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py) import
+— before any `RunConfig` load, before the orchestrator or runner spawn any
+child — so a bad `tolokaforge-models` install pair fails the process at
+boot rather than at the first LLM call.
+
+1. **Minimum-engine-version gate.**
+   [`_check_minimum_engine_version()`](../tolokaforge/core/model_data.py)
+   imports `tolokaforge_models` and reads
+   `tolokaforge_models.minimum_engine_version`. Two failure branches:
+
+   * `tolokaforge_models` is not importable → `RuntimeError` naming the
+     `pip install tolokaforge-models` install instruction, chained from
+     the underlying `ImportError`.
+   * The installed engine version does not satisfy the specifier →
+     `RuntimeError` naming both the installed engine version and the
+     models-wheel floor (`>=0.17,<0.18`), with the actionable "upgrade
+     the engine or downgrade the models wheel" hint.
+
+   Engine version resolution goes through
+   [`_resolve_engine_version()`](../tolokaforge/core/model_data.py), which
+   tries the `tolokaforge` distribution first and falls back to
+   `tolokaforge-runner-subset`; the same gate fires unchanged inside the
+   runner subset image, whose distribution name differs from the base
+   wheel.
+
+2. **Class-name-existence gate.**
+   [`_check_class_names_resolve()`](../tolokaforge/core/llm/presets.py)
+   walks the bundled `model_presets.yaml` — every slot on the `default`
+   block, every entry under `presets`, every entry under `providers` —
+   and asserts that every referenced policy name (either a bare
+   `schema_sanitizer: gemini` string or the `name` key of a
+   `{name, params}` mapping) is a key of the merged `_POLICY_REGISTRIES`.
+   Unresolved names raise `RuntimeError` naming every offending
+   `(where, slot, policy)` triple with a
+   [`difflib.get_close_matches`](https://docs.python.org/3/library/difflib.html#difflib.get_close_matches)
+   suggestion drawn from the registry's live keyset. Runs after the
+   `tolokaforge-models` entry-point merge, so it covers both engine
+   defaults and out-of-tree registrations.
+
+Canonical locks:
+[`tests/canonical/test_models_wheel_absent.py`](../tests/canonical/test_models_wheel_absent.py),
+[`tests/canonical/test_minimum_engine_version_gate.py`](../tests/canonical/test_minimum_engine_version_gate.py),
+[`tests/canonical/test_class_name_existence_gate.py`](../tests/canonical/test_class_name_existence_gate.py).
+
 ## Public helper API
 
 Every engine-general helper and base-class hook a per-model policy subclass
