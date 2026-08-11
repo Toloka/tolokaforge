@@ -48,7 +48,7 @@ from tolokaforge.core.grading.key_manifest import (
     TRACE_CONSTRAINTS_KEY,
     UNBOUND_BINDING_SKIP,
 )
-from tolokaforge.core.grading.predicates import contains
+from tolokaforge.core.grading.predicates import contains, ever_satisfiable, json_type_of
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
@@ -87,6 +87,41 @@ from tolokaforge.core.models import (
 __all__ = ["MatcherOutcome", "evaluate_trace_checks", "select_events"]
 
 
+class _Makeability(str, Enum):
+    """How one binding comparison read on one event.
+
+    Three-valued rather than two, because a comparison over a value no JSON type
+    names is evidence neither way, and reading it as ``MADE`` would let one call
+    that omitted the argument silence a report a sibling call earned.
+    """
+
+    MADE = "made"
+    UNMAKEABLE = "unmakeable"
+    NEITHER = "neither"
+
+
+@dataclass(frozen=True)
+class _ComparisonRecord:
+    """One binding reference of one matcher, as it read on one candidate event."""
+
+    event: TraceEvent
+    field: str
+    operator: str
+    binding: str
+    bound: Any
+    state: _Makeability
+
+    __hash__ = None
+    """Unhashable, like the :class:`TraceEvent` every record embeds — without this,
+    the generated hash could only raise, naming ``TraceEvent`` rather than the
+    record."""
+
+    @property
+    def reference(self) -> tuple[str, str, str]:
+        """What the record is a reading *of*, which repeats across the candidates."""
+        return (self.field, self.operator, self.binding)
+
+
 @dataclass(frozen=True)
 class MatcherOutcome:
     """What one matcher resolved to on one timeline.
@@ -100,16 +135,37 @@ class MatcherOutcome:
     verdict, and indeterminate otherwise — so a caller reads both tuples, never
     ``matched`` alone.
 
-    ``unmakeable_comparisons`` names the comparisons a bound value's type put out of
-    reach, which is a property of the matcher and the environment rather than of any
-    one event: a binding reference against a text field is unmakeable on every event
-    once the binding holds a non-string.
+    ``comparisons`` holds how each binding reference the matcher declares read on
+    each event that was a candidate for it — the events every *other* reading of the
+    matcher admits, so a comparison speaks only for the events it was actually read
+    on.
     """
 
     matched: tuple[TraceEvent, ...]
     undecidable: tuple[TraceEvent, ...]
     unreadable_fields: tuple[str, ...]
-    unmakeable_comparisons: tuple[str, ...]
+    comparisons: tuple[_ComparisonRecord, ...]
+
+    @property
+    def unmakeable_comparisons(self) -> tuple[str, ...]:
+        """The comparisons no candidate could make, as the sentences the grade prints.
+
+        A reference is reported when at least one candidate could not make its
+        comparison and none of them made it, which is the printed sentence's own
+        truth: "the comparison was not made" must not be printed on a trajectory
+        where some candidate made it. A candidate that read no comparison at all —
+        an argument it did not carry — neither reports nor silences, since a call
+        that omitted the argument is no evidence that the reference is reachable.
+        """
+        by_reference: dict[tuple[str, str, str], list[_ComparisonRecord]] = {}
+        for record in self.comparisons:
+            by_reference.setdefault(record.reference, []).append(record)
+        return tuple(
+            _unmakeable_message(records[0])
+            for records in by_reference.values()
+            if any(record.state is _Makeability.UNMAKEABLE for record in records)
+            and all(record.state is not _Makeability.MADE for record in records)
+        )
 
     @property
     def indeterminate_reason(self) -> str | None:
@@ -171,18 +227,19 @@ def select_events(
     matched: list[TraceEvent] = []
     undecidable: list[TraceEvent] = []
     unreadable: set[str] = set()
-    unmakeable: dict[str, None] = {}
+    comparisons: list[_ComparisonRecord] = []
     for event in timeline.events:
         if event.kind is not matcher.kind:
             continue
-        truth, missing = _resolve(matcher, event, results, bindings, unmakeable)
+        truth, missing, records = _resolve(matcher, event, results, bindings)
+        comparisons.extend(records)
         if truth is _Truth.TRUE:
             matched.append(event)
         elif truth is _Truth.UNKNOWN:
             undecidable.append(event)
             unreadable |= missing
     return MatcherOutcome(
-        tuple(matched), tuple(undecidable), tuple(sorted(unreadable)), tuple(unmakeable)
+        tuple(matched), tuple(undecidable), tuple(sorted(unreadable)), tuple(comparisons)
     )
 
 
@@ -214,69 +271,123 @@ def _resolve(
     event: TraceEvent,
     results: Mapping[str, TraceEvent],
     bindings: Mapping[str, Any],
-    unmakeable: dict[str, None],
-) -> tuple[_Truth, frozenset[str]]:
-    """Kleene conjunction over the matcher's predicates, and the fields left unread.
+) -> tuple[_Truth, frozenset[str], list[_ComparisonRecord]]:
+    """What this event decides, what it left unread, and what it compared.
 
-    A definitely-failing predicate decides the event whatever the missing evidence
+    The verdict is the Kleene conjunction over the matcher's predicates. A
+    definitely-failing predicate decides the event whatever the missing evidence
     would have said, so it wins over undecidability however the two are ordered —
     which is what keeps an unexecuted call to a tool the matcher does not name out
-    of the undecidable set.
+    of the undecidable set. A reading whose comparison could not be made is one of
+    those definite failures: ``40 == "report.md"`` is false.
 
-    ``unmakeable`` is filled before that conjunction rather than inside it, keyed by
-    message so repeats collapse. An author's type mistake is unconditional, and
-    reading it off only the events that survived the other predicates would hide it
-    behind whichever predicate happened to fail first.
+    A comparison is recorded on this event only where every *other* reading admits
+    it, so an event some other predicate definitely rejects speaks for no comparison
+    — which is what keeps a call to a tool the matcher does not name out of the
+    candidate set. A reading that made no comparison of its own rejects nothing,
+    whether it was refused or read a value no JSON type names: two bad references on
+    one matcher would otherwise empty each other's candidate set, and an author who
+    wrote two of them would be told about neither.
     """
     outcome = _outcome_of(event, results)
     unreadable_when_none = _unreadable_when_none(outcome)
     readings = _predicate_readings(matcher, event, outcome)
-    unmakeable.update(
-        dict.fromkeys(
-            message
-            for field, value, predicate in readings
-            for message in _unmakeable_comparisons(field, value, predicate, bindings)
-        )
-    )
-    unreadable: set[str] = set()
-    for field, value, predicate in readings:
-        if value is None and field in unreadable_when_none:
-            unreadable.add(field)
-        elif not _predicate_holds(predicate, value, bindings):
-            return _Truth.FALSE, frozenset()
+    records = [
+        _comparison_records(field, value, predicate, bindings, event)
+        for field, value, predicate in readings
+    ]
+    unreadable = {
+        field for field, value, _ in readings if value is None and field in unreadable_when_none
+    }
+    failing = {
+        index
+        for index, (field, value, predicate) in enumerate(readings)
+        if not (value is None and field in unreadable_when_none)
+        and not _predicate_holds(predicate, value, bindings)
+    }
+    rejecting = {
+        index
+        for index in failing
+        if all(record.state is _Makeability.MADE for record in records[index])
+    }
+    candidate_records = [
+        record for index, found in enumerate(records) if not rejecting - {index} for record in found
+    ]
+    if failing:
+        return _Truth.FALSE, frozenset(), candidate_records
     if unreadable:
-        return _Truth.UNKNOWN, frozenset(unreadable)
-    return _Truth.TRUE, frozenset()
+        return _Truth.UNKNOWN, frozenset(unreadable), candidate_records
+    return _Truth.TRUE, frozenset(), candidate_records
 
 
-def _unmakeable_comparisons(
-    field: str, value: Any, predicate: ValuePredicate, bindings: Mapping[str, Any]
-) -> Iterable[str]:
-    """Why a binding reference on this reading could not be compared at all.
-
-    Both binding operators read a text field as text: ``contains`` takes two strings
-    as a substring pair and falls back to equality for any other pairing, and
-    ``equals`` over a string and a non-string is false outright. So a non-string
-    bound value against a text field is false on every trajectory whichever operator
-    the author wrote — indistinguishable from an agent failure to everything that
-    reads the score, and so reported as a comparison rather than folded in as one.
+def _comparison_records(
+    field: str,
+    value: Any,
+    predicate: ValuePredicate,
+    bindings: Mapping[str, Any],
+    event: TraceEvent,
+) -> list[_ComparisonRecord]:
+    """How each binding reference on this reading compared on this one event.
 
     A predicate is a conjunction, so both references are read: an author who wrote
     two of them made two mistakes and is owed both.
     """
-    if not isinstance(value, str):
-        return ()
     references = [(name, getattr(predicate, name)) for name in sorted(_BINDING_OPERATORS)]
     return [
-        f"the {field} comparison was not made: binding {bound_name!r} holds "
-        f"{bindings[bound_name]!r} of type {type(bindings[bound_name]).__name__}, and "
-        f"{name} reads a text field as text — a non-string value neither equals a string "
-        "nor is found inside one, which is false on every trajectory. Reference the binding "
-        "from an args predicate, which compares two arguments as they were written, or bind "
-        "a regex capture, which is always text"
+        _ComparisonRecord(
+            event=event,
+            field=field,
+            operator=name,
+            binding=bound_name,
+            bound=bindings[bound_name],
+            state=_makeability(name, value, bindings[bound_name]),
+        )
         for name, bound_name in references
-        if bound_name is not None and not isinstance(bindings[bound_name], str)
+        if bound_name is not None
     ]
+
+
+def _makeability(operator: str, value: Any, bound: Any) -> _Makeability:
+    """Whether this pair of runtime values could have satisfied the comparison.
+
+    The question is asked of both operands' JSON types, over
+    :func:`~tolokaforge.core.grading.predicates.ever_satisfiable`'s per-operator
+    table — which pairs are false on every trajectory is a property of the pair and
+    not of which side holds the text, so a text binding read against a natively-typed
+    field gets the same answer as the reverse. A pair the table refuses is
+    indistinguishable from an agent failure to everything that reads the score, and
+    so recorded as a comparison rather than folded in as one.
+
+    A side no JSON type names — an absent argument, a JSON ``null`` — makes the
+    reading ``NEITHER``: the comparison was not made there, and that says nothing
+    about whether the reference is reachable. That pre-gate is this caller's own, as
+    ``ever_satisfiable`` fails open on a type it cannot name.
+    """
+    held_type, bound_type = json_type_of(value), json_type_of(bound)
+    if held_type is None or bound_type is None:
+        return _Makeability.NEITHER
+    if ever_satisfiable(operator, held_type, bound_type):
+        return _Makeability.MADE
+    return _Makeability.UNMAKEABLE
+
+
+def _unmakeable_message(record: _ComparisonRecord) -> str:
+    """What the grade says about a reference no candidate could compare.
+
+    True of the candidate set as a whole rather than of any one event, so it names
+    the binding, the value it holds and that value's JSON type, the field and the
+    operator — and no held type, which differs across the candidates the sentence
+    speaks for. The remedy is one the authoring gate's own rules accept: a capture is
+    text only where the field beneath it holds text.
+    """
+    return (
+        f"the {record.field} comparison was not made: binding {record.binding!r} holds "
+        f"{record.bound!r}, a JSON {json_type_of(record.bound)}, and no candidate carried a "
+        f"value at that field which {record.operator} can ever satisfy against it — two JSON "
+        "types the operator cannot pair are false on every trajectory, whichever of the two "
+        "holds the text. Reference the binding from an args predicate whose arguments the "
+        "tools type the same way, or extract a regex capture off a field that holds text"
+    )
 
 
 def _predicate_readings(
@@ -1096,7 +1207,9 @@ def _restricted(outcome: MatcherOutcome, within: TurnWindow | None) -> MatcherOu
 
     The window narrows what a matcher selects, not what the timeline contains, so
     positions stay the trial's own and an adjacency view is still read over the
-    whole trial.
+    whole trial. It narrows the comparisons the same way, so a reference reduces
+    over the candidates the author's window admits and a call outside it neither
+    reports nor silences.
     """
     if within is None:
         return outcome
@@ -1106,7 +1219,7 @@ def _restricted(outcome: MatcherOutcome, within: TurnWindow | None) -> MatcherOu
         matched,
         undecidable,
         outcome.unreadable_fields if undecidable else (),
-        outcome.unmakeable_comparisons,
+        tuple(record for record in outcome.comparisons if _inside(record.event, within)),
     )
 
 
