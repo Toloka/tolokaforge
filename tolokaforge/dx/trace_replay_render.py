@@ -78,6 +78,8 @@ def _gate_notes(outcome: TrialTraceReplayOutcome) -> str:
 def _disposition(outcome: TrialTraceReplayOutcome, bundle: str) -> str:
     if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
         return f"[warn]skip (not applicable)[/warn] {bundle}"
+    if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NO_TASK:
+        return f"[warn]skip (no task)[/warn] {bundle} — {outcome.reason}"
     if outcome.status is TraceReplayOutcomeStatus.FAILED:
         return f"[error]failed[/error] {bundle} — {outcome.reason}"
     evidence = outcome.evidence
@@ -114,8 +116,9 @@ def render_trace_replay_dispositions(
     console.print(
         f"\n[bold]{'Would re-check' if dry_run else 'Re-checked'}:[/bold] {eligible} eligible, "
         f"{_count(outcomes, TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE)} "
-        f"skipped-not-applicable, {_count(outcomes, TraceReplayOutcomeStatus.FAILED)} "
-        "failed-with-reason"
+        "skipped-not-applicable, "
+        f"{_count(outcomes, TraceReplayOutcomeStatus.SKIPPED_NO_TASK)} skipped-no-task, "
+        f"{_count(outcomes, TraceReplayOutcomeStatus.FAILED)} failed-with-reason"
     )
 
 
@@ -161,7 +164,9 @@ def _evidence_line(report: TraceReplayReport) -> str:
     return (
         f"[bold]Evidence:[/bold] {evidence.bundles_read} bundles read, "
         f"{evidence.bundles_with_tool_log} carried a tool-call record, "
-        f"{evidence.bundles_skipped} skipped, {evidence.bundles_failed} failed, "
+        f"{evidence.bundles_skipped} skipped, "
+        f"{evidence.bundles_no_task} with no task snapshot, "
+        f"{evidence.bundles_failed} failed, "
         f"{evidence.bundles_predating_call_ids} predating call ids"
         + (f"; bundle schema versions {stamps}" if stamps else "")
     )

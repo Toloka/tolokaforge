@@ -107,14 +107,34 @@ marker, so nothing it leaves under `--source` can be mistaken for a bundle by an
 Judge replay's own markers are untouched — `retrace` declares its own and never calls
 `discover_trial_bundles`.
 
-Each discovered bundle gets one of four dispositions, all of them reported:
+Each bundle the command is pointed at gets one of five dispositions, all of them
+reported:
 
 | status | meaning |
 |---|---|
 | `replayed` | re-checked, artifacts written |
 | `would_replay` | `--dry-run`: eligible and reconstructable |
 | `skipped_not_applicable` | the bundle's `grading_config` declares no `trace_checks` and no override was supplied |
+| `skipped_no_task` | the bundle carries no `task.yaml` and its own trajectory records an infrastructure abort, so nothing says what the trial would have been checked against |
 | `failed` | an input is missing or invalid; the reason names the file and the defect |
+
+**A bundle with no `task.yaml` is classified rather than failed when its own
+trajectory says the trial never ran.** A trial whose environment did not come up is
+written by the executor alone — `trajectory.yaml` and `metrics.yaml`, because the
+conductor never ran — so nothing in it says what it would have been checked against.
+That is `skipped_no_task`, named from the outcome class the trial's own trajectory
+records, and like every skip it never affects the exit code. The rule is deliberately
+narrow: a task-less bundle whose trajectory records a real episode has lost its task
+snapshot and is `failed` naming `task.yaml`, and one whose `trajectory.yaml` is
+missing or unreadable is `failed` naming that file. The reason names the outcome
+class; *why* the environment did not come up is `error_reason` in the same bundle's
+`metrics.yaml`. Discovery keys on `task.yaml`, so such a bundle is reached by naming
+it with `--trial`.
+
+It is kept apart from `skipped_not_applicable` on purpose: that status asserts
+something about the pack — it declares no `trace_checks` — which a bundle carrying no
+`task.yaml` cannot support. A "cannot answer" reported as "nothing to check" is the
+silent number this command exists to avoid.
 
 A skip is declared, never silent. A failure never aborts the batch — the readable
 trials are still measured and still reported — but it does make the command exit
@@ -158,9 +178,12 @@ call with it, and so is any binder reading one.
 
 So a discrimination verdict is only as good as the corpus behind it, and the report
 carries a run-level `evidence` block saying what the corpus was: how many bundles were
-read, how many carried a tool-call record, how many were skipped, how many failed, how
-many were rejected as pre-call-id, and which schema stamps were seen (`unstamped`
-included). An operator reading `never_decided` needs to know whether the corpus is old
+read, how many carried a tool-call record, how many were skipped, how many carried no
+task snapshot, how many failed, how many were rejected as pre-call-id, and which schema
+stamps were seen (`unstamped` included). The task-less count is its own number rather
+than part of `bundles_skipped`: what an aborted trial could not say about a pack and
+what a pack chose not to declare are two facts, and one number carrying both is a
+number nobody can act on. An operator reading `never_decided` needs to know whether the corpus is old
 before concluding anything about the constraint.
 
 `tool_log_present` is the reader's file-presence answer, not the timeline's

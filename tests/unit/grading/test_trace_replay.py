@@ -42,6 +42,7 @@ import pytest
 import yaml
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
+from tests.utils.provision_failure import write_provision_failure_bundle
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.trace_overrides import override_file
 from tolokaforge.core.grading.trace_replay import (
@@ -64,6 +65,7 @@ from tolokaforge.core.grading.trace_replay import (
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
+    TerminationReason,
     TraceConstraintKind,
     TraceConstraintResult,
     Trajectory,
@@ -244,6 +246,57 @@ def test_a_bundle_under_a_reserved_directory_is_not_discovered(
     _write_bundle(tmp_path / nested_under / "refund_task" / "0")
 
     assert discover_trace_bundles(tmp_path) == [live]
+
+
+def test_a_bundle_the_substrate_killed_is_classified_rather_than_failed(tmp_path: Path) -> None:
+    """A trial whose environment never came up carries no ``task.yaml``.
+
+    The executor writes that bundle alone — the trajectory and the metrics, nothing
+    else — because the conductor never ran, so nothing in it says what the trial
+    would have been graded against. It is a declared skip named from the trial's own
+    recorded outcome class, not a defective input: refusing it would make every run
+    that hit a provisioning failure a red ``retrace``. The bundle is written by the
+    production path rather than by hand, so the shape under test is the shape a run
+    produces.
+    """
+    source = tmp_path / "run"
+    bundle = write_provision_failure_bundle(source)
+
+    outcomes = run_trace_replay_batch(source, replay_id="r1", trial=bundle)
+
+    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.SKIPPED_NO_TASK]
+    assert TerminationReason.PROVISION_ERROR.value in (outcomes[0].reason or "")
+    assert not (source / TRACE_REPLAY_DIRNAME).exists()
+
+
+@pytest.mark.parametrize(
+    ("removed", "named"),
+    [
+        (("task.yaml",), "task.yaml"),
+        (("task.yaml", "trajectory.yaml"), "trajectory.yaml"),
+    ],
+    ids=["recorded_a_real_episode", "cannot_say_what_happened"],
+)
+def test_a_task_less_bundle_outside_the_narrow_rule_is_a_named_failure(
+    tmp_path: Path, removed: tuple[str, ...], named: str
+) -> None:
+    """Only an abort is excused a missing ``task.yaml`` — everything else still fails.
+
+    A bundle that recorded a real episode and lost its task snapshot is a defective
+    input, and one that cannot say what happened to it at all is a different
+    defective input; each failure names the file it is about. A rule that skipped
+    every task-less bundle would trade this issue's silent exclusion for a silent
+    excuse.
+    """
+    source = tmp_path / "run"
+    bundle = _write_bundle(source / "trials" / "refund_task" / "0")
+    for filename in removed:
+        (bundle / filename).unlink()
+
+    outcomes = run_trace_replay_batch(source, replay_id="r1", trial=bundle)
+
+    assert [outcome.status for outcome in outcomes] == [TraceReplayOutcomeStatus.FAILED]
+    assert named in (outcomes[0].reason or "")
 
 
 def test_each_bundles_task_file_is_parsed_once_for_the_whole_re_check(

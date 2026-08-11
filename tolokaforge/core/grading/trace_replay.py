@@ -9,8 +9,8 @@ view, ``tool_log.yaml`` for the tool-call record — and scores the pack's
 
 Nothing here runs an agent, an environment or a judge, so a replay costs no
 tokens and starts no container. That is a structural property of the imports, not
-a promise: this module reaches the evaluator, the bundle reader and the authoring
-gate, and stops there.
+a promise: this module reaches the evaluator, the bundle reader, the authoring
+gate and the outcome classifier a run's own attribution uses, and stops there.
 
 Constraints can come from a supplied file instead of the bundle, which is how an
 author iterates on one without editing the pack. Such a block is checked against
@@ -38,6 +38,7 @@ import yaml
 from pydantic import BaseModel, ValidationError
 from pydantic_core import ErrorDetails
 
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.grading.config_validation import (
     AuthoringReport,
     ToolInventory,
@@ -141,7 +142,10 @@ class TraceReplayOutcomeStatus(str, Enum):
     ``REPLAYED`` — recomputed and the artifact written. ``WOULD_REPLAY`` — a
     ``dry_run`` trial that is eligible and reconstructable. ``SKIPPED_NOT_APPLICABLE``
     — the bundle declares no ``trace_checks`` and no override was supplied, which is
-    a declared skip, never a silent one. ``FAILED`` — the bundle could not be
+    a declared skip, never a silent one. ``SKIPPED_NO_TASK`` — the bundle carries no
+    ``task.yaml``, so nothing says what the trial was graded against; it is kept
+    apart from ``SKIPPED_NOT_APPLICABLE``, which asserts something about the pack
+    that a bundle without one cannot support. ``FAILED`` — the bundle could not be
     classified or reconstructed; ``reason`` names the file and the defect, and the
     batch continues.
     """
@@ -149,6 +153,7 @@ class TraceReplayOutcomeStatus(str, Enum):
     REPLAYED = "replayed"
     WOULD_REPLAY = "would_replay"
     SKIPPED_NOT_APPLICABLE = "skipped_not_applicable"
+    SKIPPED_NO_TASK = "skipped_no_task"
     FAILED = "failed"
 
 
@@ -884,6 +889,38 @@ def _refuse_mis_authored_override(
         )
 
 
+def _task_less_disposition(bundle: Path) -> TrialTraceReplayOutcome:
+    """What a bundle carrying no ``task.yaml`` is, read off its own trajectory.
+
+    A trial the substrate killed before it ran is written by the executor alone —
+    the trajectory and the metrics, no task snapshot — so refusing every task-less
+    bundle would report the most common abort shape as a defective input. Anything
+    else task-less recorded a real episode and lost what it was graded against,
+    which *is* a defective input and stays a failure naming the file.
+
+    The reason names the outcome class, not the operational cause — for a provision
+    failure that is ``error_reason`` in the same bundle's ``metrics.yaml``, which
+    replay does not read. Raises :class:`MissingTraceReplayInputError` for both
+    failing arms, so the batch's per-bundle net reports them.
+    """
+    trajectory, _ = _load_trajectory(bundle)
+    if classify_trial_outcome(trajectory) is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+        raise MissingTraceReplayInputError(
+            f"not a trial bundle: {bundle / 'task.yaml'} is missing, so nothing says what "
+            "the trial recorded here was graded against"
+        )
+    termination = trajectory.termination_reason.value if trajectory.termination_reason else "none"
+    return TrialTraceReplayOutcome(
+        bundle=bundle,
+        status=TraceReplayOutcomeStatus.SKIPPED_NO_TASK,
+        reason=(
+            "the trial was aborted before it was measured "
+            f"(termination_reason: {termination}), so it recorded no task.yaml and "
+            "there are no trace checks to re-check it against"
+        ),
+    )
+
+
 def _replay_one_bundle(
     source: Path,
     bundle: Path,
@@ -894,6 +931,8 @@ def _replay_one_bundle(
     authoring: AuthoringReport | None,
 ) -> TrialTraceReplayOutcome:
     try:
+        if not (bundle / "task.yaml").exists():
+            return _task_less_disposition(bundle)
         task = recorded_task(bundle)
         if _classify_trace_trial(task, override) is TraceReplayEligibility.NOT_APPLICABLE:
             return TrialTraceReplayOutcome(
@@ -950,8 +989,10 @@ def run_trace_replay_batch(
     trials. What the gate could not check travels on each outcome.
 
     A bundle declaring no ``trace_checks`` and given no override is reported
-    skipped; one that cannot be read or reconstructed is a named per-trial failure
-    and the batch continues. With ``dry_run`` the inputs are still resolved — the
+    skipped, and so is one carrying no ``task.yaml`` whose own trajectory calls it
+    an infrastructure abort; one that cannot be read or reconstructed — including a
+    task-less bundle that did record an episode — is a named per-trial failure and
+    the batch continues. With ``dry_run`` the inputs are still resolved — the
     reconstruction is the thing worth checking for free — and nothing is written.
     Otherwise each bundle's recomputed result is written to
     ``<source>/trace_replay/<replay_id>/…``; no file the source already held is
@@ -1062,11 +1103,18 @@ class TraceReplayEvidence(BaseModel):
     ``schema_versions`` — the bundles whose inputs were reconstructed, which a dry
     run also does. ``schema_versions`` counts the stamps seen, under ``unstamped``
     where a bundle predates the stamp; it is evidence and never a gate.
+
+    ``bundles_skipped`` counts the bundles that declared no ``trace_checks`` and
+    nothing else. A bundle carrying no ``task.yaml`` is counted by
+    ``bundles_no_task`` instead: what an aborted trial could not say about a pack
+    and what a pack chose not to declare are two facts, and one number carrying
+    both is a number nobody can act on.
     """
 
     bundles_read: int
     bundles_with_tool_log: int
     bundles_skipped: int
+    bundles_no_task: int
     bundles_failed: int
     bundles_predating_call_ids: int
     schema_versions: dict[str, int]
@@ -1302,6 +1350,9 @@ def _replay_evidence(outcomes: Sequence[TrialTraceReplayOutcome]) -> TraceReplay
             1
             for outcome in outcomes
             if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE
+        ),
+        bundles_no_task=sum(
+            1 for outcome in outcomes if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NO_TASK
         ),
         bundles_failed=sum(
             1 for outcome in outcomes if outcome.status is TraceReplayOutcomeStatus.FAILED
