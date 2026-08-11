@@ -1,0 +1,66 @@
+# Both trials read the same report, so both bind the same reason code, and both
+# search the policy corpus by the lot number — an integer where the binding holds
+# text, which is the comparison no trajectory can make. They differ in one call: the
+# satisfying trial also searches by the code itself, which is the search the
+# constraint asks for. A build charging the whole constraint for the unmakeable call
+# scores the satisfying trial 0.0.
+satisfying:
+  messages:
+    - role: user
+      content: "Find the policy for the corrective action on lot 7."
+    - role: assistant
+      content: "Reading the lot report."
+      tool_calls:
+        - tool_name: read_file
+          executor: agent
+          status: success
+          arguments: { path: "/lots/lot-7.md" }
+          output: "lot 7 — reason code: CAPA-01, status: open"
+    - role: assistant
+      content: "Searching the policy corpus by lot number first."
+      tool_calls:
+        - tool_name: http_request
+          executor: agent
+          status: success
+          arguments:
+            method: "POST"
+            url: "http://policy-search:8000/search"
+            json: { q: 7 }
+          output: '{"hits": []}'
+    - role: assistant
+      content: "Nothing there — searching by the reason code."
+      tool_calls:
+        - tool_name: http_request
+          executor: agent
+          status: success
+          arguments:
+            method: "POST"
+            url: "http://policy-search:8000/search"
+            json: { q: "CAPA-01" }
+          output: '{"hits": [{"policy": "P-19"}]}'
+  state: {}
+
+violating:
+  messages:
+    - role: user
+      content: "Find the policy for the corrective action on lot 7."
+    - role: assistant
+      content: "Reading the lot report."
+      tool_calls:
+        - tool_name: read_file
+          executor: agent
+          status: success
+          arguments: { path: "/lots/lot-7.md" }
+          output: "lot 7 — reason code: CAPA-01, status: open"
+    - role: assistant
+      content: "Searching the policy corpus by lot number."
+      tool_calls:
+        - tool_name: http_request
+          executor: agent
+          status: success
+          arguments:
+            method: "POST"
+            url: "http://policy-search:8000/search"
+            json: { q: 7 }
+          output: '{"hits": []}'
+  state: {}
