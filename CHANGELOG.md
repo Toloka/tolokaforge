@@ -4,6 +4,10 @@ All notable changes to this project are documented in this file.
 
 ## Unreleased
 
+### Added
+
+- **core**: `OrchestratorConfig.strict_task_load` (default `false`) turns an adapter's `get_task()` failure into a startup refusal instead of the historical log-and-skip. Left `false`, `Orchestrator.load_tasks` behaves exactly as before — a broken task id is logged at error level and the run proceeds with the remaining tasks. Set to `true`, the exception propagates naming the offending task so the run refuses to start with a silently shorter task list; the bundled `examples/terminal_bench/*.yaml` opt in. `--dry-run` is strict regardless via its own loader (`load_tasks_for_dry_run`). (#1045)
+
 ### Fix
 
 - **core**: `EnvironmentManifest.stack_inputs` now reaches `docker compose` at up-time. `PerTrialRuntimeBackend.provision` writes a per-trial `.env` alongside the copied compose file — task-authored `.env` content first, then `stack_inputs`, then the engine-reserved block. The reserved compose variable `TOLOKAFORGE_TRIAL_SLUG` is exposed so a task compose file can pin a per-trial-unique `container_name: <prefix>${TOLOKAFORGE_TRIAL_SLUG}_<service>`. Task keys under the reserved `TOLOKAFORGE_` prefix are rejected at provision time with a manifest-error message (not `docker compose up failed`). (#1045)

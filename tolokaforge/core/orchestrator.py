@@ -1317,12 +1317,20 @@ class Orchestrator:
         task_ids = self.adapter.get_task_ids()
 
         # Load each task
+        strict = self.config.orchestrator.strict_task_load
+        loaded: list[TaskConfig] = []
         for task_id in task_ids:
             try:
-                task = self.adapter.get_task(task_id)
-                self.tasks.append(task)
+                loaded.append(self.adapter.get_task(task_id))
             except Exception as e:
+                if strict:
+                    raise RuntimeError(
+                        f"Failed to load task {task_id!r}: {e} "
+                        "(orchestrator.strict_task_load=true — the run refuses "
+                        "to start with a silently shorter task list)"
+                    ) from e
                 self.logger.error("Failed to load task", task_id=task_id, error=str(e))
+        self.tasks.extend(loaded)
 
         self.logger.info("Tasks loaded", count=len(self.tasks), adapter=type(self.adapter).__name__)
 

@@ -406,6 +406,19 @@ class OrchestratorConfig(BaseModel):
 
     auto_start_services: bool = True  # Auto-start Docker services via EngineStack
 
+    strict_task_load: bool = False
+    """Opt in to fail-loud task loading. When ``False`` (the default), an
+    adapter exception raised from :meth:`BaseAdapter.get_task` during
+    :meth:`Orchestrator.load_tasks` is logged at error level and the task is
+    skipped — the run proceeds with the remaining tasks. When ``True`` the
+    exception propagates with the task id in the message, so the run refuses
+    to start rather than silently omitting a task.
+
+    ``--dry-run`` is strict regardless of this flag: it has its own loader
+    (:func:`tolokaforge.core.dry_run.load_tasks_for_dry_run`) with no
+    exception handling — surfacing config errors is the whole point of that
+    entry point."""
+
     continue_prompt: str = "Please proceed to the next step."
     """Deprecated. Not consumed by any runtime code today; the
     canonical home is ``TaskDefaults.continue_prompt``. Kept for

@@ -17,6 +17,10 @@ orchestrator:
   repeats: 1
   max_turns: 80
   queue_backend: sqlite
+  # Terminal-bench synthesises its environment from each task's docker-compose.yaml;
+  # a failed task load is a config error the operator must see, not a task silently
+  # dropped from the run. See docs/CONFIG.md § orchestrator.strict_task_load.
+  strict_task_load: true
 
 evaluation:
   task_packs:
