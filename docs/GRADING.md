@@ -501,7 +501,7 @@ check over tool calls sees the same fields whichever substrate grades it:
 
 | Field | Meaning |
 | --- | --- |
-| `call_id` | the provider's tool-call id — the only key that joins a call to its result |
+| `call_id` | the id the call was recorded under; grading joins on the episode-unique key derived from it (G3), never on the raw value |
 | `sequence` | trial-wide, 0-based, execution order across **every** executor |
 | `tool_name` | the tool the call named |
 | `arguments` | the arguments the caller passed, verbatim |
@@ -693,7 +693,7 @@ missing on a kind it does apply to.
 | `turn_index` | all | 0-based index of the assistant generation the event belongs to |
 | `kind` | all | `TraceEventKind` |
 | `text` | `*_message` | the message text as the wire carries it |
-| `call_id` | `tool_call` / `tool_result` | the provider's tool-call id — the join key |
+| `call_id` | `tool_call` / `tool_result` | the trial's episode-unique call id — the join key (G3) |
 | `tool_name` | `tool_call` / `tool_result` | the tool the call named |
 | `executor` | `tool_call` / `tool_result` | `ToolExecutorIdentity`, from the record |
 | `arguments` | `tool_call` | the arguments the caller passed, verbatim |
@@ -712,13 +712,35 @@ initial user prompt precedes the first assistant message and carries index 0.
 - **G1 — message order is authoritative.** Event order follows `messages` order,
   and `position` is dense: `events[i].position == i`.
 - **G2 — `turn_index` counts assistant generations**, per the paragraph above.
-- **G3 — a call and its result are joined by id, and uniqueness is enforced.**
-  Each `tool_call` has at most one `tool_result` with the same `call_id`, at a
-  later `position`. A `call_id` occurring twice raises
-  `TimelineInconsistencyError` naming both positions rather than picking a
-  winner: two calls to one tool with identical arguments differ only in the id, so
-  a collision makes the join ambiguous, and an ambiguous join is a broken
-  invariant rather than task data.
+- **G3 — a call and its result are joined by the trial's episode-unique call id.**
+  That key is the provider's `ToolCall.id` where the provider kept it unique
+  within the episode, and a deterministic disambiguation of it where the provider
+  reused one: the k-th occurrence (0-based) of a raw id `x` in a trial is keyed
+  `x` for k = 0 and `x#<k+1>` thereafter. The rule is
+  [`tolokaforge/core/tool_call_ids.py`](../tolokaforge/core/tool_call_ids.py),
+  and it is the identity on a trial whose ids are already unique — a provider
+  minting `toolu_*` or `call_*` sees its own ids back, byte for byte, while one
+  numbering its calls per turn (`<tool>:<index-in-turn>`, which repeats whenever
+  the same tool is called at the same position in two turns) is joinable instead
+  of ungradeable.
+
+  Each view derives its own keys from its own observation order — the message view
+  in declaration order (message order, then position within `tool_calls`), the
+  record in `sequence` order — so the k-th declaration of an id pairs with the
+  k-th record of it. What makes that pairing unambiguous is the **suffix
+  invariant**: a turn's calls execute in declaration order, the episode stops at
+  the first failure, and termination is decided before any of a turn's calls run,
+  so the declarations that never executed are always a trailing suffix of the
+  trial rather than a gap in the middle.
+
+  Every event carries the derived key as its `call_id`, `tool_result`s included.
+  So each `tool_call` has at most one `tool_result` with the same `call_id`, at a
+  later `position`, and `call_id` is unique per call whatever the provider did
+  (N7). Three disagreements still raise `TimelineInconsistencyError`, each naming
+  the offending key and where it occurred: a record whose key matches no declared
+  call (G7), a `role: tool` result whose key matches no declared call (G6b), and a
+  record whose `tool_name` disagrees with the declaration its key joined it to
+  (G7).
 - **G4 — an attempted call is always an event, and "attempted" is not
   "executed".** A `tool_call` is **never** dropped, because dropping one makes an
   `absent` or `count` constraint wrong in the agent's favour. Three states:
@@ -765,25 +787,37 @@ initial user prompt precedes the first assistant message and carries index 0.
   `executor` / `status` / `latency_seconds` are `None` throughout. The tool output
   is not lost with them — `trajectory.yaml` keeps every `role: tool` message with
   its `tool_call_id` — so each `tool_call` is paired with a `tool_result` carrying
-  that message's text, joined by id and never by position. A failed call's text is
+  that message's text, joined by key and never by position. The results' keys are
+  derived in message order, the same rule the declarations use (G3), so the k-th
+  result naming an id answers the k-th declaration of it. A failed call's text is
   then the agent-facing rendering — the recorded text behind an `Error: ` prefix —
   which is why G5 reads the record wherever one exists.
   `records_present` therefore means "a record view was supplied", not "results
   exist": a constraint reading `status`, `executor` or `latency_seconds` is still a
   **named failing sub-check** and never a silent pass, while a phrase rule still
-  reads what the tools returned. A `role: tool` message answering a call the
-  message view does not declare raises `TimelineInconsistencyError` naming its
-  index, symmetrically with G7 — that text is the only surviving evidence of what
-  the call returned, so it can be neither joined nor dropped. Where records *are*
+  reads what the tools returned. A `role: tool` message whose key answers a call
+  the message view does not declare raises `TimelineInconsistencyError` naming
+  that key and the message's index, symmetrically with G7 — that text is the only
+  surviving evidence of what the call returned, so it can be neither joined nor
+  dropped. A view answering an id more times than it declares lands here. Where records *are*
   present those messages are the shadowed view: neither read nor validated, because
   extending the join's loudness to evidence nothing reads would fail a live grading
   run over a discrepancy no verdict depends on.
 - **G7 — reconciliation failure is loud.** When a message view is present, every
-  record must be linkable by `call_id` to a call in it. An unlinkable record
-  raises `TimelineInconsistencyError` naming its `call_id`, `sequence` and
-  `tool_name`: the two views disagreeing about one trial is a harness bug, and
+  record must be linkable by its episode-unique key to a call in it. An unlinkable
+  record raises `TimelineInconsistencyError` naming that key, its `sequence` and
+  its `tool_name`: the two views disagreeing about one trial is a harness bug, and
   grading around it would be exactly the silent degradation
-  [AGENTS.md](../AGENTS.md) core rule 1 forbids.
+  [AGENTS.md](../AGENTS.md) core rule 1 forbids. A record holding *more*
+  occurrences of an id than the message view declares lands here — the surplus
+  record's key names a call nothing asked for.
+
+  A record that *is* linkable must also name the tool its declaration named, or it
+  raises too. The pairing G3 derives is by occurrence order, which is sound under
+  the suffix invariant; the tool name is the independent corroboration. Where the
+  two views disagree about what ran, the call and the result paired with it do not
+  describe one call, and a mis-pairing nothing notices is the failure an
+  order-based join has to be defended against.
 - **G8 — within a turn, executed calls follow recorded execution order.** The
   `tool_call`s of one assistant message are emitted in ascending
   `RecordedToolCall.sequence` — execution order, since `sequence` is stamped at
@@ -829,7 +863,9 @@ declared call (G7): the message view alone proves that tool never ran.
   `tool_call`, even an empty one, so a generated hash would raise for that kind and
   succeed for the others — `set()` / `Counter()` over results working while the
   same code over calls raised. `__hash__` is `None` so it fails uniformly at the
-  first use. Key on `position` (unique per event) or `call_id` (unique per call).
+  first use. Key on `position` (unique per event) or `call_id` (unique per call —
+  it is G3's episode-unique key, not the raw provider id, so it stays unique on a
+  trial whose provider reused one).
   Equality is unaffected.
 
 [`tests/canonical/test_trace_timeline_substrate_parity.py`](../tests/canonical/test_trace_timeline_substrate_parity.py)

@@ -120,22 +120,38 @@ def make_trial_messages(calls: Sequence[RecordedToolCall], turns: tuple[str, str
     ``result`` text, so a view that omits it understates what a re-graded bundle can
     still decide.
     """
+    return make_turn_trial_messages([calls], turns)
+
+
+def make_turn_trial_messages(
+    calls_per_turn: Sequence[Sequence[RecordedToolCall]], turns: tuple[str, str]
+) -> list[Message]:
+    """The same message view, with the calls grouped by the turn that declared them.
+
+    :func:`make_trial_messages` lands every call on one assistant turn, which is what
+    a fixture asserting about one turn wants. This one takes the calls per turn, for
+    the properties whose whole subject is *which* turn declared a call — a provider
+    numbering its tool-call ids within a turn reuses one only across turns, so a
+    single-turn view cannot express that trial at all.
+    """
     user, assistant = turns
-    return [
-        Message(role=MessageRole.USER, content=user),
-        Message(
-            role=MessageRole.ASSISTANT,
-            content=assistant,
-            tool_calls=[
-                ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments)
-                for call in calls
-            ],
-        ),
-        *[
+    messages = [Message(role=MessageRole.USER, content=user)]
+    for turn_calls in calls_per_turn:
+        messages.append(
+            Message(
+                role=MessageRole.ASSISTANT,
+                content=assistant,
+                tool_calls=[
+                    ToolCall(id=call.call_id, name=call.tool_name, arguments=call.arguments)
+                    for call in turn_calls
+                ],
+            )
+        )
+        messages.extend(
             Message(role=MessageRole.TOOL, content=call.output, tool_call_id=call.call_id)
-            for call in calls
-        ],
-    ]
+            for call in turn_calls
+        )
+    return messages
 
 
 def make_trajectory(

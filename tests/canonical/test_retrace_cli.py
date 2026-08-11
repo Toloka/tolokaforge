@@ -24,17 +24,20 @@ The whole exit contract, one test per row:
    written. A ``--replay-id`` that is not one directory name is refused at the option
    for the same reason: the read-only guarantee is scoped to one subtree, and the id
    is what keeps the writes inside it.
+7. **A bundle whose provider reused a tool-call id is re-checked, not refused** — the
+   trial's join key is episode-unique, so a bundle already on disk from a provider
+   that numbers its ids per turn is gradeable from what it recorded.
 
 And what the console has to carry for the numbers to be readable:
 
-7. **A gate that could not run says so** — per bundle, and once in full with its
+8. **A gate that could not run says so** — per bundle, and once in full with its
    reason, so an unchecked block never reads as a checked one.
-8. **A route that won no trial is printed unmeasured beside its denominator**, with
+9. **A route that won no trial is printed unmeasured beside its denominator**, with
    the route-scoping note, so unanimity on a route is not read as a corpus-wide claim.
-9. **A dry run previews the batch and writes nothing** — and states that no
-   constraint was measured rather than drawing an empty table.
-10. **``--trial`` measures the bundle it names**, not the ones beside it.
-11. **The import boundary holds** — a clean subprocess importing the replay module
+10. **A dry run previews the batch and writes nothing** — and states that no
+    constraint was measured rather than drawing an empty table.
+11. **``--trial`` measures the bundle it names**, not the ones beside it.
+12. **The import boundary holds** — a clean subprocess importing the replay module
     reaches neither an LLM client nor the judge, which is what makes "spends nothing"
     a property of the imports rather than a promise.
 
@@ -53,13 +56,18 @@ import pytest
 import yaml
 from click.testing import CliRunner, Result
 
-from tests.canonical._factories import make_trajectory, make_trial_messages
+from tests.canonical._factories import (
+    make_trajectory,
+    make_trial_messages,
+    make_turn_trial_messages,
+)
 from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.trace_replay import TRACE_REPLAY_DIRNAME
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
+    Message,
     RecordedToolCall,
     TraceConstraintKind,
     TraceConstraintResult,
@@ -177,16 +185,35 @@ def _write_bundle(
     wire_tools: list[dict[str, Any]] | None = None,
     recorded_verdicts: list[TraceConstraintResult] | None = None,
 ) -> Path:
-    """One graded bundle on disk, written by the writer the eval flow uses.
+    """One graded bundle on disk, its calls all declared by one assistant turn.
 
     ``recorded_verdicts`` is what the live run concluded per constraint — the
     independent source the report joins each recomputed verdict to by id. A bundle
     given none is graded but records no per-constraint verdict, which is a trial the
     agreement count has nothing to compare against rather than one that agreed.
     """
+    return _write_graded_bundle(
+        trial_dir,
+        make_trial_messages(calls, _TURNS),
+        calls,
+        trace_checks=trace_checks,
+        wire_tools=wire_tools,
+        recorded_verdicts=recorded_verdicts,
+    )
+
+
+def _write_graded_bundle(
+    trial_dir: Path,
+    messages: list[Message],
+    calls: list[RecordedToolCall],
+    *,
+    trace_checks: dict[str, Any],
+    wire_tools: list[dict[str, Any]] | None,
+    recorded_verdicts: list[TraceConstraintResult] | None,
+) -> Path:
     trajectory = make_trajectory(
         task_id="refund_task",
-        messages=make_trial_messages(calls, _TURNS),
+        messages=messages,
         tool_log=calls,
     )
     graded = trajectory.model_copy(
@@ -211,6 +238,18 @@ def _write_bundle(
     if wire_tools is not None:
         writer.write_tools_schemas(trial_dir, wire_tools)
     return trial_dir
+
+
+def _write_cross_turn_bundle(trial_dir: Path, calls_per_turn: list[list[RecordedToolCall]]) -> Path:
+    """One graded bundle whose calls are spread across several assistant turns."""
+    return _write_graded_bundle(
+        trial_dir,
+        make_turn_trial_messages(calls_per_turn, _TURNS),
+        [call for turn in calls_per_turn for call in turn],
+        trace_checks=_TRACE_CHECKS,
+        wire_tools=None,
+        recorded_verdicts=None,
+    )
 
 
 def _corpus(root: Path, runs: list[list[RecordedToolCall]], **kwargs: Any) -> Path:
@@ -378,6 +417,51 @@ def test_an_unreadable_bundle_exits_one_naming_the_file_and_the_rest_still_repor
     assert result.exit_code == 1, result.output
     assert str(broken / "trajectory.yaml") in result.output
     assert "always_true" in result.output
+    assert "evaluated 1, decided 1" in result.output
+    assert (source / TRACE_REPLAY_DIRNAME / "r1" / "trace_replay_report.yaml").is_file()
+
+
+def test_a_bundle_whose_provider_reused_a_call_id_is_re_checked_rather_than_refused(
+    tmp_path: Path,
+) -> None:
+    """The bundles already on disk are gradeable, at the surface an operator runs.
+
+    ``moonshotai/kimi-k3`` numbers each tool call within its turn, so calling one
+    tool at the same position in two turns emits one id twice — across turns, never
+    within one, which is why this bundle needs a message view that spans turns.
+    The trial's join key is derived per occurrence rather than taken raw, so the
+    bundle reconstructs and both constraints are decided from what it recorded.
+    """
+    source = tmp_path
+    _write_cross_turn_bundle(
+        source / "trials" / "refund_task" / "0",
+        [
+            [
+                recorded_call(
+                    "get_order",
+                    sequence=0,
+                    call_id="get_order:0",
+                    arguments={"id": "O-1"},
+                    output='{"t": 1}',
+                )
+            ],
+            [
+                recorded_call(
+                    "get_order",
+                    sequence=1,
+                    call_id="get_order:0",
+                    arguments={"id": "O-2"},
+                    output='{"t": 2}',
+                )
+            ],
+        ],
+    )
+
+    result = _retrace("--source", str(source), "--replay-id", "r1")
+
+    assert result.exit_code == 0, result.output
+    assert "the_order_was_read" in result.output
+    assert "no_account_was_deleted" in result.output
     assert "evaluated 1, decided 1" in result.output
     assert (source / TRACE_REPLAY_DIRNAME / "r1" / "trace_replay_report.yaml").is_file()
 

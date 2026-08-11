@@ -1,9 +1,10 @@
 """The guarantees :func:`build_trial_timeline` makes, one test each.
 
 Every fixture here is shaped after a state a real trial produces: the two
-identical parallel calls a provider distinguishes only by id, a terminating turn
-whose calls never execute, a rejection the executor recorded, a bundle-sourced
-trajectory with no records at all, and a hash-only trial with no messages at all.
+identical parallel calls a provider distinguishes only by id, a trial whose
+provider reused one id across two turns, a terminating turn whose calls never
+execute, a rejection the executor recorded, a bundle-sourced trajectory with no
+records at all, and a hash-only trial with no messages at all.
 """
 
 from __future__ import annotations
@@ -73,6 +74,23 @@ def _of_kind(timeline, kind: TraceEventKind) -> list:
     return [event for event in timeline.events if event.kind is kind]
 
 
+def _answered_calls(timeline) -> list[tuple]:
+    """Each ``TOOL_CALL`` beside the ``TOOL_RESULT`` emitted for it — by adjacency.
+
+    A result is appended immediately after the call it answers on every emission
+    path, so adjacency identifies the pair without reading ``call_id``. That is
+    what makes "the result carries its call's id" a claim a test can falsify
+    rather than a restatement of how the pair was found.
+    """
+    events = timeline.events
+    return [
+        (call, events[call.position + 1])
+        for call in _of_kind(timeline, TraceEventKind.TOOL_CALL)
+        if call.position + 1 < len(events)
+        and events[call.position + 1].kind is TraceEventKind.TOOL_RESULT
+    ]
+
+
 def _refund_trial() -> tuple[list[Message], list]:
     """The two-identical-calls trial: same tool, same arguments, different ids.
 
@@ -101,6 +119,46 @@ def _refund_trial() -> tuple[list[Message], list]:
             output='{"error": "already refunded"}',
         ),
     ]
+    return messages, records
+
+
+# The trial the issue reported, turn by turn: ``moonshotai/kimi-k3`` names each
+# call ``<tool>:<index>``, and the index it emitted for the second turn-4 call
+# repeats the one from turn 1. Twelve calls, seven assistant turns, one collision.
+_REUSED_ID_TURNS: tuple[tuple[tuple[str, str], ...], ...] = (
+    (("search_directory:0", "search_directory"), ("get_employee:1", "get_employee")),
+    (("list_cases:2", "list_cases"), ("get_case:3", "get_case")),
+    (("get_case_notes:4", "get_case_notes"),),
+    (("get_employee:1", "get_employee"), ("get_manager:6", "get_manager")),
+    (("list_policies:7", "list_policies"), ("get_policy:8", "get_policy")),
+    (("add_case_note:9", "add_case_note"),),
+    (("set_case_status:10", "set_case_status"), ("update_case:11", "update_case")),
+)
+
+_REUSED_RAW_IDS = tuple(call_id for turn in _REUSED_ID_TURNS for call_id, _ in turn)
+
+
+def _reused_id_trial() -> tuple[list[Message], list]:
+    """The reported trajectory: every call executed, in declaration order.
+
+    Each call carries the trial-wide index of its own execution in ``arguments``
+    and its record returns ``out-<that index>``, so a mis-pairing shows up in the
+    result text rather than only in an id.
+    """
+    messages: list[Message] = []
+    records = []
+    sequence = 0
+    for turn in _REUSED_ID_TURNS:
+        declared = [
+            _call(call_id, name, n=sequence + offset) for offset, (call_id, name) in enumerate(turn)
+        ]
+        messages.append(_assistant("", *declared))
+        for call_id, name in turn:
+            messages.append(_tool_message(call_id, f"out-{sequence}"))
+            records.append(
+                recorded_call(name, sequence=sequence, call_id=call_id, output=f"out-{sequence}")
+            )
+            sequence += 1
     return messages, records
 
 
@@ -286,22 +344,27 @@ def test_a_result_never_precedes_its_own_call() -> None:
     assert results and all(results[call_id] > calls[call_id] for call_id in results)
 
 
-def test_a_duplicate_call_id_raises_naming_both_positions() -> None:
+def test_a_reused_provider_id_declared_twice_becomes_two_calls_with_their_own_keys() -> None:
+    """The provider reused one id across two declarations, so the trial's key for the
+    second occurrence is derived rather than borrowed. Each call keeps its own
+    arguments, which is what pairing by occurrence is for."""
     messages = [
         _assistant(
             "", _call("call_A", "refund", order_id="42"), _call("call_A", "refund", order_id="43")
         )
     ]
 
-    with pytest.raises(TimelineInconsistencyError) as raised:
-        build_trial_timeline(messages, [], None)
+    timeline = build_trial_timeline(messages, [], None)
 
-    assert "'call_A'" in str(raised.value)
-    assert "positions 1 and 2" in str(raised.value)
+    assert [
+        (event.call_id, event.arguments) for event in _of_kind(timeline, TraceEventKind.TOOL_CALL)
+    ] == [("call_A", {"order_id": "42"}), ("call_A#2", {"order_id": "43"})]
 
 
-def test_a_call_id_recorded_twice_raises_naming_both_sequences() -> None:
-    """Indexing records by id would otherwise let the later record win silently."""
+def test_a_record_holding_more_occurrences_than_the_view_declares_raises() -> None:
+    """One declaration, two records: the second record's key names a call the message
+    view never asked for, so the two views disagree about what the trial did. Letting
+    the later record win silently is the ambiguity the key exists to remove."""
     messages = [_assistant("", _call("call_A", "refund", order_id="42"))]
     records = [
         recorded_call("refund", sequence=0, call_id="call_A", output="first"),
@@ -311,8 +374,155 @@ def test_a_call_id_recorded_twice_raises_naming_both_sequences() -> None:
     with pytest.raises(TimelineInconsistencyError) as raised:
         build_trial_timeline(messages, records, None)
 
-    assert "'call_A'" in str(raised.value)
-    assert "sequences 0 and 1" in str(raised.value)
+    message = str(raised.value)
+    assert "'call_A#2'" in message
+    assert "sequence 1" in message
+    assert "matches no tool call in the message view" in message
+
+
+def test_the_reported_trajectory_joins_every_call_to_its_own_result() -> None:
+    """The reported defect, end to end: a provider reused one id across two turns and
+    the trial could not be graded at all. Twelve calls, twelve results, and exactly
+    one key that is not the id the provider minted."""
+    messages, records = _reused_id_trial()
+
+    timeline = build_trial_timeline(messages, records, TerminationReason.AGENT_DONE)
+
+    pairs = _answered_calls(timeline)
+    assert len(pairs) == 12
+    assert all(call.call_id == result.call_id for call, result in pairs)
+    assert [result.result for _, result in pairs] == [
+        f"out-{call.arguments['n']}" for call, _ in pairs
+    ]
+    derived = [event.call_id for event in _of_kind(timeline, TraceEventKind.TOOL_CALL)]
+    assert [key for key, raw in zip(derived, _REUSED_RAW_IDS, strict=True) if key != raw] == [
+        "get_employee:1#2"
+    ]
+
+
+def test_the_reported_trajectory_joins_from_its_message_view_alone() -> None:
+    """The same trial as a bundle written before ``tool_log.yaml`` existed, or a
+    ``retrace`` of one: the twelve ``role: tool`` texts pair with the same twelve
+    calls, each result carrying the key of the call it answers rather than the raw
+    id the provider reused."""
+    messages, _ = _reused_id_trial()
+
+    timeline = build_trial_timeline(messages, [], None)
+
+    assert timeline.records_present is False
+    pairs = _answered_calls(timeline)
+    assert len(pairs) == 12
+    assert all(call.call_id == result.call_id for call, result in pairs)
+    assert [result.result for _, result in pairs] == [
+        f"out-{call.arguments['n']}" for call, _ in pairs
+    ]
+
+
+def test_every_call_of_a_duplicating_trial_still_has_a_key_of_its_own() -> None:
+    """N7 promises ``call_id`` is unique per call, and every check keyed on it —
+    ``attempted_calls``, the trace-check result index — depends on that holding on a
+    trial the provider duplicated."""
+    messages, records = _reused_id_trial()
+
+    timeline = build_trial_timeline(messages, records, None)
+
+    calls = _of_kind(timeline, TraceEventKind.TOOL_CALL)
+    assert len(calls) == 12
+    assert len({event.call_id for event in calls}) == 12
+
+
+def test_a_record_naming_a_different_tool_than_its_declaration_raises() -> None:
+    """The order-based join is sound under the suffix invariant, and the tool name is
+    the independent corroboration. Where the two views disagree about what ran, the
+    pairing they produced is not trustworthy and saying so is the whole point."""
+    messages = [_assistant("", _call("call_A", "refund", order_id="42"))]
+    records = [recorded_call("wire_transfer", sequence=0, call_id="call_A")]
+
+    with pytest.raises(TimelineInconsistencyError) as raised:
+        build_trial_timeline(messages, records, None)
+
+    message = str(raised.value)
+    assert "'call_A'" in message
+    assert "'wire_transfer'" in message
+    assert "'refund'" in message
+
+
+def test_the_recordless_declaration_of_a_reused_id_is_the_last_one() -> None:
+    """A turn's calls stop executing at the first failure and termination is decided
+    before any of them run, so unexecuted calls are a suffix. The two records answer
+    the first two declarations, and it is the third that carries no status."""
+    messages = [
+        _assistant(
+            "",
+            _call("call_A", "refund", order_id="42"),
+            _call("call_A", "refund", order_id="43"),
+            _call("call_A", "refund", order_id="44"),
+        )
+    ]
+    records = [
+        recorded_call("refund", sequence=0, call_id="call_A", output="first"),
+        recorded_call("refund", sequence=1, call_id="call_A", output="second"),
+    ]
+
+    timeline = build_trial_timeline(messages, records, None)
+
+    assert [
+        (event.call_id, event.arguments["order_id"], event.status)
+        for event in _of_kind(timeline, TraceEventKind.TOOL_CALL)
+    ] == [("call_A", "42", None), ("call_A#2", "43", None), ("call_A#3", "44", None)]
+    assert [
+        (event.call_id, event.result) for event in _of_kind(timeline, TraceEventKind.TOOL_RESULT)
+    ] == [("call_A", "first"), ("call_A#2", "second")]
+
+
+def test_a_trial_whose_provider_ids_are_unique_carries_exactly_those_ids() -> None:
+    """The no-movement guarantee at the join: every Anthropic / OpenAI trial, and
+    every fixture and bundle already on disk, keys on the provider's own id."""
+    messages = [
+        _user("refund both orders"),
+        _assistant("", _call("toolu_01", "refund", order_id="42")),
+        _tool_message("toolu_01", '{"ok": true}'),
+        _assistant("", _call("toolu_02", "refund", order_id="43"), _call("toolu_03", "notify")),
+        _tool_message("toolu_02", '{"ok": true}'),
+        _tool_message("toolu_03", '{"ok": true}'),
+    ]
+    records = [
+        recorded_call("refund", sequence=0, call_id="toolu_01"),
+        recorded_call("refund", sequence=1, call_id="toolu_02"),
+        recorded_call("notify", sequence=2, call_id="toolu_03"),
+    ]
+
+    timeline = build_trial_timeline(messages, records, None)
+
+    assert [event.call_id for event in timeline.events if event.kind in _TOOL_EVENT_KINDS] == [
+        "toolu_01",
+        "toolu_01",
+        "toolu_02",
+        "toolu_02",
+        "toolu_03",
+        "toolu_03",
+    ]
+
+
+def test_a_records_only_trial_reusing_an_id_keys_each_result_to_its_own_call() -> None:
+    """Hash-only grading supplies no message view, so nothing reconciles the record
+    against a declaration and neither G7 nor G6b applies. The keys have to come out
+    distinct and the results have to carry them, or two calls share an id in silence."""
+    records = [
+        recorded_call("get_employee", sequence=0, call_id="get_employee:1", output="first"),
+        recorded_call("list_cases", sequence=1, call_id="list_cases:2", output="second"),
+        recorded_call("get_employee", sequence=2, call_id="get_employee:1", output="third"),
+    ]
+
+    timeline = build_trial_timeline([], records, TerminationReason.MAX_TURNS)
+
+    assert timeline.message_view_present is False
+    pairs = _answered_calls(timeline)
+    assert [(call.call_id, result.call_id, result.result) for call, result in pairs] == [
+        ("get_employee:1", "get_employee:1", "first"),
+        ("list_cases:2", "list_cases:2", "second"),
+        ("get_employee:1#2", "get_employee:1#2", "third"),
+    ]
 
 
 def test_a_record_matching_no_message_side_call_raises() -> None:
@@ -432,8 +642,9 @@ def test_a_tool_message_carrying_no_call_id_raises() -> None:
 
 
 def test_two_tool_messages_answering_one_call_raise() -> None:
-    """Letting the second win silently is the ambiguous join ``call_id`` exists to
-    prevent, exactly as for a duplicated record."""
+    """The view declares one occurrence of the id and answers two, so the second
+    result's key names a call no turn asked for. Its text is the only surviving
+    evidence of what that call returned, so it can be neither joined nor dropped."""
     messages = [
         _assistant("", _call("call_A", "refund", order_id="42")),
         _tool_message("call_A", '{"ok": true}'),
@@ -443,7 +654,7 @@ def test_two_tool_messages_answering_one_call_raise() -> None:
     with pytest.raises(TimelineInconsistencyError) as raised:
         build_trial_timeline(messages, [], None)
 
-    assert "'call_A'" in str(raised.value)
+    assert "'call_A#2'" in str(raised.value)
     assert "index 2" in str(raised.value)
 
 
