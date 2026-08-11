@@ -240,7 +240,7 @@ presets:
   # when ``item`` is a discriminated union (TicketCreate | UserCreate |
   # OrganizationCreate | CommentCreate). The wire-shape was
   # ``{"item": "{\"subject\":...}"}`` — a JSON-encoded string instead of a
-  # nested dict. ``JsonCoerceResponse._coerce_json_strings`` decodes that
+  # nested dict. ``JsonCoerceResponse`` (via ``coerce_json_strings``) decodes that
   # back to native shape before pydantic validation.
   # ``DictMapHints`` is also routed because the same models share Qwen's
   # ``Dict[str, T]`` blind spot (test_dict_map_tool_call).

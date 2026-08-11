@@ -22,6 +22,7 @@ from tolokaforge.core.llm.content_policy import (
     OpenAIContent,
     ToolContentPolicy,
 )
+from tolokaforge.core.llm.dict_maps import find_additional_properties
 from tolokaforge.core.llm.message_assembly_policy import (
     MessageAssemblyPolicy,
     NovaMessageAssembly,
@@ -57,6 +58,8 @@ from tolokaforge.core.llm.response_policy import (
     ScalarArrayDictMapResponse,
     StandardResponse,
     UnwrapInputResponse,
+    coerce_empty_containers,
+    coerce_json_strings,
 )
 from tolokaforge.core.llm.schema_sanitizer import (
     GeminiRecursiveSchema,
@@ -146,6 +149,9 @@ __all__ = [
     "JsonRecursiveCoerceResponse",
     "ItemRecursiveUnwrapResponse",
     "MinimaxM3TagRecoveryResponse",
+    "coerce_empty_containers",
+    "coerce_json_strings",
+    "find_additional_properties",
     "ParamsPolicy",
     "ParamPolicy",
     "GenerationParams",

@@ -14,10 +14,10 @@ from __future__ import annotations
 import json
 from typing import Any, Protocol, runtime_checkable
 
-from tolokaforge.core.llm._dict_maps import (
+from tolokaforge.core.llm.dict_maps import (
     DictMapParam,
-    _find_additional_properties,
     detect_dict_maps,
+    find_additional_properties,
 )
 
 __all__ = [
@@ -192,7 +192,7 @@ class RefResolvingDictMapHints(DictMapHints):
             for prop_name, prop_schema in props.items():
                 if not isinstance(prop_schema, dict):
                     continue
-                additional = _find_additional_properties(prop_schema)
+                additional = find_additional_properties(prop_schema)
                 if additional is not None and additional is not False:
                     results.append(
                         cls._make_param(tool_name, prop_name, additional, prop_schema, defs)
@@ -208,7 +208,7 @@ class RefResolvingDictMapHints(DictMapHints):
                 for sub_name, sub_schema in nested_props.items():
                     if not isinstance(sub_schema, dict):
                         continue
-                    sub_additional = _find_additional_properties(sub_schema)
+                    sub_additional = find_additional_properties(sub_schema)
                     if sub_additional is None or sub_additional is False:
                         continue
                     results.append(

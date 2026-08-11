@@ -503,7 +503,7 @@ def test_the_replay_module_reaches_neither_an_llm_client_nor_the_judge() -> None
     The two names are the assertion, not the ``tolokaforge.core.llm`` prefix: eleven
     ``core.llm`` *policy* modules (``cache_policy``, ``content_policy``,
     ``params_policy``, ``prompt_policy``, ``reasoning``, ``reasoning_codec``,
-    ``response_policy``, ``schema_sanitizer``, ``usage``, ``_dict_maps``, and the
+    ``response_policy``, ``schema_sanitizer``, ``usage``, ``dict_maps``, and the
     package) arrive transitively via ``core.models``, so a prefix assertion would be
     red on day one and would be asserting the wrong thing. ``client`` and ``judge``
     are what a wired-in judge would pull, and they are what spends money.

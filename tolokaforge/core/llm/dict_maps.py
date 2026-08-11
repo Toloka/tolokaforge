@@ -1,8 +1,8 @@
-"""Dict-map parameter detection — private helper shared by the prompt policy
-and the client's observability logging.
+"""Dict-map parameter detection shared by the prompt policy and the client's
+observability logging.
 
-Exported from :mod:`tolokaforge.core.llm.prompt_policy` (re-export) for
-convenience. Not part of the public package surface.
+Also re-exported from :mod:`tolokaforge.core.llm.prompt_policy` for
+convenience.
 """
 
 from __future__ import annotations
@@ -10,7 +10,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any
 
-__all__ = ["DictMapParam", "detect_dict_maps"]
+__all__ = ["DictMapParam", "detect_dict_maps", "find_additional_properties"]
 
 
 @dataclass(frozen=True)
@@ -69,9 +69,12 @@ class DictMapParam:
         return example
 
 
-def _find_additional_properties(prop_schema: dict[str, Any]) -> Any:
+def find_additional_properties(prop_schema: dict[str, Any]) -> Any:
     """Locate an ``additionalProperties`` declaration on *prop_schema* or any
     of its ``anyOf`` / ``oneOf`` branches.
+
+    Public API. Stable within the v0.17.x minor series; removal or signature
+    change requires a deprecation announcement.
 
     Pydantic emits ``Optional[Dict[str, T]]`` as
     ``anyOf=[{additionalProperties:T, type:object}, {type:null}]`` and
@@ -124,7 +127,7 @@ def detect_dict_maps(tools: list[dict[str, Any]]) -> list[DictMapParam]:
         for prop_name, prop_schema in props.items():
             if not isinstance(prop_schema, dict):
                 continue
-            additional = _find_additional_properties(prop_schema)
+            additional = find_additional_properties(prop_schema)
             if additional is None or additional is False:
                 continue
 

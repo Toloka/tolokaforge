@@ -51,6 +51,8 @@ __all__ = [
     "JsonRecursiveCoerceResponse",
     "ItemRecursiveUnwrapResponse",
     "MinimaxM3TagRecoveryResponse",
+    "coerce_empty_containers",
+    "coerce_json_strings",
 ]
 
 #: Declared-array ``tags`` sites the MiniMax-M3 recursive recovery policies are
@@ -66,11 +68,14 @@ __all__ = [
 ARRAY_SITES: frozenset[tuple[str, str]] = frozenset({("updates", "tags"), ("item", "tags")})
 
 
-def _coerce_empty_containers(
+def coerce_empty_containers(
     arguments: dict[str, Any],
     param_types: Mapping[str, str] | None,
 ) -> dict[str, Any]:
     """Coerce ``''`` → ``[]`` / ``''`` → ``{}`` based on declared param types.
+
+    Public API. Stable within the v0.17.x minor series; removal or signature
+    change requires a deprecation announcement.
 
     Schema-aware recovery for the qwen ``equipment: ''`` failure mode (post-PR-#88
     diagnosis): the model occasionally emits an empty string for what the
@@ -104,8 +109,11 @@ def _coerce_empty_containers(
     return out
 
 
-def _coerce_json_strings(arguments: dict[str, Any]) -> dict[str, Any]:
+def coerce_json_strings(arguments: dict[str, Any]) -> dict[str, Any]:
     """Decode stringified JSON arrays / objects back to native values.
+
+    Public API. Stable within the v0.17.x minor series; removal or signature
+    change requires a deprecation announcement.
 
     Heuristic: a value is decoded only when it is a ``str`` whose first
     non-whitespace character is ``[`` or ``{`` *and* ``json.loads`` returns
@@ -243,8 +251,8 @@ class JsonCoerceResponse:
     ) -> dict[str, Any]:
         # Schema-aware empty-container coercion runs BEFORE JSON-string
         # decoding so empty strings never reach ``json.loads``.
-        coerced = _coerce_empty_containers(arguments, param_types)
-        return _coerce_json_strings(coerced)
+        coerced = coerce_empty_containers(arguments, param_types)
+        return coerce_json_strings(coerced)
 
 
 class ArrayDictMapResponse:
@@ -252,7 +260,7 @@ class ArrayDictMapResponse:
 
     Two-stage pipeline:
 
-    1. :func:`_coerce_json_strings` — recover stringified containers.
+    1. :func:`coerce_json_strings` — recover stringified containers.
     2. ``additionalProperties → array of {key, …}`` reverse pivot:
        ``StrictSchema`` converts ``additionalProperties: {schema}``
        parameters into ``type: array`` with ``items`` containing a synthetic
@@ -278,8 +286,8 @@ class ArrayDictMapResponse:
     ) -> dict[str, Any]:
         # Same recovery order as JsonCoerceResponse: empty-container coercion
         # → JSON-string decode → array → dict pivot.
-        coerced = _coerce_empty_containers(arguments, param_types)
-        result = dict(_coerce_json_strings(coerced))
+        coerced = coerce_empty_containers(arguments, param_types)
+        result = dict(coerce_json_strings(coerced))
         for param_name, value in list(result.items()):
             if isinstance(value, list):
                 if not value:
@@ -330,7 +338,7 @@ class ArrayDictMapResponse:
 # the two policies below; both are scoped to :data:`ARRAY_SITES` only so the
 # recovery can never touch a scalar field elsewhere in the call. The shipped
 # :class:`JsonCoerceResponse` / :class:`ArrayDictMapResponse` helpers
-# (:func:`_coerce_json_strings`, :func:`_coerce_empty_containers`) are reused;
+# (:func:`coerce_json_strings`, :func:`coerce_empty_containers`) are reused;
 # the new behaviour is *recursion* into the ``updates`` / ``item`` parent plus
 # the site allowlist that bounds it.
 
@@ -341,7 +349,7 @@ def _recover_json_string_at_tags_site(value: Any) -> Any:
     Two shapes, both proven on the M3 airlines census:
 
     * stringified JSON list (``'["a","b"]'``) → the native ``list`` via
-      :func:`_coerce_json_strings` (which only promotes ``[`` / ``{`` strings
+      :func:`coerce_json_strings` (which only promotes ``[`` / ``{`` strings
       whose ``json.loads`` yields a container — scalar strings are never
       promoted, by design).
     * empty string (``''``) → ``[]``. This is the empty-string → ``[]``
@@ -362,7 +370,7 @@ def _recover_json_string_at_tags_site(value: Any) -> Any:
         return []
     # Reuse the shipped JSON-string decoder by wrapping in a single-key dict;
     # it never promotes scalar strings and leaves non-string values untouched.
-    return _coerce_json_strings({"tags": value})["tags"]
+    return coerce_json_strings({"tags": value})["tags"]
 
 
 # Bound the ``{"item": {"item": ...}}`` unwrap recursion. The observed M3
@@ -407,7 +415,7 @@ class JsonRecursiveCoerceResponse:
     was proven net-harmful: on MiniMax-M2.7 it corrupted scalar fields such as
     ``resolution_category__c`` / ``employee_id`` / ``keyword``.
 
-    Never promotes scalar strings (delegates to :func:`_coerce_json_strings`),
+    Never promotes scalar strings (delegates to :func:`coerce_json_strings`),
     never touches ``None`` / ``null`` (passes straight through).
     """
 
