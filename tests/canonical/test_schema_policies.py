@@ -113,14 +113,14 @@ class TestStrictSchemaCanon:
 
 
 class TestDictMapHintsCanon:
-    """Canonical snapshot for DictMapHints._build_hints() on tau_manufacturing."""
+    """Canonical snapshot for DictMapHints.build_hints() on tau_manufacturing."""
 
     def test_dict_map_hints_tau_manufacturing(self, canon_snapshot) -> None:
-        """DictMapHints._build_hints() output for CREATE_ORDER_TOOL.
+        """DictMapHints.build_hints() output for CREATE_ORDER_TOOL.
 
         Captures the hint text generated for the lines parameter.
         """
-        hints = DictMapHints._build_hints([copy.deepcopy(CREATE_ORDER_TOOL)])
+        hints = DictMapHints().build_hints([copy.deepcopy(CREATE_ORDER_TOOL)])
 
         snap = canon_snapshot("schema_policy_dict_map_hints_tau")
         snap.assert_match({"hints": hints}, "dict_map_hints.json")

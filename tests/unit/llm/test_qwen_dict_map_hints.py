@@ -45,7 +45,7 @@ pytestmark = pytest.mark.unit
 # We do NOT use ``pydantic.TypeAdapter`` for the dict-map value type here:
 # Pydantic emits the nested model as ``$ref: #/$defs/LineItem`` rather than
 # inline ``properties``, and the current
-# :func:`~tolokaforge.core.llm._dict_maps.detect_dict_maps` helper does not
+# :func:`~tolokaforge.core.llm.dict_maps.detect_dict_maps` helper does not
 # resolve ``$ref`` — so the enrichment would silently no-op. Production tool
 # schemas (e.g. ``tau_manufacturing_modify_order``) in which Qwen's P2 bug
 # was first observed use inline ``properties``; we mirror that shape.
