@@ -72,6 +72,7 @@ from tolokaforge.core.llm.schema_sanitizer import (
     StrictSchema,
     ToolSchemaSanitizer,
 )
+from tolokaforge.core.model_data import bundled_presets_path
 
 __all__ = [
     "build_capabilities",
@@ -346,9 +347,10 @@ def resolve_overlay_path(
 
 
 def _load_bundled_presets() -> dict[str, Any]:
-    """Load the bundled ``model_presets.yaml`` from inside the wheel."""
-    preset_path = Path(__file__).parent.parent / "data" / "model_presets.yaml"
-    if not preset_path.exists():
+    """Load the bundled ``model_presets.yaml`` via the model-data seam."""
+    try:
+        preset_path = bundled_presets_path()
+    except FileNotFoundError:
         return _DEFAULT_PRESET_DATA
     with open(preset_path) as f:
         return yaml.safe_load(f) or _DEFAULT_PRESET_DATA

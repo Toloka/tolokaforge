@@ -30,13 +30,13 @@ from pathlib import Path
 
 import yaml
 
+from tolokaforge.core.model_data import bundled_pricing_path
+
 logger = logging.getLogger(__name__)
 
 # ---------------------------------------------------------------------------
 # Load pricing data from JSON
 # ---------------------------------------------------------------------------
-
-_PRICING_DATA_PATH = Path(__file__).parent / "data" / "pricing.json"
 
 MODEL_PRICING: dict[str, dict[str, float]] = {}
 
@@ -47,15 +47,17 @@ def _load_pricing(path: Path | None = None) -> dict[str, dict[str, float]]:
     Parameters
     ----------
     path
-        Path to ``pricing.json``.  Defaults to the bundled package data file.
+        Path to ``pricing.json``. Defaults to the bundled package data file
+        located via :func:`tolokaforge.core.model_data.bundled_pricing_path`.
 
     Returns
     -------
     dict[str, dict[str, float]]
         ``{model_id: {"input": price_per_1M, "output": price_per_1M}}``
     """
-    target = path or _PRICING_DATA_PATH
+    target: Path | None = None
     try:
+        target = path if path is not None else bundled_pricing_path()
         with open(target) as fh:
             data = json.load(fh)
         models = data.get("models", data)  # support bare dict or {"models": {...}}
@@ -63,8 +65,8 @@ def _load_pricing(path: Path | None = None) -> dict[str, dict[str, float]]:
             logger.error("pricing_data_invalid: %s", target)
             return {}
         return models
-    except FileNotFoundError:
-        logger.error("pricing_data_not_found: %s", target)
+    except FileNotFoundError as exc:
+        logger.error("pricing_data_not_found: %s", target if target is not None else exc)
         return {}
     except (json.JSONDecodeError, OSError) as exc:
         logger.error("pricing_data_load_error: %s — %s", target, exc)
