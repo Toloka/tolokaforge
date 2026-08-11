@@ -124,20 +124,29 @@ Adopted verbatim from the [2026-08-07 review comment](https://github.com/Toloka/
 
 ## The one seam the engine uses to reach model data
 
-The engine reaches `tolokaforge_models` through exactly one internal module: [`tolokaforge/core/model_data.py`](../../tolokaforge/core/model_data.py) (to be added). Public API:
+The engine reaches `tolokaforge_models` through exactly one internal module surface. Today (post-#937) this surface is split across two files at the heavy-import boundary:
+
+- [`tolokaforge/core/model_data.py`](../../tolokaforge/core/model_data.py) — the light seam. Zero first-party heavy imports. Ships the public path accessors, the `MODELS_*_VERSION` constants, the `ModelsFingerprint` type, and `decode_models_fingerprint`. Safe to include in the runner subset because it does not transitively pull in `tolokaforge.testing.certify`, `tolokaforge.core.llm.presets`, or `tolokaforge.core.pricing`.
+- [`tolokaforge/core/model_data_fingerprint.py`](../../tolokaforge/core/model_data_fingerprint.py) — the orchestrator-only sibling. Ships `compute_models_fingerprint`, the certificate canonicaliser, and the heavy first-party imports. Explicitly excluded from the runner subset.
+
+The split is why the seam module can be reached from subset-included files (`tolokaforge.core.pricing`, `tolokaforge.core.llm.presets`, `tolokaforge.core.llm.providers`) without dragging the testing / orchestrator layer into the runner Docker image. The canonical partition test locks that invariant.
+
+Public API on `model_data`:
 
 ```python
 def bundled_presets_path() -> Path: ...
 def bundled_pricing_path() -> Path: ...
 def bundled_providers_path() -> Path: ...              # NEW (widening)
-def bundled_vendor_prefixes_path() -> Path: ...        # NEW (widening)
-def bundled_certificates() -> list[ModelCertificate]: ...   # NEW (widening)
-def declared_api_version() -> int: ...
-def declared_minimum_engine_version() -> str: ...      # NEW (widening)
-def load_policy_registrations() -> dict[str, dict[str, type]]: ...  # NEW (widening) — entry-point discovery
+def bundled_vendor_prefixes_path() -> Path: ...        # NEW (widening) — deferred to #938
+def bundled_certificates() -> list[ModelCertificate]: ...   # NEW (widening) — deferred to #938
+def declared_api_version() -> int: ...                 # deferred to #938
+def declared_minimum_engine_version() -> str: ...      # NEW (widening) — deferred to #938
+def load_policy_registrations() -> dict[str, dict[str, type]]: ...  # NEW (widening) — deferred to #938; entry-point discovery
 ```
 
-Every function does `from tolokaforge_models import ...` internally today. If a future superseding ADR moves to a plugin ecosystem, the internals change (entry-point discovery from multiple registered publishers); every caller in the engine is untouched. Nothing else in the engine's code paths reaches into `tolokaforge_models` outside this module. The seam is the whole coupling.
+The three path accessors are stable public API within the `v0.17.x` minor series (see [`docs/RELEASING.md § Downstream data-resource consumers`](../RELEASING.md#downstream-data-resource-consumers)). Each raises `FileNotFoundError` when the resource is absent — consumers verify parse + non-empty on top. Pre-cutover the accessors resolve to `tolokaforge/core/data/`; the cutover PR (#938) flips the internal `_DATA_ROOT` constant in one line to point at `tolokaforge_models/data/`. Consumer code is untouched by the flip.
+
+Nothing else in the engine's code paths reaches into `tolokaforge_models` outside this seam. The seam is the whole coupling.
 
 ## Extension-point surface (new — widening)
 
@@ -243,6 +252,8 @@ The original widening draft proposed a build-time forwarding stub in `tolokaforg
 3. **Move (cutover PR).** The two data files move to `tolokaforge_models/data/` with no forwarding stub. Any resource-path reader that missed migration in step 1 fails loud on first access (the file is not there), which is the right failure mode.
 
 Migration note in [`docs/RELEASING.md`](../RELEASING.md) + release notes on the first models-wheel-cutover engine release. @bberkes-toloka has committed to landing the collector-side migration ahead of the cutover.
+
+*Resolved by [#937](https://github.com/Toloka/tolokaforge/issues/937); `tolokaforge.core.model_data` now exposes `bundled_pricing_path`, `bundled_presets_path`, `bundled_providers_path`, each raising `FileNotFoundError` when the resource is absent. The three in-repo readers (`pricing.py`, `presets.py`, `providers.py`) migrated. `_load_pricing` and `_load_bundled_presets` transitioned from silent-swallow to loud `FileNotFoundError` / `ValueError`. Downstream migration guidance landed in [`docs/RELEASING.md § Downstream data-resource consumers`](../RELEASING.md#downstream-data-resource-consumers). The `benchmark-results-collector` migration is bberkes-toloka's territory and lands ahead of #938.*
 
 ## Fingerprinting for auditability
 

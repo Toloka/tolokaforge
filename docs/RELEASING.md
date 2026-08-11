@@ -112,6 +112,63 @@ Dockerfiles and wheel still build.
 3. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the stable
    images and move `:latest`.
 
+## Downstream data-resource consumers
+
+Tolokaforge ships three bundled data files that external tooling reads at
+runtime: `pricing.json`, `model_presets.yaml`, `providers.yaml`. Downstream
+consumers (leaderboards, cost analysers, integration scripts) must reach
+these through the public accessor API on `tolokaforge.core.model_data`
+rather than through raw `importlib.resources` lookups:
+
+```python
+from tolokaforge.core.model_data import (
+    bundled_pricing_path,
+    bundled_presets_path,
+    bundled_providers_path,
+)
+
+pricing_path = bundled_pricing_path()  # -> pathlib.Path
+```
+
+Each accessor returns a `pathlib.Path` when the file exists and raises
+`FileNotFoundError` when it does not. Both surfaces are public API, stable
+within the `v0.17.x` minor series; signature or semantic changes require a
+deprecation announcement in the CHANGELOG.
+
+### Missing vs empty — the fail-loud split
+
+The accessor and the consumer share a two-layer fail-loud contract:
+
+- **Accessor layer** — verifies the resource file exists on disk. Raises
+  `FileNotFoundError` if it does not. Does NOT read or validate contents.
+- **Consumer layer** — verifies the file's parsed content is well-formed
+  and non-empty. Raises `ValueError` on malformed JSON/YAML, on an empty
+  document, or on a top-level payload of the wrong shape.
+
+Downstream consumers must NOT skip the empty-content check on their side.
+An empty-but-present file is not a supported install shape; treating it as
+"pricing is `{}`" produces silent zero-cost leaderboards, which is worse
+than a loud startup error.
+
+Never wrap either layer in a try/except that swallows the exception and
+returns an empty dict. The pre-#937 shape (silent-swallow with a
+`logger.error` line) shipped exactly that hazard; #937 removed it from the
+engine and expects downstream consumers to do the same.
+
+### Post-cutover
+
+The accessors abstract the resource location. When ADR-0030's cutover
+(#938) moves the bundled data to the `tolokaforge-models` wheel, the three
+accessor bodies change by exactly one line each — the `_DATA_ROOT`
+constant flips from `tolokaforge.core.data` to `tolokaforge_models.data`.
+Consumer code stays unchanged: the return type is still a `Path`, the
+`FileNotFoundError` semantics are still the same, and the compat guarantee
+still applies.
+
+See [ADR-0030 § "Downstream data-resource consumers"](adr/0030-tolokaforge-models-split.md#downstream-data-resource-consumers)
+for the rationale ADR-0030 chose fixing consumers up-front over shipping a
+forwarding stub in the engine.
+
 ## See also
 
 - [Standalone Runner Guide](STANDALONE_RUNNER.md#published-images) — the published
