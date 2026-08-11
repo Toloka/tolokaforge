@@ -37,10 +37,11 @@ re-checked against is resolved through the bundle's ``task_id`` to the pack whos
 override: pinning a fixture would make a CI re-verification decorative, where resolving from
 the pack makes editing the shipped constraint red the lock over the frozen corpus.
 
-Nothing here spends anything. It reaches the trace-replay reader, the one production trace
-evaluator, the pure agreement maths and the task loader ``tolokaforge validate`` already
-uses, and stops there — measured: no ``litellm`` / ``openai`` / ``anthropic`` module and no
-judge module enters ``sys.modules`` on import.
+Nothing here spends anything. It reaches the trace-replay reader and its bundle discovery,
+the one production trace evaluator, the outcome classifier a run's own attribution uses,
+the pure agreement maths and the task loader ``tolokaforge validate`` already uses, and
+stops there — measured: no ``litellm`` / ``openai`` / ``anthropic`` module and no judge
+module enters ``sys.modules`` on import.
 """
 
 from __future__ import annotations
@@ -78,11 +79,12 @@ from tolokaforge.core.grading.migration_declaration import (
     criterion_shape_disagreement,
     inspect_migration_declaration,
 )
+from tolokaforge.core.grading.replay_layout import discover_trial_bundles
 from tolokaforge.core.grading.rubric import aggregate_rubric
 from tolokaforge.core.grading.trace_replay import (
     MissingTraceReplayInputError,
     TraceChecksOverride,
-    discover_trace_bundles,
+    aborted_without_a_task_snapshot,
     read_trace_replay_inputs,
     recorded_grade,
     recorded_task,
@@ -368,6 +370,23 @@ class UnreadableTrial(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class CorpusExclusion(BaseModel):
+    """A discovered bundle that is no part of the corpus, and why it is not.
+
+    A trial the substrate killed before it ran records no ``task.yaml``, so nothing
+    names the pack whose migration it could speak to. It is neither an
+    :class:`UnreadableTrial` — nothing about it is broken — nor an
+    :class:`ExcludedTrial`, which is a statement about one entry's label pool. It
+    never blocks: a corpus is not defective for containing a trial that never
+    happened.
+    """
+
+    bundle: str
+    reason: str
+
+    model_config = {"extra": "forbid"}
+
+
 class ReconciledEntry(BaseModel):
     """One declared migration, measured against the corpus.
 
@@ -420,6 +439,7 @@ class ReconcileReport(BaseModel):
     trials_read: int
     entries: list[ReconciledEntry]
     unreadable_trials: list[UnreadableTrial]
+    excluded_bundles: list[CorpusExclusion]
 
     model_config = {"extra": "forbid"}
 
@@ -428,7 +448,9 @@ class ReconcileReport(BaseModel):
         """Every reason this reconciliation is not a clean pass, in the order found.
 
         Empty is what exit ``0`` means, and it means one thing: every converting entry
-        reached ``no_counter_evidence`` and every bundle was readable.
+        reached ``no_counter_evidence`` and every bundle that is part of the corpus was
+        readable. An excluded bundle is not: a trial that never ran is reported, not a
+        defect.
         """
         blocking = [f"{trial.trial}: {trial.reason}" for trial in self.unreadable_trials]
         blocking.extend(
@@ -1710,6 +1732,31 @@ def reconcile_root(source: Path, replay_id: str) -> Path:
     return Path(source) / RECONCILE_DIRNAME / replay_id
 
 
+def _excluded_from_the_corpus(bundle: Path) -> CorpusExclusion:
+    """A discovered bundle carrying no ``task.yaml``, excluded by name.
+
+    Only a trial the substrate killed before it ran is excused the file: it records
+    no pack to resolve a migration against, and a corpus is not defective for
+    holding one. A task-less bundle that recorded a real episode lost what it was
+    graded against, which is a defect, so it is raised into ``unreadable_trials``
+    and keeps blocking the exit code.
+    """
+    termination = aborted_without_a_task_snapshot(bundle)
+    if termination is None:
+        raise MissingTraceReplayInputError(
+            f"{bundle / 'task.yaml'} is missing, so nothing names the task whose "
+            "migration this trial could speak to"
+        )
+    return CorpusExclusion(
+        bundle=str(bundle),
+        reason=(
+            "the trial was aborted before it was measured "
+            f"(termination_reason: {termination}), so it recorded no task.yaml and "
+            "speaks to no pack's migration"
+        ),
+    )
+
+
 def reconcile_corpus(
     source: Path,
     *,
@@ -1725,29 +1772,42 @@ def reconcile_corpus(
     having for free.
 
     Raises:
-        ReconcileError: If ``source`` holds no bundle, if no pack behind it declares a
-            migration, if a ``task_id`` resolves to no pack or to several, if a pack's block
-            cannot be graded against what a bundle recorded, or if one criterion is pooled
-            across tasks declaring different things.
+        ReconcileError: If ``source`` holds no bundle, if every bundle it holds is
+            excluded from the corpus, if no pack behind it declares a migration, if a
+            ``task_id`` resolves to no pack or to several, if a pack's block cannot be
+            graded against what a bundle recorded, or if one criterion is pooled across
+            tasks declaring different things.
     """
     source = Path(source)
     roots = tuple(Path(root) for root in (packs or (DEFAULT_PACKS_ROOT,)))
-    bundles = discover_trace_bundles(source)
+    bundles = discover_trial_bundles(source)
     if not bundles:
         raise ReconcileError(
             f"no trial bundle under {source} — a corpus holding nothing reconciles nothing. A "
-            "bundle is a directory holding task.yaml + trajectory.yaml"
+            "bundle is a directory holding trajectory.yaml"
         )
 
     by_task: dict[str, list[Path]] = {}
     unreadable: list[UnreadableTrial] = []
+    excluded: list[CorpusExclusion] = []
     for bundle in bundles:
         try:
+            if not (bundle / "task.yaml").exists():
+                excluded.append(_excluded_from_the_corpus(bundle))
+                continue
             task_id = recorded_task_id(bundle, recorded_task(bundle))
         except MissingTraceReplayInputError as exc:
             unreadable.append(UnreadableTrial(trial=str(bundle), reason=str(exc)))
             continue
         by_task.setdefault(task_id, []).append(bundle)
+
+    if not by_task and excluded:
+        raise ReconcileError(
+            f"no trial under {source} names a task whose migration could be reconciled: "
+            f"{len(excluded)} of {len(bundles)} discovered bundles are excluded from the "
+            "corpus, recording no task.yaml because the trial never ran. Point --source "
+            "at a run whose trials reached the agent"
+        )
 
     declaring = {
         task_id: pack
@@ -1776,6 +1836,7 @@ def reconcile_corpus(
             for _, pool in sorted(pools.items())
         ],
         unreadable_trials=unreadable + read_failures,
+        excluded_bundles=excluded,
     )
     if not dry_run:
         emit_reconcile_report(report, source=source, replay_id=replay_id)

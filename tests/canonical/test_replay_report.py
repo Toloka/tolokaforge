@@ -2,10 +2,12 @@
 
 Builds a batch of synthetic replayed outcomes over recorded originals covering
 every bucket — a matching pair, a disagreeing pair, an errored original, an
-original with no verdict, and an errored replay — then snapshots
+original with no verdict, and an errored replay — beside the two dispositions
+that are counted but never compared, then snapshots
 :func:`build_replay_report`'s output. Pins the agreement math (denominator over
 ``COMPARABLE`` criteria only), the aggregate ``llm_judge`` delta, the judge-only
-usage totals, the bucket assignment, and the report shape in one golden file.
+usage totals, the bucket assignment, the batch census over every discovered
+bundle, and the report shape in one golden file.
 
 Regenerate the golden snapshot with:
     uv run pytest tests/canonical/test_replay_report.py --update-canon
@@ -170,8 +172,20 @@ def test_replay_report_snapshot(tmp_path: Path, canon_snapshot) -> None:
         _errored_result(),
     )
 
+    # Neither is compared — both are counted, which is what the census is for.
+    no_grade = TrialReplayOutcome(
+        bundle=source / "trials" / "aborted" / "0",
+        status=ReplayOutcomeStatus.SKIPPED_NO_GRADE,
+        reason="the trial was aborted before it was measured",
+    )
+    failed = TrialReplayOutcome(
+        bundle=source / "trials" / "broken" / "0",
+        status=ReplayOutcomeStatus.FAILED,
+        reason="no transcript",
+    )
+
     report = build_replay_report(
-        [agree, disagree, original_errored, original_no_verdict, replay_errored],
+        [agree, disagree, original_errored, original_no_verdict, replay_errored, no_grade, failed],
         source=source,
         replay_id="snap",
     )
@@ -181,5 +195,8 @@ def test_replay_report_snapshot(tmp_path: Path, canon_snapshot) -> None:
     assert report.criteria_compared == 2
     assert report.criteria_agreed == 1
     assert report.agreement_rate == 0.5
+    # The census covers the whole batch; ``trials`` covers the compared subset.
+    assert report.batch.discovered == 7
+    assert len(report.trials) == 5
 
     canon_snapshot("replay_report").assert_match(report.model_dump(mode="json"), "report.json")
