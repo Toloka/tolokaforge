@@ -15,6 +15,7 @@ import json
 import pathlib
 import re
 import threading
+import time
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import pytest
@@ -80,16 +81,22 @@ ADMISSION_HEADER = "x-github-runner-key"
 ADMISSION_VALUE = "runner-secret"
 
 
+#: Insertion order is deliberately not sorted order: the fetch must sort.
+SERVED = ["x-ai/grok-4.5", "x-ai/*", "azure_ai/cohere-command-a-plus-05-2026", "anthropic/*"]
+
+
 class _Handler(BaseHTTPRequestHandler):
     """A gateway that admits callers by an attribution header, like the real deployment."""
 
     def do_GET(self) -> None:  # noqa: N802
-        SEEN_HEADERS.append({k.lower(): v for k, v in self.headers.items()})
-        if SEEN_HEADERS[-1].get(ADMISSION_HEADER) != ADMISSION_VALUE:
+        self.server.seen.append({k.lower(): v for k, v in self.headers.items()})  # type: ignore[attr-defined]
+        if self.server.hang_s:  # type: ignore[attr-defined]
+            time.sleep(self.server.hang_s)  # type: ignore[attr-defined]
+        if self.server.seen[-1].get(ADMISSION_HEADER) != ADMISSION_VALUE:  # type: ignore[attr-defined]
             body, status = b'{"error":"forbidden"}', 403
         else:
-            body = json.dumps({"data": [{"id": e} for e in SERVES]}).encode()
-            status = 200
+            entries = [{"id": e} for e in self.server.serves]  # type: ignore[attr-defined]
+            body, status = json.dumps({"data": entries}).encode(), 200
         self.send_response(status)
         self.send_header("Content-Type", "application/json")
         self.send_header("Content-Length", str(len(body)))
@@ -100,38 +107,42 @@ class _Handler(BaseHTTPRequestHandler):
         pass
 
 
-SEEN_HEADERS: list[dict[str, str]] = []
-SERVES: list[str] = []
-
-
 @pytest.fixture(scope="module")
 def _server():
+    """State lives on the server, not in module globals, so no test can inherit another's."""
     server = HTTPServer(("127.0.0.1", 0), _Handler)
     threading.Thread(target=server.serve_forever, daemon=True).start()
     try:
-        yield f"http://127.0.0.1:{server.server_address[1]}/v1"
+        yield server
     finally:
         server.shutdown()
+        server.server_close()
 
 
 @pytest.fixture
 def gateway(_server, monkeypatch):
-    """A configured gateway, with the engine's per-process catalog cache cleared."""
-    SEEN_HEADERS.clear()
-    SERVES[:] = ["x-ai/grok-4.5", "x-ai/*"]
+    """A configured gateway, reset, with the engine's per-process catalog cache cleared."""
+    _server.seen = []
+    _server.serves = list(SERVED)
+    _server.hang_s = 0
     gateway_route.clear_catalog_cache()
-    monkeypatch.setenv("LLM_PROXY_BASE_URL", _server)
+    monkeypatch.setenv("LLM_PROXY_BASE_URL", f"http://127.0.0.1:{_server.server_address[1]}/v1")
     monkeypatch.setenv("LLM_PROXY_API_KEY", "sk-gw")
     yield _server
     gateway_route.clear_catalog_cache()
+
+
+def _admit(monkeypatch) -> None:
+    monkeypatch.setenv("LLM_PROXY_HEADERS", json.dumps({"X-GitHub-Runner-Key": ADMISSION_VALUE}))
 
 
 class TestTheConfiguredCatalogIsReadLikeARunReadsIt:
     """The poll must reach the same gateway an integration run reaches.
 
     It used to send only the key, so a deployment that admits callers by an attribution
-    header answered 403 and every model reported absent for a transport reason. The
-    reply then said "not on the gateway" about a model the gateway serves.
+    header answered 403. The catalog then read as unreadable, every model reported as
+    unknown for a transport reason rather than a catalogue one, and a gateway-only model
+    could not be resolved at all.
     """
 
     def test_no_gateway_configured_is_no_information(self, monkeypatch) -> None:
@@ -140,11 +151,9 @@ class TestTheConfiguredCatalogIsReadLikeARunReadsIt:
         assert gateway_catalog.fetch_configured_catalog() is None
 
     def test_the_admission_header_rides_along(self, gateway, monkeypatch) -> None:
-        monkeypatch.setenv(
-            "LLM_PROXY_HEADERS", json.dumps({"X-GitHub-Runner-Key": ADMISSION_VALUE})
-        )
-        assert gateway_catalog.fetch_configured_catalog() == ["x-ai/*", "x-ai/grok-4.5"]
-        assert SEEN_HEADERS[0]["authorization"] == "Bearer sk-gw"
+        _admit(monkeypatch)
+        assert gateway_catalog.fetch_configured_catalog() == sorted(SERVED)
+        assert gateway.seen[0]["authorization"] == "Bearer sk-gw"
 
     def test_a_secret_reference_in_a_header_is_resolved(self, gateway, monkeypatch) -> None:
         """The workflow passes the value as ``${secret:NAME}``, so an unexpanded
@@ -166,11 +175,16 @@ class TestTheConfiguredCatalogIsReadLikeARunReadsIt:
     def test_an_empty_catalog_is_unknown_too(self, gateway, monkeypatch) -> None:
         """The engine calls an empty answer unreadable; the poller now agrees, so one
         gateway state cannot produce two different routing decisions."""
-        monkeypatch.setenv(
-            "LLM_PROXY_HEADERS", json.dumps({"X-GitHub-Runner-Key": ADMISSION_VALUE})
-        )
-        SERVES.clear()
+        _admit(monkeypatch)
+        gateway.serves = []
         assert gateway_catalog.fetch_configured_catalog() is None
+
+    def test_a_hanging_gateway_gives_up_on_the_timeout(self, gateway, monkeypatch) -> None:
+        """The poll runs on a schedule against a gateway nobody watches, so the timeout
+        has to reach the socket rather than sit unused in the signature."""
+        _admit(monkeypatch)
+        gateway.hang_s = 2
+        assert gateway_catalog.fetch_configured_catalog(timeout=1) is None
 
     def test_an_unreachable_gateway_returns_none_rather_than_raising(self, monkeypatch) -> None:
         """A notification path must never break the poll."""
@@ -186,22 +200,47 @@ class TestTheConfiguredCatalogIsReadLikeARunReadsIt:
         refuses on. Here it must surface without taking the poll down with it."""
         monkeypatch.delenv("LLM_PROXY_BASE_URL", raising=False)
         monkeypatch.setenv("LLM_PROXY_API_KEY", "sk-orphan")
+        monkeypatch.setenv("GITHUB_ACTIONS", "true")
         assert gateway_catalog.fetch_configured_catalog() is None
-        assert "gateway unusable" in capsys.readouterr().err
+        captured = capsys.readouterr()
+        assert "gateway unusable" in captured.err
+        # The reply blames the model ("could not confirm the gateway serves..."), so
+        # without an annotation the real cause is one stderr line in a green job.
+        assert "::warning title=Gateway configuration unusable::" in captured.out
 
 
 class TestALocalEnvCannotAnswerARealPoll:
-    def test_the_default_manager_is_not_consulted(self, monkeypatch) -> None:
+    def test_the_default_manager_is_not_consulted(self, _server, monkeypatch) -> None:
         """Dotenv precedence would let a developer's gateway answer a production poll,
-        and the reply would record availability nobody can reproduce."""
+        and the reply would record availability nobody else can reproduce.
+
+        The default manager is pointed at the REAL test server, so consulting it would
+        succeed loudly. Pointing it at an unreachable host would prove nothing: that
+        returns None as well, which is the answer this test expects.
+        """
+        _server.seen = []
+        _server.serves = list(SERVED)
+        _server.hang_s = 0
+        gateway_route.clear_catalog_cache()
         monkeypatch.delenv("LLM_PROXY_BASE_URL", raising=False)
         monkeypatch.setattr(
             secrets_manager,
             "_default_manager",
-            SecretManager([DictProvider({"LLM_PROXY_BASE_URL": "http://dev-gateway.invalid/v1"})]),
+            SecretManager(
+                [
+                    DictProvider(
+                        {
+                            "LLM_PROXY_BASE_URL": f"http://127.0.0.1:{_server.server_address[1]}/v1",
+                            "LLM_PROXY_HEADERS": json.dumps(
+                                {"X-GitHub-Runner-Key": ADMISSION_VALUE}
+                            ),
+                        }
+                    )
+                ]
+            ),
         )
-        gateway_route.clear_catalog_cache()
         assert gateway_catalog.fetch_configured_catalog() is None
+        assert _server.seen == [], "the gateway was not even asked"
 
 
 class TestRouteDirective:

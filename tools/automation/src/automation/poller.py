@@ -304,6 +304,9 @@ def run(channel: str, allowed_users: str | None, out_path: str, window_hours: fl
     request, reply in-thread, and write the integration plan to ``out_path``. Always returns 0
     (a poll must never fail the workflow)."""
     plan: list[dict] = []
+    # os.environ rather than SecretManager: this package's entry points are CI-only, where the
+    # token arrives through the workflow's env, and dotenv precedence would let a developer's
+    # local .env drive a real poll. The gateway read keeps the same property (gateway_catalog).
     token = os.environ.get("SLACK_BOT_TOKEN")
     if not token or not channel:
         slack._log("no SLACK_BOT_TOKEN or channel - dry-run no-op")

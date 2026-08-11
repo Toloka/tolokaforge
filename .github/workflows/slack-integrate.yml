@@ -75,9 +75,17 @@ jobs:
       # A gateway may admit callers by an attribution header rather than by the key alone.
       # The poller reads the catalog through the engine's ProxyConfig, so it sends these
       # exactly like a run does; without them such a gateway answers 403 and every model
-      # would report absent for a transport reason rather than a catalogue one.
-      LLM_PROXY_HEADERS: ${{ vars.LLM_PROXY_HEADERS }}
-      # Values the ${secret:NAME} references inside LLM_PROXY_HEADERS resolve to.
+      # would report as unknown for a transport reason rather than a catalogue one.
+      #
+      # Gated on the base URL because the headers come from a repo VARIABLE while the base
+      # URL is a SECRET: a companion without a base URL is a hard error in the engine, so
+      # an ungated variable would make every poll of a gateway-less deployment log a
+      # configuration failure.
+      LLM_PROXY_HEADERS: >-
+        ${{ secrets.ARENA_AUTOMATION_LLM_PROXY_BASE_URL != '' && vars.LLM_PROXY_HEADERS || '' }}
+      # Values the ${secret:NAME} references inside LLM_PROXY_HEADERS resolve to. Grep both
+      # this list and integrate-model.yml's before adding a third reference: an unresolved
+      # one makes the gateway reject the request.
       LLM_PROXY_SUNDAY_ORDER_ID: ${{ secrets.LLM_PROXY_SUNDAY_ORDER_ID }}
       LLM_PROXY_GATEWAY_RUNNER_KEY: ${{ secrets.LLM_PROXY_GATEWAY_RUNNER_KEY }}
     steps:

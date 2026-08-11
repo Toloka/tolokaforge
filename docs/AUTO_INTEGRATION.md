@@ -199,6 +199,11 @@ gateway by whichever it finds
 ([`docs/LLM_LAYER.md` § speaking to the gateway](LLM_LAYER.md#speaking-to-the-gateway)), so this
 lookup checks both in that order and a prefixed-only entry *is* evidence.
 
+The two agree except on a catalog carrying **both** names for one model: this lookup reports the
+prefixed one, while the engine refuses to guess and requires `LLM_PROXY_PREFERRED_ROUTE`, because
+the two names can be backed by different upstreams. On such a catalog the reply promises a route
+the run will not take until that variable is set.
+
 The report distinguishes two strengths, because they are not equally trustworthy:
 
 | Reply says | Means |

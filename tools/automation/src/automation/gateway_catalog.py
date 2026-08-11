@@ -31,13 +31,14 @@ returns ``unknown`` and the flow is unchanged.
 
 The catalog itself is fetched by the engine (:mod:`tolokaforge.core.llm.gateway_route`)
 through a :class:`~tolokaforge.core.llm.proxy.ProxyConfig`, so the poller and the
-integration run read the same gateway the same way. See ``docs/AUTO_INTEGRATION.md``
-§ "Integration route" for why this module owns no transport of its own.
+integration run read the same gateway the same way. See ``docs/LLM_LAYER.md``
+§ "Speaking to the gateway" for why this module owns no transport of its own.
 """
 
 from __future__ import annotations
 
 import dataclasses
+import os
 import sys
 
 from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog
@@ -85,6 +86,18 @@ class Availability:
 USER_SIMULATOR_SLUG = "anthropic/claude-sonnet-4.6"
 
 
+def _warn(message: str) -> None:
+    """Surface an operator error without failing the poll.
+
+    A misconfigured gateway is not a model problem, but the reply a requester sees says
+    the route could not be confirmed, which points at the model. The annotation is what
+    connects the two.
+    """
+    print(f"[gateway_catalog] {message}", file=sys.stderr)
+    if os.environ.get("GITHUB_ACTIONS"):
+        print(f"::warning title=Gateway configuration unusable::{message}")
+
+
 def fetch_configured_catalog(timeout: int = 15) -> list[str] | None:
     """The gateway catalog for THIS deployment, or ``None`` when there is no readable gateway.
 
@@ -98,12 +111,12 @@ def fetch_configured_catalog(timeout: int = 15) -> list[str] | None:
     try:
         proxy = resolve_proxy_config(SecretManager([EnvProvider()]))
     except ProxyConfigError as exc:
-        print(f"gateway unusable, availability is unknown: {exc}", file=sys.stderr)
+        _warn(f"gateway unusable, availability is unknown: {exc}")
         return None
     if proxy is None:
         return None
     served = fetch_gateway_catalog(proxy, timeout)
-    # Sorted because resolution against this catalog must be deterministic.
+    # Sorted so the same gateway yields the same resolution and the same log twice over.
     return None if served is None else sorted(served)
 
 
