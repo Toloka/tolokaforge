@@ -2973,12 +2973,11 @@ def test_a_string_argument_correlated_with_an_integer_binding_is_an_error() -> N
 
 
 def test_an_integer_argument_correlated_with_a_string_binding_is_an_error() -> None:
-    """The reverse direction, which nothing catches at either tier today.
+    """The reverse direction, answered at both tiers.
 
-    The evaluation-time backstop guards ``isinstance(value, str)`` on the value the
-    predicate reads, so a *text* binding against a natively-typed argument passes
-    it and the constraint reads as ``present is unmatched`` — the agent's failure.
-    The gate is the only tier that answers this one.
+    The gate refuses it before the run wherever both schemas type the arguments;
+    the evaluator's backstop reads both operands' runtime JSON types over the
+    residue the gate cannot type. This test locks the pre-run half.
     """
     report = _correlated(
         _CODING,

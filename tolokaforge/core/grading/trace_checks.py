@@ -111,6 +111,11 @@ class _ComparisonRecord:
     bound: Any
     state: _Makeability
 
+    __hash__ = None
+    """Unhashable, like the :class:`TraceEvent` every record embeds — without this,
+    the generated hash could only raise, naming ``TraceEvent`` rather than the
+    record."""
+
     @property
     def reference(self) -> tuple[str, str, str]:
         """What the record is a reading *of*, which repeats across the candidates."""

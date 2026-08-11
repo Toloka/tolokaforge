@@ -2981,8 +2981,9 @@ argument and read by a predicate on one of the event's five text fields —
 vocabularies that subclass `str`, so the value compared is text like the rest — or
 beside a `regex` that asserts the same of an argument, is false on **every**
 trajectory. That is the [type limit](#the-bound-values-type-is-load-bearing)
-answered before the run: the declared type lives in the tool's JSON schema, and the
-gate is the only tier holding it.
+answered before the run: the declared type lives in the tool's JSON schema, which
+only the gate reads — the evaluator's backstop answers the same pair again at run
+time, over the two runtime types.
 
 **An `args` predicate is checked against both declared types, not exempted.** A
 reference there compares two arguments as the tools typed them, which is the
