@@ -653,3 +653,326 @@ class TestComposeEnvVars:
         env = resolve_tbench_env_vars(meta)
         assert env["CPUS"] == "4"
         assert env["MEMORY"] == "8192M"
+
+
+# =============================================================================
+# compose_synthesis: task environment materialisation
+# =============================================================================
+
+
+def _write_task(
+    tmp_path: Path, task_id: str, compose_body: dict, extras: dict[str, str] | None = None
+):
+    """Build a TerminalBenchTask on disk under ``tmp_path`` with the given compose body."""
+    import yaml as _yaml
+    from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
+
+    task_dir = tmp_path / task_id
+    task_dir.mkdir()
+    (task_dir / "docker-compose.yaml").write_text(_yaml.safe_dump(compose_body))
+    for rel, content in (extras or {}).items():
+        target = task_dir / rel
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content)
+    return TerminalBenchTask(
+        task_id=task_id,
+        task_dir=task_dir,
+        compose_file=task_dir / "docker-compose.yaml",
+        instruction="test",
+    )
+
+
+def _load_synthesised(env) -> dict:
+    import yaml as _yaml
+
+    with env.compose_file.open() as f:
+        return _yaml.safe_load(f)
+
+
+class TestComposeSynthesisFixBillingHolds:
+    """The synthesised YAML for a real example task locks the emit contract."""
+
+    def test_emitted_shape(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        tasks = discover_tasks(examples_dir)
+        assert "fix-billing-holds" in tasks
+        env = materialise_task_environment(tasks["fix-billing-holds"], staging_root=tmp_path)
+
+        compose = _load_synthesised(env)
+        assert set(compose["services"]) == {"runner", "db-service", "main"}
+        main = compose["services"]["main"]
+        assert main["image"] == "tbench-fix-billing-holds:local"
+        assert main["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_main"
+        assert main["volumes"] == ["./tests:/tests", "./_logs:/logs"]
+
+        text = env.compose_file.read_text()
+        assert "T_BENCH_" not in text
+        assert "${CPUS}" not in text
+        assert "${MEMORY}" not in text
+
+    def test_environment_manifest_accepts_emitted_file(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+        from tolokaforge_adapter_terminal_bench.task_parser import discover_tasks
+
+        from tolokaforge.runner.models import EnvironmentManifest
+
+        examples_dir = Path(__file__).parent.parent.parent / "examples" / "terminal_bench"
+        tasks = discover_tasks(examples_dir)
+        env = materialise_task_environment(tasks["fix-billing-holds"], staging_root=tmp_path)
+
+        manifest = EnvironmentManifest(compose_file=env.compose_file, runner_service="runner")
+        assert manifest.runner_service == "runner"
+
+
+class TestComposeSynthesisAgentServiceResolution:
+    def test_sole_service_is_agent(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "app-only",
+            {
+                "services": {
+                    "app": {
+                        "image": "python:3.11-slim",
+                        "command": ["sleep", "infinity"],
+                    }
+                }
+            },
+        )
+        staging_root = tmp_path / "staging"
+        env = materialise_task_environment(meta, staging_root=staging_root)
+
+        assert env.agent_service == "app"
+        compose = _load_synthesised(env)
+        assert set(compose["services"]) == {"runner", "db-service", "app"}
+        assert (
+            compose["services"]["app"]["container_name"] == "tbench_${TOLOKAFORGE_TRIAL_SLUG}_app"
+        )
+
+    def test_multi_service_without_main_raises(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "multi",
+            {
+                "services": {
+                    "alice": {"image": "python:3.11-slim", "command": ["sleep", "infinity"]},
+                    "bob": {"image": "python:3.11-slim", "command": ["sleep", "infinity"]},
+                }
+            },
+        )
+        with pytest.raises(ValueError, match=r"alice.*bob|bob.*alice"):
+            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+
+class TestComposeSynthesisResourceLimits:
+    """Regression lock for the M3 CPUS/MEMORY resolution."""
+
+    def test_deploy_limits_resolve_from_task_metadata(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "deploy-limits",
+            {
+                "services": {
+                    "main": {
+                        "image": "${T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME}",
+                        "command": ["sleep", "infinity"],
+                        "deploy": {
+                            "resources": {
+                                "limits": {"cpus": "${CPUS}", "memory": "${MEMORY}"},
+                            }
+                        },
+                    }
+                }
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        compose = _load_synthesised(env)
+        limits = compose["services"]["main"]["deploy"]["resources"]["limits"]
+        assert limits["cpus"] == "2"
+        assert limits["memory"] == "4096M"
+
+
+class TestComposeSynthesisStaging:
+    def test_idempotent_second_call_returns_same_path(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "idempotent",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+        )
+        staging_root = tmp_path / "staging"
+
+        first = materialise_task_environment(meta, staging_root=staging_root)
+        second = materialise_task_environment(meta, staging_root=staging_root)
+
+        assert first.staging_dir == second.staging_dir
+        assert first.compose_file == second.compose_file
+        # Only one subdirectory under staging_root — the digest-named one.
+        subdirs = [p for p in staging_root.iterdir() if p.is_dir()]
+        assert len(subdirs) == 1
+
+    def test_root_run_tests_promoted_to_tests_test_sh(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "promote-script",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+            extras={"run-tests.sh": "#!/bin/bash\necho ok\n"},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        promoted = env.staging_dir / "tests" / "test.sh"
+        assert promoted.exists()
+        assert "echo ok" in promoted.read_text()
+
+    def test_existing_tests_test_sh_wins(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "existing-script",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+            extras={
+                "run-tests.sh": "#!/bin/bash\necho root\n",
+                "tests/test.sh": "#!/bin/bash\necho pack\n",
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert "echo pack" in (env.staging_dir / "tests" / "test.sh").read_text()
+
+    def test_log_dirs_created(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "log-dirs",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert (env.staging_dir / "_logs" / "verifier").is_dir()
+        assert (env.staging_dir / "_logs" / "agent").is_dir()
+
+    def test_pycache_excluded(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "no-cache",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+            extras={
+                "tests/__pycache__/whatever.pyc": "bytes",
+                "tests/test_something.py": "def test(): pass\n",
+            },
+        )
+        env = materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+        assert not (env.staging_dir / "tests" / "__pycache__").exists()
+        assert (env.staging_dir / "tests" / "test_something.py").exists()
+
+
+class TestComposeSynthesisReservedNameCollision:
+    def test_task_declares_runner_service_raises(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "collides-with-runner",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim"},
+                    "runner": {"image": "python:3.11-slim"},
+                }
+            },
+        )
+        with pytest.raises(
+            ValueError, match="runner.*collides-with-runner|collides-with-runner.*runner"
+        ):
+            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+    def test_task_declares_db_service_raises(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "collides-with-db",
+            {
+                "services": {
+                    "main": {"image": "python:3.11-slim"},
+                    "db-service": {"image": "postgres:16"},
+                }
+            },
+        )
+        with pytest.raises(ValueError, match="db-service"):
+            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+
+
+class TestComposeSynthesisFloatingTagRejected:
+    def test_latest_tag_rejected(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "float-tag",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+        )
+        with pytest.raises(ValueError, match="floating tag"):
+            materialise_task_environment(
+                meta, staging_root=tmp_path / "staging", image_tag="latest"
+            )
+
+
+class TestComposeSynthesisNoSubprocess:
+    """Materialisation must stay daemon-free — the canonical adapter lane and dry-run depend on it."""
+
+    def test_no_subprocess_invoked(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+            materialise_task_environment,
+        )
+
+        meta = _write_task(
+            tmp_path,
+            "no-daemon",
+            {"services": {"main": {"image": "python:3.11-slim"}}},
+        )
+        with patch("subprocess.Popen") as popen_mock:
+            materialise_task_environment(meta, staging_root=tmp_path / "staging")
+        popen_mock.assert_not_called()
