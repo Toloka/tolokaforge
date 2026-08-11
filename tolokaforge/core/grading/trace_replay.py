@@ -456,8 +456,9 @@ def _load_yaml_mapping(path: Path) -> dict[str, Any] | None:
     """A mapping off *path*, ``None`` where the file is absent *or* holds anything else.
 
     For the inputs whose absence and whose wrong shape are one refusal at the call
-    site: a bundle with no ``task.yaml`` and one whose ``task.yaml`` is a list are
-    both "not a trial bundle", and the caller names both possibilities.
+    site: a bundle with no ``task.yaml`` and one whose ``task.yaml`` is a list have
+    both lost what the trial was graded against, and the caller names both
+    possibilities.
     """
     if not path.exists():
         return None
@@ -519,7 +520,8 @@ def recorded_task(bundle: Path) -> dict[str, Any]:
     task = _load_yaml_mapping(bundle / "task.yaml")
     if task is None:
         raise MissingTraceReplayInputError(
-            f"not a trial bundle: {bundle / 'task.yaml'} is missing or not a mapping"
+            f"{bundle / 'task.yaml'} is missing or not a mapping, so nothing says what "
+            "the trial recorded here was graded against"
         )
     return task
 
@@ -533,7 +535,8 @@ def classify_trace_trial(
     block, or an override supplies one — an override replaces the block wholesale,
     so it makes a trial that declared none re-checkable. Raises
     :class:`MissingTraceReplayInputError` when ``task.yaml`` is missing or is not a
-    mapping: that is not a constraint-less trial, it is not a trial bundle.
+    mapping: that is not a constraint-less trial, it is a bundle that lost what it
+    was graded against.
     """
     bundle = Path(bundle)
     return _classify_trace_trial(recorded_task(bundle), override)
@@ -877,8 +880,8 @@ def _task_less_disposition(bundle: Path) -> TrialTraceReplayOutcome:
     termination = aborted_without_a_task_snapshot(bundle)
     if termination is None:
         raise MissingTraceReplayInputError(
-            f"not a trial bundle: {bundle / 'task.yaml'} is missing, so nothing says what "
-            "the trial recorded here was graded against"
+            f"{bundle / 'task.yaml'} is missing, so nothing says what the trial recorded "
+            "here was graded against"
         )
     return TrialTraceReplayOutcome(
         bundle=bundle,

@@ -883,7 +883,10 @@ def _print_rejudge_summary(
         if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
             console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
         elif outcome.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE:
-            console.print(f"[yellow]skip (no grade)[/yellow] {rel} — {outcome.reason}")
+            # The reason embeds recorded grading_error free text; escape it so a
+            # bracketed fragment prints rather than vanishing as console markup.
+            reason = escape(outcome.reason or "")
+            console.print(f"[yellow]skip (no grade)[/yellow] {rel} — {reason}")
         elif outcome.status is ReplayOutcomeStatus.FAILED:
             console.print(f"[red]failed[/red] {rel} — {outcome.reason}")
         else:

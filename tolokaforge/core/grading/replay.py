@@ -12,9 +12,11 @@ Trial classification is the batch-selection predicate: a trial is *judge-eligibl
 iff its recorded ``grade.yaml`` carried a judge stage (``judge_status`` not
 ``unspecified``). Trials that never had a judge are *not-applicable*, and a bundle
 carrying no ``grade.yaml`` at all is *no-grade*, named with the grade-less shape
-its own trajectory says it is. Neither is ever judged and neither ever fails loud
-— not even under a rubric override, which would spend real tokens on a task that
-never had a judge stage.
+its own trajectory says it is — where that trajectory is itself absent or
+unreadable, the bundle is a named failure instead, because it cannot say why it
+carries no grade. Neither skip is ever judged and neither ever fails loud — not
+even under a rubric override, which would spend real tokens on a task that never
+had a judge stage.
 """
 
 from __future__ import annotations
@@ -325,7 +327,8 @@ def _carried_mapping(path: Path) -> dict[str, Any] | None:
     if isinstance(loaded, dict):
         return loaded
     raise MissingReplayInputError(
-        f"not a trial bundle: {path} holds {type(loaded).__name__} where a mapping belongs"
+        f"{path} holds {type(loaded).__name__} where a mapping belongs, so the bundle "
+        "cannot say what the run concluded"
     )
 
 

@@ -34,6 +34,7 @@ from pydantic import ValidationError
 from tests.unit.grading.test_judge import ScriptedClient
 from tests.utils.five_shape_run import write_five_shape_run
 from tests.utils.provision_failure import write_provision_failure_bundle
+from tolokaforge.core.failure_attribution import TrialOutcomeClass
 from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     REPLAY_UNAVAILABLE,
@@ -258,7 +259,7 @@ def test_classify_trial_fails_loud_when_grade_yaml_is_present_but_unreadable(
     trial_dir.mkdir()
     (trial_dir / "grade.yaml").write_text("- not\n- a\n- mapping\n")
 
-    with pytest.raises(MissingReplayInputError, match="not a trial bundle"):
+    with pytest.raises(MissingReplayInputError, match="cannot say what the run concluded"):
         classify_trial(trial_dir)
 
 
@@ -291,28 +292,34 @@ def test_grade_less_bundles_are_skips_that_say_which_grade_less_shape_they_are(
     """A bundle carrying no ``grade.yaml`` is a declared skip, not a failure, and
     its reason comes from its own recorded trajectory: the trial grading refused
     carries the recorded ``grading_error``, the aborted one carries its termination
-    reason, and the two sentences DIFFER — one hardcoded "(infrastructure abort)"
-    for both would mislabel half the population. Classification precedes input
-    reconstruction, so the judge is never reached and nothing is written."""
+    reason, and one in neither shape — a completed trial the run simply never
+    graded — is named as the anomaly it is. All three sentences DIFFER — one
+    hardcoded "(infrastructure abort)" for the lot would mislabel most of the
+    population. Classification precedes input reconstruction, so the judge is
+    never reached and nothing is written."""
     source = tmp_path / "run"
     ungradeable = source / "trials" / "ungradeable" / "0"
     aborted = source / "trials" / "aborted" / "0"
+    anomalous = source / "trials" / "anomalous" / "0"
     _grade_less_bundle(ungradeable, grading_error=_GRADING_REFUSAL)
     _aborted_bundle(aborted)
+    _grade_less_bundle(anomalous)
     client = _submit_report_client()
 
     assert classify_trial(ungradeable) is TrialEligibility.NO_GRADE
     outcomes = [
         run_replay_batch(source, replay_id="r1", trial=bundle, judge_client=client)[0]
-        for bundle in (ungradeable, aborted)
+        for bundle in (ungradeable, aborted, anomalous)
     ]
 
-    assert [o.status for o in outcomes] == [ReplayOutcomeStatus.SKIPPED_NO_GRADE] * 2
-    ungradeable_reason, aborted_reason = (o.reason or "" for o in outcomes)
+    assert [o.status for o in outcomes] == [ReplayOutcomeStatus.SKIPPED_NO_GRADE] * 3
+    ungradeable_reason, aborted_reason, anomalous_reason = (o.reason or "" for o in outcomes)
     assert _GRADING_REFUSAL in ungradeable_reason
     assert _GRADING_REFUSAL not in aborted_reason
     assert TerminationReason.API_TIMEOUT.value in aborted_reason
-    assert ungradeable_reason != aborted_reason
+    assert "neither grade-less shape" in anomalous_reason
+    assert TrialOutcomeClass.MEASURED.value in anomalous_reason
+    assert len({ungradeable_reason, aborted_reason, anomalous_reason}) == 3
     assert client.calls == 0
     assert not (source / "replays").exists()
 
@@ -818,7 +825,7 @@ def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_pa
 @pytest.mark.parametrize(
     ("grade_content", "reason_match"),
     [
-        ("- not\n- a\n- mapping\n", "not a trial bundle"),
+        ("- not\n- a\n- mapping\n", "cannot say what the run concluded"),
         ('{"a": [', "unreadable YAML"),
     ],
     ids=["not_mapping", "syntax_corrupt"],
@@ -962,6 +969,25 @@ def test_rejudge_cli_reports_a_grade_less_bundle_and_exits_zero(tmp_path: Path) 
         "failed": 0,
     }
     assert census["discovered"] == per_trial_lines
+
+
+def test_rejudge_cli_prints_bracket_bearing_grading_errors_verbatim(tmp_path: Path) -> None:
+    """A recorded ``grading_error`` is free text: ``judge[v2] refused …`` must reach
+    the operator as written on the skip line, not with ``[v2]`` eaten as console
+    markup. Digit-leading brackets stay literal on their own, so only a
+    letter-leading bracket discriminates."""
+    from tolokaforge.dx.cli.main import cli
+
+    source = tmp_path / "run"
+    bundle = source / "trials" / "ungradeable" / "0"
+    _grade_less_bundle(bundle, grading_error="judge[v2] refused the transcript")
+
+    result = CliRunner().invoke(
+        cli, ["rejudge", "--source", str(source), "--trial", str(bundle)], env={"COLUMNS": "200"}
+    )
+
+    assert result.exit_code == 0, result.output
+    assert "judge[v2] refused the transcript" in " ".join(result.output.split())
 
 
 def test_rejudge_cli_census_accounts_for_every_bundle_under_the_source(tmp_path: Path) -> None:

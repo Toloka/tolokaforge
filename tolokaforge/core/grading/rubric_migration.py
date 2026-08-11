@@ -37,10 +37,11 @@ re-checked against is resolved through the bundle's ``task_id`` to the pack whos
 override: pinning a fixture would make a CI re-verification decorative, where resolving from
 the pack makes editing the shipped constraint red the lock over the frozen corpus.
 
-Nothing here spends anything. It reaches the trace-replay reader, the one production trace
-evaluator, the pure agreement maths and the task loader ``tolokaforge validate`` already
-uses, and stops there — measured: no ``litellm`` / ``openai`` / ``anthropic`` module and no
-judge module enters ``sys.modules`` on import.
+Nothing here spends anything. It reaches the trace-replay reader and its bundle discovery,
+the one production trace evaluator, the outcome classifier a run's own attribution uses,
+the pure agreement maths and the task loader ``tolokaforge validate`` already uses, and
+stops there — measured: no ``litellm`` / ``openai`` / ``anthropic`` module and no judge
+module enters ``sys.modules`` on import.
 """
 
 from __future__ import annotations
@@ -1743,8 +1744,8 @@ def _excluded_from_the_corpus(bundle: Path) -> CorpusExclusion:
     termination = aborted_without_a_task_snapshot(bundle)
     if termination is None:
         raise MissingTraceReplayInputError(
-            f"not a trial bundle: {bundle / 'task.yaml'} is missing, so nothing names the "
-            "task whose migration this trial could speak to"
+            f"{bundle / 'task.yaml'} is missing, so nothing names the task whose "
+            "migration this trial could speak to"
         )
     return CorpusExclusion(
         bundle=str(bundle),

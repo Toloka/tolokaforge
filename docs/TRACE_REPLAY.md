@@ -5,8 +5,8 @@
 [`trace_checks`](GRADING.md#trace-checks) block against it again. No agent, no
 environment service, no judge — so it starts no container and spends no tokens. The
 guarantee is structural: `tolokaforge/core/grading/trace_replay.py` reaches the one
-production evaluator, the bundle reader and the authoring gate, and stops there, which
-a clean-subprocess import probe holds
+production evaluator, the bundle reader, the authoring gate and the outcome classifier
+a run's own attribution uses, and stops there, which a clean-subprocess import probe holds
 (`tests/canonical/test_retrace_cli.py::test_the_replay_module_reaches_neither_an_llm_client_nor_the_judge`).
 
 `rejudge` and `retrace` are separate commands because they cost different things:

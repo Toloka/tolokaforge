@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from rich.console import Console
+from rich.markup import escape
 
 from tolokaforge.core.grading.trace_replay import (
     ConstraintDiscrimination,
@@ -79,7 +80,9 @@ def _disposition(outcome: TrialTraceReplayOutcome, bundle: str) -> str:
     if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
         return f"[warn]skip (not applicable)[/warn] {bundle}"
     if outcome.status is TraceReplayOutcomeStatus.SKIPPED_NO_TASK:
-        return f"[warn]skip (no task)[/warn] {bundle} — {outcome.reason}"
+        # The reason embeds recorded trajectory text; escape it so a bracketed
+        # fragment prints rather than vanishing as console markup.
+        return f"[warn]skip (no task)[/warn] {bundle} — {escape(outcome.reason or '')}"
     if outcome.status is TraceReplayOutcomeStatus.FAILED:
         return f"[error]failed[/error] {bundle} — {outcome.reason}"
     evidence = outcome.evidence
