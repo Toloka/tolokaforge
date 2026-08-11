@@ -340,11 +340,14 @@ def _runner_service_body(runner_image: str, agent_service: str) -> dict[str, Any
 
 
 def _db_service_body(db_service_image: str) -> dict[str, Any]:
+    # The engine's ``tolokaforge-db-service`` image ships ``curl`` and no
+    # ``wget``; matches the image's own ``HEALTHCHECK`` while tightening the
+    # timings for per-trial provisioning.
     return {
         "image": db_service_image,
         "ports": ["8000"],
         "healthcheck": {
-            "test": ["CMD-SHELL", "wget -q -O - http://localhost:8000/health || exit 1"],
+            "test": ["CMD-SHELL", "curl -fs http://localhost:8000/health || exit 1"],
             "interval": "2s",
             "timeout": "3s",
             "retries": 30,
