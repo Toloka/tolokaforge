@@ -1,6 +1,6 @@
 # pricing-updater
 
-Fetch model pricing from the [OpenRouter API](https://openrouter.ai/api/v1/models) and update `tolokaforge/core/data/pricing.json`.
+Fetch model pricing from the [OpenRouter API](https://openrouter.ai/api/v1/models) and update `tolokaforge_models/src/tolokaforge_models/data/pricing.json`.
 
 ## Usage
 
@@ -30,4 +30,4 @@ uv run pricing-updater show minimax
 2. Parses `pricing.prompt` and `pricing.completion` (per-token strings)
 3. Converts to USD per 1M tokens
 4. Merges with existing `pricing.json` (new entries override, old entries preserved)
-5. Writes the result to `tolokaforge/core/data/pricing.json`
+5. Writes the result to `tolokaforge_models/src/tolokaforge_models/data/pricing.json`

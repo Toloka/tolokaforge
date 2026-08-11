@@ -296,8 +296,8 @@ suspect construct with explicit `properties` and watch for the
 property names to start round-tripping. The fix belongs in a new
 [`ToolSchemaSanitizer`](../tolokaforge/core/llm/schema_sanitizer.py)
 subclass shipped in
-[`tolokaforge_models/policies/`](../tolokaforge_models/policies/) (see
-[`GeminiSchema`](../tolokaforge_models/policies/gemini.py) for the worked
+[`tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/) (see
+[`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) for the worked
 example) — never in prompt engineering or in renaming task-pack fields to
 match the model's preference.
 

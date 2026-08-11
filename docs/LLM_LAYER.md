@@ -348,7 +348,7 @@ Three concrete sanitizers ship today:
   preset uses `passthrough` instead — see § `response_policy` for the
   rationale.
 * `GeminiSchema(StrictSchema)` — shipped by
-  [`tolokaforge-models`](../tolokaforge_models/policies/gemini.py) and used
+  [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) and used
   by the `gemini` preset. Adds `flatten_oneof_discriminator=True` on top of
   `StrictSchema`'s rewrites because Gemini's tool spec is a JSON-Schema
   *subset* that does not document `$defs`/`$ref`, `oneOf`/`anyOf` with
@@ -1080,7 +1080,7 @@ Implementations:
   `openai_gpt5` and `xai_grok` presets.
 * `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
   corruption (`minimax` preset, registry name `minimax_m3_tags`), shipped
-  by [`tolokaforge-models`](../tolokaforge_models/policies/minimax.py).
+  by [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/minimax.py).
   M3's XML → JSON tool-call conversion mangles the `tags` array on every
   emission (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The
   composite chains `JsonRecursiveCoerceResponse` (stringified-list → list,
@@ -1315,7 +1315,7 @@ out-of-tree recovery classes.
 
 **Overridable classmethod:**
 
-* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (see [`GeminiRecursiveSchema`](../tolokaforge_models/policies/gemini.py) — it substitutes a permissive open-object schema at any point of cyclic re-entry).
+* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (see [`GeminiRecursiveSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) — it substitutes a permissive open-object schema at any point of cyclic re-entry).
 
 **Class-attribute hooks** — six flags on the class body, declared with
 `ClassVar[…]` so a subclass method that mis-writes `self.<hook> = ...`
@@ -1332,7 +1332,7 @@ shadow:
 | `strip_re2_incompatible_patterns` | `ClassVar[bool]` | `True` | Remove `pattern` values containing lookarounds / backreferences (OpenAI / xAI / Qwen-strict raise 500 on these). Gemini appears to pass RE2-incompatible patterns through unchanged and overrides to `False`. |
 
 The defaults preserve the shipped OpenAI / xAI Grok behaviour.
-[`GeminiSchema`](../tolokaforge_models/policies/gemini.py) subclasses
+[`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) subclasses
 `StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
 `GeminiRecursiveSchema` subclasses `GeminiSchema` and additionally overrides
 `inline_refs_in_tool`. Neither reaches into any `_`-prefixed symbol.
@@ -1346,7 +1346,7 @@ text to append to the system prompt. Subclasses that need to close over
 instance state (e.g. `RefResolvingDictMapHints` — the `$ref`-resolving +
 one-level-nested variant used by the `thinkingmachines/inkling` route)
 override the method directly (see
-[`RefResolvingDictMapHints`](../tolokaforge_models/policies/inkling.py) for
+[`RefResolvingDictMapHints`](../tolokaforge_models/src/tolokaforge_models/policies/inkling.py) for
 the shipped example); the shape is an instance method so the override needs
 no `# type: ignore[override]` marker.
 

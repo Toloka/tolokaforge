@@ -13,7 +13,7 @@ normal synchronous Claude Code run; nothing to await.
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`, PR #`{{PR}}`.
 
 ## Tasks (write/edit files only)
-1. Fold the overlay preset into `tolokaforge/core/data/model_presets.yaml`: add ONE new entry
+1. Fold the overlay preset into `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`: add ONE new entry
    under `presets:` with the overlay's `match` + axes. Leave every other preset untouched (do
    NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
    the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
@@ -23,7 +23,7 @@ normal synchronous Claude Code run; nothing to await.
    `known_unsupported=frozenset({...})` from decision.json `ceilings`. Match the surrounding
    style and keep model_ids unique (the canonical registry test enforces this).
 3. ENSURE PRICING. Verify the candidate's litellm name (`{{NAME}}`) has an entry under `models`
-   in `tolokaforge/core/data/pricing.json`. The pre-observe step normally adds it, but ALWAYS
+   in `tolokaforge_models/src/tolokaforge_models/data/pricing.json`. The pre-observe step normally adds it, but ALWAYS
    check and fill it if missing: fetch OpenRouter pricing
    (`curl -s https://openrouter.ai/api/v1/models`, find the object whose `id == "{{NAME}}"`),
    convert per-token `prompt` / `completion` to USD-per-1M (multiply by 1e6), and add

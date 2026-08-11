@@ -13,9 +13,9 @@ on:
     # can always be requested manually on a skipped PR via an `@claude`
     # comment (the issue_comment trigger has no path filter).
     paths-ignore:
-      - tolokaforge/core/data/model_presets.yaml
-      - tolokaforge/core/data/pricing.json
-      - tolokaforge/testing/certify/_registry.py
+      - tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml
+      - tolokaforge_models/src/tolokaforge_models/data/pricing.json
+      - tolokaforge_models/src/tolokaforge_models/certificates/registry.py
       - uv.lock
       - docs/**
       - CHANGELOG.md

@@ -1,22 +1,10 @@
-"""Automated pre/post byte-identity lock on the fingerprint sub-payload.
+"""Byte-identity lock on the fingerprint sub-payload.
 
-The Milestone 29 cutover flips :data:`tolokaforge.core.model_data._DATA_ROOT`
-from the engine-side ``tolokaforge/core/data/`` tree to the
-``tolokaforge_models/data/`` tree shipped by the models wheel, and widens
-the hashed payload of
-:func:`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
-to include ``providers.yaml`` (previously not hashed).
-
-The full-payload ``content_sha256`` therefore changes across the flip.
-This test locks the *sub-payload* ``sha256({presets, pricing, certificates})``
-— the payload minus the newly-joined ``providers`` slice — as byte-invariant
-across the flip. Any drift — accidental ``ALL_MODELS`` reordering, dropped
-certificate, whitespace tweak in the JSON canonicaliser, byte-copy mismatch
-of the moved data files — fails the assertion naming the sub-payload.
-
-The expected hex is the ``sha256({presets, pricing, certificates})`` computed
-on the Stage 3 tip (post-move, pre-flip) using the exact same
-canonicalisation :func:`compute_models_fingerprint` uses.
+Locks ``sha256({presets, pricing, certificates})`` — the models-fingerprint
+payload minus its ``providers`` slice — as byte-invariant against a
+hardcoded hex. Any drift (``ALL_MODELS`` reorder, dropped certificate,
+JSON canonicaliser tweak, byte-copy mismatch of a bundled data file) trips
+the assertion naming the sub-payload.
 """
 
 from __future__ import annotations
@@ -34,24 +22,21 @@ from tolokaforge.testing.certify import ALL_MODELS
 
 pytestmark = pytest.mark.canonical
 
-EXPECTED_PRE_WIDENING_SHA256: Final[str] = (
+EXPECTED_SUB_PAYLOAD_SHA256: Final[str] = (
     "29b3ee7c769aeca01a50bfbcc656e2bc86183fef7edb8339851894a6483004e1"
 )
-"""sha256 over the canonicalised ``{presets, pricing, certificates}`` triple
-computed on Stage 3's tip (``3babf85a``) — before Stage 4 widened the payload
-to include ``providers.yaml``. Reproduce by running
-:func:`_compute_pre_widening_subset_sha` on that commit."""
+"""sha256 over the canonicalised ``{presets, pricing, certificates}`` triple.
+Reproduce by running :func:`_compute_sub_payload_sha`."""
 
 
-def _compute_pre_widening_subset_sha() -> str:
-    """Rebuild the pre-widening sub-payload from the current accessors.
-
-    Uses the same canonicalisation
+def _compute_sub_payload_sha() -> str:
+    """Compute ``sha256({presets, pricing, certificates})`` using the same
+    canonicalisation
     :func:`~tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`
     applies: ``json.dumps(..., sort_keys=True, ensure_ascii=True,
     separators=(",", ":"))`` over the UTF-8 bytes. Excludes the ``providers``
-    key that Stage 4 added — the whole point of this test is to lock the
-    unchanged sub-payload across the widening.
+    slice so the hash locks the three inputs that were hashed together before
+    ``providers.yaml`` joined the payload.
     """
     payload = {
         "presets": get_resolved_presets(),
@@ -62,14 +47,13 @@ def _compute_pre_widening_subset_sha() -> str:
     return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
 
 
-def test_sub_payload_is_byte_invariant_across_data_root_flip() -> None:
-    actual = _compute_pre_widening_subset_sha()
+def test_sub_payload_sha_matches_locked_hex() -> None:
+    actual = _compute_sub_payload_sha()
 
-    assert actual == EXPECTED_PRE_WIDENING_SHA256, (
-        f"sha256({{presets, pricing, certificates}}) drifted across the "
-        f"data-root flip: expected {EXPECTED_PRE_WIDENING_SHA256}, got "
-        f"{actual}. This means one of the three inputs shifted — a byte "
-        f"tweak to a moved data file, an ALL_MODELS reordering, a dropped "
-        f"certificate, or a whitespace / sort-key change in the canonical "
-        f"JSON — and the flip is not byte-identical anymore."
+    assert actual == EXPECTED_SUB_PAYLOAD_SHA256, (
+        f"sha256({{presets, pricing, certificates}}) drifted: expected "
+        f"{EXPECTED_SUB_PAYLOAD_SHA256}, got {actual}. One of the three "
+        f"inputs shifted — a byte tweak to a bundled data file, an "
+        f"ALL_MODELS reordering, a dropped certificate, or a whitespace "
+        f"/ sort-key change in the canonical JSON."
     )

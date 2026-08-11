@@ -407,12 +407,11 @@ Schema fields (see
 | `format_model_name_bare` | When `true`, `LLMClient._format_model_name` returns `config.name` as-is. Nova only. |
 | `kwargs_pin_transport` | When `true`, `endpoint` and `api_key_env` are read fresh per attempt and pinned into `kwargs["api_base"]` / `kwargs["api_key"]` (fails loud when `api_key_env` resolves empty). Nova only. |
 
-`providers.yaml` lives at `tolokaforge_models/data/providers.yaml` under the
-engine wheel. The cutover PR
-([#938](https://github.com/Toloka/tolokaforge/issues/938)) moves the file to
-`tolokaforge_models/data/providers.yaml` alongside the other data artifacts,
-and widens `engine_run_state.json`'s `models_fingerprint.content_sha256` to
-cover it.
+`providers.yaml` ships inside the `tolokaforge-models` wheel at
+`tolokaforge_models/data/providers.yaml`. Its bytes contribute to
+`engine_run_state.json`'s `models_fingerprint.content_sha256` alongside
+`pricing.json` and `model_presets.yaml` — see [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md)
+and [ADR-0030 § "Fingerprinting for auditability"](adr/0030-tolokaforge-models-split.md#fingerprinting-for-auditability).
 
 ### Preset overlay file (no engine release required)
 
