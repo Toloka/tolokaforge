@@ -1,10 +1,10 @@
 """Lock the ``DictMapHints.build_hints`` public-hook shape.
 
-Bucket B companion to ADR-0030 § follow-up 8. ``build_hints`` is an instance
-method (not a ``@staticmethod``) so subclasses may override it while closing
-over ``self`` state; the private predecessor (``_build_hints``) is gone from
-both the base class and :class:`RefResolvingDictMapHints`, and no
-``type: ignore[override]`` remains in the module.
+``build_hints`` is an instance method (not a ``@staticmethod``) so subclasses
+may override it while closing over ``self`` state. The name is public on both
+:class:`DictMapHints` and :class:`RefResolvingDictMapHints` — no ``_build_hints``
+attribute is defined on either class — and ``prompt_policy.py`` carries no
+``type: ignore[override]`` pragma.
 """
 
 from __future__ import annotations
@@ -33,10 +33,10 @@ def test_build_hints_first_parameter_is_self() -> None:
     assert params[0] == "self", msg
 
 
-def test_private_build_hints_is_gone_on_base_and_subclass() -> None:
-    base_msg = "DictMapHints._build_hints must be removed by the Bucket B promotion."
+def test_no_underscored_build_hints_attribute() -> None:
+    base_msg = "DictMapHints must not define an underscored `_build_hints` attribute."
     assert not hasattr(DictMapHints, "_build_hints"), base_msg
-    sub_msg = "RefResolvingDictMapHints._build_hints must be renamed to build_hints."
+    sub_msg = "RefResolvingDictMapHints must not define an underscored `_build_hints` attribute."
     assert not hasattr(RefResolvingDictMapHints, "_build_hints"), sub_msg
 
 
@@ -49,7 +49,7 @@ def test_subclass_override_is_named_build_hints() -> None:
 
 def test_prompt_policy_source_carries_no_type_ignore_override() -> None:
     source = Path(prompt_policy.__file__).read_text(encoding="utf-8")
-    msg = "prompt_policy.py must not carry a 'type: ignore[override]' (Bucket B removes it)."
+    msg = "prompt_policy.py must not carry a 'type: ignore[override]' pragma."
     assert "type: ignore[override]" not in source, msg
 
 

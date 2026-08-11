@@ -1,23 +1,30 @@
 """Public-API boundary guardrail for per-model policy subclasses.
 
-Every currently-shipped per-model subclass of a
-:mod:`tolokaforge.core.llm.*` base must reach the engine through public API
-only — no ``_``-prefixed helper imports, no private-base-method overrides,
-no ``self._x`` / ``super()._x`` access to a base's private surface. This
-module locks that contract via four static / runtime checks so a regression
-fires immediately, before the #938 cutover bakes the violation into
-``tolokaforge_models``.
+Every per-model subclass of a :mod:`tolokaforge.core.llm.*` base must reach
+the engine through public API only — no ``_``-prefixed helper imports, no
+private-base-method overrides, no ``self._x`` / ``super()._x`` access to a
+base's private surface. This module locks that contract via four static /
+runtime checks:
 
-Tests 1-3 operate on the source text of each entry in
-:data:`PER_MODEL_SUBCLASSES` — parsed by :mod:`ast`, no runtime import of the
-subclass required. Test 4 walks
-:data:`tolokaforge.core.llm.presets._POLICY_REGISTRIES` at import time and
-asserts that every registered class inheriting from another in-registry class
-appears in the guardrail's enumeration, so a new per-model subclass added to
-a preset registry cannot slip past unlisted.
+* **Test 1 (private-symbol imports)** — no ``from tolokaforge.core.llm[.X]
+  import _foo`` on the subclass' host module.
+* **Test 2 (private-base-method override)** — no subclass method named
+  ``_x`` where ``_x`` exists on any resolvable engine base.
+* **Test 3 (private-attr reach)** — no ``self._x`` / ``cls._x`` /
+  ``super()._x`` where ``_x`` is a base-class method name and not
+  locally defined by the subclass.
+* **Test 4 (registry audit)** — every class in
+  :data:`tolokaforge.core.llm.presets._POLICY_REGISTRIES` that inherits
+  from another in-registry class appears in :data:`PER_MODEL_SUBCLASSES`,
+  so a new per-model subclass added to a preset registry cannot slip past
+  unlisted.
 
-The subclass entries name concrete-module dotted paths (e.g.
-``tolokaforge.core.llm.schema_sanitizer``) rather than the top-level
+Tests 1-3 parse the subclass' host-module source via :mod:`ast`; no runtime
+import of the subclass is required. Test 4 walks the registries at import
+time.
+
+Entries in :data:`PER_MODEL_SUBCLASSES` name concrete-module dotted paths
+(e.g. ``tolokaforge.core.llm.schema_sanitizer``) rather than the top-level
 ``tolokaforge.core.llm`` package: the top-level ``__init__`` uses lazy
 ``__getattr__`` for a handful of names, and Test 2 imports each base class
 directly to inspect its methods.
@@ -29,29 +36,29 @@ import ast
 import importlib
 import inspect
 from pathlib import Path
-from typing import Any
+from typing import Any, Final
 
 import pytest
 
 pytestmark = pytest.mark.unit
 
 
-#: Every currently-shipped per-model subclass or composite helper that ADR-0030
-#: § Follow-up 8 puts on the #938 relocation path. Two shapes qualify:
+#: Per-model subclasses and composite helpers under the boundary guardrail.
+#: Two shapes qualify:
 #:
 #: (a) subclasses of a concrete engine base already registered in a
 #:     ``_POLICY_REGISTRIES`` slot (``StrictSchema``, ``DictMapHints``,
 #:     ``OpenAIReasoningCodec``, ``ArrayDictMapResponse``, ...);
-#: (b) composite helper classes that inherit only from ``object`` but wire up
-#:     other in-tree policy instances internally
-#:     (``JsonRecursiveCoerceResponse``, ``ItemRecursiveUnwrapResponse``,
-#:     ``MinimaxM3TagRecoveryResponse``).
+#: (b) composite helper classes registered in ``_POLICY_REGISTRIES`` that
+#:     inherit only from ``object`` and wire up other in-tree policy
+#:     instances internally (``JsonRecursiveCoerceResponse``,
+#:     ``ItemRecursiveUnwrapResponse``, ``MinimaxM3TagRecoveryResponse``).
 #:
 #: Test 4 below is the authoritative audit for shape (a): it walks
 #: ``_POLICY_REGISTRIES`` at runtime and asserts every registered class with an
 #: in-registry base appears here. Shape (b) entries carry no automatic audit
 #: from the registries and must be added manually when a new composite lands.
-PER_MODEL_SUBCLASSES: list[tuple[str, str]] = [
+PER_MODEL_SUBCLASSES: Final[tuple[tuple[str, str], ...]] = (
     ("tolokaforge.core.llm.schema_sanitizer", "GeminiSchema"),
     ("tolokaforge.core.llm.schema_sanitizer", "GeminiRecursiveSchema"),
     ("tolokaforge.core.llm.prompt_policy", "RefResolvingDictMapHints"),
@@ -60,7 +67,7 @@ PER_MODEL_SUBCLASSES: list[tuple[str, str]] = [
     ("tolokaforge.core.llm.response_policy", "JsonRecursiveCoerceResponse"),
     ("tolokaforge.core.llm.response_policy", "ItemRecursiveUnwrapResponse"),
     ("tolokaforge.core.llm.reasoning_codec", "OpenAISummaryReplayReasoningCodec"),
-]
+)
 
 #: Engine slot Protocols — the abstract slot definitions. They never appear in
 #: ``_POLICY_REGISTRIES`` (only concrete classes are registered), but Test 4
@@ -147,7 +154,7 @@ def _iter_engine_base_classes(class_def: ast.ClassDef) -> list[type[Any]]:
         "tolokaforge.core.llm.assistant_text_policy",
     ]
     for base in class_def.bases:
-        base_name = base.id if isinstance(base, ast.Name) else None
+        base_name = _base_name(base)
         if base_name is None:
             continue
         for dotted in llm_modules:
@@ -157,6 +164,20 @@ def _iter_engine_base_classes(class_def: ast.ClassDef) -> list[type[Any]]:
                 bases.append(candidate)
                 break
     return bases
+
+
+def _base_name(node: ast.expr) -> str | None:
+    """Extract the trailing identifier from a base-class expression.
+
+    Handles bare identifiers (``StrictSchema``) and dotted attribute chains
+    (``tolokaforge.core.llm.schema_sanitizer.StrictSchema``); returns
+    ``None`` for anything else (subscripted generics, calls, ...).
+    """
+    if isinstance(node, ast.Name):
+        return node.id
+    if isinstance(node, ast.Attribute):
+        return node.attr
+    return None
 
 
 def _base_method_names(base_cls: type[Any]) -> set[str]:
@@ -183,7 +204,9 @@ def test_no_private_symbol_imports(module_dotted: str, class_name: str) -> None:
     for node in ast.walk(tree):
         if not isinstance(node, ast.ImportFrom):
             continue
-        if node.module is None or not node.module.startswith("tolokaforge.core.llm."):
+        if node.module is None or not (
+            node.module == "tolokaforge.core.llm" or node.module.startswith("tolokaforge.core.llm.")
+        ):
             continue
         for alias in node.names:
             if alias.name.startswith("_"):

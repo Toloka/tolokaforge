@@ -1,24 +1,24 @@
 """:class:`StrictSchema` public hook — override contract.
 
-Locks the promoted public overridable hook :meth:`StrictSchema.inline_refs_in_tool`
+Locks the public overridable hook :meth:`StrictSchema.inline_refs_in_tool`
 against silent regression. A per-model subclass must be able to override the
-hook at its public name and have the base's :meth:`~StrictSchema.sanitize` pipeline
-route through the override rather than the base implementation.
+hook at its public name and have the base's :meth:`~StrictSchema.sanitize`
+pipeline route through the override rather than the base implementation.
 
 Two properties matter here and both are asserted:
 
 1. The base class exposes the hook at its public (non-underscored) name — a
    subclass' ``def inline_refs_in_tool(cls, tool)`` is a genuine override, not
-   the accidental addition of a new attribute alongside a still-private base
-   method.
-2. :meth:`GeminiRecursiveSchema.inline_refs_in_tool` — the one shipped
-   override — remains distinct from the base implementation, so the
-   cycle-tolerant path still fires on Gemini routes.
+   the accidental addition of a new attribute alongside a private
+   ``_inline_refs_in_tool``.
+2. :meth:`GeminiRecursiveSchema.inline_refs_in_tool` — the shipped override —
+   remains distinct from the base implementation, so the cycle-tolerant path
+   still fires on Gemini routes.
 """
 
 from __future__ import annotations
 
-from typing import Any
+from typing import Any, ClassVar
 
 import pytest
 
@@ -43,7 +43,7 @@ _SIMPLE_TOOL: dict[str, Any] = {
 class _MarkingStrict(StrictSchema):
     """Synthetic subclass — asserts the hook is genuinely overridable."""
 
-    inline_refs_calls: list[Any] = []
+    inline_refs_calls: ClassVar[list[Any]] = []
 
     @classmethod
     def inline_refs_in_tool(cls, tool: Any) -> Any:
@@ -74,8 +74,8 @@ class TestStrictSchemaInlineRefsInToolHookOverride:
             "at its public name for subclasses to override it as a classmethod."
         )
         assert not hasattr(StrictSchema, "_inline_refs_in_tool"), (
-            "underscored predecessor `_inline_refs_in_tool` must not linger on the "
-            "class — the public name is the contract."
+            "`StrictSchema` must not define an underscored `_inline_refs_in_tool` "
+            "attribute — the public name is the contract."
         )
 
     def test_gemini_recursive_override_distinct_from_base(self) -> None:

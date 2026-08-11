@@ -69,7 +69,7 @@ class DictMapParam:
         return example
 
 
-def find_additional_properties(prop_schema: dict[str, Any]) -> Any:
+def find_additional_properties(prop_schema: dict[str, Any]) -> dict[str, Any] | bool | None:
     """Locate an ``additionalProperties`` declaration on *prop_schema* or any
     of its ``anyOf`` / ``oneOf`` branches.
 
