@@ -445,6 +445,26 @@ Each task loads under its enclosing project. `validate` walks up from the `task.
 
 `make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
+## Run and worker exit codes
+
+`tolokaforge run` and `tolokaforge worker` are usable as gates on whether the run measured everything it attempted:
+
+| Outcome | Exit code |
+|---|---|
+| every attempt reached a verdict | `0` |
+| the run completed and any trial is **`ungradeable`** | `1`, after every artifact is written, the end banner is printed and the run directory is on stdout |
+| the run never happened — bad config, orchestrator raise, zero tasks | non-zero with **empty** stdout; see [§ stdout / stderr contract](#stdout--stderr-contract) |
+
+An **ungradeable** trial is one the run attempted and measured and then could not grade: `trajectory.yaml` carries a `grading_error` and no `grade`. A run that reports success while an arbitrary, model-correlated subset of its grades is missing is the failure mode this gate exists to remove.
+
+A trial the provider or the substrate killed — an `api_timeout`, `rate_limit` or `provision_error`, counted under `infrastructure_aborts` — produces no verdict either and **does not** trigger the gate. Those trials were never measured, they sit outside the measured denominator by design, and failing a several-hour run for one rate limit is how an exit code becomes something operators route around instead of reading.
+
+There is no tolerance threshold. A threshold is a way to re-silence the signal, and the number an operator would tune is already `ungradeable` in `aggregate.json`.
+
+On exit `1` the console carries one error line naming the count, the first few trial ids and the total. The run directory is complete, so the response is to read it: `ungradeable` in `aggregate.json` says how many, `per_task_metrics.json` says where, and each named trial's `trajectory.yaml` `grading_error` says why. Then rerun those trials, or accept the loss deliberately.
+
+`tolokaforge worker` applies the same rule to the attempts that worker completed, which is the surface a sharded CI actually gates on. Its `--run-dir` summary line is printed either way — the gate is a verdict on top of a completed shard, not a replacement for what the shard did.
+
 ## Run banner
 
 `tolokaforge run` frames every invocation with two banners on stderr. Both banners write through the shared `console`, so the semantic palette, soft-wrapping, and stream posture from [§ Display layer](#display-layer) apply.
@@ -602,7 +622,9 @@ observability:
 | `tolokaforge analyze`                        | (empty)                               | Trajectory summary, tool-failure / log-error breakdown.      |
 | `tolokaforge docker build` / `up` / `down` / `status` | (empty)                      | Build progress, stack status, error text.                    |
 
-On any failure — bad config, orchestrator raise, zero tasks — stdout stays **empty** and the process exits non-zero. The `tolokaforge run` "no tasks" branch and every `tolokaforge validate` failure exit with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+A failure that produces **no run** — bad config, orchestrator raise, zero tasks — leaves stdout **empty** and exits non-zero. The `tolokaforge run` "no tasks" branch and every `tolokaforge validate` failure exit with code `1`; other failures propagate whatever exit code the underlying error raises (click `UsageError` → 2, `SystemExit(N)` → N).
+
+The grading-completeness gate is the one non-zero exit that **does** print the run directory: the run happened, wrote every artifact and emitted its path, and the exit code reports separately that it could not grade everything it measured — see [§ Run and worker exit codes](#run-and-worker-exit-codes). Suppressing the path there would make the incomplete run harder to inspect than the complete one.
 
 The emitted path is `Path.resolve()`'d: symlinks are canonicalised and the line is always absolute, regardless of the caller's cwd or how the config expressed `evaluation.output_dir`.
 
@@ -613,6 +635,8 @@ RUN_DIR=$(tolokaforge run --config path/to/run.yaml)
 # stderr still shows progress; RUN_DIR is the absolute run-dir path.
 tolokaforge status --run-dir "$RUN_DIR"
 ```
+
+The capture still works when the run could not grade every trial — the path is emitted before the exit code is decided — but **under `set -e`, which is most CI, the shell aborts at that assignment**, because the command exits `1`. That is the intended behaviour: a lossy run should stop the pipeline. A caller that wants the directory anyway, to inspect what was lost, has to say so — `RUN_DIR=$(tolokaforge run --config …) || true` — and then decide what to do about the incomplete run rather than proceeding as if it were complete.
 
 Adding `2>/dev/null` (or `2>run.log`) drops progress without breaking the capture — the artifact-path emission is independent of `--verbose` / `--quiet` / `--log-format`, which shape stderr only.
 

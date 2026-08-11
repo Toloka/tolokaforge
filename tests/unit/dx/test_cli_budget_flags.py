@@ -17,6 +17,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
 from tolokaforge.core.budgets import (
     CompositeBudget,
     CostBudget,
@@ -66,6 +67,7 @@ def _make_capturing_orchestrator(
             captured["deps"] = kwargs.get("deps")
             captured["config"] = args[0] if args else kwargs.get("config")
             self.tasks = [object()]
+            self.grading_completeness = complete_run()
 
         def load_tasks(self) -> None:
             return None

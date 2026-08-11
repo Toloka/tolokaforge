@@ -7,8 +7,8 @@ path, so the attempt reaches ``total_trials``, keeps the ``termination_reason``
 it really ended with, and leaves the cause recoverable from its bundle.
 
 Every refusal here is produced, not typed: the in-process runner servicer
-records two tool calls under one ``call_id``, which needs no live provider and
-which the trial's event timeline cannot join.
+records two tool calls under an id the message view declares once, which needs
+no live provider and which the trial's event timeline refuses to reconcile.
 
 ``InProcessConductor.run()`` is not drivable without a real environment — it
 dies inside ``EnvironmentState.hydrate()`` — so the composition tests reach the
@@ -47,7 +47,8 @@ from tests.utils.servicer_runtime import (
     produce_grading_refusal,
     register_collided_trial,
 )
-from tolokaforge.core.conductor import ConductorContext, InProcessConductor
+from tolokaforge.core.conductor import ConductorContext, InProcessConductor, _TrialSetup
+from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,
@@ -58,7 +59,8 @@ from tolokaforge.core.models import (
     Trajectory,
     TrialStatus,
 )
-from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps
+from tolokaforge.core.orchestrator import GradingCompleteness, Orchestrator, OrchestratorDeps
+from tolokaforge.core.output.artifacts import FileArtifactWriter
 from tolokaforge.core.runtime import InMemoryRuntimeBackend
 from tolokaforge.core.trial import TrialResult, TrialSpec
 from tolokaforge.core.trial_grader import GradingFailedError, RunnerRPCTrialGrader
@@ -93,16 +95,24 @@ class _RefuseOneTrialGrader:
 
     *refusal* is the message a real ``GradeTrial`` refusal carried, captured
     once from the servicer — the string is produced; which trial it lands on is
-    the scenario.
+    the scenario. ``refusing_index=None`` refuses nothing, for a scenario whose
+    only defect is elsewhere.
+
+    A trial the substrate aborted is returned unverdicted rather than graded,
+    mirroring ``RunnerRPCTrialGrader.grade``'s own first branch — grading a
+    trial production never grades would make the negative lock below measure a
+    state the engine cannot reach.
     """
 
-    def __init__(self, refusal: str, *, refusing_index: int) -> None:
+    def __init__(self, refusal: str, *, refusing_index: int | None) -> None:
         self._refusal = refusal
         self._refusing_index = refusing_index
 
     def grade(
         self, spec: TrialSpec, trajectory: Trajectory, agent_system_prompt: str
     ) -> Grade | None:
+        if classify_trial_outcome(trajectory) is TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+            return None
         if trajectory.trial_index == self._refusing_index:
             raise GradingFailedError(self._refusal)
         return Grade(
@@ -242,20 +252,24 @@ class _GradingPhaseConductor:
     capture — are skipped.
     """
 
-    def __init__(self, ctx: ConductorContext, grader: Any) -> None:
+    def __init__(
+        self, ctx: ConductorContext, grader: Any, *, aborting: _ScriptedAbort | None = None
+    ) -> None:
         self._conductor = InProcessConductor(**{**vars(ctx), "trial_grader": grader})
         self._output_dir = ctx.output_dir
+        self._aborting = aborting
 
     def run(self, spec: TrialSpec, task_config: TaskConfig) -> TrialResult:
         trial_idx = int(spec.trial_id.rsplit(":", 1)[1])
         now = datetime.now(UTC)
+        aborted = self._aborting is not None and self._aborting.trial_index == trial_idx
         trajectory = Trajectory(
             task_id=task_config.task_id,
             trial_index=trial_idx,
             start_ts=now,
             end_ts=now,
             status=TrialStatus.COMPLETED,
-            termination_reason=TerminationReason.AGENT_DONE,
+            termination_reason=(self._aborting.reason if aborted else TerminationReason.AGENT_DONE),
             messages=[],
             metrics=Metrics(),
         )
@@ -268,24 +282,53 @@ class _GradingPhaseConductor:
         )
 
 
-def _run_with_one_refusal(
+@dataclass(frozen=True)
+class _ScriptedAbort:
+    """A termination reason to stamp on one trial, standing in for the substrate.
+
+    ``API_TIMEOUT`` rather than ``RATE_LIMIT``: both are excluded typed reasons,
+    but ``Orchestrator._is_retryable_trajectory`` calls ``RATE_LIMIT`` retryable,
+    so the orchestrator would requeue the attempt until the retry budget is spent
+    and the run under test would be a requeue storm rather than one trial.
+    """
+
+    trial_index: int
+    reason: TerminationReason
+
+
+@dataclass(frozen=True)
+class _CompletedRun:
+    """A finished ``Orchestrator.run()``: where it wrote, and what it graded."""
+
+    run_dir: Path
+    completeness: GradingCompleteness
+
+
+def _run_orchestrator(
     tmp_path: Path,
     refusal: str,
     *,
     repeats: int,
     events: _RecordingEvents | None = None,
-) -> Path:
-    """Drive a real ``Orchestrator.run()`` in which trial 1's grading refuses."""
+    refusing_index: int | None = 1,
+    aborting: _ScriptedAbort | None = None,
+) -> _CompletedRun:
+    """Drive a real ``Orchestrator.run()`` with one scripted defect.
+
+    By default trial 1's grading refuses. ``refusing_index=None`` with an
+    ``aborting`` trial gives the other scenario: a run whose only defect is a
+    trial the substrate killed.
+    """
     run_root = tmp_path / "results" / "run_base"
     run_root.parent.mkdir(parents=True, exist_ok=True)
 
-    grader = _RefuseOneTrialGrader(refusal, refusing_index=1)
+    grader = _RefuseOneTrialGrader(refusal, refusing_index=refusing_index)
     orch = Orchestrator(
         make_run_config(run_root, repeats=repeats),
         deps=OrchestratorDeps(
             events=events or _RecordingEvents(),
             runtime_backend=InMemoryRuntimeBackend(),
-            conductor_factory=lambda ctx: _GradingPhaseConductor(ctx, grader),
+            conductor_factory=lambda ctx: _GradingPhaseConductor(ctx, grader, aborting=aborting),
         ),
     )
     orch.tasks = [make_task_config("TASK-A")]
@@ -297,7 +340,7 @@ def _run_with_one_refusal(
     adapter.get_grading_config.return_value = None
     orch.adapter = adapter
 
-    return orch.run()
+    return _CompletedRun(run_dir=orch.run(), completeness=orch.grading_completeness)
 
 
 class TestTheRunCountsTheUngradeableAttempt:
@@ -306,7 +349,7 @@ class TestTheRunCountsTheUngradeableAttempt:
     def test_both_trials_reach_the_metrics_and_the_bundle_lands(
         self, real_refusal: str, tmp_path: Path
     ) -> None:
-        run_dir = _run_with_one_refusal(tmp_path, real_refusal, repeats=2)
+        run_dir = _run_orchestrator(tmp_path, real_refusal, repeats=2).run_dir
 
         per_task = json.loads((run_dir / "per_task_metrics.json").read_text())
         assert len(per_task) == 1
@@ -332,7 +375,7 @@ class TestTheRunCountsTheUngradeableAttempt:
     def test_the_attempt_is_not_retried_and_counts_once(
         self, real_refusal: str, tmp_path: Path
     ) -> None:
-        run_dir = _run_with_one_refusal(tmp_path, real_refusal, repeats=2)
+        run_dir = _run_orchestrator(tmp_path, real_refusal, repeats=2).run_dir
 
         per_task = json.loads((run_dir / "per_task_metrics.json").read_text())
         assert per_task[0]["total_trials"] == 2
@@ -346,7 +389,7 @@ class TestTheRunCountsTheUngradeableAttempt:
     ) -> None:
         """The live display is told the trial was not graded, not that it failed."""
         events = _RecordingEvents()
-        _run_with_one_refusal(tmp_path, real_refusal, repeats=2, events=events)
+        _run_orchestrator(tmp_path, real_refusal, repeats=2, events=events)
 
         completions = {
             kwargs["trial_id"]: kwargs for kind, kwargs in events.calls if kind == "trial_completed"
@@ -358,6 +401,71 @@ class TestTheRunCountsTheUngradeableAttempt:
         assert completions["TASK-A:0"]["score"] == 1.0
         assert completions["TASK-A:1"]["binary_pass"] is None
         assert completions["TASK-A:1"]["score"] is None
+
+
+class TestTheRunPublishesItsGradingCompleteness:
+    """What the process-level verdict is computed from, at the tier that can
+    produce a real ``UNGRADEABLE`` trial. The CLI half — that a non-zero count
+    exits 1 — is locked in ``tests/unit/dx/test_cli_stdout_contract.py``, whose
+    stub orchestrator has no grader, no trial and no bundle to assert against.
+    """
+
+    def test_the_count_names_the_refused_trial_and_agrees_with_aggregate_json(
+        self, real_refusal: str, tmp_path: Path
+    ) -> None:
+        """Two independent readings of one run, asserted against each other
+        rather than by restating the classifier in the test."""
+        completed = _run_orchestrator(tmp_path, real_refusal, repeats=2)
+
+        aggregate = json.loads((completed.run_dir / "aggregate.json").read_text())
+        assert completed.completeness.total_attempts == 2
+        assert completed.completeness.ungradeable_trial_ids == ("TASK-A:1",)
+        assert completed.completeness.ungradeable == aggregate["ungradeable"] == 1
+        assert completed.completeness.is_complete is False
+
+    def test_the_run_completed_and_wrote_the_refused_trials_bundle(
+        self, real_refusal: str, tmp_path: Path
+    ) -> None:
+        """The gate reports on a run that finished honestly, not one that
+        aborted: both bundles are on disk and the refused one says why."""
+        completed = _run_orchestrator(tmp_path, real_refusal, repeats=2)
+
+        trials = completed.run_dir / "trials" / "TASK-A"
+        assert sorted(path.name for path in trials.iterdir()) == ["0", "1"]
+        graded = yaml.safe_load((trials / "0" / "trajectory.yaml").read_text())
+        refused = yaml.safe_load((trials / "1" / "trajectory.yaml").read_text())
+        assert graded["grading_error"] is None
+        assert DUPLICATE_CALL_ID in refused["grading_error"]
+
+    def test_a_run_whose_only_defect_is_an_infrastructure_abort_counts_zero(
+        self, real_refusal: str, tmp_path: Path
+    ) -> None:
+        """The negative lock that pins which set the gate counts.
+
+        A trial the substrate killed also produces no verdict, but it was never
+        measured: it sits outside the denominator by design and is reported in
+        ``infrastructure_aborts``. Failing a several-hour run for one of those is
+        how the exit code becomes something operators route around, so the count
+        is ``UNGRADEABLE`` alone. Without this, a later change widening the count
+        to every verdict-less trial would break nothing.
+        """
+        completed = _run_orchestrator(
+            tmp_path,
+            real_refusal,
+            repeats=2,
+            refusing_index=None,
+            aborting=_ScriptedAbort(trial_index=1, reason=TerminationReason.API_TIMEOUT),
+        )
+
+        per_task = json.loads((completed.run_dir / "per_task_metrics.json").read_text())
+        # The scenario really did produce a verdict-less trial, under the reason
+        # this test chose — otherwise the zero below would be the zero of a run
+        # with no defect at all.
+        assert per_task[0]["infrastructure_aborts"]["api_timeout"] == 1
+        assert per_task[0]["scored_trials"] == 1
+        assert completed.completeness.ungradeable_trial_ids == ()
+        assert completed.completeness.is_complete is True
+        assert completed.completeness.total_attempts == 2
 
 
 # ---------------------------------------------------------------------------

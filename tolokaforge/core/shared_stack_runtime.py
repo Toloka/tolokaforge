@@ -468,7 +468,8 @@ class GrpcRunnerClient:
             arguments: Tool arguments as dict
             timeout_seconds: Execution timeout
             executor: Which environment is making the call ("agent" or "user")
-            call_id: Provider tool-call id the runner records with the call
+            call_id: The trial's episode-unique tool-call id, which the runner
+                records with the call
 
         Returns:
             ToolResult with execution results
