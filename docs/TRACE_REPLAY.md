@@ -84,9 +84,18 @@ be a new explicit flag, not a change to this default.
 
 ## What gets re-checked
 
-A directory is a trace-replay bundle iff it directly contains **`task.yaml` +
-`trajectory.yaml`**. Not `grade.yaml`: a trial is worth re-checking whether or not it
-was ever graded.
+A directory records a trial iff it directly contains **`trajectory.yaml`**, and every
+recorded trial is a bundle. One file, because it is the only one every writer
+produces: `task.yaml` comes from the conductor alone and `grade.yaml` only where a
+verdict exists, so a trial that never ran or was never graded carries neither. The
+rule has one home, `tolokaforge/core/grading/replay_layout.py`, and all three offline
+commands discover through it, so a directory is a bundle for `retrace` exactly when it
+is one for [`rejudge`](JUDGE_REPLAY.md) and
+[`reconcile`](RUBRIC_MIGRATION.md).
+
+The weaker filter is the deliberate cost: a directory holding a stray
+`trajectory.yaml` is a bundle, and a command pointed at its parent reports it as a
+named failure rather than passing over it in silence.
 
 **`trace_replay` and `replays` are reserved directory names.** A bundle sitting beneath
 a directory with either name, at any depth under `--source`, is not discovered:
@@ -104,11 +113,7 @@ does not need to be: its isolation comes from its *write set* rather than from d
 writes exactly one file — `reconcile/<replay_id>/reconcile_report.yaml` — and never a per-bundle
 marker, so nothing it leaves under `--source` can be mistaken for a bundle by anything.
 
-Judge replay's own markers are untouched — `retrace` declares its own and never calls
-`discover_trial_bundles`.
-
-Each bundle the command is pointed at gets one of five dispositions, all of them
-reported:
+Each discovered bundle gets one of five dispositions, all of them reported:
 
 | status | meaning |
 |---|---|
@@ -128,8 +133,7 @@ narrow: a task-less bundle whose trajectory records a real episode has lost its 
 snapshot and is `failed` naming `task.yaml`, and one whose `trajectory.yaml` is
 missing or unreadable is `failed` naming that file. The reason names the outcome
 class; *why* the environment did not come up is `error_reason` in the same bundle's
-`metrics.yaml`. Discovery keys on `task.yaml`, so such a bundle is reached by naming
-it with `--trial`.
+`metrics.yaml`.
 
 It is kept apart from `skipped_not_applicable` on purpose: that status asserts
 something about the pack — it declares no `trace_checks` — which a bundle carrying no

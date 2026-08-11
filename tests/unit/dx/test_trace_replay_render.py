@@ -14,7 +14,7 @@ import pytest
 from click.testing import CliRunner
 
 from tests.utils.provision_failure import write_provision_failure_bundle
-from tolokaforge.core.grading.trace_replay import TRACE_REPLAY_DIRNAME
+from tolokaforge.core.grading.replay_layout import TRACE_REPLAY_DIRNAME
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit

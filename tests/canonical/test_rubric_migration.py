@@ -239,6 +239,7 @@ def test_the_report_names_which_side_of_the_pair_is_the_reference(tmp_path: Path
                 "trials_read",
                 "entries",
                 "unreadable_trials",
+                "excluded_bundles",
             },
         ),
         (

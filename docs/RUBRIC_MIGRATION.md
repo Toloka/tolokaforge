@@ -53,7 +53,7 @@ and it reaches exactly the same verdict.
 
 | Flag | Meaning |
 |---|---|
-| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it holds `task.yaml` + `trajectory.yaml`. |
+| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it directly holds `trajectory.yaml` ([JUDGE_REPLAY.md](JUDGE_REPLAY.md#what-gets-re-judged)). A discovered bundle recording a trial that never ran carries no `task.yaml`, names no pack, and is **excluded from the corpus by name** rather than blocking it. |
 | `--packs` | Directory searched recursively for the pack each bundle's `task_id` names; repeatable, default `examples/`. |
 | `--replay-id` | Names the artifact subdirectory (letters, digits, `.`, `_`, `-`). Default: timestamped. |
 | `--dry-run` | Reach the verdict and report it, write nothing. |

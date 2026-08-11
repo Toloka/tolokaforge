@@ -29,6 +29,7 @@ from tolokaforge.core.grading.replay import (
     load_grading_override,
     run_replay_batch,
 )
+from tolokaforge.core.grading.replay_layout import JUDGE_REPLAY_DIRNAME
 from tolokaforge.core.grading.rubric_migration import (
     DEFAULT_PACKS_ROOT,
     ReconcileError,
@@ -900,7 +901,7 @@ def _print_rejudge_summary(
         f"{failed} failed-with-reason"
     )
     if not dry_run and eligible:
-        console.print(f"Replay artifacts: {source / 'replays' / replay_id}")
+        console.print(f"Replay artifacts: {source / JUDGE_REPLAY_DIRNAME / replay_id}")
 
 
 def _print_replay_report(report: ReplayReport) -> None:
@@ -931,8 +932,9 @@ def _print_replay_report(report: ReplayReport) -> None:
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
-        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
-        "grade.yaml + task.yaml."
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it directly "
+        "contains trajectory.yaml; a trial that produced no grade is discovered and "
+        "reported as a no-grade skip."
     ),
 )
 @click.option(
@@ -1050,9 +1052,9 @@ def _checked_replay_id(ctx: click.Context, param: click.Parameter, value: str | 
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Recorded run dir (trials/<task>/<idx> subtree), a flat collection of trial "
-        "bundle dirs, or a single bundle dir. A directory is a bundle iff it contains "
-        "task.yaml + trajectory.yaml — a trial is worth re-checking whether or not it "
-        "was graded."
+        "bundle dirs, or a single bundle dir. A directory is a bundle iff it directly "
+        "contains trajectory.yaml — a trial is worth re-checking whether or not it was "
+        "graded, and one that never ran is reported rather than dropped."
     ),
 )
 @click.option(
@@ -1141,7 +1143,7 @@ def retrace(
     if report is None:
         raise click.ClickException(
             f"no trial bundle under {source_path} — a selector matching nothing validates "
-            "nothing. A bundle is a directory holding task.yaml + trajectory.yaml"
+            "nothing. A bundle is a directory holding trajectory.yaml"
         )
 
     render_trace_replay_report(

@@ -2,8 +2,10 @@
 
 Locks the contract of :mod:`tolokaforge.core.grading.trace_replay`:
 
-* discovery keys on ``task.yaml`` + ``trajectory.yaml``, so a trial is re-checkable
-  whether or not it was ever graded, and never walks either replay command's output;
+* every discovered bundle gets a disposition — a trial is re-checkable whether or
+  not it was ever graded, and one the substrate killed before it ran is classified
+  rather than refused (the identity a bundle is discovered by is
+  :mod:`tolokaforge.core.grading.replay_layout`'s, locked beside it);
 * a bundle declaring no ``trace_checks`` is a declared skip until an override
   supplies a block, which it replaces wholesale;
 * evidence about what the bundle recorded comes from the reader's file-presence
@@ -42,11 +44,12 @@ import pytest
 import yaml
 
 from tests.canonical._factories import make_trajectory, make_trial_messages
+from tests.utils.five_shape_run import write_five_shape_run
 from tests.utils.provision_failure import write_provision_failure_bundle
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.trace_overrides import override_file
+from tolokaforge.core.grading.replay_layout import TRACE_REPLAY_DIRNAME
 from tolokaforge.core.grading.trace_replay import (
-    TRACE_REPLAY_DIRNAME,
     TRACE_REPLAY_REPORT_FILENAME,
     ConstraintDiscrimination,
     ConstraintProvenance,
@@ -56,7 +59,6 @@ from tolokaforge.core.grading.trace_replay import (
     TraceReplayReportError,
     build_trace_replay_report,
     declared_trace_checks,
-    discover_trace_bundles,
     emit_trace_replay_report,
     load_trace_checks_override,
     read_trace_replay_inputs,
@@ -196,56 +198,34 @@ def _persisted_tool_calls(bundle: Path) -> tuple[dict[str, Any], list[dict[str, 
     return persisted, calls
 
 
-def test_discovery_is_layout_agnostic_over_the_three_recorded_shapes(tmp_path: Path) -> None:
-    """A bundle is ``task.yaml`` + ``trajectory.yaml``, wherever the layout puts it.
+def test_every_shape_a_run_writes_is_discovered_and_named(tmp_path: Path) -> None:
+    """The same run directory judge replay accounts for, accounted for here too.
 
-    Not ``grade.yaml``: a trial is worth re-checking whether or not it was graded,
-    and keying on the grade is what makes judge replay miss ungraded trials.
+    All five shapes are discovered, the four that reached the conductor are
+    re-checkable, and the one whose environment never came up is the skip its own
+    trajectory earns rather than a bundle missing from the batch. The bundle named
+    with ``--trial`` gets the same answer discovery's does — two entry points, one
+    answer per bundle.
     """
-    run_dir = tmp_path / "run"
-    nested = [_write_bundle(run_dir / "trials" / "refund_task" / str(index)) for index in (0, 1)]
-    flat = tmp_path / "flat"
-    loose = [_write_bundle(flat / name) for name in ("a", "b")]
-    for bundle in nested:
-        (bundle / "grade.yaml").unlink(missing_ok=True)
+    source = tmp_path / "run"
+    run = write_five_shape_run(source)
 
-    assert discover_trace_bundles(run_dir) == nested
-    assert discover_trace_bundles(flat) == loose
-    assert discover_trace_bundles(flat / "a") == [flat / "a"]
+    outcomes = run_trace_replay_batch(source, replay_id="r1", dry_run=True)
 
+    assert [outcome.bundle for outcome in outcomes] == run.bundles
+    by_bundle = {outcome.bundle: outcome.status for outcome in outcomes}
+    assert by_bundle == {
+        run.judged: TraceReplayOutcomeStatus.WOULD_REPLAY,
+        run.state_only: TraceReplayOutcomeStatus.WOULD_REPLAY,
+        run.ungradeable: TraceReplayOutcomeStatus.WOULD_REPLAY,
+        run.aborted: TraceReplayOutcomeStatus.WOULD_REPLAY,
+        run.provision_failure: TraceReplayOutcomeStatus.SKIPPED_NO_TASK,
+    }
 
-@pytest.mark.parametrize(
-    "nested_under",
-    [
-        pytest.param(Path("trace_replay") / "earlier", id="this_commands_own_output_at_the_top"),
-        pytest.param(Path("replays") / "earlier", id="judge_replays_output_at_the_top"),
-        pytest.param(Path("trials") / "replays" / "earlier", id="judge_replays_output_nested"),
-        pytest.param(
-            Path("trials") / "trace_replay" / "earlier", id="this_commands_own_output_nested"
-        ),
-    ],
-)
-def test_a_bundle_under_a_reserved_directory_is_not_discovered(
-    tmp_path: Path, nested_under: Path
-) -> None:
-    """Two directory names are reserved anywhere under a source, at any depth.
-
-    ``trace_replay/`` is this command's output and ``replays/`` is judge replay's, and
-    a source re-pointed at a run that already holds either would otherwise re-check
-    what sits under it — for ``replays/`` that means grading a *replayed* bundle as
-    though it were a trial. The names are written out here rather than imported:
-    reserving a name is a claim about the string, and a test that read it off the
-    module could not tell a renamed constant from a widened rule.
-
-    At any depth, because a previously-replayed subtree can be nested arbitrarily
-    under whatever the operator points ``--source`` at. The deliberate cost is that a
-    *task* named ``replays`` would hide its own trials, which is why both names are
-    documented as reserved rather than left to be discovered.
-    """
-    live = _write_bundle(tmp_path / "trials" / "refund_task" / "0")
-    _write_bundle(tmp_path / nested_under / "refund_task" / "0")
-
-    assert discover_trace_bundles(tmp_path) == [live]
+    named = run_trace_replay_batch(
+        source, replay_id="r1", trial=run.provision_failure, dry_run=True
+    )
+    assert [outcome.status for outcome in named] == [by_bundle[run.provision_failure]]
 
 
 def test_a_bundle_the_substrate_killed_is_classified_rather_than_failed(tmp_path: Path) -> None:

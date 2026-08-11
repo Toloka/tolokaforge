@@ -38,6 +38,10 @@ from tolokaforge.core.grading.judge import (
 )
 from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.kb_search import KnowledgeSearch, SearchHit
+from tolokaforge.core.grading.replay_layout import (
+    JUDGE_REPLAY_DIRNAME,
+    discover_trial_bundles,
+)
 from tolokaforge.core.grading.transcript_wire import (
     encode_transcript_wire,
     split_leading_system_message,
@@ -78,7 +82,6 @@ __all__ = [
     "build_replay_grade",
     "build_replay_report",
     "classify_trial",
-    "discover_trial_bundles",
     "emit_replay_report",
     "load_grading_override",
     "read_replay_inputs",
@@ -654,13 +657,8 @@ def replay_trial(inputs: ReplayInputs, *, judge_client: LLMClient | None = None)
 
 
 # ---------------------------------------------------------------------------
-# Batch replay — discovery, artifact writing, and per-trial orchestration
+# Batch replay — artifact writing and per-trial orchestration
 # ---------------------------------------------------------------------------
-
-_BUNDLE_MARKERS = ("grade.yaml", "task.yaml")
-#: Subdirectory replay artifacts are written under; excluded from discovery so a
-#: re-run never re-judges its own previous output.
-REPLAYS_DIRNAME = "replays"
 
 
 class ReplayOutcomeStatus(str, Enum):
@@ -693,33 +691,6 @@ class TrialReplayOutcome:
     provenance: ReplayProvenance | None = None
     result: JudgeResult | None = None
     artifacts_dir: Path | None = None
-
-
-def _is_bundle(path: Path) -> bool:
-    return path.is_dir() and all((path / marker).exists() for marker in _BUNDLE_MARKERS)
-
-
-def discover_trial_bundles(source: Path) -> list[Path]:
-    """Discover trial bundle directories under ``source``, layout-agnostic.
-
-    A directory is a bundle iff it directly contains the marker files
-    (``grade.yaml`` + ``task.yaml``). Handles the three recorded layouts uniformly:
-    a run dir with a ``trials/<task>/<idx>/`` subtree, a flat collection of bundle
-    dirs (no ``trials/`` parent — e.g. an extracted archive of bundles), or a
-    single bundle dir. Bundles are identified by
-    directory path — never by string-splitting ``<task>_<idx>`` (task ids contain
-    both hyphens and underscores). The ``replays/`` output subtree is excluded so a
-    re-run never re-judges its own artifacts. Returned sorted for stable batches.
-    """
-    source = Path(source)
-    if _is_bundle(source):
-        return [source]
-    bundles = {
-        marker.parent
-        for marker in source.rglob("grade.yaml")
-        if REPLAYS_DIRNAME not in marker.relative_to(source).parts and _is_bundle(marker.parent)
-    }
-    return sorted(bundles)
 
 
 def build_replay_grade(result: JudgeResult) -> Grade:
@@ -771,7 +742,7 @@ def _replay_destination(source: Path, bundle: Path, replay_id: str) -> Path:
         rel = Path(bundle.name)
     if rel == Path("."):
         rel = Path(bundle.name)
-    return source / REPLAYS_DIRNAME / replay_id / rel
+    return source / JUDGE_REPLAY_DIRNAME / replay_id / rel
 
 
 def _write_replay_artifacts(
@@ -1162,7 +1133,7 @@ def emit_replay_report(
     report = build_replay_report(outcomes, source=source, replay_id=replay_id)
     if report is None:
         return None
-    report_dir = source / REPLAYS_DIRNAME / replay_id
+    report_dir = source / JUDGE_REPLAY_DIRNAME / replay_id
     report_dir.mkdir(parents=True, exist_ok=True)
     with open(report_dir / "replay_report.yaml", "w") as f:
         yaml.dump(

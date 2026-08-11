@@ -22,6 +22,7 @@ from __future__ import annotations
 import hashlib
 import json
 import re
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path
 
@@ -31,6 +32,8 @@ from click.testing import CliRunner
 from pydantic import ValidationError
 
 from tests.unit.grading.test_judge import ScriptedClient
+from tests.utils.five_shape_run import write_five_shape_run
+from tests.utils.provision_failure import write_provision_failure_bundle
 from tolokaforge.core.grading.judge import JudgeStatus as JudgeRunStatus
 from tolokaforge.core.grading.replay import (
     REPLAY_UNAVAILABLE,
@@ -45,11 +48,11 @@ from tolokaforge.core.grading.replay import (
     ReplayProvenance,
     TrialEligibility,
     classify_trial,
-    discover_trial_bundles,
     read_replay_inputs,
     replay_trial,
     run_replay_batch,
 )
+from tolokaforge.core.grading.replay_layout import discover_trial_bundles
 from tolokaforge.core.grading.transcript_wire import (
     encode_transcript_wire,
     split_leading_system_message,
@@ -695,36 +698,91 @@ def _completed_bundle(trial_dir: Path) -> None:
     )
 
 
-def test_discovery_finds_bundles_across_all_three_layouts(tmp_path: Path) -> None:
-    # (a) a run dir with a trials/<task>/<idx> subtree.
-    nested = tmp_path / "nested"
-    _completed_bundle(nested / "trials" / "refund_task" / "0")
-    _completed_bundle(nested / "trials" / "AE-BDG-003_billing" / "1")
-    assert discover_trial_bundles(nested) == sorted(
-        [nested / "trials" / "refund_task" / "0", nested / "trials" / "AE-BDG-003_billing" / "1"]
-    )
+def test_a_re_run_does_not_re_judge_what_the_first_run_wrote(tmp_path: Path) -> None:
+    """End to end over a real batch: what replay writes is never a trial to replay.
 
-    # (b) a flat collection of bundle dirs (no trials/ parent — e.g. an extracted
-    # archive of bundles).
-    flat = tmp_path / "flat"
-    _completed_bundle(flat / "AE-BDG-002_1")
-    _completed_bundle(flat / "AE-BDG-003_0")
-    assert discover_trial_bundles(flat) == sorted([flat / "AE-BDG-002_1", flat / "AE-BDG-003_0"])
-
-    # (c) a single bundle dir.
-    single = tmp_path / "single"
-    _completed_bundle(single)
-    assert discover_trial_bundles(single) == [single]
-
-
-def test_discovery_excludes_the_replays_output_subtree(tmp_path: Path) -> None:
+    Two things hold it, and the source is pointed at after a real replay so both are
+    exercised together — the artifacts sit under the reserved ``replays/`` name, and
+    a replay bundle records a judge trajectory rather than a trial's, so it carries
+    no ``trajectory.yaml`` to be identified by.
+    """
     source = tmp_path / "run"
     _completed_bundle(source / "trials" / "refund_task" / "0")
 
     run_replay_batch(source, replay_id="r1", judge_client=_submit_report_client())
 
-    # A second discovery must not pick up the replay bundle written under replays/.
+    assert (source / "replays" / "r1").is_dir()
     assert discover_trial_bundles(source) == [source / "trials" / "refund_task" / "0"]
+
+
+def test_every_shape_a_run_writes_is_discovered_and_named(tmp_path: Path) -> None:
+    """Nothing recorded under ``--source`` is absent from the batch's output.
+
+    All five shapes the harness writes today, including the two grade-less ones and
+    the provision failure that carries no ``task.yaml`` either: each is discovered
+    and each gets the disposition its own contents earn. Before identity keyed on
+    the trajectory, three of these five appeared in no line of the output.
+
+    The bundle named with ``--trial`` gets the same answer as the one discovery
+    found — two entry points reach classification by different paths, and a
+    disagreement between them is the specific regression this rule is exposed to.
+    """
+    source = tmp_path / "run"
+    run = write_five_shape_run(source)
+
+    outcomes = run_replay_batch(source, replay_id="r1", dry_run=True)
+
+    assert [outcome.bundle for outcome in outcomes] == run.bundles
+    by_bundle = {outcome.bundle: outcome.status for outcome in outcomes}
+    assert by_bundle == {
+        run.judged: ReplayOutcomeStatus.WOULD_REPLAY,
+        run.state_only: ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE,
+        run.ungradeable: ReplayOutcomeStatus.SKIPPED_NO_GRADE,
+        run.aborted: ReplayOutcomeStatus.SKIPPED_NO_GRADE,
+        run.provision_failure: ReplayOutcomeStatus.SKIPPED_NO_GRADE,
+    }
+
+    named = run_replay_batch(source, replay_id="r1", trial=run.ungradeable, dry_run=True)
+    assert [outcome.status for outcome in named] == [by_bundle[run.ungradeable]]
+
+
+def test_the_discovered_total_is_stable_when_a_trial_aborts_instead_of_running(
+    tmp_path: Path,
+) -> None:
+    """Two runs of one suite, differing only in that one trial never provisioned.
+
+    The eligible count *must* move — an aborted trial genuinely has no judge stage —
+    so what is delivered is a stable denominator with the difference named: the
+    discovered total is equal and one eligible trades for exactly one no-grade skip.
+    Before this rule the aborted run simply reported a smaller batch, with nothing
+    saying why.
+
+    The aborted arm is built through the production writer rather than by hand, so
+    the shape under test is the one a run leaves behind.
+    """
+    completed = tmp_path / "completed"
+    aborted = tmp_path / "aborted"
+    for source in (completed, aborted):
+        _completed_bundle(source / "trials" / "refund_task" / "0")
+        _write_bundle(
+            source / "trials" / "state_only" / "0",
+            judge_status=JudgeStatus.UNSPECIFIED,
+            judge_inputs=None,
+            with_rubric=False,
+        )
+    _completed_bundle(completed / "trials" / "billing" / "0")
+    write_provision_failure_bundle(aborted, task_id="billing")
+
+    counted = [
+        Counter(
+            outcome.status for outcome in run_replay_batch(source, replay_id="r1", dry_run=True)
+        )
+        for source in (completed, aborted)
+    ]
+
+    assert [sum(counts.values()) for counts in counted] == [3, 3]
+    assert counted[0] - counted[1] == Counter({ReplayOutcomeStatus.WOULD_REPLAY: 1})
+    assert counted[1] - counted[0] == Counter({ReplayOutcomeStatus.SKIPPED_NO_GRADE: 1})
 
 
 def test_not_applicable_trial_reported_skipped_even_with_grading_override(tmp_path: Path) -> None:

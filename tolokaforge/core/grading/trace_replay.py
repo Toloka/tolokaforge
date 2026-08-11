@@ -44,6 +44,10 @@ from tolokaforge.core.grading.config_validation import (
     ToolInventory,
     inspect_grading_authoring,
 )
+from tolokaforge.core.grading.replay_layout import (
+    TRACE_REPLAY_DIRNAME,
+    discover_trial_bundles,
+)
 from tolokaforge.core.grading.trace_checks import evaluate_trace_checks
 from tolokaforge.core.grading.trace_timeline import (
     TimelineInconsistencyError,
@@ -60,10 +64,7 @@ from tolokaforge.core.models import (
 from tolokaforge.core.output.artifacts import read_recorded_tool_log
 
 __all__ = [
-    "JUDGE_REPLAY_DIRNAME",
-    "RESERVED_DIRNAMES",
     "TRACE_CHECKS_RESULT_FILENAME",
-    "TRACE_REPLAY_DIRNAME",
     "TRACE_REPLAY_REPORT_FILENAME",
     "BundleEvidence",
     "ConstraintDiscrimination",
@@ -82,10 +83,10 @@ __all__ = [
     "TraceReplayReportError",
     "TrialTraceReplay",
     "TrialTraceReplayOutcome",
+    "aborted_without_a_task_snapshot",
     "build_trace_replay_report",
     "classify_trace_trial",
     "declared_trace_checks",
-    "discover_trace_bundles",
     "emit_trace_replay_report",
     "load_trace_checks_override",
     "read_trace_replay_inputs",
@@ -98,28 +99,12 @@ __all__ = [
     "trace_replay_root",
 ]
 
-#: Subdirectory replay artifacts are written under; excluded from discovery so a
-#: source pointed at a previous run's output never re-checks bundles nested there.
-TRACE_REPLAY_DIRNAME = "trace_replay"
-#: Judge replay's output subtree, excluded from discovery beside this command's own.
-#: A local literal rather than an import of ``replay.REPLAYS_DIRNAME``: that module
-#: loads the judge and its LLM client at import time, and the import boundary that
-#: makes this one incapable of spending forbids reaching it. A shared leaf module
-#: carrying the layout for both is #787.
-JUDGE_REPLAY_DIRNAME = "replays"
-#: Directory names reserved anywhere under a source: a bundle sitting beneath one is
-#: not discovered, at any depth, because a previously-replayed subtree can be nested
-#: arbitrarily. The trade is deliberate — a *task* named ``replays`` would hide its
-#: own trials — and it is what keeps the two replay commands from reading each
-#: other's output whatever either one writes into its tree.
-RESERVED_DIRNAMES = frozenset({TRACE_REPLAY_DIRNAME, JUDGE_REPLAY_DIRNAME})
 #: Per-bundle artifact name. Deliberately one no trial bundle already holds, so a
 #: write that escaped the output subtree creates a file rather than clobbering one.
 TRACE_CHECKS_RESULT_FILENAME = "trace_checks_result.yaml"
 #: Run-level artifact name, beside the per-bundle results under the same subtree.
 TRACE_REPLAY_REPORT_FILENAME = "trace_replay_report.yaml"
 
-_BUNDLE_MARKERS = ("task.yaml", "trajectory.yaml")
 _TOOLS_SCHEMAS_FILENAME = "tools_schemas.yaml"
 #: The denominator a route-scoped row is read against, carried in the report so a
 #: reader never takes a route's unanimity for a corpus-wide claim.
@@ -501,33 +486,25 @@ def _carried_mapping(path: Path) -> dict[str, Any] | None:
     )
 
 
-def _is_bundle(path: Path) -> bool:
-    return path.is_dir() and all((path / marker).exists() for marker in _BUNDLE_MARKERS)
+def aborted_without_a_task_snapshot(bundle: Path) -> str | None:
+    """The termination reason of a task-less bundle the substrate killed, else ``None``.
 
+    The one rule every command applies to a bundle carrying no ``task.yaml``. A
+    trial whose environment never came up is written by the executor alone — the
+    trajectory and the metrics, no task snapshot — so refusing every task-less
+    bundle would report the most common abort shape as a defective input. ``None``
+    says the trial recorded a real episode and lost what it was measured against,
+    which *is* a defective input, and each caller refuses it in its own words.
 
-def discover_trace_bundles(source: Path) -> list[Path]:
-    """Discover re-checkable trial bundles under ``source``, layout-agnostic.
-
-    A directory is a bundle iff it directly contains ``task.yaml`` +
-    ``trajectory.yaml``. Not ``grade.yaml``: a trial is worth re-checking whether
-    or not it was ever graded. Handles the three recorded layouts uniformly — a run
-    dir with a ``trials/<task>/<idx>/`` subtree, a flat collection of bundle dirs,
-    or a single bundle dir. Returned sorted for stable batches.
-
-    Nothing beneath a :data:`RESERVED_DIRNAMES` directory is discovered, at any
-    depth: a source re-pointed at a run that already holds either replay command's
-    output re-checks the trials, never the artifacts.
+    Public because ``reconcile`` asks the same question of a corpus that
+    ``retrace`` asks of a batch. Raises :class:`MissingTraceReplayInputError` when
+    the trajectory cannot be read: a bundle that cannot say what happened to it is
+    a defective input whoever is asking.
     """
-    source = Path(source)
-    if _is_bundle(source):
-        return [source]
-    bundles = {
-        marker.parent
-        for marker in source.rglob("trajectory.yaml")
-        if RESERVED_DIRNAMES.isdisjoint(marker.relative_to(source).parts)
-        and _is_bundle(marker.parent)
-    }
-    return sorted(bundles)
+    trajectory, _ = _load_trajectory(bundle)
+    if classify_trial_outcome(trajectory) is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+        return None
+    return trajectory.termination_reason.value if trajectory.termination_reason else "none"
 
 
 def recorded_task(bundle: Path) -> dict[str, Any]:
@@ -892,24 +869,17 @@ def _refuse_mis_authored_override(
 def _task_less_disposition(bundle: Path) -> TrialTraceReplayOutcome:
     """What a bundle carrying no ``task.yaml`` is, read off its own trajectory.
 
-    A trial the substrate killed before it ran is written by the executor alone —
-    the trajectory and the metrics, no task snapshot — so refusing every task-less
-    bundle would report the most common abort shape as a defective input. Anything
-    else task-less recorded a real episode and lost what it was graded against,
-    which *is* a defective input and stays a failure naming the file.
-
     The reason names the outcome class, not the operational cause — for a provision
     failure that is ``error_reason`` in the same bundle's ``metrics.yaml``, which
     replay does not read. Raises :class:`MissingTraceReplayInputError` for both
     failing arms, so the batch's per-bundle net reports them.
     """
-    trajectory, _ = _load_trajectory(bundle)
-    if classify_trial_outcome(trajectory) is not TrialOutcomeClass.INFRASTRUCTURE_ABORT:
+    termination = aborted_without_a_task_snapshot(bundle)
+    if termination is None:
         raise MissingTraceReplayInputError(
             f"not a trial bundle: {bundle / 'task.yaml'} is missing, so nothing says what "
             "the trial recorded here was graded against"
         )
-    termination = trajectory.termination_reason.value if trajectory.termination_reason else "none"
     return TrialTraceReplayOutcome(
         bundle=bundle,
         status=TraceReplayOutcomeStatus.SKIPPED_NO_TASK,
@@ -999,7 +969,7 @@ def run_trace_replay_batch(
     opened for write.
     """
     source = Path(source)
-    bundles = [Path(trial)] if trial is not None else discover_trace_bundles(source)
+    bundles = [Path(trial)] if trial is not None else discover_trial_bundles(source)
     reports: dict[Path, AuthoringReport] = {}
     unreadable: dict[Path, str] = {}
     if override is not None:
