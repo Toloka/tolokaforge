@@ -151,21 +151,23 @@ An empty-but-present file is not a supported install shape; treating it as
 than a loud startup error.
 
 Never wrap either layer in a try/except that swallows the exception and
-returns an empty dict. The pre-#937 shape (silent-swallow with a
-`logger.error` line) shipped exactly that hazard; #937 removed it from the
-engine and expects downstream consumers to do the same.
+returns an empty dict. Silent-swallowing a missing pricing table produces
+zero-cost columns in leaderboards — a silent-wrong outcome AGENTS.md Core
+Rule 1 rejects. Downstream consumers must let the raise propagate to
+startup, not translate it into an empty mapping.
 
 ### Post-cutover
 
 The accessors abstract the resource location. When ADR-0030's cutover
-(#938) moves the bundled data to the `tolokaforge-models` wheel, the three
-accessor bodies change by exactly one line each — the `_DATA_ROOT`
-constant flips from `tolokaforge.core.data` to `tolokaforge_models.data`.
-Consumer code stays unchanged: the return type is still a `Path`, the
-`FileNotFoundError` semantics are still the same, and the compat guarantee
-still applies.
+(#938) moves the bundled data to the `tolokaforge-models` wheel, exactly
+one line changes — the module-level `_DATA_ROOT` constant in
+[`tolokaforge/core/model_data.py`](../tolokaforge/core/model_data.py)
+flips from `tolokaforge.core.data` to `tolokaforge_models.data`. The
+three accessor bodies do not change. Consumer code stays unchanged: the
+return type is still a `Path`, the `FileNotFoundError` semantics are
+still the same, and the compat guarantee still applies.
 
-See [ADR-0030 § "Downstream data-resource consumers"](adr/0030-tolokaforge-models-split.md#downstream-data-resource-consumers)
+See [ADR-0030 § "Downstream data-resource consumers"](adr/0030-tolokaforge-models-split.md#downstream-data-resource-consumers-new--widening-revised-2026-08-07)
 for the rationale ADR-0030 chose fixing consumers up-front over shipping a
 forwarding stub in the engine.
 
