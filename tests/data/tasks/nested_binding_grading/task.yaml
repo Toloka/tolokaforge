@@ -1,0 +1,35 @@
+task_id: nested_binding_grading
+name: "Nested-argument binding reference"
+category: test
+description: |
+  Substrate-parity fixture for a binding reference the authoring gate cannot type.
+  The grading block addresses `args.json.q`, a path below the tool schema's first
+  segment: the gate checks an argument path at its first segment only (#765), so it
+  stands down there and the evaluator's own reading of the two runtime types is the
+  only thing between the author and a never-true comparison. Not runnable end to end
+  — the trials are authored in `trial.yaml` and replayed.
+
+initial_state:
+  json_db: null
+
+# `http_request` declares `json` as an object and closes its argument set, so the
+# schema resolves and `json.q` is addressable while its type is not: the residue this
+# fixture exists to grade.
+tools:
+  agent:
+    enabled:
+      - read_file
+      - http_request
+  user:
+    enabled: []
+
+actors:
+  user:
+    mode: scripted
+    scripted_flow: []
+
+policies:
+  disallowed_actions: []
+  guidance: []
+
+grading: grading.yaml
