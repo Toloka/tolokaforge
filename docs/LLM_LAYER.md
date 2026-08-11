@@ -8,6 +8,64 @@ appear — callers above it work with the curated Python types described below.
 See [`plans/llm_reasoning_and_observability_fix.md`](../plans/llm_reasoning_and_observability_fix.md)
 for the design rationale and the canonical litellm surface.
 
+## Two-wheel architecture
+
+Tolokaforge publishes two PyPI wheels from one monorepo — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md):
+
+- **`tolokaforge`** (engine wheel) ships the base classes for every
+  policy slot (`StrictSchema`, `DictMapHints`, `ResponsePolicy`,
+  `ReasoningCodec`, `AssistantTextPolicy`, `ParamsPolicy`,
+  `MessageAssemblyPolicy`, `CachePolicy`, `ContentPolicy`), the nine
+  `_POLICY_REGISTRIES` slots, and the loader / overlay machinery on
+  [`presets.py`](../tolokaforge/core/llm/presets.py). It also ships the
+  `Capability` enum and the `ModelCertificate` dataclass at
+  [`tolokaforge.testing.certify`](../tolokaforge/testing/certify/).
+- **[`tolokaforge-models`](../tolokaforge_models/)** ships the per-model
+  policy subclasses at
+  [`tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/)
+  (`gemini.py`, `minimax.py`, `deepseek.py`, `inkling.py`), the 39
+  `ModelCertificate` entries at
+  [`tolokaforge_models.certificates.ALL_MODELS`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py),
+  and the three data files (`pricing.json`, `model_presets.yaml`,
+  `providers.yaml`) at
+  [`tolokaforge_models/data/`](../tolokaforge_models/src/tolokaforge_models/data/).
+
+The models wheel registers its policy classes with the engine via the
+`tolokaforge.policies` entry-point group declared in
+[`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml).
+[`load_policy_registrations()`](../tolokaforge/core/model_data.py)
+discovers the entry points at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
+import and merges the registrations into `_POLICY_REGISTRIES`;
+duplicate keys or unknown slots fail loud. Two install-time gates
+follow the merge — see § Startup validation. Certificates reach the
+engine through [`bundled_certificates()`](../tolokaforge/core/model_data.py),
+consumed once at
+[`tolokaforge.testing.certify.__init__`](../tolokaforge/testing/certify/__init__.py)
+to populate the public `ALL_MODELS` symbol.
+
+`pip install tolokaforge` transitively pulls the models wheel via
+`Requires-Dist: tolokaforge-models >=1.0.0,<2.0.0` — the two wheels
+version and release independently (see
+[`docs/RELEASING.md`](RELEASING.md)) but a working engine install
+always carries a matching models wheel.
+
+### Deprecation shim for by-name imports (v0.17.x → v0.18.0)
+
+`from tolokaforge.core.llm import GeminiSchema` (and its seven
+siblings — `GeminiRecursiveSchema`, `ScalarArrayDictMapResponse`,
+`RefResolvingDictMapHints`, `JsonRecursiveCoerceResponse`,
+`ItemRecursiveUnwrapResponse`, `MinimaxM3TagRecoveryResponse`,
+`OpenAISummaryReplayReasoningCodec`) resolves via a lazy
+[`__getattr__`](../tolokaforge/core/llm/__init__.py) shim to the
+subclass in `tolokaforge_models.policies.<family>`. First access
+emits a `DeprecationWarning` naming the new import path; subsequent
+accesses per name resolve silently through a `_WARNED` cache. **The
+shim is removed in v0.18.0** — migrate to
+`from tolokaforge_models.policies.<family> import <Class>` before
+upgrading past v0.17.x.
+
 ## Module map
 
 | Module | Purpose |
@@ -737,12 +795,14 @@ where the mechanism is genuinely per-provider:
 
 ### Fingerprint
 
-The provider-binding table ships inside the engine wheel pre-cutover, so
-`engine_run_state.json`'s `models_fingerprint.content_sha256` does **not**
-include `providers.yaml` yet — see ADR-0030 § "Fingerprinting for
-auditability". The cutover PR ([#938](https://github.com/Toloka/tolokaforge/issues/938))
-moves the file to `tolokaforge_models/data/providers.yaml` and widens the
-hashed payload.
+`providers.yaml` ships in the `tolokaforge-models` wheel at
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml),
+so `engine_run_state.json`'s `models_fingerprint.content_sha256`
+covers `{presets, pricing, providers, certificates}` — a provider
+binding edit changes the digest. See
+[`docs/OUTPUT_FORMAT.md` § `engine_run_state.json`](OUTPUT_FORMAT.md#engine_run_statejson)
+and [ADR-0030](adr/0030-tolokaforge-models-split.md) § "Fingerprinting
+for auditability".
 
 ## `cache_policy`
 

@@ -2,6 +2,29 @@
 
 Six-step process. No PR merges a model change without all six passing.
 
+## Bucket A vs Bucket B — which wheel does your change target?
+
+Tolokaforge ships two PyPI wheels — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md). A model addition lands
+in exactly one of two buckets:
+
+- **Bucket A — [`tolokaforge_models/`](../tolokaforge_models/).** New
+  preset routing that composes existing policy classes, a new pricing
+  entry, a new certificate, a per-model policy subclass of a stable
+  engine base that reaches only public API, a new provider binding, or
+  a per-model certification body. Ships on the `models-vX.Y.Z` tag
+  axis independent of the engine's `vX.Y.Z` cadence.
+- **Bucket B — [`tolokaforge/`](../tolokaforge/) (engine).** A new base
+  class, a new lifecycle stage (a new `_POLICY_REGISTRIES` slot), a
+  new `Capability` enum category whose probe pattern differs from
+  every shipped probe, or a change to an existing base class's
+  *shape* (a new abstract method, a new required kwarg). Ships on the
+  engine's `vX.Y.Z` tag axis. Land a Bucket-B PR first when the model
+  needs a hook the engine does not yet expose, then land a follow-up
+  Bucket-A PR for the model itself.
+
+Every step below routes to the correct wheel for the file it touches.
+
 ## Pre-flight: 30-second checklist
 
 Before writing any code, verify the model exists and decide where each
