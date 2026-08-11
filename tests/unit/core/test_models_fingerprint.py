@@ -55,16 +55,16 @@ def test_field_shape_and_sentinel_defaults() -> None:
     assert fp.package_version == "in-tree"
     assert fp.api_version == 1
     assert _HEX64.match(fp.content_sha256), fp.content_sha256
-    assert fp.minimum_engine_version == ">=0.16,<0.17"
+    assert fp.minimum_engine_version == ">=0.17,<0.18"
 
 
 def test_minimum_engine_version_parses_as_pep440_specifier() -> None:
     spec = SpecifierSet(md.MODELS_MINIMUM_ENGINE_VERSION)
 
-    assert "0.16.0" in spec
-    assert "0.16.5" in spec
-    assert "0.17.0" not in spec
-    assert "0.15.9" not in spec
+    assert "0.17.0" in spec
+    assert "0.17.5" in spec
+    assert "0.18.0" not in spec
+    assert "0.16.9" not in spec
 
 
 def test_determinism_same_state_same_digest() -> None:
