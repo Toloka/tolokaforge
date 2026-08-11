@@ -44,6 +44,8 @@ from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
 from tolokaforge.core.llm.capabilities import ModelCapabilities
+from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
+from tolokaforge.core.llm.litellm_params import allowed_openai_params
 from tolokaforge.core.llm.presets import build_capabilities
 from tolokaforge.core.llm.prompt_policy import detect_dict_maps
 from tolokaforge.core.llm.providers import compile_rate_limit_patterns, get_provider_binding
@@ -543,6 +545,9 @@ class LLMClient:
         self.provider = (config.provider or "").lower()
         self._provider_binding = get_provider_binding(self.provider)
         self.model_name = self._format_model_name()
+        # Parameters an overlay admits for a model litellm's map does not carry.
+        # Empty for every model it does: the kwarg is then omitted entirely.
+        self.allowed_openai_params = allowed_openai_params(self.model_name, self.config.provider)
         self.capabilities = build_capabilities(
             self.config.name,
             self.config.provider,
@@ -581,6 +586,34 @@ class LLMClient:
                     provider=self.provider,
                 )
             self._proxy = None
+
+        # A gateway that does not serve this model must not intercept it: fall back
+        # to the direct provider rather than post a name it cannot route.
+        # docs/LLM_LAYER.md § Speaking to the gateway.
+        self._gateway_route: str | None = None
+        if self._proxy is not None:
+            catalog = fetch_gateway_catalog(self._proxy)
+            if catalog is None:
+                # Unreadable is NOT "absent": silently leaving the gateway would be
+                # the unattributed-spend outcome this transport exists to prevent.
+                self.logger.warning(
+                    "Gateway catalog unreadable; routing on the untranslated name",
+                    base_url=self._proxy.base_url,
+                    model=self.model_name,
+                )
+            else:
+                # A readable catalog is never empty here: the fetch maps an empty
+                # answer to None, so resolver-None below can only mean "omitted".
+                self._gateway_route = resolve_gateway_route(
+                    self.model_name, catalog, self._proxy.preferred_route
+                )
+                if self._gateway_route is None:
+                    self.logger.warning(
+                        "Gateway does not serve this model; calling the provider directly",
+                        base_url=self._proxy.base_url,
+                        model=self.model_name,
+                    )
+                    self._proxy = None
 
         self._openrouter_headers = (
             self._configure_openrouter_headers() if self.provider.startswith("openrouter") else {}
@@ -1705,6 +1738,12 @@ class LLMClient:
         is read fresh per attempt.
         """
         kwargs: dict[str, Any] = {"model": self.model_name}
+        if self.allowed_openai_params:
+            # litellm's own escape hatch for a model its map does not carry: the
+            # named parameters are admitted past the gating for this call, and
+            # stripped before the request body is built. Anything NOT named is
+            # still refused, so the declaration stays the boundary.
+            kwargs["allowed_openai_params"] = list(self.allowed_openai_params)
 
         # Adapt model-specific parameters (temperature, seed, reasoning)
         kwargs = self.capabilities.params_policy.adapt(
@@ -1750,9 +1789,20 @@ class LLMClient:
                 }
 
         if self._proxy is not None:
-            # Transport swap only. ``model`` keeps its ``<provider>/<name>``
-            # shape so preset resolution and pricing normalisation are
-            # untouched — see the module docstring in ``llm/proxy.py``.
+            # The gateway is an OpenAI-compatible endpoint, so speak that dialect
+            # and address it by ITS route name. docs/LLM_LAYER.md § Speaking to the
+            # gateway has the failure modes this replaces.
+            route = self._gateway_route
+            if route is not None:
+                kwargs["model"] = route
+                kwargs["custom_llm_provider"] = "openai"
+                # Same class as the usage extension the dialect switch removes: an
+                # OpenRouter-only body field a non-OpenRouter upstream rejects.
+                extra_body = kwargs.get("extra_body")
+                if isinstance(extra_body, dict):
+                    extra_body.pop("provider", None)
+                    if not extra_body:
+                        kwargs.pop("extra_body")
             kwargs["api_base"] = self._proxy.base_url
             if self._proxy.api_key:
                 kwargs["api_key"] = self._proxy.api_key
@@ -1922,7 +1972,9 @@ class LLMClient:
 
                 if binding.custom_llm_provider is not None:
                     kwargs["custom_llm_provider"] = binding.custom_llm_provider
-                elif "/" in self.config.provider:
+                elif self._gateway_route is None and "/" in self.config.provider:
+                    # Not when routed: _build_kwargs already set the gateway's dialect
+                    # and overwriting it here reverts the name AND the body shape.
                     kwargs["custom_llm_provider"] = self.config.provider.split("/")[0]
 
                 if binding.slug_rewrite is not None:

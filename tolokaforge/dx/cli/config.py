@@ -14,6 +14,7 @@ import click
 from tolokaforge.core.config_validator import Severity, validate_run_config
 from tolokaforge.core.llm.presets import (
     resolve_overlay_path,
+    set_overlay_path,
     validate_overlay_file,
 )
 from tolokaforge.core.project_loader import load_effective_run_config
@@ -100,6 +101,12 @@ def validate(config_path: str, strict: bool, presets_file: str | None) -> None:
             else None
         )
         resolved_overlay = resolve_overlay_path(cli_value=presets_file, config_value=config_overlay)
+        # INSTALLED, not merely read: the checks below ask what the overlay
+        # declares (a model litellm's own map does not carry is declared there),
+        # and validating the file without installing it reported such a model
+        # unable to call functions while the run worked. Set unconditionally so
+        # one config in a glob cannot inherit the previous config's overlay.
+        set_overlay_path(resolved_overlay or None)
         if resolved_overlay:
             try:
                 validate_overlay_file(resolved_overlay)

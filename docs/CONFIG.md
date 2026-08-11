@@ -435,7 +435,24 @@ Set the overlay path two ways; precedence is **CLI flag > config field**:
      presets_file: ./overlay.yaml   # relative to the working directory
    ```
 
-The overlay file uses the same schema as `model_presets.yaml`. Overlay
+The overlay file uses the schema of `model_presets.yaml` (`default:`,
+`presets:`, `providers:`) plus one block the bundled file has no use for:
+
+```yaml
+litellm_models:                    # models litellm's own map does not carry
+  meta/muse-spark-1.2:
+    supports_function_calling: true
+    supports_reasoning: true       # needed when the config sets models.agent.reasoning
+    evidence: "2026-08-10, litellm 1.96.0: no entry, so meta refused tools
+      before sending; admitting them returns a correct tool call."
+```
+
+Each entry declares what a model accepts on the wire, with the observation
+behind it, and admits exactly the parameters its flags name for that model's
+calls. Nothing else changes, and nothing is written into litellm's global
+map. See [`docs/LLM_LAYER.md`](LLM_LAYER.md#when-litellm-has-never-heard-of-the-model).
+
+Overlay
 presets are prepended to the iteration order so first-match-wins lets you
 shadow a bundled preset. Same-named overlay presets *replace* the bundled
 entry (logged at INFO so the replacement is visible). Policy-name strings

@@ -83,6 +83,7 @@ upgrading past v0.17.x.
 | [`assistant_text_policy.py`](../tolokaforge/core/llm/assistant_text_policy.py) | Assistant-text reshaping between litellm parse and `GenerationResult.text` |
 | [`capabilities.py`](../tolokaforge/core/llm/capabilities.py) | `ModelCapabilities` frozen dataclass |
 | [`presets.py`](../tolokaforge/core/llm/presets.py) | YAML preset loader → `ModelCapabilities`. Also implements the **operator-overridable preset overlay** (`--presets-file`, `engine.presets_file`) so new model registrations don't require an engine release — see [ADR 0002](adr/0002-external-model-registry.md) and [`docs/CONFIG.md` § Preset overlay file](CONFIG.md#preset-overlay-file-no-engine-release-required). |
+| [`litellm_params.py`](../tolokaforge/core/llm/litellm_params.py) | Turns overlay-declared capabilities into litellm's `allowed_openai_params`, so a vendor-native provider does not refuse `tools` for a model its map lacks — see [§ When litellm has never heard of the model](#when-litellm-has-never-heard-of-the-model) |
 | [`proxy.py`](../tolokaforge/core/llm/proxy.py) | Optional LLM-gateway transport (`ProxyConfig`), e.g. a LiteLLM proxy; configured entirely by env |
 | [`client.py`](../tolokaforge/core/llm/client.py) | `LLMClient`, `GenerationResult`, `UserSimulator` |
 
@@ -481,6 +482,92 @@ Vertex AI, hosted vLLM, and WatsonX. Our `StrictSchema` and `DictMapHints`
 policies in `tolokaforge/core/llm/` handle **all** GPT-5 tool-schema
 adaptation independently of litellm, so this gap is transparent to callers.
 
+## When litellm has never heard of the model
+
+litellm decides which OpenAI parameters a provider may be sent by looking the
+model up in its own map. For most providers that decision is generic, but a
+**vendor-native** provider answers from the entry alone. A model the map does
+not carry is therefore read as supporting NO parameters, and the request is
+refused inside our process, before anything is sent:
+
+```
+litellm.UnsupportedParamsError: meta does not support parameters:
+['tools', 'tool_choice'], for model=muse-spark-1.2
+```
+
+Measured 2026-08-10 across litellm versions with an identical request: 1.83.14
+passes the tools through, 1.93.0 and 1.96.0 refuse them. The strictness arrived
+in a patch release, so a routine dependency bump can turn a working
+vendor-native model into one that cannot make a single tool call — and the
+error names the provider rather than the missing data, so it reads as "this
+vendor does not do tool calls".
+
+It says nothing about the model. The identical request driven through litellm's
+`openai` transport against the same `api_base` returns a correct tool call —
+the gap is upstream DATA, and the fix is to supply the entry rather than to
+wait on someone else's release.
+
+litellm's own answer to this is `allowed_openai_params`, a per-call kwarg
+naming the parameters to admit past the map gating for that one request; its
+error message says so. `litellm_params.py` turns an operator's declaration into
+that list, and it ships with **no list of models**. A model missing from a
+third-party map is not a fact about an engine release, and a list in the wheel
+would tie every future gap to the release cadence — the argument
+[ADR 0002](adr/0002-external-model-registry.md) already
+made for preset data. So the entries are operator data, declared in the same
+preset overlay (`--presets-file` / `RunConfig.engine.presets_file`):
+
+```yaml
+litellm_models:
+  meta/muse-spark-1.2:
+    supports_function_calling: true
+    supports_reasoning: true       # the config sets models.agent.reasoning
+    evidence: "2026-08-10, litellm 1.96.0: no entry, so meta refused tools
+      before sending; the same request through litellm's openai transport
+      against api.meta.ai returned a correct tool call."
+```
+
+The key is the litellm model id, because that is the lookup litellm performs.
+An entry **declares**; it does not copy. Only the parameters its flags name are
+admitted, so a capability nothing observed is never asserted on the model's
+behalf.
+
+Two rules keep it honest:
+
+- **The flags are an allow-list.** A parameter stays refused until someone
+  declares the capability with evidence, and extending the map is a decision
+  about what we are willing to assert. `supports_reasoning` is on it because a
+  config that sets `models.agent.reasoning` sends `reasoning_effort`, which
+  litellm refuses for an unmapped model exactly as it refuses `tools`.
+- **Nothing is written into litellm's global map.** The kwarg is per call, so
+  our own price can never end up labelled `cost_source="litellm"` (the label
+  meaning provider-authoritative), no entry of ours can outlive the day
+  upstream ships a richer one, and there is no process-global mutation to
+  synchronise across the trial thread pool. Once upstream carries the model,
+  the allow-list is a harmless no-op.
+
+An undeclared capability is **refused**, not dropped: the allow-list only ever
+ADDS to what litellm already permits, so a config that sets
+`models.agent.reasoning` against an entry that does not declare
+`supports_reasoning` fails per call rather than quietly running without it. An
+entry has to cover what its config asks for.
+
+Validation is at overlay load and is louder than the preset blocks beside it: a
+preset that fails to apply changes how a request is shaped, while a dropped
+entry here decides whether a request is sent at all.
+
+Three things that look like fixes and are not:
+
+- **`drop_params: true`** silences the error by stripping `tools`, turning
+  every tool-use trial into a no-tool trial. The eval then measures a
+  configuration mistake and reports it as model capability.
+- **A preset `params:` block** cannot reach this. They validate against a
+  closed set introspected from `GenerationParams.__init__`, and the refusal
+  happens upstream of every policy slot.
+- **`extra_body`** passes ungated, so smuggling a refused parameter through it
+  works — and a provider that silently ignores the key is then invisible,
+  which is the same failure wearing a different hat.
+
 ## `proxy` — routing calls through an LLM gateway
 
 Some deployments forbid direct provider access: calls must go through a gateway
@@ -511,8 +598,9 @@ posting to a route the gateway does not serve.
 | `LLM_PROXY_HEADERS` | JSON object of static headers added to every request, e.g. `{"X-Team-Id": "research"}`. Wins over the engine's own provider headers on a name collision. A value may reference a secret as `${secret:NAME}`, see below. |
 | `LLM_PROXY_REQUEST_ID_HEADER` | Header *name* that receives a fresh UUID4 per request. A static env var cannot express "new value per call". |
 | `LLM_PROXY_PROVIDERS` | Comma-separated provider allow-list, replacing the default. Read the routing table below before widening it. |
+| `LLM_PROXY_PREFERRED_ROUTE` | Namespace that wins when the gateway serves one model under several names, e.g. `openrouter/`. Without it an ambiguous lookup raises rather than guessing a serving path. |
 
-All five resolve through `SecretManager`, so `.env`, the process environment,
+All six resolve through `SecretManager`, so `.env`, the process environment,
 and the runner container's `TOLOKAFORGE_SECRETS_JSON` behave identically.
 A malformed value raises `ProxyConfigError` at the first `LLMClient`
 construction rather than running a whole evaluation with unattributed spend. Setting
@@ -584,6 +672,67 @@ every `.env` key unconditionally, so putting referenced names in `.env` is the w
 to make in-container resolution work if that is ever needed.
 
 
+### Speaking to the gateway
+
+A gateway is an OpenAI-compatible endpoint, so routed calls speak that dialect
+(`custom_llm_provider="openai"`) and address the gateway by **its** route name,
+resolved from `GET {base}/models` at client construction and cached per base URL.
+
+Both halves are load-bearing, and each replaces a measured failure.
+
+**The dialect.** litellm's OpenRouter transformation unconditionally adds
+`usage: {"include": true}` to the body to get cost data back. That field is an
+OpenRouter extension. Forwarded by the gateway to any other upstream it is rejected
+(`usage: Extra inputs are not permitted` from both Anthropic and Bedrock), so every
+call to a non-OpenRouter-backed route failed. The dialect also decides prefix
+handling: the OpenRouter transport strips one leading `openrouter/`, the OpenAI one
+does not.
+
+**The name.** Those two effects are coupled, so the name that arrives depends on the
+dialect, and the gateway's name for a model is not derivable from the engine's model
+string. It is whichever of `<provider>/<name>` or `<name>` the catalog contains:
+
+| engine model string | gateway route |
+|---|---|
+| `openrouter/azure_ai/cohere-command-a-plus-05-2026` | `azure_ai/cohere-command-a-plus-05-2026` |
+| `openrouter/anthropic/claude-sonnet-4.6` | `openrouter/anthropic/claude-sonnet-4.6` |
+
+Three outcomes, deliberately different:
+
+* **Catalog names the model** → route through the gateway under that name.
+* **Catalog answers and omits it** → the gateway does not serve this model, so the
+  call goes to the provider directly. This is what lets one run mix a gateway-only
+  candidate with a simulator the gateway does not carry.
+* **Catalog unreadable** (or empty) → keep the gateway and send the untranslated
+  name. Unreadable is not absence: silently leaving the gateway is the
+  unattributed-spend outcome this transport exists to prevent.
+
+When the catalog serves a model under several names, they can be backed by
+different upstreams, which is a serving-path choice rather than a transport detail.
+`LLM_PROXY_PREFERRED_ROUTE` names the namespace that wins; without it the resolver
+raises rather than guessing.
+
+**Hard requirement on the gateway: route names must mirror upstream names.** The
+resolver derives exactly two candidates and does no fuzzy matching, so a route named
+as an arbitrary alias (`sonnet-4.6`, `team-default`, or a separator variant like
+`claude-sonnet-4-6` for a config that says `4.6`) is invisible to it. The model then
+resolves as "not served" and the call goes to the provider directly, with only a
+per-client warning. On a gateway-only model that direct call fails; on any other it
+runs unattributed. If a deployment cannot rename such a route, the exact-name entry
+has to be added alongside the alias.
+
+Wildcard entries (`openrouter/*`, `anthropic/*`) are deliberately **not** accepted as
+evidence: a wildcard says the gateway will forward the request, not that the model
+exists behind it. Measured on a live gateway, `anthropic/*` accepted a name that its
+Bedrock backing then rejected as invalid, while the very same wildcard also "covered"
+a nonexistent model. If routing every model through the gateway ever becomes the
+goal, the extension point is a *namespace-matched* wildcard (accept `openrouter/*`
+only for `provider: openrouter` configs, where the fallback is the same upstream the
+board is calibrated on), not looser matching.
+
+Preset resolution and pricing are unaffected: both key off `ModelConfig.provider` /
+`.name`, not off the wire name.
+
 ### Which providers can be routed
 
 **Setting `api_base` does not make litellm speak OpenAI to that URL — it makes
@@ -612,23 +761,25 @@ a gateway replaces the base URL but not the rewrite, so litellm would get a
 provider-less model string and raise `BadRequestError` before sending
 anything.
 
-### The model name must be the gateway's route name
+### Naming a gateway route explicitly
 
-Enabling the gateway is **not** a drop-in for existing run configs. litellm
-strips exactly one provider prefix before sending, so `provider: openrouter` +
-`name: anthropic/claude-opus-4.7` puts `anthropic/claude-opus-4.7` on the wire.
-A gateway resolves that against *its own* model table, which need not mean what
-the provider would mean by it.
+Route resolution (above) makes existing run configs work through the gateway
+unchanged, so this section is the **manual override**: pinning a config directly to
+one specific gateway route, either because the catalog is unreadable from the
+running host or because a deployment needs a route the resolver's two candidates
+cannot derive (an alias, see the hard requirement above).
 
-Observed on a real LiteLLM proxy: that name matched the gateway's catch-all
-`anthropic/*` route, which is backed by **Bedrock**, so the request was served
-by a different upstream than the config asked for. It failed loudly there only
-because that particular Bedrock model rejects `temperature=0.0`; a
-closer-matching route would have silently evaluated a different serving path.
-For a leaderboard that is a comparability break, not a transport detail.
+The cautionary tale that motivates being explicit at all: before route resolution
+existed, `provider: openrouter` + `name: anthropic/claude-opus-4.7` put the bare
+`anthropic/claude-opus-4.7` on the wire (litellm strips one prefix), and on a real
+LiteLLM proxy that matched the catch-all `anthropic/*` route, backed by **Bedrock**,
+a different upstream than the config asked for. It failed loudly there only
+because that particular Bedrock model rejects `temperature=0.0`; a closer-matching
+route would have silently evaluated a different serving path. For a leaderboard that
+is a comparability break, not a transport detail.
 
-So name the model the way the gateway names it, and pick the provider so that
-litellm's prefix strip leaves that name intact:
+To pin a route by hand, name the model the way the gateway names it, and pick the
+provider so that litellm's prefix strip leaves that name intact:
 
 ```yaml
 # Gateway route "openrouter/anthropic/claude-opus-4.7"
@@ -656,10 +807,13 @@ couplings described below:
   `extra_body.reasoning`. That is correct for an OpenAI-shaped gateway endpoint,
   but verify it for reasoning models before trusting a run.
 
-**This is a transport swap and nothing else.** `_build_kwargs` sets `api_base`,
-`api_key`, and `extra_headers`; the litellm model string keeps its original
-`<provider>/<name>` shape. Two distinct couplings hang off model naming, and
-only the second is to that formatted string:
+What `_build_kwargs` does differs by path. **On a resolved route** it rewrites
+`model` to the gateway's route name, forces `custom_llm_provider="openai"`, and
+drops OpenRouter-only body fields (`extra_body.provider`). **On the
+unrouted / unreadable-catalog path** it sets only `api_base`, `api_key` and
+`extra_headers`; the model string keeps its `<provider>/<name>` shape, and
+OpenRouter's headers and provider pin still apply. Two distinct couplings hang off
+model naming, and only the second is to the formatted string:
 
 - Preset `match:` globs resolve off `ModelConfig.name` and the `providers:`
   overlay off `ModelConfig.provider` (see [`presets`](#presets)). Re-prefixing
@@ -672,10 +826,11 @@ only the second is to that formatted string:
   verbatim. A second prefix guarantees a pricing-table miss, degrading
   `cost_source` to `"unknown"` and tripping `Capability.COST_USD_POPULATED`.
 
-Because the provider string is untouched, provider-specific request shaping
-still applies on top of the gateway: OpenRouter's `HTTP-Referer` / `X-Title`
-headers and its `extra_body.provider` upstream pinning both survive. On a
-header-name collision the gateway's configured header wins, since that is
+`ModelConfig.provider` is untouched either way, so OpenRouter's
+`HTTP-Referer` / `X-Title` headers still apply on top of the gateway; the
+`extra_body.provider` upstream pin applies only on the unrouted path (a resolved
+route drops it, since a non-OpenRouter upstream rejects it as an unknown field).
+On a header-name collision the gateway's configured header wins, since that is
 explicit operator configuration and the other is an engine default.
 
 ### Verifying a gateway from CI

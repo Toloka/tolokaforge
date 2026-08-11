@@ -29,11 +29,19 @@ _CATALOG = [
 
 
 class TestLookup:
-    def test_prefixed_entry_is_not_evidence_for_this_run(self) -> None:
-        """litellm strips `openrouter/`, so the run asks for the BARE slug (LLM_LAYER.md)."""
+    def test_a_prefixed_entry_is_reachable_and_reported_with_its_route(self) -> None:
+        """The engine resolves the route name from this catalog and addresses the
+        gateway by it, so a prefixed-only entry IS reachable. Reporting it absent was
+        the bug that made the poller disagree with the engine."""
         found = gateway_catalog.lookup("anthropic/claude-opus-4.7", _CATALOG)
-        assert found.status == gateway_catalog.STATUS_ABSENT
-        assert not found.reachable
+        assert found.status == gateway_catalog.STATUS_EXACT
+        assert found.route == "openrouter/anthropic/claude-opus-4.7"
+        assert found.reachable
+
+    def test_the_prefixed_entry_wins_over_the_bare_one(self) -> None:
+        """Same order the engine tries, so the two never disagree."""
+        catalog = ["openrouter/a/b", "a/b"]
+        assert gateway_catalog.lookup("a/b", catalog).route == "openrouter/a/b"
 
     def test_bare_slug_entry_is_the_exact_match(self) -> None:
         found = gateway_catalog.lookup("azure_ai/cohere-command-a-plus-05-2026", _CATALOG)

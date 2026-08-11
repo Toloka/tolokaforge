@@ -36,6 +36,7 @@ from tolokaforge.core.llm.content_policy import (
     OpenAIContent,
     ToolContentPolicy,
 )
+from tolokaforge.core.llm.litellm_params import DECLARABLE_FLAGS
 from tolokaforge.core.llm.message_assembly_policy import (
     MessageAssemblyPolicy,
     NovaMessageAssembly,
@@ -76,6 +77,7 @@ __all__ = [
     "build_capabilities",
     "get_overlay_path",
     "get_resolved_presets",
+    "litellm_model_entries",
     "resolve_effective_preset",
     "resolve_overlay_path",
     "resolve_policy_names",
@@ -186,7 +188,12 @@ def _merge_out_of_tree_policy_registrations() -> None:
 _merge_out_of_tree_policy_registrations()
 
 
-_DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers": {}}
+_DEFAULT_PRESET_DATA: dict[str, Any] = {
+    "default": {},
+    "presets": {},
+    "providers": {},
+    "litellm_models": {},
+}
 
 
 # ---------------------------------------------------------------------------
@@ -205,7 +212,15 @@ _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers
 # ``tolokaforge.adapters``.
 
 #: Top-level keys allowed in an overlay (and the bundled file).
-_OVERLAY_TOP_LEVEL_KEYS: frozenset[str] = frozenset({"default", "presets", "providers"})
+_OVERLAY_TOP_LEVEL_KEYS: frozenset[str] = frozenset(
+    {"default", "presets", "providers", "litellm_models"}
+)
+
+#: Keys one ``litellm_models:`` entry may carry: the wire capabilities it
+#: DECLARES (``litellm_params.DECLARABLE_FLAGS``) plus the ``evidence`` for them.
+#: No prices - a registered price would relabel our own table as
+#: provider-authoritative; see ``litellm_params`` for why.
+_LITELLM_MODEL_KEYS: frozenset[str] = frozenset({"evidence", *DECLARABLE_FLAGS})
 
 
 def _extract_known_keys(cls: type[Any]) -> frozenset[str]:
@@ -435,6 +450,79 @@ def validate_overlay_file(path: str) -> None:
     _load_overlay_file(path)
 
 
+def _lower_vendor_keys(block: dict[str, Any]) -> dict[str, Any]:
+    """Store entries under a lowercased vendor, which is what the lookup builds.
+
+    litellm's own ids are lowercase, and the alternative - rejecting
+    ``Meta/...`` at load - fails a file that says exactly what it means.
+    """
+    lowered: dict[str, Any] = {}
+    for model_id, entry in block.items():
+        vendor, _, name = str(model_id).partition("/")
+        lowered[f"{vendor.lower()}/{name}"] = entry
+    return lowered
+
+
+def _validate_litellm_models(block: Any, path: str) -> None:
+    """Validate a ``litellm_models:`` block. Loud on anything malformed.
+
+    Louder than the preset blocks around it on purpose: a preset that fails to
+    apply changes how a request is shaped, while an entry here changes whether
+    the request is sent at all, and a silently-dropped one reappears as
+    "this provider does not support tool calls". Runs at overlay load, which is
+    the CLI boundary, so a bad entry fails before the orchestrator exists and
+    before anything has been spent.
+    """
+    if not isinstance(block, dict):
+        raise ValueError(
+            f"Preset overlay {path!r}: litellm_models must be a mapping of "
+            f"'<provider>/<model>' to an entry, got {type(block).__name__}."
+        )
+    for model_id, entry in block.items():
+        where = f"litellm_models[{model_id!r}]"
+        vendor, _, name = model_id.partition("/") if isinstance(model_id, str) else ("", "", "")
+        if not vendor or not name:
+            raise ValueError(
+                f"Preset overlay {path!r}: {where} must be a litellm model id of the "
+                "form '<provider>/<model>' - that is the key litellm looks up, and "
+                "half of one matches nothing."
+            )
+        if not isinstance(entry, dict):
+            raise ValueError(
+                f"Preset overlay {path!r}: {where} must be a mapping, got {type(entry).__name__}."
+            )
+        unknown = set(entry) - _LITELLM_MODEL_KEYS
+        if unknown:
+            raise ValueError(
+                f"Preset overlay {path!r}: {where} has unknown keys {sorted(unknown)}. "
+                f"Allowed: {sorted(_LITELLM_MODEL_KEYS)}. Capability flags are an "
+                "allow-list on purpose: an entry states what we are willing to "
+                "assert about a model, not everything litellm can hold."
+            )
+        evidence = entry.get("evidence")
+        if not isinstance(evidence, str) or not evidence.strip():
+            raise ValueError(
+                f"Preset overlay {path!r}: {where} needs a non-empty 'evidence'. "
+                "The entry asserts what a model accepts on the wire, so it has to "
+                "say what was observed and when, or nobody can re-check it."
+            )
+        declared = [flag for flag in DECLARABLE_FLAGS if flag in entry]
+        for flag in declared:
+            if not isinstance(entry[flag], bool):
+                raise ValueError(
+                    f"Preset overlay {path!r}: {where}.{flag} must be true or false, "
+                    f"got {entry[flag]!r}."
+                )
+        if not any(entry[flag] for flag in declared):
+            raise ValueError(
+                f"Preset overlay {path!r}: {where} declares nothing. An entry exists "
+                f"to state a capability litellm's map is missing, so one of "
+                f"{list(DECLARABLE_FLAGS)} must be true - otherwise the model is "
+                "left exactly as unusable as it was, and the file reads as though "
+                "it had been fixed."
+            )
+
+
 def _validate_overlay(data: dict[str, Any], path: str) -> None:
     """Host-boundary validation for an overlay's contents.
 
@@ -455,6 +543,8 @@ def _validate_overlay(data: dict[str, Any], path: str) -> None:
             f"Preset overlay {path!r} has unknown top-level keys: "
             f"{sorted(unknown_top)}. Allowed: {sorted(_OVERLAY_TOP_LEVEL_KEYS)}."
         )
+
+    _validate_litellm_models(data.get("litellm_models") or {}, path)
 
     def _check_block(block: dict[str, Any], where: str) -> None:
         if not isinstance(block, dict):
@@ -547,6 +637,7 @@ def _merge_overlay(
       at INFO so the operator can confirm it took effect.
     - ``providers:`` shallow merge per provider key; overlay wins; nested
       ``params`` merges deeply.
+    - ``litellm_models:`` shallow merge per model id; overlay wins.
     """
     merged: dict[str, Any] = {}
 
@@ -598,6 +689,15 @@ def _merge_overlay(
         new_providers[name] = merged_p
     merged["providers"] = new_providers
 
+    # litellm_models — per-model-id, overlay wins. Nothing is bundled today, so
+    # in practice this is the overlay's own block.
+    merged["litellm_models"] = _lower_vendor_keys(
+        {
+            **(bundled.get("litellm_models") or {}),
+            **(overlay.get("litellm_models") or {}),
+        }
+    )
+
     return merged
 
 
@@ -632,6 +732,17 @@ def get_resolved_presets() -> dict[str, Any]:
     call so callers cannot mutate the module cache.
     """
     return copy.deepcopy(_load_presets())
+
+
+def litellm_model_entries() -> dict[str, dict[str, Any]]:
+    """Operator-supplied entries for models litellm's own map does not carry.
+
+    Empty unless an overlay declares them - the engine ships no list of its
+    own, because a model missing from a third-party map is not a fact about
+    this release. See ``litellm_params.allowed_openai_params`` for what is done
+    with them, and ``docs/LLM_LAYER.md`` for why they exist at all.
+    """
+    return dict(_load_presets().get("litellm_models") or {})
 
 
 def _iter_preset_matches(
