@@ -171,9 +171,11 @@ def render_reconcile_report(
 
     ``artifacts_dir`` is ``None`` for a dry run, which wrote nothing to point at.
     """
+    excluded = len(report.excluded_bundles)
     console.print(
         f"[bold]Reconciled[/bold] {report.trials_read} trials under {report.source} against "
         f"{', '.join(report.packs_searched)}"
+        + (f" ({excluded} excluded: no task snapshot)" if excluded else "")
     )
     console.print(f"  [muted]reference: {report.reference_labeller}[/muted]")
     console.print(f"  [muted]candidate: {report.candidate_labeller}[/muted]")
@@ -181,5 +183,7 @@ def render_reconcile_report(
         _render_entry(entry, console=console)
     for unreadable in report.unreadable_trials:
         console.print(f"\n[error]unreadable[/error] · {unreadable.trial}: {unreadable.reason}")
+    for excluded_bundle in report.excluded_bundles:
+        console.print(f"[warn]excluded[/warn] · {excluded_bundle.bundle}: {excluded_bundle.reason}")
     if artifacts_dir is not None:
         console.print(f"\nReconcile report: {artifacts_dir}")

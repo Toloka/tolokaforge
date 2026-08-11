@@ -5,8 +5,8 @@
 [`trace_checks`](GRADING.md#trace-checks) block against it again. No agent, no
 environment service, no judge — so it starts no container and spends no tokens. The
 guarantee is structural: `tolokaforge/core/grading/trace_replay.py` reaches the one
-production evaluator, the bundle reader and the authoring gate, and stops there, which
-a clean-subprocess import probe holds
+production evaluator, the bundle reader, the authoring gate and the outcome classifier
+a run's own attribution uses, and stops there, which a clean-subprocess import probe holds
 (`tests/canonical/test_retrace_cli.py::test_the_replay_module_reaches_neither_an_llm_client_nor_the_judge`).
 
 `rejudge` and `retrace` are separate commands because they cost different things:
@@ -84,9 +84,18 @@ be a new explicit flag, not a change to this default.
 
 ## What gets re-checked
 
-A directory is a trace-replay bundle iff it directly contains **`task.yaml` +
-`trajectory.yaml`**. Not `grade.yaml`: a trial is worth re-checking whether or not it
-was ever graded.
+A directory records a trial iff it directly contains **`trajectory.yaml`**, and every
+recorded trial is a bundle. One file, because it is the only one every writer
+produces: `task.yaml` comes from the conductor alone and `grade.yaml` only where a
+verdict exists, so a trial that never ran or was never graded carries neither. The
+rule has one home, `tolokaforge/core/grading/replay_layout.py`, and all three offline
+commands discover through it, so a directory is a bundle for `retrace` exactly when it
+is one for [`rejudge`](JUDGE_REPLAY.md) and
+[`reconcile`](RUBRIC_MIGRATION.md).
+
+The weaker filter is the deliberate cost: a directory holding a stray
+`trajectory.yaml` is a bundle, and a command pointed at its parent reports it as a
+named failure rather than passing over it in silence.
 
 **`trace_replay` and `replays` are reserved directory names.** A bundle sitting beneath
 a directory with either name, at any depth under `--source`, is not discovered:
@@ -104,17 +113,32 @@ does not need to be: its isolation comes from its *write set* rather than from d
 writes exactly one file — `reconcile/<replay_id>/reconcile_report.yaml` — and never a per-bundle
 marker, so nothing it leaves under `--source` can be mistaken for a bundle by anything.
 
-Judge replay's own markers are untouched — `retrace` declares its own and never calls
-`discover_trial_bundles`.
-
-Each discovered bundle gets one of four dispositions, all of them reported:
+Each discovered bundle gets one of five dispositions, all of them reported:
 
 | status | meaning |
 |---|---|
 | `replayed` | re-checked, artifacts written |
 | `would_replay` | `--dry-run`: eligible and reconstructable |
 | `skipped_not_applicable` | the bundle's `grading_config` declares no `trace_checks` and no override was supplied |
+| `skipped_no_task` | the bundle carries no `task.yaml` and its own trajectory records an infrastructure abort, so nothing says what the trial would have been checked against |
 | `failed` | an input is missing or invalid; the reason names the file and the defect |
+
+**A bundle with no `task.yaml` is classified rather than failed when its own
+trajectory says the trial never ran.** A trial whose environment did not come up is
+written by the executor alone — `trajectory.yaml` and `metrics.yaml`, because the
+conductor never ran — so nothing in it says what it would have been checked against.
+That is `skipped_no_task`, named from the outcome class the trial's own trajectory
+records, and like every skip it never affects the exit code. The rule is deliberately
+narrow: a task-less bundle whose trajectory records a real episode has lost its task
+snapshot and is `failed` naming `task.yaml`, and one whose `trajectory.yaml` is
+missing or unreadable is `failed` naming that file. The reason names the outcome
+class; *why* the environment did not come up is `error_reason` in the same bundle's
+`metrics.yaml`.
+
+It is kept apart from `skipped_not_applicable` on purpose: that status asserts
+something about the pack — it declares no `trace_checks` — which a bundle carrying no
+`task.yaml` cannot support. A "cannot answer" reported as "nothing to check" is the
+silent number this command exists to avoid.
 
 A skip is declared, never silent. A failure never aborts the batch — the readable
 trials are still measured and still reported — but it does make the command exit
@@ -158,9 +182,12 @@ call with it, and so is any binder reading one.
 
 So a discrimination verdict is only as good as the corpus behind it, and the report
 carries a run-level `evidence` block saying what the corpus was: how many bundles were
-read, how many carried a tool-call record, how many were skipped, how many failed, how
-many were rejected as pre-call-id, and which schema stamps were seen (`unstamped`
-included). An operator reading `never_decided` needs to know whether the corpus is old
+read, how many carried a tool-call record, how many were skipped, how many carried no
+task snapshot, how many failed, how many were rejected as pre-call-id, and which schema
+stamps were seen (`unstamped` included). The task-less count is its own number rather
+than part of `bundles_skipped`: what an aborted trial could not say about a pack and
+what a pack chose not to declare are two facts, and one number carrying both is a
+number nobody can act on. An operator reading `never_decided` needs to know whether the corpus is old
 before concluding anything about the constraint.
 
 `tool_log_present` is the reader's file-presence answer, not the timeline's

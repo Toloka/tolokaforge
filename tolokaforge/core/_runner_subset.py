@@ -116,6 +116,7 @@ RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/grading/config_validation.py",
     "tolokaforge/core/grading/migration_declaration.py",
     "tolokaforge/core/grading/replay.py",
+    "tolokaforge/core/grading/replay_layout.py",
     "tolokaforge/core/grading/rubric_migration.py",
     "tolokaforge/core/grading/state_checks.py",
     "tolokaforge/core/grading/trace_replay.py",
@@ -140,13 +141,15 @@ Six grading-side files (``core.grading.combine``, ``core.grading.replay``,
 orchestrator-only siblings (``core.output.artifacts``, ``core.utils.diff``,
 ``core.env_state``, ``adapters._task_loader``) — including any of these in
 the subset would drag those orchestrator-only surfaces along with them, or
-fail at import time inside the runner container. The remaining five
+fail at import time inside the runner container. The remaining six
 (``core.grading.agreement``, ``core.grading.config_validation``,
-``core.grading.migration_declaration``, ``core.grading.unknown_keys``,
-``core.llm.fallback_client``) have only shared-spine imports but are consumed
-exclusively by orchestrator-side code — the pre-run authoring gate and the
-rubric-to-trace-check migration both run on the host, before any trial is
-scheduled — and would ship as dead weight. The runner container's runtime
+``core.grading.migration_declaration``, ``core.grading.replay_layout``,
+``core.grading.unknown_keys``, ``core.llm.fallback_client``) have only
+shared-spine imports — ``replay_layout`` imports nothing outside the standard
+library — but are consumed exclusively by orchestrator-side code: the pre-run
+authoring gate, the rubric-to-trace-check migration and the offline replay
+commands all run on the host, before or after any trial is scheduled, and they
+would ship as dead weight. The runner container's runtime
 closure reaches none of them.
 """
 

@@ -9,8 +9,9 @@ recorded timeline and joining the two verdicts per trial.
 
 It spends nothing — no agent, no environment service, no judge — and it never edits a pack.
 The guarantee is structural: `tolokaforge/core/grading/rubric_migration.py` reaches the
-trace-replay reader, the one production trace evaluator, the pure agreement maths and the task
-loader `tolokaforge validate` already uses, and stops there, which a clean-subprocess import
+trace-replay reader and its bundle discovery, the one production trace evaluator, the outcome
+classifier a run's own attribution uses, the pure agreement maths and the task loader
+`tolokaforge validate` already uses, and stops there, which a clean-subprocess import
 probe holds (`tests/canonical/test_rubric_migration.py::test_the_differential_reaches_neither_an_llm_client_nor_the_judge`).
 
 `reconcile` is a separate command from [`retrace`](TRACE_REPLAY.md) — which also spends
@@ -53,7 +54,7 @@ and it reaches exactly the same verdict.
 
 | Flag | Meaning |
 |---|---|
-| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it holds `task.yaml` + `trajectory.yaml`. |
+| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it directly holds `trajectory.yaml` ([JUDGE_REPLAY.md](JUDGE_REPLAY.md#what-gets-re-judged)). A discovered bundle recording a trial that never ran carries no `task.yaml`, names no pack, and is **excluded from the corpus by name** — the report's `excluded_bundles` — rather than blocking it. |
 | `--packs` | Directory searched recursively for the pack each bundle's `task_id` names; repeatable, default `examples/`. |
 | `--replay-id` | Names the artifact subdirectory (letters, digits, `.`, `_`, `-`). Default: timestamped. |
 | `--dry-run` | Reach the verdict and report it, write nothing. |
@@ -179,13 +180,15 @@ corpus that quietly got smaller.
 | `no_verdict_for_criterion` | The grade holds no verdict for the named criterion. |
 | `constraint_verdict_unavailable` | A named constraint was undecided, or was route-scoped and its route did not win. |
 
-A bundle that cannot be **read** is different again: it is reported apart from the exclusions
-and it blocks, because a verdict over a corpus that partly failed to load is a verdict over an
-unknown denominator. It never aborts the run, whatever is wrong with it — bytes no decoder
-accepts in any of its artifacts, a `task.yaml` whose recorded rubric does not read as one, a
-`grade.yaml` whose `criterion_results` hold a row that is not a judge verdict or whose `score`
-or component values are not numbers. Each is one named entry under `unreadable_trials`, and
-every other trial in the corpus is still measured.
+A bundle that cannot be **read** is different again: it is reported apart from the
+per-criterion exclusions above and from the corpus-level `excluded_bundles` (the task-less
+bundle a trial that never ran leaves, excluded by name), and it blocks, because a verdict over
+a corpus that partly failed to load is a verdict over an unknown denominator. It never aborts
+the run, whatever is wrong with it — bytes no decoder accepts in any of its artifacts, a
+`task.yaml` absent on a bundle whose trajectory records a real episode, a `task.yaml` whose
+recorded rubric does not read as one, a `grade.yaml` whose `criterion_results` hold a row that
+is not a judge verdict or whose `score` or component values are not numbers. Each is one named
+entry under `unreadable_trials`, and every other trial in the corpus is still measured.
 
 ## Pooling across tasks
 
