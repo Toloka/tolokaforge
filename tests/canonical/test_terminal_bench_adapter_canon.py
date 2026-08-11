@@ -13,12 +13,14 @@ SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 
 
 def _normalize_paths(obj):
-    """Replace absolute task_dir paths with a stable placeholder.
+    """Replace absolute paths + the content digest with stable placeholders.
 
-    Adapter output contains machine-specific absolute paths (e.g.
-    ``/Users/alice/work/...`` vs ``/home/runner/work/...``).  We replace
-    the prefix up to ``tests/data/`` with ``<ROOT>/`` so that golden
-    snapshots are portable across machines and CI.
+    Adapter output contains two machine-varying strings: the absolute
+    prefix leading to ``tests/data/terminal_bench_tasks/`` (differs by
+    checkout root), and the staging directory name
+    ``<staging_root>/echo-hello-<16-hex-digest>/…`` (differs by the
+    per-test ``tmp_path``). Both are normalised to keep the snapshot
+    portable across machines and CI.
     """
     text = json.dumps(obj)
     text = re.sub(
@@ -26,16 +28,22 @@ def _normalize_paths(obj):
         r'"<ROOT>\1',
         text,
     )
+    text = re.sub(
+        r'"[^"]*?/echo-hello-[0-9a-f]{16}/',
+        r'"<STAGING>/echo-hello/',
+        text,
+    )
     return json.loads(text)
 
 
 @pytest.fixture
-def tbench_adapter(test_data_dir) -> TerminalBenchAdapter:
+def tbench_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
     """Create TerminalBenchAdapter pointed at tests/data/terminal_bench_tasks/."""
     tbench_tasks_dir = test_data_dir / "terminal_bench_tasks"
     return TerminalBenchAdapter(
         {
             "terminal_bench_dir": str(tbench_tasks_dir),
+            "staging_root": str(tmp_path / "staging"),
         }
     )
 
@@ -109,14 +117,11 @@ class TestTerminalBenchAdapterIntegrity:
         assert tool.name == "bash"
         assert tool.source.invocation_style == "docker_compose_exec"
 
-    def test_tool_source_extra_has_compose_paths(self, tbench_adapter):
-        """ToolSource.extra contains compose_file, task_dir, service, env_vars."""
+    def test_tool_source_extra_shape(self, tbench_adapter):
+        """``ToolSource.extra`` carries exactly the two keys ``PerTrialRuntimeBackend`` + wrapper need."""
         td = tbench_adapter.to_task_description("echo-hello")
         extra = td.agent_tools[0].source.extra
-        assert extra["compose_file"] == "docker-compose.yaml"
-        assert extra["service"] == "main"
-        assert "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME" in extra["env_vars"]
-        assert "T_BENCH_CONTAINER_LOGS_PATH" in extra["env_vars"]
+        assert extra == {"service": "main", "compose_project_prefix": "tbench_"}
 
     def test_metadata_from_toml(self, tbench_adapter):
         """TaskDescription metadata contains difficulty and tags from task.toml."""
@@ -134,14 +139,3 @@ class TestTerminalBenchAdapterIntegrity:
             }
         )
         assert adapter.get_task_ids() == []
-
-    def test_runner_task_dir_override(self, terminal_bench_tasks_dir):
-        """runner_task_dir param overrides task_dir in ToolSource.extra."""
-        adapter = TerminalBenchAdapter(
-            {
-                "terminal_bench_dir": str(terminal_bench_tasks_dir),
-                "runner_task_dir": "/mounted/tasks",
-            }
-        )
-        td = adapter.to_task_description("echo-hello")
-        assert td.agent_tools[0].source.extra["task_dir"] == "/mounted/tasks/echo-hello"

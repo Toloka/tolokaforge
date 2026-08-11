@@ -538,13 +538,7 @@ Both satisfy the same `RuntimeBackend` Protocol. Callers depend only on the Prot
 | Adapter | Populates `environment_manifest` | Compatible with `--runtime per_trial` |
 |---|---|---|
 | `native` | Yes — reads it from the task's `task.yaml` when declared. | Yes. Tested end-to-end with `coding_public_example_01`. |
-| `terminal_bench` | No — the adapter synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest = None` by design. | No. Terminal-bench tasks run only under `--runtime shared` today. |
-
-**Why terminal-bench sits outside `PerTrialRuntimeBackend`.** Each terminal-bench task already ships its own `docker-compose.yaml`, which the adapter materialises through the `DOCKER_COMPOSE_EXEC` tool style (see `adapter_settings.compose_file` in the produced `TaskDescription`). That gives terminal-bench tasks *adapter-owned* per-task isolation — a fresh container per task, orchestrated inside the tool-invocation path — but it lives one level below the runtime backend seam. From the orchestrator's perspective, terminal-bench tasks look like shared-stack workloads: the engine services (`runner`, `db-service`) come up once for the run, and the adapter handles each task's own container itself.
-
-The consequence is that terminal-bench tasks cannot currently benefit from the orchestrator-level substrate primitives — `TrialExecutor`'s `provision → await_ready → endpoints → teardown` bracket, per-trial network isolation, `PROVISION_ERROR` failure attribution, or the `IsolationMode` enforcement path — because none of that runs for them. Terminal-bench brings its own equivalents inside the adapter.
-
-Unifying terminal-bench with `PerTrialRuntimeBackend` is future work (see "Follow-up work" below).
+| `terminal_bench` | Yes — synthesises the compose file (task services + injected `runner` + `db-service`) into a staging directory, then emits an `EnvironmentPatch(stack=StackPatch(compose_file=…, runner_service="runner"))` on `TaskConfig`. `project_loader.resolve` fills every service with `ServiceSpec(isolation="ephemeral")`, which routes the run to `PerTrialRuntimeBackend`. | Yes. The `terminal_bench` adapter emits an all-`ephemeral` manifest, so `_select_backend_from_tasks` returns `per_trial`. `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply. |
 
 ## Extending to new substrates
 
@@ -723,7 +717,6 @@ The runner and db-service images are also published to Docker Hub (see [STANDALO
 
 ## Follow-up work
 
-- **Terminal-bench + `per_trial`.** The `terminal_bench` adapter today materialises each task's own compose stack inside the tool-invocation path (see "Adapter compatibility with `per_trial`" above). Lifting that into the orchestrator's substrate seam — either by having the adapter synthesise an `environment_manifest` from the task's `docker-compose.yaml`, or by defining a second manifest kind that reads `adapter_settings.compose_file` — would let terminal-bench tasks use `--runtime per_trial` and pick up `TrialExecutor`'s bracket, per-trial network isolation, and `PROVISION_ERROR` attribution. The manifest-synthesis path aligns better with the "one substrate primitive, adapters produce a manifest" direction — the alternative couples `PerTrialRuntimeBackend` to adapter-specific fields.
 - **No perf optimisations.** Image pre-pull, postgres template-DB, container pool, orphan sweep, resource caps, benchmark harness — all filed as a follow-up umbrella ticket.
 
 ## Where to read next

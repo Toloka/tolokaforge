@@ -10,7 +10,10 @@ from tolokaforge.docker.policy import Capability
 from tolokaforge.docker.stacks.core import core_stack
 from tolokaforge.runner.models import (
     AdapterType,
+    EnvironmentManifest,
+    EnvironmentPatch,
     InvocationStyle,
+    NetworkPolicy,
     ToolSchema,
     ToolSource,
 )
@@ -455,91 +458,217 @@ class TestCoreStackDinD:
         assert runner.resources.cap_drop == [Capability.ALL]
 
 
-class TestCoreStackTerminalBenchMounts:
-    def test_task_pack_mounts_bind_same_absolute_path(self, tmp_path):
-        pack = tmp_path / "pack"
-        pack.mkdir()
-        stack = core_stack(task_pack_mounts=[pack])
-        runner = stack.services["runner"]
-        binds = [m for m in runner.mounts if m.source == str(pack.resolve())]
-        assert binds, "task pack should be bind-mounted at its absolute host path"
-        assert binds[0].target == str(pack.resolve())
-
-    def test_extra_runner_binds_are_applied(self, tmp_path):
-        host = tmp_path / "logs"
-        host.mkdir()
-        stack = core_stack(extra_runner_binds=[(host, "/tmp/tb-logs")])
-        runner = stack.services["runner"]
-        targets = [m.target for m in runner.mounts]
-        assert "/tmp/tb-logs" in targets
-
-    def test_mount_docker_socket_adds_bind_and_relaxes_caps(self):
-        stack = core_stack(mount_docker_socket=True)
-        runner = stack.services["runner"]
-        sock_mounts = [m for m in runner.mounts if m.source == "/var/run/docker.sock"]
-        assert len(sock_mounts) == 1
-        assert sock_mounts[0].target == "/var/run/docker.sock"
-        # Relaxed profile means no explicit cap drop — docker CLI needs extra caps.
-        assert runner.resources is None or runner.resources.cap_drop == []
-
-
 class TestTerminalBenchAdapterDockerStackRequirements:
-    """Adapter declares its host-socket needs through the generic hook."""
+    """Adapter declares one :class:`ComposeImageBuild` per discovered task."""
 
-    def test_requirements_request_socket_passthrough(self, tmp_path):
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def test_image_builds_one_per_task(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
-        pack = tmp_path / "pack"
-        pack.mkdir()
-        adapter = TerminalBenchAdapter({"task_packs": [str(pack)]})
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        task_ids = adapter.get_task_ids()
 
         reqs = adapter.docker_stack_requirements()
+        assert reqs.mount_docker_socket is False
+        assert reqs.task_pack_mounts == []
+        assert reqs.extra_runner_binds == []
+        assert [b.service for b in reqs.image_builds] == [
+            adapter._environment(tid).agent_service for tid in task_ids
+        ]
+        assert [b.compose_file for b in reqs.image_builds] == [
+            adapter._environment(tid).compose_file for tid in task_ids
+        ]
 
-        assert reqs.mount_docker_socket is True
-        assert pack.resolve() in reqs.task_pack_mounts
-        assert (
-            Path(TerminalBenchAdapter.LOGS_HOST_ROOT),
-            TerminalBenchAdapter.LOGS_HOST_ROOT,
-        ) in reqs.extra_runner_binds
-
-    def test_missing_pack_is_excluded_from_mounts(self, tmp_path):
+    def test_prebuild_images_false_returns_no_builds(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
 
-        ghost = tmp_path / "missing"
-        adapter = TerminalBenchAdapter({"task_packs": [str(ghost)]})
-
+        adapter = TerminalBenchAdapter(
+            {
+                "terminal_bench_dir": str(fixture_dir),
+                "staging_root": str(tmp_path),
+                "prebuild_images": False,
+            }
+        )
         reqs = adapter.docker_stack_requirements()
-        assert ghost.resolve() not in reqs.task_pack_mounts
+        assert reqs.image_builds == []
 
-    def test_first_pack_drives_discovery_and_runner_paths(self, tmp_path):
-        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
-
-        pack = tmp_path / "pack"
-        pack.mkdir()
-        adapter = TerminalBenchAdapter({"task_packs": [str(pack)]})
-
-        # Adapter self-resolves its discovery + runner paths from task_packs;
-        # orchestrator no longer needs to set them.
-        assert adapter.terminal_bench_dir == pack.resolve()
-        assert adapter.runner_task_dir == str(pack.resolve())
-        assert adapter.logs_host_root == TerminalBenchAdapter.LOGS_HOST_ROOT
-
-    def test_to_core_stack_kwargs_renders_only_set_fields(self, tmp_path):
-        from tolokaforge.adapters.base import DockerStackRequirements
+    def test_to_core_stack_kwargs_omits_image_builds(self, tmp_path):
+        """``image_builds`` is the orchestrator's declarative seam, never a stack kwarg."""
+        from tolokaforge.adapters.base import (
+            ComposeImageBuild,
+            DockerStackRequirements,
+        )
 
         empty = DockerStackRequirements().to_core_stack_kwargs()
         assert empty == {}
 
-        pack = tmp_path / "pack"
-        pack.mkdir()
-        kwargs = DockerStackRequirements(
-            task_pack_mounts=[pack],
-            mount_docker_socket=True,
+        compose = tmp_path / "docker-compose.yaml"
+        compose.write_text("services: {}\n")
+        with_builds = DockerStackRequirements(
+            image_builds=[ComposeImageBuild(compose_file=compose, service="main")]
         ).to_core_stack_kwargs()
-        assert kwargs == {
-            "task_pack_mounts": [pack],
-            "mount_docker_socket": True,
+        assert with_builds == {}
+
+
+class TestTerminalBenchAdapterRemovedParams:
+    """Removed params fail loud in ``__init__`` with a rename hint."""
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def test_runner_task_dir_removed(self, fixture_dir):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        with pytest.raises(ValueError, match=r"runner_task_dir.*staging_root"):
+            TerminalBenchAdapter(
+                {"terminal_bench_dir": str(fixture_dir), "runner_task_dir": "/mounted"}
+            )
+
+    def test_logs_host_root_removed(self, fixture_dir):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        with pytest.raises(ValueError, match=r"logs_host_root.*_logs"):
+            TerminalBenchAdapter(
+                {"terminal_bench_dir": str(fixture_dir), "logs_host_root": "/tmp/x"}
+            )
+
+
+class TestTerminalBenchAdapterEnvironmentManifest:
+    """``get_task`` emits an :class:`EnvironmentPatch`; ``to_task_description`` emits the resolved manifest.
+
+    Structural agreement, not object identity — one patch + one resolver.
+    """
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    @pytest.fixture
+    def adapter(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        return TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+
+    def test_task_config_carries_environment_patch(self, adapter):
+        task = adapter.get_task("echo-hello")
+        assert isinstance(task.environment_manifest, EnvironmentPatch)
+        stack = task.environment_manifest.stack
+        assert stack is not None
+        env = adapter._environment("echo-hello")
+        assert stack.compose_file == env.compose_file
+        assert stack.runner_service == "runner"
+        assert task.environment_manifest.network_policy is NetworkPolicy.FULL_INTERNET
+
+    def test_task_description_carries_resolved_manifest(self, adapter):
+        td = adapter.to_task_description("echo-hello")
+        manifest = td.environment_manifest
+        assert isinstance(manifest, EnvironmentManifest)
+        env = adapter._environment("echo-hello")
+        assert manifest.compose_file == env.compose_file
+        assert manifest.runner_service == "runner"
+        assert set(manifest.services) == {"runner", "db-service", env.agent_service}
+        assert {name: spec.isolation for name, spec in manifest.services.items()} == {
+            "runner": "ephemeral",
+            "db-service": "ephemeral",
+            env.agent_service: "ephemeral",
         }
+        assert manifest.requires_per_trial is True
+        assert manifest.network_policy is NetworkPolicy.FULL_INTERNET
+
+    def test_patch_and_manifest_point_at_same_compose_file(self, adapter):
+        task = adapter.get_task("echo-hello")
+        td = adapter.to_task_description("echo-hello")
+        assert task.environment_manifest.stack.compose_file == td.environment_manifest.compose_file
+
+    def test_tool_source_extra_is_two_key_shape(self, adapter):
+        td = adapter.to_task_description("echo-hello")
+        extra = td.agent_tools[0].source.extra
+        env = adapter._environment("echo-hello")
+        assert extra == {"service": env.agent_service, "compose_project_prefix": "tbench_"}
+
+
+class TestTerminalBenchAdapterNoSubprocess:
+    """Both accessors must stay daemon-free — canonical lane + ``--dry-run`` depend on it."""
+
+    @pytest.fixture
+    def fixture_dir(self) -> Path:
+        return Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+
+    def test_get_task_invokes_no_subprocess(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        with (
+            patch("subprocess.run") as run_mock,
+            patch("subprocess.Popen") as popen_mock,
+            patch("subprocess.check_call") as check_call_mock,
+            patch("subprocess.check_output") as check_output_mock,
+        ):
+            adapter.get_task("echo-hello")
+        run_mock.assert_not_called()
+        popen_mock.assert_not_called()
+        check_call_mock.assert_not_called()
+        check_output_mock.assert_not_called()
+
+    def test_to_task_description_invokes_no_subprocess(self, fixture_dir, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        with (
+            patch("subprocess.run") as run_mock,
+            patch("subprocess.Popen") as popen_mock,
+            patch("subprocess.check_call") as check_call_mock,
+            patch("subprocess.check_output") as check_output_mock,
+        ):
+            adapter.to_task_description("echo-hello")
+        run_mock.assert_not_called()
+        popen_mock.assert_not_called()
+        check_call_mock.assert_not_called()
+        check_output_mock.assert_not_called()
+
+
+class TestTerminalBenchTasksSelectPerTrialBackend:
+    """Backend selection is task-driven: an ``all-ephemeral`` manifest picks per-trial."""
+
+    def test_select_backend_returns_per_trial(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        from tolokaforge.core.models import (
+            EvaluationConfig,
+            ModelConfig,
+            OrchestratorConfig,
+            RunConfig,
+        )
+        from tolokaforge.core.orchestrator import Orchestrator
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        run_config = RunConfig(
+            models={"agent": ModelConfig(provider="openai", name="gpt-4")},
+            orchestrator=OrchestratorConfig(workers=1, repeats=1, auto_start_services=False),
+            evaluation=EvaluationConfig(output_dir=str(tmp_path / "out")),
+        )
+        orch = Orchestrator(run_config)
+        orch.adapter = adapter
+        task = MagicMock()
+        task.task_id = "echo-hello"
+        orch.tasks = [task]
+
+        assert orch._select_backend_from_tasks() == "per_trial"
 
 
 # =============================================================================
@@ -590,69 +719,6 @@ class TestTaskParser:
 
         tasks = discover_tasks(tmp_path)
         assert tasks == {}
-
-
-# =============================================================================
-# Compose env var resolution
-# =============================================================================
-
-
-class TestComposeEnvVars:
-    def test_default_image_name(self):
-        from tolokaforge_adapter_terminal_bench.compose_env import resolve_tbench_env_vars
-        from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
-
-        meta = TerminalBenchTask(
-            task_id="my-task",
-            task_dir=Path("/tasks/my-task"),
-            compose_file=Path("/tasks/my-task/docker-compose.yaml"),
-            instruction="test",
-        )
-        env = resolve_tbench_env_vars(meta)
-        assert env["T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME"] == "tbench_my-task"
-
-    def test_registry_image_name(self):
-        from tolokaforge_adapter_terminal_bench.compose_env import resolve_tbench_env_vars
-        from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
-
-        meta = TerminalBenchTask(
-            task_id="my-task",
-            task_dir=Path("/tasks/my-task"),
-            compose_file=Path("/tasks/my-task/docker-compose.yaml"),
-            instruction="test",
-        )
-        env = resolve_tbench_env_vars(meta, image_registry="registry.io/tbench")
-        assert env["T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME"] == "registry.io/tbench/my-task:latest"
-
-    def test_log_paths_under_workspace(self):
-        from tolokaforge_adapter_terminal_bench.compose_env import resolve_tbench_env_vars
-        from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
-
-        meta = TerminalBenchTask(
-            task_id="my-task",
-            task_dir=Path("/tasks/my-task"),
-            compose_file=Path("/tasks/my-task/docker-compose.yaml"),
-            instruction="test",
-        )
-        env = resolve_tbench_env_vars(meta)
-        assert env["T_BENCH_TASK_LOGS_PATH"].startswith("/workspace/")
-        assert env["T_BENCH_TASK_AGENT_LOGS_PATH"].startswith("/workspace/")
-
-    def test_resource_limits(self):
-        from tolokaforge_adapter_terminal_bench.compose_env import resolve_tbench_env_vars
-        from tolokaforge_adapter_terminal_bench.task_parser import TerminalBenchTask
-
-        meta = TerminalBenchTask(
-            task_id="t",
-            task_dir=Path("/t"),
-            compose_file=Path("/t/dc.yaml"),
-            instruction="",
-            cpus=4,
-            memory_mb=8192,
-        )
-        env = resolve_tbench_env_vars(meta)
-        assert env["CPUS"] == "4"
-        assert env["MEMORY"] == "8192M"
 
 
 # =============================================================================

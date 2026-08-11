@@ -1,18 +1,32 @@
 {
   "actors": null,
   "adapter_settings": {
-    "compose_file": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello/docker-compose.yaml",
     "difficulty": "easy",
     "tags": [
       "shell",
       "basics"
-    ],
-    "task_dir": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello"
+    ]
   },
   "adapter_type": "terminal_bench",
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
-  "environment_manifest": null,
+  "environment_manifest": {
+    "initial_state": null,
+    "limited_internet_allowlist": null,
+    "network_policy": "full_internet",
+    "security_context_defaults": null,
+    "services": null,
+    "stack": {
+      "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+      "db_port": null,
+      "db_service": null,
+      "inputs": {},
+      "rag_port": null,
+      "rag_service": null,
+      "runner_port": null,
+      "runner_service": "runner"
+    }
+  },
   "grading": "__adapter__",
   "initial_state": {
     "device_overrides": null,
