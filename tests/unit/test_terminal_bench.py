@@ -20,6 +20,7 @@ from tolokaforge.runner.models import (
 from tolokaforge.runner.tool_factory import (
     DockerComposeExecToolWrapper,
     ToolConfigurationError,
+    ToolExecutionError,
     ToolFactory,
     ToolLifecycleContext,
 )
@@ -95,7 +96,7 @@ class TestToolSourceExtra:
 
 @pytest.fixture
 def wrapper_schema():
-    """Minimal ToolSchema for the bash tool."""
+    """Minimal ToolSchema for the bash tool with the exec-only ``extra`` shape."""
     return ToolSchema(
         name="bash",
         description="Execute bash command",
@@ -111,12 +112,7 @@ def wrapper_schema():
             module_path="",
             class_name="bash",
             invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-            extra={
-                "compose_file": "docker-compose.yaml",
-                "task_dir": "/tasks/test-task",
-                "service": "main",
-                "env_vars": {"T_BENCH_TEST_DIR": "/tests"},
-            },
+            extra={"service": "main", "compose_project_prefix": "tbench_"},
         ),
     )
 
@@ -125,166 +121,58 @@ def wrapper_schema():
 def wrapper(wrapper_schema):
     return DockerComposeExecToolWrapper(
         tool_schema=wrapper_schema,
-        compose_file="docker-compose.yaml",
-        task_dir="/tasks/test-task",
         service="main",
-        env_vars={"T_BENCH_TEST_DIR": "/tests"},
+        compose_project_prefix="tbench_",
     )
 
 
 class TestDockerComposeExecWrapperInit:
-    def test_initial_state(self, wrapper):
-        assert wrapper.compose_file == "docker-compose.yaml"
-        assert wrapper.task_dir == "/tasks/test-task"
-        assert wrapper.service == "main"
-        assert wrapper.project_name is None
-        assert wrapper._started is False
+    def test_records_service_and_prefix_only(self, wrapper):
+        assert wrapper._service == "main"
+        assert wrapper._project_prefix == "tbench_"
+        assert wrapper._trial_id is None
+        assert wrapper._container is None
 
-    def test_default_service(self, wrapper_schema):
+    def test_start_resolves_container_no_subprocess(self, wrapper_schema):
         w = DockerComposeExecToolWrapper(
             tool_schema=wrapper_schema,
-            compose_file="dc.yaml",
-            task_dir="/tmp",
+            service="main",
+            compose_project_prefix="tbench_",
         )
-        assert w.service == "main"
-        assert w.env_vars == {}
-
-
-class TestDockerComposeExecWrapperComposeCmdBuilder:
-    def test_compose_cmd_builds_correctly(self, wrapper):
-        wrapper.project_name = "test_project"
-        cmd = wrapper._compose_cmd("up", "-d", "--wait")
-        assert cmd == [
-            "docker",
-            "compose",
-            "-f",
-            "docker-compose.yaml",
-            "-p",
-            "test_project",
-            "up",
-            "-d",
-            "--wait",
-        ]
-
-    def test_compose_cmd_exec(self, wrapper):
-        wrapper.project_name = "proj"
-        cmd = wrapper._compose_cmd("exec", "-T", "main", "bash", "-c", "echo hi")
-        assert cmd[0:6] == ["docker", "compose", "-f", "docker-compose.yaml", "-p", "proj"]
-        assert cmd[6:] == ["exec", "-T", "main", "bash", "-c", "echo hi"]
-
-
-class TestDockerComposeExecWrapperStart:
-    @patch("subprocess.run")
-    @patch("os.makedirs")
-    @patch("os.path.isdir", return_value=True)
-    @patch("os.path.isfile", return_value=True)
-    def test_start_sets_project_name(
-        self, mock_isfile, mock_isdir, mock_makedirs, mock_run, wrapper
-    ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        wrapper.start(ToolLifecycleContext(trial_id="task_0"))
-        assert wrapper.project_name == "tbench_task_0"
-        assert wrapper._started is True
-
-    @patch("subprocess.run")
-    @patch("os.makedirs")
-    @patch("os.path.isdir", return_value=False)
-    @patch("os.path.isfile", return_value=False)
-    def test_start_overrides_container_name(
-        self, mock_isfile, mock_isdir, mock_makedirs, mock_run, wrapper
-    ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        wrapper.start(ToolLifecycleContext(trial_id="mytask_2"))
-        assert (
-            wrapper.env_vars["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"] == "tbench_mytask_2_main"
-        )
-
-    @patch("subprocess.run")
-    @patch("os.makedirs")
-    @patch("os.path.isdir", return_value=False)
-    @patch("os.path.isfile", return_value=False)
-    def test_start_sets_unique_log_paths(
-        self, mock_isfile, mock_isdir, mock_makedirs, mock_run, wrapper
-    ):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        wrapper.start(ToolLifecycleContext(trial_id="task_1"))
-        assert wrapper.env_vars["T_BENCH_TASK_LOGS_PATH"] == "/workspace/logs/tbench_task_1"
-        assert (
-            wrapper.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"]
-            == "/workspace/agent_logs/tbench_task_1"
-        )
-
-    @patch("subprocess.run")
-    @patch("os.makedirs")
-    def test_start_raises_on_compose_failure(self, mock_makedirs, mock_run, wrapper):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=1, stdout="", stderr="Error: service failed"
-        )
-        with pytest.raises(RuntimeError, match="docker compose up failed"):
-            wrapper.start(ToolLifecycleContext(trial_id="fail_0"))
-
-    @patch("subprocess.run")
-    @patch("os.makedirs")
-    @patch("os.path.isdir", return_value=True)
-    @patch("os.path.isfile", return_value=True)
-    def test_start_copies_tests(self, mock_isfile, mock_isdir, mock_makedirs, mock_run, wrapper):
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        wrapper.start(ToolLifecycleContext(trial_id="copy_0"))
-        # Should have: compose up, cp tests, cp run-tests.sh, mkdir logs
-        assert mock_run.call_count >= 4
-
-
-class TestDockerComposeExecWrapperStop:
-    @patch("subprocess.run")
-    def test_stop_when_started(self, mock_run, wrapper):
-        wrapper._started = True
-        wrapper.project_name = "tbench_test_0"
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        wrapper.stop()
-        assert wrapper._started is False
-        # Verify docker compose down was called
-        call_args = mock_run.call_args[0][0]
-        assert "down" in call_args
-
-    def test_stop_noop_when_not_started(self, wrapper):
-        wrapper._started = False
-        wrapper.project_name = None
-        wrapper.stop()  # Should not raise
-
-    @patch("subprocess.run")
-    def test_cleanup_calls_stop(self, mock_run, wrapper):
-        wrapper._started = True
-        wrapper.project_name = "tbench_cleanup_0"
-        mock_run.return_value = subprocess.CompletedProcess(
-            args=[], returncode=0, stdout="", stderr=""
-        )
-        wrapper.cleanup()
-        assert wrapper._started is False
+        with (
+            patch("subprocess.run") as run_mock,
+            patch("subprocess.Popen") as popen_mock,
+        ):
+            w.start(ToolLifecycleContext(trial_id="task-1:0"))
+        run_mock.assert_not_called()
+        popen_mock.assert_not_called()
+        assert w._trial_id == "task-1:0"
+        assert w._container == "tbench_task-1_0_main"
 
 
 class TestDockerComposeExecWrapperExec:
     def test_exec_sync_success(self, wrapper):
-        wrapper.project_name = "proj"
-        with patch.object(wrapper, "_run") as mock_run:
+        wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=0, stdout="hello world\n", stderr=""
             )
             result = wrapper._exec_sync("echo hello world", 30.0)
             assert result == "hello world\n"
+            argv = mock_run.call_args.args[0]
+            assert argv == [
+                "docker",
+                "exec",
+                "-i",
+                "tbench_task-1_0_main",
+                "bash",
+                "-c",
+                "echo hello world",
+            ]
 
     def test_exec_sync_nonzero_exit(self, wrapper):
-        wrapper.project_name = "proj"
-        with patch.object(wrapper, "_run") as mock_run:
+        wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
+        with patch("subprocess.run") as mock_run:
             mock_run.return_value = subprocess.CompletedProcess(
                 args=[], returncode=1, stdout="partial", stderr="error msg"
             )
@@ -293,9 +181,13 @@ class TestDockerComposeExecWrapperExec:
             assert "[exit code: 1]" in result
             assert "error msg" in result
 
+    def test_exec_before_start_fails_loud(self, wrapper):
+        with pytest.raises(ToolExecutionError, match="container name unresolved"):
+            wrapper._exec_sync("echo hi", 30.0)
+
     @pytest.mark.asyncio
     async def test_execute_async(self, wrapper):
-        wrapper.project_name = "proj"
+        wrapper.start(ToolLifecycleContext(trial_id="task-1:0"))
         with patch.object(wrapper, "_exec_sync", return_value="async result") as mock:
             result = await wrapper.execute({"command": "ls"})
             assert result == "async result"
@@ -323,22 +215,15 @@ class TestToolFactoryDockerComposeExec:
                 module_path="",
                 class_name="bash",
                 invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                extra={
-                    "compose_file": "docker-compose.yaml",
-                    "task_dir": "/tasks/test",
-                    "service": "main",
-                    "env_vars": {"KEY": "val"},
-                },
+                extra={"service": "main", "compose_project_prefix": "tbench_"},
             ),
         )
         wrapper = factory._create_wrapper(schema)
         assert isinstance(wrapper, DockerComposeExecToolWrapper)
-        assert wrapper.compose_file == "docker-compose.yaml"
-        assert wrapper.task_dir == "/tasks/test"
-        assert wrapper.service == "main"
-        assert wrapper.env_vars == {"KEY": "val"}
+        assert wrapper._service == "main"
+        assert wrapper._project_prefix == "tbench_"
 
-    def test_missing_compose_file_raises(self, factory):
+    def test_missing_service_raises(self, factory):
         schema = ToolSchema(
             name="bash",
             description="Run command",
@@ -348,13 +233,13 @@ class TestToolFactoryDockerComposeExec:
                 module_path="",
                 class_name="bash",
                 invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                extra={"task_dir": "/tasks/test"},
+                extra={"compose_project_prefix": "tbench_"},
             ),
         )
-        with pytest.raises(ToolConfigurationError, match="compose_file"):
+        with pytest.raises(ToolConfigurationError, match=r"service.*compose_project_prefix"):
             factory._create_wrapper(schema)
 
-    def test_missing_task_dir_raises(self, factory):
+    def test_missing_compose_project_prefix_raises(self, factory):
         schema = ToolSchema(
             name="bash",
             description="Run command",
@@ -364,27 +249,11 @@ class TestToolFactoryDockerComposeExec:
                 module_path="",
                 class_name="bash",
                 invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                extra={"compose_file": "dc.yaml"},
+                extra={"service": "main"},
             ),
         )
-        with pytest.raises(ToolConfigurationError, match="task_dir"):
+        with pytest.raises(ToolConfigurationError, match=r"service.*compose_project_prefix"):
             factory._create_wrapper(schema)
-
-    def test_default_service_is_main(self, factory):
-        schema = ToolSchema(
-            name="bash",
-            description="Run command",
-            parameters={"type": "object", "properties": {}},
-            source=ToolSource(
-                toolset="terminal_bench",
-                module_path="",
-                class_name="bash",
-                invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
-                extra={"compose_file": "dc.yaml", "task_dir": "/t"},
-            ),
-        )
-        wrapper = factory._create_wrapper(schema)
-        assert wrapper.service == "main"
 
 
 # =============================================================================

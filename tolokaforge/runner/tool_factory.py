@@ -1019,159 +1019,55 @@ def create_search_kb_schema() -> ToolSchemaModel:
 
 
 class DockerComposeExecToolWrapper(ToolWrapper):
-    """Execute commands inside a Docker Compose service via ``docker compose exec``.
+    """Execute a command inside an already-running compose service via ``docker exec``.
 
-    Manages compose lifecycle: pull/build → up → exec → down.
-    Uses host Docker daemon via mounted socket.
+    The wrapper never brings a compose stack up or down: :class:`~tolokaforge.
+    runtime.per_trial_runtime.PerTrialRuntimeBackend` owns the trial's compose
+    project lifecycle. ``start()`` records the trial id (its only reason to
+    live) and resolves the target container via
+    :func:`~tolokaforge.runner.compose_naming.compose_container_name`, the same
+    resolver the host-side materialiser uses to name the project — so the argv
+    ``docker exec -i <container> bash -c <command>`` targets the container the
+    per-trial runtime brought up.
     """
 
-    # Runner-managed per-trial lifecycle (compose up on RegisterTrial, down on reset).
+    # Runner-managed per-trial lifecycle: start() is how the wrapper learns
+    # ctx.trial_id so it can resolve the container name. No subprocess runs
+    # in start() — the compose stack is brought up by the per-trial runtime.
     has_lifecycle = True
 
     def __init__(
         self,
         tool_schema: ToolSchemaModel,
-        compose_file: str,
-        task_dir: str,
-        service: str = "main",
-        env_vars: dict[str, str] | None = None,
+        service: str,
+        compose_project_prefix: str,
     ):
         super().__init__(tool_schema)
-        self.compose_file = compose_file
-        self.task_dir = task_dir
-        self.service = service
-        self.env_vars = env_vars or {}
-        self.project_name: str | None = None
-        self._started = False
-
-    # -- helpers --------------------------------------------------------------
-
-    def _compose_cmd(self, *args: str) -> list[str]:
-        return [
-            "docker",
-            "compose",
-            "-f",
-            self.compose_file,
-            "-p",
-            self.project_name,
-            *args,
-        ]
-
-    def _run(self, cmd: list[str], timeout: float = 120) -> subprocess.CompletedProcess[str]:
-        return subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            timeout=timeout,
-            cwd=self.task_dir,
-            env={**__import__("os").environ, **self.env_vars},
-        )
-
-    # -- lifecycle ------------------------------------------------------------
+        self._service = service
+        self._project_prefix = compose_project_prefix
+        self._trial_id: str | None = None
+        self._container: str | None = None
 
     def start(self, ctx: "ToolLifecycleContext") -> None:
-        """Build/pull images, start the compose stack, and copy tests in.
-
-        Called once per trial from ``RegisterTrial`` for any lifecycle tool. Owns
-        its own per-trial naming and ``__artifacts__`` resolution so the runner
-        stays generic.
-        """
-        import os
-
-        # Resolve the deferred artifacts task_dir to the real extraction path.
-        if self.task_dir == "__artifacts__" and ctx.artifacts_dir is not None:
-            self.task_dir = str(ctx.artifacts_dir)
-
-        project_name = f"tbench_{ctx.trial_id.replace(':', '_')}"
-        self.project_name = project_name
-        # Override container_name and log paths for parallel trial isolation.
-        # Derive per-trial log dirs from the parents of the task-scoped paths
-        # the adapter provided, so DinD (/workspace) and host-socket
-        # (/tmp/...) setups both work without hardcoding a root here.
-        prev_logs = self.env_vars.get("T_BENCH_TASK_LOGS_PATH", "/workspace/logs/default")
-        prev_agent_logs = self.env_vars.get(
-            "T_BENCH_TASK_AGENT_LOGS_PATH", "/workspace/agent_logs/default"
-        )
-        logs_root = os.path.dirname(prev_logs) or "/workspace/logs"
-        agent_logs_root = os.path.dirname(prev_agent_logs) or "/workspace/agent_logs"
-
-        self.env_vars["T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME"] = f"{project_name}_main"
-        self.env_vars["T_BENCH_TASK_LOGS_PATH"] = os.path.join(logs_root, project_name)
-        self.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"] = os.path.join(agent_logs_root, project_name)
-
-        # Pre-create log dirs.  Both DinD (shared /workspace volume) and
-        # host-socket (shared /tmp bind-mount) setups make this path visible
-        # to the Docker daemon that runs the task container.
-        os.makedirs(self.env_vars["T_BENCH_TASK_LOGS_PATH"], exist_ok=True)
-        os.makedirs(self.env_vars["T_BENCH_TASK_AGENT_LOGS_PATH"], exist_ok=True)
-
-        result = self._run(self._compose_cmd("up", "-d", "--wait"), timeout=300)
-        if result.returncode != 0:
-            raise RuntimeError(
-                f"docker compose up failed (project={project_name}): {result.stderr}"
-            )
-        self._started = True
-
-        # Copy tests/ and run-tests.sh into the container (Harbor does this too).
-        task_dir = self.task_dir
-        tests_src = os.path.join(task_dir, "tests")
-        run_tests_src = os.path.join(task_dir, "run-tests.sh")
-        env = {**os.environ, **self.env_vars}
-
-        if os.path.isdir(tests_src):
-            subprocess.run(
-                self._compose_cmd("cp", f"{tests_src}/.", f"{self.service}:/tests/"),
-                cwd=task_dir,
-                env=env,
-                timeout=30,
-            )
-        if os.path.isfile(run_tests_src):
-            subprocess.run(
-                self._compose_cmd("cp", run_tests_src, f"{self.service}:/tests/test.sh"),
-                cwd=task_dir,
-                env=env,
-                timeout=30,
-            )
-
-        # Ensure /logs/verifier exists for reward output
-        self._run(
-            self._compose_cmd(
-                "exec", "-T", self.service, "bash", "-c", "mkdir -p /logs/verifier /logs/agent"
-            ),
-            timeout=10,
-        )
-
-        logger.info("DockerComposeExec: stack started (project=%s)", project_name)
-
-    def stop(self) -> None:
-        """Tear down the compose stack.  Called on trial cleanup."""
-        if self._started and self.project_name:
-            self._run(
-                self._compose_cmd("down", "-v", "--remove-orphans"),
-                timeout=60,
-            )
-            self._started = False
-            logger.info(
-                "DockerComposeExec: stack stopped (project=%s)",
-                self.project_name,
-            )
-
-    def cleanup(self) -> None:
-        """Override base cleanup to tear down compose."""
-        self.stop()
-
-    # -- execute --------------------------------------------------------------
+        self._trial_id = ctx.trial_id
+        self._container = compose_container_name(ctx.trial_id, self._service, self._project_prefix)
 
     async def execute(self, arguments: dict[str, Any]) -> str:
-        """Execute a bash command in the main container."""
         command = arguments.get("command", "")
         timeout = self.timeout_s or 120.0
         loop = asyncio.get_event_loop()
         return await loop.run_in_executor(None, self._exec_sync, command, timeout)
 
     def _exec_sync(self, command: str, timeout: float) -> str:
-        proc = self._run(
-            self._compose_cmd("exec", "-T", self.service, "bash", "-c", command),
+        if self._container is None:
+            raise ToolExecutionError(
+                self.name,
+                "docker_compose_exec tool executed before start() — container name unresolved",
+            )
+        proc = subprocess.run(
+            ["docker", "exec", "-i", self._container, "bash", "-c", command],
+            capture_output=True,
+            text=True,
             timeout=timeout,
         )
         output = proc.stdout
@@ -1861,24 +1757,26 @@ class ToolFactory:
     def _create_docker_compose_exec_wrapper(
         self, schema: ToolSchemaModel, source: ToolSourceModel
     ) -> DockerComposeExecToolWrapper:
-        """Create a Docker Compose exec wrapper for terminal-bench tasks.
+        """Create a Docker Compose exec wrapper.
 
-        FAIL FAST: Raises ToolConfigurationError if required extra fields are missing.
+        FAIL FAST: Raises ToolConfigurationError if ``service`` or
+        ``compose_project_prefix`` are missing from ``source.extra`` — the two
+        fields the wrapper needs to resolve the container the per-trial runtime
+        brought up.
         """
         extra = source.extra
-        compose_file = extra.get("compose_file")
-        task_dir = extra.get("task_dir")
-        if not compose_file or not task_dir:
+        service = extra.get("service")
+        compose_project_prefix = extra.get("compose_project_prefix")
+        if not service or not compose_project_prefix:
             raise ToolConfigurationError(
                 schema.name,
-                "DOCKER_COMPOSE_EXEC requires 'compose_file' and 'task_dir' in source.extra",
+                "DOCKER_COMPOSE_EXEC requires 'service' and 'compose_project_prefix' "
+                "in source.extra",
             )
         return DockerComposeExecToolWrapper(
             tool_schema=schema,
-            compose_file=compose_file,
-            task_dir=task_dir,
-            service=extra.get("service", "main"),
-            env_vars=extra.get("env_vars", {}),
+            service=service,
+            compose_project_prefix=compose_project_prefix,
         )
 
     def _create_rag_search_wrapper(self, schema: ToolSchemaModel) -> RAGSearchToolWrapper:
