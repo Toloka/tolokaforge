@@ -2,7 +2,7 @@
 under the ADR-0030 widened design.
 
 See ADR-0030 § "What success looks like" for the target this test
-reports against, and ``tests/canonical/_models_wheel_replay/classifier.py``
+reports against, and ``tools/automation/src/automation/bucket_classifier.py``
 for the Bucket A / Bucket B classifier."""
 
 from __future__ import annotations
@@ -12,8 +12,8 @@ from pathlib import Path
 from typing import Any
 
 import pytest
+from automation.bucket_classifier import classify_paths
 
-from tests.canonical._models_wheel_replay.classifier import classify_paths
 from tests.canonical._models_wheel_replay.git_walk import (
     enumerate_integration_commits,
 )

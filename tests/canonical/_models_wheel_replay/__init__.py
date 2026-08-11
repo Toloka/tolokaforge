@@ -2,5 +2,5 @@
 
 The leading-underscore package name marks these helpers as internal to
 ``tests/canonical/``. No public exports; consumers import from the
-concrete submodule (``classifier``).
+concrete submodule (``git_walk``).
 """

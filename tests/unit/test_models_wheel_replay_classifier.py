@@ -11,8 +11,7 @@ from __future__ import annotations
 import dataclasses
 
 import pytest
-
-from tests.canonical._models_wheel_replay.classifier import (
+from automation.bucket_classifier import (
     Bucket,
     Classification,
     classify_paths,
