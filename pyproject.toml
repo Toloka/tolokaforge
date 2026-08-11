@@ -529,6 +529,7 @@ required-version = ">=0.9.5,<0.10"
 
 [tool.uv.workspace]
 members = [
+    "tolokaforge_models",
     "tools/automation",
     "tools/dev-mcp",
     "tools/pricing-updater",
