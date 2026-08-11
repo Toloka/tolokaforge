@@ -626,6 +626,16 @@ what it replaced: such a trial stays inside the measured denominator, so the zer
 would enter `success_rate`, `avg_score`, `pass@k` and `binary_pass` as an agent
 failure reported against evidence that was never read.
 
+The rest of that chain, so the failure is not merely loud at the RPC and quiet
+everywhere after it: the conductor records the reason on
+`Trajectory.grading_error`, `classify_trial_outcome` returns `UNGRADEABLE`, the
+trial reaches `total_trials` and `measured_trials` and its own `ungradeable`
+count, and the process **exits non-zero** once the run has otherwise completed —
+every artifact written, the run directory still emitted. See
+[`docs/CLI.md` § Run and worker exit codes](CLI.md#run-and-worker-exit-codes).
+An infrastructure abort produces no verdict either and deliberately does not
+trigger that exit: it was never measured.
+
 #### A `state_checks` block the trial cannot answer
 
 This fails the RPC for the same reason. Before any grading branch reads the database,

@@ -58,7 +58,12 @@ from tolokaforge.core.logging import (
     silence_root_logging,
 )
 from tolokaforge.core.models import ModelConfig, ProjectConfig, RunConfig, TaskConfig
-from tolokaforge.core.orchestrator import Orchestrator, OrchestratorDeps, resolve_run_directory
+from tolokaforge.core.orchestrator import (
+    GradingCompleteness,
+    Orchestrator,
+    OrchestratorDeps,
+    resolve_run_directory,
+)
 from tolokaforge.core.project_loader import (
     construct_config,
     find_project_yaml,
@@ -440,6 +445,37 @@ def _activate_presets_overlay(
     if resolved is not None:
         validate_overlay_file(resolved)
     return resolved
+
+
+_UNGRADEABLE_TRIALS_NAMED = 5
+"""How many ungradeable trial ids the error line names before it stops counting
+and states the total. A lossy run can lose hundreds; the ids are all in
+``aggregate.json`` and the operator needs the shape, not the list."""
+
+
+def _fail_on_ungradeable_trials(completeness: GradingCompleteness) -> None:
+    """Exit 1 when the run finished without a verdict for something it measured.
+
+    Called after the run has completed normally — every artifact written, the end
+    banner printed, the run directory already emitted on stdout. The run
+    executed, so the banner's success axis stays true; this is the separate
+    question of whether it measured everything it attempted, and the exit code
+    plus this line are its only channel.
+    """
+    if completeness.is_complete:
+        return
+    named = completeness.ungradeable_trial_ids[:_UNGRADEABLE_TRIALS_NAMED]
+    trailing = completeness.ungradeable - len(named)
+    listed = ", ".join(named) + (f", and {trailing} more" if trailing else "")
+    # Markup wraps a literal only: a trial id is task-authored text, and Rich
+    # would read a bracket in one as markup it then fails to parse.
+    console.print(
+        "[red]Run incomplete:[/red] "
+        f"{completeness.ungradeable} of {completeness.total_attempts} attempts "
+        f"could not be graded ({listed}). See 'ungradeable' in aggregate.json, "
+        "and each trial's trajectory.yaml 'grading_error' for why."
+    )
+    raise SystemExit(1)
 
 
 def _run_dry_run(
@@ -824,6 +860,7 @@ def run(
             stopped_reason=stopped_reason,
         )
     emit_artifact_path(output_dir)
+    _fail_on_ungradeable_trials(orchestrator.grading_completeness)
 
 
 def _print_rejudge_summary(
@@ -1308,6 +1345,7 @@ def worker(
             **summary
         )
     )
+    _fail_on_ungradeable_trials(orchestrator.grading_completeness)
 
 
 @cli.command()

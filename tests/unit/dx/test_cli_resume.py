@@ -23,6 +23,7 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
 from tolokaforge.core.engine_run_state import write_engine_run_state
 from tolokaforge.core.resume import RunStateManager
 from tolokaforge.dx.cli.main import cli
@@ -86,6 +87,7 @@ class _RecordingOrchestrator:
     def __init__(self, *args: Any, **kwargs: Any) -> None:
         type(self).captured["init_kwargs"] = kwargs
         self.tasks: list[object] = [object()]
+        self.grading_completeness = complete_run()
 
     def load_tasks(self) -> None:
         return None

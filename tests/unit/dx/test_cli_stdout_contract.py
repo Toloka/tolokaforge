@@ -21,6 +21,8 @@ import yaml
 from click.testing import CliRunner
 
 import tolokaforge.dx.cli.main as cli_main
+from tests.utils.orchestrator_stubs import complete_run
+from tolokaforge.core.orchestrator import GradingCompleteness
 from tolokaforge.dx.cli.main import cli
 
 pytestmark = pytest.mark.unit
@@ -60,26 +62,41 @@ def _make_stub_orchestrator(
     run_raises: BaseException | None = None,
     prepare_return: dict[str, Any] | None = None,
     prepare_raises: BaseException | None = None,
+    completeness: GradingCompleteness | None = None,
+    worker_summary: dict[str, Any] | None = None,
 ) -> type:
     """Factory for a stub orchestrator class with configurable behaviour.
 
-    Supports both ``run`` and ``prepare_run`` — the ``run`` tests set
+    Supports ``run``, ``run_worker`` and ``prepare_run`` — the ``run`` tests set
     ``run_return`` / ``run_raises``; the ``prepare`` tests set
     ``prepare_return`` / ``prepare_raises``. ``prepare_run`` creates the
     supplied ``output_dir`` on disk so the CLI's ``emit_artifact_path``
     call resolves against a real path.
+
+    ``completeness`` is what the stub publishes as ``grading_completeness``; it
+    defaults to a run that graded everything, so a test not about the gate is
+    unaffected by it.
     """
 
     task_list = list(tasks) if tasks is not None else [object()]
+    stub_completeness = completeness if completeness is not None else complete_run()
     default_prepare_summary: dict[str, Any] = {
         "queued_attempts": 1,
         "queue_counts": {"pending": 1, "total": 1},
         "queue_backend": "sqlite",
     }
+    default_worker_summary: dict[str, Any] = {
+        "processed_attempts": 1,
+        "completed_attempts": 1,
+        "failed_attempts": 0,
+        "requeued_attempts": 0,
+        "total_cost_usd": 0.0,
+    }
 
     class _StubOrchestrator:
         def __init__(self, *args: Any, **kwargs: Any) -> None:
             self.tasks = list(task_list)
+            self.grading_completeness = stub_completeness
 
         def load_tasks(self) -> None:
             return None
@@ -89,6 +106,9 @@ def _make_stub_orchestrator(
                 raise run_raises
             assert run_return is not None
             return run_return
+
+        def run_worker(self, run_dir: Path, max_attempts: int | None = None) -> dict[str, Any]:
+            return worker_summary if worker_summary is not None else default_worker_summary
 
         def prepare_run(self, output_dir: Path, reset_queue: bool = False) -> dict[str, Any]:
             if prepare_raises is not None:
@@ -189,6 +209,156 @@ class TestRunStdoutContract:
         assert result.exit_code != 0
         assert result.stdout == ""
         assert "No tasks found" in result.stderr
+
+    def test_a_run_that_could_not_grade_a_trial_exits_one_and_still_emits_its_path(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The one non-zero exit that deliberately prints the run directory.
+
+        The run executed and wrote everything, so the path is the operator's way
+        into the evidence; the exit code is the separate statement that the run
+        did not measure everything it attempted. Suppressing the path here would
+        make the failure less diagnosable than the success.
+        """
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=4, ungradeable_trial_ids=("TASK-A:1", "TASK-B:0")
+                ),
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+
+        assert result.exit_code == 1
+        assert Path(result.stdout.strip()) == expected_dir
+        assert "2 of 4 attempts could not be graded" in result.stderr
+        assert "TASK-A:1" in result.stderr
+        assert "TASK-B:0" in result.stderr
+
+    def test_a_run_that_graded_everything_exits_zero(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """The discriminating half: a run reporting attempts and no refusal is
+        not failed by the gate, so exit 1 above is the count and not the wiring."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir, completeness=complete_run(total_attempts=4)
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+
+        assert result.exit_code == 0, result.stderr
+        assert "could not be graded" not in result.stderr
+
+    def test_the_error_line_bounds_how_many_trials_it_names(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A lossy run can lose hundreds of trials, and the ids are all in
+        ``aggregate.json``; the console line carries the shape, not the list."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+        refused = tuple(f"TASK-A:{index}" for index in range(8))
+
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(total_attempts=10, ungradeable_trial_ids=refused),
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+
+        assert result.exit_code == 1
+        assert "8 of 10 attempts could not be graded" in result.stderr
+        assert "TASK-A:4" in result.stderr
+        assert "TASK-A:5" not in result.stderr
+        assert "and 3 more" in result.stderr
+
+
+class TestWorkerCompletenessGate:
+    """``tolokaforge worker`` gates on the same attribute, over its own attempts.
+
+    A sharded CI reads the worker's exit code and never sees the single-process
+    one, so a gate that stopped at ``run`` would fix the case nobody runs and
+    leave the reported one untouched.
+    """
+
+    def test_a_worker_that_could_not_grade_an_attempt_exits_one(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                completeness=GradingCompleteness(
+                    total_attempts=3, ungradeable_trial_ids=("TASK-A:2",)
+                )
+            ),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["worker", "--config", str(valid_config), "--run-dir", str(tmp_path / "run_dir")],
+        )
+
+        assert result.exit_code == 1
+        assert "1 of 3 attempts could not be graded" in result.stderr
+        assert "TASK-A:2" in result.stderr
+        # The worker's own summary is still reported: the gate is a verdict on
+        # top of a completed shard, not a replacement for what it did.
+        assert "processed=1" in result.stderr
+
+    def test_a_worker_that_graded_everything_exits_zero(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(completeness=complete_run(total_attempts=3)),
+        )
+
+        result = runner.invoke(
+            cli,
+            ["worker", "--config", str(valid_config), "--run-dir", str(tmp_path / "run_dir")],
+        )
+
+        assert result.exit_code == 0, result.stderr
+        assert "could not be graded" not in result.stderr
 
 
 class TestPrepareStdoutContract:
