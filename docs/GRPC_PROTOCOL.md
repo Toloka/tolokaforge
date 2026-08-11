@@ -192,10 +192,11 @@ message ExecuteToolRequest {
   // "agent" for assistant tools, "user" for user-side tools
   string executor = 5;
 
-  // The provider's tool-call id (ToolCall.id) — the key that joins this call
-  // to the tool-result message it produced. Required: the runner rejects an
-  // empty value, because two calls to the same tool with identical arguments
-  // are otherwise indistinguishable in the recorded history.
+  // The trial's episode-unique tool-call id (ToolCall.id, after the agent loop
+  // has assigned it) — the key that joins this call to the tool-result message
+  // it produced. Required: the runner rejects an empty value, because two calls
+  // to the same tool with identical arguments are otherwise indistinguishable
+  // in the recorded history.
   string call_id = 6;
 }
 
@@ -272,8 +273,8 @@ message GradeTrialRequest {
   // result crosses as role "tool" carrying its tool_call_id.
   // An assistant or user turn that called tools also carries
   // tool_calls: [{"id", "function": {"name", "arguments"}}], where "id" is the
-  // provider's tool-call id and "arguments" is a JSON-encoded string. That id is
-  // the only key joining a call to its result — parallel calls to one tool with
+  // trial's episode-unique tool-call id and "arguments" is a JSON-encoded string.
+  // That id is what joins a call to its result — parallel calls to one tool with
   // identical arguments are otherwise indistinguishable — and
   // decode_transcript_wire rejects a payload whose tool_calls carry none.
   // The leading "system" message is the agent's policy, lifted out by
@@ -643,7 +644,7 @@ The tool execution flow:
    - Records the call in the trial's history under `call_id`, stamped with a trial-wide 0-based `sequence`
 4. Runner returns `ExecuteToolResponse` with output string
 
-**`call_id` is required.** It is the provider's `ToolCall.id`, and it is the only key that joins a recorded call to the `role: tool` message carrying its result — position does not resolve the same tool called twice with identical arguments. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
+**`call_id` is required.** It is the trial's episode-unique tool-call id — the agent loop assigns it before the call reaches this RPC, so what the runner records is already unambiguous ([GRADING.md G3](GRADING.md#guarantees): the provider's own id where the provider kept it unique within the episode, `<id>#<n>` for the n-th further occurrence where it did not). It is what joins a call to its result: position does not resolve the same tool called twice with identical arguments, and an empty value leaves the call with no key at all. The runner raises on an empty value rather than answering with a non-success status: a tool-shaped failure is one the agent survives and retries, so it would burn the turn budget instead of surfacing. Every registered engine declares a protocol version that carries the field (see the version lock under [RegisterTrialRequest](#registertrialrequest)), so an empty `call_id` is a harness bug, not skew.
 
 **Error Handling:**
 
@@ -680,7 +681,8 @@ Three properties a consumer can rely on:
 - **Tool results are on the wire.** A result is a `role: tool` message carrying the
   `tool_call_id` of the call that produced it, positioned where it happened.
 - **Calls are joined to results by `id`, never by position.** Every `tool_calls`
-  entry carries the provider's tool-call id; `arguments` is a JSON-encoded string.
+  entry carries the trial's episode-unique tool-call id; `arguments` is a
+  JSON-encoded string.
   Parallel calls to one tool with identical arguments are distinguishable only by
   that id, so a payload whose `tool_calls` carry none is rejected rather than
   degraded — see `tolokaforge.core.grading.transcript_wire`.
@@ -854,7 +856,7 @@ what that costs the run's counts.
 | `error` | Cause |
 |---|---|
 | `Trial '<id>' not found` | The trial was never registered, or was already cleaned up |
-| `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, or one `call_id` used twice. The error names the offending `call_id` |
+| `Trial '<id>' is not gradeable: TimelineInconsistencyError: …` | The transcript and the Runner's tool-call record cannot be joined into one timeline — a recorded call the transcript never asked for, a tool result answering one, or a recorded call naming a different tool than the declaration it paired with. The error names the offending call's key |
 | `Trial '<id>' is not gradeable: <ValueError subclass>: …` | `llm_messages_json` does not decode into a transcript — malformed JSON, a message missing `role` / `content`, a `tool_calls` entry carrying no `id`, or one whose `function` / `function.name` / `function.arguments` is absent. Every rejection is a `ValueError`, so it lands on this row rather than the catch-all below |
 | `Trial '<id>' is not gradeable: ValueError: state_checks.hash.weight is required …` | A hash verdict and a JSONPath score are both real and `state_checks.hash_weight` says nothing about how to fold them. Reachable only for a pack the presence gate accepts at `RegisterTrial` yet whose hash source materialises at grade time — a refusal-shaped pack (`hash_enabled` with empty `golden_actions`) carrying live assertions. An authored pack cannot be that shape: `hash.enabled` with no source is refused before the run ([GRADING.md](GRADING.md#what-is-validated-before-a-run)), so this row is reached by a `TaskDescription` built directly against the runner or recorded before that rule |
 | `Trial '<id>' is not gradeable: ValueError: state_checks.db_probes is the sole state source for a task that declares it …` | A probe score arrived at the fold beside a hash verdict or a JSONPath score — two verdicts for one `state_checks` component with no declared share between them, so `resolve_state_checks_component` refuses. It refuses *before* the weight is read, so a block refused outright is never answered with a demand for a `hash.weight`. An authored pack cannot be that shape: both config models reject a probe declared beside a non-empty `jsonpaths` or an enabled `hash` naming a source, so such a pack stops loading on either substrate ([GRADING.md](GRADING.md#substrate-grading-state_checksdb_probes)). One shape reaches here — `hash_enabled` true with **no** declared source beside non-empty `db_probes`, which neither model refuses because neither sees a source to conflict with, yet the runner grades that hash against the trial's initial state and so produces a real verdict at grade time — reachable from a `TaskDescription` built directly against the runner, or one recorded before the rule |

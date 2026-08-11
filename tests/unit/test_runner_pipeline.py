@@ -509,7 +509,7 @@ class TestRegisterTrialSearchPlanes:
 
 
 class TestCallIdCrossesTheWire:
-    """The provider's tool-call id reaches the runner's recorded history.
+    """The trial's tool-call id reaches the runner's recorded history.
 
     Drives the real ``RegisterTrial`` / ``ExecuteTool`` handlers against the real
     in-process DB service, so what is asserted is the recorded history the

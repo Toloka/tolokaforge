@@ -2872,8 +2872,9 @@ class RecordedToolCall(BaseModel):
     trial's :class:`ToolCallRecorder`.
     """
 
-    # The provider's tool-call id, carried on ExecuteToolRequest. Two calls to
-    # the same tool with identical arguments differ only here and in ``sequence``.
+    # The trial's episode-unique tool-call id, assigned by the agent loop and
+    # carried on ExecuteToolRequest. Two calls to the same tool with identical
+    # arguments differ only here and in ``sequence``.
     call_id: str = Field(min_length=1)
     # Trial-wide, 0-based, stamped by the recorder at append time.
     sequence: int

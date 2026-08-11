@@ -47,7 +47,7 @@ def _task_description() -> dict[str, Any]:
         "task_id": "call_id_e2e",
         "name": "Call Id Wire E2E",
         "category": "test",
-        "description": "Carry the provider tool-call id to the runner over gRPC",
+        "description": "Carry the trial's episode-unique tool-call id to the runner over gRPC",
         "adapter_type": "native",
         "system_prompt": "You are a test assistant.",
         "initial_state": {"tables": {}, "schemas": [], "unstable_fields": []},
