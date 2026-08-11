@@ -189,6 +189,49 @@ def _run_needs_docker_cli(adapter_type: str | None, tasks: list[Any]) -> bool:
     return _tasks_use_compose_variant_tools(tasks)
 
 
+def _compose_service_image_ref(compose_file: Path, service: str) -> str | None:
+    """Return the ``image:`` value declared for ``service`` in ``compose_file``.
+
+    Read straight from the file — no ``docker compose config`` shell-out — so
+    the skip-when-already-present check the pre-build helper does works
+    without touching the daemon. Missing service, missing file, missing
+    ``image:`` entry, or unreadable YAML all return ``None``; the caller
+    treats that as "cannot determine, build unconditionally".
+    """
+    import yaml
+
+    try:
+        with compose_file.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle)
+    except (OSError, yaml.YAMLError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    services = data.get("services")
+    if not isinstance(services, dict):
+        return None
+    entry = services.get(service)
+    if not isinstance(entry, dict):
+        return None
+    image = entry.get("image")
+    return image if isinstance(image, str) and image else None
+
+
+def _local_image_exists(image_ref: str) -> bool:
+    """Return True iff ``docker image inspect <image_ref>`` reports the image
+    present in the local daemon's cache. Any daemon / lookup error is treated
+    as "not present" — the caller then builds, and a real daemon problem
+    surfaces at build time with the actionable error."""
+    import subprocess
+
+    result = subprocess.run(
+        ["docker", "image", "inspect", image_ref],
+        capture_output=True,
+        check=False,
+    )
+    return result.returncode == 0
+
+
 def _tasks_need_full_stack(tasks: list[Any]) -> bool:
     """Return True iff any task needs ``full_stack`` (mock-web / rag).
 
@@ -959,6 +1002,11 @@ class Orchestrator:
             source = "tasks"
 
         factory = load_runtime_backend(runtime_choice)
+        adapter_type = (
+            self.config.evaluation.harness_adapter.type
+            if self.config.evaluation.harness_adapter
+            else None
+        )
         backend = factory(
             RuntimeBackendBuildContext(
                 runner_address=runner_address,
@@ -967,7 +1015,7 @@ class Orchestrator:
                 seeds=self._project_seed_registry(),
                 log_capture=log_capture,
                 events=self._events,
-                mount_docker_socket=_tasks_use_compose_variant_tools(self.tasks),
+                mount_docker_socket=_run_needs_docker_cli(adapter_type, self.tasks),
             )
         )
         self.logger.info(
@@ -1047,6 +1095,48 @@ class Orchestrator:
                     error=str(e),
                 )
                 continue
+
+    def _perform_declared_compose_image_builds(self, stack_requirements: Any) -> None:
+        """Build adapter-declared compose images once per run, before any
+        trial provisions.
+
+        Iterates ``DockerStackRequirements.image_builds`` and, for each
+        entry, invokes ``docker compose -f <compose_file> build <service>``
+        — skipped when the service's pinned image already resolves locally,
+        so cache-hit runs pay no build cost. Raises on the first build
+        failure so a broken Dockerfile aborts the run at prep time, rather
+        than surfacing as a ``PROVISION_ERROR`` naming compose in every
+        trial of that task.
+        """
+        if stack_requirements is None:
+            return
+        image_builds = getattr(stack_requirements, "image_builds", ())
+        for build in image_builds:
+            self._perform_one_compose_image_build(build)
+
+    def _perform_one_compose_image_build(self, build: Any) -> None:
+        """Build one adapter-declared compose service image, skipping the
+        subprocess when the pinned image already resolves locally."""
+        import subprocess
+
+        image_ref = _compose_service_image_ref(build.compose_file, build.service)
+        if image_ref is not None and _local_image_exists(image_ref):
+            self.logger.info(
+                "compose image already resolves locally; skipping declared build",
+                compose_file=str(build.compose_file),
+                service=build.service,
+                image=image_ref,
+            )
+            return
+        self.logger.info(
+            "Building adapter-declared compose image",
+            compose_file=str(build.compose_file),
+            service=build.service,
+        )
+        subprocess.run(
+            ["docker", "compose", "-f", str(build.compose_file), "build", build.service],
+            check=True,
+        )
 
     def _build_trial_executor(
         self,
@@ -1711,6 +1801,7 @@ class Orchestrator:
                     )
                     service_stack.build_and_prepare()
                     self._ensure_engine_image_local_aliases(service_stack)
+                    self._perform_declared_compose_image_builds(stack_requirements)
                     self._events.phase_changed(
                         phase="services_ready",
                         detail="engine images ready (per-trial stacks own runtime)",
@@ -1734,6 +1825,7 @@ class Orchestrator:
                         services=_engine_service_snapshots(service_stack),
                     )
                     self._ensure_engine_image_local_aliases(service_stack)
+                    self._perform_declared_compose_image_builds(stack_requirements)
                     # Use localhost address — the orchestrator runs on the host,
                     # not inside Docker, so Docker container names don't resolve.
                     runner_url = service_stack.get_service_url("runner", 50051)

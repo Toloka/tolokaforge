@@ -154,10 +154,14 @@ class RuntimeBackendBuildContext:
     log_capture: LogCaptureConfig | None
     events: RunDisplayEvents = field(default_factory=_NullRunDisplayEvents)
     mount_docker_socket: bool = False
-    """Bind-mount the host docker socket into the materialised runner. Set when
-    the run routes a shipped tool through the compose variant
+    """Bind-mount the host docker socket into the materialised runner. Set by
+    the same predicate that decides whether to bake the docker CLI into the
+    runner image (see :func:`_run_needs_docker_cli`): the terminal-bench
+    adapter (which shells out to docker directly against the host daemon) or
+    any run routing a shipped tool through the compose variant
     (``tools.agent.<tool>.service``), whose wrappers ``docker exec`` from the
-    runner into a sibling service and so need the runner to reach the daemon."""
+    runner into a sibling service. CLI without socket, or socket without CLI,
+    are both useless — the two flags are one decision."""
 
 
 @dataclass(frozen=True)

@@ -109,9 +109,12 @@ slug the wrapper uses at resolve time, so the two sides cannot disagree.
 
 The runner reaches that sibling container's daemon over the host docker socket.
 Materialisation bind-mounts `/var/run/docker.sock` into the runner service
-automatically whenever a task routes a shipped tool through the compose variant
-— the same trigger that bakes the docker CLI into the runner image — so the
-task-declared compose file does not need to (and should not) supply it.
+automatically whenever the run needs the docker CLI baked into the runner image
+— today: the `terminal_bench` adapter (which shells out to docker directly
+against the host daemon) or any task routing a shipped tool through the compose
+variant (`tools.agent.<tool>.service`). The same predicate decides both — CLI
+without socket, or socket without CLI, are both useless — so the task-declared
+compose file does not need to (and should not) supply the socket bind.
 
 **When to use.** Prefer `bash_session` for multi-step workflows that need a
 persistent cwd, environment, or shell functions across turns. Use the legacy

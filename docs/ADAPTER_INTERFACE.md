@@ -117,6 +117,52 @@ custom lifecycle tools must either fit within the current shape or vendor the
 missing pieces internally. See the open tracking issue for the planned
 direction.
 
+### Docker stack requirements
+
+Adapters that need bind mounts, a docker socket, a DinD sidecar, `rag-service`,
+or per-run compose-image pre-builds declare them by overriding
+`BaseAdapter.docker_stack_requirements()`:
+
+```python
+class MyAdapter(BaseAdapter):
+    def docker_stack_requirements(self) -> DockerStackRequirements:
+        return DockerStackRequirements(
+            task_pack_mounts=[self.task_pack_root],
+            image_builds=[
+                ComposeImageBuild(compose_file=compose, service="main")
+                for compose in self.task_compose_files()
+            ],
+        )
+```
+
+Fields:
+
+- `task_pack_mounts: list[Path]` — host directories bind-mounted into the
+  runner at their absolute path. Used when the runner spawns sibling
+  containers that must resolve task files at the same path on the host Docker
+  daemon.
+- `extra_runner_binds: list[tuple[Path, str]]` — additional
+  `(host_path, container_path)` binds for the runner (typically a shared log
+  directory).
+- `mount_docker_socket: bool` — bind-mount `/var/run/docker.sock` into the
+  runner. Overridden automatically for terminal-bench runs and compose-variant
+  tool routing via the runtime-backend build context, so most adapters leave
+  this at its default.
+- `enable_dind: bool` — add a Docker-in-Docker sidecar so the runner can
+  manage Docker Compose stacks without touching the host daemon.
+- `needs_rag_service: bool` — declare that the adapter emits
+  `TaskDescription.search.enabled=True`, so the orchestrator selects the
+  `full_stack` factory that actually provisions `rag-service`. Not rendered
+  into stack kwargs — it selects the factory.
+- `image_builds: list[ComposeImageBuild]` — task-declared compose images the
+  orchestrator builds once per run, immediately after the engine `:local`
+  aliases are in place. Each entry runs
+  `docker compose -f <compose_file> build <service>`, skipped when the pinned
+  image already resolves locally. A build failure raises and aborts the run.
+  This keeps the daemon-free `get_task()` / `to_task_description()` accessor
+  contract intact — adapters *declare* what needs building; the orchestrator
+  runs the subprocess.
+
 ### `ToolWrapper.execute` and `ToolWrapper.execute_call`
 
 A tool call answers two questions: what the tool said, and whether the

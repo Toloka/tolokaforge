@@ -18,6 +18,26 @@ if TYPE_CHECKING:
 logger = get_logger(__name__)
 
 
+@dataclass(frozen=True)
+class ComposeImageBuild:
+    """One task-declared compose image the orchestrator builds before any trial provisions.
+
+    Adapters that ship compose stacks whose services carry local ``build:``
+    contexts declare the (compose file, service) pair here so the
+    orchestrator can build the image once per run — outside every trial's
+    provision path — instead of every trial paying the build cost and
+    surfacing a ``PROVISION_ERROR`` on a broken Dockerfile.
+
+    Attributes:
+        compose_file: Absolute path to the compose file that defines
+            ``service``. Passed as ``docker compose -f <compose_file>``.
+        service: Compose service name to build.
+    """
+
+    compose_file: Path
+    service: str
+
+
 @dataclass
 class DockerStackRequirements:
     """Adapter's declarative needs for the runtime Docker stack.
@@ -47,6 +67,15 @@ class DockerStackRequirements:
             visible in task tool names or ``initial_state`` (e.g. a
             domain-shipped ``docindex/`` knowledge base) must declare the
             need here for the orchestrator's stack selection.
+        image_builds: Task-declared compose images the orchestrator builds
+            once per run, immediately after the engine ``:local`` aliases are
+            in place. Adapters emit these when a task's compose stack has a
+            service with a local ``build:`` context whose image would
+            otherwise be built lazily at first-trial provision and surface a
+            ``PROVISION_ERROR`` (naming compose, not the Dockerfile) on
+            failure. Each entry becomes ``docker compose -f <compose_file>
+            build <service>``, skipped when the service's pinned image
+            already resolves locally.
     """
 
     task_pack_mounts: list[Path] = field(default_factory=list)
@@ -54,6 +83,7 @@ class DockerStackRequirements:
     mount_docker_socket: bool = False
     enable_dind: bool = False
     needs_rag_service: bool = False
+    image_builds: list[ComposeImageBuild] = field(default_factory=list)
 
     def to_core_stack_kwargs(self) -> dict[str, Any]:
         """Render to ``core_stack()`` kwargs, omitting empty defaults.
@@ -61,9 +91,10 @@ class DockerStackRequirements:
         An empty requirements object yields ``{}`` so default callers stay
         unchanged.
 
-        ``needs_rag_service`` is deliberately NOT rendered: it selects the
-        stack factory (``core_stack`` vs ``full_stack``), it is not a stack
-        kwarg - neither factory accepts it.
+        ``needs_rag_service`` and ``image_builds`` are deliberately NOT
+        rendered: the first selects the stack factory (``core_stack`` vs
+        ``full_stack``), the second is the orchestrator's declarative
+        pre-build seam. Neither stack factory accepts them.
         """
         kwargs: dict[str, Any] = {}
         if self.task_pack_mounts:

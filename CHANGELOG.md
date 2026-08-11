@@ -6,7 +6,12 @@ All notable changes to this project are documented in this file.
 
 ### Added
 
+- **adapters**: `DockerStackRequirements.image_builds: list[ComposeImageBuild]` (default `[]`) declares task-side compose images the orchestrator builds once per run, immediately after the engine `:local` aliases are in place. Each entry runs `docker compose -f <compose_file> build <service>`, skipped when the service's pinned image already resolves locally. A build failure raises and aborts the run — instead of every trial of that task failing later with a `PROVISION_ERROR` naming compose, not the broken Dockerfile. The new field is deliberately absent from `to_core_stack_kwargs()` (same carve-out as `needs_rag_service`) — it is the orchestrator's declarative pre-build seam, not a stack kwarg. Every existing adapter keeps the empty default and needs no edit. (#1045)
 - **core**: `OrchestratorConfig.strict_task_load` (default `false`) turns an adapter's `get_task()` failure into a startup refusal instead of the historical log-and-skip. Left `false`, `Orchestrator.load_tasks` behaves exactly as before — a broken task id is logged at error level and the run proceeds with the remaining tasks. Set to `true`, the exception propagates naming the offending task so the run refuses to start with a silently shorter task list; the bundled `examples/terminal_bench/*.yaml` opt in. `--dry-run` is strict regardless via its own loader (`load_tasks_for_dry_run`). (#1045)
+
+### Changed
+
+- **runtime**: `RuntimeBackendBuildContext.mount_docker_socket` is now derived from the same predicate that decides `enable_docker_cli` on the runner image build (`_run_needs_docker_cli`) — the terminal-bench adapter or any task routing a shipped tool through the compose variant (`tools.agent.<tool>.service`). An image with the CLI and no socket, or a socket and no CLI, are both useless — the two flags are one decision. Terminal-bench runs now reach the host daemon from the per-trial runner without the adapter having to declare `mount_docker_socket=True` on `DockerStackRequirements` itself. (#1045)
 
 ### Fix
 
