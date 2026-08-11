@@ -2177,26 +2177,54 @@ contains(["W1", "W2"], ["W1"])                  # False — and never a containe
 1 == 1.0 == True                                # True  — three JSON types, one value
 ```
 
+Every false row above is diagnosed rather than scored against the agent: the evaluator
+reads the pair and not one side of it, so the reverse direction earns the same report
+as the forward one.
+
 Which pairs can ever hold is a per-operator table, not "do the two types differ":
 `equals_binding` holds across `integer` / `number` / `boolean` and between two
 arrays or two objects, while `contains_binding` over an array or object **haystack**
 holds against any scalar **needle** by descent — and against no container one,
 because the descent never compares a container to what it is looking for.
 
-A **binding reference** between a text field and a value bound out of an integer
-argument is therefore false on **every** trajectory, `equals_binding` exactly as much
-as `contains_binding`. That is not scored as an agent failure: the constraint fails
-with a message saying the comparison was not made, naming the binding, its value, its
-type, the operator that could not make the comparison, and two ways to write the
-intent — "a reference on an args predicate, which compares two arguments as they were
-written, or a regex capture, which is always text".
+A **binding reference** whose two operands' types the table refuses is therefore false
+wherever it is read, `equals_binding` exactly as much as `contains_binding`, and in
+whichever direction the mismatch runs: a text field against a value bound out of an
+integer argument, and a natively-typed argument against a value bound out of text. That
+is not scored as an agent failure. The constraint fails carrying the sentence the
+evaluator prints, which names the binding, the value it holds and that value's JSON
+type, the field, the operator, and two ways to write the intent:
 
-**The gate states both of those more narrowly than the evaluator's sentence does**,
-and the gate is the one that answers first: an `args` predicate is only a repair
-where the two arguments' declared types can ever satisfy the operator, and a capture
-is only text where the field beneath it holds text. Each is checked in its own right
-below, so an author who takes either repair against a schema that refuses it is told
-so before the run rather than by a second failed trial.
+```text
+the args.code comparison was not made: binding 'delivery' holds 4021, a JSON integer,
+and no candidate carried a value at that field which equals_binding can ever satisfy
+against it — two JSON types the operator cannot pair are false on every trajectory,
+whichever of the two holds the text. Reference the binding from an args predicate whose
+arguments the tools type the same way, or extract a regex capture off a field that
+holds text
+```
+
+It names the binding's type and never the field's, because it speaks for every
+candidate and they need not have carried the same one.
+
+**The message speaks for the events the comparison was read on, and fires only where
+none of them made it.** A *candidate* for a reference is an event the matcher's other
+predicates admit and the constraint's [`within`](#negate-and-within) window keeps — so
+a call to a tool the matcher does not name, a call in an excluded turn, and a call that
+carried no such argument at all speak for no comparison, while a single sibling call
+whose argument the reference *could* compare is standing proof that the reference is
+reachable, and the constraint is scored on what the agent did rather than reported as
+an authoring mistake. The comparison a reference could not make still fails the event
+it was read on, so a constraint no candidate could satisfy fails whichever kind it is
+written as: an `absent` whose reference could compare nothing does not pass vacuously
+on the strength of having matched nothing.
+
+**Both repairs carry a condition, and the gate is the tier that answers first**: an
+`args` predicate repairs the correlation only where the two arguments' declared types
+can ever satisfy the operator, and a capture is text only where the field beneath it
+holds text. Each is checked in its own right below, so an author who takes either
+repair against a schema that refuses it is told so before the run rather than by a
+second failed trial.
 
 **`tolokaforge validate` catches it first, wherever a schema declares the type.**
 The config models cannot: `args.reason_code` is a string and `args.delivery_id` is an
@@ -2206,14 +2234,15 @@ tool's JSON schema, which the [authoring gate](#what-is-validated-before-a-run) 
 — so the misuse is an **error** before the trial is paid for, on a schema forbidding
 extras, and an advisory on one permitting them.
 
-**The gate is the only tier holding the reverse direction.** The evaluation-time
-message above is raised from the value the *predicate* reads, and only where that
-value is a string, so a text binding correlated against a natively-typed argument
-passes it and the constraint reads as `present is unmatched` — the message a genuine
-agent miss carries. Every never-true shape the gate can type is answered before the
-run; the residue it cannot type — no schema resolved, a path below its first segment,
-a property writing no `type` or one outside the six JSON type names — is `unchecked`,
-and there nothing backstops the reverse direction at all.
+**The gate answers first wherever a schema types the field; the evaluator backstops
+both directions over the residue.** Every never-true shape the gate can type is
+answered before the run is paid for. The residue it cannot type — no schema resolved,
+a path below its first segment, a property writing no `type` or one outside the six
+JSON type names — is `unchecked` there, and it is exactly where the evaluation-time
+sentence answers: that reading is over both operands' runtime JSON types, so a text
+binding correlated against a natively-typed argument is reported as the authoring
+mistake it is rather than reading as `present is unmatched`, the message a genuine
+agent miss carries.
 
 ### When a constraint cannot be decided
 
@@ -2952,8 +2981,9 @@ argument and read by a predicate on one of the event's five text fields —
 vocabularies that subclass `str`, so the value compared is text like the rest — or
 beside a `regex` that asserts the same of an argument, is false on **every**
 trajectory. That is the [type limit](#the-bound-values-type-is-load-bearing)
-answered before the run: the declared type lives in the tool's JSON schema, and the
-gate is the only tier holding it.
+answered before the run: the declared type lives in the tool's JSON schema, which
+only the gate reads — the evaluator's backstop answers the same pair again at run
+time, over the two runtime types.
 
 **An `args` predicate is checked against both declared types, not exempted.** A
 reference there compares two arguments as the tools typed them, which is the

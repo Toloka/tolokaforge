@@ -1,0 +1,29 @@
+combine:
+  method: weighted
+  weights:
+    trace_checks: 1.0
+  pass_threshold: 0.5
+
+# The code the agent must search by is bound out of the report it read, so the
+# search is graded against what the trial actually returned rather than against a
+# literal. The reference sits on `json.q`, inside the request body: the binding
+# holds text and a call that searched by the lot number carries an integer there,
+# which is a comparison no trajectory can make. It fails the call it was read on —
+# a sibling call that searched by the code satisfies the constraint.
+trace_checks:
+  constraints:
+    - id: the_policy_search_quoted_the_code_that_was_read
+      description: "the policy corpus is searched for the reason code the lot report gave"
+      bind:
+        match:
+          kind: tool_call
+          tool: { equals: read_file }
+        values:
+          code: { field: result, pattern: 'reason code: ([A-Z]+-[0-9]+)' }
+      require:
+        present:
+          match:
+            kind: tool_call
+            tool: { equals: http_request }
+            args:
+              json.q: { equals_binding: code }
