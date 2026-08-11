@@ -9,7 +9,7 @@ and :func:`split_leading_system_message` lifts back out the agent policy the
 encoder prepends.
 
 The payload carries the **full interleaved** trace — assistant and user turns,
-each ``tool_calls`` entry carrying the provider's call id, and every
+each ``tool_calls`` entry carrying the trial's episode-unique call id, and every
 ``role: tool`` result carrying its ``tool_call_id`` — so a call and the result
 it produced are joined by id rather than by position. Parallel calls to one tool
 with identical arguments are distinguishable only that way.

@@ -568,6 +568,25 @@ Three things that look like fixes and are not:
   works — and a provider that silently ignores the key is then invisible,
   which is the same failure wearing a different hat.
 
+## Tool-call ids are not unique per provider
+
+A provider mints `ToolCall.id` as model output, and nothing obliges it to be
+unique across the episode. `moonshotai/kimi-k3` via OpenRouter names each call
+`<tool_name>:<index within the turn>`, so calling the same tool at the same
+position in two turns emits the **same id twice** — the ids collide across turns
+and never within one. Anthropic (`toolu_*`) and OpenAI (`call_*`) mint a fresh
+id per call and are unaffected.
+
+The id is the only key that joins a call to the result it produced, so a
+duplicate makes a trial ungradeable. The fix is not in this layer: the agent
+loop assigns the trial's **episode-unique** id at ingestion
+([`core/tool_call_ids.py`](../tolokaforge/core/tool_call_ids.py), applied in
+`ToolCallingLoop._run_turn`), which is a no-op for a provider whose ids are
+already unique and rewrites the n-th further occurrence to `<id>#<n>` for one
+that reuses them. Both sides of the conversation the id is echoed into carry the
+assigned value, so the provider sees one consistent id per call rather than the
+duplicate it emitted. See [GRADING.md G3](GRADING.md#guarantees).
+
 ## `proxy` — routing calls through an LLM gateway
 
 Some deployments forbid direct provider access: calls must go through a gateway

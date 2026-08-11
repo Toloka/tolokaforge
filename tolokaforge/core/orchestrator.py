@@ -38,7 +38,9 @@ from tolokaforge.core.engine_run_state import (
     write_engine_run_state,
 )
 from tolokaforge.core.failure_attribution import (
+    TrialOutcomeClass,
     attribute_failure,
+    classify_trial_outcome,
     is_failed_trajectory,
     summarize_failure_attributions,
 )
@@ -429,8 +431,43 @@ class OrchestratorDeps:
     agent_client_factory: Callable[[ModelConfig], LLMClient] | None = None
 
 
+@dataclass(frozen=True)
+class GradingCompleteness:
+    """Whether the run produced a verdict for everything it measured.
+
+    An ungradeable trial is one the run *attempted and measured* and then could
+    not grade — ``Trajectory.grading_error`` is set, so
+    :func:`~tolokaforge.core.failure_attribution.classify_trial_outcome` returns
+    ``UNGRADEABLE``. A trial the provider or the substrate killed before the
+    agent was measured is an ``INFRASTRUCTURE_ABORT`` and is deliberately not
+    here: it produces no verdict either, but it sits outside the measured
+    denominator by design and is reported in ``infrastructure_aborts``.
+
+    ``ungradeable_trial_ids`` is the whole of the state; the count derives from
+    it rather than being carried beside it, so the two cannot disagree.
+    """
+
+    total_attempts: int
+    ungradeable_trial_ids: tuple[str, ...]
+
+    @property
+    def ungradeable(self) -> int:
+        return len(self.ungradeable_trial_ids)
+
+    @property
+    def is_complete(self) -> bool:
+        return not self.ungradeable_trial_ids
+
+
 class Orchestrator:
     """Orchestrates benchmark runs across tasks and trials"""
+
+    grading_completeness: GradingCompleteness
+    """Set by :meth:`run` and :meth:`run_worker` once they finish, and by
+    nothing else. Deliberately left unbound until then rather than defaulted:
+    a default would let an orchestrator that never computed completeness report
+    a complete run, which is the silent fallback AGENTS.md core rule 1 forbids.
+    An embedder gets no exit code, so this attribute is its channel."""
 
     def __init__(
         self,
@@ -2360,6 +2397,7 @@ class Orchestrator:
 
         # Generate reports
         self._generate_reports(output_dir)
+        self._publish_grading_completeness()
 
         resolved_output_dir = output_dir.resolve()
         self._events.run_finished(output_dir=resolved_output_dir)
@@ -2595,6 +2633,7 @@ class Orchestrator:
                 except Exception:
                     pass
 
+        self._publish_grading_completeness()
         summary = {
             "processed_attempts": processed,
             "completed_attempts": completed,
@@ -2697,6 +2736,17 @@ class Orchestrator:
                 infrastructure_aborts={reason: count for reason, count in aborts.items() if count},
                 pass_at_k_without_coverage=lost_k,
             )
+
+    def _publish_grading_completeness(self) -> None:
+        """Stamp :attr:`grading_completeness` from the attempts this process ran."""
+        self.grading_completeness = GradingCompleteness(
+            total_attempts=len(self.results),
+            ungradeable_trial_ids=tuple(
+                f"{trajectory.task_id}:{trajectory.trial_index}"
+                for trajectory in self.results
+                if classify_trial_outcome(trajectory) is TrialOutcomeClass.UNGRADEABLE
+            ),
+        )
 
     def _generate_reports(self, output_dir: Path) -> None:
         """Generate aggregate reports with pass@k"""

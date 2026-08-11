@@ -163,6 +163,23 @@ def _registry(*tools: Tool) -> ToolRegistry:
     return registry
 
 
+class _CallIdWatchingExecutor(ToolExecutor):
+    """The real executor, plus the ``call_id`` every call arrived with.
+
+    A second observation, not a restatement of the recorder's: the id the
+    executor receives is the id the gRPC client puts on the wire, and therefore
+    the one the runner's own trial-context record keys on.
+    """
+
+    def __init__(self, registry: ToolRegistry) -> None:
+        super().__init__(registry)
+        self.call_ids: list[str] = []
+
+    def execute(self, tool_name: str, arguments: dict[str, Any], *, call_id: str) -> ToolResult:
+        self.call_ids.append(call_id)
+        return super().execute(tool_name, arguments, call_id=call_id)
+
+
 class _ScriptedClient:
     """Yields a fixed sequence of GenerationResults, one per generate call."""
 
@@ -494,6 +511,88 @@ class TestOneOrderedRecordPerTrial:
         )
 
         assert [call.call_id for call in trial_recorder.recorded] == ["toolu_A"]
+
+
+# ---------------------------------------------------------------------------
+# The loop assigns the episode-unique id before anything downstream reads it
+# ---------------------------------------------------------------------------
+
+
+class TestTheLoopAssignsAnEpisodeUniqueCallId:
+    """A provider that numbers its tool calls within a turn reuses an id across
+    turns. The loop assigns the trial's episode-unique id at ingestion, so all
+    four consumers — the executor (hence the runner's own record), the core
+    recorder, the assistant message and the ``role: tool`` message — carry one
+    unambiguous id per call rather than one id for two calls.
+    """
+
+    @staticmethod
+    def _drive_reused_id(executor: ToolExecutor, recorder: TrialToolCallRecorder) -> list[Message]:
+        """Two turns whose provider minted the same id, with different arguments
+        so a mis-pairing shows up in the output rather than only in the id."""
+        return _drive_loop(
+            [
+                [ToolCall(id="echo:0", name="echo", arguments={"payload": "first"})],
+                [ToolCall(id="echo:0", name="echo", arguments={"payload": "second"})],
+            ],
+            executor,
+            recorder,
+        )
+
+    def test_the_executor_is_called_with_two_distinct_ids(self) -> None:
+        executor = _CallIdWatchingExecutor(_registry(_Echo()))
+
+        self._drive_reused_id(executor, TrialToolCallRecorder())
+
+        assert executor.call_ids == ["echo:0", "echo:0#2"]
+
+    def test_the_recorder_holds_two_records_with_distinct_ids(self) -> None:
+        recorder = TrialToolCallRecorder()
+
+        self._drive_reused_id(ToolExecutor(_registry(_Echo())), recorder)
+
+        assert [(call.call_id, call.output) for call in recorder.recorded] == [
+            ("echo:0", "first"),
+            ("echo:0#2", "second"),
+        ]
+
+    def test_each_tool_message_answers_the_assistant_entry_it_names(self) -> None:
+        """The two sides of the conversation the id is echoed into must agree, or
+        the provider is handed a transcript naming a call it cannot resolve."""
+        messages = self._drive_reused_id(ToolExecutor(_registry(_Echo())), TrialToolCallRecorder())
+
+        declared = [call.id for message in messages for call in (message.tool_calls or [])]
+        answered = [
+            message.tool_call_id for message in messages if message.tool_call_id is not None
+        ]
+        assert declared == ["echo:0", "echo:0#2"]
+        assert answered == declared
+
+    def test_a_provider_that_minted_unique_ids_records_exactly_those_ids(self) -> None:
+        """The no-movement guarantee at the runtime end: every Anthropic / OpenAI
+        trial records the provider's own ids, so no bundle changes shape."""
+        executor = _CallIdWatchingExecutor(_registry(_Echo()))
+        recorder = TrialToolCallRecorder()
+
+        messages = _drive_loop(
+            [
+                [
+                    ToolCall(id="toolu_01", name="echo", arguments={"payload": "a"}),
+                    ToolCall(id="toolu_02", name="echo", arguments={"payload": "b"}),
+                ],
+                [ToolCall(id="toolu_03", name="echo", arguments={"payload": "c"})],
+            ],
+            executor,
+            recorder,
+        )
+
+        expected = ["toolu_01", "toolu_02", "toolu_03"]
+        assert executor.call_ids == expected
+        assert [call.call_id for call in recorder.recorded] == expected
+        assert [call.id for message in messages for call in (message.tool_calls or [])] == expected
+        assert [
+            message.tool_call_id for message in messages if message.tool_call_id is not None
+        ] == expected
 
 
 # ---------------------------------------------------------------------------
