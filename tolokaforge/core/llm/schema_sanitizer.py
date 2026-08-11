@@ -68,7 +68,7 @@ from __future__ import annotations
 import json
 import re
 from enum import Enum
-from typing import Any, Protocol, runtime_checkable
+from typing import Any, ClassVar, Protocol, runtime_checkable
 
 __all__ = [
     "SchemaCapability",
@@ -192,15 +192,42 @@ class StrictSchema:
     :class:`SchemaInvariantError` if any object schema's ``required`` list
     references a property name not declared in ``properties``. This is the
     regression guard for the "property-name-as-metadata-key" bug class.
+
+    ## Public hooks
+
+    Per-model subclasses customise :class:`StrictSchema` through the following
+    public extension surface. Each is **stable within the v0.17.x minor series**;
+    removal, signature change, or default-value change requires a deprecation
+    announcement.
+
+    * :meth:`inline_refs_in_tool` (``@classmethod``) — override to customise
+      per-tool ``$ref`` resolution (e.g. cycle-tolerant inlining).
+    * :attr:`KEY_FIELD` — name of the synthetic key field on dict-map → array
+      conversion.
+    * :attr:`VALUE_FIELD` — name of the synthetic scalar-value field (only
+      emitted when :attr:`carry_scalar_dict_map_value` is ``True``).
+    * :attr:`carry_scalar_dict_map_value` — pair with a scalar-aware response
+      policy to preserve scalar dict-map values.
+    * :attr:`flatten_oneof_discriminator` — flatten Pydantic discriminated
+      unions into a single object schema (Gemini path).
+    * :attr:`strip_parameters_root_description` — strip Pydantic's class
+      docstring at the parameters root.
+    * :attr:`strip_re2_incompatible_patterns` — remove ``pattern`` values that
+      contain lookarounds or backreferences.
+
+    The class-attribute hooks are declared with :class:`typing.ClassVar` so a
+    subclass method that mis-writes ``self.<hook> = ...`` (creating an instance
+    attribute rather than overriding the class default) is flagged by a
+    type-checker instead of silently mis-behaving at runtime.
     """
 
     #: Name of the synthetic key field added when converting dict-maps → arrays.
-    KEY_FIELD = "key"
+    KEY_FIELD: ClassVar[str] = "key"
 
     #: Name of the synthetic value field added when converting a *scalar*-valued
     #: dict-map (``Dict[str, int]`` / ``Dict[str, str]`` …) → array. Only emitted
     #: when :attr:`carry_scalar_dict_map_value` is ``True``; see that flag.
-    VALUE_FIELD = "value"
+    VALUE_FIELD: ClassVar[str] = "value"
 
     #: When ``True``, a dict-map whose value schema is a **scalar** (no
     #: ``properties`` to lift onto the synthetic items object) gets a synthetic
@@ -211,7 +238,7 @@ class StrictSchema:
     #: carry lift their own ``properties`` and are unaffected either way).
     #: Subclasses that pair this with a scalar-aware response policy override
     #: to ``True``. Reversed by :class:`ScalarArrayDictMapResponse`.
-    carry_scalar_dict_map_value: bool = False
+    carry_scalar_dict_map_value: ClassVar[bool] = False
 
     _MAX_REF_DEPTH = 16
 
@@ -223,7 +250,7 @@ class StrictSchema:
     #: Subclass overrides this for Gemini routes; the GPT-5 / xAI Grok
     #: routes leave it ``False`` since both providers handle ``oneOf``
     #: natively.
-    flatten_oneof_discriminator: bool = False
+    flatten_oneof_discriminator: ClassVar[bool] = False
 
     #: When ``True``, strip Pydantic's class-level ``description`` artefact
     #: at the parameters root (e.g. ``"Input model for d365_api.create_case
@@ -234,7 +261,7 @@ class StrictSchema:
     #: hurts (e.g. Gemini sometimes drops optional fields when the root
     #: description is absent — observed as a regression on flat
     #: ``d365_api_create_case`` tools in a travel marketplace evaluation).
-    strip_parameters_root_description: bool = True
+    strip_parameters_root_description: ClassVar[bool] = True
 
     #: When ``True``, remove ``pattern`` values that contain RE2-incompatible
     #: constructs (lookarounds ``(?!``/``(?=``/``(?<!``/``(?<=`` and
@@ -246,7 +273,7 @@ class StrictSchema:
     #: optional-field selection. Removing it on travel_marketplace's
     #: 7 Pydantic-Decimal-string patterns correlated with a 50 % → 10 %
     #: Gemini 3.5 Flash regression on that domain's evaluation.
-    strip_re2_incompatible_patterns: bool = True
+    strip_re2_incompatible_patterns: ClassVar[bool] = True
 
     # ------------------------------------------------------------------
     # Public entry point
@@ -255,7 +282,7 @@ class StrictSchema:
     def sanitize(self, tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
         sanitised: list[dict[str, Any]] = []
         for tool in tools:
-            tool = self._inline_refs_in_tool(tool)
+            tool = self.inline_refs_in_tool(tool)
             tool = self._sanitise_tool(tool)
             sanitised.append(tool)
         self._validate_invariants(sanitised)
@@ -310,9 +337,13 @@ class StrictSchema:
     # ------------------------------------------------------------------
 
     @classmethod
-    def _inline_refs_in_tool(cls, tool: Any) -> Any:
-        """Resolve every ``$ref`` against the tool's parameter-level
-        ``$defs`` block, then drop the now-stale ``$defs``.
+    def inline_refs_in_tool(cls, tool: Any) -> Any:
+        """Public hook — override to customise per-tool ``$ref`` resolution.
+
+        Resolves every ``$ref`` against the tool's parameter-level ``$defs``
+        block, then drops the now-stale ``$defs``. Stable within the v0.17.x
+        minor series; removal or signature change requires a deprecation
+        announcement.
 
         Without this pre-pass the dict-map → array conversion sees a
         ``value_schema`` of the form ``{"$ref": "#/$defs/<Model>"}`` and
@@ -326,7 +357,9 @@ class StrictSchema:
         Each tool's ``$defs`` is local to its parameters block; resolving
         per-tool keeps siblings independent. Cycles are detected via a
         depth-bounded resolution (a $ref pointing through itself raises
-        rather than recursing forever).
+        rather than recursing forever); subclasses that need cycle
+        tolerance override this method (see
+        :class:`GeminiRecursiveSchema`).
         """
         if not isinstance(tool, dict):
             return tool
@@ -850,7 +883,7 @@ class GeminiSchema(StrictSchema):
 class GeminiRecursiveSchema(GeminiSchema):
     """Gemini sanitiser that tolerates **self-referential** (cyclic) ``$ref``.
 
-    ``StrictSchema._inline_refs`` fully inlines every ``$ref`` and raises
+    ``StrictSchema.inline_refs_in_tool`` fully inlines every ``$ref`` and raises
     ``"$ref resolution exceeded depth 16"`` the moment a ``$def`` references
     itself (a Pydantic recursive model such as ``TreeNode.children:
     list[TreeNode]`` compiles to exactly this cyclic ``$ref``). The raise
@@ -877,7 +910,11 @@ class GeminiRecursiveSchema(GeminiSchema):
     carry_scalar_dict_map_value = True
 
     @classmethod
-    def _inline_refs_in_tool(cls, tool: Any) -> Any:
+    def inline_refs_in_tool(cls, tool: Any) -> Any:
+        """Override of :meth:`StrictSchema.inline_refs_in_tool` — inlines every
+        non-cyclic ``$ref`` exactly as the base does, but substitutes a
+        permissive open-object schema at any point of cyclic re-entry.
+        """
         if not isinstance(tool, dict):
             return tool
         func = tool.get("function")
