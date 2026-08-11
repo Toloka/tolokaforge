@@ -26,7 +26,7 @@ pytestmark = pytest.mark.canonical
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _ENGINE_DATA_ROOT = _REPO_ROOT / "tolokaforge" / "core" / "data"
-_MODELS_DATA_ROOT = _REPO_ROOT / "tolokaforge_models" / "data"
+_MODELS_DATA_ROOT = _REPO_ROOT / "tolokaforge_models" / "src" / "tolokaforge_models" / "data"
 
 _DATA_FILES = ("pricing.json", "model_presets.yaml", "providers.yaml")
 

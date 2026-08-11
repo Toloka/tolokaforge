@@ -4574,6 +4574,7 @@ dependencies = [
     { name = "structlog" },
     { name = "tenacity" },
     { name = "testcontainers" },
+    { name = "tolokaforge-models" },
     { name = "toml" },
     { name = "typesense" },
 ]
@@ -4717,6 +4718,7 @@ requires-dist = [
     { name = "tolokaforge", extras = ["dx", "browser", "server", "rag", "office", "adapters", "runner"], marker = "extra == 'all'", editable = "." },
     { name = "tolokaforge", extras = ["terminal-bench"], marker = "extra == 'adapters'", editable = "." },
     { name = "tolokaforge-adapter-terminal-bench", marker = "extra == 'terminal-bench'", editable = "external_adapters/tolokaforge-adapter-terminal-bench" },
+    { name = "tolokaforge-models", editable = "tolokaforge_models" },
     { name = "toml", specifier = ">=0.10.0" },
     { name = "typesense", specifier = ">=2.0.0" },
     { name = "uvicorn", marker = "extra == 'runner'", specifier = ">=0.25.0" },

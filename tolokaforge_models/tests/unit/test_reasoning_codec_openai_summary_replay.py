@@ -26,12 +26,10 @@ from types import SimpleNamespace
 from typing import Any
 
 import pytest
+from tolokaforge_models.policies.deepseek import OpenAISummaryReplayReasoningCodec
 
 from tolokaforge.core.llm.reasoning import ReasoningBlock, StructuredReasoning
-from tolokaforge.core.llm.reasoning_codec import (
-    OpenAIReasoningCodec,
-    OpenAISummaryReplayReasoningCodec,
-)
+from tolokaforge.core.llm.reasoning_codec import OpenAIReasoningCodec
 
 pytestmark = pytest.mark.unit
 

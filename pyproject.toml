@@ -30,6 +30,12 @@ classifiers = [
 ]
 
 dependencies = [
+    # Model data + per-model policy subclasses (see ADR-0030). Ships the
+    # bundled ``pricing.json``, ``model_presets.yaml``, ``providers.yaml``,
+    # the ``ModelCertificate`` registry, and the per-model policy subclasses
+    # the engine reaches through its entry-point registry at
+    # :mod:`tolokaforge.core.model_data`.
+    "tolokaforge-models>=1.0.0,<2.0.0",
     # Core LLM integration
     "litellm>=1.83.14,!=1.92.0,<2.0.0",
     # Data validation and schemas
@@ -353,7 +359,7 @@ quote-style = "double"
 indent-style = "space"
 
 [tool.pytest.ini_options]
-testpaths = ["tests"]
+testpaths = ["tests", "tolokaforge_models/tests"]
 python_files = ["test_*.py"]
 python_classes = ["Test*"]
 python_functions = ["test_*"]
@@ -543,6 +549,7 @@ dev-mcp = { workspace = true }
 rubric-calibrator = { workspace = true }
 tolokaforge = { workspace = true }
 tolokaforge-adapter-terminal-bench = { workspace = true }
+tolokaforge-models = { workspace = true }
 
 # PyPI as primary index for cross-platform compatibility
 [[tool.uv.index]]

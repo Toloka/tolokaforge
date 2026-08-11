@@ -179,7 +179,12 @@ stdlib = set(sys.stdlib_module_names) | set(sys.builtin_module_names)
 footprint_violations = []
 for name in list(sys.modules):
     top = name.split(".")[0]
-    if top in stdlib or top == "tolokaforge" or top.startswith("_") or top in GUARDED_OPTIONAL:
+    if (
+        top in stdlib
+        or top in {"tolokaforge", "tolokaforge_models"}
+        or top.startswith("_")
+        or top in GUARDED_OPTIONAL
+    ):
         continue
     dists = distributions.get(top, [])
     if not dists or any(norm(dist) in allowed for dist in dists):

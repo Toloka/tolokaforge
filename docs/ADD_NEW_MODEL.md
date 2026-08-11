@@ -272,9 +272,11 @@ REST endpoint directly with a hand-built schema: replace each
 suspect construct with explicit `properties` and watch for the
 property names to start round-tripping. The fix belongs in a new
 [`ToolSchemaSanitizer`](../tolokaforge/core/llm/schema_sanitizer.py)
-subclass (see `GeminiSchema` for the worked example) — never in
-prompt engineering or in renaming task-pack fields to match the
-model's preference.
+subclass shipped in
+[`tolokaforge_models/policies/`](../tolokaforge_models/policies/) (see
+[`GeminiSchema`](../tolokaforge_models/policies/gemini.py) for the worked
+example) — never in prompt engineering or in renaming task-pack fields to
+match the model's preference.
 
 ## 4a. Run a smoke eval before declaring the model ready
 

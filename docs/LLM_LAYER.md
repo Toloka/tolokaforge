@@ -289,15 +289,16 @@ Three concrete sanitizers ship today:
   keywords like `title` / `examples`) pass through unchanged. The `qwen`
   preset uses `passthrough` instead — see § `response_policy` for the
   rationale.
-* `GeminiSchema(StrictSchema)` — used by the `gemini` preset. Adds
-  `flatten_oneof_discriminator=True` on top of `StrictSchema`'s rewrites
-  because Gemini's tool spec is a JSON-Schema *subset* that does not
-  document `$defs`/`$ref`, `oneOf`/`anyOf` with object branches, or
-  `discriminator` — sending these constructs causes Gemini to silently
-  lose every property name inside them and emit description-derived
-  English keys instead (verified live 2026-05-20). The flattener
-  collapses `oneOf` discriminated unions into a single object schema
-  unioning every branch's `properties`; intersects `required` (so
+* `GeminiSchema(StrictSchema)` — shipped by
+  [`tolokaforge-models`](../tolokaforge_models/policies/gemini.py) and used
+  by the `gemini` preset. Adds `flatten_oneof_discriminator=True` on top of
+  `StrictSchema`'s rewrites because Gemini's tool spec is a JSON-Schema
+  *subset* that does not document `$defs`/`$ref`, `oneOf`/`anyOf` with
+  object branches, or `discriminator` — sending these constructs causes
+  Gemini to silently lose every property name inside them and emit
+  description-derived English keys instead (verified live 2026-05-20). The
+  flattener collapses `oneOf` discriminated unions into a single object
+  schema unioning every branch's `properties`; intersects `required` (so
   typically only the discriminator survives); special-cases the
   discriminator field by merging per-branch `const` values into a single
   `enum`. Paired with `response_policy: array_dict_map` to reverse the
@@ -1018,19 +1019,21 @@ Implementations:
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
 * `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
-  corruption (`minimax` preset, registry name `minimax_m3_tags`). M3's
-  XML → JSON tool-call conversion mangles the `tags` array on every emission
-  (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The composite
-  chains `JsonRecursiveCoerceResponse` (stringified-list → list, `''` → `[]`)
-  then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list, recursing into the
-  parent so `{"item": {"item": "a"}}` flattens to `["a"]`). Both recurse into
-  the `updates` / `item` parent but are scoped to the `ARRAY_SITES` allowlist
-  (`updates.tags`, `item.tags`) — the empty-string → `[]` coercion is tied to
-  those declared-array sites so it can never fire on a scalar field. Scalar
-  strings are never promoted, `None` is never touched, multi-key dicts are
-  left unchanged, and already-valid `list[str]` tags pass through unchanged
-  (zero false positives). M2.7 emits native `tags` lists and is not in this
-  preset. See AGENTS.md gotcha #25.
+  corruption (`minimax` preset, registry name `minimax_m3_tags`), shipped
+  by [`tolokaforge-models`](../tolokaforge_models/policies/minimax.py).
+  M3's XML → JSON tool-call conversion mangles the `tags` array on every
+  emission (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The
+  composite chains `JsonRecursiveCoerceResponse` (stringified-list → list,
+  `''` → `[]`) then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list,
+  recursing into the parent so `{"item": {"item": "a"}}` flattens to
+  `["a"]`). Both recurse into the `updates` / `item` parent but are scoped
+  to the `ARRAY_SITES` allowlist (`updates.tags`, `item.tags`) — the
+  empty-string → `[]` coercion is tied to those declared-array sites so
+  it can never fire on a scalar field. Scalar strings are never promoted,
+  `None` is never touched, multi-key dicts are left unchanged, and
+  already-valid `list[str]` tags pass through unchanged (zero false
+  positives). M2.7 emits native `tags` lists and is not in this preset.
+  See AGENTS.md gotcha #25.
 
 `param_types` is a `Mapping[str, str]` from root-level parameter name to
 its post-sanitised JSON-Schema `type`. `LLMClient._assemble_result` builds
@@ -1191,10 +1194,12 @@ Free functions, re-exported from `tolokaforge.core.llm`:
 | [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
 | [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
 
-All three are consumed by shipped per-model policies (`JsonCoerceResponse`,
-`ArrayDictMapResponse`, `MinimaxM3TagRecoveryResponse` compose the first two;
-`RefResolvingDictMapHints` composes the third) and are the intended entry
-points for out-of-tree recovery classes.
+All three are consumed by shipped per-model policies — `JsonCoerceResponse`
+and `ArrayDictMapResponse` compose `coerce_json_strings` / `coerce_empty_containers`
+(engine-side); the models-wheel `MinimaxM3TagRecoveryResponse` reuses
+`coerce_json_strings` for its tags-site recovery, and `RefResolvingDictMapHints`
+composes `find_additional_properties`. Both are the intended entry points for
+out-of-tree recovery classes.
 
 ### `StrictSchema` public hooks
 
@@ -1203,7 +1208,7 @@ points for out-of-tree recovery classes.
 
 **Overridable classmethod:**
 
-* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (`GeminiRecursiveSchema` is the shipped example — it substitutes a permissive open-object schema at any point of cyclic re-entry).
+* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (see [`GeminiRecursiveSchema`](../tolokaforge_models/policies/gemini.py) — it substitutes a permissive open-object schema at any point of cyclic re-entry).
 
 **Class-attribute hooks** — six flags on the class body, declared with
 `ClassVar[…]` so a subclass method that mis-writes `self.<hook> = ...`
@@ -1219,8 +1224,9 @@ shadow:
 | `strip_parameters_root_description` | `ClassVar[bool]` | `True` | Strip Pydantic's class-docstring artefact at the parameters root (redundant with `function.description` for strict validators). Gemini sets `False` — evidence shows the strip hurts on some flat tool schemas. |
 | `strip_re2_incompatible_patterns` | `ClassVar[bool]` | `True` | Remove `pattern` values containing lookarounds / backreferences (OpenAI / xAI / Qwen-strict raise 500 on these). Gemini appears to pass RE2-incompatible patterns through unchanged and overrides to `False`. |
 
-The defaults preserve the shipped OpenAI / xAI Grok behaviour. `GeminiSchema`
-subclasses `StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
+The defaults preserve the shipped OpenAI / xAI Grok behaviour.
+[`GeminiSchema`](../tolokaforge_models/policies/gemini.py) subclasses
+`StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
 `GeminiRecursiveSchema` subclasses `GeminiSchema` and additionally overrides
 `inline_refs_in_tool`. Neither reaches into any `_`-prefixed symbol.
 
@@ -1232,8 +1238,10 @@ by `enrich` when both `system` and `tools` are non-empty; returns the hint
 text to append to the system prompt. Subclasses that need to close over
 instance state (e.g. `RefResolvingDictMapHints` — the `$ref`-resolving +
 one-level-nested variant used by the `thinkingmachines/inkling` route)
-override the method directly; the shape is an instance method so the
-override needs no `# type: ignore[override]` marker.
+override the method directly (see
+[`RefResolvingDictMapHints`](../tolokaforge_models/policies/inkling.py) for
+the shipped example); the shape is an instance method so the override needs
+no `# type: ignore[override]` marker.
 
 ### Public-API boundary guardrail
 

@@ -21,11 +21,9 @@ from __future__ import annotations
 from typing import Any, ClassVar
 
 import pytest
+from tolokaforge_models.policies.gemini import GeminiRecursiveSchema
 
-from tolokaforge.core.llm.schema_sanitizer import (
-    GeminiRecursiveSchema,
-    StrictSchema,
-)
+from tolokaforge.core.llm.schema_sanitizer import StrictSchema
 
 pytestmark = pytest.mark.unit
 

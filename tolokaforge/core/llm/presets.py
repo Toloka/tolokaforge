@@ -45,7 +45,6 @@ from tolokaforge.core.llm.params_policy import GenerationParams, ParamsPolicy
 from tolokaforge.core.llm.prompt_policy import (
     DictMapHints,
     NoPromptEnrichment,
-    RefResolvingDictMapHints,
     SystemPromptPolicy,
 )
 from tolokaforge.core.llm.reasoning_codec import (
@@ -53,26 +52,21 @@ from tolokaforge.core.llm.reasoning_codec import (
     GeminiReasoningCodec,
     NoReasoningCodec,
     OpenAIReasoningCodec,
-    OpenAISummaryReplayReasoningCodec,
     ReasoningCodec,
 )
 from tolokaforge.core.llm.response_policy import (
     ArrayDictMapResponse,
     JsonCoerceResponse,
-    MinimaxM3TagRecoveryResponse,
     ResponsePolicy,
-    ScalarArrayDictMapResponse,
     StandardResponse,
     UnwrapInputResponse,
 )
 from tolokaforge.core.llm.schema_sanitizer import (
-    GeminiRecursiveSchema,
-    GeminiSchema,
     PassthroughSchema,
     StrictSchema,
     ToolSchemaSanitizer,
 )
-from tolokaforge.core.model_data import bundled_presets_path
+from tolokaforge.core.model_data import bundled_presets_path, load_policy_registrations
 
 __all__ = [
     "build_capabilities",
@@ -96,14 +90,11 @@ logger = logging.getLogger(__name__)
 _SCHEMA_SANITIZERS: dict[str, type[ToolSchemaSanitizer]] = {
     "passthrough": PassthroughSchema,
     "strict": StrictSchema,
-    "gemini": GeminiSchema,
-    "gemini_recursive": GeminiRecursiveSchema,
 }
 
 _PROMPT_POLICIES: dict[str, type[SystemPromptPolicy]] = {
     "none": NoPromptEnrichment,
     "dict_map_hints": DictMapHints,
-    "dict_map_hints_ref": RefResolvingDictMapHints,
 }
 
 _CONTENT_POLICIES: dict[str, type[ToolContentPolicy]] = {
@@ -117,15 +108,12 @@ _RESPONSE_POLICIES: dict[str, type[ResponsePolicy]] = {
     "unwrap_input": UnwrapInputResponse,
     "json_coerce": JsonCoerceResponse,
     "array_dict_map": ArrayDictMapResponse,
-    "scalar_array_dict_map": ScalarArrayDictMapResponse,
-    "minimax_m3_tags": MinimaxM3TagRecoveryResponse,
 }
 
 _REASONING_CODECS: dict[str, type[ReasoningCodec]] = {
     "none": NoReasoningCodec,
     "anthropic": AnthropicReasoningCodec,
     "openai": OpenAIReasoningCodec,
-    "openai_summary_replay": OpenAISummaryReplayReasoningCodec,
     "gemini": GeminiReasoningCodec,
 }
 
@@ -165,6 +153,33 @@ _POLICY_REGISTRIES: dict[str, dict[str, type[Any]]] = {
     "message_assembly_policy": _MESSAGE_ASSEMBLY_POLICIES,
     "assistant_text_policy": _ASSISTANT_TEXT_POLICIES,
 }
+
+
+def _merge_out_of_tree_policy_registrations() -> None:
+    """Merge ``tolokaforge-models`` policy classes onto ``_POLICY_REGISTRIES``.
+
+    Unknown-slot and duplicate-collision both fail loud with a message naming
+    the offending pair (see ADR-0030 § "The one seam"). Runs exactly once at
+    module import time.
+    """
+    for slot_name, registrations in load_policy_registrations().items():
+        if slot_name not in _POLICY_REGISTRIES:
+            raise RuntimeError(
+                f"tolokaforge-models registered policy in unknown slot "
+                f"{slot_name!r}; engine knows slots: {sorted(_POLICY_REGISTRIES)}"
+            )
+        for policy_name, cls in registrations.items():
+            existing = _POLICY_REGISTRIES[slot_name].get(policy_name)
+            if existing is not None and existing is not cls:
+                raise RuntimeError(
+                    f"tolokaforge-models registration "
+                    f"{slot_name}.{policy_name!r} shadows engine class "
+                    f"{existing!r} (would-be new: {cls!r})"
+                )
+            _POLICY_REGISTRIES[slot_name][policy_name] = cls
+
+
+_merge_out_of_tree_policy_registrations()
 
 
 _DEFAULT_PRESET_DATA: dict[str, Any] = {"default": {}, "presets": {}, "providers": {}}

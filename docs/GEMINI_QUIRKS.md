@@ -27,7 +27,7 @@ not checked in).
 |---|---|---|
 | `reasoning_details` `id`/`format`/`index` must round-trip | All Gemini via OpenRouter | **Fixed** in [`GeminiReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py) |
 | Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` opts into the filler) |
-| `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge/core/llm/schema_sanitizer.py) |
+| `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge_models/policies/gemini.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
 | `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) |
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
@@ -116,7 +116,7 @@ emitted:     {"quantity": 5, "title": "WMS access"}   # wrong names
 
 Live-verified 2026-05-20 against all three Gemini models.
 
-**Harness mitigation**: [`GeminiSchema`](../tolokaforge/core/llm/schema_sanitizer.py)
+**Harness mitigation**: [`GeminiSchema`](../tolokaforge_models/policies/gemini.py)
 flattens `oneOf` + `discriminator` into a single object schema unioning
 every branch's properties. Bare `Union[A, B]` (Pydantic emits `anyOf`
 without `discriminator`) is left untouched — flattening it caused a

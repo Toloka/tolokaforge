@@ -23,11 +23,11 @@ Tests 1-3 parse the subclass' host-module source via :mod:`ast`; no runtime
 import of the subclass is required. Test 4 walks the registries at import
 time.
 
-Entries in :data:`PER_MODEL_SUBCLASSES` name concrete-module dotted paths
-(e.g. ``tolokaforge.core.llm.schema_sanitizer``) rather than the top-level
-``tolokaforge.core.llm`` package: the top-level ``__init__`` uses lazy
-``__getattr__`` for a handful of names, and Test 2 imports each base class
-directly to inspect its methods.
+Entries in :data:`PER_MODEL_SUBCLASSES` name concrete-module dotted paths in
+:mod:`tolokaforge_models.policies` (e.g. ``tolokaforge_models.policies.gemini``)
+where the eight per-model subclasses actually live; the engine's public shim
+in ``tolokaforge.core.llm.__init__.py`` still resolves them for a one-release
+deprecation window but is not the boundary the AST walk audits.
 """
 
 from __future__ import annotations
@@ -59,14 +59,14 @@ pytestmark = pytest.mark.unit
 #: in-registry base appears here. Shape (b) entries carry no automatic audit
 #: from the registries and must be added manually when a new composite lands.
 PER_MODEL_SUBCLASSES: Final[tuple[tuple[str, str], ...]] = (
-    ("tolokaforge.core.llm.schema_sanitizer", "GeminiSchema"),
-    ("tolokaforge.core.llm.schema_sanitizer", "GeminiRecursiveSchema"),
-    ("tolokaforge.core.llm.prompt_policy", "RefResolvingDictMapHints"),
-    ("tolokaforge.core.llm.response_policy", "ScalarArrayDictMapResponse"),
-    ("tolokaforge.core.llm.response_policy", "MinimaxM3TagRecoveryResponse"),
-    ("tolokaforge.core.llm.response_policy", "JsonRecursiveCoerceResponse"),
-    ("tolokaforge.core.llm.response_policy", "ItemRecursiveUnwrapResponse"),
-    ("tolokaforge.core.llm.reasoning_codec", "OpenAISummaryReplayReasoningCodec"),
+    ("tolokaforge_models.policies.gemini", "GeminiSchema"),
+    ("tolokaforge_models.policies.gemini", "GeminiRecursiveSchema"),
+    ("tolokaforge_models.policies.gemini", "ScalarArrayDictMapResponse"),
+    ("tolokaforge_models.policies.inkling", "RefResolvingDictMapHints"),
+    ("tolokaforge_models.policies.minimax", "MinimaxM3TagRecoveryResponse"),
+    ("tolokaforge_models.policies.minimax", "JsonRecursiveCoerceResponse"),
+    ("tolokaforge_models.policies.minimax", "ItemRecursiveUnwrapResponse"),
+    ("tolokaforge_models.policies.deepseek", "OpenAISummaryReplayReasoningCodec"),
 )
 
 #: Engine slot Protocols — the abstract slot definitions. They never appear in

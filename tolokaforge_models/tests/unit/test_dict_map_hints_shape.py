@@ -13,9 +13,10 @@ import inspect
 from pathlib import Path
 
 import pytest
+from tolokaforge_models.policies.inkling import RefResolvingDictMapHints
 
 from tolokaforge.core.llm import prompt_policy
-from tolokaforge.core.llm.prompt_policy import DictMapHints, RefResolvingDictMapHints
+from tolokaforge.core.llm.prompt_policy import DictMapHints
 
 pytestmark = pytest.mark.unit
 

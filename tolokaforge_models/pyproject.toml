@@ -29,10 +29,14 @@ dependencies = [
     "tolokaforge>=0.17,<0.18",
 ]
 
-[tool.hatch.build.targets.wheel]
-packages = ["tolokaforge_models"]
+[project.entry-points."tolokaforge.policies"]
+# key = "<slot>.<policy-name>" ; value = "<module>:<class>"
+"schema_sanitizer.gemini" = "tolokaforge_models.policies.gemini:GeminiSchema"
+"schema_sanitizer.gemini_recursive" = "tolokaforge_models.policies.gemini:GeminiRecursiveSchema"
+"prompt_policy.dict_map_hints_ref" = "tolokaforge_models.policies.inkling:RefResolvingDictMapHints"
+"response_policy.scalar_array_dict_map" = "tolokaforge_models.policies.gemini:ScalarArrayDictMapResponse"
+"response_policy.minimax_m3_tags" = "tolokaforge_models.policies.minimax:MinimaxM3TagRecoveryResponse"
+"reasoning_codec.openai_summary_replay" = "tolokaforge_models.policies.deepseek:OpenAISummaryReplayReasoningCodec"
 
-[tool.hatch.build.targets.wheel.force-include]
-"tolokaforge_models/data/pricing.json" = "tolokaforge_models/data/pricing.json"
-"tolokaforge_models/data/model_presets.yaml" = "tolokaforge_models/data/model_presets.yaml"
-"tolokaforge_models/data/providers.yaml" = "tolokaforge_models/data/providers.yaml"
+[tool.hatch.build.targets.wheel]
+packages = ["src/tolokaforge_models"]
