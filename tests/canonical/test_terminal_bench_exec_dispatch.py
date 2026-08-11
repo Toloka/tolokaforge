@@ -1,4 +1,4 @@
-"""Canonical wiring lock for :class:`DockerComposeExecToolWrapper` (#1045).
+"""Canonical wiring lock for :class:`DockerComposeExecToolWrapper`.
 
 The wrapper does not own the compose stack — the per-trial runtime does. Its
 one responsibility is to ``docker exec`` into the container that runtime brought

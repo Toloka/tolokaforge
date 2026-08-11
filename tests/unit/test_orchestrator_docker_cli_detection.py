@@ -5,11 +5,8 @@ against the host daemon via the mounted socket) and any task whose
 enabled ``bash_session`` / ``str_replace_editor`` uses the compose
 variant (``tools.agent.<tool>.service: <name>`` — the Migration Bench
 adapter shape). Every other run builds the slim default image without
-the CLI (#539).
-
-The same predicate now decides ``mount_docker_socket`` on the runtime
-backend build context (#1045): an image with the CLI and no socket, or a
-socket and no CLI, are both useless — CLI + socket is one decision.
+the CLI (#539). The same predicate wires ``mount_docker_socket`` on the
+runtime backend build context.
 """
 
 from __future__ import annotations

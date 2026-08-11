@@ -19,8 +19,7 @@ required:
    are present inside the container the runner will exec into;
 4. ``grade_trial`` — a real ``bash test.sh`` run against the unsolved
    baseline: some tests pass, most fail, so the reward is strictly
-   between 0 and 1. The oracle-pass case (#1059) sits on top of this
-   baseline once the example pack ships a ``solution.sh``;
+   between 0 and 1;
 5. ``teardown`` — the compose project's containers are gone.
 
 The concurrency case provisions the same task twice. Because the
@@ -217,7 +216,7 @@ class TestTerminalBenchPerTrialBracket:
             score = grade["score"]
             # Unsolved baseline: some tests pass (health, accessibility),
             # most fail. Range keeps this from breaking when the task's
-            # test list changes; the exact-1.0 oracle case is #1059.
+            # test list changes.
             assert 0.0 < score < 1.0, (
                 f"expected 0.0 < score < 1.0 against the unsolved baseline; got {score}. "
                 f"reasons: {grade.get('reasons')}"
