@@ -1,0 +1,80 @@
+name: Bug report
+description: A tolokaforge behaviour that doesn't match what the docs or tests promise.
+title: "bug: <short description>"
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a bug. A minimal reproduction is worth more than a long description — the shorter your repro, the faster this gets fixed.
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened
+      description: What did you observe? Paste the error output or unexpected behaviour verbatim.
+      placeholder: |
+        Ran `tolokaforge run examples/native/tool_use` and got:
+        ```
+        <paste output>
+        ```
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: What should have happened instead — and where in the docs or a test you'd expect that behaviour to be pinned.
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: How to reproduce
+      description: |
+        The smallest sequence of commands (or the smallest task pack) that reliably shows the bug.
+        Prefer bundled examples under `examples/` when possible.
+      placeholder: |
+        1. `make install-dev`
+        2. `make docker-up`
+        3. `tolokaforge run examples/native/tool_use`
+        4. Observe the error above.
+    validations:
+      required: true
+
+  - type: input
+    id: version
+    attributes:
+      label: tolokaforge version
+      description: Output of `tolokaforge --version` (or the commit SHA if you're on a source checkout).
+      placeholder: "0.15.0 or a4d4344a"
+    validations:
+      required: true
+
+  - type: input
+    id: python
+    attributes:
+      label: Python version
+      placeholder: "3.11.x"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: OS
+      options:
+        - macOS
+        - Linux
+        - Windows (WSL2)
+        - Other
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Additional context
+      description: Docker state, LLM provider, task pack details, or anything else you think matters.

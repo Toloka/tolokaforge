@@ -1,0 +1,43 @@
+name: Feature request
+description: A capability tolokaforge should have but doesn't yet.
+title: "feat: <short description>"
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Feature requests that describe the *problem* land faster than ones that describe the solution. Tell us what you're trying to do, we'll help figure out the right shape.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: The problem
+      description: What are you trying to do that tolokaforge doesn't let you do today? Include the concrete workflow, not the abstraction.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed shape
+      description: |
+        Optional. If you have a concrete API / CLI / config shape in mind, describe it. Otherwise leave this blank — a good "problem" section is enough.
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Workarounds you've tried
+      description: What did you try before filing? Even "nothing yet" is a useful answer.
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope
+      description: |
+        Is this a small addition to an existing surface, a new surface, or a rethink of an existing one? If you know it touches a compatibility surface (task contracts, run-config schemas, CLI, published API), flag it here.
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Anything else
+      description: Related links, prior art, why-now, or how urgent this is for you.

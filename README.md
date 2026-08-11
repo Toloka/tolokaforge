@@ -198,6 +198,10 @@ examples/             # Reference task layouts with runnable run_config.yaml
 └── terminal_bench/   # `terminal_bench` adapter (Docker compose)
 ```
 
+## Roadmap
+
+The release-versioned architecture arc and per-release ADR links are in [docs/ROADMAP.md](docs/ROADMAP.md). Governance and the contribution ladder are in [GOVERNANCE.md](GOVERNANCE.md).
+
 ## Documentation
 
 | Topic | Link |

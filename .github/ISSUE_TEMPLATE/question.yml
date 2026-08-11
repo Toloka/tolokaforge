@@ -1,0 +1,34 @@
+name: Question / help
+description: A question about how tolokaforge works or how to use it.
+title: "q: <short summary>"
+labels: ["question"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Questions are welcome. Before filing, please check:
+        - [The README](../../README.md) — install, quick start, examples.
+        - [The docs index](../../README.md#documentation) — architecture, task authoring, grading, runner, adapters.
+        - Existing issues (Search → filter to Closed to see resolved ones).
+
+        If your question is more of a discussion (design ideas, "what if", tradeoffs), open a [Discussion](../../discussions) instead.
+
+  - type: textarea
+    id: question
+    attributes:
+      label: Your question
+      description: What are you trying to understand or accomplish?
+    validations:
+      required: true
+
+  - type: textarea
+    id: tried
+    attributes:
+      label: What you've already tried / read
+      description: Which docs, commands, or examples did you look at first? What did you learn from them?
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context
+      description: Your use case, environment, task pack, or anything that helps us answer well.
