@@ -48,7 +48,7 @@ from tolokaforge.core.grading.key_manifest import (
     TRACE_CONSTRAINTS_KEY,
     UNBOUND_BINDING_SKIP,
 )
-from tolokaforge.core.grading.predicates import contains, json_type_of
+from tolokaforge.core.grading.predicates import contains, ever_satisfiable, json_type_of
 from tolokaforge.core.grading.trace_timeline import (
     TraceEvent,
     TraceEventKind,
@@ -335,48 +335,53 @@ def _comparison_records(
             operator=name,
             binding=bound_name,
             bound=bindings[bound_name],
-            state=_makeability(value, bindings[bound_name]),
+            state=_makeability(name, value, bindings[bound_name]),
         )
         for name, bound_name in references
         if bound_name is not None
     ]
 
 
-def _makeability(value: Any, bound: Any) -> _Makeability:
+def _makeability(operator: str, value: Any, bound: Any) -> _Makeability:
     """Whether this pair of runtime values could have satisfied the comparison.
 
-    Both binding operators read a text field as text: ``contains`` takes two strings
-    as a substring pair and falls back to equality for any other pairing, and
-    ``equals`` over a string and a non-string is false outright. So a non-string
-    bound value against a text field is false whichever operator the author wrote —
+    The question is asked of both operands' JSON types, over
+    :func:`~tolokaforge.core.grading.predicates.ever_satisfiable`'s per-operator
+    table — which pairs are false on every trajectory is a property of the pair and
+    not of which side holds the text, so a text binding read against a natively-typed
+    field gets the same answer as the reverse. A pair the table refuses is
     indistinguishable from an agent failure to everything that reads the score, and
     so recorded as a comparison rather than folded in as one.
 
     A side no JSON type names — an absent argument, a JSON ``null`` — makes the
     reading ``NEITHER``: the comparison was not made there, and that says nothing
-    about whether the reference is reachable.
+    about whether the reference is reachable. That pre-gate is this caller's own, as
+    ``ever_satisfiable`` fails open on a type it cannot name.
     """
-    if json_type_of(value) is None or json_type_of(bound) is None:
+    held_type, bound_type = json_type_of(value), json_type_of(bound)
+    if held_type is None or bound_type is None:
         return _Makeability.NEITHER
-    if isinstance(value, str) and not isinstance(bound, str):
-        return _Makeability.UNMAKEABLE
-    return _Makeability.MADE
+    if ever_satisfiable(operator, held_type, bound_type):
+        return _Makeability.MADE
+    return _Makeability.UNMAKEABLE
 
 
 def _unmakeable_message(record: _ComparisonRecord) -> str:
     """What the grade says about a reference no candidate could compare.
 
     True of the candidate set as a whole rather than of any one event, so it names
-    the binding, its value and its type, the field and the operator, and no held
-    value — those differ across the candidates the sentence speaks for.
+    the binding, the value it holds and that value's JSON type, the field and the
+    operator — and no held type, which differs across the candidates the sentence
+    speaks for. The remedy is one the authoring gate's own rules accept: a capture is
+    text only where the field beneath it holds text.
     """
     return (
         f"the {record.field} comparison was not made: binding {record.binding!r} holds "
-        f"{record.bound!r} of type {type(record.bound).__name__}, and "
-        f"{record.operator} reads a text field as text — a non-string value neither equals a "
-        "string nor is found inside one, which is false on every trajectory. Reference the "
-        "binding from an args predicate, which compares two arguments as they were written, "
-        "or bind a regex capture, which is always text"
+        f"{record.bound!r}, a JSON {json_type_of(record.bound)}, and no candidate carried a "
+        f"value at that field which {record.operator} can ever satisfy against it — two JSON "
+        "types the operator cannot pair are false on every trajectory, whichever of the two "
+        "holds the text. Reference the binding from an args predicate whose arguments the "
+        "tools type the same way, or extract a regex capture off a field that holds text"
     )
 
 
