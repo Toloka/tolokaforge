@@ -13,6 +13,7 @@ from typing import Any
 import click
 import yaml
 from rich.console import Console
+from rich.markup import escape
 
 from tolokaforge.core import pricing
 from tolokaforge.core.budgets import LimitHitMarker, make_budget
@@ -466,9 +467,9 @@ def _fail_on_ungradeable_trials(completeness: GradingCompleteness) -> None:
         return
     named = completeness.ungradeable_trial_ids[:_UNGRADEABLE_TRIALS_NAMED]
     trailing = completeness.ungradeable - len(named)
-    listed = ", ".join(named) + (f", and {trailing} more" if trailing else "")
-    # Markup wraps a literal only: a trial id is task-authored text, and Rich
-    # would read a bracket in one as markup it then fails to parse.
+    # A trial id is task-authored text; escape it so Rich prints a bracket in
+    # one literally instead of reading it as markup.
+    listed = escape(", ".join(named) + (f", and {trailing} more" if trailing else ""))
     console.print(
         "[red]Run incomplete:[/red] "
         f"{completeness.ungradeable} of {completeness.total_attempts} attempts "

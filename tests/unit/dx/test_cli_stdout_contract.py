@@ -301,6 +301,36 @@ class TestRunStdoutContract:
         assert "TASK-A:5" not in result.stderr
         assert "and 3 more" in result.stderr
 
+    def test_the_error_line_prints_bracket_bearing_trial_ids_verbatim(
+        self,
+        runner: CliRunner,
+        valid_config: Path,
+        tmp_path: Path,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        """A trial id is task-authored text: ``task[v2]:0`` must reach the
+        operator as written, not with ``[v2]`` eaten as console markup.
+        Digit-leading brackets like ``[0]`` stay literal on their own, so only
+        a letter-leading bracket discriminates."""
+        expected_dir = (tmp_path / "results" / "run_20260715_120000").resolve()
+        expected_dir.mkdir(parents=True)
+
+        monkeypatch.setattr(
+            cli_main,
+            "Orchestrator",
+            _make_stub_orchestrator(
+                run_return=expected_dir,
+                completeness=GradingCompleteness(
+                    total_attempts=2, ungradeable_trial_ids=("task[v2]:0",)
+                ),
+            ),
+        )
+
+        result = runner.invoke(cli, ["run", "--config", str(valid_config)])
+
+        assert result.exit_code == 1
+        assert "task[v2]:0" in result.stderr
+
 
 class TestWorkerCompletenessGate:
     """``tolokaforge worker`` gates on the same attribute, over its own attempts.
