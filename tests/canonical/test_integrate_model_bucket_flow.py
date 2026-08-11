@@ -9,7 +9,7 @@ result. This test locks four properties that a future refactor could
 silently regress:
 
 1. The ``git add`` whitelist references the current models-wheel layout
-   (post-#938) and drops the pre-cutover paths.
+   (current) and drops the pre-cutover paths.
 2. The classification step runs between ``git add`` and ``git commit`` so
    ``git diff --cached`` sees the staged tree that is about to be committed.
 3. All three Slack ``MSG`` bodies on the non-data-scope branch carry a
@@ -105,7 +105,7 @@ def test_finalize_git_add_targets_models_wheel_layout() -> None:
 def test_finalize_drops_pre_cutover_paths() -> None:
     body = _finalize_step_body()
     for path in _PRE_CUTOVER_PATHS_FORBIDDEN:
-        msg = f"pre-#938 path '{path}' still referenced in the finalize step"
+        msg = f"pre-cutover path '{path}' still referenced in the finalize step"
         assert path not in body, msg
 
 

@@ -12,9 +12,9 @@ grep-visible instead of relying on a rendered read:
 
 1. ``tolokaforge_models/data/`` without a preceding ``src/tolokaforge_models/``
    segment — pre-src-layout drift.
-2. ``tolokaforge/core/data/`` — removed by #938; a hit is stale narrative in a
+2. ``tolokaforge/core/data/`` — removed by the models-wheel cutover; a hit is stale narrative in a
    living doc.
-3. ``tolokaforge/testing/certify/_registry.py`` — removed by #938; the module
+3. ``tolokaforge/testing/certify/_registry.py`` — removed by the models-wheel cutover; the module
    lives at
    ``tolokaforge_models/src/tolokaforge_models/certificates/registry.py``.
 4. Every ``[label](target)`` link whose target ends in ``.py`` / ``.json`` /
@@ -75,7 +75,7 @@ def test_no_pre_cutover_engine_data_path(doc: Path) -> None:
         for n, line in enumerate(doc.read_text(encoding="utf-8").splitlines(), 1)
         if _LEGACY_ENGINE_DATA.search(line)
     ]
-    message = f"pre-#938 `tolokaforge/core/data/` path in {doc.name}:\n" + "\n".join(hits)
+    message = f"pre-cutover `tolokaforge/core/data/` path in {doc.name}:\n" + "\n".join(hits)
     assert hits == [], message
 
 
@@ -88,7 +88,7 @@ def test_no_pre_cutover_certificate_registry_path(doc: Path) -> None:
         if _LEGACY_REGISTRY_FILE.search(line)
     ]
     message = (
-        f"pre-#938 `tolokaforge/testing/certify/_registry.py` path in "
+        f"pre-cutover `tolokaforge/testing/certify/_registry.py` path in "
         f"{doc.name}:\n" + "\n".join(hits)
     )
     assert hits == [], message

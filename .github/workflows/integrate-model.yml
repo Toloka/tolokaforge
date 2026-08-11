@@ -693,7 +693,7 @@ jobs:
           # `git add -A` is refused deliberately: the workflow runs after a `git stash pop` that
           # restored `observation/` (tracked resolve evidence); the whitelist matches exactly the
           # surfaces the compose/finalize prompts are told to write. Every whitelisted path is
-          # a permanent fixture of the post-#938 tree, so `git add` runs unguarded -- a missing
+          # a permanent fixture of the current tree, so `git add` runs unguarded -- a missing
           # path signals a workflow bug in the retarget and must fail the step loudly.
           git add \
             tolokaforge/core/llm \
