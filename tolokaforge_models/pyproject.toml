@@ -1,0 +1,84 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "tolokaforge-models"
+version = "1.0.0"
+description = "Model data and per-model policy subclasses for tolokaforge."
+requires-python = ">=3.10"
+license = {text = "Apache-2.0"}
+authors = [
+    {name = "Renaud de la Gueronniere"},
+    {name = "Tolokaforge Contributors"},
+]
+keywords = ["llm", "benchmark", "tool-use", "models"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+]
+
+# No hard ``Requires-Dist: tolokaforge`` on purpose. The
+# ``tolokaforge`` Python package this wheel imports at load time is
+# provided by two independent PyPI distributions in different install
+# contexts: the ``tolokaforge`` engine wheel on host installs, and the
+# Docker-only ``tolokaforge-runner-subset`` wheel inside the runner
+# container. A hard pip-level dep on ``tolokaforge`` would refuse to
+# resolve in the subset context (subset's distribution name is
+# ``tolokaforge-runner-subset``). Version pairing is enforced by
+# ``tolokaforge.core.model_data._check_minimum_engine_version`` at import
+# time against :data:`tolokaforge_models.minimum_engine_version` — that
+# gate is fail-loud, actionable, and independent of the pip resolver.
+dependencies = []
+
+[project.entry-points."tolokaforge.policies"]
+# key = "<slot>.<policy-name>" ; value = "<module>:<class>"
+"schema_sanitizer.gemini" = "tolokaforge_models.policies.gemini:GeminiSchema"
+"schema_sanitizer.gemini_recursive" = "tolokaforge_models.policies.gemini:GeminiRecursiveSchema"
+"prompt_policy.dict_map_hints_ref" = "tolokaforge_models.policies.inkling:RefResolvingDictMapHints"
+"response_policy.scalar_array_dict_map" = "tolokaforge_models.policies.gemini:ScalarArrayDictMapResponse"
+"response_policy.minimax_m3_tags" = "tolokaforge_models.policies.minimax:MinimaxM3TagRecoveryResponse"
+"reasoning_codec.openai_summary_replay" = "tolokaforge_models.policies.deepseek:OpenAISummaryReplayReasoningCodec"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tolokaforge_models"]
+
+# =============================================================================
+# Release tooling (commitizen) — drives the `Release tolokaforge-models
+# (cz bump)` workflow. `cz bump` reads/writes the single version literal in
+# `[project] version`, regenerates `CHANGELOG.md` from Conventional Commits,
+# commits, and tags `models-vX.Y.Z`. Independent of the engine's own
+# `[tool.commitizen]` block in the workspace-root `pyproject.toml`.
+# See `docs/RELEASING.md` ("Cutting a tolokaforge-models release").
+# =============================================================================
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"          # read/write [project] version in place
+tag_format = "models-v$version"      # matches the `models-v*` trigger in publish-tolokaforge-models.yml
+changelog_file = "CHANGELOG.md"      # relative to this pyproject's directory
+version_files = [
+    "src/tolokaforge_models/__init__.py:__version__",
+]
+update_changelog_on_bump = true
+changelog_incremental = true         # only prepend new sections; never rewrite hand-written history
+bump_message = "chore(models-release): bump tolokaforge-models to $new_version"
+annotated_tag = true
+
+# Keep the workspace-root `uv.lock` in step with the models version bump.
+# `cz bump` writes the new version literal but does not relock; without this
+# the lockfile would pin the previous version. `uv lock` regenerates the
+# workspace root's lock from any workspace member. `pre_bump_hooks` run after
+# the version write and before cz's commit, so cz folds the staged lockfile
+# into the same release commit.
+pre_bump_hooks = [
+    "uv lock",
+    "git add -- ../uv.lock",
+]

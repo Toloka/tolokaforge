@@ -22,6 +22,13 @@ pip install "tolokaforge[browser]"     # + Playwright
 pip install "tolokaforge[all]"         # everything
 ```
 
+`pip install tolokaforge` transitively pulls the sibling
+[`tolokaforge-models`](https://pypi.org/project/tolokaforge-models/)
+wheel — that second wheel ships the model-data tables, the certificate
+registry, and the per-model policy subclasses on a release cadence
+independent of the engine. See
+[ADR-0030](docs/adr/0030-tolokaforge-models-split.md).
+
 The `[dx]` extras install the terminal front-end that owns the `tolokaforge` CLI — Rich panels, banners, and the Click command tree. Without them the library still imports (`from tolokaforge.core.orchestrator import Orchestrator`), and the `tolokaforge` console script prints an install hint pointing at `pip install 'tolokaforge[dx]'`. Front-end pluggability is recorded in [ADR-0019](docs/adr/0019-front-end-plugin-namespace.md).
 
 Dev install:

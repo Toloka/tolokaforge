@@ -243,11 +243,50 @@ def _target_to_path(dotted: str) -> str | None:
     return None
 
 
+def _is_type_checking_guard(node: ast.If) -> bool:
+    """Return True when *node* is ``if TYPE_CHECKING:`` (or ``typing.TYPE_CHECKING``).
+
+    A guarded import runs only under a static type checker — it never
+    executes inside the runner container and cannot drag a target module
+    into the runtime closure.
+    """
+    test = node.test
+    if isinstance(test, ast.Name):
+        return test.id == "TYPE_CHECKING"
+    if isinstance(test, ast.Attribute) and test.attr == "TYPE_CHECKING":
+        return isinstance(test.value, ast.Name) and test.value.id == "typing"
+    return False
+
+
+def _collect_runtime_imports(tree: ast.AST) -> list[ast.stmt]:
+    """Return every ``Import``/``ImportFrom`` reachable at runtime.
+
+    ``ast.walk`` traverses ``if TYPE_CHECKING:`` blocks too, so the raw
+    walk over-reports for the partition check. This helper skips those
+    guard branches while keeping every other block (function bodies,
+    class bodies, plain conditionals) intact.
+    """
+    imports: list[ast.stmt] = []
+    stack: list[ast.AST] = [tree]
+    while stack:
+        node = stack.pop()
+        if isinstance(node, ast.If) and _is_type_checking_guard(node):
+            stack.extend(node.orelse)
+            continue
+        if isinstance(node, ast.Import | ast.ImportFrom):
+            imports.append(node)
+        for child in ast.iter_child_nodes(node):
+            stack.append(child)
+    return imports
+
+
 def test_subset_files_do_not_import_orchestrator_only_siblings() -> None:
     """A shared-spine file that reached an orchestrator-only sibling would
     force that sibling into the subset (or crash inside the slim image).
     Static AST walk covers every ``import`` / ``from … import`` at any
-    nesting depth, including deferred function-body imports."""
+    nesting depth, including deferred function-body imports. ``if
+    TYPE_CHECKING:`` blocks are skipped — those imports run only under a
+    static type checker and never inside the runner container."""
     subset_files = _enumerate_subset_files()
     violations: list[str] = []
     for rel in sorted(subset_files):
@@ -261,7 +300,7 @@ def test_subset_files_do_not_import_orchestrator_only_siblings() -> None:
         except SyntaxError as exc:  # pragma: no cover - would fail the ruff gate first
             violations.append(f"{rel}: parse error {exc}")
             continue
-        for node in ast.walk(tree):
+        for node in _collect_runtime_imports(tree):
             targets: list[tuple[int, str]] = []
             if isinstance(node, ast.Import):
                 for alias in node.names:
@@ -569,23 +608,40 @@ def test_subset_wheel_ships_cli_shim_module(subset_wheel_path: Path) -> None:
     )
 
 
-def test_subset_wheel_ships_data_files_for_pricing_and_presets(
-    subset_wheel_path: Path,
-) -> None:
-    """GitHub #830: the subset wheel must include the pricing table and
-    model-preset registry as bundled data files. Without them, the runner
-    image boots with an empty pricing table (silent cost-tracking regression)
-    and the preset registry raises at first grading-model resolution."""
+def test_subset_wheel_requires_tolokaforge_models(subset_wheel_path: Path) -> None:
+    """The runner container's pricing / preset / provider tables now ship
+    inside the :mod:`tolokaforge_models` wheel — the subset wheel resolves
+    them through ``Requires-Dist: tolokaforge-models`` at pip-install time.
+    Without this dep, the runner image would boot with an empty pricing
+    table (silent cost-tracking regression) and the preset registry would
+    raise at first grading-model resolution."""
+    metadata_txt = _wheel_read(subset_wheel_path, "*.dist-info/METADATA")
+    matches = [
+        line
+        for line in metadata_txt.splitlines()
+        if line.startswith("Requires-Dist: tolokaforge-models")
+    ]
+    assert matches, (
+        "subset wheel METADATA is missing a Requires-Dist entry for "
+        "tolokaforge-models — the runner image would install without the "
+        "data-file provider and boot with empty pricing / preset / provider "
+        "tables. Add the pin to scripts/hatch/hatch_runner_subset_builder.py "
+        "SUBSET_DEPENDENCIES."
+    )
+
+
+def test_subset_wheel_does_not_ship_engine_data_dir(subset_wheel_path: Path) -> None:
+    """Data files live in :mod:`tolokaforge_models`; the subset wheel must
+    not re-ship them under ``tolokaforge/core/data/``. A stale entry in
+    ``[tool.hatch.build.targets.custom].only-include`` would silently
+    double-ship the tables and diverge from the models wheel on every
+    subsequent overlay tweak."""
     members = _wheel_members(subset_wheel_path)
-    expected = {
-        "tolokaforge/core/data/pricing.json",
-        "tolokaforge/core/data/model_presets.yaml",
-    }
-    missing = sorted(expected - members)
-    assert not missing, (
-        "subset wheel is missing data files (GitHub #830 regression):\n"
-        + "\n".join(f"  - {m}" for m in missing)
-        + "\nAll RUNNER_SUBSET_DATA_FILES entries must ship in the wheel."
+    stale = sorted(m for m in members if m.startswith("tolokaforge/core/data/"))
+    assert not stale, (
+        "subset wheel ships engine-side data files under "
+        "tolokaforge/core/data/ — the cutover left them behind:\n"
+        + "\n".join(f"  - {m}" for m in stale)
     )
 
 

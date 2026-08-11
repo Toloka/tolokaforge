@@ -8,6 +8,64 @@ appear — callers above it work with the curated Python types described below.
 See [`plans/llm_reasoning_and_observability_fix.md`](../plans/llm_reasoning_and_observability_fix.md)
 for the design rationale and the canonical litellm surface.
 
+## Two-wheel architecture
+
+Tolokaforge publishes two PyPI wheels from one monorepo — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md):
+
+- **`tolokaforge`** (engine wheel) ships the base classes for every
+  policy slot (`StrictSchema`, `DictMapHints`, `ResponsePolicy`,
+  `ReasoningCodec`, `AssistantTextPolicy`, `ParamsPolicy`,
+  `MessageAssemblyPolicy`, `CachePolicy`, `ContentPolicy`), the nine
+  `_POLICY_REGISTRIES` slots, and the loader / overlay machinery on
+  [`presets.py`](../tolokaforge/core/llm/presets.py). It also ships the
+  `Capability` enum and the `ModelCertificate` dataclass at
+  [`tolokaforge.testing.certify`](../tolokaforge/testing/certify/).
+- **[`tolokaforge-models`](../tolokaforge_models/)** ships the per-model
+  policy subclasses at
+  [`tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/)
+  (`gemini.py`, `minimax.py`, `deepseek.py`, `inkling.py`), the 39
+  `ModelCertificate` entries at
+  [`tolokaforge_models.certificates.ALL_MODELS`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py),
+  and the three data files (`pricing.json`, `model_presets.yaml`,
+  `providers.yaml`) at
+  [`tolokaforge_models/data/`](../tolokaforge_models/src/tolokaforge_models/data/).
+
+The models wheel registers its policy classes with the engine via the
+`tolokaforge.policies` entry-point group declared in
+[`tolokaforge_models/pyproject.toml`](../tolokaforge_models/pyproject.toml).
+[`load_policy_registrations()`](../tolokaforge/core/model_data.py)
+discovers the entry points at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py)
+import and merges the registrations into `_POLICY_REGISTRIES`;
+duplicate keys or unknown slots fail loud. Two install-time gates
+follow the merge — see § Startup validation. Certificates reach the
+engine through [`bundled_certificates()`](../tolokaforge/core/model_data.py),
+consumed once at
+[`tolokaforge.testing.certify.__init__`](../tolokaforge/testing/certify/__init__.py)
+to populate the public `ALL_MODELS` symbol.
+
+`pip install tolokaforge` transitively pulls the models wheel via
+`Requires-Dist: tolokaforge-models >=1.0.0,<2.0.0` — the two wheels
+version and release independently (see
+[`docs/RELEASING.md`](RELEASING.md)) but a working engine install
+always carries a matching models wheel.
+
+### Deprecation shim for by-name imports (v0.17.x → v0.18.0)
+
+`from tolokaforge.core.llm import GeminiSchema` (and its seven
+siblings — `GeminiRecursiveSchema`, `ScalarArrayDictMapResponse`,
+`RefResolvingDictMapHints`, `JsonRecursiveCoerceResponse`,
+`ItemRecursiveUnwrapResponse`, `MinimaxM3TagRecoveryResponse`,
+`OpenAISummaryReplayReasoningCodec`) resolves via a lazy
+[`__getattr__`](../tolokaforge/core/llm/__init__.py) shim to the
+subclass in `tolokaforge_models.policies.<family>`. First access
+emits a `DeprecationWarning` naming the new import path; subsequent
+accesses per name resolve silently through a `_WARNED` cache. **The
+shim is removed in v0.18.0** — migrate to
+`from tolokaforge_models.policies.<family> import <Class>` before
+upgrading past v0.17.x.
+
 ## Module map
 
 | Module | Purpose |
@@ -160,7 +218,7 @@ reasoning on subsequent turns.
 ### Preset wiring
 
 ```yaml
-# tolokaforge/core/data/model_presets.yaml
+# tolokaforge_models/data/model_presets.yaml
 presets:
   anthropic:
     match: ["anthropic/*", "*claude*"]
@@ -289,15 +347,16 @@ Three concrete sanitizers ship today:
   keywords like `title` / `examples`) pass through unchanged. The `qwen`
   preset uses `passthrough` instead — see § `response_policy` for the
   rationale.
-* `GeminiSchema(StrictSchema)` — used by the `gemini` preset. Adds
-  `flatten_oneof_discriminator=True` on top of `StrictSchema`'s rewrites
-  because Gemini's tool spec is a JSON-Schema *subset* that does not
-  document `$defs`/`$ref`, `oneOf`/`anyOf` with object branches, or
-  `discriminator` — sending these constructs causes Gemini to silently
-  lose every property name inside them and emit description-derived
-  English keys instead (verified live 2026-05-20). The flattener
-  collapses `oneOf` discriminated unions into a single object schema
-  unioning every branch's `properties`; intersects `required` (so
+* `GeminiSchema(StrictSchema)` — shipped by
+  [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) and used
+  by the `gemini` preset. Adds `flatten_oneof_discriminator=True` on top of
+  `StrictSchema`'s rewrites because Gemini's tool spec is a JSON-Schema
+  *subset* that does not document `$defs`/`$ref`, `oneOf`/`anyOf` with
+  object branches, or `discriminator` — sending these constructs causes
+  Gemini to silently lose every property name inside them and emit
+  description-derived English keys instead (verified live 2026-05-20). The
+  flattener collapses `oneOf` discriminated unions into a single object
+  schema unioning every branch's `properties`; intersects `required` (so
   typically only the discriminator survives); special-cases the
   discriminator field by merging per-branch `const` values into a single
   `enum`. Paired with `response_policy: array_dict_map` to reverse the
@@ -676,7 +735,7 @@ Provider-specific transport knobs (endpoint URL, credential env-var names,
 routability under a gateway, rotation env-var, `custom_llm_provider` litellm
 routing hint, per-provider rate-limit text patterns, and Nova-shaped slug /
 transport pinning) live in
-[`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
 The schema is
 [`tolokaforge.core.llm.providers.ProviderBinding`](../tolokaforge/core/llm/providers.py)
 — a frozen Pydantic model, `extra="forbid"`, one entry per shipped provider
@@ -736,12 +795,14 @@ where the mechanism is genuinely per-provider:
 
 ### Fingerprint
 
-The provider-binding table ships inside the engine wheel pre-cutover, so
-`engine_run_state.json`'s `models_fingerprint.content_sha256` does **not**
-include `providers.yaml` yet — see ADR-0030 § "Fingerprinting for
-auditability". The cutover PR ([#938](https://github.com/Toloka/tolokaforge/issues/938))
-moves the file to `tolokaforge_models/data/providers.yaml` and widens the
-hashed payload.
+`providers.yaml` ships in the `tolokaforge-models` wheel at
+[`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml),
+so `engine_run_state.json`'s `models_fingerprint.content_sha256`
+covers `{presets, pricing, providers, certificates}` — a provider
+binding edit changes the digest. See
+[`docs/OUTPUT_FORMAT.md` § `engine_run_state.json`](OUTPUT_FORMAT.md#engine_run_statejson)
+and [ADR-0030](adr/0030-tolokaforge-models-split.md) § "Fingerprinting
+for auditability".
 
 ## `cache_policy`
 
@@ -845,7 +906,7 @@ list-of-blocks back to text.
 
 `cache_policy` is preset-driven, not user-overridable via `ModelConfig.capabilities`
 in Stage 6. To disable caching for an ablation study, override the preset in
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml:22)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml:22)
 with `cache_policy: none`. The override path contract is documented in
 `docs/ADD_NEW_MODEL.md` (Stage 8).
 
@@ -1018,19 +1079,21 @@ Implementations:
   pivot of `StrictSchema`'s dict-map → array conversion. Used by
   `openai_gpt5` and `xai_grok` presets.
 * `MinimaxM3TagRecoveryResponse` — composite for the MiniMax-M3 `tags`
-  corruption (`minimax` preset, registry name `minimax_m3_tags`). M3's
-  XML → JSON tool-call conversion mangles the `tags` array on every emission
-  (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The composite
-  chains `JsonRecursiveCoerceResponse` (stringified-list → list, `''` → `[]`)
-  then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list, recursing into the
-  parent so `{"item": {"item": "a"}}` flattens to `["a"]`). Both recurse into
-  the `updates` / `item` parent but are scoped to the `ARRAY_SITES` allowlist
-  (`updates.tags`, `item.tags`) — the empty-string → `[]` coercion is tied to
-  those declared-array sites so it can never fire on a scalar field. Scalar
-  strings are never promoted, `None` is never touched, multi-key dicts are
-  left unchanged, and already-valid `list[str]` tags pass through unchanged
-  (zero false positives). M2.7 emits native `tags` lists and is not in this
-  preset. See AGENTS.md gotcha #25.
+  corruption (`minimax` preset, registry name `minimax_m3_tags`), shipped
+  by [`tolokaforge-models`](../tolokaforge_models/src/tolokaforge_models/policies/minimax.py).
+  M3's XML → JSON tool-call conversion mangles the `tags` array on every
+  emission (`{"item": X}` 76 %, JSON-encoded / empty string 23 %). The
+  composite chains `JsonRecursiveCoerceResponse` (stringified-list → list,
+  `''` → `[]`) then `ItemRecursiveUnwrapResponse` (`{"item": X}` → list,
+  recursing into the parent so `{"item": {"item": "a"}}` flattens to
+  `["a"]`). Both recurse into the `updates` / `item` parent but are scoped
+  to the `ARRAY_SITES` allowlist (`updates.tags`, `item.tags`) — the
+  empty-string → `[]` coercion is tied to those declared-array sites so
+  it can never fire on a scalar field. Scalar strings are never promoted,
+  `None` is never touched, multi-key dicts are left unchanged, and
+  already-valid `list[str]` tags pass through unchanged (zero false
+  positives). M2.7 emits native `tags` lists and is not in this preset.
+  See AGENTS.md gotcha #25.
 
 `param_types` is a `Mapping[str, str]` from root-level parameter name to
 its post-sanitised JSON-Schema `type`. `LLMClient._assemble_result` builds
@@ -1107,7 +1170,7 @@ class ModelCapabilities:
 `build_capabilities(model_name, provider, overrides)` walks the merge order
 `default → matched preset → provider overlay → overrides` and constructs a
 fresh `ModelCapabilities`. Presets live in
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 ### Preset coverage
 
@@ -1115,7 +1178,7 @@ Per-preset policy wiring as shipped today. The three `StrictSchema` presets
 all cover the same two failure surfaces — `Decimal` look-ahead regex (P1,
 Stage 1) and typed `Dict[str, T]` parameters (P2, Stage 2) — by combining
 the same three policies. Keep this table in sync with
-[`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml).
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 
 | Preset                  | Match globs                                                      | `schema_sanitizer` | `response_policy`   | `prompt_policy`   | `content_policy` | `reasoning_codec` | `message_assembly_policy` | `assistant_text_policy` |
 |-------------------------|------------------------------------------------------------------|--------------------|---------------------|-------------------|------------------|-------------------|---------------------------|-------------------------|
@@ -1167,8 +1230,55 @@ Both helpers raise `ValueError` on unknown inputs rather than returning
 placeholders — per AGENTS.md rule #1 we surface drift immediately. Unit
 guard: [`tests/unit/llm/test_preset_fingerprint.py`](../tests/unit/llm/test_preset_fingerprint.py)
 parametrises over every preset in
-[`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) and
+[`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) and
 plants a rogue policy instance to confirm the raise path.
+
+### Startup validation
+
+Two install-time gates fire at
+[`tolokaforge.core.llm.presets`](../tolokaforge/core/llm/presets.py) import
+— before any `RunConfig` load, before the orchestrator or runner spawn any
+child — so a bad `tolokaforge-models` install pair fails the process at
+boot rather than at the first LLM call.
+
+1. **Minimum-engine-version gate.**
+   [`_check_minimum_engine_version()`](../tolokaforge/core/model_data.py)
+   imports `tolokaforge_models` and reads
+   `tolokaforge_models.minimum_engine_version`. Two failure branches:
+
+   * `tolokaforge_models` is not importable → `RuntimeError` naming the
+     `pip install tolokaforge-models` install instruction, chained from
+     the underlying `ImportError`.
+   * The installed engine version does not satisfy the specifier →
+     `RuntimeError` naming both the installed engine version and the
+     models-wheel floor (`>=0.17,<0.18`), with the actionable "upgrade
+     the engine or downgrade the models wheel" hint.
+
+   Engine version resolution goes through
+   [`_resolve_engine_version()`](../tolokaforge/core/model_data.py), which
+   tries the `tolokaforge` distribution first and falls back to
+   `tolokaforge-runner-subset`; the same gate fires unchanged inside the
+   runner subset image, whose distribution name differs from the base
+   wheel.
+
+2. **Class-name-existence gate.**
+   [`_check_class_names_resolve()`](../tolokaforge/core/llm/presets.py)
+   walks the bundled `model_presets.yaml` — every slot on the `default`
+   block, every entry under `presets`, every entry under `providers` —
+   and asserts that every referenced policy name (either a bare
+   `schema_sanitizer: gemini` string or the `name` key of a
+   `{name, params}` mapping) is a key of the merged `_POLICY_REGISTRIES`.
+   Unresolved names raise `RuntimeError` naming every offending
+   `(where, slot, policy)` triple with a
+   [`difflib.get_close_matches`](https://docs.python.org/3/library/difflib.html#difflib.get_close_matches)
+   suggestion drawn from the registry's live keyset. Runs after the
+   `tolokaforge-models` entry-point merge, so it covers both engine
+   defaults and out-of-tree registrations.
+
+Canonical locks:
+[`tests/canonical/test_models_wheel_absent.py`](../tests/canonical/test_models_wheel_absent.py),
+[`tests/canonical/test_minimum_engine_version_gate.py`](../tests/canonical/test_minimum_engine_version_gate.py),
+[`tests/canonical/test_class_name_existence_gate.py`](../tests/canonical/test_class_name_existence_gate.py).
 
 ## Public helper API
 
@@ -1191,10 +1301,12 @@ Free functions, re-exported from `tolokaforge.core.llm`:
 | [`coerce_empty_containers`](../tolokaforge/core/llm/response_policy.py) | `response_policy` | Schema-aware recovery: coerces `""` → `[]` / `""` → `{}` for declared `array` / `object` / `dict_map` parameters. No-op without `param_types`; `""` on a `string` parameter passes through. |
 | [`find_additional_properties`](../tolokaforge/core/llm/dict_maps.py) | `dict_maps` | Locate an `additionalProperties` declaration on a property schema or any of its `anyOf` / `oneOf` branches. Handles the Pydantic `Optional[Dict[str, T]]` shape (`anyOf=[{additionalProperties:T}, {null}]`). |
 
-All three are consumed by shipped per-model policies (`JsonCoerceResponse`,
-`ArrayDictMapResponse`, `MinimaxM3TagRecoveryResponse` compose the first two;
-`RefResolvingDictMapHints` composes the third) and are the intended entry
-points for out-of-tree recovery classes.
+All three are consumed by shipped per-model policies — `JsonCoerceResponse`
+and `ArrayDictMapResponse` compose `coerce_json_strings` / `coerce_empty_containers`
+(engine-side); the models-wheel `MinimaxM3TagRecoveryResponse` reuses
+`coerce_json_strings` for its tags-site recovery, and `RefResolvingDictMapHints`
+composes `find_additional_properties`. Both are the intended entry points for
+out-of-tree recovery classes.
 
 ### `StrictSchema` public hooks
 
@@ -1203,7 +1315,7 @@ points for out-of-tree recovery classes.
 
 **Overridable classmethod:**
 
-* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (`GeminiRecursiveSchema` is the shipped example — it substitutes a permissive open-object schema at any point of cyclic re-entry).
+* [`inline_refs_in_tool(cls, tool)`](../tolokaforge/core/llm/schema_sanitizer.py) — resolves per-tool `$ref` against the tool's parameter-level `$defs` block and drops the now-stale `$defs`. Subclasses that need cycle tolerance override this hook rather than reaching into `_inline_refs` (see [`GeminiRecursiveSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) — it substitutes a permissive open-object schema at any point of cyclic re-entry).
 
 **Class-attribute hooks** — six flags on the class body, declared with
 `ClassVar[…]` so a subclass method that mis-writes `self.<hook> = ...`
@@ -1219,8 +1331,9 @@ shadow:
 | `strip_parameters_root_description` | `ClassVar[bool]` | `True` | Strip Pydantic's class-docstring artefact at the parameters root (redundant with `function.description` for strict validators). Gemini sets `False` — evidence shows the strip hurts on some flat tool schemas. |
 | `strip_re2_incompatible_patterns` | `ClassVar[bool]` | `True` | Remove `pattern` values containing lookarounds / backreferences (OpenAI / xAI / Qwen-strict raise 500 on these). Gemini appears to pass RE2-incompatible patterns through unchanged and overrides to `False`. |
 
-The defaults preserve the shipped OpenAI / xAI Grok behaviour. `GeminiSchema`
-subclasses `StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
+The defaults preserve the shipped OpenAI / xAI Grok behaviour.
+[`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) subclasses
+`StrictSchema` and toggles the four booleans plus `VALUE_FIELD`;
 `GeminiRecursiveSchema` subclasses `GeminiSchema` and additionally overrides
 `inline_refs_in_tool`. Neither reaches into any `_`-prefixed symbol.
 
@@ -1232,8 +1345,10 @@ by `enrich` when both `system` and `tools` are non-empty; returns the hint
 text to append to the system prompt. Subclasses that need to close over
 instance state (e.g. `RefResolvingDictMapHints` — the `$ref`-resolving +
 one-level-nested variant used by the `thinkingmachines/inkling` route)
-override the method directly; the shape is an instance method so the
-override needs no `# type: ignore[override]` marker.
+override the method directly (see
+[`RefResolvingDictMapHints`](../tolokaforge_models/src/tolokaforge_models/policies/inkling.py) for
+the shipped example); the shape is an instance method so the override needs
+no `# type: ignore[override]` marker.
 
 ### Public-API boundary guardrail
 

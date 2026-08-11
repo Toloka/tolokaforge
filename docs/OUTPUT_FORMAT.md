@@ -73,10 +73,10 @@ overlay and the exact tolokaforge-models resolution behind every score.
   "run_id": "results/coding_example_20260629_154233",
   "presets_file": "/path/to/overlay.yaml",
   "models_fingerprint": {
-    "package_version": "in-tree",
+    "package_version": "1.0.0",
     "content_sha256": "9f0d…64-hex chars…",
     "api_version": 1,
-    "minimum_engine_version": ">=0.16,<0.17"
+    "minimum_engine_version": ">=0.17,<0.18"
   }
 }
 ```
@@ -91,12 +91,12 @@ overlay and the exact tolokaforge-models resolution behind every score.
 
 | Field | Type | Meaning |
 |---|---|---|
-| `package_version` | string | The `tolokaforge-models` PEP 440 version whose bundle resolved this run, or the literal `"in-tree"` sentinel while the data still ships in the engine wheel. |
-| `content_sha256` | string | Lowercase 64-hex-char sha256 over the canonicalised `{presets, pricing, certificates}` triple after all overlays have been folded in. Same inputs produce a byte-identical digest; any overlay tweak (a new preset entry, a pricing rate change, a certificate field) changes the digest. |
+| `package_version` | string | The `tolokaforge-models` PEP 440 version whose bundle resolved this run — sourced from `tolokaforge_models.__version__` at compute time. |
+| `content_sha256` | string | Lowercase 64-hex-char sha256 over the canonicalised `{presets, pricing, providers, certificates}` payload after all overlays have been folded in. Same inputs produce a byte-identical digest; any overlay tweak (a new preset entry, a pricing rate change, a provider binding edit, a certificate field) changes the digest. |
 | `api_version` | integer | Contract version of the hashed payload — `1` today. A future change to the payload shape bumps this so readers know to reject an older client's output rather than mis-compare it. |
-| `minimum_engine_version` | string | PEP 440 specifier the model-data snapshot requires the engine to satisfy. Parsed via `packaging.specifiers.SpecifierSet`. |
+| `minimum_engine_version` | string | PEP 440 specifier the model-data snapshot requires the engine to satisfy — sourced from `tolokaforge_models.minimum_engine_version` at compute time. Parsed via `packaging.specifiers.SpecifierSet`. |
 
-Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data.compute_models_fingerprint`](../tolokaforge/core/model_data.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context and the pre-cutover sentinel semantics.
+Written via [`tolokaforge.core.engine_run_state.write_engine_run_state`](../tolokaforge/core/engine_run_state.py) with the fingerprint computed by [`tolokaforge.core.model_data_fingerprint.compute_models_fingerprint`](../tolokaforge/core/model_data_fingerprint.py); the on-disk shape is locked by the `ModelsFingerprint` Pydantic model (`extra="forbid"`). See [`docs/adr/0030-tolokaforge-models-split.md`](adr/0030-tolokaforge-models-split.md) § "Fingerprinting for auditability" for the wheel-split context.
 
 ## `LIMIT_HIT.json`
 
@@ -236,7 +236,7 @@ Computed by the orchestrator at trial-start via
 
 | Field | Values | Source |
 |---|---|---|
-| `effective_preset` | preset name from [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) (e.g. `anthropic_claude_4_7`) or `"default"` on fallthrough | `resolve_effective_preset` |
+| `effective_preset` | preset name from [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) (e.g. `anthropic_claude_4_7`) or `"default"` on fallthrough | `resolve_effective_preset` |
 | `schema_sanitizer` | `passthrough` \| `strict` | policy registry |
 | `prompt_policy` | `none` \| `dict_map_hints` | policy registry |
 | `content_policy` | `openai` \| `anthropic` | policy registry |

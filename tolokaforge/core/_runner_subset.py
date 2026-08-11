@@ -93,20 +93,6 @@ file at wheel-build time.
 """
 
 RUNNER_SUBSET_DATA_FILES: tuple[str, ...] = (
-    # Pricing table, preset registry, and provider binding table — the
-    # three bundled model-data files that every runner container reads at
-    # first use via :mod:`tolokaforge.core.model_data`'s accessors.
-    # ``pricing.json`` powers cost telemetry (:mod:`tolokaforge.core.pricing`);
-    # ``model_presets.yaml`` drives model-capability resolution
-    # (:mod:`tolokaforge.core.llm.presets`) that grading + judge dispatch
-    # needs to be non-empty; ``providers.yaml`` supplies the provider-binding
-    # table LLM-judge grading routes through
-    # (:mod:`tolokaforge.core.llm.providers`). A subset image missing any
-    # one silently boots into a corrupted engine state (empty pricing,
-    # empty presets, or `FileNotFoundError` at first LLM call).
-    "tolokaforge/core/data/pricing.json",
-    "tolokaforge/core/data/model_presets.yaml",
-    "tolokaforge/core/data/providers.yaml",
     # Python version pin — the ``tolokaforge.docker.builder`` helper is
     # base-wheel only, but ``tolokaforge/_python_version.txt`` is included
     # here to keep the ``importlib.resources.files("tolokaforge")`` lookup
@@ -114,12 +100,13 @@ RUNNER_SUBSET_DATA_FILES: tuple[str, ...] = (
     "tolokaforge/_python_version.txt",
 )
 """Non-Python files shipped in the subset that runtime code reads via
-``importlib.resources`` at first use. The three model-data files
-(``pricing.json``, ``model_presets.yaml``, ``providers.yaml``) are
-resolved through :mod:`tolokaforge.core.model_data`; the
-``_python_version.txt`` pin is a build artefact discoverable via
-``importlib.resources.files("tolokaforge")`` for parity with the base
-wheel."""
+``importlib.resources`` at first use. Pricing, preset, and provider
+binding tables are supplied by the :mod:`tolokaforge_models` wheel — the
+subset wheel's ``Requires-Dist: tolokaforge-models`` pulls them into the
+runner container at ``pip install`` time. Only the
+``_python_version.txt`` build artefact ships directly here, discoverable
+via ``importlib.resources.files("tolokaforge")`` for parity with the
+base wheel."""
 
 RUNNER_SUBSET_EXCLUDED_FILES: tuple[str, ...] = (
     "tolokaforge/core/actors/turn_policy.py",

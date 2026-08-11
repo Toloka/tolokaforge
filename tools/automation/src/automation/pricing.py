@@ -14,7 +14,7 @@ Modes:
              Used as the auto-merge precondition (the "price check").
 
 Units: USD per 1M tokens (OpenRouter reports per-token; multiply by 1e6), matching
-``tolokaforge/core/data/pricing.json`` and ``tools/pricing-updater``.
+``tolokaforge_models/src/tolokaforge_models/data/pricing.json`` and ``tools/pricing-updater``.
 
 The pure helpers (``entry_for`` etc.) are unit-tested; ``run`` does the I/O and
 returns an exit code.
@@ -30,7 +30,7 @@ from pathlib import Path
 _OPENROUTER_MODELS_URL = "https://openrouter.ai/api/v1/models"
 _TIMEOUT = 30
 
-DEFAULT_PRICING_FILE = "tolokaforge/core/data/pricing.json"
+DEFAULT_PRICING_FILE = "tolokaforge_models/src/tolokaforge_models/data/pricing.json"
 
 
 def _models(pricing_file: Path) -> dict:

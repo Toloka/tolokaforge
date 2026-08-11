@@ -2,7 +2,7 @@
 
 OpenRouter exposes ``GET /api/v1/models`` which returns pricing per-token as
 string values.  This module fetches the data and converts to *USD per 1 M
-tokens* which is the format used by ``tolokaforge/core/data/pricing.json``.
+tokens* which is the format used by ``tolokaforge_models/src/tolokaforge_models/data/pricing.json``.
 """
 
 from __future__ import annotations

@@ -27,9 +27,9 @@ not checked in).
 |---|---|---|
 | `reasoning_details` `id`/`format`/`index` must round-trip | All Gemini via OpenRouter | **Fixed** in [`GeminiReasoningCodec`](../tolokaforge/core/llm/reasoning_codec.py) |
 | Empty assistant content with tool_calls gets echoed by Gemini | All Gemini | **Fixed** via [`NullMessageAssembly`](../tolokaforge/core/llm/message_assembly_policy.py) (only `aws_nova*` opts into the filler) |
-| `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge/core/llm/schema_sanitizer.py) |
+| `oneOf`+`discriminator` Pydantic unions → invented arg names | All Gemini | **Fixed** in [`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) |
 | OpenRouter's 48-char placeholder UUID on no-thinking turns | All Gemini | **Fixed** — codec drops it on replay (togglable) |
-| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml) |
+| `litellm` direct `gemini/*` + `reasoning_effort=medium` → empty response | All Gemini, direct provider only | **Guarded** via `unsupported_effort_levels` in [`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml) |
 | Nullable + optional Pydantic fields treated as opt-in | All Gemini, **most strict in Pro 3.1** | Intrinsic — measured by eval |
 | Doubled-prefix tool name mangling (`a_a_foo` → `a:a_foo`) | Pro 3.1 | Known_unsupported `TOOL_NAME_DISCIPLINE` |
 | Lexical tool invention (`knowledge_base_search_policy`) | Pro 3.1 | Known_unsupported `LEXICAL_TOOL_INVENTION` |
@@ -60,7 +60,7 @@ which declares `inject_empty_assistant_filler = False`. Only the `aws_nova`
 and `aws_nova_openrouter` presets opt in via `NovaMessageAssembly`
 (`empty_assistant_filler = "I'll help you with that."`); the filler string
 is data on the policy instance so a future preset overlay can override it
-without engine changes ([`model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)).
+without engine changes ([`model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)).
 
 ### 1.2 `reasoning_details` `id`/`format`/`index` must round-trip
 
@@ -116,7 +116,7 @@ emitted:     {"quantity": 5, "title": "WMS access"}   # wrong names
 
 Live-verified 2026-05-20 against all three Gemini models.
 
-**Harness mitigation**: [`GeminiSchema`](../tolokaforge/core/llm/schema_sanitizer.py)
+**Harness mitigation**: [`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py)
 flattens `oneOf` + `discriminator` into a single object schema unioning
 every branch's properties. Bare `Union[A, B]` (Pydantic emits `anyOf`
 without `discriminator`) is left untouched — flattening it caused a
@@ -148,7 +148,7 @@ whenever `reasoning_effort=medium` is combined with `tool_choice`.
 because it sends `extra_body.reasoning.effort=medium`, which OpenRouter
 translates upstream into Google's `thinking_level=medium`.
 
-**Harness mitigation**: [`unsupported_effort_levels: ["medium"]`](../tolokaforge/core/data/model_presets.yaml)
+**Harness mitigation**: [`unsupported_effort_levels: ["medium"]`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 on the `providers.gemini` overlay. Per AGENTS.md rule #1, the harness
 **fails loud** rather than silently mapping to `high`:
 
@@ -223,7 +223,7 @@ none, hence no exposure).
 [`tolokaforge/testing/certify/suite/test_tool_name_discipline.py`](../tolokaforge/testing/certify/suite/test_tool_name_discipline.py)
 captures the symptom. Pro is declared `TOOL_NAME_DISCIPLINE`
 known_unsupported in
-[`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py).
+[`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py).
 
 **Harness response**: known_unsupported declaration. Not silently
 worked around — the eval correctly measures the cost.
@@ -462,7 +462,7 @@ logistics: $1.86 / pass → $0.41 / pass — 4.5× more efficient).
   (config-error retry filter),
   [#151](https://github.com/Toloka/tolokaforge/issues/151)
   (api_error follow-up).
-- Capability registry: [`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py)
+- Capability registry: [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   (`TOOL_NAME_DISCIPLINE`, `LEXICAL_TOOL_INVENTION` declared
   `known_unsupported` for Pro).
 - Codec fix commits: `c394409a0` (extras round-trip), `8b1511d67`

@@ -97,7 +97,7 @@ def reload_pricing(
 
     Loading order (each layer merged field-level onto the next):
 
-    1. Shipped ``tolokaforge/core/data/pricing.json``. Passing ``path``
+    1. Shipped ``tolokaforge_models/data/pricing.json``. Passing ``path``
        replaces this baseline entirely.
     2. ``overlay_path`` — JSON or YAML with the same schema as the shipped
        table. Suffix-detected: ``.json`` → JSON; ``.yaml`` / ``.yml`` →

@@ -56,7 +56,7 @@ def _reports_cache_on_cold_call(cert: ModelCertificate) -> bool:
     ``excluded_capabilities`` names :attr:`Capability.IMPLICIT_PROMPT_CACHING`
     when the route's counter is unreliable on cold calls. See the
     excluded cert's own inline evidence in
-    :mod:`tolokaforge.testing.certify._registry` for the full rationale.
+    :mod:`tolokaforge_models.certificates.registry` for the full rationale.
     Follow-up #484 will teach the ratchet to send a cold probe before
     trusting the counter, retiring the exclusion.
     """
@@ -144,7 +144,7 @@ def test_known_unsupported_routes_do_not_auto_cache(
     the cert declaring ``IMPLICIT_PROMPT_CACHING`` in ``known_unsupported``
     — i.e. upstream silently started auto-caching this route. The fix is
     to move the capability from ``known_unsupported`` to ``required``
-    in :mod:`tolokaforge.testing.certify._registry` and remove the
+    in :mod:`tolokaforge_models.certificates.registry` and remove the
     diagnostic-skip comment alongside.
     """
     client = live_client(cert)
@@ -174,7 +174,7 @@ def test_known_unsupported_routes_do_not_auto_cache(
             f"cache_read_input_tokens={observed_read}, "
             f"cached_tokens={observed_cached} (above the "
             f"{_NOISE_FLOOR_TOKENS}-token noise floor). The cert in "
-            f"tolokaforge/testing/certify/_registry.py claims this is "
+            f"tolokaforge_models/src/tolokaforge_models/certificates/registry.py claims this is "
             f"`known_unsupported` for IMPLICIT_PROMPT_CACHING; the cert "
             f"is now wrong. Move IMPLICIT_PROMPT_CACHING from "
             f"``known_unsupported`` to ``required`` for this model and "

@@ -27,13 +27,13 @@ Contract pinned here:
 from __future__ import annotations
 
 import pytest
-
-from tolokaforge.core.llm import (
+from tolokaforge_models.policies.minimax import (
     ItemRecursiveUnwrapResponse,
     JsonRecursiveCoerceResponse,
     MinimaxM3TagRecoveryResponse,
-    build_capabilities,
 )
+
+from tolokaforge.core.llm import build_capabilities
 from tolokaforge.core.llm.presets import resolve_effective_preset, resolve_policy_names
 
 pytestmark = pytest.mark.unit

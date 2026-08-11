@@ -2,7 +2,7 @@
 
 Provider-specific transport behaviour (endpoints, credential env-var names,
 routability, rotation, slug rewrites, rate-limit text patterns) is declared
-in ``tolokaforge/core/data/providers.yaml`` and consumed by the LLM client
+in ``tolokaforge_models/data/providers.yaml`` and consumed by the LLM client
 through :class:`ProviderBinding`. Onboarding a new provider is one YAML
 edit; extending rotation or a rate-limit pattern is one YAML edit.
 

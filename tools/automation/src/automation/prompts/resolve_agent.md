@@ -18,7 +18,7 @@ and pushes the whole integration to needs-human.
   iteration 1). On a later iteration, read it to see which fix-targets are STILL red and adjust.
 - Candidate: provider=`{{PROVIDER}}`, name=`{{NAME}}`, model_id=`{{MODEL_ID}}`.
   Iteration `{{ITER}}` of `{{MAX_ITER}}`.
-- Engine: presets in `tolokaforge/core/data/model_presets.yaml`; adapter classes registered in
+- Engine: presets in `tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml`; adapter classes registered in
   `_POLICY_REGISTRIES` (`tolokaforge/core/llm/presets.py`).
 
 ## Your task this iteration

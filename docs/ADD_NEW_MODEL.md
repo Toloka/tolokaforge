@@ -2,6 +2,29 @@
 
 Six-step process. No PR merges a model change without all six passing.
 
+## Bucket A vs Bucket B — which wheel does your change target?
+
+Tolokaforge ships two PyPI wheels — see
+[ADR-0030](adr/0030-tolokaforge-models-split.md). A model addition lands
+in exactly one of two buckets:
+
+- **Bucket A — [`tolokaforge_models/`](../tolokaforge_models/).** New
+  preset routing that composes existing policy classes, a new pricing
+  entry, a new certificate, a per-model policy subclass of a stable
+  engine base that reaches only public API, a new provider binding, or
+  a per-model certification body. Ships on the `models-vX.Y.Z` tag
+  axis independent of the engine's `vX.Y.Z` cadence.
+- **Bucket B — [`tolokaforge/`](../tolokaforge/) (engine).** A new base
+  class, a new lifecycle stage (a new `_POLICY_REGISTRIES` slot), a
+  new `Capability` enum category whose probe pattern differs from
+  every shipped probe, or a change to an existing base class's
+  *shape* (a new abstract method, a new required kwarg). Ships on the
+  engine's `vX.Y.Z` tag axis. Land a Bucket-B PR first when the model
+  needs a hook the engine does not yet expose, then land a follow-up
+  Bucket-A PR for the model itself.
+
+Every step below routes to the correct wheel for the file it touches.
+
 ## Pre-flight: 30-second checklist
 
 Before writing any code, verify the model exists and decide where each
@@ -15,16 +38,16 @@ curl -s https://openrouter.ai/api/v1/models | \
 
 | File / dir | Branch | Reason |
 |---|---|---|
-| `tolokaforge/core/data/pricing.json` | **main** | Shared cost catalog |
-| `tolokaforge/testing/certify/_registry.py` | **main** | Capability certificate is shared |
-| `tolokaforge/core/data/model_presets.yaml` | **main** | Only if new preset needed |
+| `tolokaforge_models/data/pricing.json` | **main** | Shared cost catalog |
+| `tolokaforge_models/src/tolokaforge_models/certificates/registry.py` | **main** | Capability certificate is shared |
+| `tolokaforge_models/data/model_presets.yaml` | **main** | Only if new preset needed |
 
 Evaluation-specific configs **must not land on `main`** — see
 `AGENTS.md` § "No Project-Specific Content on main".
 
 ## 1. Add pricing
 
-Append an entry to [`tolokaforge/core/data/pricing.json`](../tolokaforge/core/data/pricing.json).
+Append an entry to [`tolokaforge_models/data/pricing.json`](../tolokaforge_models/src/tolokaforge_models/data/pricing.json).
 Use current OpenRouter / Nova / direct-provider pricing; document the
 capture date in the adjacent comment. Schema: `{input, output}` per
 1M tokens, USD.
@@ -50,7 +73,7 @@ API response verbatim (it's per-token, scientific notation, e.g.
 `"0.0000015"`) and forget the ×1,000,000 conversion.
 ## 2. Add a preset (or confirm fallthrough is OK)
 
-[`tolokaforge/core/data/model_presets.yaml`](../tolokaforge/core/data/model_presets.yaml)
+[`tolokaforge_models/data/model_presets.yaml`](../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml)
 owns every **non-default** policy combination. If the model needs
 specialised schema sanitisation / cache policy / reasoning codec /
 prompt hints, add a new entry with explicit `match:` globs. If the
@@ -133,7 +156,7 @@ invocations pick it up automatically without re-specifying `--presets-file`.
 ## 3. Add a ModelCertificate
 
 Append to `ALL_MODELS` in
-[`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py).
+[`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py).
 Pick `required` and `known_unsupported` from the
 [`Capability`](../tolokaforge/testing/certify/_capability.py) enum.
 
@@ -272,9 +295,11 @@ REST endpoint directly with a hand-built schema: replace each
 suspect construct with explicit `properties` and watch for the
 property names to start round-tripping. The fix belongs in a new
 [`ToolSchemaSanitizer`](../tolokaforge/core/llm/schema_sanitizer.py)
-subclass (see `GeminiSchema` for the worked example) — never in
-prompt engineering or in renaming task-pack fields to match the
-model's preference.
+subclass shipped in
+[`tolokaforge_models/policies/`](../tolokaforge_models/src/tolokaforge_models/policies/) (see
+[`GeminiSchema`](../tolokaforge_models/src/tolokaforge_models/policies/gemini.py) for the worked
+example) — never in prompt engineering or in renaming task-pack fields to
+match the model's preference.
 
 ## 4a. Run a smoke eval before declaring the model ready
 
@@ -323,7 +348,7 @@ If the model lives on a provider that isn't already routed through
    rate-limit patterns, `custom_llm_provider` litellm hint, and
    Nova-shaped slug rewrite / per-attempt transport pinning) are
    declared in
-   [`tolokaforge/core/data/providers.yaml`](../tolokaforge/core/data/providers.yaml).
+   [`tolokaforge_models/data/providers.yaml`](../tolokaforge_models/src/tolokaforge_models/data/providers.yaml).
    See [`docs/LLM_LAYER.md` § Provider bindings](LLM_LAYER.md#provider-bindings)
    and [`docs/CONFIG.md` § Provider bindings](CONFIG.md#provider-bindings-providersyaml)
    for the full `ProviderBinding` schema. A hypothetical new provider
@@ -390,7 +415,7 @@ acme:
 - [`docs/LLM_LAYER.md`](LLM_LAYER.md) — policy slot contracts +
   implementation notes.
 - The Gemini certificates in
-  [`tolokaforge/testing/certify/_registry.py`](../tolokaforge/testing/certify/_registry.py)
+  [`tolokaforge_models/src/tolokaforge_models/certificates/registry.py`](../tolokaforge_models/src/tolokaforge_models/certificates/registry.py)
   are a worked example of an entire model family registered with
   asymmetric postures across variants (Flash `required` vs Pro
   `known_unsupported` for the same capability) — useful when a new

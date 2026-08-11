@@ -1,9 +1,15 @@
 """Single source of truth for which models are under integration test.
 
-To add a new model: append a :class:`~tolokaforge.testing.certify.certificate.ModelCertificate`
-to :data:`ALL_MODELS`. Capability tests auto-pick it up via parametrisation.
-See [`docs/ADD_NEW_MODEL.md`](../../../../docs/ADD_NEW_MODEL.md) for the full
-contributor walkthrough.
+Shipped by the :mod:`tolokaforge_models` wheel; the engine reaches this
+tuple through :func:`tolokaforge.core.model_data.bundled_certificates`,
+which is re-exposed as :data:`tolokaforge.testing.certify.ALL_MODELS` at
+the public certify seam.
+
+To add a new model: append a
+:class:`~tolokaforge.testing.certify.certificate.ModelCertificate` to
+:data:`ALL_MODELS`. Capability tests auto-pick it up via parametrisation.
+See [`docs/ADD_NEW_MODEL.md`](../../../../docs/ADD_NEW_MODEL.md) for the
+full contributor walkthrough.
 
 Invariants enforced at module-import time:
 
@@ -27,8 +33,13 @@ from __future__ import annotations
 
 import os
 
-from ._capability import Capability as C
-from .certificate import ModelCertificate as MC
+# Reach for the leaf modules directly: the public
+# ``tolokaforge.testing.certify`` package resolves ``ALL_MODELS``
+# lazily through :func:`tolokaforge.core.model_data.bundled_certificates`,
+# which re-enters this package. Going through the seam here would
+# deadlock the two ``__init__.py`` files against each other.
+from tolokaforge.testing.certify._capability import Capability as C
+from tolokaforge.testing.certify.certificate import ModelCertificate as MC
 
 __all__ = ["ALL_MODELS"]
 

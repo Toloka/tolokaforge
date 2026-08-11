@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import copy
 import os
-from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock, patch
 
@@ -1794,13 +1793,17 @@ class TestPresetLoading:
     """Tests for YAML preset loading and matching."""
 
     def test_preset_file_exists(self) -> None:
-        """model_presets.yaml must exist at the expected path."""
-        preset_path = Path("tolokaforge/core/data/model_presets.yaml")
+        """The bundled ``model_presets.yaml`` must resolve through the seam."""
+        from tolokaforge.core.model_data import bundled_presets_path
+
+        preset_path = bundled_presets_path()
         assert preset_path.exists(), f"Preset file not found: {preset_path}"
 
     def test_preset_file_valid_yaml(self) -> None:
-        """model_presets.yaml must parse as valid YAML with expected sections."""
-        with open(Path("tolokaforge/core/data/model_presets.yaml")) as f:
+        """The bundled ``model_presets.yaml`` must parse with expected sections."""
+        from tolokaforge.core.model_data import bundled_presets_path
+
+        with open(bundled_presets_path()) as f:
             data = yaml.safe_load(f)
         assert "default" in data
         assert "presets" in data

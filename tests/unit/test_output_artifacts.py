@@ -4,7 +4,7 @@ Covers:
 
 * :func:`model_id_slug` — deterministic, filesystem-safe slug over every
   real-world model name registered in
-  [`model_presets.yaml`](../../tolokaforge/core/data/model_presets.yaml).
+  [`model_presets.yaml`](../../tolokaforge_models/src/tolokaforge_models/data/model_presets.yaml).
 * :class:`FileArtifactWriter.write_tools_schemas` — per-trial YAML
   artifact at ``trial_dir/tools_schemas.yaml``. Latest write wins
   (the trial dir is recreated fresh by the orchestrator).

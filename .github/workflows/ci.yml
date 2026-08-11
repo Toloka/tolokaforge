@@ -91,13 +91,23 @@ jobs:
     - name: Set up Python (pinned in .python-version)
       run: uv python install "$(cat .python-version)"
 
-    - name: Build the wheel
-      run: uv build --wheel
+    - name: Build both wheels (engine + models)
+      run: |
+        uv build --wheel --package tolokaforge
+        uv build --wheel --package tolokaforge-models
 
-    - name: Install the wheel into a clean venv (no source tree on the path)
+    - name: Install the engine wheel into a clean venv (no source tree on the path)
+      # Use --find-links so uv resolves `tolokaforge-models` against the
+      # local dist/ directory rather than fetching from PyPI. Post-milestone
+      # merge + first models-v1.0.0 publish, `uv pip install tolokaforge`
+      # alone will resolve `tolokaforge-models` transitively from PyPI —
+      # but during the milestone-integration branch we ship both from
+      # the workspace.
       run: |
         uv venv /tmp/wheelenv
-        VIRTUAL_ENV=/tmp/wheelenv uv pip install dist/*.whl
+        VIRTUAL_ENV=/tmp/wheelenv uv pip install \
+          --find-links dist/ \
+          dist/tolokaforge-*.whl
 
     - name: Runner build context must assemble from the installed wheel
       # cd / so the source checkout cannot be picked up via CWD.

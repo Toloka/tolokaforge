@@ -112,10 +112,10 @@ class TestRegistryInvariants:
         """
         import importlib
 
-        from tolokaforge.testing.certify import _registry
+        from tolokaforge_models.certificates import registry
 
         original = ALL_MODELS
-        reloaded = importlib.reload(_registry).ALL_MODELS
+        reloaded = importlib.reload(registry).ALL_MODELS
         assert [c.model_id for c in reloaded] == [c.model_id for c in original]
 
 
@@ -137,7 +137,7 @@ class TestCapabilityCoverage:
         assert not missing, (
             f"Orphan capabilities (no certificate references them): {missing}. "
             "Declare each capability on at least one certificate in "
-            "tolokaforge/testing/certify/_registry.py."
+            "tolokaforge_models/src/tolokaforge_models/certificates/registry.py."
         )
 
     def test_every_capability_has_required_coverage(self) -> None:
@@ -148,7 +148,7 @@ class TestCapabilityCoverage:
                 f"No certificate requires {cap.value!r} — the capability "
                 "test's pass-path is untested. Declare it in the ``required`` "
                 "set of at least one ModelCertificate in "
-                "tolokaforge/testing/certify/_registry.py."
+                "tolokaforge_models/src/tolokaforge_models/certificates/registry.py."
             )
 
     def test_non_core_capabilities_have_both_branches(self) -> None:
@@ -169,7 +169,7 @@ class TestCapabilityCoverage:
                 f"No certificate lists {cap.value!r} as known_unsupported — "
                 "the capability test's skip-path is untested. Declare it on "
                 "at least one ModelCertificate in "
-                "tolokaforge/testing/certify/_registry.py whose target "
+                "tolokaforge_models/src/tolokaforge_models/certificates/registry.py whose target "
                 "provider genuinely lacks this capability."
             )
 
