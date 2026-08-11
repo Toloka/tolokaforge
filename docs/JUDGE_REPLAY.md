@@ -56,7 +56,7 @@ uv run tolokaforge rejudge --source <run-dir> \
 | `--grading` | Override the rubric — and, when the file carries them, the judge's custom prompt (`llm_judge.customization.system_prompt`) and agent-policy gating (`llm_judge.customization.include_agent_system_prompt`) — with a supplied `grading.yaml` (or a bare `rubric:` mapping). Required for old bundles that recorded no rubric. Default: the recorded rubric, prompt, and gating. |
 | `--knowledge-search` | `recorded` (honour the bundle's recorded gating), `on`, or `off`. Default: `recorded`. Forcing `on` for a bundle with no recorded KB gating cannot conjure a KB tool: the replay grade records `offered: []` and the provenance records the mode — observable, not silent. |
 | `--replay-id` | Name for the artifact subdirectory. Default: a timestamped id. |
-| `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. |
+| `--dry-run` | Discover, classify, and resolve inputs, then report what would replay — spending nothing. The census it prints (`<N> discovered: <e> eligible, <s> not-applicable, <g> no-grade, <f> failed`) is the same one a real batch prints. |
 
 `rejudge --judge-model` takes a full `<provider>/<model>` ref — the first path
 segment selects the provider — unlike `run --judge-model`, which takes a bare
@@ -117,7 +117,10 @@ recorded inputs that fail validation (a corrupt `trajectory.yaml`, rubric, or
 model config). When any trial
 fails, `rejudge` still writes the comparison report for the replayed subset and
 then **exits non-zero**, so a scripted caller never reads a partially-failed
-replay as clean.
+replay as clean. A skip never does: neither a not-applicable trial nor a no-grade
+one moves the exit code, because neither is a defect. **A `--source` that
+discovers no bundle at all exits non-zero naming the directory searched** — a
+batch that claims nothing and returns success is the same silence at full scale.
 
 **The batch's size is legible.** A run that hit provider throttling has the same
 number of recorded trials as the same suite on a clean run; what differs is how
@@ -199,12 +202,21 @@ trial:
   and the fidelity mode.
 
 The batch also writes one `replays/<replay_id>/replay_report.yaml` — the per-run
-comparison against the recorded originals.
+comparison against the recorded originals. A batch that replayed **nothing**
+writes no report: there is no comparison to make, and the console carries that
+batch's census instead.
 
 ## Reading the comparison report
 
 `replay_report.yaml` (and its console summary) reports:
 
+- **The batch census** (`batch`) — `discovered` and, summing to it, `replayed`,
+  `skipped_not_applicable`, `skipped_no_grade` and `failed`. `trials` below covers
+  the *compared* subset; the census covers the whole source, which is what makes
+  two batches over one suite comparable: "fewer trials were judge-eligible" is a
+  different fact from "the provider throttled us", and only the census tells them
+  apart. A census whose parts do not sum to `discovered` is refused rather than
+  written.
 - **Per-criterion** `original` vs `replay` `met`/`score` per trial, with the
   per-criterion `met_agrees` and `score_delta`.
 - **Agreement rate** — the fraction of criteria whose `met` matches, computed over

@@ -865,13 +865,21 @@ def run(
     _fail_on_ungradeable_trials(orchestrator.grading_completeness)
 
 
+def _relative_bundle(bundle: Path, source: Path) -> str:
+    """A bundle's path as the operator named the source, or its own name from outside it."""
+    try:
+        return str(bundle.relative_to(source))
+    except ValueError:
+        return bundle.name
+
+
 def _print_rejudge_summary(
     outcomes: list[TrialReplayOutcome], *, replay_id: str, source: Path, dry_run: bool
 ) -> None:
-    """Print the batch disposition per trial + the aggregate counts."""
+    """Print one line per discovered bundle, then the census over the whole batch."""
     label = "Would re-judge" if dry_run else "Re-judged"
     for outcome in outcomes:
-        rel = outcome.bundle
+        rel = _relative_bundle(outcome.bundle, source)
         if outcome.status is ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE:
             console.print(f"[yellow]skip (not applicable)[/yellow] {rel}")
         elif outcome.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE:
@@ -896,9 +904,8 @@ def _print_rejudge_summary(
     no_grade = sum(o.status is ReplayOutcomeStatus.SKIPPED_NO_GRADE for o in outcomes)
     failed = sum(o.status is ReplayOutcomeStatus.FAILED for o in outcomes)
     console.print(
-        f"\n[bold]{label}:[/bold] {eligible} eligible, "
-        f"{skipped} skipped-not-applicable, {no_grade} skipped-no-grade, "
-        f"{failed} failed-with-reason"
+        f"\n[bold]{label}:[/bold] {len(outcomes)} discovered: {eligible} eligible, "
+        f"{skipped} not-applicable, {no_grade} no-grade, {failed} failed"
     )
     if not dry_run and eligible:
         console.print(f"Replay artifacts: {source / JUDGE_REPLAY_DIRNAME / replay_id}")
@@ -995,8 +1002,10 @@ def rejudge(
     Re-executes only the rubric judge over recorded trajectories — no agent re-run,
     no live services — so judge changes (schema, prompt, wording, model) can be
     A/B-tested against a recorded run. Execution is sequential with no concurrency
-    cap; inspect --dry-run first. Exits non-zero when any trial fails to classify
-    or reconstruct (the report for the replayed subset is still written). See
+    cap; inspect --dry-run first. Every discovered bundle gets a line and the batch
+    closes with a census over all of them. Exits non-zero when any trial fails to
+    classify or reconstruct (the report for the replayed subset is still written),
+    and when --source discovers no bundle at all. A skip never does. See
     docs/JUDGE_REPLAY.md.
     """
     source_path = Path(source)
@@ -1013,6 +1022,11 @@ def rejudge(
         knowledge_search=KnowledgeSearchMode(knowledge_search),
         dry_run=dry_run,
     )
+    if not outcomes:
+        raise click.ClickException(
+            f"no trial bundle under {source_path} — a batch that discovered nothing "
+            "re-judges nothing. A bundle is a directory holding trajectory.yaml"
+        )
     _print_rejudge_summary(outcomes, replay_id=replay_id, source=source_path, dry_run=dry_run)
 
     if not dry_run:

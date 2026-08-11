@@ -44,10 +44,12 @@ from tolokaforge.core.grading.replay import (
     OfflineDBReader,
     OfflineKnowledgeSearch,
     ProvenanceSource,
+    ReplayBatchCensus,
     ReplayOutcomeStatus,
     ReplayProvenance,
     TrialEligibility,
     classify_trial,
+    emit_replay_report,
     read_replay_inputs,
     replay_trial,
     run_replay_batch,
@@ -907,32 +909,36 @@ def test_rejudge_cli_dry_run_spends_nothing(tmp_path: Path) -> None:
     assert not (source / "replays").exists()
 
 
-_TOTALS_LINE = re.compile(
+_CENSUS_LINE = re.compile(
+    r"(?:Re-judged|Would re-judge): (?P<discovered>\d+) discovered: "
     r"(?P<eligible>\d+) eligible, "
-    r"(?P<skipped_not_applicable>\d+) skipped-not-applicable, "
-    r"(?P<skipped_no_grade>\d+) skipped-no-grade, "
-    r"(?P<failed>\d+) failed-with-reason"
+    r"(?P<not_applicable>\d+) not-applicable, "
+    r"(?P<no_grade>\d+) no-grade, "
+    r"(?P<failed>\d+) failed"
 )
 _PER_TRIAL_MARKERS = ("re-judged", "would re-judge", "skip (not applicable)", "skip (no grade)")
 
 
-def _totals_and_lines(output: str) -> tuple[dict[str, int], int]:
-    """The totals line's counts, and how many per-trial lines were printed above it.
+def _census_and_lines(output: str) -> tuple[dict[str, int], int]:
+    """The census line's counts, and how many per-trial lines were printed above it.
 
-    Whitespace-normalised because Rich wraps both the totals line and the reasons.
+    Whitespace-normalised because Rich wraps both the census line and the reasons.
+    The census label is matched as part of the line so it is not counted as one of
+    the per-trial lines above it.
     """
-    per_trial, totals = output.split("Re-judged:")
-    match = _TOTALS_LINE.search(" ".join(totals.split()))
+    printed = " ".join(output.split())
+    match = _CENSUS_LINE.search(printed)
     assert match is not None, output
-    printed = sum(" ".join(per_trial.split()).count(marker) for marker in _PER_TRIAL_MARKERS)
-    return {key: int(value) for key, value in match.groupdict().items()}, printed
+    above = printed[: match.start()]
+    lines = sum(above.count(marker) for marker in _PER_TRIAL_MARKERS)
+    return {key: int(value) for key, value in match.groupdict().items()}, lines
 
 
 def test_rejudge_cli_reports_a_grade_less_bundle_and_exits_zero(tmp_path: Path) -> None:
     """A grade-less bundle named with ``--trial`` is a reported skip at exit 0, not
     a failure: the same disposition the batch gives it, through the other entry
-    point. Its count sits on the totals line, which therefore accounts for every
-    per-trial line printed above it — a totals line omitting a disposition the same
+    point. Its count sits on the census line, which therefore accounts for every
+    per-trial line printed above it — a census omitting a disposition the same
     function prints is arithmetically incomplete."""
     from tolokaforge.dx.cli.main import cli
 
@@ -947,14 +953,112 @@ def test_rejudge_cli_reports_a_grade_less_bundle_and_exits_zero(tmp_path: Path) 
     assert TerminationReason.API_TIMEOUT.value in " ".join(result.output.split())
     assert not (source / "replays").exists()
 
-    totals, per_trial_lines = _totals_and_lines(result.output)
-    assert totals == {
+    census, per_trial_lines = _census_and_lines(result.output)
+    assert census == {
+        "discovered": 1,
         "eligible": 0,
-        "skipped_not_applicable": 0,
-        "skipped_no_grade": 1,
+        "not_applicable": 0,
+        "no_grade": 1,
         "failed": 0,
     }
-    assert sum(totals.values()) == per_trial_lines
+    assert census["discovered"] == per_trial_lines
+
+
+def test_rejudge_cli_census_accounts_for_every_bundle_under_the_source(tmp_path: Path) -> None:
+    """One batch, four dispositions, and a census that adds up to what it found.
+
+    The mixed batch is where the arithmetic bites: five recorded trials, one of
+    each disposition the command can reach, so a census counting the wrong status
+    or omitting one cannot be right by coincidence. Bundle paths print relative to
+    ``--source``, as retrace already prints them — an absolute path per line is
+    unreadable on a real run dir and says nothing the header has not.
+    """
+    from tolokaforge.dx.cli.main import cli
+
+    source = tmp_path / "run"
+    run = write_five_shape_run(source)
+
+    result = CliRunner().invoke(
+        cli, ["rejudge", "--source", str(source), "--dry-run"], env={"COLUMNS": "200"}
+    )
+
+    assert result.exit_code == 0, result.output
+    census, per_trial_lines = _census_and_lines(result.output)
+    assert census == {
+        "discovered": 5,
+        "eligible": 1,
+        "not_applicable": 1,
+        "no_grade": 3,
+        "failed": 0,
+    }
+    assert census["discovered"] == per_trial_lines
+    assert sum(count for key, count in census.items() if key != "discovered") == per_trial_lines
+
+    printed = " ".join(result.output.split())
+    assert str(run.judged.relative_to(source)) in printed
+    assert str(run.judged) not in printed
+
+
+def test_rejudge_cli_exits_nonzero_when_the_source_holds_no_bundle(tmp_path: Path) -> None:
+    """A batch that discovered nothing claimed nothing and returned success.
+
+    That is the maximal case of the defect this command's census exists to remove:
+    zeros on every line read as "the suite was clean" to a scripted caller. It now
+    exits non-zero naming the directory searched, matching ``retrace``.
+    """
+    from tolokaforge.dx.cli.main import cli
+
+    empty = tmp_path / "nowhere"
+    empty.mkdir()
+
+    result = CliRunner().invoke(
+        cli, ["rejudge", "--source", str(empty), "--dry-run"], env={"COLUMNS": "200"}
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "no trial bundle" in result.output
+    assert str(empty) in " ".join(result.output.split())
+    assert "discovered:" not in result.output
+
+
+def test_the_written_report_accounts_for_the_batch_not_the_judged_subset(tmp_path: Path) -> None:
+    """``replay_report.yaml`` says what the batch found, not only what it compared.
+
+    One trial of five was judge-eligible here; a report carrying that one trial and
+    nothing else would read as a five-trial suite that shrank. The census crosses
+    the artifact boundary, so an operator diffing two runs reads it off the file.
+    """
+    source = tmp_path / "run"
+    write_five_shape_run(source)
+
+    outcomes = run_replay_batch(source, replay_id="r1", judge_client=_submit_report_client())
+    report = emit_replay_report(outcomes, source=source, replay_id="r1")
+
+    assert report is not None
+    assert report.batch == ReplayBatchCensus(
+        discovered=5, replayed=1, skipped_not_applicable=1, skipped_no_grade=3, failed=0
+    )
+    assert len(report.trials) == 1
+    written = yaml.safe_load((source / "replays" / "r1" / "replay_report.yaml").read_text())
+    assert written["batch"] == {
+        "discovered": 5,
+        "replayed": 1,
+        "skipped_not_applicable": 1,
+        "skipped_no_grade": 3,
+        "failed": 0,
+    }
+
+
+def test_a_census_that_cannot_account_for_the_batch_is_refused() -> None:
+    """The model enforces its own arithmetic: four dispositions, one denominator.
+
+    A census whose parts do not sum to ``discovered`` under-reports the batch by
+    exactly the bundles it lost, which is the silence this issue is about.
+    """
+    with pytest.raises(ValidationError, match="cannot say what became of every bundle"):
+        ReplayBatchCensus(
+            discovered=5, replayed=1, skipped_not_applicable=1, skipped_no_grade=1, failed=0
+        )
 
 
 def test_rejudge_cli_exits_nonzero_when_a_trial_fails(tmp_path: Path) -> None:

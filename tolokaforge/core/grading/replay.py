@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import dataclasses
 import json
+from collections import Counter
 from dataclasses import dataclass, field
 from enum import Enum
 from pathlib import Path
@@ -71,6 +72,7 @@ __all__ = [
     "OfflineDBReader",
     "OfflineKnowledgeSearch",
     "ProvenanceSource",
+    "ReplayBatchCensus",
     "ReplayInputs",
     "ReplayOutcomeStatus",
     "ReplayProvenance",
@@ -960,6 +962,36 @@ class ReplayUsageTotals(BaseModel):
     model_config = {"extra": "forbid"}
 
 
+class ReplayBatchCensus(BaseModel):
+    """What the batch discovered, and what became of every bundle in it.
+
+    The four dispositions sum to ``discovered``, and the model refuses a census
+    that does not: a batch whose size the report cannot account for is what an
+    operator would read as a smaller suite. This is what lets two batches over one
+    suite be compared — "fewer trials were judge-eligible" is a different fact from
+    "the provider throttled us", and only the census tells them apart.
+    """
+
+    discovered: int
+    replayed: int
+    skipped_not_applicable: int
+    skipped_no_grade: int
+    failed: int
+
+    model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _dispositions_account_for_the_batch(self) -> ReplayBatchCensus:
+        counted = self.replayed + self.skipped_not_applicable + self.skipped_no_grade + self.failed
+        if counted != self.discovered:
+            raise ValueError(
+                f"the dispositions account for {counted} bundles of {self.discovered} "
+                "discovered — a census that cannot say what became of every bundle it "
+                "found is not a census"
+            )
+        return self
+
+
 class ReplayReport(BaseModel):
     """Per-run comparison of a replay against the recorded originals.
 
@@ -971,6 +1003,7 @@ class ReplayReport(BaseModel):
 
     replay_id: str
     judge_model: str
+    batch: ReplayBatchCensus
     trials: list[TrialComparison]
     criteria_compared: int
     criteria_agreed: int
@@ -1050,14 +1083,28 @@ def _compare_trial(
     )
 
 
+def _batch_census(outcomes: list[TrialReplayOutcome]) -> ReplayBatchCensus:
+    """Count what the batch discovered and what became of each bundle."""
+    counted = Counter(outcome.status for outcome in outcomes)
+    return ReplayBatchCensus(
+        discovered=len(outcomes),
+        replayed=counted[ReplayOutcomeStatus.REPLAYED],
+        skipped_not_applicable=counted[ReplayOutcomeStatus.SKIPPED_NOT_APPLICABLE],
+        skipped_no_grade=counted[ReplayOutcomeStatus.SKIPPED_NO_GRADE],
+        failed=counted[ReplayOutcomeStatus.FAILED],
+    )
+
+
 def build_replay_report(
     outcomes: list[TrialReplayOutcome], *, source: Path, replay_id: str
 ) -> ReplayReport | None:
     """Build the per-run comparison report from a batch's replayed outcomes.
 
-    Returns ``None`` when nothing was replayed. Only ``REPLAYED`` outcomes enter
-    the report — skipped-not-applicable and failed-to-reconstruct trials are batch
-    console concerns, not comparisons. Agreement is computed over ``COMPARABLE``
+    Returns ``None`` when nothing was replayed — a batch that judged nothing has no
+    comparison to write, and the console carries its census instead. Only
+    ``REPLAYED`` outcomes enter ``trials``; the skipped and failed ones are counted
+    in ``batch``, which is what accounts for the whole source rather than the
+    compared subset. Agreement is computed over ``COMPARABLE``
     trials only; other buckets carry the replay-side result but never affect the
     rate or the aggregate deltas.
     """
@@ -1103,6 +1150,7 @@ def build_replay_report(
     return ReplayReport(
         replay_id=replay_id,
         judge_model=judge_model,
+        batch=_batch_census(outcomes),
         trials=trials,
         criteria_compared=compared,
         criteria_agreed=agreed,
