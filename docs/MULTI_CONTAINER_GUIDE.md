@@ -290,6 +290,24 @@ Things worth noting:
 - **Pinned image tags are enforced.** The validator rejects floating tags
   like `postgres:latest` — pin to a specific version (`postgres:16` above)
   so runs stay reproducible.
+- **`${TOLOKAFORGE_TRIAL_SLUG}` is the per-trial name suffix.** The engine
+  writes a per-trial `.env` next to the copied compose file so
+  `docker compose up` interpolates `${var}` slots at up-time. The reserved
+  variable `TOLOKAFORGE_TRIAL_SLUG` resolves to a sanitised form of the
+  trial id — the same slug encoded in the compose project name. Use it
+  in `container_name:` when the compose service must have a stable,
+  per-trial-unique container name (e.g. so a sibling `docker exec` can
+  target it):
+  ```yaml
+  services:
+    main:
+      container_name: my_pack_${TOLOKAFORGE_TRIAL_SLUG}_main
+  ```
+  Task-declared substitutions live under `stack.inputs:` and land in the
+  same `.env`. Keys starting with `TOLOKAFORGE_` are reserved for the
+  engine and rejected at provision time — a task that tries to override
+  the reserved block fails loud with a clear message rather than
+  silently taking effect.
 
 The engine validates a few more safety invariants when it loads the stack:
 no `network_mode: host`, no `privileged: true`, no `cap_add`, `depends_on`

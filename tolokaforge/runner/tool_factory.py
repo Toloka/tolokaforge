@@ -36,6 +36,7 @@ from typing import Any
 
 from pydantic import BaseModel, Field
 
+from tolokaforge.runner.compose_naming import compose_container_name
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.db_proxy import DBServiceProxy, SyncDBServiceProxy
 from tolokaforge.runner.id_resolution import compute_diff_ops
@@ -72,14 +73,13 @@ logger = logging.getLogger(__name__)
 def _resolve_compose_container_name(trial_id: str, service: str, project_prefix: str) -> str:
     """Container name for *service* in the per-trial compose stack.
 
-    Mirrors the per-trial project convention the compose lifecycle consumer
-    uses (project ``{prefix}{trial_id}``, container ``{project}_{service}``), so
-    an exec targets the same running container the stack brought up. The
-    ``bash_session`` and ``str_replace_editor`` compose backends share it so
-    both target the identical container.
+    Thin re-export of :func:`tolokaforge.runner.compose_naming.compose_container_name`
+    that keeps the ``bash_session`` and ``str_replace_editor`` wrappers' local
+    resolver-name stable; the shared implementation is what the compose lifecycle
+    consumer on the host uses to name the project directory, so an exec targets
+    the same container the stack brought up.
     """
-    project = f"{project_prefix}{trial_id.replace(':', '_')}"
-    return f"{project}_{service}"
+    return compose_container_name(trial_id, service, project_prefix)
 
 
 # =============================================================================

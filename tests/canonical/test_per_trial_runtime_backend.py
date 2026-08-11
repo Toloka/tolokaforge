@@ -566,6 +566,81 @@ class TestProvision:
 
 
 # ---------------------------------------------------------------------------
+# Per-trial compose ``.env`` — stack_inputs materialisation
+# ---------------------------------------------------------------------------
+
+
+class TestComposeEnvFile:
+    """The manifest's ``stack_inputs`` becomes a per-trial ``.env`` next to the
+    copied compose file so ``docker compose up`` interpolates ``${var}`` slots.
+    The engine appends its own reserved block last (currently just
+    ``TOLOKAFORGE_TRIAL_SLUG``); any task-authored ``.env`` in the source
+    context is preserved above it. Keys under the reserved prefix in
+    ``stack_inputs`` are rejected before provision starts so the error does
+    not read as ``docker compose up failed``.
+    """
+
+    def test_env_file_written_with_reserved_block_last(
+        self, patched_backend: PerTrialRuntimeBackend, tmp_path: Path
+    ) -> None:
+        # Copy the fixture into a temp source dir and add a task-authored
+        # .env: the copy step must preserve it, and the reserved block must
+        # win by appearing last.
+        src = tmp_path / "src"
+        src.mkdir()
+        compose = src / "compose.yaml"
+        compose.write_text((_FIXTURES / "safe_two_service.yaml").read_text())
+        (src / ".env").write_text("TASK_AUTHORED=preserved\n")
+        manifest = EnvironmentManifest(
+            compose_file=compose,
+            stack_inputs={"IMAGE_TAG": "v1.2.3", "PORT": "5432"},
+        )
+        spec = _make_trial_spec(trial_id="task-1:0", manifest=manifest)
+        handle = patched_backend.provision(spec)
+        assert isinstance(handle, _LocalEnvHandle)
+        env_content = (handle.temp_dir / ".env").read_text()
+        assert "TASK_AUTHORED=preserved" in env_content
+        assert "IMAGE_TAG=v1.2.3" in env_content
+        assert "PORT=5432" in env_content
+        assert "TOLOKAFORGE_TRIAL_SLUG=task-1_0" in env_content
+        # Reserved block last: no task/manifest line may appear below it.
+        lines = [line for line in env_content.splitlines() if line]
+        assert lines[-1] == "TOLOKAFORGE_TRIAL_SLUG=task-1_0"
+
+    def test_empty_stack_inputs_still_writes_reserved_block(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
+        spec = _make_trial_spec(compose_file=_FIXTURES / "safe_two_service.yaml")
+        handle = patched_backend.provision(spec)
+        assert isinstance(handle, _LocalEnvHandle)
+        env_content = (handle.temp_dir / ".env").read_text()
+        assert "TOLOKAFORGE_TRIAL_SLUG=task-1_0" in env_content
+
+    def test_reserved_prefix_key_raises_before_compose_up(
+        self, patched_backend: PerTrialRuntimeBackend
+    ) -> None:
+        """A ``stack_inputs`` key under the reserved prefix must fail the
+        provision *before* the compose lifecycle's ``try`` block, so the
+        reason names the reserved-prefix rule and the offending key —
+        not ``docker compose up failed``. Asserted on the message text so
+        a future refactor that moves the check inside the ``try`` fails
+        here."""
+        manifest = EnvironmentManifest(
+            compose_file=_FIXTURES / "safe_two_service.yaml",
+            stack_inputs={"TOLOKAFORGE_TRIAL_SLUG": "clobber"},
+        )
+        spec = _make_trial_spec(trial_id="task-1:0", manifest=manifest)
+        with pytest.raises(ProvisionError) as exc:
+            patched_backend.provision(spec)
+        err = exc.value
+        assert err.stage == "provision"
+        assert err.trial_id == spec.trial_id
+        assert "TOLOKAFORGE_TRIAL_SLUG" in err.reason
+        assert "reserved" in err.reason
+        assert "compose up failed" not in err.reason
+
+
+# ---------------------------------------------------------------------------
 # Reset-recipe failure attribution — the reset seam owns ``stage="reset_recipe"``
 # ---------------------------------------------------------------------------
 
