@@ -1309,6 +1309,12 @@ The per-run comparison of the replay against the recorded originals:
 ```yaml
 replay_id: replay_20260718_010425
 judge_model: openrouter/openai/gpt-4.1-mini
+batch:                          # census over every discovered bundle
+  discovered: 3                 # the four dispositions below sum to this
+  replayed: 1
+  skipped_not_applicable: 1
+  skipped_no_grade: 1
+  failed: 0
 criteria_compared: 2            # denominator: criteria in COMPARABLE trials only
 criteria_agreed: 1
 agreement_rate: 0.5             # null when nothing was comparable
@@ -1347,7 +1353,9 @@ trials:
 * **Non-judge components are carried, not recomputed** — the deterministic
   state/transcript/db-probe components stay as recorded; replay only re-runs the
   `llm_judge` component (the aggregate deltas are over that component).
-* Not-applicable (non-judge) trials never enter the report.
+* Not-applicable trials never enter `trials`; the `batch` census counts them,
+  alongside every other disposition, and refuses to load when the four
+  dispositions do not sum to `discovered`.
 
 ## Reading Output Files
 

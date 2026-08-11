@@ -62,7 +62,7 @@ from tests.canonical._factories import (
     make_turn_trial_messages,
 )
 from tests.utils.recorded_calls import recorded_call
-from tolokaforge.core.grading.trace_replay import TRACE_REPLAY_DIRNAME
+from tolokaforge.core.grading.replay_layout import TRACE_REPLAY_DIRNAME
 from tolokaforge.core.logging import StructuredLogger
 from tolokaforge.core.models import (
     Grade,

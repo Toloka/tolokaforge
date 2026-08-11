@@ -182,6 +182,7 @@ def make_trajectory(
     metrics: Metrics | None = None,
     messages: list[Message] | None = None,
     tool_log: list[RecordedToolCall] | None = None,
+    grading_error: str | None = None,
 ) -> Trajectory:
     now = datetime.now(UTC)
     return Trajectory(
@@ -194,4 +195,5 @@ def make_trajectory(
         messages=messages or [],
         tool_log=tool_log or [],
         metrics=metrics or Metrics(),
+        grading_error=grading_error,
     )

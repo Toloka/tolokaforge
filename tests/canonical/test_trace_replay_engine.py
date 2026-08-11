@@ -32,14 +32,16 @@ import pytest
 from tests.canonical._factories import make_trajectory, make_trial_messages
 from tests.utils.recorded_calls import recorded_call
 from tests.utils.trace_overrides import override_file
+from tolokaforge.core.grading.replay_layout import (
+    TRACE_REPLAY_DIRNAME,
+    discover_trial_bundles,
+)
 from tolokaforge.core.grading.trace_replay import (
     TRACE_CHECKS_RESULT_FILENAME,
-    TRACE_REPLAY_DIRNAME,
     TRACE_REPLAY_REPORT_FILENAME,
     TraceChecksOverrideError,
     TraceReplayOutcomeStatus,
     declared_trace_checks,
-    discover_trace_bundles,
     emit_trace_replay_report,
     read_trace_replay_inputs,
     run_trace_replay_batch,
@@ -223,7 +225,7 @@ def test_the_committed_unstamped_bundles_are_re_checked_rather_than_rejected(
     """
     source = _RECORDED_RUNS
     override = override_file(tmp_path, _TRACE_CHECKS)
-    bundles = discover_trace_bundles(source)
+    bundles = discover_trial_bundles(source)
     outcomes = run_trace_replay_batch(source, replay_id="stamp", override=override, dry_run=True)
     expected = len(_RECORDED_CALL_COUNTS)
 
@@ -296,7 +298,7 @@ def test_a_bundle_that_recorded_no_wire_tool_list_leaves_the_override_unchecked(
     """
     source = _RECORDED_RUNS
     assert not any(
-        (bundle / "tools_schemas.yaml").exists() for bundle in discover_trace_bundles(source)
+        (bundle / "tools_schemas.yaml").exists() for bundle in discover_trial_bundles(source)
     )
 
     outcomes = run_trace_replay_batch(
