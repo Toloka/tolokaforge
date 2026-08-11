@@ -58,12 +58,19 @@ class DictMapHints:
     def enrich(self, system: str | None, tools: list[dict[str, Any]] | None) -> str | None:
         if not system or not tools:
             return system
-        hints = self._build_hints(tools)
+        hints = self.build_hints(tools)
         return system + hints if hints else system
 
-    @staticmethod
-    def _build_hints(tools: list[dict[str, Any]]) -> str:
-        """Generate system-prompt hints for tool parameters using dict-map schemas."""
+    def build_hints(self, tools: list[dict[str, Any]]) -> str:
+        """Public hook — override to compose custom system-prompt hints.
+
+        Generates the hint text for tool parameters using dict-map schemas.
+        Called by :meth:`enrich` when both ``system`` and ``tools`` are
+        non-empty.
+
+        Public API. Stable within the v0.17.x minor series; removal or
+        signature change requires a deprecation announcement.
+        """
         dict_maps = detect_dict_maps(tools)
         if not dict_maps:
             return ""
@@ -134,15 +141,15 @@ class RefResolvingDictMapHints(DictMapHints):
        the depth the observe evidence covers (``order.lines``).
 
     Everything else — the per-param hint string, the example construction, the
-    boolean ``additionalProperties: true`` arm — is delegated to the parent by
-    reusing :class:`DictMapParam` and the parent ``_build_hints`` for the
-    already-flat top-level maps. Purely additive: a schema the parent already
+    boolean ``additionalProperties: true`` arm — mirrors the parent's shape by
+    reusing :class:`DictMapParam` (``value_fields`` / ``example_value``) and the
+    same hint-template loop. Purely additive: a schema the parent already
     handled produces the same hint (a top-level typed map with inline
-    ``properties`` still flows through ``detect_dict_maps``); this only adds hints
-    the parent dropped.
+    ``properties`` still flows through ``detect_dict_maps``); this only adds
+    hints the parent dropped.
     """
 
-    def _build_hints(self, tools: list[dict[str, Any]]) -> str:  # type: ignore[override]
+    def build_hints(self, tools: list[dict[str, Any]]) -> str:
         params = self._collect_dict_map_params(tools)
         if not params:
             return ""

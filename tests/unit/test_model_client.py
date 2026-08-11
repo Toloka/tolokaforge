@@ -1575,7 +1575,7 @@ class TestModelCapabilities:
 
 
 # ===================================================================
-# DictMapHints._build_hints() — system prompt hint generation
+# DictMapHints.build_hints() — system prompt hint generation
 # ===================================================================
 
 
@@ -1584,7 +1584,7 @@ class TestBuildDictMapHints:
     """Tests for dict-map system prompt hint generation."""
 
     def test_no_tools_returns_empty(self) -> None:
-        assert DictMapHints._build_hints([]) == ""
+        assert DictMapHints().build_hints([]) == ""
 
     def test_simple_tool_no_hints(self) -> None:
         tools = [
@@ -1600,7 +1600,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        assert DictMapHints._build_hints(tools) == ""
+        assert DictMapHints().build_hints(tools) == ""
 
     def test_typed_dict_map_generates_hint(self) -> None:
         tools = [
@@ -1624,7 +1624,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        hint = DictMapHints._build_hints(tools)
+        hint = DictMapHints().build_hints(tools)
         assert "create_order" in hint
         assert "lines" in hint
         assert "MUST" in hint
@@ -1642,7 +1642,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        assert DictMapHints._build_hints(tools) == ""
+        assert DictMapHints().build_hints(tools) == ""
 
     def test_additional_properties_true_generates_hint(self) -> None:
         tools = [
@@ -1663,7 +1663,7 @@ class TestBuildDictMapHints:
                 },
             }
         ]
-        hint = DictMapHints._build_hints(tools)
+        hint = DictMapHints().build_hints(tools)
         assert "flex_tool" in hint
         assert "meta" in hint
 
