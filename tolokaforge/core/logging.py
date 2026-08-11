@@ -71,6 +71,17 @@ _LEVEL_ANSI: dict[str, str] = {
 _TOLOKAFORGE_ROOT_HANDLER_SENTINEL = "_tolokaforge_root_handler"
 
 
+#: Substrings identifying context keys whose values must not appear in log
+#: output. Match is case-insensitive on the whole key name. Extending the
+#: list is preferable to whitelisting individual redactions elsewhere —
+#: `_sanitize_extra` is the single choke point.
+_SENSITIVE_KEY_SUBSTRINGS: frozenset[str] = frozenset(
+    {"password", "secret", "token", "api_key", "apikey", "authorization", "credential"}
+)
+
+_REDACTED = "***REDACTED***"
+
+
 def _render_scalar(key: str, value: Any) -> str:
     text = str(value)
     if any(ch.isspace() for ch in text) or "|" in text:
@@ -259,18 +270,28 @@ class StructuredLogger:
 
     @staticmethod
     def _sanitize_extra(context: dict[str, Any]) -> dict[str, Any]:
-        """Rename keys that would collide with `LogRecord` attributes.
+        """Rename LogRecord-reserved keys and redact sensitive values.
 
-        `logging.Logger.log(..., extra=...)` copies each key straight onto
-        `LogRecord.__dict__`; a key like `module` or `name` would raise
-        `KeyError` at `LogRecord.__init__`. Prefix such collisions with
-        `ctx_` so the record survives — the `StructuredFormatter` reads the
-        renamed keys via the same scope-pair rule.
+        Two guarantees:
+
+        1. Keys colliding with `LogRecord` attributes (`module`, `name`, …)
+           are prefixed with `ctx_` so `logging.Logger.log(..., extra=...)`
+           doesn't raise `KeyError` at `LogRecord.__init__`. The
+           `StructuredFormatter` reads renamed keys via the same rule.
+        2. Values under keys that name a credential (`password`, `secret`,
+           `token`, `api_key`, …) are replaced with `***REDACTED***`.
+           Substring match on the sanitized (post-rename) key, case-
+           insensitive. `_sanitize_extra` is the single choke point for
+           this policy — callers cannot bypass it.
         """
         sanitized: dict[str, Any] = {}
         for key, value in context.items():
             safe_key = f"ctx_{key}" if key in _LOG_RECORD_RESERVED else key
-            sanitized[safe_key] = value
+            lower = safe_key.lower()
+            if any(marker in lower for marker in _SENSITIVE_KEY_SUBSTRINGS):
+                sanitized[safe_key] = _REDACTED
+            else:
+                sanitized[safe_key] = value
         return sanitized
 
     def _log(self, level: str, message: str, context: dict[str, Any] | None = None, **kwargs):
