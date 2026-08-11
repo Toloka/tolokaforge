@@ -1,7 +1,12 @@
 """Provider pricing for token cost estimation.
 
-Pricing data is loaded from ``tolokaforge/core/data/pricing.json`` which can be
-refreshed from the OpenRouter API using the ``pricing-updater`` tool::
+Pricing data is loaded via
+:func:`tolokaforge.core.model_data.bundled_pricing_path`, which returns the
+on-disk location of the shipped ``pricing.json`` and raises
+:class:`FileNotFoundError` on a corrupted install. This module then loud-fails
+on malformed JSON or a non-mapping payload with :class:`ValueError`. The
+shipped table can be refreshed from the OpenRouter API using the
+``pricing-updater`` tool::
 
     uv run pricing-updater update
 
@@ -54,23 +59,33 @@ def _load_pricing(path: Path | None = None) -> dict[str, dict[str, float]]:
     -------
     dict[str, dict[str, float]]
         ``{model_id: {"input": price_per_1M, "output": price_per_1M}}``
+
+    Raises
+    ------
+    FileNotFoundError
+        The pricing file (custom ``path`` or bundled default) does not exist.
+    ValueError
+        The file exists but its contents are malformed JSON or the payload
+        is not a mapping. Message names the resource and the parse failure.
     """
-    target: Path | None = None
+    target = Path(path) if path is not None else bundled_pricing_path()
+    if path is not None and not target.is_file():
+        raise FileNotFoundError(f"pricing table not found at {target}")
     try:
-        target = path if path is not None else bundled_pricing_path()
         with open(target) as fh:
             data = json.load(fh)
-        models = data.get("models", data)  # support bare dict or {"models": {...}}
-        if not isinstance(models, dict):
-            logger.error("pricing_data_invalid: %s", target)
-            return {}
-        return models
-    except FileNotFoundError as exc:
-        logger.error("pricing_data_not_found: %s", target if target is not None else exc)
-        return {}
-    except (json.JSONDecodeError, OSError) as exc:
-        logger.error("pricing_data_load_error: %s — %s", target, exc)
-        return {}
+    except json.JSONDecodeError as exc:
+        raise ValueError(f"invalid JSON in pricing table {target}: {exc}") from exc
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"pricing table {target} top-level must be a mapping, got {type(data).__name__}"
+        )
+    models = data.get("models", data)  # support bare dict or {"models": {...}}
+    if not isinstance(models, dict):
+        raise ValueError(
+            f"pricing table {target} 'models' entry must be a mapping, got {type(models).__name__}"
+        )
+    return models
 
 
 def reload_pricing(

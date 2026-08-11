@@ -347,13 +347,26 @@ def resolve_overlay_path(
 
 
 def _load_bundled_presets() -> dict[str, Any]:
-    """Load the bundled ``model_presets.yaml`` via the model-data seam."""
-    try:
-        preset_path = bundled_presets_path()
-    except FileNotFoundError:
-        return _DEFAULT_PRESET_DATA
+    """Load the bundled ``model_presets.yaml`` via the model-data seam.
+
+    Raises
+    ------
+    FileNotFoundError
+        The bundled preset file is absent — propagated from the accessor.
+    ValueError
+        The YAML parsed to ``None`` (empty file) or a non-mapping payload.
+        A corrupted install shape must surface as a loud startup failure.
+    """
+    preset_path = bundled_presets_path()
     with open(preset_path) as f:
-        return yaml.safe_load(f) or _DEFAULT_PRESET_DATA
+        data = yaml.safe_load(f)
+    if data is None:
+        raise ValueError(f"bundled preset table {preset_path} is empty")
+    if not isinstance(data, dict):
+        raise ValueError(
+            f"bundled preset table {preset_path} must be a mapping, got {type(data).__name__}"
+        )
+    return data
 
 
 def _load_overlay_file(path: str) -> dict[str, Any]:
