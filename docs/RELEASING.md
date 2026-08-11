@@ -1,19 +1,23 @@
 # Releasing Tolokaforge
 
-A tolokaforge release has two independent axes, each cut by its own tag push and
-each with its own GitHub Actions workflow:
+A tolokaforge release has three independent axes, each cut by its own tag push
+and each with its own GitHub Actions workflow:
 
-- **The PyPI package** — `vX.Y.Z` tags, cut automatically by the "Release (cz
-  bump)" workflow.
+- **The `tolokaforge` PyPI package** — `vX.Y.Z` tags, cut automatically by the
+  "Release (cz bump)" workflow.
+- **The `tolokaforge-models` PyPI package** — `models-vX.Y.Z` tags, cut
+  automatically by the "Release tolokaforge-models (cz bump)" workflow.
 - **The Docker images** — the `image-vX.Y.Z-rc.1` release-candidate tag is cut
-  automatically by the same "Release (cz bump)" workflow; the stable
+  automatically by the "Release (cz bump)" workflow; the stable
   `image-vX.Y.Z` tag is pushed by hand once the rc is verified.
 
-Both axes are locked to a single version number. The PyPI release sets that
-number (it owns `[project].version` in `pyproject.toml`); the image workflow
-refuses to publish unless the image tag agrees with it. Cutting the package
-release also cuts the rc image tag; the stable image tag is pushed by hand
-afterwards.
+The engine and Docker-image axes share a single version number: the PyPI
+release sets it (it owns `[project].version` in the workspace-root
+`pyproject.toml`), and the image workflow refuses to publish unless the image
+tag agrees with it. The `tolokaforge-models` axis versions independently —
+its `[project].version` lives in `tolokaforge_models/pyproject.toml`, and its
+tag namespace (`models-v*`) does not overlap the engine's (`v*`) or the
+images' (`image-v*`).
 
 ## PyPI package — `vX.Y.Z` (automated)
 
@@ -51,6 +55,78 @@ Pushing the `vX.Y.Z` tag then triggers two tag-driven workflows automatically:
 
 If `auto` finds no releasable commits since the last tag, the workflow exits
 cleanly without cutting a release.
+
+## PyPI package — tolokaforge-models `models-vX.Y.Z` (automated)
+
+The `tolokaforge-models` wheel — model data files, the 39 `ModelCertificate`
+registry, and the eight per-model policy subclasses — ships on its own release
+cadence. The release is driven entirely by
+[`.github/workflows/release-models.yml`](../.github/workflows/release-models.yml)
+("Release tolokaforge-models (cz bump)"). Run it from the Actions tab as a
+manual `workflow_dispatch`:
+
+- **`bump`** — `auto` (derive the increment from the Conventional Commits
+  since the last `models-v*` tag: `fix` → patch, `feat` → minor,
+  `feat!` / `BREAKING CHANGE` → major), or force `patch` / `minor` / `major`.
+- **`dry_run`** — compute the bump and changelog and print them without
+  committing, tagging, or pushing.
+
+A real run enters the `tolokaforge_models/` directory and executes
+`cz bump` against the per-project commitizen config
+(`tolokaforge_models/pyproject.toml` `[tool.commitizen]`). The bump:
+
+1. Rewrites `tolokaforge_models/pyproject.toml` `[project].version` and
+   `tolokaforge_models/src/tolokaforge_models/__init__.py` `__version__`.
+2. Regenerates `tolokaforge_models/CHANGELOG.md` from the Conventional
+   Commit history.
+3. Relocks the workspace-root `uv.lock` (a commitizen pre-bump hook) and
+   folds it into the release commit.
+4. Commits `chore(models-release): bump tolokaforge-models to X.Y.Z`.
+5. Creates and pushes the annotated `models-vX.Y.Z` tag.
+
+Pushing the `models-vX.Y.Z` tag triggers
+[`publish-tolokaforge-models.yml`](../.github/workflows/publish-tolokaforge-models.yml),
+which builds the wheel with `uv build --package tolokaforge-models` and
+publishes it to PyPI via OIDC trusted publishing (no stored token), then
+creates a GitHub Release. The engine's `Release Gate` workflow does not run
+against a `models-v*` tag — engine and models test lanes are separately
+sequenced.
+
+The version and changelog are owned by commitizen. **Do not hand-edit
+`tolokaforge_models/pyproject.toml` `[project].version` or
+`tolokaforge_models/CHANGELOG.md`** — the bump derives both, and manual edits
+desync the two.
+
+### Trusted publisher configuration
+
+The PyPI project `tolokaforge-models` is registered with a Trusted Publisher
+configuration bound to this repository:
+
+| Field | Value |
+| --- | --- |
+| Owner | `Toloka` |
+| Repository | `tolokaforge` |
+| Workflow filename | `publish-tolokaforge-models.yml` |
+| Environment | `release` |
+
+The publish job on `publish-tolokaforge-models.yml` declares
+`environment: release` and `permissions: id-token: write`; PyPI's Trusted
+Publisher backend resolves the workflow's OIDC token against the entry above
+at publish time. No API token is stored in the repository. The TestPyPI
+counterpart follows the same shape under the `testpypi` environment.
+
+### TestPyPI dry run
+
+To validate the build + publish path without cutting a real release, run
+`publish-tolokaforge-models.yml` from the Actions tab as a
+`workflow_dispatch` with `target = testpypi`. The workflow builds the wheel,
+uploads it as an artifact, and publishes to
+[test.pypi.org](https://test.pypi.org/project/tolokaforge-models/) under the
+`testpypi` environment via `uv publish ... --publish-url
+https://test.pypi.org/legacy/ --trusted-publishing always`. No tag is
+required and no PyPI release is cut. Bump `[project].version` locally on a
+throwaway commit if the run overlaps an already-published version — TestPyPI
+refuses re-uploads of a used version string.
 
 ## Docker images — `image-vX.Y.Z-rc.1` (auto) and `image-vX.Y.Z` (manual)
 
@@ -106,11 +182,24 @@ Dockerfiles and wheel still build.
 
 ## Typical order
 
-1. Run "Release (cz bump)" to cut `vX.Y.Z` — this sets the version, publishes the
-   package, and pushes `image-vX.Y.Z-rc.1` to build the rc images.
+The engine + image release, and the `tolokaforge-models` release, are
+independent. Each has its own tag axis and its own workflow.
+
+For the engine + image axis:
+
+1. Run "Release (cz bump)" to cut `vX.Y.Z` — this sets the engine version,
+   publishes the `tolokaforge` package, and pushes `image-vX.Y.Z-rc.1` to
+   build the rc images.
 2. Verify the rc images.
-3. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the stable
-   images and move `:latest`.
+3. `git tag image-vX.Y.Z && git push origin image-vX.Y.Z` to publish the
+   stable images and move `:latest`.
+
+For the `tolokaforge-models` axis:
+
+1. Run "Release tolokaforge-models (cz bump)" to cut `models-vX.Y.Z` — this
+   sets the models version, regenerates
+   `tolokaforge_models/CHANGELOG.md`, and publishes the `tolokaforge-models`
+   package to PyPI. No image tag is cut; the wheel ships data, not runtime.
 
 ## Downstream data-resource consumers
 

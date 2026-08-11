@@ -49,3 +49,36 @@ dependencies = []
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/tolokaforge_models"]
+
+# =============================================================================
+# Release tooling (commitizen) — drives the `Release tolokaforge-models
+# (cz bump)` workflow. `cz bump` reads/writes the single version literal in
+# `[project] version`, regenerates `CHANGELOG.md` from Conventional Commits,
+# commits, and tags `models-vX.Y.Z`. Independent of the engine's own
+# `[tool.commitizen]` block in the workspace-root `pyproject.toml`.
+# See `docs/RELEASING.md` ("Cutting a tolokaforge-models release").
+# =============================================================================
+
+[tool.commitizen]
+name = "cz_conventional_commits"
+version_provider = "pep621"          # read/write [project] version in place
+tag_format = "models-v$version"      # matches the `models-v*` trigger in publish-tolokaforge-models.yml
+changelog_file = "CHANGELOG.md"      # relative to this pyproject's directory
+version_files = [
+    "src/tolokaforge_models/__init__.py:__version__",
+]
+update_changelog_on_bump = true
+changelog_incremental = true         # only prepend new sections; never rewrite hand-written history
+bump_message = "chore(models-release): bump tolokaforge-models to $new_version"
+annotated_tag = true
+
+# Keep the workspace-root `uv.lock` in step with the models version bump.
+# `cz bump` writes the new version literal but does not relock; without this
+# the lockfile would pin the previous version. `uv lock` regenerates the
+# workspace root's lock from any workspace member. `pre_bump_hooks` run after
+# the version write and before cz's commit, so cz folds the staged lockfile
+# into the same release commit.
+pre_bump_hooks = [
+    "uv lock",
+    "git add -- ../uv.lock",
+]

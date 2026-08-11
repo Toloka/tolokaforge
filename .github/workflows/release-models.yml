@@ -1,0 +1,133 @@
+name: Release tolokaforge-models (cz bump)
+
+# Human-initiated release for the `tolokaforge-models` wheel — orthogonal to
+# the engine's own `Release (cz bump)` workflow. Runs `cz bump` against the
+# per-project commitizen config in `tolokaforge_models/pyproject.toml`,
+# regenerates `tolokaforge_models/CHANGELOG.md` from the Conventional Commit
+# history scoped to that project, commits, and pushes a `models-vX.Y.Z`
+# annotated tag. That tag then triggers
+# `publish-tolokaforge-models.yml` (PyPI trusted publishing + GitHub Release).
+# No engine files are touched — the engine's `pyproject.toml`, `CHANGELOG.md`,
+# and `vX.Y.Z` tag axis are all independent.
+#
+# See `docs/RELEASING.md` ("Cutting a tolokaforge-models release").
+
+on:
+  workflow_dispatch:
+    inputs:
+      bump:
+        description: "Version increment"
+        required: true
+        default: auto
+        type: choice
+        options:
+          - auto      # derive from commits: fix->patch, feat->minor, feat!/BREAKING CHANGE->major
+          - patch
+          - minor
+          - major
+      dry_run:
+        description: "Dry run (compute the bump + changelog, do not commit/tag/push)"
+        required: false
+        default: false
+        type: boolean
+
+# Independent of the engine's `release` group — the two wheels release on
+# separate cadences and must be free to run in parallel.
+concurrency:
+  group: release-models
+  cancel-in-progress: false
+
+permissions:
+  contents: write   # push the bump commit + tag back to main
+
+jobs:
+  release-models:
+    name: Bump models version, changelog, tag
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0      # full history + tags so commitizen can derive the bump
+          ref: main           # always release from main
+          # The `main` branch ruleset requires a PR + 1 approval for every push and
+          # only allows a *deploy key* to bypass it. `ssh-key` makes actions/checkout
+          # set `origin` to the SSH URL and authenticate as the deploy key, so the
+          # bump commit + tag can be pushed straight to main.
+          ssh-key: ${{ secrets.RELEASE_SSH_KEY }}
+
+      - name: Guard — main must be clean
+        run: |
+          test -z "$(git status --porcelain)" || { echo "Working tree not clean"; exit 1; }
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v7
+
+      - name: Install Python
+        run: uv python install "$(cat .python-version)"
+
+      - name: Install commitizen
+        run: uv sync --group dev
+
+      - name: Configure git identity
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+
+      - name: Compute increment argument
+        id: incr
+        run: |
+          if [ "${{ inputs.bump }}" = "auto" ]; then
+            echo "arg=" >> "$GITHUB_OUTPUT"
+          else
+            echo "arg=--increment ${{ inputs.bump }}" >> "$GITHUB_OUTPUT"
+          fi
+
+      # Working directory is `tolokaforge_models/` so commitizen reads the
+      # per-project `[tool.commitizen]` block and its relative paths
+      # (`CHANGELOG.md`, `src/tolokaforge_models/__init__.py`, the local
+      # `pyproject.toml` via `version_provider = "pep621"`). `uv run` from
+      # inside a workspace member still resolves the workspace root's
+      # dependency closure, so `commitizen` is present.
+      - name: Dry run (preview only)
+        if: ${{ inputs.dry_run }}
+        working-directory: tolokaforge_models
+        run: |
+          uv run cz bump --dry-run --yes ${{ steps.incr.outputs.arg }}
+
+      # `update_changelog_on_bump = true` in the per-project cz config
+      # regenerates `tolokaforge_models/CHANGELOG.md` as part of the bump. If
+      # `auto` finds nothing to release (NO_COMMITS_FOUND=3 / NO_INCREMENT=21),
+      # exit cleanly instead of failing the run.
+      - name: Bump models version + changelog, commit + tag
+        id: bump
+        if: ${{ !inputs.dry_run }}
+        working-directory: tolokaforge_models
+        run: |
+          set +e
+          uv run cz bump --yes ${{ steps.incr.outputs.arg }}
+          code=$?
+          set -e
+          if [ "$code" -eq 3 ] || [ "$code" -eq 21 ]; then
+            echo "::notice::No releasable commits since the last models tag — nothing to release."
+            echo "released=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          [ "$code" -eq 0 ] || exit "$code"
+          echo "released=true" >> "$GITHUB_OUTPUT"
+          echo "new_tag=models-v$(uv run cz version -p)" >> "$GITHUB_OUTPUT"
+
+      # The per-project cz `pre_bump_hooks` relock the workspace root
+      # `uv.lock` and stage it into the bump commit. Assert there's no leftover
+      # drift before we publish the tag.
+      - name: Assert uv.lock is consistent with the bump
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        run: uv lock --check
+
+      # Push the bump commit and its tag in a single atomic update: both refs
+      # land or neither does. Avoids leaving a release commit on main with no
+      # tag (which would trigger nothing downstream) if the tag push were
+      # rejected.
+      - name: Push commit + tag
+        if: ${{ !inputs.dry_run && steps.bump.outputs.released == 'true' }}
+        run: |
+          git push --atomic origin HEAD:main "refs/tags/${{ steps.bump.outputs.new_tag }}"
