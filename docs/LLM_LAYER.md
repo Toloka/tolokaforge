@@ -1856,13 +1856,14 @@ runtime checks parse each entry's source via `ast` and walk
 * **`test_no_private_symbol_imports`** — rejects any `from tolokaforge.core.llm.<mod> import _<name>` in the subclass module.
 * **`test_no_private_base_method_override`** — rejects a subclass method starting with `_` that shadows a base-class method of the same name (via `inspect.getmembers` on the concrete base).
 * **`test_no_private_attribute_access_on_self_or_super`** — rejects `self._<attr>` / `cls._<attr>` / `super()._<attr>` reads whose `<attr>` is not defined locally in the subclass body.
-* **`test_per_model_subclasses_covers_registered_non_base_classes`** — walks `_POLICY_REGISTRIES` and asserts every registered class inheriting from another in-registry class appears in the guardrail's `PER_MODEL_SUBCLASSES` list. Composite classes that inherit only from `object` (e.g. `MinimaxM3TagRecoveryResponse`) carry no automatic audit and must be added manually to `PER_MODEL_SUBCLASSES` when a new composite lands.
+* **`test_no_per_model_subclass_is_registered_engine_side`** — walks `_POLICY_REGISTRIES` and asserts no class registered from `tolokaforge.core.llm.*` extends another registered class. That shape is a per-model subclass sitting on the engine side of the boundary, which is what the pre-split tree looked like and what the auto-integration would recreate if a resolve agent wrote into an engine module.
 
 A per-model subclass added to a preset registry that regresses into a
 `_`-prefixed name fails one of the four checks at test-import time — before
 the [#938](https://github.com/Toloka/tolokaforge/issues/938) cutover can
 bake the violation into `tolokaforge_models/policies/`. When adding a new
-per-model subclass, list it in `PER_MODEL_SUBCLASSES` and either compose the
+per-model subclass, put it under `tolokaforge_models/.../policies/<family>.py` (the guardrail
+derives its audit set from the registries, so there is no list to update) and either compose the
 public helpers above or promote the private you need to public API in the
 same PR (see [ADR-0030 § Follow-ups (8)](adr/0030-tolokaforge-models-split.md)).
 
