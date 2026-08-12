@@ -35,7 +35,12 @@ from tolokaforge.runner import add_RunnerServiceServicer_to_server
 from tolokaforge.runner.db_client import DBServiceClient
 from tolokaforge.runner.rag_client import RAGServiceClient
 from tolokaforge.runner.service import RunnerServiceImpl
-from tolokaforge.secrets import SecretManager, init_default_from, install_global_redactor
+from tolokaforge.secrets import (
+    CONTAINER_SECRETS_ENV_VAR,
+    SecretManager,
+    init_default_from,
+    install_global_redactor,
+)
 
 # Default configuration
 DEFAULT_DB_SERVICE_URL = "http://localhost:8000"
@@ -277,7 +282,7 @@ async def run_server() -> None:
     # serialized payload. This is the *only* legitimate ``os.environ`` read
     # for credentials inside the runner container — every later access
     # routes through ``get_default().get_secret(...)``.
-    _bootstrap_secrets_from_env(os.environ.get("TOLOKAFORGE_SECRETS_JSON", ""), logger)
+    _bootstrap_secrets_from_env(os.environ.get(CONTAINER_SECRETS_ENV_VAR, ""), logger)
 
     logger.info("=" * 60)
     logger.info("Tolokaforge Runner Service")
