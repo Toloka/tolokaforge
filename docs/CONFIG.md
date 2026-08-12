@@ -542,11 +542,17 @@ entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
 - **`agent_only`** — no user turn dispatched after the initial message.
   The agent runs to `###STOP###` (routed to `TerminationReason.AGENT_DONE`),
   `max_turns`, or `episode_timeout_s`. The user simulator is never
-  constructed. Requires a non-empty `initial_user_message` at pack
-  authoring time (fails loud at run-start otherwise — the agent-only
-  route has no simulator to synthesize a bootstrap message). Matches
-  agent-driven eval shapes (code migration, autonomous tool-use) where
-  the task lives entirely in the system prompt.
+  constructed. Matches agent-driven eval shapes (code migration,
+  autonomous tool-use) where the task lives entirely in the system prompt.
+
+Both shapes read the same field for turn 0. `initial_user_message` is the
+task's pinned opener: its text is delivered verbatim as the first user
+message, whitespace included, and no simulator dispatch produces that turn.
+`agent_only` **requires** it — that shape has no simulator to synthesize a
+bootstrap message, so a task declaring it without an opener fails loud at
+run-start. `conversational` treats it as optional: unset, the user simulator
+writes turn 1. Under either mode, declaring the key with an empty or
+whitespace-only value is refused at load.
 
 ## Grading Specification (`grading.yaml`)
 

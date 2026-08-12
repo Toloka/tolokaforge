@@ -1,5 +1,6 @@
 """Unit tests for terminal-bench adapter and Docker Compose exec wrapper."""
 
+import shutil
 import subprocess
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -462,6 +463,29 @@ class TestTerminalBenchAdapterEnvironmentManifest:
         extra = td.agent_tools[0].source.extra
         env = adapter._environment("echo-hello")
         assert extra == {"service": env.agent_service, "compose_project_prefix": "tbench_"}
+
+
+class TestTerminalBenchAdapterInstructionlessTask:
+    """A pack with no instruction pins no opener, so the simulator writes turn 1.
+
+    ``discover_tasks`` reports such a task with an empty instruction, and an
+    empty ``initial_user_message`` is a task-contract error — the adapter must
+    leave the field unset rather than forward the blank.
+    """
+
+    def test_get_task_leaves_initial_user_message_unset(self, tmp_path) -> None:
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        tbench_dir = tmp_path / "tasks"
+        shutil.copytree(fixture_dir, tbench_dir)
+        (tbench_dir / "echo-hello" / "task.yaml").write_text("difficulty: easy\n")
+
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(tbench_dir), "staging_root": str(tmp_path / "staging")}
+        )
+
+        assert adapter.get_task("echo-hello").initial_user_message is None
 
 
 class TestTerminalBenchAdapterNoSubprocess:

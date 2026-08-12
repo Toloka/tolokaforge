@@ -58,12 +58,13 @@ tools:
   user:
     enabled: []
 
-user_simulator:
-  mode: "llm"
-  persona: "online shopper"
-  backstory: |
-    You bought a coffee maker and want to leave a 4-star review.
-    When the agent confirms the review is submitted, say ###STOP###.
+actors:
+  user:
+    mode: "llm"
+    persona: "online shopper"
+    backstory: |
+      You bought a coffee maker and want to leave a 4-star review.
+      When the agent confirms the review is submitted, say ###STOP###.
 
 grading: "grading.yaml"
 ```
@@ -80,7 +81,7 @@ carries no `grading` field.
 | --- | --- |
 | `initial_state` | empty state (no JSON DB, filesystem, mock-web, or RAG) |
 | `tools` | no tools enabled for agent or user |
-| `user_simulator` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
+| `actors.user` | cooperative LLM user (`mode: llm`, `persona: cooperative`) |
 | `grading` | a `grading.yaml` sitting next to `task.yaml` is picked up automatically; a native task with neither is refused by `tolokaforge validate` and by the run's pre-flight, since the native adapter grades from that file (see [docs/GRADING.md § What is validated before a run](GRADING.md#what-is-validated-before-a-run)) |
 
 So a task that inherits everything from its Project needs only:
@@ -198,16 +199,27 @@ see [ADR-0018](adr/0018-multi-container-under-shared-runtime.md).
 Prefer LLM mode (`mode: "llm"`) for realistic conversations. Use `backstory` to define the user's goal and information they reveal over the conversation:
 
 ```yaml
-user_simulator:
-  mode: "llm"
-  persona: "impatient customer"
-  backstory: |
-    You need to reschedule your delivery to next Tuesday.
-    Do not reveal all details at once — answer the agent's questions naturally.
-    When the agent confirms the reschedule, say ###STOP###.
+actors:
+  user:
+    mode: "llm"
+    persona: "impatient customer"
+    backstory: |
+      You need to reschedule your delivery to next Tuesday.
+      Do not reveal all details at once — answer the agent's questions naturally.
+      When the agent confirms the reschedule, say ###STOP###.
 ```
 
 Scripted mode (`mode: "scripted"`) is available for simple deterministic flows but produces less realistic conversations.
+
+### Authoring the opening turn
+
+An opening line the task wants the agent to receive word-for-word belongs in
+`initial_user_message`, not in the backstory. That field is the pinned opener:
+its text becomes the first user message verbatim, and no simulator turn is
+generated for it, so the wording an author reviews is the wording the agent
+reads. A backstory instruction to "open by saying X" is a prompt, not a
+guarantee — the simulator paraphrases. Leave the field unset when the opening
+turn should be improvised from the backstory; a blank value is refused at load.
 
 ### Specialised personas
 
