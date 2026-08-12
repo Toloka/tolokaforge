@@ -36,6 +36,7 @@ from tolokaforge.core.compose_materialisation import (
     cleanup_partial_materialisation,
     compose_container_to_snapshot,
     copy_compose_context,
+    inject_runner_credentials,
     make_project_temp_dir,
     mount_docker_socket_into_runner,
     resolve_env_endpoints,
@@ -1094,6 +1095,9 @@ class SharedStackRuntimeBackend:
                 manifest.runner_service,
                 manifest.limited_internet_allowlist,
                 restricted_services=manifest.restricted_services,
+            )
+            inject_runner_credentials(
+                temp_dir / manifest.compose_file.name, manifest.runner_service
             )
             if self._mount_docker_socket:
                 mount_docker_socket_into_runner(

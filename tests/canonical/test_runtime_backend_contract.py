@@ -9,7 +9,9 @@ a real runner gRPC server.
 
 The lower half of the file pins the ADR-0010 provisioning surface:
 ``provision`` / ``await_ready`` / ``endpoints`` / ``teardown``,
-``EnvHandle``, ``ProvisionError``.
+``EnvHandle``, ``ProvisionError``. Those provisions materialise a compose file
+for real, credential injection included, so the package-level
+``_pin_fake_secrets`` pins the manager whose payload reaches it.
 """
 
 from __future__ import annotations
