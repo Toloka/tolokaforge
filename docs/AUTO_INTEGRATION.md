@@ -248,6 +248,32 @@ GOTCHA: `schedule` and `workflow_dispatch` only activate once this file is on th
 (a brand-new workflow on a feature branch is not yet registered). Before then, exercise the poller
 by TEMPORARILY adding a `push:` trigger on the feature branch (remove it before merge).
 
+### Integrating a model only the gateway serves
+
+Two things do not follow from the route alone, and both would surface late.
+
+**Pricing.** `ensure-pricing` resolves a price by exact id against the OpenRouter catalog, so a
+gateway-only id never matches, and nothing else can fetch one. `COST_USD_POPULATED` is a CORE
+capability that can never be a `known_unsupported` ceiling, so the run cannot finish clean
+without a price. Supply it at dispatch as the `pricing` input, `"<input>,<output>"` in USD per
+million tokens; it is written verbatim. Nothing invents a price: without the input the miss is
+reported and left for a human.
+
+**The certificate gate.** A certificate's `env_key` names what must be set before its live
+probes run; absent, they skip. The first onboarding of a model has no certificate, so the
+registry synthesises one gated on the provider key the run already supplies. A **re-onboarding**
+reuses the curated certificate instead, and a gateway-only model's gate names the deployment that
+serves the route, which no workflow sets. Every probe would then skip and the cleanliness gate
+would read "capability suite did not run", which is a transport fact wearing a capability mask.
+
+So the run opens that gate itself: `automation cert-env-gate --model-id <slug>` reports the
+variable a curated certificate declares and the workflow sets it, but only on the gateway route,
+because that route is the claim the gate encodes. On the OpenRouter route an unset gate is a
+warning instead, since nothing there can vouch for it.
+
+New certificates the finalize agent writes get a derived gate name on the gateway route
+(`TF_<MODEL_ID>_GATEWAY_LIVE`) rather than an invented one, so a later re-onboarding finds it.
+
 ## Slack notifications (optional)
 
 One Slack thread per integration PR: a root the pipeline posts once
