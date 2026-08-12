@@ -30,7 +30,7 @@
       "environment": [
         "TEST_DIR=/tests"
       ],
-      "image": "tbench-echo-hello:local-claude-code",
+      "image": "tbench-echo-hello:local-claude-code-2.1.228",
       "volumes": [
         "./tests:/tests",
         "./_logs:/logs"

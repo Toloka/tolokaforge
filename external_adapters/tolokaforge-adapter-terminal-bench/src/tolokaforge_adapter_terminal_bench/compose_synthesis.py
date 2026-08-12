@@ -41,8 +41,9 @@ import yaml
 # a Pydantic validator on the synthesised compose file.
 from tolokaforge.runner.models import _FLOATING_IMAGE_TAGS
 from tolokaforge_adapter_terminal_bench.harness import (
+    ENGINE_LOOP,
+    HARNESSES,
     INSTALL_SCRIPT,
-    NO_OP_HARNESS,
     provider_env_input,
     validate_harness,
 )
@@ -95,7 +96,7 @@ def materialise_task_environment(
     staging_root: Path,
     image_registry: str | None = None,
     image_tag: str = "local",
-    agent_harness: str = NO_OP_HARNESS,
+    agent_harness: str = ENGINE_LOOP,
     provider_env_keys: Sequence[str] = (),
     runner_image: str = "tolokaforge-runner:local",
     db_service_image: str = "tolokaforge-db-service:local",
@@ -126,7 +127,8 @@ def materialise_task_environment(
             task's own build becomes the ``-base`` image, and the agent
             service builds a thin layer on top of it that installs the CLI.
             The layered image carries the harness in its tag, so switching
-            harnesses can never reuse a stale cached image.
+            harnesses (or bumping a pinned CLI version) can never reuse a
+            stale cached image.
         provider_env_keys: Environment-variable names the agent service
             receives. Each is bound to an adapter-namespaced compose input
             (``KEY=${TBENCH_PROVIDER_KEY}``) that the per-trial ``.env``
@@ -165,7 +167,7 @@ def materialise_task_environment(
     _check_no_reserved_service_collisions(
         meta.task_id,
         task_services,
-        base_service if agent_harness != NO_OP_HARNESS else None,
+        base_service if agent_harness != ENGINE_LOOP else None,
     )
 
     digest = _compute_digest(
@@ -197,7 +199,7 @@ def materialise_task_environment(
         runner_image=runner_image,
         db_service_image=db_service_image,
     )
-    if agent_harness != NO_OP_HARNESS:
+    if agent_harness != ENGINE_LOOP:
         _write_harness_build_context(
             staging_dir,
             base_image=_agent_image(meta.task_id, image_registry, image_tag),
@@ -303,17 +305,23 @@ def _write_harness_build_context(staging_dir: Path, *, base_image: str, agent_ha
     """Materialise the harness image layer's build context in the staging dir.
 
     The layer is one ``COPY`` of the install script plus one ``RUN`` of it
-    against *base_image*. Both live under ``_harness/`` so a task pack that
-    ships its own ``install-harness.sh`` or ``harness.Dockerfile`` at its root
-    cannot collide with them.
+    against *base_image*, installing the version :data:`HARNESSES` pins. Both
+    live under ``_harness/`` so a task pack shipping its own
+    ``install-harness.sh`` or ``harness.Dockerfile`` at its root cannot collide
+    with them, and a ``.dockerignore`` keeps the rest of the staging tree
+    (task sources, tests, log mountpoints) out of the layer's build context.
     """
+    spec = HARNESSES[agent_harness]
     harness_dir = staging_dir / _HARNESS_STAGING_DIR
     harness_dir.mkdir(exist_ok=True)
     shutil.copy2(INSTALL_SCRIPT, harness_dir / INSTALL_SCRIPT.name)
     (harness_dir / _HARNESS_DOCKERFILE_NAME).write_text(
         f"FROM {base_image}\n"
         f"COPY {_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name} {_HARNESS_INSTALL_PATH}\n"
-        f"RUN sh {_HARNESS_INSTALL_PATH} {agent_harness}\n"
+        f"RUN sh {_HARNESS_INSTALL_PATH} {spec.npm_package} {spec.version}\n"
+    )
+    (staging_dir / ".dockerignore").write_text(
+        f"*\n!{_HARNESS_STAGING_DIR}/{INSTALL_SCRIPT.name}\n"
     )
 
 
@@ -343,7 +351,11 @@ def _build_synthesised_compose(
     a locally-built task image.
     """
     base_image = _agent_image(meta.task_id, image_registry, image_tag)
-    agent_image = base_image if agent_harness == NO_OP_HARNESS else f"{base_image}-{agent_harness}"
+    if agent_harness == ENGINE_LOOP:
+        agent_image = base_image
+    else:
+        spec = HARNESSES[agent_harness]
+        agent_image = f"{base_image}-{agent_harness}-{spec.version}"
     agent_container_name = f"{PROJECT_PREFIX}{_TOLOKAFORGE_TRIAL_SLUG_PLACEHOLDER}_{agent_service}"
 
     resolved_vars = {
@@ -374,7 +386,7 @@ def _build_synthesised_compose(
         )
 
     base_build_service: str | None = None
-    if agent_harness != NO_OP_HARNESS:
+    if agent_harness != ENGINE_LOOP:
         agent_body["build"] = {
             "context": ".",
             "dockerfile": f"{_HARNESS_STAGING_DIR}/{_HARNESS_DOCKERFILE_NAME}",

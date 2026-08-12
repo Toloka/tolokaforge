@@ -640,7 +640,13 @@ class InProcessConductor:
         agent and takes the :meth:`_run_harness_trial` branch instead.
         """
         harness_command = spec.task.metadata.get("agent_harness_command")
-        if harness_command:
+        if harness_command is not None:
+            if not isinstance(harness_command, str) or not harness_command.strip():
+                raise RuntimeError(
+                    f"trial {setup.trial_id}: task metadata "
+                    f"'agent_harness_command' must be a non-blank string; got "
+                    f"{harness_command!r}. Omit the key to run the LLM turn loop."
+                )
             return self._run_harness_trial(spec, task_config, setup, harness_command)
 
         task = task_config
@@ -779,22 +785,41 @@ class InProcessConductor:
         arrives fully formed on ``TaskDescription.metadata``, and the tool it
         runs through is the task's sole agent tool.
         """
-        agent_tools = spec.task.agent_tools
-        if len(agent_tools) != 1:
+        # Guard the collection the call actually dispatches against: the runner
+        # resolves the tool by name from what ``register_trial`` registered.
+        if len(setup.tool_schemas) != 1:
+            registered = [s["function"]["name"] for s in setup.tool_schemas]
             raise RuntimeError(
-                f"harness trial {setup.trial_id}: the task declares "
-                f"{len(agent_tools)} agent tools ({[t.name for t in agent_tools]!r}); "
+                f"harness trial {setup.trial_id}: the trial registered "
+                f"{len(setup.tool_schemas)} agent tools ({registered!r}); "
                 "a harness CLI runs through exactly one"
             )
-        tool = agent_tools[0]
+        tool_name = setup.tool_schemas[0]["function"]["name"]
+        tool = next((t for t in spec.task.agent_tools if t.name == tool_name), None)
+        if tool is None:
+            raise RuntimeError(
+                f"harness trial {setup.trial_id}: the runner registered tool "
+                f"{tool_name!r}, which the task does not declare"
+            )
 
-        # The tool's own timeout is the harness budget the adapter sized for
-        # this task; the run-level episode cap still bounds it, and the runner
-        # enforces whichever the conductor asks for.
-        timeout_s = min(
-            tool.timeout_s or DEFAULT_TOOL_TIMEOUT_S,
-            float(self.config.orchestrator.timeouts.episode_s),
-        )
+        timeout_s = tool.timeout_s or DEFAULT_TOOL_TIMEOUT_S
+        # Two independent deadlines govern the exec, and only their agreement
+        # makes either safe. The RPC's ``asyncio.wait_for`` can abandon the call
+        # but cannot stop the ``subprocess.run`` thread behind it, which runs to
+        # the tool's own ``timeout_s``. Were the run-level budget the shorter of
+        # the two, the trial would be recorded as TIMEOUT and graded while the
+        # CLI kept editing the same container — a reward for a half-finished
+        # state. Refuse instead of silently taking the min.
+        episode_budget = float(self._effective_episode_timeout_s(task_config))
+        if episode_budget < timeout_s:
+            raise RuntimeError(
+                f"harness trial {setup.trial_id}: the harness needs {timeout_s:g}s "
+                f"(the task's agent timeout, carried on tool {tool.name!r}) but the run "
+                f"allows {episode_budget:g}s. Raise orchestrator.timeouts.episode_s "
+                "(and the task's trial_seconds, if it declares one) to at least the "
+                "harness budget, or lower the task's agent timeout — the exec cannot be "
+                "cut short without grading a container the CLI is still writing to."
+            )
 
         system_prompt = self._build_system_prompt(task_config, setup.tool_schemas, setup.task_dir)
         runner = TrialRunner(
@@ -817,6 +842,17 @@ class InProcessConductor:
             timeout_s=timeout_s,
         )
         return trajectory, runner, system_prompt
+
+    def _effective_episode_timeout_s(self, task_config: TaskConfig) -> int:
+        """Per-trial episode budget: the tighter of task scope and run-level cap.
+
+        Same coalescing the turn-loop branch applies, so a task declaring
+        ``timeouts.trial_seconds`` is bounded identically however it is driven.
+        """
+        run_episode_s = self.config.orchestrator.timeouts.episode_s
+        if task_config.timeouts is None:
+            return run_episode_s
+        return min(task_config.timeouts.trial_seconds, run_episode_s)
 
     def _capture_final_state(
         self,

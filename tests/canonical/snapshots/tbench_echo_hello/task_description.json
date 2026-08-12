@@ -90,7 +90,7 @@
   },
   "initialization_actions": [],
   "metadata": {
-    "agent_harness": "terminus-2",
+    "agent_harness": "engine-loop",
     "difficulty": "easy",
     "tags": [
       "shell",

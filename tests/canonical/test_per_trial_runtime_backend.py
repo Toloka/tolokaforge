@@ -670,6 +670,7 @@ class TestComposeEnvFile:
                 "terminal_bench_dir": str(tasks_dir),
                 "staging_root": str(tmp_path / "staging"),
                 "agent_harness": "claude-code",
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
                 "agent_provider_env": {
                     "ANTHROPIC_API_KEY": "sk-canon",
                     "ANTHROPIC_BASE_URL": "https://proxy.example",

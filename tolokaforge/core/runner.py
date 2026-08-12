@@ -401,7 +401,15 @@ class TrialRunner:
                 Built by the adapter, which owns every CLI's argv.
             instruction: The task text handed to the CLI, recorded as the
                 trial's user message.
-            timeout_s: Deadline for the invocation, enforced runner-side.
+            timeout_s: Deadline for the invocation, enforced runner-side. Must
+                equal the target tool's registered ``timeout_s``: the runner
+                applies this to the RPC and the tool's own value to the
+                subprocess, and abandoning the former does not stop the latter.
+
+        Requires a ``tool_executor`` accepting ``timeout_seconds`` — the
+        per-trial :class:`~tolokaforge.core.docker_adapter.DockerRunnerAdapter`
+        does; the narrower :class:`~tolokaforge.tools.registry.ToolExecutor`
+        does not, and cannot reach a harness trial (which is Docker-only).
         """
         trial_id = f"{self.task_id}:{self.trial_index}"
         with trial_id_scope(trial_id):
@@ -500,23 +508,18 @@ class TrialRunner:
             latency_s=self.metrics.latency_total_s,
         )
 
-        # Stage 7 (P5) — pull simulator prompt from the (possibly None)
-        # attribute exposed by UserSimulator. LLM mode populates it on every
-        # reply; scripted mode leaves it None. Overwrite our cached copy on
-        # every trial-end so that if a follow-up reply revised the prompt,
-        # we land the latest version. Guard against non-string values
-        # (e.g. MagicMock in tests) — a real UserSimulator never populates a
-        # non-string-non-None value, but silently coercing garbage onto the
-        # Trajectory would violate AGENTS.md rule #1.
+        # LLM mode populates the simulator prompt on every reply; scripted mode
+        # leaves it None. Re-read at every trial-end so a follow-up reply that
+        # revised the prompt lands its latest version. The isinstance guard
+        # keeps a non-string (a MagicMock in a test) off the Trajectory rather
+        # than silently coercing it — AGENTS.md rule #1.
         sim_prompt = getattr(self.user_simulator, "last_system_prompt", None)
         if isinstance(sim_prompt, str) and sim_prompt:
             self._user_system_prompt_captured = sim_prompt
 
-        # Create trajectory with status and termination reason. Both
-        # system prompts are read off the runner via the
+        # Both system prompts are read off the runner via the
         # :attr:`effective_system_prompt` / :attr:`user_system_prompt`
-        # properties and persisted by the orchestrator into
-        # ``prompts.yaml`` — they no longer ride on Trajectory.
+        # properties and persisted by the orchestrator into ``prompts.yaml``.
         return Trajectory(
             task_id=self.task_id,
             trial_index=self.trial_index,

@@ -99,9 +99,25 @@ run before any trial provisions. Synthesis itself never shells out —
 ## Harness mode — coding-harness CLIs
 
 `agent_harness` selects which agent drives the trial. The default,
-`terminus-2`, keeps the engine's LLM turn loop and leaves the task image
-untouched. Any other accepted value (`claude-code`, `codex`, `gemini-cli`)
-installs that vendor's CLI into the task image.
+`engine-loop`, keeps tolokaforge's own turn loop and leaves the task image
+untouched — named for what actually runs, since this repo installs no
+Terminus-2 scaffold and a trial labelled `terminus-2` would be claiming a
+comparison it did not run. Any other accepted value (`claude-code`, `codex`,
+`gemini-cli`) installs that vendor's CLI into the task image and requires
+`agent_model`: the CLI would otherwise pick its own default and the run
+config's model would not be the one measured.
+
+Each CLI is installed at a **pinned version** recorded in `HARNESSES`. The
+version rides the layered image tag and `metadata["agent_harness_version"]`,
+because the agent is the largest single variable in a coding benchmark and the
+orchestrator skips a build whose tag already resolves locally — a floating
+version would freeze per-machine and appear in no artifact.
+
+The model reaches the CLI with any `openrouter/` prefix **stripped**. A vendor
+CLI does not go through litellm; it reaches OpenRouter through the
+`*_BASE_URL` variables below. Left on, the prefix makes the CLI select its own
+direct-vendor handler, read the blank vendor key, and 401. The engine loop
+keeps the prefix, which is what litellm needs to route.
 
 ### Image layering
 
@@ -111,7 +127,7 @@ and a harness switch don't invalidate each other:
 | Compose service    | Image                                    | Role                                              |
 | ------------------ | ---------------------------------------- | ------------------------------------------------- |
 | `{agent}-base`     | `tbench-{task_id}:{image_tag}`           | The task's own build. Build-only — never started. |
-| `{agent}`          | `tbench-{task_id}:{image_tag}-{harness}` | `FROM` the base, plus the CLI.                    |
+| `{agent}`          | `tbench-{task_id}:{image_tag}-{harness}-{version}` | `FROM` the base, plus the pinned CLI.   |
 
 The base service carries `profiles: [tolokaforge-build]`, which is what keeps
 it out of `docker compose up`: it exists so the base image has a service name
@@ -125,9 +141,15 @@ That script is the single place a harness's install steps live; an
 unrecognised harness name aborts the image build rather than producing an
 image whose missing CLI would surface as a trial-time "command not found".
 
-Because the layered image tag carries the harness name, switching harnesses
-can never reuse a stale cached image — and the harness is part of the staging
-digest, so each harness gets its own staging directory.
+Because the layered image tag carries the harness name and its pinned version,
+switching harnesses or bumping a CLI can never reuse a stale cached image — and
+the harness is part of the staging digest, so each gets its own staging
+directory. A `.dockerignore` in the staging dir keeps the task sources, tests,
+and log mountpoints out of the layer's build context.
+
+`describe_environment_identity` records `{agent}-base` among the trial's
+services even though the compose profile keeps it out of `up` — it is a
+declared service that never runs.
 
 When `image_registry` is set the base image is pulled rather than built, so
 no base service is declared and only the layer is built locally.
@@ -148,7 +170,10 @@ evaluation:
 ```
 
 Values resolve through `expand_secret_refs`, so a run config names a
-credential rather than carrying it. Keys are checked against an allow-list —
+credential rather than carrying it. A value containing a newline or a `$` is
+refused: each becomes one line of the per-trial `.env`, where a newline splits
+the line and a `$` starts an interpolation. Keys are checked against an
+allow-list —
 `ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, `ANTHROPIC_BASE_URL`,
 `OPENAI_API_KEY`, `OPENAI_BASE_URL`, `GOOGLE_API_KEY` — and anything else is
 refused naming the accepted set.
@@ -178,5 +203,9 @@ exactly what the run config declared.
 
 Under harness mode the whole trial runs inside a single `docker exec`, so the
 `bash` tool's `timeout_s` carries the task's `[agent] timeout_sec` rather than
-the 120 s per-call default. That field is what the runner-side compose-exec
-wrapper reads for its subprocess timeout.
+the 120 s per-call default. That one value governs both timers the runner
+applies — the RPC deadline and the compose-exec wrapper's `subprocess.run` —
+and they must agree, because abandoning the RPC does not stop the subprocess.
+A run whose effective episode budget is below the harness budget is **refused**
+rather than silently shortened: a cut-short exec would be graded while the CLI
+was still writing to the container.

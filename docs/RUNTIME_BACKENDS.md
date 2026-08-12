@@ -218,11 +218,18 @@ Two properties make this a narrow branch rather than a second execution model:
   turn-loop trials alike. For terminal-bench that is `test_execution` — the
   reference test suite run in the container.
 
-The deadline is `min(tool.timeout_s, orchestrator.timeouts.episode_s)`, passed
-as the RPC's `timeout_seconds` and enforced runner-side by the service's
-`asyncio.wait_for`. The task's sole agent tool is the one the command runs
-through; a task declaring more than one is refused, since one exec is the whole
-trial.
+The deadline is the target tool's own `timeout_s`, which the runner applies to
+*both* governing timers — the RPC (`asyncio.wait_for` in the runner service)
+and the `subprocess.run` behind the compose-exec wrapper. They must agree:
+abandoning the RPC does not stop the subprocess thread, so a shorter run-level
+budget would record the trial as `TIMEOUT` and then grade a container the CLI
+is still writing to. Rather than take the shorter of the two,
+`_run_harness_trial` **refuses** when the effective episode budget
+(`min(task trial_seconds, orchestrator.timeouts.episode_s)`) is below the
+harness budget, naming both knobs.
+
+The task's sole agent tool is the one the command runs through; a task
+registering more than one is refused, since one exec is the whole trial.
 
 The terminal-bench adapter is the first producer of this metadata — see
 [`external_adapters/tolokaforge-adapter-terminal-bench/README.md`](../external_adapters/tolokaforge-adapter-terminal-bench/README.md)

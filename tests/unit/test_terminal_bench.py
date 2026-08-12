@@ -921,64 +921,83 @@ class TestComposeSynthesisNoSubprocess:
 class TestInstallHarnessScript:
     """The install script is the only place a harness's install steps live."""
 
-    def test_every_accepted_harness_has_a_dispatch_branch(self):
-        from tolokaforge_adapter_terminal_bench.harness import (
-            ACCEPTED_HARNESSES,
-            INSTALL_SCRIPT,
-        )
+    @staticmethod
+    def _run_with_fake_npm(tmp_path: Path, *args: str):
+        """Run the script with a fake ``npm`` on ``PATH`` recording its argv.
 
-        text = INSTALL_SCRIPT.read_text()
-        for name in ACCEPTED_HARNESSES:
-            assert f"\n    {name})" in text, f"no case branch for {name!r}"
-
-    def test_no_op_harness_exits_clean_without_network(self):
-        from tolokaforge_adapter_terminal_bench.harness import (
-            INSTALL_SCRIPT,
-            NO_OP_HARNESS,
-        )
-
-        proc = subprocess.run(
-            ["sh", str(INSTALL_SCRIPT), NO_OP_HARNESS],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert proc.returncode == 0, proc.stderr
-
-    def test_unknown_harness_aborts_naming_accepted_set(self):
-        from tolokaforge_adapter_terminal_bench.harness import (
-            ACCEPTED_HARNESSES,
-            INSTALL_SCRIPT,
-        )
-
-        proc = subprocess.run(
-            ["sh", str(INSTALL_SCRIPT), "not-a-harness"],
-            capture_output=True,
-            text=True,
-            timeout=30,
-        )
-        assert proc.returncode != 0
-        for name in ACCEPTED_HARNESSES:
-            assert name in proc.stderr
-
-    def test_missing_argument_aborts(self):
+        Behavioural rather than source-scraping: what matters is the package
+        and version the script asks npm for, not how the dispatch is written.
+        """
         from tolokaforge_adapter_terminal_bench.harness import INSTALL_SCRIPT
 
+        bin_dir = tmp_path / "bin"
+        bin_dir.mkdir(parents=True, exist_ok=True)
+        record = tmp_path / "npm-argv.txt"
+        fake_npm = bin_dir / "npm"
+        fake_npm.write_text(f'#!/bin/sh\necho "$@" >> {record}\n')
+        fake_npm.chmod(0o755)
         proc = subprocess.run(
-            ["sh", str(INSTALL_SCRIPT)],
+            ["sh", str(INSTALL_SCRIPT), *args],
             capture_output=True,
             text=True,
             timeout=30,
+            env={"PATH": f"{bin_dir}:/usr/bin:/bin"},
         )
+        recorded = record.read_text().splitlines() if record.exists() else []
+        return proc, recorded
+
+    def test_every_harness_installs_its_pinned_package(self, tmp_path):
+        from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+        for name, spec in HARNESSES.items():
+            proc, recorded = self._run_with_fake_npm(
+                tmp_path / name, spec.npm_package, spec.version
+            )
+            assert proc.returncode == 0, f"{name}: {proc.stderr}"
+            assert recorded == [f"install -g {spec.npm_package}@{spec.version}"], name
+
+    def test_missing_version_aborts(self, tmp_path):
+        """An unpinned install would make the agent version unrecorded."""
+        proc, recorded = self._run_with_fake_npm(tmp_path, "@anthropic-ai/claude-code")
         assert proc.returncode != 0
-        assert "unknown harness" in proc.stderr
+        assert "pinned" in proc.stderr
+        assert recorded == []
+
+    def test_missing_package_aborts(self, tmp_path):
+        proc, recorded = self._run_with_fake_npm(tmp_path)
+        assert proc.returncode != 0
+        assert "npm package" in proc.stderr
+        assert recorded == []
 
 
 class TestHarnessCommand:
     def test_claude_code_argv(self):
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
-        assert harness_command("claude-code", "fix the bug") == "claude --print 'fix the bug'"
+        assert (
+            harness_command("claude-code", "fix the bug", "anthropic/claude-sonnet-4-6")
+            == "claude --model anthropic/claude-sonnet-4-6 --print 'fix the bug'"
+        )
+
+    def test_codex_and_gemini_argv_shapes(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        assert shlex.split(harness_command("codex", "do it", "openai/gpt-5-codex")) == [
+            "codex",
+            "exec",
+            "--model",
+            "openai/gpt-5-codex",
+            "do it",
+        ]
+        assert shlex.split(harness_command("gemini-cli", "do it", "google/gemini-2.5-flash")) == [
+            "gemini",
+            "--model",
+            "google/gemini-2.5-flash",
+            "--prompt",
+            "do it",
+        ]
 
     def test_instruction_is_one_shell_argument(self):
         import shlex
@@ -986,23 +1005,69 @@ class TestHarnessCommand:
         from tolokaforge_adapter_terminal_bench.harness import harness_command
 
         instruction = "don't $EXPAND `me`;\nsecond line"
-        argv = shlex.split(harness_command("codex", instruction))
-        assert argv == ["codex", "exec", instruction]
+        argv = shlex.split(harness_command("codex", instruction, "m"))
+        assert argv[-1] == instruction
 
-    def test_no_op_harness_has_no_command(self):
-        from tolokaforge_adapter_terminal_bench.harness import (
-            NO_OP_HARNESS,
-            harness_command,
-        )
+    def test_engine_loop_has_no_command(self):
+        from tolokaforge_adapter_terminal_bench.harness import ENGINE_LOOP, harness_command
 
         with pytest.raises(ValueError, match="runs no CLI"):
-            harness_command(NO_OP_HARNESS, "anything")
+            harness_command(ENGINE_LOOP, "anything", "m")
 
     def test_unknown_harness_names_accepted_set(self):
         from tolokaforge_adapter_terminal_bench.harness import validate_harness
 
         with pytest.raises(ValueError, match="claude-code"):
             validate_harness("bogus")
+
+    def test_terminus_2_is_not_an_accepted_harness(self):
+        """This repo installs no Terminus-2 scaffold, so no trial may claim it."""
+        from tolokaforge_adapter_terminal_bench.harness import (
+            ACCEPTED_HARNESSES,
+            validate_harness,
+        )
+
+        assert "terminus-2" not in ACCEPTED_HARNESSES
+        with pytest.raises(ValueError, match="not supported"):
+            validate_harness("terminus-2")
+
+
+class TestHarnessModelPrefix:
+    """A vendor CLI reaches OpenRouter through ``*_BASE_URL``, not litellm."""
+
+    def test_openrouter_prefix_stripped_for_a_vendor_cli(self):
+        import shlex
+
+        from tolokaforge_adapter_terminal_bench.harness import harness_command
+
+        argv = shlex.split(
+            harness_command("claude-code", "go", "openrouter/anthropic/claude-sonnet-4-6")
+        )
+        assert argv[argv.index("--model") + 1] == "anthropic/claude-sonnet-4-6"
+
+    def test_a_bare_model_name_is_untouched(self):
+        from tolokaforge_adapter_terminal_bench.harness import harness_model
+
+        assert harness_model("anthropic/claude-sonnet-4-6") == "anthropic/claude-sonnet-4-6"
+
+    def test_only_a_leading_prefix_is_stripped(self):
+        from tolokaforge_adapter_terminal_bench.harness import harness_model
+
+        assert harness_model("vendor/openrouter/x") == "vendor/openrouter/x"
+
+    def test_the_engine_loop_never_rewrites_the_model(self, tmp_path):
+        """litellm needs the prefix to pick its OpenRouter handler, and the
+        engine loop hands the run config's model straight to litellm — so the
+        adapter must not touch it (and publishes no CLI command at all)."""
+        from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
+
+        fixture_dir = Path(__file__).parent.parent / "data" / "terminal_bench_tasks"
+        adapter = TerminalBenchAdapter(
+            {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
+        )
+        metadata = adapter.to_task_description("echo-hello").metadata
+        assert "agent_harness_command" not in metadata
+        assert "agent_harness_model" not in metadata
 
 
 def _harness_task(tmp_path: Path, task_id: str, *, with_build: bool):
@@ -1053,7 +1118,7 @@ class TestComposeSynthesisHarnessLayer:
         assert base["profiles"] == ["tolokaforge-build"]
 
         main = compose["services"]["main"]
-        assert main["image"] == "tbench-layered:local-claude-code"
+        assert main["image"] == "tbench-layered:local-claude-code-2.1.228"
         assert main["build"] == {
             "context": ".",
             "dockerfile": "_harness/harness.Dockerfile",
@@ -1086,7 +1151,7 @@ class TestComposeSynthesisHarnessLayer:
 
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         assert dockerfile.splitlines()[0] == "FROM tbench-dockerfile:local"
-        assert "install-harness.sh gemini-cli" in dockerfile
+        assert "install-harness.sh @google/gemini-cli 0.55.1" in dockerfile
         assert (env.staging_dir / "_harness" / "install-harness.sh").exists()
 
     def test_task_without_build_context_declares_no_base_service(self, tmp_path):
@@ -1103,7 +1168,7 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code"
+        assert compose["services"]["main"]["image"] == "tbench-prebuilt:local-claude-code-2.1.228"
 
     def test_registry_base_is_pulled_not_built(self, tmp_path):
         from tolokaforge_adapter_terminal_bench.compose_synthesis import (
@@ -1122,7 +1187,9 @@ class TestComposeSynthesisHarnessLayer:
         compose = _load_synthesised(env)
         assert "main-base" not in compose["services"]
         assert env.base_build_service is None
-        assert compose["services"]["main"]["image"] == "reg.example/tbench/registry:v1-codex"
+        assert (
+            compose["services"]["main"]["image"] == "reg.example/tbench/registry:v1-codex-0.147.0"
+        )
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         assert dockerfile.startswith("FROM reg.example/tbench/registry:v1\n")
 
@@ -1216,6 +1283,7 @@ class TestTerminalBenchAdapterHarnessImageBuilds:
                 "task_ids": ["fix-billing-holds"],
                 "staging_root": str(tmp_path),
                 "agent_harness": "claude-code",
+                "agent_model": "m",
             }
         )
         reqs = adapter.docker_stack_requirements()
@@ -1245,6 +1313,7 @@ class TestTerminalBenchAdapterHarnessImageBuilds:
                     "terminal_bench_dir": str(fixture_dir),
                     "staging_root": str(tmp_path),
                     "agent_harness": "terminus-3",
+                    "agent_model": "m",
                 }
             )
 
@@ -1264,6 +1333,7 @@ class TestProviderEnvWire:
                 "terminal_bench_dir": str(fixture_dir),
                 "staging_root": str(tmp_path),
                 "agent_harness": "claude-code",
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
                 **extra,
             }
         )
@@ -1462,13 +1532,18 @@ class TestHarnessTaskDescriptionMetadata:
                 "terminal_bench_dir": str(fixture_dir),
                 "staging_root": str(tmp_path),
                 "agent_harness": "claude-code",
+                "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
             }
         )
         td = adapter.to_task_description("echo-hello")
         assert td.metadata["agent_harness"] == "claude-code"
         argv = shlex.split(td.metadata["agent_harness_command"])
-        assert argv[:2] == ["claude", "--print"]
-        assert argv[2] == adapter.get_task("echo-hello").initial_user_message
+        assert argv[:2] == ["claude", "--model"]
+        # The vendor CLI must not see the litellm route prefix.
+        assert argv[2] == "anthropic/claude-sonnet-4-6"
+        assert argv[3] == "--print"
+        assert argv[4] == adapter.get_task("echo-hello").initial_user_message
+        assert td.metadata["agent_harness_version"] == "2.1.228"
 
     def test_default_harness_publishes_no_command(self, fixture_dir, tmp_path):
         from tolokaforge_adapter_terminal_bench.adapter import TerminalBenchAdapter
@@ -1477,7 +1552,7 @@ class TestHarnessTaskDescriptionMetadata:
             {"terminal_bench_dir": str(fixture_dir), "staging_root": str(tmp_path)}
         )
         td = adapter.to_task_description("echo-hello")
-        assert td.metadata["agent_harness"] == "terminus-2"
+        assert td.metadata["agent_harness"] == "engine-loop"
         assert "agent_harness_command" not in td.metadata
 
     def test_harness_mode_gives_bash_the_whole_agent_budget(self, fixture_dir, tmp_path):
@@ -1490,6 +1565,7 @@ class TestHarnessTaskDescriptionMetadata:
                 "terminal_bench_dir": str(fixture_dir),
                 "staging_root": str(tmp_path),
                 "agent_harness": "codex",
+                "agent_model": "m",
             }
         )
         expected = discover_tasks(fixture_dir)["echo-hello"].agent_timeout_sec

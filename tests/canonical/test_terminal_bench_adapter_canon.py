@@ -57,6 +57,7 @@ def tbench_harness_adapter(test_data_dir, tmp_path) -> TerminalBenchAdapter:
             "terminal_bench_dir": str(tbench_tasks_dir),
             "staging_root": str(tmp_path / "staging"),
             "agent_harness": "claude-code",
+            "agent_model": "openrouter/anthropic/claude-sonnet-4-6",
         }
     )
 
@@ -123,17 +124,6 @@ class TestTerminalBenchHarnessModeCanon:
 
         dockerfile = (env.staging_dir / "_harness" / "harness.Dockerfile").read_text()
         snap.assert_match({"dockerfile": dockerfile}, "harness_dockerfile.json")
-
-    def test_two_image_builds_base_first(self, tbench_harness_adapter):
-        """The layer's Dockerfile is FROM the base, so the base must build first."""
-        requirements = tbench_harness_adapter.docker_stack_requirements()
-        assert [b.service for b in requirements.image_builds] == ["main-base", "main"]
-        compose_files = {b.compose_file for b in requirements.image_builds}
-        assert compose_files == {tbench_harness_adapter._environment("echo-hello").compose_file}
-
-    def test_default_harness_declares_one_build(self, tbench_adapter):
-        requirements = tbench_adapter.docker_stack_requirements()
-        assert [b.service for b in requirements.image_builds] == ["main"]
 
 
 class TestTerminalBenchAdapterIntegrity:

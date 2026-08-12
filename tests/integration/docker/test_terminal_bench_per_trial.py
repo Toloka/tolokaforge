@@ -282,6 +282,7 @@ class TestTerminalBenchPerTrialBracket:
 
 _HARNESS_TASK_ID = "echo-hello"
 _HARNESS = "claude-code"
+_HARNESS_MODEL = "openrouter/anthropic/claude-sonnet-4-6"
 
 # A literal fake, asserted by exact value: a "key is set" marker would pass
 # even if compose interpolated the wrong one, and the wire is the whole point.
@@ -295,6 +296,9 @@ _FAKE_PROVIDER_KEY = "sk-integration-fake"
 # reward the test had to special-case.
 _INSTALL_STUB = """#!/bin/sh
 set -eu
+# Same contract as the real script: package and pinned version, both required.
+[ -n "${1:-}" ] || { echo "stub: no package" >&2; exit 1; }
+[ -n "${2:-}" ] || { echo "stub: no version" >&2; exit 1; }
 cat > /usr/local/bin/claude <<'CLI'
 #!/bin/sh
 echo "harness-stub argv: $*"
@@ -303,6 +307,13 @@ printf 'Hello, World!\\n' > /tmp/hello.txt
 CLI
 chmod +x /usr/local/bin/claude
 """
+
+
+def _layered_image_ref() -> str:
+    """The harness-layered image tag, version included."""
+    from tolokaforge_adapter_terminal_bench.harness import HARNESSES
+
+    return f"tbench-{_HARNESS_TASK_ID}:local-{_HARNESS}-{HARNESSES[_HARNESS].version}"
 
 
 @pytest.fixture(scope="module")
@@ -314,6 +325,7 @@ def harness_adapter(tmp_path_factory: pytest.TempPathFactory) -> TerminalBenchAd
             "task_ids": [_HARNESS_TASK_ID],
             "staging_root": str(tmp_path_factory.mktemp("tbench-harness-staging")),
             "agent_harness": _HARNESS,
+            "agent_model": _HARNESS_MODEL,
             "agent_provider_env": {"ANTHROPIC_API_KEY": _FAKE_PROVIDER_KEY},
         }
     )
@@ -399,6 +411,10 @@ class TestTerminalBenchHarnessMode:
                 invocation.output
             ), invocation.output
             assert f"provider-env: {_FAKE_PROVIDER_KEY}" in invocation.output, invocation.output
+            # The vendor CLI reaches OpenRouter via ANTHROPIC_BASE_URL, so the
+            # litellm route prefix must not be on the model it was given.
+            assert "--model anthropic/claude-sonnet-4-6" in invocation.output, invocation.output
+            assert "openrouter/" not in invocation.output, invocation.output
 
             grade_result = backend.grade_trial(
                 trial_id=spec.trial_id,
@@ -439,7 +455,7 @@ class TestTerminalBenchHarnessMode:
                 "--no-trunc",
                 "--format",
                 "{{.CreatedBy}}",
-                f"tbench-{_HARNESS_TASK_ID}:local-{_HARNESS}",
+                _layered_image_ref(),
             ],
             capture_output=True,
             text=True,

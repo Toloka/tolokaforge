@@ -51,7 +51,8 @@ from tolokaforge_adapter_terminal_bench.compose_synthesis import (
     materialise_task_environment,
 )
 from tolokaforge_adapter_terminal_bench.harness import (
-    NO_OP_HARNESS,
+    ENGINE_LOOP,
+    HARNESSES,
     harness_command,
     provider_env_input,
     validate_harness,
@@ -101,15 +102,20 @@ def _resolve_provider_env(declared: dict[str, str]) -> dict[str, str]:
         for key, value in declared.items()
     }
     # Each value is written as one ``KEY=value`` line in the per-trial compose
-    # ``.env``. A newline would split the line and turn the remainder into a
-    # variable of its own, so the container would silently get a truncated
-    # credential — refuse it here, where the offending key can be named.
-    multiline = sorted(key for key, value in resolved.items() if "\n" in value or "\r" in value)
-    if multiline:
+    # ``.env``. A newline splits the line and turns the remainder into a
+    # variable of its own; a ``$`` starts a compose interpolation and the value
+    # is truncated there. Either way the container gets a mangled credential
+    # and the CLI fails with a provider auth error many layers from the cause,
+    # so refuse here, where the offending key can be named.
+    unrepresentable = sorted(
+        key for key, value in resolved.items() if any(char in value for char in ("\n", "\r", "$"))
+    )
+    if unrepresentable:
         raise ValueError(
-            f"terminal-bench adapter: agent_provider_env value(s) for {multiline!r} contain a "
-            "newline; each value becomes one line of the per-trial compose `.env`, which "
-            "cannot represent one."
+            f"terminal-bench adapter: agent_provider_env value(s) for {unrepresentable!r} "
+            "contain a newline or a `$`; each value becomes one line of the per-trial "
+            "compose `.env`, where a newline splits the line and a `$` starts an "
+            "interpolation. Neither survives intact."
         )
     return resolved
 
@@ -137,7 +143,16 @@ class TerminalBenchAdapter(BaseAdapter):
             params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
         self.prebuild_images: bool = params.get("prebuild_images", True)
-        self.agent_harness: str = validate_harness(params.get("agent_harness", NO_OP_HARNESS))
+        self.agent_harness: str = validate_harness(params.get("agent_harness", ENGINE_LOOP))
+        # Empty under the engine loop, which never reads it: the run config's
+        # model reaches litellm through the engine's own LLM layer there.
+        self.agent_model: str = params.get("agent_model") or ""
+        if self.agent_harness != ENGINE_LOOP and not self.agent_model:
+            raise ValueError(
+                f"terminal-bench adapter: agent_harness {self.agent_harness!r} requires "
+                "`agent_model` — the CLI selects its own default otherwise, so the run "
+                "config's model would not be the one measured."
+            )
         self.agent_provider_env: dict[str, str] = _resolve_provider_env(
             params.get("agent_provider_env") or {}
         )
@@ -331,7 +346,7 @@ class TerminalBenchAdapter(BaseAdapter):
                     # completion inside a single exec.
                     timeout_s=(
                         _AGENT_TOOL_TIMEOUT_S
-                        if self.agent_harness == NO_OP_HARNESS
+                        if self.agent_harness == ENGINE_LOOP
                         else meta.agent_timeout_sec
                     ),
                     source=ToolSource(
@@ -374,9 +389,11 @@ class TerminalBenchAdapter(BaseAdapter):
             "verifier_timeout_sec": meta.verifier_timeout_sec,
             "agent_harness": self.agent_harness,
         }
-        if self.agent_harness != NO_OP_HARNESS:
+        if self.agent_harness != ENGINE_LOOP:
+            metadata["agent_harness_version"] = HARNESSES[self.agent_harness].version
+            metadata["agent_harness_model"] = self.agent_model
             metadata["agent_harness_command"] = harness_command(
-                self.agent_harness, meta.instruction
+                self.agent_harness, meta.instruction, self.agent_model
             )
         return metadata
 

@@ -57,9 +57,9 @@ _HARNESS_TIMEOUT_S = 60.0
 _CLI_OUTPUT = "wrote /app/out.txt\n"
 
 
-def _bash_tool(timeout_s: float = _HARNESS_TIMEOUT_S) -> ToolSchema:
+def _bash_tool(timeout_s: float = _HARNESS_TIMEOUT_S, name: str = "bash") -> ToolSchema:
     return ToolSchema(
-        name="bash",
+        name=name,
         description="Execute a bash command inside the task container",
         parameters={
             "type": "object",
@@ -161,7 +161,12 @@ def harness_trial(tmp_path: Path, monkeypatch: pytest.MonkeyPatch):
         metadata = (
             metadata
             if metadata is not None
-            else {"agent_harness": "claude-code", "agent_harness_command": _HARNESS_COMMAND}
+            else {
+                "agent_harness": "claude-code",
+                "agent_harness_version": "2.1.228",
+                "agent_harness_model": "anthropic/claude-sonnet-4-6",
+                "agent_harness_command": _HARNESS_COMMAND,
+            }
         )
 
         def _no_loop(*args: Any, **kwargs: Any):
@@ -222,9 +227,23 @@ class TestHarnessTrialBypassesTheTurnLoop:
         _, runtime, _ = harness_trial()
         assert runtime.executed_tools[0]["timeout_seconds"] == _HARNESS_TIMEOUT_S
 
-    def test_run_level_episode_cap_still_bounds_the_deadline(self, harness_trial):
-        _, runtime, _ = harness_trial(episode_s=30)
-        assert runtime.executed_tools[0]["timeout_seconds"] == 30.0
+    def test_a_run_budget_below_the_harness_budget_is_refused(self, harness_trial):
+        """The exec cannot be cut short, so a shorter run budget must not be
+        silently accepted.
+
+        The RPC deadline can abandon the call but cannot stop the
+        ``subprocess.run`` thread behind it, so taking the min would record
+        TIMEOUT and then grade a container the CLI is still writing to.
+        """
+        with pytest.raises(RuntimeError, match="cannot be cut short"):
+            harness_trial(episode_s=30)
+
+    def test_the_refusal_names_both_budgets(self, harness_trial):
+        with pytest.raises(RuntimeError) as exc:
+            harness_trial(episode_s=30)
+        assert "episode_s" in str(exc.value)
+        assert "30" in str(exc.value)
+        assert "60" in str(exc.value)
 
     def test_the_trial_completes_without_an_llm_turn(self, harness_trial):
         result, _, _ = harness_trial()
@@ -258,6 +277,15 @@ class TestHarnessTrajectoryShape:
 
 
 class TestHarnessModeSelection:
+    def test_a_blank_command_is_refused_rather_than_silently_ignored(self, harness_trial):
+        """An empty string means a broken adapter, not "run the turn loop"."""
+        with pytest.raises(RuntimeError, match="non-blank string"):
+            harness_trial(metadata={"agent_harness_command": "   "})
+
+    def test_a_non_string_command_is_refused(self, harness_trial):
+        with pytest.raises(RuntimeError, match="non-blank string"):
+            harness_trial(metadata={"agent_harness_command": ["claude", "--print"]})
+
     def test_a_task_without_the_command_keeps_the_turn_loop(self, harness_trial):
         """No ``agent_harness_command`` routes to the turn loop, as before.
 
@@ -265,7 +293,7 @@ class TestHarnessModeSelection:
         initialization error — that recorded message is the evidence the
         branch was taken, and the run-level default stays the LLM path.
         """
-        result, runtime, _ = harness_trial(metadata={"agent_harness": "terminus-2"})
+        result, runtime, _ = harness_trial(metadata={"agent_harness": "engine-loop"})
         assert result.trajectory.status is TrialStatus.ERROR
         assert any(
             "ToolCallingLoop was constructed" in (m.content or "")
@@ -275,4 +303,4 @@ class TestHarnessModeSelection:
 
     def test_multiple_agent_tools_are_refused(self, harness_trial):
         with pytest.raises(RuntimeError, match="runs through exactly one"):
-            harness_trial(tools=[_bash_tool(), _bash_tool()])
+            harness_trial(tools=[_bash_tool(), _bash_tool(name="bash2")])
