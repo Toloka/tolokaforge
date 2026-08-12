@@ -150,6 +150,26 @@ class ActorSpec(BaseModel):
 
     model_config = {"extra": "ignore"}
 
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_first_message(cls, data: Any) -> Any:
+        """Reject an opener declared on the actor instead of on the task.
+
+        ``extra="ignore"`` would drop the key, and the nested position keeps it
+        out of :func:`construct_config`'s unknown-key warning — so an author
+        would see neither their opener delivered nor any complaint. Reached by
+        every spelling: ``actors.user``, the legacy top-level
+        ``user_simulator`` block, and a project's ``task_defaults`` actors map.
+        """
+        if not isinstance(data, dict) or "first_message" not in data:
+            return data
+        raise ValueError(
+            "first_message is not an actor field, under actors.user or under the "
+            "legacy top-level user_simulator block. A task's opening turn is declared "
+            "task-level as initial_user_message, whose text is delivered verbatim as "
+            "the first user message — move the value there."
+        )
+
 
 def _validate_actors_map(
     value: dict[str, ActorSpec] | None,

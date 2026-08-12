@@ -559,9 +559,13 @@ message HealthCheckResponse {
 
 ### RegisterTrialRequest
 
-**Version lock.** `engine_protocol_version` declares the wire protocol the calling engine speaks; `ENGINE_PROTOCOL_VERSION` in [`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py) is the single source of that number, and the engine sets it on every registration. The runner refuses to register a trial from an engine below its own version and names the skew in `RegisterTrialResponse.error`, which the orchestrator already treats as fatal — so a skewed pair fails before any tokens are spent, rather than burning a turn budget on rejected tool calls and reporting a completed trial that scored ~0.
+#### Version lock
+
+`engine_protocol_version` declares the wire protocol the calling engine speaks; `ENGINE_PROTOCOL_VERSION` in [`tolokaforge/runner/protocol.py`](../tolokaforge/runner/protocol.py) is the single source of that number, and the engine sets it on every registration. The runner refuses to register a trial from an engine below its own version and names the skew in `RegisterTrialResponse.error`, which the orchestrator already treats as fatal — so a skewed pair fails before any tokens are spent, rather than burning a turn budget on rejected tool calls and reporting a completed trial that scored ~0.
 
 Version 1 is the first that sends `ExecuteToolRequest.call_id`. An engine that predates the field sends nothing, which arrives as `0` and is refused. Rebuild the runner image from the engine you are running (`make docker-build-core`) or pin an image tag that matches it.
+
+Version 2 is the first that omits `user_simulator.first_message` and `user_simulator.user_context` from the trial spec, so an engine below it emits two keys this runner no longer declares and could not parse.
 
 The gate is a lower bound, not an equality: a *newer* engine still sends `call_id`, so this runner registers it.
 

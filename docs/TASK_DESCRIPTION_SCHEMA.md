@@ -166,12 +166,6 @@ class UserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str = ""                           # User instruction/context
     
-    # First message to start conversation (TlkMcpCore)
-    first_message: Optional[str] = None
-    
-    # User context data injected into conversation (TlkMcpCore)
-    user_context: Optional[Dict[str, Any]] = None
-    
     # For scripted mode
     scripted_flow: Optional[List[Dict[str, str]]] = None
 
@@ -443,9 +437,7 @@ class TaskDescription(BaseModel):
   "user_simulator": {
     "mode": "llm",
     "persona": "customer",
-    "backstory": "You are Jane Roe contacting customer service about order ORD-60010.",
-    "first_message": "I bought a DSLR camera about a month ago and it was delivered. I want to return it for a refund.",
-    "user_context": {"name": "Jane Roe", "email": "customer2@example.com", "order_id": "ORD-60010"}
+    "backstory": "You are Jane Roe contacting customer service about order ORD-60010."
   },
 
   "search": {

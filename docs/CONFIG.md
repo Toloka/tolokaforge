@@ -507,14 +507,15 @@ tools:
   user:
     enabled: []
 
-user_simulator:
-  mode: "scripted"   # "scripted" or "llm"
-  persona: "cooperative"
-  backstory: ""
-  scripted_flow:
-    - if_assistant_contains: "done"
-      user: "Thanks!"
-    - default: "Please continue."
+actors:
+  user:
+    mode: "scripted" # "scripted" or "llm"
+    persona: "cooperative"
+    backstory: ""
+    scripted_flow:
+      - if_assistant_contains: "done"
+        user: "Thanks!"
+      - default: "Please continue."
 
 policies:
   guidance:

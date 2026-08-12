@@ -102,12 +102,13 @@ tools:
   user:
     enabled: []                          # tool names available to user simulator
 
-user_simulator:
-  mode: llm                             # llm | scripted
-  persona: cooperative                  # short persona label for the LLM
-  backstory: >                          # scenario description (revealed gradually to agent)
-    You are customer Alex Torres (C-101) …
-    When the assistant confirms, end with ###STOP###.
+actors:
+  user:
+    mode: llm                           # llm | scripted
+    persona: cooperative                # short persona label for the LLM
+    backstory: >                        # scenario description (revealed gradually to agent)
+      You are customer Alex Torres (C-101) …
+      When the assistant confirms, end with ###STOP###.
 
 policies:
   guidance:                             # optional — guidelines shown in system prompt

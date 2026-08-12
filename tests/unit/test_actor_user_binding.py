@@ -152,6 +152,42 @@ class TestActorsUserDrivesSimulator:
         assert len(deprecations) == 1
 
 
+class TestFirstMessageSpellingRefused:
+    """An opener declared on the user actor is refused, whatever the spelling.
+
+    The key is silently dropped otherwise — ``ActorSpec`` ignores extras and a
+    nested key never reaches the loader's unknown-key warning — so the author
+    would see neither their opener delivered nor a complaint.
+    """
+
+    def test_canonical_actors_user_spelling_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(actors={"user": {"mode": "llm", "first_message": "Hi, I need help."}}),
+        )
+        with pytest.raises(ValueError, match="initial_user_message"):
+            load_task_yaml(task_path)
+
+    def test_legacy_user_simulator_spelling_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(
+            task_path,
+            _task_body(user_simulator={"mode": "llm", "first_message": "Hi, I need help."}),
+        )
+        with pytest.raises(ValueError, match="initial_user_message"):
+            load_task_yaml(task_path)
+
+    def test_project_task_defaults_spelling_is_refused(self, tmp_path: Path) -> None:
+        task_path = tmp_path / "task.yaml"
+        _write_yaml(task_path, _task_body())
+        with pytest.raises(ValueError, match="initial_user_message"):
+            load_task_yaml(
+                task_path,
+                project_task_defaults={"actors": {"user": {"first_message": "Hi."}}},
+            )
+
+
 class TestDirectPythonUserSimulatorKwargShim:
     """External Python callers doing ``TaskConfig(user_simulator=…)`` continue
     to work: a ``mode="before"`` shim on ``TaskConfig`` and ``TaskDefaults``

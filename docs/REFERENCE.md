@@ -86,15 +86,16 @@ tools:
   user:
     enabled: []                     # User-side tools (dual-control)
 
-user_simulator:
-  mode: "llm"                       # "llm" or "scripted"
-  persona: "cooperative"
-  backstory: |
-    Context for LLM user simulator...
-  scripted_flow:                    # For scripted mode
-    - if_assistant_contains: "name"
-      user: "My name is Alice."
-    - default: "Please proceed."
+actors:
+  user:
+    mode: "llm"                     # "llm" or "scripted"
+    persona: "cooperative"
+    backstory: |
+      Context for LLM user simulator...
+    scripted_flow:                  # For scripted mode
+      - if_assistant_contains: "name"
+        user: "My name is Alice."
+      - default: "Please proceed."
 
 policies:
   disallowed_actions:
