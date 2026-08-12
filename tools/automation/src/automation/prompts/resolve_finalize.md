@@ -18,13 +18,15 @@ normal synchronous Claude Code run; nothing to await.
    NOT broaden a shared glob). If the compose step wrote a new adapter class, it is already in
    the engine + `_POLICY_REGISTRIES` + `__init__.py`; leave it.
 2. Add the candidate cert to `tests/integration/llm/registry.py`: an `MC(...)` entry in `_ALL`
-   with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="OPENROUTER_API_KEY"`,
+   with `model_id="{{MODEL_ID}}"`, provider/name, `env_key="{{CERT_ENV_KEY}}"`,
    `required=frozenset({...})` from decision.json `required`, and
    `known_unsupported=frozenset({...})` from decision.json `ceilings`. Match the surrounding
    style and keep model_ids unique (the canonical registry test enforces this).
 3. ENSURE PRICING. Verify the candidate's litellm name (`{{NAME}}`) has an entry under `models`
    in `tolokaforge/core/data/pricing.json`. The pre-observe step normally adds it, but ALWAYS
-   check and fill it if missing: fetch OpenRouter pricing
+   check and fill it if missing. If OpenRouter does not carry this model (a gateway-only route),
+   there is nothing to fetch: say so in the report and stop rather than inventing a price, since
+   only an operator can supply one (the run's `pricing` input). Otherwise fetch OpenRouter pricing
    (`curl -s https://openrouter.ai/api/v1/models`, find the object whose `id == "{{NAME}}"`),
    convert per-token `prompt` / `completion` to USD-per-1M (multiply by 1e6), and add
    `"{{NAME}}": {"input": <in>, "output": <out>}` (plus `"cache_read"` if the API reports a

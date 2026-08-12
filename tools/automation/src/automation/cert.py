@@ -17,11 +17,16 @@ so a hard false-pessimism flag requires EVERY parameter to pass.
 
 ``run`` returns an exit code (1 on any violation, 0 otherwise); the pure helpers
 below are unit-tested without importing the engine registry.
+
+:func:`env_gate` answers a different question for the same registry: which variable
+gates a curated certificate's live probes. See ``docs/AUTO_INTEGRATION.md``
+§ "Integrating a model only the gateway serves".
 """
 
 from __future__ import annotations
 
 import json
+import os
 import pathlib
 import sys
 
@@ -133,6 +138,27 @@ def _load_cert(model_id: str) -> tuple[set[str], set[str], list[str]]:
                 cap_values,
             )
     raise SystemExit(f"cert_reconcile: model_id {model_id!r} not found in ALL_MODELS")
+
+
+def env_gate(model_id: str) -> int:
+    """Print the variable gating ``model_id``'s live probes, if it needs opening.
+
+    Prints nothing when no certificate names one, when the certificate is the
+    synthesised candidate (whose gate is the provider key the run already sets),
+    or when the variable already carries a value. Exit code is 0 either way: a
+    model with no curated certificate is the normal case, not a failure.
+    """
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).resolve().parents[4]))
+        from tests.integration.llm.registry import ALL_MODELS
+    except Exception as exc:  # fail loud - a silent empty answer reads as "no gate"
+        print(f"::error::cert_env_gate could not import the registry: {exc}")
+        return 1
+    for mc in ALL_MODELS:
+        if mc.model_id == model_id and mc.env_key and not os.environ.get(mc.env_key):
+            print(mc.env_key)
+            break
+    return 0
 
 
 def run(model_id: str, findings_path: str) -> int:

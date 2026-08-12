@@ -53,9 +53,26 @@ def ensure_pricing(
     name: str = typer.Option(..., "--name", help="litellm model name, e.g. xiaomi/mimo-v2.5-pro"),
     pricing_file: str = typer.Option(pricing.DEFAULT_PRICING_FILE, "--pricing-file"),
     check: bool = typer.Option(False, "--check", help="exit 0 if priced, 1 if not; no fetch/write"),
+    input_usd: float | None = typer.Option(
+        None, "--input-usd", help="declared input price per million tokens (gateway-only models)"
+    ),
+    output_usd: float | None = typer.Option(None, "--output-usd", help="declared output price"),
 ) -> None:
     """Ensure the candidate has a pricing.json entry (best-effort, minimal diff)."""
-    raise typer.Exit(pricing.run(name, pricing_file=pricing_file, check=check))
+    if (input_usd is None) != (output_usd is None):
+        raise typer.BadParameter("--input-usd and --output-usd go together, or neither")
+    declared = None if input_usd is None else (input_usd, output_usd)
+    raise typer.Exit(
+        pricing.run(name, pricing_file=pricing_file, check=check, declared=declared)  # type: ignore[arg-type]
+    )
+
+
+@app.command("cert-env-gate")
+def cert_env_gate(
+    model_id: str = typer.Option(..., "--model-id", help="filesystem-safe certificate slug"),
+) -> None:
+    """Print the variable gating this model's live capability probes, if it needs opening."""
+    raise typer.Exit(cert.env_gate(model_id))
 
 
 @app.command("greencheck")

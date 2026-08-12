@@ -52,6 +52,14 @@ on:
         options:
           - openrouter
           - litellm
+      pricing:
+        description: >-
+          "<input>,<output>" USD per million tokens, for a model OpenRouter does not carry (a
+          gateway-only route). Nothing can fetch such a price, and COST_USD_POPULATED is a CORE
+          capability that can never be declared unsupported, so without this the run cannot
+          finish clean. Leave empty for an OpenRouter model: the price is fetched.
+        required: false
+        default: ""
 
 # Optional workspace restyling: a JSON map from icon ROLE to the emoji the
 # workspace uploaded, e.g. {"observe_started":":tf-observe-started:"}. Keyed on
@@ -280,8 +288,39 @@ jobs:
         # tops it up, and the auto-merge price gate is the backstop).
         env:
           TF_NAME: ${{ steps.parse.outputs.name }}
+          DECLARED: ${{ inputs.pricing }}
         run: |
-          uv run automation ensure-pricing --name "$TF_NAME" || true
+          if [ -n "$DECLARED" ]; then
+            IN="${DECLARED%%,*}"; OUT="${DECLARED##*,}"
+            if [ "$IN" = "$DECLARED" ] || [ -z "$IN" ] || [ -z "$OUT" ]; then
+              echo "::error title=pricing input malformed::expected \"<input>,<output>\", got '$DECLARED'"
+              exit 1
+            fi
+            uv run automation ensure-pricing --name "$TF_NAME" --input-usd "$IN" --output-usd "$OUT"
+          else
+            uv run automation ensure-pricing --name "$TF_NAME" || true
+          fi
+
+      - name: Open the capability gate a curated certificate declares
+        # Re-onboarding a model that already has a certificate reuses THAT certificate
+        # (registry._candidate_from_env), so the run inherits its env_key rather than the
+        # synthesised OPENROUTER_API_KEY one. A gateway-only model's gate names the deployment
+        # that serves the route, which no workflow sets, so every probe would skip and the
+        # cleanliness gate would read "capability suite did not run". Only on the gateway
+        # route: that route is chosen deliberately, and it is the claim the gate encodes.
+        env:
+          MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          ROUTE: ${{ inputs.route || 'openrouter' }}
+          OPENROUTER_API_KEY: ${{ secrets.ARENA_AUTOMATION_OPENROUTER_API_KEY }}
+        run: |
+          GATE="$(uv run automation cert-env-gate --model-id "$MODEL_ID")"
+          if [ -z "$GATE" ]; then echo "no certificate gate to open"; exit 0; fi
+          if [ "$ROUTE" = "litellm" ]; then
+            echo "$GATE=1" >> "$GITHUB_ENV"
+            echo "opened the capability gate $GATE for the gateway route"
+          else
+            echo "::warning title=Capability suite will skip::the certificate for $MODEL_ID gates on $GATE, which is unset on the $ROUTE route; its live probes will skip and observe will read as not-run"
+          fi
 
       # ---------------------------------------------------------------- OBSERVE
       - name: Capability integration probes (report-only, CAPABILITY_K repeats)
@@ -654,12 +693,23 @@ jobs:
           TF_PROVIDER: ${{ steps.parse.outputs.provider }}
           TF_NAME: ${{ steps.parse.outputs.name }}
           MODEL_ID: ${{ steps.slug.outputs.model_id }}
+          ROUTE: ${{ inputs.route || 'openrouter' }}
         run: |
           set -euo pipefail
           P=tools/automation/src/automation/prompts
+          # A gateway-only model has no OpenRouter key to gate on, so its certificate names the
+          # deployment that serves the route instead. Derived rather than agent-invented, so the
+          # "Open the capability gate" step can find it again on a re-onboarding.
+          if [ "$ROUTE" = "litellm" ]; then
+            CERT_ENV_KEY="TF_$(printf '%s' "$MODEL_ID" | tr 'a-z.-' 'A-Z__' | tr -cd 'A-Z0-9_')_GATEWAY_LIVE"
+          else
+            CERT_ENV_KEY=OPENROUTER_API_KEY
+          fi
+          echo "certificate gate for this run: $CERT_ENV_KEY"
           fill () {
             sed -e "s|{{OBS_DIR}}|observation|g" -e "s|{{PROVIDER}}|${TF_PROVIDER}|g" \
-              -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" "$1"
+              -e "s|{{NAME}}|${TF_NAME}|g" -e "s|{{MODEL_ID}}|${MODEL_ID}|g" -e "s|{{PR}}|${PR}|g" \
+              -e "s|{{CERT_ENV_KEY}}|${CERT_ENV_KEY}|g" "$1"
           }
           fill "$P/resolve_finalize.md" > /tmp/finalize.md
           # `|| true`: if the agent hits --max-turns it exits non-zero; do not abort - the commit
