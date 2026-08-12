@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from typing import Any
+from unittest.mock import MagicMock
 
 import pytest
 
@@ -27,7 +28,7 @@ from tolokaforge.core.actors.reply_guard import (
 from tolokaforge.core.failure_attribution import TrialOutcomeClass, classify_trial_outcome
 from tolokaforge.core.llm import GenerationResult, UserSimulator
 from tolokaforge.core.llm.usage import Usage
-from tolokaforge.core.loop import classify_loop_error
+from tolokaforge.core.loop import TerminationDecision, classify_loop_error
 from tolokaforge.core.models import (
     USER_REPLY_MAX_ATTEMPTS,
     Message,
@@ -36,8 +37,10 @@ from tolokaforge.core.models import (
     TerminationReason,
     Trajectory,
     TrialStatus,
+    UserReplyOutcome,
 )
 from tolokaforge.core.run_display_events import LLMCallObservation
+from tolokaforge.core.runner import TrialRunner
 
 pytestmark = pytest.mark.unit
 
@@ -306,3 +309,150 @@ class TestScriptedRepliesAreAuthoredContent:
 
         assert result.text == scripted_text
         assert result.guard_rejections == ()
+
+
+# ===================================================================
+# What the bundle records — a real TrialRunner driving a real
+# UserSimulator whose only stand-in is the wire client.
+# ===================================================================
+
+PINNED_OPENER = "My router keeps dropping the 5GHz band."
+AGENT_TURN_TEXT = "Let me look into that for you."
+AGENT_STOP = "###STOP###"
+
+
+class _ScriptedAgentClient:
+    """Agent-side wire client: says each text in order, then repeats the last.
+
+    Declares the keyword arguments ``ToolCallingLoop._generate`` passes and the
+    ``classify_loop_error`` seam the loop is handed, so the runner drives real
+    control flow over a scripted wire rather than over a mock's defaults.
+    """
+
+    def __init__(self, texts: list[str]) -> None:
+        self.texts = texts
+        self.calls = 0
+
+    def generate(
+        self,
+        *,
+        system: str | None = None,
+        messages: list[Message] | None = None,
+        tools: list[dict[str, Any]] | None = None,
+        tool_choice: str | None = None,
+        observation: LLMCallObservation | None = None,
+    ) -> GenerationResult:
+        self.calls += 1
+        return GenerationResult(
+            text=self.texts[min(self.calls - 1, len(self.texts) - 1)],
+            tool_calls=[],
+            usage=Usage(prompt_tokens=10, completion_tokens=5),
+        )
+
+    def classify_loop_error(self, exc: Exception) -> TerminationDecision:
+        return classify_loop_error(exc, ())
+
+
+def _run_trial(
+    *,
+    user_replies: list[str],
+    agent_texts: list[str],
+    opener: str = PINNED_OPENER,
+) -> Trajectory:
+    """One trial with a real runner, a real simulator, and scripted wires."""
+    simulator, _ = _llm_simulator(user_replies)
+    runner = TrialRunner(
+        task_id="guard",
+        trial_index=0,
+        agent_client=_ScriptedAgentClient(agent_texts),  # type: ignore[arg-type]
+        user_simulator=simulator,
+        tool_executor=MagicMock(),
+        tool_schemas=[],
+        max_turns=4,
+        turn_timeout_s=30,
+        episode_timeout_s=600,
+    )
+    return runner.run("System", opener)
+
+
+class TestTheBundleRecordsWhatAUserTurnCost:
+    def test_a_mid_conversation_turn_rejected_once_records_one_delivered_event(self) -> None:
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY, CLEAN_REPLY],
+            agent_texts=[AGENT_TURN_TEXT, AGENT_STOP],
+        )
+
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.DELIVERED
+        assert [(d.detector, d.reason) for d in event.rejected] == [
+            ("fourth_wall", "self_identified_as_model")
+        ]
+        # The delivered text at that index, not the role there: the index is the
+        # position the turn was dispatched at, and the sibling test below covers
+        # a dispatch position the loop fills with a SYSTEM message instead.
+        assert trajectory.messages[event.message_index].content == CLEAN_REPLY
+
+    def test_a_stop_token_turn_indexes_the_message_the_loop_wrote_there(self) -> None:
+        """The accepted reply is a bare ``###STOP###``, so no USER message is
+        appended and the loop's own SYSTEM message takes that index. The event
+        still points at the position the turn was dispatched at."""
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY, "###STOP###"],
+            agent_texts=[AGENT_TURN_TEXT],
+        )
+
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.DELIVERED
+        assert trajectory.termination_reason is TerminationReason.USER_STOP
+        recorded = trajectory.messages[event.message_index]
+        assert recorded.role is MessageRole.SYSTEM
+        assert "###STOP###" in recorded.content
+
+    def test_a_refused_mid_conversation_turn_is_recorded_before_the_trial_errors(self) -> None:
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY],
+            agent_texts=[AGENT_TURN_TEXT],
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.termination_reason is TerminationReason.ERROR
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.REFUSED
+        assert len(event.rejected) == USER_REPLY_MAX_ATTEMPTS
+
+    def test_a_bootstrap_turn_rejected_once_records_index_zero(self) -> None:
+        """Turn 0 goes through a separate call site, and its message index is
+        the first position in the trace."""
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY, CLEAN_REPLY],
+            agent_texts=[AGENT_STOP],
+            opener="",
+        )
+
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.DELIVERED
+        assert event.message_index == 0
+        assert trajectory.messages[0].content == CLEAN_REPLY
+
+    def test_a_refused_bootstrap_is_recorded_before_the_trial_errors(self) -> None:
+        trajectory = _run_trial(
+            user_replies=[FOURTH_WALL_REPLY],
+            agent_texts=[AGENT_STOP],
+            opener="",
+        )
+
+        assert trajectory.status is TrialStatus.ERROR
+        assert trajectory.termination_reason is TerminationReason.ERROR
+        (event,) = trajectory.user_reply_guard_events
+        assert event.outcome is UserReplyOutcome.REFUSED
+        assert event.message_index == 0
+        assert len(event.rejected) == USER_REPLY_MAX_ATTEMPTS
+
+    def test_a_trial_whose_every_turn_was_clean_records_nothing(self) -> None:
+        trajectory = _run_trial(
+            user_replies=[CLEAN_REPLY],
+            agent_texts=[AGENT_TURN_TEXT, AGENT_STOP],
+        )
+
+        assert trajectory.user_reply_guard_events == []
+        assert any(m.content == CLEAN_REPLY for m in trajectory.messages)

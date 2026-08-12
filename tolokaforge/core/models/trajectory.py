@@ -5,8 +5,8 @@ message trace (:class:`Message`, :class:`ToolCall`), status/termination
 enums, the :class:`Metrics` accounting block, the rate-limit-probe
 census (:class:`RateLimitProbeRoleMetrics`,
 :class:`RateLimitProbeBucketMetrics`), the user-reply guard's findings
-(:class:`ReplyDefect`), and the composite :class:`Trajectory` that carries
-them.
+(:class:`ReplyDefect`, :class:`UserReplyGuardEvent`), and the composite
+:class:`Trajectory` that carries them.
 """
 
 import dataclasses
@@ -41,6 +41,8 @@ __all__ = [
     "ToolUsage",
     "Trajectory",
     "TrialStatus",
+    "UserReplyGuardEvent",
+    "UserReplyOutcome",
 ]
 
 
@@ -474,6 +476,38 @@ class ReplyDefect(BaseModel):
     """The matched span of the discarded reply."""
 
 
+class UserReplyOutcome(str, Enum):
+    """The reply guard's verdict on one dispatched user turn."""
+
+    DELIVERED = "delivered"  # A later attempt passed the guard
+    REFUSED = "refused"  # The attempt budget was spent; the trial fails
+
+
+class UserReplyGuardEvent(BaseModel):
+    """What one user turn cost when it cost more than one generation.
+
+    A turn whose first generation passed the guard records no event, so a trial
+    that never broke frame carries an empty list rather than a row per turn.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    message_index: int
+    """Position in :attr:`Trajectory.messages` this turn was dispatched at.
+
+    The index the turn's USER message occupies, *or would have occupied had one
+    been appended*. A reply the guard accepts can still be a bare ``###STOP###``,
+    which terminates the dialogue and puts the loop's SYSTEM termination message
+    at this index instead; a refused turn does the same. Nothing may assume the
+    message here is user-role."""
+
+    outcome: UserReplyOutcome
+    """The guard's verdict, not the runner's subsequent disposition of the reply."""
+
+    rejected: list[ReplyDefect]
+    """One entry per discarded attempt, in the order they were generated."""
+
+
 class Trajectory(BaseModel):
     """Complete trial trajectory.
 
@@ -498,6 +532,11 @@ class Trajectory(BaseModel):
     # bootstrapped, and for a bundle written before the key existed.
     first_user_message_source: FirstUserMessageSource | None = None
     messages: list[Message]
+    # One entry per user turn that cost more than one generation, so a run's
+    # frame-breaking replies — and the trials refused because none was clean —
+    # are diagnosable from the bundle. Empty on a trial where every user turn
+    # passed the guard on its first attempt.
+    user_reply_guard_events: list[UserReplyGuardEvent] = Field(default_factory=list)
     final_env_state: dict[str, Any] = Field(default_factory=dict)
     metrics: Metrics = Field(default_factory=Metrics)
     # The trial's ordered tool-call record, one entry per call across every

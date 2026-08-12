@@ -1,10 +1,12 @@
 """Trial runner with agent-user loop"""
 
 import time
+from collections.abc import Sequence
 from datetime import datetime, timezone
 from typing import Any
 
 from tolokaforge.core.actors.actor import Actor
+from tolokaforge.core.actors.reply_guard import UserReplyRefused
 from tolokaforge.core.actors.turn_policy import TurnPolicy, TurnState
 from tolokaforge.core.llm import SIMULATOR_GREETING, GenerationResult, LLMClient, UserSimulator
 from tolokaforge.core.logging import StructuredLogger, init_trial_logger
@@ -24,11 +26,14 @@ from tolokaforge.core.models import (
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
     RecordedToolCall,
+    ReplyDefect,
     TerminationReason,
     ToolExecutionStatus,
     ToolExecutorIdentity,
     Trajectory,
     TrialStatus,
+    UserReplyGuardEvent,
+    UserReplyOutcome,
 )
 from tolokaforge.core.models.task_config import InteractionMode, TaskConfig
 from tolokaforge.core.rate_limiter import GlobalRateLimiter
@@ -174,6 +179,9 @@ class TrialRunner:
         # carried onto the trajectory. Stays ``None`` when the bootstrap never
         # completed — a trial that failed before turn 0 has no such source.
         self._first_user_message_source: FirstUserMessageSource | None = None
+        # One entry per dispatched user turn the reply guard did not accept on
+        # its first generation, carried onto the trajectory.
+        self._user_reply_guard_events: list[UserReplyGuardEvent] = []
         # Set when the simulator emits a substantive final reply glued to the
         # ``###STOP###`` token in the same message. On the next user turn the
         # runner terminates before calling the simulator so the agent gets
@@ -427,6 +435,7 @@ class TrialRunner:
                 termination_reason=termination_reason,
                 first_user_message_source=self._first_user_message_source,
                 messages=self.messages,
+                user_reply_guard_events=list(self._user_reply_guard_events),
                 metrics=self.metrics,
                 tool_log=list(recorded_calls),
             )
@@ -566,6 +575,29 @@ class TrialRunner:
             )
         )
 
+    def _record_user_reply_guard(
+        self,
+        *,
+        message_index: int,
+        outcome: UserReplyOutcome,
+        rejected: Sequence[ReplyDefect],
+    ) -> None:
+        """Record what one dispatched user turn cost the reply guard.
+
+        A turn the guard accepted on its first generation rejected nothing and
+        records nothing, so a trial that never broke frame carries an empty list
+        rather than one no-op row per turn.
+        """
+        if not rejected:
+            return
+        self._user_reply_guard_events.append(
+            UserReplyGuardEvent(
+                message_index=message_index,
+                outcome=outcome,
+                rejected=list(rejected),
+            )
+        )
+
     def _bootstrap_via_simulator(self) -> str:
         """Synthesise turn 0 by dispatching the user simulator against a canned
         agent greeting. Retries on rate limits only.
@@ -601,6 +633,11 @@ class TrialRunner:
                 first_user_result = self.user_simulator.reply(
                     greeting_context, observation=self._user_observation
                 )
+                self._record_user_reply_guard(
+                    message_index=len(self.messages),
+                    outcome=UserReplyOutcome.DELIVERED,
+                    rejected=first_user_result.guard_rejections,
+                )
                 # An empty opening would seed the transcript with a blank USER
                 # turn: the simulator's flipped context then drops it, loses
                 # every trace of having asked, and restarts the conversation —
@@ -612,6 +649,16 @@ class TrialRunner:
                     )
                 self.logger.debug("User simulator generated first message")
                 return first_user_result.text
+            except UserReplyRefused as exc:
+                # Before the re-raise: the trial dies here, and the evidence for
+                # why has to outlive the exception. A refusal is never a rate
+                # limit, so it must not reach the retry branch below either.
+                self._record_user_reply_guard(
+                    message_index=len(self.messages),
+                    outcome=UserReplyOutcome.REFUSED,
+                    rejected=exc.rejected,
+                )
+                raise
             except Exception as exc:
                 is_rate_limit = self._is_rate_limit_error(exc)
                 if is_rate_limit and attempt < init_attempts:
@@ -721,7 +768,24 @@ class TrialRunner:
                 )
             )
 
-        user_result = actor.reply(messages, observation=self._user_observation)
+        # Read before the dispatch: this is the position the turn's USER message
+        # will occupy, and on a stop token or a refusal the loop puts its own
+        # SYSTEM message there instead.
+        message_index = len(messages)
+        try:
+            user_result = actor.reply(messages, observation=self._user_observation)
+        except UserReplyRefused as exc:
+            self._record_user_reply_guard(
+                message_index=message_index,
+                outcome=UserReplyOutcome.REFUSED,
+                rejected=exc.rejected,
+            )
+            raise
+        self._record_user_reply_guard(
+            message_index=message_index,
+            outcome=UserReplyOutcome.DELIVERED,
+            rejected=user_result.guard_rejections,
+        )
 
         if "###STOP###" in user_result.text:
             pre_stop_text, _, _ = user_result.text.partition("###STOP###")

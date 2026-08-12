@@ -496,6 +496,16 @@ list of `ReplyDetector`s over the reply text:
   not an unaccounted multiplier on it (see [`CONFIG.md`](CONFIG.md) §
   `rate_limit_probe`).
 
+What it records, and where: the runner appends one `user_reply_guard_events`
+entry to `trajectory.yaml` per user turn the guard did not accept on its first
+generation — `message_index` (the position in `messages` the turn was dispatched
+at), `outcome` (`delivered` | `refused`), and one `{detector, reason, excerpt}`
+per discarded attempt. Both dispatch sites record, the bootstrap turn and every
+mid-conversation turn, and the refused path records **before** re-raising so a
+trial that died on the guard still carries the evidence for why. A trial whose
+every turn was clean carries `[]`. Field reference in
+[`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `trajectory.yaml`.
+
 `FourthWallDetector` (`name = "fourth_wall"`) is the registered detector. It
 matches **attributed frames**, not vocabulary: a pattern fires only when the
 meta-concept is attributed to a conversational party or to the exercise itself

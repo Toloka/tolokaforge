@@ -113,6 +113,8 @@ from tolokaforge.core.models.trajectory import (
     ToolUsage,
     Trajectory,
     TrialStatus,
+    UserReplyGuardEvent,
+    UserReplyOutcome,
 )
 
 # Cross-package wire types re-exported so callers reach one module for
@@ -197,6 +199,8 @@ __all__ = [
     "ToolUsage",
     "Trajectory",
     "TrialStatus",
+    "UserReplyGuardEvent",
+    "UserReplyOutcome",
     # Model config
     "ModelConfig",
     "OpenRouterConfig",

@@ -274,6 +274,13 @@ status: "completed"                                   # TrialStatus enum
 termination_reason: "agent_done"                      # TerminationReason enum or null
 grading_error: null                                   # why grading produced no verdict, or null
 first_user_message_source: "pinned"                   # pinned | simulator | null
+user_reply_guard_events:                              # [] on a trial that never broke frame
+  - message_index: 2
+    outcome: "refused"                                # delivered | refused
+    rejected:
+      - detector: "fourth_wall"
+        reason: "self_identified_as_model"
+        excerpt: "As an AI language model, I"
 messages:
   - role: "user"
     content: "..."
@@ -302,6 +309,7 @@ messages:
 |---|---|---|---|
 | `simulator_schema_version` | `int` | current value: `2` | Monotonic; bump whenever the simulator prompt shape or the conversation context the simulator sees changes. Analytics consumers gate cross-run comparisons on this stamp. |
 | `first_user_message_source` | `"pinned"`, `"simulator"`, or `null` | set once the turn loop delivers message index 0 | Where the opening user turn came from. `pinned` — the task's `initial_user_message`, delivered verbatim with no simulator dispatch; `simulator` — a user-simulator dispatch wrote it. Partitions a run's trials into authored-opener and generated-opener without re-reading the task pack. `null` means the trial never bootstrapped (it failed first), or the bundle was written before the key existed. |
+| `user_reply_guard_events` | list of `{message_index, outcome, rejected[]}` | one entry per user turn the reply guard did not accept on its first generation | What a defective user turn cost. `[]` is the normal state — a turn accepted on its first generation records nothing. `outcome: delivered` means a later attempt passed the guard and the turn was delivered; `outcome: refused` means the attempt budget was spent, so no clean turn could be produced and the trial errored as a `harness_error`. `rejected` carries one `{detector, reason, excerpt}` per discarded attempt, in order. `message_index` is the position in `messages` the turn was **dispatched at** — for a turn whose accepted reply was a bare `###STOP###`, and for a refused turn, that position holds the loop's own SYSTEM message rather than a USER turn. |
 | `grading_error` | `str` or `null` | non-null when grading ran and refused to produce a verdict | The reason the grading substrate gave. Such a trial has no `grade.yaml` but keeps its own `status` / `termination_reason`, is counted in `total_trials` and `measured_trials`, and is excluded from `scored_trials`. `null` means grading either succeeded or was correctly not attempted — `grade.yaml`'s presence tells those two apart. |
 
 ### `messages[*].reasoning.summary` — when populated

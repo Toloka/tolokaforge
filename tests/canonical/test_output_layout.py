@@ -39,6 +39,7 @@ Spot-checks (content — not full snapshot; that lives in
 * ``prompts.yaml`` carries the agent + user-simulator system prompts.
 * ``trajectory.yaml`` does NOT carry the prompts (moved to ``prompts.yaml``).
 * ``trajectory.yaml.first_user_message_source`` is on disk as the enum's value.
+* ``trajectory.yaml.user_reply_guard_events`` round-trips, nested enum included.
 * ``tools_schemas.yaml`` equals ``capabilities.schema_sanitizer.sanitize(tools)``.
 """
 
@@ -60,8 +61,11 @@ from tolokaforge.core.models import (
     Message,
     MessageRole,
     ModelConfig,
+    ReplyDefect,
     Trajectory,
     TrialStatus,
+    UserReplyGuardEvent,
+    UserReplyOutcome,
 )
 from tolokaforge.core.output.artifacts import FileArtifactWriter
 
@@ -343,6 +347,72 @@ def test_trajectory_yaml_carries_the_first_user_message_source_as_a_plain_string
     assert raw["first_user_message_source"] == "pinned"
     reloaded = Trajectory.model_validate(raw)
     assert reloaded.first_user_message_source is FirstUserMessageSource.PINNED
+
+
+def test_trajectory_yaml_round_trips_a_refused_user_reply_guard_event(
+    tmp_path: Path,
+) -> None:
+    """The event's nested enum has to reach disk as its value too.
+
+    ``outcome`` sits one level down from the keys the writer spells out by
+    hand, so it is the member — and a ``yaml.dump``ed member emits
+    ``!!python/object/apply:``, which ``yaml.safe_load`` refuses, losing the
+    whole bundle for every reader rather than just this key.
+    """
+    writer = FileArtifactWriter()
+    trial_dir = tmp_path / "trials" / "task_A" / "0"
+    refused = _trajectory("task_A", 0).model_copy(
+        update={
+            "user_reply_guard_events": [
+                UserReplyGuardEvent(
+                    message_index=2,
+                    outcome=UserReplyOutcome.REFUSED,
+                    rejected=[
+                        ReplyDefect(
+                            detector="fourth_wall",
+                            reason="self_identified_as_model",
+                            excerpt="As an AI language model, I",
+                        )
+                    ],
+                )
+            ]
+        }
+    )
+    writer.write_trajectory(trial_dir, refused)
+
+    raw = yaml.safe_load((trial_dir / "trajectory.yaml").read_text())
+
+    (event,) = raw["user_reply_guard_events"]
+    assert type(event["outcome"]) is str
+    assert event["outcome"] == "refused"
+    assert event["message_index"] == 2
+    assert event["rejected"] == [
+        {
+            "detector": "fourth_wall",
+            "reason": "self_identified_as_model",
+            "excerpt": "As an AI language model, I",
+        }
+    ]
+
+    reloaded = Trajectory.model_validate(raw)
+    (reloaded_event,) = reloaded.user_reply_guard_events
+    assert reloaded_event.outcome is UserReplyOutcome.REFUSED
+    assert reloaded_event.rejected[0].reason == "self_identified_as_model"
+
+
+def test_a_trajectory_dict_without_the_guard_key_loads_with_an_empty_list(
+    tmp_path: Path,
+) -> None:
+    """Bundles written before the key existed still load."""
+    writer = FileArtifactWriter()
+    trial_dir = tmp_path / "trials" / "task_A" / "0"
+    writer.write_trajectory(trial_dir, _trajectory("task_A", 0))
+
+    raw = yaml.safe_load((trial_dir / "trajectory.yaml").read_text())
+    assert raw["user_reply_guard_events"] == []
+
+    del raw["user_reply_guard_events"]
+    assert Trajectory.model_validate(raw).user_reply_guard_events == []
 
 
 def test_tools_schemas_yaml_matches_sanitizer_output(tmp_path: Path) -> None:
