@@ -745,10 +745,9 @@ class InProcessConductor:
             interaction_mode=task.interaction_mode,
         )
 
-        # Use initial_user_message if provided (e.g., tool-use style tasks).
-        # Otherwise use task.description which the user simulator interprets (e.g., TAU tasks).
-        initial_message = task.initial_user_message if task.initial_user_message else ""
-        trajectory = runner.run(system_prompt, initial_message)
+        # "" is the runner's "caller supplied nothing" seed: turn 0 is routed
+        # to the turn policy's own bootstrap instead of a pinned opener.
+        trajectory = runner.run(system_prompt, task.initial_user_message or "")
 
         return trajectory, runner, system_prompt
 

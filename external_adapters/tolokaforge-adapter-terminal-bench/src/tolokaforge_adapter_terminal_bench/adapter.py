@@ -169,7 +169,7 @@ class TerminalBenchAdapter(BaseAdapter):
             category="terminal",
             description=meta.instruction[:500] if meta.instruction else task_id,
             adapter_type="terminal_bench",
-            initial_user_message=meta.instruction,
+            initial_user_message=meta.instruction if meta.instruction.strip() else None,
             initial_state=InitialStateConfig(),
             tools=ToolsConfig(
                 agent={"enabled": ["bash"]},

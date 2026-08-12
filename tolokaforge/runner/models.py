@@ -233,6 +233,12 @@ class RunnerInitializationAction(BaseModel):
 # =============================================================================
 
 
+_RETIRED_USER_SIMULATOR_KEYS = frozenset({"first_message", "user_context"})
+"""Keys this wire model no longer declares. Named by the refusal below so a
+payload carrying them gets directions rather than Pydantic's bare
+``extra_forbidden``."""
+
+
 class RunnerUserSimulatorConfig(BaseModel):
     """Configuration for the user simulator."""
 
@@ -240,16 +246,34 @@ class RunnerUserSimulatorConfig(BaseModel):
     persona: str = "cooperative"
     backstory: str = ""  # User instruction/context
 
-    # First message to start conversation (TlkMcpCore)
-    first_message: str | None = None
-
-    # User context data injected into conversation (TlkMcpCore)
-    user_context: dict[str, Any] | None = None
-
     # For scripted mode
     scripted_flow: list[dict[str, str]] | None = None
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _refuse_retired_keys(cls, data: Any) -> Any:
+        """Answer a payload carrying a retired key with the remedy for its source.
+
+        Two sources reach here and each needs a different fix: an adapter
+        populating the field in Python, and an engine older than this image
+        emitting it onto the wire.
+        """
+        if not isinstance(data, dict):
+            return data
+        retired = _RETIRED_USER_SIMULATOR_KEYS & set(data)
+        if not retired:
+            return data
+        raise ValueError(
+            f"user_simulator carries {sorted(retired)}, which this runner no longer "
+            "declares — nothing ever read either key. An adapter should set the task's "
+            "opening turn on TaskConfig.initial_user_message in get_task(), where it is "
+            "delivered verbatim as the first user message; user_context has no "
+            "replacement. If this payload came from an engine, that engine and this "
+            "runner image are version-skewed: rebuild the image from the engine you are "
+            "running (make docker-build-core) or pin an image tag that matches it."
+        )
 
 
 # =============================================================================

@@ -148,12 +148,18 @@ naming the skew in `RegisterTrialResponse.error`. The orchestrator already treat
 registration failure as fatal, so a skewed pair fails before any tokens are spent.
 
 **This gate's bound is one-sided, and the unprotected direction is the quieter one.**
-An **older** engine against a newer image fails every trial at registration, loudly.
-A **newer** engine against an older image passes *this* gate — the older runner does
-not know the `engine_protocol_version` field, and proto3 drops unknown fields on a
-proto message rather than erroring — so the version skew itself surfaces later and
-less clearly: that engine sends a `call_id` on every `ExecuteTool` which the older
-runner also ignores, so calls are recorded without the id grading joins on.
+An **older** engine against a newer image fails every trial at registration, loudly —
+for the field it cannot send (`call_id`) and, from protocol version 2 on, for the two
+`user_simulator` keys it still emits into the trial spec that the current image no
+longer declares. A **newer** engine against an older image passes *this* gate — the
+older runner does not know the `engine_protocol_version` field, and proto3 drops
+unknown fields on a proto message rather than erroring — so the version skew itself
+surfaces later and less clearly: that engine sends a `call_id` on every `ExecuteTool`
+which the older runner also ignores, so calls are recorded without the id grading
+joins on. Each version and what it first changed is listed in
+[`GRPC_PROTOCOL.md`](GRPC_PROTOCOL.md#version-lock) § Version lock; refusing an
+engine below the bound at the gate, rather than at model validation, is what a bump
+buys.
 
 **That reasoning covers the proto message only, and registration also carries a
 JSON payload where it does not hold.** The trial spec crosses as `trial_spec_json`,

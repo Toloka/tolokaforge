@@ -27,6 +27,7 @@ from tolokaforge.core.models.grade import Grade
 from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
+    "FirstUserMessageSource",
     "Message",
     "MessageRole",
     "Metrics",
@@ -71,6 +72,13 @@ class TerminationReason(str, Enum):
     API_TIMEOUT = "api_timeout"  # API call timed out after retries
     API_ERROR = "api_error"  # Other API errors
     PROVISION_ERROR = "provision_error"  # Substrate provisioning failed before the trial body ran
+
+
+class FirstUserMessageSource(str, Enum):
+    """Where message index 0 came from."""
+
+    PINNED = "pinned"  # The task's initial_user_message, delivered verbatim
+    SIMULATOR = "simulator"  # A user-simulator dispatch produced it
 
 
 class ToolCall(BaseModel):
@@ -451,6 +459,11 @@ class Trajectory(BaseModel):
     end_ts: datetime
     status: TrialStatus = TrialStatus.COMPLETED
     termination_reason: TerminationReason | None = None
+    # How message index 0 was delivered, so an analyst can partition trials
+    # into authored-opener and generated-opener without re-reading the task
+    # pack. ``None`` is the honest state for a trial whose turn loop never
+    # bootstrapped, and for a bundle written before the key existed.
+    first_user_message_source: FirstUserMessageSource | None = None
     messages: list[Message]
     final_env_state: dict[str, Any] = Field(default_factory=dict)
     metrics: Metrics = Field(default_factory=Metrics)

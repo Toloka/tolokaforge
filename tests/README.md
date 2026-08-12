@@ -175,6 +175,13 @@ Compare output against committed golden snapshots in `snapshots/`.
   constant, so a bump nobody documented reds nothing; the table is the second source. A
   failure means the constants moved and the docs table follows — never the other way
   round.
+- Protocol version documented (`test_protocol_version_documented.py`) — the versions
+  `docs/GRPC_PROTOCOL.md` § Version lock names, one sentence each, must be exactly
+  `1..ENGINE_PROTOCOL_VERSION`. Every in-tree caller reads the constant, so a bump
+  nobody documented reds nothing while the doc keeps telling an operator that the
+  newest version is the previous one; a sentence above the constant describes a gate
+  nothing enforces. A failure means the section follows the constant — document what
+  the new version is the first to change, never edit the constant to match the prose.
 - Gate semantics parity (`test_gate_semantics_parity.py`) — the judge's required
   criterion and a trace check's `severity: gate` are one gate scored by two
   implementations, driven against one shared answer table. A failure names the cell

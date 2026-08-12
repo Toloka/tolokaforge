@@ -485,6 +485,7 @@ task_id: "browser_simple_navigation"
 name: "Simple Browser Navigation"
 category: "browser"
 description: "Navigate to the mock Example Domain page"
+initial_user_message: "Open example.com and tell me the page title."   # optional — pinned opener, delivered verbatim as turn 1
 
 initial_state:
   json_db: "initial_state.json"          # optional
@@ -507,14 +508,15 @@ tools:
   user:
     enabled: []
 
-user_simulator:
-  mode: "scripted"   # "scripted" or "llm"
-  persona: "cooperative"
-  backstory: ""
-  scripted_flow:
-    - if_assistant_contains: "done"
-      user: "Thanks!"
-    - default: "Please continue."
+actors:
+  user:
+    mode: "scripted" # "scripted" or "llm"
+    persona: "cooperative"
+    backstory: ""
+    scripted_flow:
+      - if_assistant_contains: "done"
+        user: "Thanks!"
+      - default: "Please continue."
 
 policies:
   guidance:
@@ -542,11 +544,17 @@ entry-point group. See [ADR-0028](adr/0028-multi-actor-turn-policy.md).
 - **`agent_only`** — no user turn dispatched after the initial message.
   The agent runs to `###STOP###` (routed to `TerminationReason.AGENT_DONE`),
   `max_turns`, or `episode_timeout_s`. The user simulator is never
-  constructed. Requires a non-empty `initial_user_message` at pack
-  authoring time (fails loud at run-start otherwise — the agent-only
-  route has no simulator to synthesize a bootstrap message). Matches
-  agent-driven eval shapes (code migration, autonomous tool-use) where
-  the task lives entirely in the system prompt.
+  constructed. Matches agent-driven eval shapes (code migration,
+  autonomous tool-use) where the task lives entirely in the system prompt.
+
+Both shapes read the same field for turn 0. `initial_user_message` is the
+task's pinned opener: its text is delivered verbatim as the first user
+message, whitespace included, and no simulator dispatch produces that turn.
+`agent_only` **requires** it — that shape has no simulator to synthesize a
+bootstrap message, so a task declaring it without an opener fails loud at
+run-start. `conversational` treats it as optional: unset, the user simulator
+writes turn 1. Under either mode, declaring the key with an empty or
+whitespace-only value is refused at load.
 
 ## Grading Specification (`grading.yaml`)
 

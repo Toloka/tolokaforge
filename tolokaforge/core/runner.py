@@ -17,6 +17,7 @@ from tolokaforge.core.loop import (
     UserTurnResult,
 )
 from tolokaforge.core.models import (
+    FirstUserMessageSource,
     Message,
     MessageRole,
     Metrics,
@@ -169,6 +170,10 @@ class TrialRunner:
         # :meth:`UserSimulator.reply` for tests that drive the runner's helper
         # methods directly.
         self._user_observation: LLMCallObservation | None = None
+        # How turn 0 was delivered, stamped by ``_seed_first_user_message`` and
+        # carried onto the trajectory. Stays ``None`` when the bootstrap never
+        # completed — a trial that failed before turn 0 has no such source.
+        self._first_user_message_source: FirstUserMessageSource | None = None
         # Set when the simulator emits a substantive final reply glued to the
         # ``###STOP###`` token in the same message. On the next user turn the
         # runner terminates before calling the simulator so the agent gets
@@ -420,6 +425,7 @@ class TrialRunner:
                 end_ts=end_ts,
                 status=status,
                 termination_reason=termination_reason,
+                first_user_message_source=self._first_user_message_source,
                 messages=self.messages,
                 metrics=self.metrics,
                 tool_log=list(recorded_calls),
@@ -539,14 +545,19 @@ class TrialRunner:
 
         if decision.first_user_message is not None:
             first_user_text = decision.first_user_message
-            self.logger.debug("Using provided initial_user_message directly")
+            self._first_user_message_source = FirstUserMessageSource.PINNED
         elif decision.bootstrap_via_simulator:
             first_user_text = self._bootstrap_via_simulator()
+            self._first_user_message_source = FirstUserMessageSource.SIMULATOR
         else:
             raise RuntimeError(
                 "BootstrapDecision must supply first_user_message or bootstrap_via_simulator=True"
             )
 
+        self.logger.info(
+            "First user message delivered",
+            source=self._first_user_message_source.value,
+        )
         self.messages.append(
             Message(
                 role=MessageRole.USER,

@@ -78,10 +78,11 @@ tools:
     enabled: ["get_order", "cancel_order", "refund_order"]
   user:
     enabled: []
-user_simulator:
-  mode: "llm"
-  persona: "customer"
-  backstory: "..."
+actors:
+  user:
+    mode: "llm"
+    persona: "customer"
+    backstory: "..."
 grading: "grading.yaml"
 system_prompt: "system_prompt.md"
 ```

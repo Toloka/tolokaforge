@@ -579,6 +579,66 @@ class TestCallIdCrossesTheWire:
 class TestRegisterTrialVersionGate:
     """Version skew aborts at registration, before any tokens are spent."""
 
+    @staticmethod
+    def _spec_with_retired_user_simulator_key(trial_id: str, task: dict[str, Any]) -> str:
+        """A trial spec as a version-1 engine still serialises it.
+
+        Built by editing the JSON rather than the model: the key is exactly what
+        this runner's models refuse, so it cannot be constructed through them.
+        """
+        spec = json.loads(trial_spec_json(task, trial_id=trial_id))
+        spec["task"]["user_simulator"] = {
+            "mode": "llm",
+            "persona": "cooperative",
+            "backstory": "",
+            "first_message": None,
+        }
+        return json.dumps(spec)
+
+    def test_engine_emitting_a_retired_trial_spec_key_is_refused_by_the_gate(
+        self, runner_service, mock_grpc_context, simple_task_description
+    ):
+        """Version 1 is the last that emits ``user_simulator.first_message``.
+
+        The gate has to catch that engine, because the alternative refusal — the
+        wire model's own — reaches the operator as a validation failure over a key
+        their engine will keep sending until the pair is rebuilt.
+        """
+        trial_id = "retired_key_engine:0"
+        response = runner_service.RegisterTrial(
+            register_request(
+                self._spec_with_retired_user_simulator_key(trial_id, simple_task_description),
+                trial_id=trial_id,
+                engine_protocol_version=1,
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.success is False
+        assert "version-skewed" in response.error
+        assert "Invalid trial_spec_json" not in response.error
+        assert trial_id not in runner_service.trials
+
+    def test_the_same_payload_from_a_current_engine_is_refused_by_the_wire_model(
+        self, runner_service, mock_grpc_context, simple_task_description
+    ):
+        """The gate's refusal above is not vacuous: the payload really is
+        unparseable, and past the gate the model names the key and its remedy."""
+        trial_id = "current_engine_retired_key:0"
+        response = runner_service.RegisterTrial(
+            register_request(
+                self._spec_with_retired_user_simulator_key(trial_id, simple_task_description),
+                trial_id=trial_id,
+            ),
+            mock_grpc_context,
+        )
+
+        assert response.success is False
+        assert "Invalid trial_spec_json" in response.error
+        assert "first_message" in response.error
+        assert "initial_user_message" in response.error
+        assert trial_id not in runner_service.trials
+
     def test_engine_below_the_required_version_is_refused(
         self, runner_service, mock_grpc_context, simple_task_description
     ):
