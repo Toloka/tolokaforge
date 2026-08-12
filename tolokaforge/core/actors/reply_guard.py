@@ -15,8 +15,9 @@ it plays. Its governing rule, which every pattern obeys:
     A pattern matches only when the meta-concept is attributed to a
     conversational party or to the exercise itself, *and* the noun carrying it
     heads its own phrase. A machine noun matches only bound to a first-person
-    subject; an exercise noun only under a demonstrative; a system prompt only
-    when possessed by the agent, or by the speaker with an instruction verb.
+    subject; an exercise noun only under a demonstrative, or in a prepositional
+    frame the speaker puts itself inside; a system prompt only when possessed by
+    the agent, or by the speaker with an instruction verb.
 
 The bare noun never matches, and neither does a noun used attributively (``an
 AI engineer``, ``a benchmark index fund``, ``a real person of interest``, ``your
@@ -38,9 +39,14 @@ often enough that the demonstrative head cannot separate them:
   my activity ring."``, ``"This evaluation is taking too long."``, ``"This
   benchmark is up 4% this year."``, ``"This test case is failing after your last
   release."`` are ordinary support turns. Only the compounds (``roleplay
-  exercise``, ``training exercise``, ``evaluation exercise``) and the
-  prepositional frame (``in this benchmark``) survive, so a bare ``"This
-  benchmark tests performance."`` is missed.
+  exercise``, ``training exercise``, ``evaluation exercise``) survive, so a bare
+  ``"This benchmark tests performance."`` is missed.
+* the prepositional frame without a first-person subject —
+  ``"During the simulation, the app froze and I lost my mesh."`` is what a
+  customer of simulation software says, so the frame only matches when the
+  speaker places itself inside it (``"In this simulation, I play the role of a
+  customer."``). A break phrased about a third party, ``"During the simulation
+  the agent refused twice."``, is missed.
 * ``instructions`` in every position — ``"My instructions say to take two
   tablets daily."`` is a support turn far more often than a leaked persona.
 * ``"I'm an LLM-based assistant."`` — the hyphen makes the machine noun
@@ -55,7 +61,7 @@ from typing import TYPE_CHECKING, Protocol, runtime_checkable
 
 from tolokaforge.core.logging import get_logger
 from tolokaforge.core.models.run_config import USER_REPLY_MAX_ATTEMPTS
-from tolokaforge.core.models.trajectory import REPLY_DEFECT_EXCERPT_MAX_CHARS, ReplyDefect
+from tolokaforge.core.models.trajectory import ReplyDefect
 
 if TYPE_CHECKING:
     from tolokaforge.core.llm.client import GenerationResult
@@ -129,12 +135,26 @@ _FOURTH_WALL_PATTERNS: tuple[tuple[str, str], ...] = (
         "named_the_exercise",
         rf"\bthis\s+{_EXERCISE_NOUN}\s+(?:is|was|tests|measures|scores|ends|starts|matters)\b",
     ),
+    # The prepositional frame is where a customer describes what went wrong
+    # ("during the simulation, the app froze"), so an end anchor cannot carry
+    # this one — a comma satisfies it. What separates the break is the speaker
+    # placing *itself* inside the exercise.
     (
         "named_the_exercise",
         r"\b(?:in|for|during)\s+(?:this|the)\s+"
-        r"(?:simulation|benchmark|roleplay|role[-\s]play|evaluation\s+run)\b",
+        r"(?:simulation|benchmark|roleplay|role[-\s]play|evaluation\s+run)\b"
+        r"\s*,?\s+(?:I|we)\b",
     ),
-    ("named_a_party_prompt", rf"\b(?:your|its|the\s+agent's)\s+system\s+prompt\b{_MACHINE_END}"),
+    # Two ways the agent's prompt heads its phrase: the general anchor, or a
+    # verb reciting what the prompt says — the latter is the family's least
+    # ambiguous break and no anchor built for nouns can see it.
+    (
+        "named_a_party_prompt",
+        rf"\b(?:your|its|the\s+agent's)\s+system\s+prompt\b"
+        rf"(?:{_MACHINE_END}"
+        r"|(?=\s+(?:say|says|said|tells?|told|instructs?|instructed"
+        r"|states?|forbids?|requires?)\b))",
+    ),
     (
         "named_a_party_prompt",
         r"\bmy\s+system\s+prompt\s+(?:say|says|said|tells?|instructs?|states?)\b",
@@ -163,11 +183,9 @@ class ReplyDetector(Protocol):
     def inspect(self, text: str) -> ReplyDefect | None:
         """Return the defect found in *text*, or ``None`` when it is clean.
 
-        The defect's ``excerpt`` must be truncated to
-        :data:`~tolokaforge.core.models.trajectory.REPLY_DEFECT_EXCERPT_MAX_CHARS`.
-        A longer span fails :class:`ReplyDefect` validation inside this call, so
-        the reply escapes the guard as an unclassified crash instead of costing
-        one attempt and being regenerated.
+        The returned ``detector`` is advisory: :class:`UserReplyGuard` records
+        the name the detector is registered under. ``excerpt`` may be any
+        length — :class:`ReplyDefect` bounds it.
         """
         ...
 
@@ -181,11 +199,7 @@ class FourthWallDetector:
         for reason, pattern in _FOURTH_WALL_RULES:
             match = pattern.search(text)
             if match is not None:
-                return ReplyDefect(
-                    detector=self.name,
-                    reason=reason,
-                    excerpt=match.group(0)[:REPLY_DEFECT_EXCERPT_MAX_CHARS],
-                )
+                return ReplyDefect(detector=self.name, reason=reason, excerpt=match.group(0))
         return None
 
 
@@ -300,8 +314,14 @@ class UserReplyGuard:
         raise UserReplyRefused(tuple(rejected))
 
     def _inspect(self, text: str) -> ReplyDefect | None:
+        """First hit in registration order, recorded under the registered name.
+
+        A detector's own ``detector`` field is overwritten here, so what the
+        bundle groups on is the registration a run can be read back from rather
+        than a string an implementation chose.
+        """
         for detector in self.detectors:
             defect = detector.inspect(text)
             if defect is not None:
-                return defect
+                return defect.model_copy(update={"detector": detector.name})
         return None

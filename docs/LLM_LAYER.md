@@ -529,13 +529,22 @@ attributively (`I'm an AI engineer at a fintech startup`, `a benchmark index
 fund`, `not a real person of interest`, `your system prompt caching feature`). A
 false positive costs the whole attempt budget and then the trial, so precision
 outranks recall — and where a demonstrative head cannot separate the two senses,
-the frame is given up rather than the support turn. `exercise`, `evaluation`,
-`benchmark` and `test scenario` / `test case` are exercise nouns only in their
-compounds (`roleplay exercise`, `training exercise`, `evaluation exercise`) and
-under the prepositional frame (`in this benchmark`), so `This exercise is not
-showing up in my activity ring.` passes and a bare `This benchmark tests
-performance.` is missed. The module's docstring carries the full list of the
-recall given up and why.
+the frame is given up rather than the support turn. `exercise` and `evaluation`
+are exercise nouns only in their compounds (`roleplay exercise`, `training
+exercise`, `evaluation exercise`), `benchmark` only under the prepositional frame
+(`in this benchmark`), and `test scenario` / `test case` no longer match in any
+frame. The prepositional frame itself matches only when the speaker places itself
+inside the exercise (`In this benchmark, I am playing a frustrated customer.`),
+because `During the simulation, the app froze and I lost my mesh.` is what a
+customer of simulation software says. So `This exercise is not showing up in my
+activity ring.` passes, and a bare `This benchmark tests performance.` is missed.
+The module's docstring carries the full list of the recall given up and why.
+
+The `named_a_party_prompt` family matches the agent's prompt two ways: as a noun
+heading its phrase (`Your system prompt is confusing.`), and as the subject of a
+verb reciting what it says (`Your system prompt says to be concise.`). The second
+is the family's least ambiguous break — a customer quoting the agent's own
+instructions — and no anchor built for nouns can see it, so it is its own branch.
 
 The user describing the **agent** as a machine (`You are chatting with an
 internal AI agent, right?`) is in frame and passes by design; only the simulator

@@ -473,7 +473,17 @@ class ReplyDefect(BaseModel):
     :attr:`excerpt`."""
 
     excerpt: str = Field(max_length=REPLY_DEFECT_EXCERPT_MAX_CHARS)
-    """The matched span of the discarded reply."""
+    """The matched span of the discarded reply, truncated to the bound.
+
+    ``max_length`` documents the bound in the schema; the before-validator
+    below applies it, so no value ever reaches the constraint too long."""
+
+    @field_validator("excerpt", mode="before")
+    @classmethod
+    def _bound_excerpt(cls, value: Any) -> Any:
+        """Truncate rather than refuse: an overlong span is still evidence, and
+        refusing it would take the reply out of the guard as a crash."""
+        return value[:REPLY_DEFECT_EXCERPT_MAX_CHARS] if isinstance(value, str) else value
 
 
 class UserReplyOutcome(str, Enum):

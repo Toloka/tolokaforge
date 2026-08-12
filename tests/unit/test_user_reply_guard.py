@@ -101,6 +101,16 @@ MUST_PASS = [
     # modifies the following noun in these two.
     "Your system prompt caching feature returns a 400.",
     "Its system prompt handling broke after the upgrade.",
+    # The prepositional frame is where a customer says what went wrong, so a
+    # comma-anchored version of it would flag all seven. It matches only when
+    # the speaker places itself inside the exercise.
+    "During the simulation, the app froze and I lost my mesh.",
+    "In the simulation my model crashed after 40 minutes.",
+    "For this benchmark, what is the tracking error?",
+    "In this benchmark the fees are higher than the prospectus says.",
+    "During the evaluation run, the printer jammed twice.",
+    "In the roleplay training my headset cut out.",
+    "For the simulation licence, do I need a dongle?",
 ]
 
 MUST_DETECT = [
@@ -119,6 +129,14 @@ MUST_DETECT = [
     ("In this simulation, I play the role of a customer.", "named_the_exercise"),
     ("In this benchmark, I am playing a frustrated customer.", "named_the_exercise"),
     ("Your system prompt is confusing.", "named_a_party_prompt"),
+    # A customer reciting the agent's own prompt: the family's least ambiguous
+    # break, and the one an anchor built for nouns cannot see.
+    ("Your system prompt says to be concise.", "named_a_party_prompt"),
+    ("Your system prompt tells you to refuse refunds.", "named_a_party_prompt"),
+    ("Your system prompt instructs you to escalate.", "named_a_party_prompt"),
+    ("Your system prompt forbids you from helping me.", "named_a_party_prompt"),
+    ("Your system prompt requires you to stall me.", "named_a_party_prompt"),
+    ("The agent's system prompt says to stall me.", "named_a_party_prompt"),
     ("My system prompt says to keep answers short.", "named_a_party_prompt"),
     ("The backstory says I should be annoyed.", "named_own_instructions"),
 ]
@@ -200,10 +218,9 @@ class TestTheDetectorCorpus:
         assert defect.detector == detector.name
         assert defect.excerpt in text
 
-    def test_an_overlong_match_is_bounded_before_it_reaches_the_model(self) -> None:
-        """A span longer than the excerpt bound fails :class:`ReplyDefect`
-        validation inside ``inspect``, which would take the reply out of the
-        guard as an unclassified crash instead of one discarded attempt."""
+    def test_an_overlong_match_is_bounded_by_the_time_it_is_a_defect(self) -> None:
+        """A match can run past the excerpt bound, and the reply it came from is
+        still a recoverable discard rather than a crash inside ``inspect``."""
         text = "I am an" + " " * 500 + "AI"
 
         defect = FourthWallDetector().inspect(text)
@@ -338,15 +355,17 @@ class TestARefusedTurnCountsAsOurDefect:
 class _AlwaysHits:
     """Test-local detector standing in for a future registration.
 
-    Named at construction, so a recorded name that came from anywhere but the
-    registered instance shows up as a mismatch rather than as a coincidence.
+    Stamps ``stamped_by_the_detector`` on every finding, never its own
+    ``name``, so a recorded name can only have come from the registration.
     """
 
     def __init__(self, name: str) -> None:
         self.name = name
 
     def inspect(self, text: str) -> ReplyDefect | None:
-        return ReplyDefect(detector=self.name, reason="test_local", excerpt=text[:20])
+        return ReplyDefect(
+            detector="stamped_by_the_detector", reason="test_local", excerpt=text[:20]
+        )
 
 
 class TestDetectorsAreAPluggableList:
@@ -364,6 +383,9 @@ class TestDetectorsAreAPluggableList:
         assert {d.detector for d in excinfo.value.rejected} == {FourthWallDetector().name}
 
     def test_a_reply_only_the_second_detector_flags_carries_its_registered_name(self) -> None:
+        """The recorded name is the registration, not the string the detector
+        stamped on its own finding — the bundle groups on a name a run can be
+        read back from."""
         detectors: tuple[ReplyDetector, ...] = (FourthWallDetector(), _AlwaysHits("scratchpad"))
         guard = UserReplyGuard(detectors=detectors)
 
@@ -535,6 +557,17 @@ class TestTheBundleRecordsWhatAUserTurnCost:
 
         assert trajectory.user_reply_guard_events == []
         assert any(m.content == CLEAN_REPLY for m in trajectory.messages)
+
+    def test_an_overlong_excerpt_is_truncated_rather_than_refused(self) -> None:
+        """Refusing it would convert a diagnosable discarded reply into an
+        unclassified crash at the point the detector builds its finding."""
+        defect = ReplyDefect(
+            detector="fourth_wall",
+            reason="self_identified_as_model",
+            excerpt="x" * (REPLY_DEFECT_EXCERPT_MAX_CHARS + 300),
+        )
+
+        assert defect.excerpt == "x" * REPLY_DEFECT_EXCERPT_MAX_CHARS
 
     def test_an_event_that_discarded_nothing_cannot_be_constructed(self) -> None:
         """The empty list is what "this turn was clean" would look like, and a
