@@ -56,6 +56,7 @@ from click.testing import CliRunner, Result
 from pydantic import BaseModel
 
 from tolokaforge.core.grading.corpus_curation import CorpusManifest
+from tolokaforge.core.grading.migration_declaration import MIGRATION_FILENAME
 from tolokaforge.core.grading.rubric_migration import (
     MigrationCounterfactual,
     RecomputationGap,
@@ -65,6 +66,7 @@ from tolokaforge.core.grading.rubric_migration import (
     RefusalKind,
     TrialCounterfactual,
     reconcile_corpus,
+    reconcile_declared_corpora,
 )
 from tolokaforge.dx.cli.main import cli
 
@@ -1083,3 +1085,220 @@ def test_the_declaration_names_the_constraint_the_corpus_measured() -> None:
     assert declared["mode"] == "candidate"
     assert declared["by"] == [_LOT_OPS_CONSTRAINT]
     assert declared["was"]["required"] is True
+
+
+# ---------------------------------------------------------------------------
+# The sweep: every declared migration, over the corpus its own declaration names
+# ---------------------------------------------------------------------------
+
+#: Every row the sweep over the shipped tree reports, in the order it reports them — by
+#: corpus, then by pool. Written out here rather than derived from the sweep, because the row
+#: set *is* the claim: a fourth sidecar, a declaration re-pointed at another corpus, or a
+#: verdict that moved reds against this literal instead of against a number.
+_SWEPT_ROWS = [
+    (_LOT_OPS_CORPUS, "names_lot", "candidate", ReconcileVerdict.REFUSED, 10, ["lot_ops_01"]),
+    (
+        _CORPUS,
+        "checked_duplicates_first",
+        "narrowed",
+        ReconcileVerdict.NO_COUNTER_EVIDENCE,
+        17,
+        ["notes_add_note_duplicate_check_gated", "notes_add_note_duplicate_check_policy"],
+    ),
+]
+
+
+def test_the_sweep_reports_one_row_per_surviving_declaration_over_the_corpus_it_names() -> None:
+    """Every migration the shipped tree declares, each measured over the corpus it names.
+
+    Three sidecars ship and they pool into **two** rows: both notes arms are byte-identical
+    and quote one measurement twice, so a sweep reporting one row per *file* would report
+    three. The sidecar count is read off the tree, which is what makes the pooling rule
+    load-bearing here rather than a number that happens to match.
+
+    The two verdicts are the two things the bar can say about a committed corpus, and both
+    ship: a narrow its evidence carries, and a candidacy its own corpus refuses. The refused
+    row is why the exit code is locked separately — a candidate converts nothing.
+    """
+    reports = reconcile_declared_corpora(packs=[_SHIPPED_PACKS], corpus_base=_REPO)
+
+    assert len(list(_SHIPPED_PACKS.rglob(MIGRATION_FILENAME))) == 3
+    assert [Path(report.source) for report in reports] == [_LOT_OPS_CORPUS, _CORPUS]
+    assert [
+        (
+            Path(report.source),
+            entry.criterion,
+            entry.mode.value,
+            entry.verdict,
+            entry.observations,
+            entry.task_ids,
+        )
+        for report in reports
+        for entry in report.entries
+    ] == _SWEPT_ROWS
+
+
+def test_the_sweep_exits_zero_over_the_shipped_tree_and_names_every_verdict(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The invocation CI runs: no ``--source``, the default pack root, and a verdict per row.
+
+    The working directory is pinned because both the default ``--packs`` root and the base
+    each declared corpus is read against come from it — "the sweep resolves the shipped packs
+    and their corpora" is a claim about running from the repository root, stated rather than
+    assumed.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli("--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "no_counter_evidence over 17 observations" in result.output
+    assert "names_lot (lot_ops_01) — declared candidate, refused over 10 observations" in (
+        result.output
+    )
+    assert "a candidate converts nothing, so its verdict gates nothing" in result.output
+
+
+@pytest.mark.parametrize(
+    ("dropped", "observations", "kinds", "names"),
+    [
+        (None, 17, [], ()),
+        (
+            "met",
+            16,
+            [RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT],
+            ("declares 17", "measured 16", "no part of the corpus left out"),
+        ),
+    ],
+    ids=["the-corpus-the-declaration-names", "one-bundle-short-of-it"],
+)
+def test_a_corpus_short_of_its_declared_count_is_refused_where_the_source_is_that_corpus(
+    tmp_path: Path,
+    dropped: str | None,
+    observations: int,
+    kinds: list[RefusalKind],
+    names: tuple[str, ...],
+) -> None:
+    """The bound the sweep tightens into an equality, and the pair that shows it is the drop.
+
+    Over an arbitrary ``--source`` a count below the declared one says nothing, because the
+    source may deliberately be part of the corpus. Over the corpus a declaration itself names
+    there is no part left out, so bundles that went missing are missing — and the whole
+    corpus, one bundle richer, reconciles clean through the same fixture.
+
+    This is the **declared-evidence** refusal, the count a reviewer reads against the one the
+    command reaches. It is not the manifest set-equality assertion above, which compares a
+    corpus's own account of itself against the directories beside it; both hold over this
+    corpus, for different reasons and on different fixtures.
+
+    The pack and the corpus are copied into one tree, the corpus under the relative path the
+    declaration already names, and the declaration is copied byte-unchanged — so ``corpus_base``
+    points the whole resolution at the copy, and the fixture writes nothing anywhere else.
+    """
+    root = tmp_path / "tree"
+    packs = root / "tests/data/migration_packs"
+    corpus = root / _CORPUS.relative_to(_REPO)
+    shutil.copytree(_PACKS, packs)
+    shutil.copytree(_CORPUS, corpus)
+    assert (packs / _DECLARATION.relative_to(_PACKS)).read_bytes() == _DECLARATION.read_bytes()
+    if dropped is not None:
+        shutil.rmtree(corpus / dropped / sorted(_MET_BUNDLES)[0])
+    before = _tree_digest(root)
+
+    (report,) = reconcile_declared_corpora(packs=[packs], corpus_base=root)
+
+    (entry,) = report.entries
+    assert entry.observations == observations
+    assert [refusal.kind for refusal in entry.refusals] == kinds
+    written = " ".join(refusal.message for refusal in entry.refusals)
+    for expected in names:
+        assert expected in written
+    assert _tree_digest(root) == before
+
+
+@pytest.mark.parametrize(
+    ("arguments", "names"),
+    [
+        (("--dry-run", "--replay-id", "swept"), "--replay-id"),
+        ((), "--dry-run"),
+    ],
+    ids=["a-name-for-a-report-it-writes-none-of", "keeping-a-report-it-writes-none-of"],
+)
+def test_the_sweep_refuses_an_invocation_that_asks_it_to_write(
+    arguments: tuple[str, ...], names: str, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A flag the mode cannot honour is refused, never quietly ignored.
+
+    The sweep reads committed corpora and a report lands under the corpus it read, so both
+    of these ask for an artifact inside the tree. Ignoring them would leave an operator
+    believing a named report exists somewhere.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli(*arguments)
+
+    assert result.exit_code != 0
+    assert names in result.output
+    assert "no_counter_evidence" not in result.output
+
+
+def test_each_entry_of_a_pack_is_measured_over_the_corpus_that_entry_names(
+    tmp_path: Path,
+) -> None:
+    """A pack may migrate two criteria on two bodies of evidence, and each row is its own.
+
+    The shipped tree declares one entry per pack, so "each entry over the corpus it names" and
+    "each pack over the corpus its first entry names" are the same sweep over it. Here they are
+    not: the policy fixture pack gains a second entry claiming ``note_saved`` over the ``met``
+    half alone, so the two rows must differ in the trials they read — seventeen for the narrow
+    pooled across both arms, twelve for the candidacy measured over one half.
+
+    ``was`` is read off the pack's own rubric rather than restated, because what this fixture
+    is about is which corpus each entry reaches, and a hand-copied criterion would only add a
+    second way for it to fail.
+    """
+    root = tmp_path / "tree"
+    packs = root / "tests/data/migration_packs"
+    corpus = root / _CORPUS.relative_to(_REPO)
+    shutil.copytree(_PACKS, packs)
+    shutil.copytree(_CORPUS, corpus)
+    policy = packs / _POLICY_DECLARATION.relative_to(_PACKS)
+    grading = yaml.safe_load((policy.parent / "grading.yaml").read_text())
+    (saved,) = [
+        criterion
+        for criterion in grading["llm_judge"]["rubric"]["criteria"]
+        if criterion["id"] == "note_saved"
+    ]
+    declared = yaml.safe_load(policy.read_text())
+    declared["migrations"].append(
+        {
+            "criterion": saved["id"],
+            "mode": "candidate",
+            "by": ["the_notes_were_listed_before_the_note_was_added"],
+            "corpus": f"{_CORPUS.relative_to(_REPO)}/met",
+            "was": {
+                "kind": saved["kind"],
+                "required": saved.get("required", False),
+                "weight": saved["weight"],
+                "description": saved["description"],
+            },
+        }
+    )
+    policy.write_text(yaml.safe_dump(declared, sort_keys=False))
+
+    reports = reconcile_declared_corpora(packs=[packs], corpus_base=root)
+
+    assert [
+        (Path(report.source), entry.criterion, entry.observations, entry.task_ids)
+        for report in reports
+        for entry in report.entries
+    ] == [
+        (
+            corpus,
+            "checked_duplicates_first",
+            17,
+            ["notes_add_note_duplicate_check_gated", "notes_add_note_duplicate_check_policy"],
+        ),
+        (corpus / "met", saved["id"], 12, ["notes_add_note_duplicate_check_policy"]),
+    ]

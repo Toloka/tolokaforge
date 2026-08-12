@@ -34,7 +34,9 @@ from tolokaforge.core.grading.replay_layout import JUDGE_REPLAY_DIRNAME
 from tolokaforge.core.grading.rubric_migration import (
     DEFAULT_PACKS_ROOT,
     ReconcileError,
+    ReconcileReport,
     reconcile_corpus,
+    reconcile_declared_corpora,
     reconcile_root,
 )
 from tolokaforge.core.grading.trace_replay import (
@@ -1283,11 +1285,13 @@ def curate(
 @cli.command(name="reconcile")
 @click.option(
     "--source",
-    required=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Corpus of recorded trial bundles the migration's evidence comes from — a run dir, "
-        "a flat collection of bundle dirs, or a single bundle dir."
+        "a flat collection of bundle dirs, or a single bundle dir. Omitted, every migration "
+        "declared under --packs is reconciled over the corpus its own declaration names, "
+        "which writes nothing and so needs --dry-run and takes no --replay-id."
     ),
 )
 @click.option(
@@ -1295,9 +1299,10 @@ def curate(
     multiple=True,
     type=click.Path(exists=True, file_okay=False),
     help=(
-        "Directory searched recursively for the pack each bundle's task_id names; repeatable. "
-        f"A task_id resolving in none of them, or in more than one, is an error naming the id "
-        f"and the roots searched. Default: {DEFAULT_PACKS_ROOT}."
+        "Directory searched recursively for the pack each bundle's task_id names, and for the "
+        "declarations the sweep reconciles; repeatable. A task_id resolving in none of them, "
+        f"or in more than one, is an error naming the id and the roots searched. "
+        f"Default: {DEFAULT_PACKS_ROOT}."
     ),
 )
 @click.option(
@@ -1312,7 +1317,7 @@ def curate(
     is_flag=True,
     help="Reconcile and report, writing no artifact.",
 )
-def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
+def reconcile(source: str | None, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
     """Check a pack's declared rubric migration against recorded judge verdicts.
 
     For every criterion a pack's migration.yaml declares, recomputes the trace constraints
@@ -1321,37 +1326,82 @@ def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_ru
     with the judge's own justification. Spends nothing — no agent, no judge, no containers —
     and edits no pack whatever the verdict.
 
+    With no --source, every migration declared under --packs is reconciled over the corpus
+    its own declaration names, which is the invocation CI runs: it writes nothing, and there
+    the declared evidence must match the measurement exactly rather than bound it.
+
     Exits zero only when every narrowed/retired entry reaches `no_counter_evidence`: an
     undefined κ (`insufficient_evidence`) and a refusal both exit non-zero, as does an
     unreadable bundle. A `candidate` entry's verdict is reported and gates nothing. See
     docs/RUBRIC_MIGRATION.md.
     """
-    source_path = Path(source)
-    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    roots = [Path(root) for root in packs] or None
+    reports = (
+        _every_declaration_reconciled(roots, replay_id=replay_id, dry_run=dry_run)
+        if source is None
+        else (_one_corpus_reconciled(Path(source), roots, replay_id=replay_id, dry_run=dry_run),)
+    )
+    blocking = [reason for report in reports for reason in report.blocking]
+    if not blocking:
+        return
+    for reason in blocking:
+        console.print(f"[error]blocks the migration[/error] {reason}")
+    raise SystemExit(1)
 
-    console.print(f"[bold blue]Reconciling declared migrations under {source_path}...[/bold blue]")
+
+def _one_corpus_reconciled(
+    source: Path, roots: list[Path] | None, *, replay_id: str | None, dry_run: bool
+) -> ReconcileReport:
+    """The corpus somebody pointed at, against every declaration its trials reach."""
+    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    console.print(f"[bold blue]Reconciling declared migrations under {source}...[/bold blue]")
     try:
         report = reconcile_corpus(
-            source_path,
-            replay_id=replay_id,
-            packs=[Path(root) for root in packs] or None,
-            dry_run=dry_run,
-            corpus_base=Path.cwd(),
+            source, replay_id=replay_id, packs=roots, dry_run=dry_run, corpus_base=Path.cwd()
         )
     except ReconcileError as exc:
         raise click.ClickException(str(exc)) from exc
 
     render_reconcile_report(
         report,
-        artifacts_dir=None if dry_run else reconcile_root(source_path, replay_id),
+        artifacts_dir=None if dry_run else reconcile_root(source, replay_id),
         console=console,
     )
-    blocking = report.blocking
-    if not blocking:
-        return
-    for reason in blocking:
-        console.print(f"[error]blocks the migration[/error] {reason}")
-    raise SystemExit(1)
+    return report
+
+
+def _every_declaration_reconciled(
+    roots: list[Path] | None, *, replay_id: str | None, dry_run: bool
+) -> tuple[ReconcileReport, ...]:
+    """Every declaration under the searched packs, over the corpus each of them names.
+
+    The two invocations this mode cannot honour are refused rather than ignored: it writes
+    nothing at all, so a name for an artifact and a request to keep one are both about a
+    report that will not exist.
+    """
+    if replay_id is not None:
+        raise click.ClickException(
+            "--replay-id names the subdirectory a report is written to, and reconciling every "
+            "declaration writes none: the corpora are committed, so a report inside one would "
+            "dirty the tree. Drop --replay-id, or pass --source to reconcile one corpus"
+        )
+    if not dry_run:
+        raise click.ClickException(
+            "reconciling every declaration writes nothing, because a report lands under the "
+            "corpus it read and every corpus here is committed. Pass --dry-run to say so, or "
+            "pass --source to reconcile one corpus and keep its report"
+        )
+    console.print(
+        "[bold blue]Reconciling every declared migration over the corpus it names...[/bold blue]"
+    )
+    try:
+        reports = reconcile_declared_corpora(packs=roots, corpus_base=Path.cwd())
+    except ReconcileError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for report in reports:
+        render_reconcile_report(report, artifacts_dir=None, console=console)
+    return reports
 
 
 @cli.command(name="prepare")

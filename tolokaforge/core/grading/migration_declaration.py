@@ -359,6 +359,17 @@ class _DeclaredConstraint:
         return self.route is None and self.severity is TraceConstraintSeverity.GATE
 
 
+def corpus_base_for(grading_path: Path, corpus_base: Path | None) -> Path:
+    """The directory an entry's ``corpus`` is read against.
+
+    The base the caller supplied, or the declaration's own directory where it supplied none,
+    which is what makes a corpus travel with an external pack. One expression, because a
+    reader resolving the pointer differently from the load-time check would read a corpus
+    the loader never approved.
+    """
+    return grading_path.parent if corpus_base is None else corpus_base
+
+
 def inspect_migration_declaration(
     grading_path: Path, *, corpus_base: Path | None = None
 ) -> MigrationDeclaration | None:
@@ -418,7 +429,7 @@ def inspect_migration_declaration(
 
     criteria = _rubric_criteria(grading_data)
     constraints = _declared_constraints(grading_data)
-    base = grading_path.parent if corpus_base is None else corpus_base
+    base = corpus_base_for(grading_path, corpus_base)
     rejected = [
         message
         for entry in declaration.migrations

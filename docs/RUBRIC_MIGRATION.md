@@ -26,16 +26,22 @@ trial; neither of the free commands does.
 
 - **Before taking a migration.** Declare the criterion as a `candidate`, point `reconcile` at
   a corpus of recorded trials, and read whether the constraint and the judge ever disagreed.
-- **In CI, after taking one.** The constraint block is resolved from the *pack*, so editing a
-  shipped constraint changes what is recomputed over the frozen corpus. A migration's evidence
-  is therefore re-verified for free on every run and cannot rot silently.
+- **In CI, after taking one.** `tolokaforge reconcile --dry-run` with no `--source` re-verifies
+  every declaration in the tree over the corpus each one names. The constraint block is
+  resolved from the *pack*, so editing a shipped constraint changes what is recomputed over the
+  frozen corpus: a migration's evidence is re-verified for free on every run and cannot rot
+  silently.
 - **When a criterion's text is half a code check.** The residue — the part no tool record can
   answer — is what a `narrowed` entry declares and the judge keeps reading.
 
 ## Usage
 
 ```bash
-# Check every migration the packs behind a corpus declare. --dry-run because this corpus is
+# Every declared migration, each over the corpus its own declaration names. The CI
+# invocation: it writes nothing, so it needs --dry-run and takes no --replay-id.
+tolokaforge reconcile --dry-run
+
+# Check every migration the packs behind one corpus declare. --dry-run because this corpus is
 # committed: the report lands under --source, so without it the run dirties the tree.
 tolokaforge reconcile --source tests/data/migration_corpora/notes_duplicate_check --dry-run
 
@@ -46,6 +52,14 @@ tolokaforge reconcile --source results/<run-id>
 tolokaforge reconcile --source <corpus> --packs tests/data/migration_packs
 ```
 
+**With no `--source` the command sweeps the declarations instead of a corpus.** It resolves
+every `migration.yaml` under `--packs` and reconciles each entry over the corpus that entry
+itself names, one report per corpus, ordered by path. Two entries of one pack naming two
+corpora are two rows over two bodies of evidence; two packs claiming one criterion the same
+way are still [pooled](#pooling-across-tasks) into one. The sweep writes nothing at all, so
+`--replay-id` and an invocation without `--dry-run` are **refused** rather than ignored: both
+ask for a report that will not exist. The exit code is the same gate as below, over every row.
+
 **Reconciling a committed corpus wants `--dry-run`.** The report is written *under* `--source`
 (see [Output](#output)), so a run over anything tracked by git leaves a `reconcile/` directory
 behind in it. `.gitignore` covers the replay commands' output directories under any root, so
@@ -54,10 +68,10 @@ and it reaches exactly the same verdict.
 
 | Flag | Meaning |
 |---|---|
-| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it directly holds `trajectory.yaml` ([JUDGE_REPLAY.md](JUDGE_REPLAY.md#what-gets-re-judged)). A discovered bundle recording a trial that never ran carries no `task.yaml`, names no pack, and is **excluded from the corpus by name** — the report's `excluded_bundles` — rather than blocking it. |
-| `--packs` | Directory searched recursively for the pack each bundle's `task_id` names; repeatable, default `examples/`. |
-| `--replay-id` | Names the artifact subdirectory (letters, digits, `.`, `_`, `-`). Default: timestamped. |
-| `--dry-run` | Reach the verdict and report it, write nothing. |
+| `--source` | The corpus: a run dir, a flat collection of bundle dirs, or a single bundle dir. A directory is a bundle iff it directly holds `trajectory.yaml` ([JUDGE_REPLAY.md](JUDGE_REPLAY.md#what-gets-re-judged)). A discovered bundle recording a trial that never ran carries no `task.yaml`, names no pack, and is **excluded from the corpus by name** — the report's `excluded_bundles` — rather than blocking it. Omitted: every declared migration, each over the corpus it names. |
+| `--packs` | Directory searched recursively for the pack each bundle's `task_id` names, and for the declarations the sweep reconciles; repeatable, default `examples/`. |
+| `--replay-id` | Names the artifact subdirectory (letters, digits, `.`, `_`, `-`). Default: timestamped. Refused without `--source`. |
+| `--dry-run` | Reach the verdict and report it, write nothing. Required without `--source`. |
 
 There is deliberately **no** `--constraints`-style flag. The block comes from the pack the
 bundle's `task_id` resolves to, which is what makes the CI re-verification bite: a flag would
@@ -161,14 +175,20 @@ Then, against the corpus:
    criterion, naming both.
 5. **A declared `evidence` block the measurement contradicts.** `evidence.observations` and
    `evidence.kappa` are what a reviewer reads *instead of* re-running the command, so they are
-   the measurement or they are nothing. The rule is a **bound**, because `--source` may
-   deliberately be part of the corpus the declaration names: a run measuring *fewer*
-   observations says nothing, one measuring **more** has read a corpus the declaration
-   under-counts, and one that reaches the declared count must reproduce the declared κ. κ is
-   compared at three decimals — the precision the report prints, and therefore the number an
-   author copies. The residue this tier cannot close: a declaration over-*counting* its own
-   corpus is indistinguishable from a reconciliation over a subset, so only a run reaching the
-   declared count catches a κ that drifted.
+   the measurement or they are nothing. A run measuring **more** observations than the
+   declaration counted has read a corpus the declaration under-counts, and one reaching the
+   declared count must reproduce the declared κ, compared at three decimals — the precision
+   the report prints, and therefore the number an author copies.
+
+   **How far short of the declared count is charged depends on which invocation read it.**
+   Given a `--source`, the rule is a **bound**: the source may deliberately be part of the
+   corpus the declaration names — pointing at one arm of a two-arm corpus is how each half is
+   shown to be the other's falsifier — so a run measuring fewer observations says nothing.
+   Sweeping the declarations (no `--source`), it is an **equality**: the source *is* the
+   corpus the entry names, there is no part of it left out, and a count below the declared one
+   means bundles went missing. The residue the bound leaves — a declaration over-*counting* its
+   own corpus, indistinguishable from a reconciliation over a subset — is therefore closed for
+   the one invocation that can close it, which is the one CI runs.
 
 ### Why `was` is checked against the bundle and not the pack
 
@@ -291,6 +311,24 @@ from a finite corpus, which is the inference [the bar](#the-bar) refuses. The fr
 therefore satisfied by *declaring* a map, and this is where the declared map is measured — an
 entry declaring the identity map on a criterion the judge scored below `1.0` reports the judge
 component **rising**, which is the accepted residual made visible rather than trusted.
+
+## Which packs get a corpus
+
+**A pack gets a committed corpus exactly when it declares a `migration.yaml` entry.** The
+entry names the corpus, the corpus's composition is the manifest `tolokaforge curate` wrote
+into it, and `tolokaforge reconcile` with no `--source` re-verifies every one of them over the
+packs a reviewer reads.
+
+Most shipped packs carrying a rubric declare no migration, and they need no corpus. Such a
+pack asserts that none of its trace constraints claims any of its criteria — a claim a
+reviewer reads off the absence of the file, and one with nothing to triage against recorded
+verdicts. Declaring an entry is what turns that into a claim about evidence.
+
+**The signal to re-curate is a refusal, not a diary note.** Editing the rubric a `candidate`
+declares `was` against refuses the declaration at load, so a criterion whose text moved cannot
+keep a stale claim. Regenerating a corpus *after* taking the migration refuses it at reconcile
+with `recorded_rubric_contradicts_was`, because the fresh bundles record the post-migration
+rubric — see [Why `was` is checked against the bundle](#why-was-is-checked-against-the-bundle-and-not-the-pack).
 
 ## Building a corpus
 
@@ -548,7 +586,10 @@ refuses its claim, which is the shape of evidence that can.
 ```python
 from pathlib import Path
 
-from tolokaforge.core.grading.rubric_migration import reconcile_corpus
+from tolokaforge.core.grading.rubric_migration import (
+    reconcile_corpus,
+    reconcile_declared_corpora,
+)
 
 report = reconcile_corpus(
     Path("tests/data/migration_corpora/notes_duplicate_check"),
@@ -558,12 +599,18 @@ report = reconcile_corpus(
 )
 for reason in report.blocking:
     print(reason)
+
+# Every declaration, each over the corpus it names — one report per corpus.
+for swept in reconcile_declared_corpora(packs=[Path("examples")], corpus_base=Path.cwd()):
+    print(swept.source, [entry.verdict.value for entry in swept.entries])
 ```
 
-`reconcile_corpus` raises `ReconcileError` for every defect that is a property of the
-invocation; a defect in one declaration is a refusal on that entry instead, so the run still
-reports every other entry. `ReconcileReport.blocking` is the exit contract: empty is what exit
-`0` means.
+Both raise `ReconcileError` for every defect that is a property of the invocation; a defect in
+one declaration is a refusal on that entry instead, so the run still reports every other entry.
+`ReconcileReport.blocking` is the exit contract: empty is what exit `0` means. `corpus_base` is
+the directory each declaration's `corpus` is read against — it defaults to the declaration's own
+directory, and the CLI passes the working directory, so nothing under `tolokaforge/core/`
+resolves a path off ambient state.
 
 The bar itself is pure — `reconcile_entry(entry, task_ids=…, trials=…)` decides every rule
 from a sequence of `TrialEvidence`, which is what makes the degenerate corpora (one trial, no

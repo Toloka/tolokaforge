@@ -572,28 +572,44 @@ def test_a_declared_evidence_block_the_measurement_contradicts_is_refused(
     assert "corpus" in refusal.message
 
 
-def test_a_reconciliation_over_part_of_the_declared_corpus_charges_the_declaration_nothing() -> (
-    None
-):
-    """The rule is a bound, and this is the boundary it exists for.
+@pytest.mark.parametrize(
+    ("over_the_declared_corpus", "kinds", "verdict"),
+    [
+        (False, [], ReconcileVerdict.NO_COUNTER_EVIDENCE),
+        (
+            True,
+            [RefusalKind.DECLARED_EVIDENCE_CONTRADICTS_MEASUREMENT],
+            ReconcileVerdict.REFUSED,
+        ),
+    ],
+    ids=["over-part-of-the-corpus-it-names", "over-the-corpus-it-names"],
+)
+def test_a_count_below_the_declared_one_is_charged_only_where_the_source_is_that_corpus(
+    over_the_declared_corpus: bool, kinds: list[RefusalKind], verdict: ReconcileVerdict
+) -> None:
+    """What the declared count is compared with depends on what was read, and this is the pair.
 
     Pointing ``--source`` at part of the declared corpus is a documented diagnostic — it is how
-    each half of the committed two-arm corpus is shown to be the other's falsifier — so a run
-    measuring fewer observations than the declaration counted says nothing about it. The κ
-    written here is wrong on purpose: below the declared count, neither field is charged, which
-    is the residue the docs state rather than a case this tier can close.
+    each half of the committed two-arm corpus is shown to be the other's falsifier — so there a
+    run measuring fewer observations than the declaration counted says nothing about it. Over
+    the corpus the entry *itself* names there is no part left out, so the same shortfall is
+    bundles gone missing. The κ written here is wrong on purpose: below the declared count in
+    the first cell neither field is charged, and the refusal in the second is about the count.
     """
     entry = _entry(MigrationMode.NARROWED).model_copy(
         update={"evidence": MigrationEvidence(observations=100, kappa=0.5)}
     )
 
     reconciled = reconcile_entry(
-        entry, task_ids=[_CORPUS_TASK_ID], trials=_n7(disagreeing="permissive")
+        entry,
+        task_ids=[_CORPUS_TASK_ID],
+        trials=_n7(disagreeing="permissive"),
+        over_the_declared_corpus=over_the_declared_corpus,
     )
 
     assert reconciled.observations == 7
-    assert reconciled.refusals == []
-    assert reconciled.verdict is ReconcileVerdict.NO_COUNTER_EVIDENCE
+    assert [refusal.kind for refusal in reconciled.refusals] == kinds
+    assert reconciled.verdict is verdict
 
 
 def test_a_declared_kappa_written_at_the_precision_it_is_reported_is_not_a_contradiction() -> None:

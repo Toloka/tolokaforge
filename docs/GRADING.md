@@ -2641,7 +2641,8 @@ state — no criterion in that rubric is about the code.
    pack therefore declares no candidacy: what a route-scoped one would need is **#1057**.
 3. **A candidacy is a claim under test, and `lot_ops_01`'s is refused by its own corpus.**
    [`tolokaforge reconcile`](RUBRIC_MIGRATION.md) reads the judge's recorded verdicts out of
-   the bundles under `--source` and recomputes the named constraints over the same trials.
+   the bundles of the corpus the entry names and recomputes the named constraints over the
+   same trials.
    Over
    [`tests/data/migration_corpora/lot_ops_names_lot/`](RUBRIC_MIGRATION.md#the-committed-corpora)
    — ten organically-varying trials across two agent models — the judge found `names_lot` met
@@ -2715,7 +2716,6 @@ evaluator.
 | limit | owner |
 |---|---|
 | An `args` path is checked only at its first segment, so a typo below it is reported as unchecked rather than caught | #765 |
-| Migrating a rubric criterion into a constraint needs recorded judge verdicts to decide it, and the packs that declare one have them. The machinery ships — the [`migration.yaml` declaration](#declaring-a-migration-the-migrationyaml-sidecar), its two load-time hazard rules, and [`tolokaforge reconcile`](RUBRIC_MIGRATION.md)'s bar — with one criterion narrowed against a committed corpus and one [declared candidacy](#what-a-correlation-is-a-candidate-to-replace-and-what-it-is-not) refused by its own. The eight rubric packs declaring no migration claim nothing, so they need no corpus | #793 |
 | `executor` never distinguishes a user-side call, because no code path builds one | #688 |
 | A harness-side `TRIAL_NOT_FOUND` is recorded as a tool error, so a `status` matcher reads it as the agent's failure | #727 |
 

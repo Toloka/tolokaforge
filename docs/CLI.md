@@ -446,6 +446,18 @@ Each task loads under its enclosing project. `validate` walks up from the `task.
 
 `make validate` wraps the command over `TASKS_GLOB` (`$(TASKS_DIR)/**/task.yaml`, with `TASKS_DIR` defaulting to `tasks`). Task packs are cloned separately, so the target prints a skip reason and exits `0` when `TASKS_DIR` is absent and `TASKS_GLOB` is still the default derived from it, instead of failing on an empty glob. A `TASKS_GLOB` you name runs whatever `TASKS_DIR` holds — pointing the target at a pack elsewhere is never skipped. The dev MCP's `validate_tasks` guards its own default identically.
 
+## Migration reconciliation
+
+`tolokaforge reconcile` checks a pack's declared rubric migration against recorded judge verdicts, spending nothing. With no `--source` it reconciles every migration declared under `--packs` (default `examples/`) over the corpus each declaration itself names — the invocation CI runs — and either way it is usable as a gate:
+
+| Outcome | Exit code |
+|---|---|
+| every converting entry reaches `no_counter_evidence`, and every bundle read | `0` |
+| any converting entry is `refused` or `insufficient_evidence`, or any bundle could not be read | `1`, after every row is printed |
+| the invocation cannot be honoured — no declaration under `--packs`, a corpus that resolves to nothing, or `--replay-id` / a missing `--dry-run` with no `--source` | `1`, naming what to change; nothing is reconciled |
+
+A `candidate` entry converts nothing, so its verdict is reported and gates nothing: a candidacy the corpus refuses still exits `0`. The sweep writes nothing at all — a report lands under the corpus it read, and those corpora are committed — which is why `--replay-id` and an invocation without `--dry-run` are refused there rather than ignored. What each verdict means, and what an entry is refused for, is in [docs/RUBRIC_MIGRATION.md](RUBRIC_MIGRATION.md#the-bar).
+
 ## Run and worker exit codes
 
 `tolokaforge run` and `tolokaforge worker` are usable as gates on whether the run measured everything it attempted:
