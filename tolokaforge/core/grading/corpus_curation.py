@@ -118,7 +118,10 @@ class CuratedBundle(BaseModel):
     source_run: str
     task_id: str
     agent_model: str
-    judge_model: str
+    # ``None`` where the trial's own snapshot names no judge: the harness records
+    # ``model_config.judge: null`` for a run that configures no run-level judge, and the
+    # label still came from the judge the pack's ``grading_config`` named.
+    judge_model: str | None
     # The judge's recorded verdict for the curated criterion — the label the corpus
     # exists to carry.
     met: bool
@@ -278,8 +281,8 @@ def _classified(bundle: Path, *, criterion: str) -> CuratedBundle | RejectedTria
         directory=f"{run_id}_trial{trial_index}",
         source_run=run_id,
         task_id=recorded_task_id(bundle, task),
-        agent_model=_recorded_model(bundle, task, "agent"),
-        judge_model=_recorded_model(bundle, task, "judge"),
+        agent_model=_recorded_agent_model(bundle, task),
+        judge_model=_named_model(task, "judge"),
         met=met,
         record_carried=record_carried,
     )
@@ -323,16 +326,22 @@ def _judged_criteria(grade: Mapping[str, Any]) -> str:
     return ", ".join(judged) if judged else "none"
 
 
-def _recorded_model(bundle: Path, task: Mapping[str, Any], role: str) -> str:
+def _named_model(task: Mapping[str, Any], role: str) -> str | None:
     """The model a recorded trial ran *role* on, off its own ``task.yaml``."""
     configured = task.get("model_config") or {}
     named = (configured.get(role) or {}).get("name") if isinstance(configured, Mapping) else None
-    if isinstance(named, str) and named:
-        return named
-    raise CurationError(
-        f"{bundle / 'task.yaml'} names no model_config.{role}.name, so the corpus cannot "
-        f"say which model produced the trial it would admit"
-    )
+    return named if isinstance(named, str) and named else None
+
+
+def _recorded_agent_model(bundle: Path, task: Mapping[str, Any]) -> str:
+    """The model that produced the transcript — a trial the corpus admits has one."""
+    named = _named_model(task, "agent")
+    if named is None:
+        raise CurationError(
+            f"{bundle / 'task.yaml'} names no model_config.agent.name, so the corpus cannot "
+            f"say which model produced the trial it would admit"
+        )
+    return named
 
 
 def _recorded_run(bundle: Path) -> tuple[str, str]:

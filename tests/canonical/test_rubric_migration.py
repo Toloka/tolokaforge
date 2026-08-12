@@ -1,7 +1,9 @@
 """The committed corpus, and what the bar says about each half of it and about the union.
 
 ``tests/data/migration_corpora/notes_duplicate_check/`` holds seventeen recorded trials in two
-halves, each carrying only the files the differential reads.
+halves, each written by its own ``tolokaforge curate`` invocation and carrying the manifest
+that names what it admitted and what it refused. A bundle holds the files the differential
+reads, plus the tool-call record wherever its source run had one.
 
 ``not_met/`` — five trials of ``notes_add_note_duplicate_check_gated``, whose prompt omits the
 check-first policy. The judge's ``checked_duplicates_first`` verdict is **not met** on every
@@ -49,6 +51,7 @@ import yaml
 from click.testing import CliRunner, Result
 from pydantic import BaseModel
 
+from tolokaforge.core.grading.corpus_curation import CorpusManifest
 from tolokaforge.core.grading.rubric_migration import (
     MigrationCounterfactual,
     ReconciledEntry,
@@ -77,11 +80,11 @@ _POLICY_ARM = _NOTES / "testcases/add_note_duplicate_check_policy"
 #: The bundle directories the not-met half holds, written out so a bundle added to or
 #: dropped from the corpus reds here rather than silently moving every number below.
 _NOT_MET_BUNDLES = {
-    "native_shared_domain_example_20260629_133126",
-    "native_shared_domain_example_20260702_140836",
-    "native_shared_domain_gate_demo_20260625_184817",
-    "native_shared_domain_gate_demo_20260626_101928",
-    "native_shared_domain_gate_demo_20260626_102829",
+    "native_shared_domain_example_20260629_133126_trial0",
+    "native_shared_domain_example_20260702_140836_trial0",
+    "native_shared_domain_gate_demo_20260625_184817_trial0",
+    "native_shared_domain_gate_demo_20260626_101928_trial0",
+    "native_shared_domain_gate_demo_20260626_102829_trial0",
 }
 
 #: The met half, bought under the policy arm's prompt. Written out for the same reason, and
@@ -112,9 +115,23 @@ _RETAINED_FILES = {
     "metrics.yaml",
 }
 
+#: Carried on top of those where the source run recorded one. ``TraceEvent.status``,
+#: ``executor`` and ``latency_seconds`` come from this file alone, so a half's bundles
+#: carrying it is what decides whether a constraint reading them can be recomputed here.
+_TOOL_LOG = "tool_log.yaml"
+
 
 def _reconcile_cli(*args: str) -> Result:
     return CliRunner().invoke(cli, ["reconcile", *args], env={"COLUMNS": "200"})
+
+
+def _bundles(half: Path) -> list[Path]:
+    """The trial bundles a half holds — every directory beside its manifest."""
+    return sorted(path for path in half.iterdir() if path.is_dir())
+
+
+def _manifest(half: Path) -> CorpusManifest:
+    return CorpusManifest.model_validate(yaml.safe_load((half / "corpus.yaml").read_text()))
 
 
 def _copied(root: Path, tmp_path: Path) -> Path:
@@ -145,9 +162,14 @@ def _entry_over_the_not_met_half(tmp_path: Path) -> ReconciledEntry:
 
 
 def test_the_not_met_half_is_exactly_the_five_trimmed_bundles() -> None:
-    """Two sources for the corpus's membership and shape: the tree, and this literal."""
-    assert {bundle.name for bundle in _NOT_MET.iterdir()} == _NOT_MET_BUNDLES
-    for bundle in _NOT_MET.iterdir():
+    """Two sources for the corpus's membership and shape: the tree, and this literal.
+
+    None of the five carries a tool-call record: they are old runs recorded before the
+    harness persisted one, which is why a constraint reading ``status`` cannot be
+    recomputed over this half and why the manifest says so per bundle.
+    """
+    assert {bundle.name for bundle in _bundles(_NOT_MET)} == _NOT_MET_BUNDLES
+    for bundle in _bundles(_NOT_MET):
         assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES
 
 
@@ -159,7 +181,7 @@ def test_no_bundle_in_either_half_declares_a_constraint_block() -> None:
     shipped constraint red the lock over this frozen corpus. A ``--constraints``-style flag
     would pin a fixture instead and make the guard decorative.
     """
-    bundles = sorted([*_NOT_MET.iterdir(), *_MET.iterdir()])
+    bundles = [*_bundles(_NOT_MET), *_bundles(_MET)]
     assert len(bundles) == len(_NOT_MET_BUNDLES) + len(_MET_BUNDLES)
     for bundle in bundles:
         task = yaml.safe_load((bundle / "task.yaml").read_text())
@@ -434,10 +456,15 @@ def _entry_over_the_union(tmp_path: Path) -> ReconciledEntry:
 
 
 def test_the_met_half_is_exactly_the_twelve_trimmed_bundles() -> None:
-    """Two sources for the bought half's membership and shape: the tree, and this literal."""
-    assert {bundle.name for bundle in _MET.iterdir()} == _MET_BUNDLES
-    for bundle in _MET.iterdir():
-        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES
+    """Two sources for the bought half's membership and shape: the tree, and this literal.
+
+    Every one of the twelve carries its tool-call record, because every source run did.
+    The asymmetry with the not-met half is the corpus's, not the curation's: a corpus is
+    record-carrying exactly where its sources were.
+    """
+    assert {bundle.name for bundle in _bundles(_MET)} == _MET_BUNDLES
+    for bundle in _bundles(_MET):
+        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES | {_TOOL_LOG}
 
 
 def test_the_policy_arm_ships_the_shared_prompt_verbatim_with_the_policy_appended() -> None:
@@ -574,7 +601,7 @@ def test_the_declared_evidence_is_the_measurement_over_the_corpus_it_names(
     named = _REPO / declared["corpus"]
 
     assert named == _CORPUS
-    assert {bundle.name for half in named.iterdir() for bundle in half.iterdir()} == (
+    assert {bundle.name for half in named.iterdir() for bundle in _bundles(half)} == (
         _NOT_MET_BUNDLES | _MET_BUNDLES
     )
     entry = _entry_over_the_union(tmp_path)
@@ -594,6 +621,92 @@ def test_the_command_exits_zero_over_the_union_and_says_what_that_means(
     assert "no_counter_evidence over 17 observations" in result.output
     assert "kappa 1.000" in result.output
     assert "pass rate 12/17 → 12/17" in result.output
+
+
+# ---------------------------------------------------------------------------
+# The manifests: the corpus's own account of what it admitted and what it refused
+# ---------------------------------------------------------------------------
+
+#: The trials ``tolokaforge curate`` refused, keyed by the path it read them from, with
+#: the observation behind each refusal. Their run directories are gitignored, so this
+#: claim is re-checkable only because the manifests carry it: the task's MCP server never
+#: started, every recorded call errored, and the judge scored a transcript of failures.
+_REFUSED_TRIALS = {
+    "results/native_shared_domain_policy_demo_20260803_062316/trials/"
+    "notes_add_note_duplicate_check_policy/0": "tool_calls: 6, succeeded: 0",
+    "results/native_shared_domain_policy_demo_20260803_062316/trials/"
+    "notes_add_note_duplicate_check_policy/1": "tool_calls: 6, succeeded: 0",
+    "results/native_shared_domain_policy_demo_20260803_062316/trials/"
+    "notes_add_note_duplicate_check_policy/2": "tool_calls: 5, succeeded: 0",
+    "results/native_shared_domain_gate_demo_20260804_122027/trials/"
+    "notes_add_note_duplicate_check_gated/0": "tool_calls: 4, succeeded: 0",
+}
+
+
+@pytest.mark.parametrize(
+    ("half", "expected"),
+    [(_NOT_MET, _NOT_MET_BUNDLES), (_MET, _MET_BUNDLES)],
+    ids=["not_met", "met"],
+)
+def test_each_manifest_names_exactly_the_bundles_its_half_holds(
+    half: Path, expected: set[str]
+) -> None:
+    """Both directions, because either one alone admits a corpus that lies about itself.
+
+    A bundle on disk the manifest does not name is a trial that entered the evidence
+    unrecorded; a manifest entry with no directory is a corpus claiming a trial it lost.
+    ``record_carried`` is asserted against the tree for the same reason — it is the
+    manifest's claim about what a constraint reading ``status`` could be recomputed over.
+    """
+    manifest = _manifest(half)
+
+    assert {entry.directory for entry in manifest.bundles} == expected
+    assert {bundle.name for bundle in _bundles(half)} == expected
+    for entry in manifest.bundles:
+        carried = (half / entry.directory / _TOOL_LOG).exists()
+        assert entry.record_carried is carried, entry.directory
+
+
+@pytest.mark.parametrize("half", [_NOT_MET, _MET], ids=["not_met", "met"])
+def test_every_manifest_label_is_the_one_its_own_bundle_recorded(half: Path) -> None:
+    """The manifest is a reading of the bundles, and each bundle is the second source.
+
+    ``met`` is the label the corpus exists to carry — the judge's verdict for the
+    criterion — and ``agent_model`` the attribution a reader needs to know what produced
+    the transcript that was labelled. Both are re-read here off the bundle's own files,
+    so a manifest transcribed from the invocation rather than from the trials reds.
+    """
+    manifest = _manifest(half)
+    criterion = yaml.safe_load(_DECLARATION.read_text())["migrations"][0]["criterion"]
+
+    assert manifest.criterion == criterion
+    for entry in manifest.bundles:
+        bundle = half / entry.directory
+        grade = yaml.safe_load((bundle / "grade.yaml").read_text())
+        (recorded,) = [result for result in grade["criterion_results"] if result["id"] == criterion]
+        task = yaml.safe_load((bundle / "task.yaml").read_text())
+        assert entry.met is recorded["met"], entry.directory
+        assert entry.task_id == task["task_id"], entry.directory
+        assert entry.agent_model == task["model_config"]["agent"]["name"], entry.directory
+
+
+def test_the_manifests_name_every_trial_the_curation_refused_and_what_it_observed() -> None:
+    """The composition's other half: the graded trials that did *not* enter, by rule.
+
+    Twenty-one graded ``checked_duplicates_first`` trials exist; seventeen are committed.
+    Which four were left out, and on what evidence, was a human judgment nobody recorded
+    until the manifests did — and the runs behind it are gitignored, so the observation
+    travels with the corpus or not at all.
+    """
+    refused = {
+        entry.source: entry
+        for half in (_NOT_MET, _MET)
+        for entry in _manifest(half).excluded
+        if entry.reason.value == "environment_dead"
+    }
+
+    assert {source: entry.observation for source, entry in refused.items()} == _REFUSED_TRIALS
+    assert {entry.by.value for entry in refused.values()} == {"rule"}
 
 
 # ---------------------------------------------------------------------------

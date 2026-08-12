@@ -1063,9 +1063,14 @@ def _corpus(tmp_path: Path, *, keep: int | None = None) -> Path:
     destination = tmp_path / "corpus"
     shutil.copytree(_COMMITTED_CORPUS, destination)
     if keep is not None:
-        for bundle in sorted(destination.iterdir())[keep:]:
+        for bundle in _trial_bundles(destination)[keep:]:
             shutil.rmtree(bundle)
     return destination
+
+
+def _trial_bundles(corpus: Path) -> list[Path]:
+    """The trial bundles a corpus holds — every directory beside its ``corpus.yaml``."""
+    return sorted(path for path in corpus.iterdir() if path.is_dir())
 
 
 def _packs(tmp_path: Path, *, name: str = "packs", **pack: Any) -> Path:
@@ -1134,7 +1139,7 @@ def test_a_trial_the_judge_never_labelled_is_excluded_with_its_reason(
     visible rather than a corpus that quietly got smaller.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_grade(patched, **patch)
 
     (entry,) = _reconcile(corpus, _packs(tmp_path)).entries
@@ -1246,7 +1251,7 @@ def _second_task(
     tmp_path: Path, corpus: Path, *, task_id: str, grading_text: str = _GRADING, **pack: Any
 ) -> Path:
     """A second task's bundles, re-stamped from the first task's, and its own pack."""
-    for bundle in sorted(corpus.iterdir())[:2]:
+    for bundle in _trial_bundles(corpus)[:2]:
         twin = corpus.parent / f"{task_id}_{bundle.name}"
         shutil.copytree(bundle, twin)
         task = yaml.safe_load((twin / "task.yaml").read_text())
@@ -1437,7 +1442,7 @@ def test_a_task_less_bundle_that_recorded_an_episode_still_blocks(tmp_path: Path
     ``task.yaml`` would trade a silent exclusion for a silent excuse.
     """
     corpus = _corpus(tmp_path)
-    stripped = sorted(corpus.iterdir())[0]
+    stripped = _trial_bundles(corpus)[0]
     (stripped / "task.yaml").unlink()
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1473,7 +1478,7 @@ def test_a_bundle_that_cannot_be_read_is_named_and_blocks_the_migration(tmp_path
     a verdict over an unknown denominator.
     """
     corpus = _corpus(tmp_path)
-    broken = sorted(corpus.iterdir())[0]
+    broken = _trial_bundles(corpus)[0]
     (broken / "trajectory.yaml").write_text("- not a mapping\n")
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1521,7 +1526,7 @@ def test_a_grade_the_counterfactual_cannot_read_costs_its_own_trial_only(
     other four are still measured — the containment ``retrace`` already gives the same class.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_grade(patched, **patch)
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1547,7 +1552,7 @@ def test_a_bundle_file_that_is_not_utf_8_costs_its_own_trial_only(
     Every file a bundle carries is read through one reader for that reason.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     (patched / artifact).write_bytes(b"\xff\xfe\x00not utf-8")
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1599,7 +1604,7 @@ def test_a_blank_recorded_description_is_bundle_data_and_not_an_authoring_defect
     unreadable trial and not a raise.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_recorded_criterion(patched, description="   ")
 
     report = _reconcile(corpus, _packs(tmp_path))
@@ -1624,7 +1629,7 @@ def test_a_recorded_rubric_that_does_not_read_as_one_is_one_unreadable_bundle(
     holding rather than the one that could not be read.
     """
     corpus = _corpus(tmp_path)
-    patched = sorted(corpus.iterdir())[0]
+    patched = _trial_bundles(corpus)[0]
     _patch_recorded_criterion(patched, weight_hint=0.5)
 
     report = _reconcile(corpus, _packs(tmp_path))

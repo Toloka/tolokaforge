@@ -332,14 +332,49 @@ one-sided part stays a corpus a reader can point a command at on its own.
 
 `tests/data/migration_corpora/notes_duplicate_check/` is the repo's judge-labelled corpus:
 seventeen recorded trials of the notes duplicate-check criterion, in two halves, committed with
-plain git at ~13 KB per bundle. Each bundle is trimmed to the five files the differential reads —
-`task.yaml`, `trajectory.yaml`, `grade.yaml`, `tools_schemas.yaml`, `metrics.yaml` — and its
-directory name carries the run it came from.
+plain git at ~13 KB per bundle. It is a multi-part corpus in the sense above — each half is a
+corpus written by its own `tolokaforge curate` invocation, carrying its own `corpus.yaml`.
 
-| half | trials | task | the judge's `checked_duplicates_first` |
-|---|---|---|---|
-| `not_met/` | 5 | `notes_add_note_duplicate_check_gated` | not met on every one |
-| `met/` | 12 | `notes_add_note_duplicate_check_policy` | met on every one |
+| half | trials | task | the judge's `checked_duplicates_first` | tool-call record |
+|---|---|---|---|---|
+| `not_met/` | 5 | `notes_add_note_duplicate_check_gated` | not met on every one | none |
+| `met/` | 12 | `notes_add_note_duplicate_check_policy` | met on every one | every bundle |
+
+**Its composition is a file a machine wrote and a machine checks.** Each half's `corpus.yaml`
+names every bundle under it with the label its own `grade.yaml` recorded and the models that
+produced it, and every discovered trial that did *not* enter, with the observation behind the
+refusal. Canonical tests read the manifest against the tree in both directions and re-read each
+label off the bundle it describes, so a corpus that has drifted from its own account of itself
+reds rather than reconciling quietly.
+
+Both halves are reproducible by command, over runs under the gitignored `results/`:
+
+```bash
+tolokaforge curate --criterion checked_duplicates_first \
+  --source results/native_shared_domain_policy_demo_20260803_062316 \
+  --source results/native_shared_domain_policy_demo_20260803_063010 \
+  --source results/native_shared_domain_policy_demo_20260803_063150 \
+  --into tests/data/migration_corpora/notes_duplicate_check/met --replace
+
+tolokaforge curate --criterion checked_duplicates_first \
+  --source results/native_shared_domain_example_20260629_133126 \
+  --source results/native_shared_domain_example_20260702_140836 \
+  --source results/native_shared_domain_gate_demo_20260625_184817 \
+  --source results/native_shared_domain_gate_demo_20260626_101928 \
+  --source results/native_shared_domain_gate_demo_20260626_102829 \
+  --source results/native_shared_domain_gate_demo_20260804_122027 \
+  --into tests/data/migration_corpora/notes_duplicate_check/not_met --replace
+```
+
+**Twenty-one graded trials exist and seventeen are committed; the four that are not are
+refused by rule, and the manifests say so.** The three `20260803_062316` trials (6, 6 and 5
+recorded calls) and the `20260804_122027` gated trial (4) have every call at `status: error`:
+the task's MCP server never started, so the judge scored a transcript of failures on a trial
+whose environment was dead. The harness called those runs completed, `aggregate.json` reported
+no harness errors, and nothing but the tool-call record separates them from an admissible
+trial — which is why the sources they came from are named on the command line above rather than
+left out of it. Leaving them out would leave the corpus's boundary unstated once `results/` is
+gone.
 
 **The `not_met/` half is deliberately heterogeneous in its agent, and that is the measured
 finding rather than an untidiness.** Two of its five trials ran `anthropic/claude-sonnet-4-6` as
@@ -386,10 +421,15 @@ counterfactual's *source* is measurable, since a report that folded under the pa
 would be indistinguishable there. They carry the shipped `task_id`s, so `tests/data` is
 deliberately never a default root: a `task_id` resolving in two roots is an error.
 
-The corpus is deliberately heterogeneous: the `not_met/` bundles are `schema_version: 1` and
-record-less (no `tool_log.yaml`), which does not block a constraint reading no `status` or
-`result`. Any future migration whose constraint reads either needs a record-carrying corpus, and
-the `evidence` block is where that shows.
+**The halves differ in what a constraint can read over them, and that asymmetry is the
+sources', not the curation's.** The five `not_met/` bundles are `schema_version: 1` and
+record-less: their runs predate the persisted tool-call record, so `TraceEvent.status`,
+`executor` and `latency_seconds` are `None` there and the environment-dead rule had nothing to
+classify them by — their manifest entries say `record_carried: false`. All twelve `met/`
+bundles carry `tool_log.yaml`, because all twelve source runs did. This corpus's constraint
+reads neither `status` nor `result`, so the not-met half blocks nothing; a migration whose
+constraint reads either needs a corpus that is record-carrying throughout, which is a property
+of the runs it is curated from.
 
 ## Reading the evidence
 

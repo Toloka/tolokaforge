@@ -21,6 +21,9 @@ The admission rule, one test per row:
    is refused without ``--replace``, and ``--replace`` rewrites the whole directory.
 7. **An exclusion the rule already covers is refused** — the manifest records one reason
    per trial, and the author's would overwrite the measurement.
+8. **The manifest names the models the trial recorded** — the agent model is the one a
+   trial cannot lack, and a snapshot recording no judge is admitted with a null judge
+   model rather than refused.
 
 The console is the shared stderr one, so ``CliRunner`` captures it in ``result.output``.
 """
@@ -103,12 +106,14 @@ def _write_bundle(
     judge_status: JudgeStatus = JudgeStatus.COMPLETED,
     criteria: tuple[str, ...] = (_CRITERION,),
     met: bool = True,
+    models: dict[str, str] | None = None,
 ) -> Path:
     """One graded bundle on disk, written by the real artifact writer.
 
     ``calls=None`` writes no ``tool_log.yaml`` at all — the shape a bundle recorded
     before the record was persisted has, and the one the environment-dead rule has no
-    evidence to classify.
+    evidence to classify. ``models`` is the recorded ``model_config``, whose ``judge``
+    the harness omits for a run configuring no run-level judge.
     """
     trajectory = _trajectory(calls or [])
     writer = FileArtifactWriter()
@@ -126,8 +131,8 @@ def _write_bundle(
             "trial_index": 0,
             "grading_config": {"llm_judge": {"rubric": {"criteria": []}}},
             "model_config": {
-                "agent": {"name": _AGENT_MODEL},
-                "judge": {"name": _JUDGE_MODEL},
+                role: {"name": name}
+                for role, name in (models or {"agent": _AGENT_MODEL, "judge": _JUDGE_MODEL}).items()
             },
         },
     )
@@ -222,6 +227,42 @@ def test_a_record_less_trial_is_admitted_and_marked_unclassifiable(tmp_path: Pat
     assert admitted.directory == "example_20260629_133126_trial0"
     assert admitted.record_carried is False
     assert "tool_log.yaml" not in _written_files(corpus / admitted.directory)
+
+
+def test_a_trial_recording_no_judge_is_admitted_and_the_manifest_says_so(tmp_path: Path) -> None:
+    """The harness writes no ``model_config.judge`` for a run configuring no run-level judge.
+
+    Two of the seventeen bundles in the committed notes corpus are that shape — old runs
+    whose judge came from the pack's ``grading_config`` — so refusing them would make the
+    shipped corpus uncurateable by the command that defines it. The agent model is the
+    one a trial cannot lack: it produced the transcript.
+    """
+    run = _run_dir(tmp_path / "results", "gate_demo_20260625_184817")
+    _write_bundle(run / "0", calls=None, models={"agent": _AGENT_MODEL})
+    corpus = tmp_path / "corpus"
+
+    result = _curate(
+        "--source", str(tmp_path / "results"), "--into", str(corpus), "--criterion", _CRITERION
+    )
+
+    assert result.exit_code == 0, result.output
+    (admitted,) = _manifest(corpus).bundles
+    assert (admitted.agent_model, admitted.judge_model) == (_AGENT_MODEL, None)
+
+
+def test_a_trial_recording_no_agent_model_is_refused(tmp_path: Path) -> None:
+    """A corpus that cannot say which model produced a transcript is not a corpus."""
+    run = _run_dir(tmp_path / "results", "gate_demo_20260625_184817")
+    _write_bundle(run / "0", calls=None, models={"judge": _JUDGE_MODEL})
+    corpus = tmp_path / "corpus"
+
+    result = _curate(
+        "--source", str(tmp_path / "results"), "--into", str(corpus), "--criterion", _CRITERION
+    )
+
+    assert result.exit_code == 1, result.output
+    assert "names no model_config.agent.name" in result.output
+    assert not corpus.exists()
 
 
 def test_a_trial_that_reached_one_success_is_admitted_with_its_record(tmp_path: Path) -> None:

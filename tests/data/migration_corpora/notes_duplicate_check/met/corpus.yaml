@@ -1,0 +1,105 @@
+criterion: checked_duplicates_first
+task_ids:
+- notes_add_note_duplicate_check_policy
+curated_from:
+- native_shared_domain_policy_demo_20260803_063010
+- native_shared_domain_policy_demo_20260803_063150
+curated_at: '2026-08-12T09:59:39.878947Z'
+bundles:
+- directory: native_shared_domain_policy_demo_20260803_063010_trial0
+  source_run: native_shared_domain_policy_demo_20260803_063010
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063010_trial1
+  source_run: native_shared_domain_policy_demo_20260803_063010
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063010_trial2
+  source_run: native_shared_domain_policy_demo_20260803_063010
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial0
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial1
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial2
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial3
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial4
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial5
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial6
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial7
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+- directory: native_shared_domain_policy_demo_20260803_063150_trial8
+  source_run: native_shared_domain_policy_demo_20260803_063150
+  task_id: notes_add_note_duplicate_check_policy
+  agent_model: openai/gpt-4o-mini
+  judge_model: openai/gpt-4.1-mini
+  met: true
+  record_carried: true
+excluded:
+- source: results/native_shared_domain_policy_demo_20260803_062316/trials/notes_add_note_duplicate_check_policy/0
+  reason: environment_dead
+  by: rule
+  observation: 'tool_calls: 6, succeeded: 0'
+- source: results/native_shared_domain_policy_demo_20260803_062316/trials/notes_add_note_duplicate_check_policy/1
+  reason: environment_dead
+  by: rule
+  observation: 'tool_calls: 6, succeeded: 0'
+- source: results/native_shared_domain_policy_demo_20260803_062316/trials/notes_add_note_duplicate_check_policy/2
+  reason: environment_dead
+  by: rule
+  observation: 'tool_calls: 5, succeeded: 0'

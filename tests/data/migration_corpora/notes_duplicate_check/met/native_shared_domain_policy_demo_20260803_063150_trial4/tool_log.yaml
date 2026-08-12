@@ -1,0 +1,75 @@
+- call_id: call_fLX8oV1eFEoep25QTCNrXdqe
+  sequence: 0
+  tool_name: list_notes
+  arguments: {}
+  executor: agent
+  status: success
+  output: |-
+    {
+      "id": "N-002",
+      "title": "Plant watering",
+      "body": "Water the office plants every Tuesday and Friday."
+    }
+    {
+      "id": "N-001",
+      "title": "Team stand-up",
+      "body": "Daily stand-up at 9:30 in the Maple room."
+    }
+  latency_seconds: 1.0036139488220215
+  timestamp: '2026-08-03T06:32:49.589793Z'
+- call_id: call_vFlmfrIEsiXOj18GAPG1VSjz
+  sequence: 1
+  tool_name: add_note
+  arguments:
+    title: Team standup
+    body: Daily standup at 9:30 in the Maple room.
+  executor: agent
+  status: success
+  output: |-
+    {
+      "id": "N-003",
+      "title": "Team standup",
+      "body": "Daily standup at 9:30 in the Maple room."
+    }
+  latency_seconds: 0.004911184310913086
+  timestamp: '2026-08-03T06:32:50.603098Z'
+- call_id: call_XRNQkiouxYYPqpujyi5COVES
+  sequence: 2
+  tool_name: list_notes
+  arguments: {}
+  executor: agent
+  status: success
+  output: |-
+    {
+      "id": "N-003",
+      "title": "Team standup",
+      "body": "Daily standup at 9:30 in the Maple room."
+    }
+    {
+      "id": "N-002",
+      "title": "Plant watering",
+      "body": "Water the office plants every Tuesday and Friday."
+    }
+    {
+      "id": "N-001",
+      "title": "Team stand-up",
+      "body": "Daily stand-up at 9:30 in the Maple room."
+    }
+  latency_seconds: 0.00595545768737793
+  timestamp: '2026-08-03T06:32:53.904715Z'
+- call_id: call_KOIGpfzkHCTeZYeFUFtroC3B
+  sequence: 3
+  tool_name: add_note
+  arguments:
+    title: Team standup
+    body: Daily sync at 9am with the full team.
+  executor: agent
+  status: success
+  output: |-
+    {
+      "id": "N-004",
+      "title": "Team standup",
+      "body": "Daily sync at 9am with the full team."
+    }
+  latency_seconds: 0.00458216667175293
+  timestamp: '2026-08-03T06:32:54.711564Z'
