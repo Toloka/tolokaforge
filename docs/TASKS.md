@@ -148,7 +148,11 @@ Field reference:
   true` network, so no application service reaches the public internet;
   inter-service DNS still works. The `runner_service` additionally joins a
   non-internal edge network so its published gRPC port stays host-reachable
-  and it retains egress for in-container LLM-as-judge grading. The contract
+  and it retains egress for in-container LLM-as-judge grading. That grading
+  also needs credentials, so materialisation writes the engine's
+  `TOLOKAFORGE_SECRETS_JSON` payload onto `runner_service` — and onto no other
+  service. Declaring that variable yourself is refused at materialisation; the
+  engine supplies it. The contract
   is scoped to application services — egress of tools the agent executes
   *inside* the runner is not blocked (#325). Individual services can opt out
   of the shared internal network via `services.<name>.network_access:
@@ -163,7 +167,10 @@ Field reference:
   else is refused with HTTP 403. HTTPS goes through the proxy via CONNECT with
   no TLS interception, so pinned certificates keep working and no CA plumbing is
   needed. The `runner_service` joins the edge network directly (not proxied),
-  keeping its grading egress, exactly as under `no_internet`. Entries are DNS
+  keeping its grading egress and its credential payload, exactly as under
+  `no_internet` — so `llm_judge` grading behaves identically under all three
+  policies, and the allowlist constrains application services rather than the
+  judge's provider call. Entries are DNS
   hostnames only — schemes, ports, paths, IP literals, and duplicates are
   rejected at manifest load.
 

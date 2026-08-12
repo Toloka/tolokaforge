@@ -44,6 +44,7 @@ from tolokaforge.core.netpolicy_constants import (
 )
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
+from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR, container_secrets_env
 
 logger = logging.getLogger(__name__)
 
@@ -212,17 +213,28 @@ _PROXY_ENV_KEYS = ("HTTP_PROXY", "HTTPS_PROXY", "http_proxy", "https_proxy")
 _NO_PROXY_KEYS = ("NO_PROXY", "no_proxy")
 
 
-def _merge_proxy_env(existing: Any, proxy_url: str, no_proxy: str) -> Any:
-    """Add the proxy env vars to a service-level ``environment:`` value,
-    preserving its declared shape (mapping or ``KEY=value`` list). Absent
-    ``existing`` yields a mapping."""
-    values = dict.fromkeys(_PROXY_ENV_KEYS, proxy_url)
-    values.update(dict.fromkeys(_NO_PROXY_KEYS, no_proxy))
+def _merge_service_env(existing: Any, values: Mapping[str, str]) -> Any:
+    """Return a service-level ``environment:`` value carrying ``values`` on top
+    of ``existing``, preserving its declared shape (mapping or ``KEY=value``
+    list). Absent ``existing`` yields a mapping.
+
+    A new object every time: ``yaml.safe_load`` resolves a YAML alias to the
+    same object, so an anchored ``environment:`` mapping shared between
+    services would carry an in-place update into every service aliasing it.
+    Callers assign the return value onto the one service they mean.
+    """
     if isinstance(existing, list):
         return [*existing, *(f"{key}={value}" for key, value in values.items())]
     if isinstance(existing, dict):
         return {**existing, **values}
-    return values
+    return dict(values)
+
+
+def _merge_proxy_env(existing: Any, proxy_url: str, no_proxy: str) -> Any:
+    """Add the proxy env vars to a service-level ``environment:`` value."""
+    values = dict.fromkeys(_PROXY_ENV_KEYS, proxy_url)
+    values.update(dict.fromkeys(_NO_PROXY_KEYS, no_proxy))
+    return _merge_service_env(existing, values)
 
 
 def render_squid_config(allowlist: list[str], service_names: list[str]) -> str:
@@ -364,6 +376,73 @@ def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> 
     service["volumes"] = volumes
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
+
+
+MATERIALISED_COMPOSE_MODE = 0o600
+"""Mode the materialised compose file is left at once it carries the credential
+payload in cleartext. ``copy_compose_context`` uses ``shutil.copy2``, which
+carries the repo file's mode in; the temp project dir is already ``0700``."""
+
+
+def _service_declares_env_var(environment: Any, name: str) -> bool:
+    """True iff a service-level ``environment:`` value declares ``name`` — as a
+    mapping key, as a ``KEY=value`` list entry, or as a bare ``KEY``
+    pass-through list entry."""
+    if isinstance(environment, Mapping):
+        return name in environment
+    if isinstance(environment, list):
+        return any(
+            isinstance(entry, str) and entry.split("=", 1)[0] == name for entry in environment
+        )
+    return False
+
+
+def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
+    """Give ``runner_service`` the host's credential payload, in place.
+
+    The task-declared stack's runner runs the same in-container LLM-as-judge
+    grading the engine-built stack's runner does, so it reads the same
+    :func:`~tolokaforge.secrets.container_secrets_env` entry. Only
+    ``runner_service`` receives it.
+
+    ``$`` is doubled in the injected value: Docker Compose interpolates ``$``
+    in ``environment`` values, so a credential containing one is otherwise
+    silently truncated. The escape belongs to this path alone — the
+    engine-built stack hands its value to the Docker SDK, which interpolates
+    nothing.
+
+    Raises ``ValueError`` when any service declares
+    :data:`~tolokaforge.secrets.CONTAINER_SECRETS_ENV_VAR` itself (the variable
+    is engine-owned; a pack declaring it either commits a credential or shadows
+    the engine's payload) or when ``runner_service`` is absent from the compose
+    doc. Nothing is written in either case. A host that resolves no secrets
+    leaves the file byte-identical.
+    """
+    with compose_file.open() as f:
+        doc = yaml.safe_load(f)
+    services: dict[str, Any] = doc["services"]
+    for service_name, service in services.items():
+        if _service_declares_env_var(service.get("environment"), CONTAINER_SECRETS_ENV_VAR):
+            raise ValueError(
+                f"compose service {service_name!r} declares {CONTAINER_SECRETS_ENV_VAR}; "
+                f"the variable is engine-owned and supplied at materialisation — "
+                f"delete the entry from the compose file."
+            )
+    if runner_service not in services:
+        raise ValueError(
+            f"runner_service {runner_service!r} is not declared in the compose file "
+            f"{compose_file.name!r}; declared services are {sorted(services)!r}."
+        )
+    payload = container_secrets_env()
+    if not payload:
+        return
+    escaped = {key: value.replace("$", "$$") for key, value in payload.items()}
+    services[runner_service]["environment"] = _merge_service_env(
+        services[runner_service].get("environment"), escaped
+    )
+    with compose_file.open("w") as f:
+        yaml.safe_dump(doc, f, sort_keys=False)
+    compose_file.chmod(MATERIALISED_COMPOSE_MODE)
 
 
 # ---------------------------------------------------------------------------

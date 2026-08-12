@@ -12,6 +12,7 @@ Example:
 
 from __future__ import annotations
 
+import json
 import logging
 from typing import TYPE_CHECKING
 
@@ -386,6 +387,28 @@ def get_default() -> SecretManager:
 
         _default_manager = SecretManager.from_config(SecretConfig.default())
     return _default_manager
+
+
+CONTAINER_SECRETS_ENV_VAR = "TOLOKAFORGE_SECRETS_JSON"
+"""Environment variable carrying the serialised credential payload from the
+host to a container. Spelled once: the engine-built core stack and the
+materialised task-declared compose stack both inject it, and the runner
+bootstrap reads it back."""
+
+
+def container_secrets_env() -> dict[str, str]:
+    """Return the host→container credential entry for a runner container.
+
+    ``{CONTAINER_SECRETS_ENV_VAR: <json payload>}``, or an empty mapping when
+    the default manager resolves no secrets. The empty case is behavioural,
+    not cosmetic: an unset variable makes the runner lazy-init its own
+    manager from its own environment, while an empty payload would bootstrap
+    an empty manager and suppress that.
+    """
+    payload = get_default().serialize()
+    if not payload:
+        return {}
+    return {CONTAINER_SECRETS_ENV_VAR: json.dumps(payload)}
 
 
 def get_default_or_none() -> SecretManager | None:

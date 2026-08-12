@@ -196,16 +196,12 @@ def core_stack(
 
     # Serialize host-side secrets into a single env var for the runner
     # container. The runner reads this on startup via __main__.py and
-    # bootstraps its own SecretManager singleton from it. This is the
-    # *only* place credentials cross the host→container boundary —
-    # never via build args, mounts, or image bake-in.
-    import json
+    # bootstraps its own SecretManager singleton from it. Credentials cross
+    # the host→container boundary only inside this payload — never via build
+    # args, mounts, or image bake-in.
+    from tolokaforge.secrets import container_secrets_env
 
-    from tolokaforge.secrets import get_default
-
-    secrets_payload = get_default().serialize()
-    if secrets_payload:
-        runner_env["TOLOKAFORGE_SECRETS_JSON"] = json.dumps(secrets_payload)
+    runner_env.update(container_secrets_env())
 
     # The runner Dockerfile is a multi-stage build: its wheel-builder stage
     # runs ``hatch build --target custom`` against the source tree to produce

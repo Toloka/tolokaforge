@@ -1,7 +1,7 @@
 """Pytest configuration and shared fixtures for test suite."""
 
 import os
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from pathlib import Path
 
 import pytest
@@ -31,6 +31,45 @@ def overlay_isolation():
     # across tests. A test that installs its OWN overlay mid-run still gets reset to
     # the session default here, so per-test isolation is preserved either way.
     set_overlay_path(os.getenv("TF_PRESETS_FILE"))
+
+
+FAKE_CONTAINER_SECRETS = {
+    "FAKE_JUDGE_API_KEY": "sk-fake-a$bc",
+    "FAKE_SEARCH_API_KEY": "fake-search-value",
+}
+"""Deterministic stand-in for the host's resolved credentials. One value
+carries a ``$`` because Docker Compose interpolates ``$`` in ``environment``
+values — a ``$``-free payload silently disarms every assertion about the
+compose-path escaping."""
+
+
+@pytest.fixture
+def installed_fake_secrets(request: pytest.FixtureRequest) -> Iterator[dict[str, str]]:
+    """Install a fixed SecretManager as the process default, restored after.
+
+    Tests that compare a credential payload need one that does not depend on
+    the host's ``.env``: clearing the singleton instead makes the next
+    ``get_default()`` lazy-init the real provider chain. Installing goes
+    through ``init_default_from`` — the runner bootstrap's own path.
+
+    Parametrise indirectly to install a different payload (``[{}]`` for a host
+    that resolves no secrets). Yields the installed mapping.
+    """
+    from tolokaforge.secrets import SecretManager, init_default_from
+    from tolokaforge.secrets import log_filter as log_filter_module
+    from tolokaforge.secrets import manager as manager_module
+
+    payload: dict[str, str] = getattr(request, "param", FAKE_CONTAINER_SECRETS)
+    saved_manager = manager_module._default_manager
+    saved_cached_manager = log_filter_module._cached_manager
+    saved_cached_values = log_filter_module._cached_values
+    init_default_from(SecretManager.from_dict(dict(payload)))
+    log_filter_module._cached_manager = None
+    log_filter_module._cached_values = frozenset()
+    yield payload
+    manager_module._default_manager = saved_manager
+    log_filter_module._cached_manager = saved_cached_manager
+    log_filter_module._cached_values = saved_cached_values
 
 
 @pytest.fixture

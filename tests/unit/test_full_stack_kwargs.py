@@ -20,10 +20,12 @@ import json
 from pathlib import Path
 
 import pytest
+import yaml
 
+from tolokaforge.core.compose_materialisation import inject_runner_credentials
 from tolokaforge.docker.stacks.core import TypeSenseAddress, core_stack
 from tolokaforge.docker.stacks.full import full_stack
-from tolokaforge.secrets import register_runtime_secret
+from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR, register_runtime_secret
 
 pytestmark = pytest.mark.unit
 
@@ -113,6 +115,40 @@ def test_the_typesense_api_key_is_never_an_environment_literal(
 
     payload = json.loads(_runner_def(stack).environment["TOLOKAFORGE_SECRETS_JSON"])
     assert payload["TYPESENSE_API_KEY"] == GENERATED_API_KEY
+
+
+def test_the_core_stack_runner_still_carries_the_secrets_payload(installed_fake_secrets) -> None:
+    """The engine-built stack's runner gets the credential entry at all.
+
+    Blunt on purpose: the cross-site comparison below would still pass if both
+    sites stopped injecting together."""
+    assert CONTAINER_SECRETS_ENV_VAR in _runner_def(core_stack()).environment
+
+
+def test_both_injection_sites_deliver_the_same_payload(
+    tmp_path: Path, installed_fake_secrets
+) -> None:
+    """One payload definition, two injection sites, one escaping rule.
+
+    The compose transform doubles ``$`` because Docker Compose interpolates it
+    in ``environment`` values; the core stack hands its value to the Docker
+    SDK, which interpolates nothing. De-escaping the compose-path value must
+    reproduce the core stack's byte for byte — that fails if either site's
+    payload diverges, if the escape moves to the shared helper (the core stack
+    would start delivering doubled dollars), or if it is applied twice.
+    """
+    compose_file = tmp_path / "environment.compose.yaml"
+    compose_file.write_text("services:\n  runner:\n    image: r:local\n")
+    inject_runner_credentials(compose_file, "runner")
+
+    written = yaml.safe_load(compose_file.read_text())["services"]["runner"]["environment"][
+        CONTAINER_SECRETS_ENV_VAR
+    ]
+    core_value = _runner_def(core_stack()).environment[CONTAINER_SECRETS_ENV_VAR]
+
+    assert "$" in core_value, "the fake payload lost its $-bearing value; this test stops biting"
+    assert "$$" in written
+    assert written.replace("$$", "$") == core_value
 
 
 def test_full_stack_includes_db_runner_and_extras():

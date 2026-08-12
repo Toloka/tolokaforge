@@ -9,6 +9,9 @@ publishes for per-trial containers
 underlying docker log streams are severed. A provision failure that
 happens before the router-build step (compose-up or reset-recipe) must
 leave no routers running because none were constructed on that path.
+
+Materialisation runs for real here, credential injection included, so
+``_pin_fake_secrets`` pins the manager whose payload reaches the compose file.
 """
 
 from __future__ import annotations
@@ -31,6 +34,14 @@ from tolokaforge.docker.logging import LogRouterError
 from tolokaforge.runner.models import ResetSpec, ServiceSpec
 
 pytestmark = pytest.mark.canonical
+
+
+@pytest.fixture(autouse=True)
+def _pin_fake_secrets(installed_fake_secrets: dict[str, str]) -> None:
+    """Every test here materialises a compose file for real, and materialisation
+    injects the process ``SecretManager``'s payload into the runner service.
+    Unpinned, the suite would write the host's own credentials into temp compose
+    files and take the empty-vs-populated branch by machine."""
 
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "environment_manifest"

@@ -9,7 +9,9 @@ a real runner gRPC server.
 
 The lower half of the file pins the ADR-0010 provisioning surface:
 ``provision`` / ``await_ready`` / ``endpoints`` / ``teardown``,
-``EnvHandle``, ``ProvisionError``.
+``EnvHandle``, ``ProvisionError``. Those provisions materialise a compose file
+for real, credential injection included, so ``_pin_fake_secrets`` pins the
+manager whose payload reaches it.
 """
 
 from __future__ import annotations
@@ -34,6 +36,14 @@ from tolokaforge.runner.models import TaskDescription
 _FIXTURES = Path(__file__).parent / "fixtures" / "environment_manifest"
 
 pytestmark = pytest.mark.canonical
+
+
+@pytest.fixture(autouse=True)
+def _pin_fake_secrets(installed_fake_secrets: dict[str, str]) -> None:
+    """Every test here materialises a compose file for real, and materialisation
+    injects the process ``SecretManager``'s payload into the runner service.
+    Unpinned, the suite would write the host's own credentials into temp compose
+    files and take the empty-vs-populated branch by machine."""
 
 
 class TestProtocolRuntimeCheck:

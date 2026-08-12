@@ -23,9 +23,11 @@ from tolokaforge.secrets.config import SecretConfig, SecretSource
 from tolokaforge.secrets.expand import UnresolvedReferenceError, expand_secret_refs
 from tolokaforge.secrets.log_filter import install_global_redactor
 from tolokaforge.secrets.manager import (
+    CONTAINER_SECRETS_ENV_VAR,
     MissingSecretError,
     RuntimeSecretConflictError,
     SecretManager,
+    container_secrets_env,
     get_default,
     get_default_or_none,
     init_default,
@@ -54,6 +56,8 @@ __all__ = [
     "init_default",
     "init_default_from",
     "register_runtime_secret",
+    "CONTAINER_SECRETS_ENV_VAR",
+    "container_secrets_env",
     "get_default",
     "get_default_or_none",
     "install_global_redactor",
