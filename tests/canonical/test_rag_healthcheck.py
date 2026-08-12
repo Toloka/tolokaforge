@@ -30,8 +30,7 @@ _REPO_ROOT = Path(__file__).resolve().parents[2]
 _RAG_DOCKERFILE = _REPO_ROOT / "tolokaforge" / "docker" / "dockerfiles" / "rag.Dockerfile"
 _RAG_APP = _REPO_ROOT / "tolokaforge" / "env" / "rag_service" / "app.py"
 
-# Offline startup measures 3.5s to serving; the grace covers that with headroom
-# while no longer budgeting for a download.
+# Offline startup measures 3.5s to serving; the grace covers that with headroom.
 _MIN_START_PERIOD_SECONDS = 15
 
 _START_PERIOD_RE = re.compile(r"--start-period=(\d+)s\b")
@@ -56,23 +55,30 @@ def _bake_slot_index(lines: list[str]) -> int:
     return _sole_index(lines, lambda line: _ARG_EMBEDDING_MODEL_RE.match(line) is not None)
 
 
+def _bake_run_index(lines: list[str]) -> int:
+    return _sole_index(lines, lambda line: line.startswith("RUN python -c") and "Sentence" in line)
+
+
 def test_bake_precedes_every_layer_carrying_tolokaforge_source() -> None:
     lines = _dockerfile_lines()
     wheel_arg = _sole_index(lines, lambda line: line.startswith("ARG WHEEL_FILENAME"))
 
+    assert _bake_run_index(lines) < wheel_arg, (
+        f"{_RAG_DOCKERFILE.name}: the `RUN` that downloads the model must precede "
+        "`ARG WHEEL_FILENAME` — the wheel installed there carries app.py, so a bake below it "
+        "re-downloads the model on every edit to any tolokaforge source file, silently and on "
+        "every build. The layer is created by the RUN; the ARG above it creates none"
+    )
     assert _bake_slot_index(lines) < wheel_arg, (
-        f"{_RAG_DOCKERFILE.name}: the model bake must precede `ARG WHEEL_FILENAME` — the wheel "
-        "installed there carries app.py, so a bake below it re-downloads the model on every edit "
-        "to any tolokaforge source file, silently and on every build"
+        f"{_RAG_DOCKERFILE.name}: `ARG EMBEDDING_MODEL` must stay above `ARG WHEEL_FILENAME` "
+        "with the RUN it feeds, so the bake layer's cache key carries no tolokaforge source"
     )
 
 
 def test_offline_mode_and_runtime_model_are_set_after_the_bake() -> None:
     lines = _dockerfile_lines()
     bake_slot = _bake_slot_index(lines)
-    bake_run = _sole_index(
-        lines, lambda line: line.startswith("RUN python -c") and "Sentence" in line
-    )
+    bake_run = _bake_run_index(lines)
     offline = _sole_index(lines, lambda line: line.startswith("ENV HF_HUB_OFFLINE="))
     runtime_model = _sole_index(lines, lambda line: line.startswith("ENV EMBEDDING_MODEL="))
     hf_home = _sole_index(lines, lambda line: line.startswith("ENV HF_HOME="))

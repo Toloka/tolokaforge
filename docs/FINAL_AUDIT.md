@@ -2,10 +2,6 @@
 
 **Docker Runner Architecture - Pre-Merge Audit**
 
-**Date:** 2026-02-24  
-**Auditor:** Claude (Automated Code Review)  
-**Branch:** prestable/docker_foundation
-
 ---
 
 ## Executive Summary
@@ -329,9 +325,11 @@ response.status_code = verdict.status_code
 
 A build without `sentence-transformers` is an honest BM25-only build and answers `200 "healthy"`. A
 build that has it but whose embedding model did not load answers `503 "degraded"` with a `reason`
-naming the model and the load failure, so the image `HEALTHCHECK`, `compose up --wait`, the
-testcontainers wait strategy and `RAGClient.is_healthy()` all reject a service that would otherwise
-serve BM25-only results under a semantic contract.
+naming the model and the load failure, so the three gates that stand a service up — the image
+`HEALTHCHECK`, `compose up --wait` and the testcontainers wait strategy — all reject a service that
+would otherwise serve BM25-only results under a semantic contract. `RAGClient.is_healthy()` returns
+`False` for it; its one caller, the runner's startup probe, logs that and continues, since a rag
+service is optional to the runner.
 
 **Verdict:** ✅ PASS - Health covers embedding model readiness.
 
@@ -427,6 +425,3 @@ The Docker Runner architecture is **well-designed and production-ready**. The co
 
 **Recommendation:** Merge to main with optional logging improvements.
 
----
-
-*Audit completed: 2026-02-24*

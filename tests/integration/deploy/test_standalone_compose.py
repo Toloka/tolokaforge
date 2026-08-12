@@ -58,6 +58,8 @@ pytestmark = [
     pytest.mark.slow,
 ]
 
+_IMAGE_SOURCE_MODES: tuple[str, ...] = ("local", "published")
+
 # Keyed by image source, because the two sources start differently. Local images
 # are built from this tree, where rag-service carries its embedding model and
 # contacts nothing at startup. Published images are pulled, and no stable publish
@@ -87,7 +89,7 @@ _RAG_TASK = REPO_ROOT / "examples/native/rag_search/dataset/tasks/kb_lookup_01/t
 _RAG_PLANTED_FACT = "HX49-QORVEN-7731"
 
 
-@pytest.fixture(scope="module", params=["local", "published"])
+@pytest.fixture(scope="module", params=_IMAGE_SOURCE_MODES)
 def composed_stack(request: pytest.FixtureRequest, docker_daemon: None) -> Iterator[StackHandle]:
     """Bring the standalone recipe up in the requested image-source mode.
 

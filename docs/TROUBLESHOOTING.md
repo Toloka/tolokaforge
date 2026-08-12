@@ -89,12 +89,17 @@ tree they build from says today — the version is baked into the image. See #79
 ## RAG Search Returns Empty
 
 - Confirm the corpus directory exists in the task.
-- Trigger indexing:
-  ```bash
-  curl -X POST http://localhost:8001/index \
-    -H "Content-Type: application/json" \
-    -d '{"corpus_path": "/app/tasks/<category>/<task>/rag/corpus"}'
-  ```
+- Indexing is per trial and the runner drives it: when a task declares a rag
+  corpus, the runner reads the corpus at trial registration and posts it to
+  `/trials/{trial_id}/index`. There is no operator step to trigger — an empty
+  result means the corpus never reached the service, so read the runner's log
+  for that trial.
+- Check the service itself with `GET /health` on the mapped port. `503
+  degraded` means its embedding model failed to load, and the `reason` field
+  names the model and the failure. Such a service still answers searches, but
+  with BM25 keyword matching only — a query that needs semantic similarity
+  comes back empty or off-target until the model loads. See
+  [`REFERENCE.md`](REFERENCE.md) § RAG Service API for the routes.
 
 ## API Keys Not Found
 

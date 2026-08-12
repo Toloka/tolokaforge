@@ -19,7 +19,7 @@ import pytest
 from tests.integration.deploy.test_standalone_compose import (
     _COMPOSE_WAIT_TIMEOUT_S as _COMPOSE_LANE_WAITS,
 )
-from tests.integration.deploy.test_standalone_compose import composed_stack
+from tests.integration.deploy.test_standalone_compose import _IMAGE_SOURCE_MODES
 from tests.integration.deploy.test_standalone_example import (
     _COMPOSE_WAIT_TIMEOUT_S as _EXAMPLE_LANE_WAIT,
 )
@@ -31,12 +31,12 @@ _BRING_UP_SIZED_S = 120
 
 
 def test_every_image_source_the_lane_drives_has_a_wait() -> None:
-    modes = set(composed_stack._fixture_function_marker.params)
+    modes = set(_IMAGE_SOURCE_MODES)
 
     assert modes == set(_COMPOSE_LANE_WAITS), (
-        "every mode the stack fixture is parametrized over must have a wait of its own — the "
-        f"lane looks the mode up by key, so a mode without one raises KeyError at bring-up "
-        f"(fixture params {sorted(modes)}, waits {sorted(_COMPOSE_LANE_WAITS)})"
+        "every image source the stack fixture is parametrized over must have a wait of its own "
+        "— the lane looks the mode up by key, so a mode without one raises KeyError at bring-up "
+        f"(declared modes {sorted(modes)}, waits {sorted(_COMPOSE_LANE_WAITS)})"
     )
 
 

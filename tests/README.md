@@ -372,10 +372,11 @@ testcontainer fixtures pin, so retag after building:
 `all-MiniLM-L6-v2` and runs offline, so the 88MB download happens once, when the
 image is built or pulled — a test run costs a ~3.5s container start. The
 build-only-when-absent rule bites here the same way it does for the runner: a
-**stale** pre-bake `tolokaforge-rag-service:latest` is never rebuilt, and against
-it the fixture's 60s wait fails *faster* than the old 120s did, because such a
-container reports `503 degraded` naming the model it could not load rather than
-eventually downloading it. Rebuild and retag:
+**stale** `tolokaforge-rag-service:latest` predating that bake is never rebuilt,
+and it downloads the model at container start, inside the fixture's 60s wait. On
+a fast link it succeeds and the suite merely runs slower; on a slow one the wait
+expires mid-download, and the log tail the fixture attaches shows exactly that.
+Rebuild and retag:
 
 ```bash
 uv run tolokaforge docker build --service rag-service

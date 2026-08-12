@@ -536,6 +536,13 @@ Base URL: `http://rag-service:8001`
 | `/search` | POST | Search the `global` trial's index (body: `{query, top_k, alpha}`) |
 | `/health` | GET | Health check — `503 "degraded"` when the embedding model failed to load |
 
+The image bakes `sentence-transformers/all-MiniLM-L6-v2` and runs with
+`HF_HUB_OFFLINE=1`, so startup loads it from disk and contacts nothing.
+`EMBEDDING_MODEL` selects the model at runtime; a value other than the baked one
+cannot be fetched under the offline pin, so the load fails and `/health` answers
+`503` naming that model. To run a different model, set `HF_HUB_OFFLINE=0` and
+accept a download at startup.
+
 ### Mock Web API
 
 Base URL: `http://mock-web:8080`

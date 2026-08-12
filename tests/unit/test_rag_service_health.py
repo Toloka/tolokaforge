@@ -22,12 +22,18 @@ _MODEL = "sentence-transformers/all-MiniLM-L6-v2"
 
 
 @pytest.mark.parametrize(
-    ("semantic_backend_installed", "model_loaded", "expected_status_code", "expected_status"),
+    (
+        "semantic_backend_installed",
+        "model_loaded",
+        "expected_status_code",
+        "expected_status",
+        "expects_reason",
+    ),
     [
-        (False, False, 200, "healthy"),
-        (False, True, 200, "healthy"),
-        (True, True, 200, "healthy"),
-        (True, False, 503, "degraded"),
+        (False, False, 200, "healthy", False),
+        (False, True, 200, "healthy", False),
+        (True, True, 200, "healthy", False),
+        (True, False, 503, "degraded", True),
     ],
 )
 def test_health_verdict_over_backend_and_model(
@@ -35,6 +41,7 @@ def test_health_verdict_over_backend_and_model(
     model_loaded: bool,
     expected_status_code: int,
     expected_status: str,
+    expects_reason: bool,
 ) -> None:
     verdict = rag_app.evaluate_health(
         semantic_backend_installed=semantic_backend_installed,
@@ -44,6 +51,10 @@ def test_health_verdict_over_backend_and_model(
     )
 
     assert (verdict.status_code, verdict.status) == (expected_status_code, expected_status)
+    assert (verdict.reason is not None) is expects_reason, (
+        f"a {verdict.status} verdict carries the wrong reason shape: reason={verdict.reason!r}, "
+        f"expected {'a reason naming the model' if expects_reason else 'none'}"
+    )
 
 
 def test_degraded_verdict_names_the_model_and_the_failure() -> None:
@@ -57,23 +68,6 @@ def test_degraded_verdict_names_the_model_and_the_failure() -> None:
     assert verdict.reason is not None
     assert "sentence-transformers/some-other-model" in verdict.reason
     assert "offline: cannot reach huggingface.co" in verdict.reason
-
-
-@pytest.mark.parametrize(
-    ("semantic_backend_installed", "model_loaded"),
-    [(False, False), (False, True), (True, True)],
-)
-def test_healthy_verdict_carries_no_reason(
-    semantic_backend_installed: bool, model_loaded: bool
-) -> None:
-    verdict = rag_app.evaluate_health(
-        semantic_backend_installed=semantic_backend_installed,
-        model_loaded=model_loaded,
-        model_name=_MODEL,
-        load_error=None,
-    )
-
-    assert verdict.reason is None
 
 
 def test_degraded_verdict_without_a_recorded_error_is_refused() -> None:
