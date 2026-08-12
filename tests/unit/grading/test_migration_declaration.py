@@ -5,8 +5,7 @@ about grading reads the file, so a claim the pack contradicts is never discovere
 trial and would instead reach ``tolokaforge reconcile`` as evidence gathered against text
 the pack no longer has.
 
-Two rules are stated over the entry alone and are the reason the sidecar's shape is what
-it is:
+The rules below are the reason the sidecar's shape is what it is:
 
 * the **freed-share rule** — a scored criterion in ``narrowed`` / ``retired`` mode must
   declare ``combine_weights``, unconditionally. What the declared map *does* to any trial is
@@ -23,6 +22,10 @@ it is:
   entry's ``was.required`` and ``was.kind`` must equal the criterion the pack still holds.
   ``was.weight`` is deliberately free, and the standing case below that keeps the rule from
   over-reaching is a narrow reducing it.
+* the **one-route rule** — the route-scoped ids one entry is ``by`` must sit in one route,
+  since a trial's recomputed verdicts carry the shared constraints and the winning route's
+  alone. The two standing cases are a same-route pair and a shared id beside a route-scoped
+  one, which keep the rule off a conjunction a corpus can decide.
 
 What a shipped pack's candidacy looks like, and the rejections stated against a real
 rubric, are in ``tests/canonical/test_migration_declaration.py``.
@@ -219,10 +222,45 @@ def test_a_route_scoped_scored_constraint_does_not_preserve_the_veto(tmp_path: P
 
 def test_a_candidate_naming_a_scored_constraint_keeps_its_veto_and_loads(tmp_path: Path):
     """A candidacy replaces nothing, so the criterion still vetoes whatever it names — which
-    is what both shipped candidacies are, each naming scored constraints."""
+    is what the shipped candidacy is, naming a scored constraint."""
     declaration = _inspect(tmp_path, _candidacy(by=["shared_scored"]))
     assert declaration is not None
     assert declaration.migrations[0].mode is MigrationMode.CANDIDATE
+
+
+# ---------------------------------------------------------------------------
+# The one-route rule: what a conjunction may name across `alternatives`.
+# ---------------------------------------------------------------------------
+
+
+def test_a_by_naming_a_constraint_from_each_route_is_refused(tmp_path: Path):
+    """A trial is scored on the route it took, so the recomputed verdicts hold the shared
+    constraints and one route's — an entry naming ``by_search``'s check beside
+    ``by_listing``'s has no verdict for one of them on every trial it could ever be measured
+    over. The refusal names both ids with the route each sits in, because which pair spans
+    the routes is the whole of what the author has to fix."""
+    with pytest.raises(ValueError) as refused:
+        _inspect(tmp_path, _candidacy(by=["route_scored", "route_scored_other"]))
+
+    written = str(refused.value)
+    assert "route_scored in route 'by_search'" in written, written
+    assert "route_scored_other in route 'by_listing'" in written, written
+
+
+def test_a_by_naming_two_constraints_of_one_route_loads(tmp_path: Path):
+    """The accepting direction: both ids are decided together on every trial that route won,
+    so their conjunction is a label a corpus can disagree with."""
+    declaration = _inspect(tmp_path, _candidacy(by=["route_gate", "route_scored"]))
+    assert declaration is not None
+    assert declaration.migrations[0].by == ["route_gate", "route_scored"]
+
+
+def test_a_by_mixing_a_shared_id_with_a_route_scoped_one_loads(tmp_path: Path):
+    """A shared constraint is decided whichever route won, so it rules no route out and
+    accompanies any route's ids."""
+    declaration = _inspect(tmp_path, _candidacy(by=["shared_scored", "route_scored"]))
+    assert declaration is not None
+    assert declaration.migrations[0].by == ["shared_scored", "route_scored"]
 
 
 # ---------------------------------------------------------------------------

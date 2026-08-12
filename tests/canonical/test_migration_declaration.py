@@ -7,14 +7,15 @@ mode the pack's rules refuse — reds here rather than reaching whoever reads th
 report. The enumeration is pinned, because a guard over a subset says nothing about the
 declarations it skipped.
 
-The two candidacies are then compared entry by entry against the entry written out here:
+The shipped candidacy is then compared entry by entry against the entry written out here:
 the file on disk is one source, this module is the other, so drift on either side reds
 instead of the two agreeing on a criterion the rubric no longer holds.
 
 ``cache_debug`` carries a ``required`` criterion beside a shared gate, a shared scored
 constraint and two routes' worth of route-scoped ones, so the veto rule's refusals are
-stated against a real block rather than a fixture. What a hand-built pack adds — the
-route-scoped *gate*, which no shipped pack declares — is in
+stated against a real block rather than a fixture — and so is the one-route rule's, over
+the pack whose two grounded-claim checks sit one per route. What a hand-built pack adds —
+the route-scoped *gate*, which no shipped pack declares — is in
 ``tests/unit/grading/test_migration_declaration.py``, which also owns every rule stated over
 the entry alone: the residual-kind directions and the freed-share rule need no real rubric to
 be about, so re-stating them here would lock one rule twice and neither more firmly. The
@@ -56,7 +57,6 @@ _NOTES_TESTCASES = _EXAMPLES / "native/native_shared_domain/dataset/notes/testca
 # re-pointed at another criterion the pack happens to hold reds here and nowhere else.
 _SHIPPED_CRITERIA = {
     _LOT_OPS.parent: ("names_lot",),
-    _CACHE_DEBUG.parent: ("explains_mechanism",),
     _NOTES_TESTCASES / "add_note_duplicate_check_gated": ("checked_duplicates_first",),
     _NOTES_TESTCASES / "add_note_duplicate_check_policy": ("checked_duplicates_first",),
 }
@@ -136,7 +136,9 @@ def _lot_ops_candidacy(**overrides: Any) -> dict[str, Any]:
 
 
 def _cache_debug_candidacy(**overrides: Any) -> dict[str, Any]:
-    """``cache_debug``'s shipped candidacy, as the entry its header points at."""
+    """A claim on ``explains_mechanism`` by one grounded-claim check from each of the pack's
+    two routes — the shape the one-route rule refuses, written against the real block whose
+    routes make it unmeasurable."""
     return {
         "criterion": "explains_mechanism",
         "mode": "candidate",
@@ -176,21 +178,17 @@ def test_every_shipped_declaration_is_one_the_pack_beside_it_honours() -> None:
 
 @pytest.mark.parametrize(
     ("task_dir", "written"),
-    [
-        (_LOT_OPS.parent, _lot_ops_candidacy()),
-        (_CACHE_DEBUG.parent, _cache_debug_candidacy()),
-    ],
-    ids=["lot_ops_01", "cache_debug"],
+    [(_LOT_OPS.parent, _lot_ops_candidacy())],
+    ids=["lot_ops_01"],
 )
 def test_a_shipped_candidacy_declares_the_entry_its_header_points_at(
     task_dir: Path, written: dict[str, Any]
 ) -> None:
-    """Both packs' headers point at a sidecar rather than restating the claim, so what the
-    sidecar says is what a reader gets — and neither is charged the rule its shape would
-    otherwise trip. ``lot_ops_01``'s ``names_lot`` is ``required: true`` while both its
-    correlations are *scored*, which a narrow or a retirement is refused for; ``cache_debug``'s
-    ``explains_mechanism`` is *graded*, so a conversion would owe a ``combine_weights`` map.
-    A candidate replaces nothing, so it owes neither.
+    """The pack's header points at a sidecar rather than restating the claim, so what the
+    sidecar says is what a reader gets — and it is not charged the rule its shape would
+    otherwise trip: ``names_lot`` is ``required: true`` while both the pack's correlations are
+    *scored*, which a narrow or a retirement is refused for. A candidate replaces nothing, so
+    it owes nothing.
 
     ``was.description`` is compared through the same normalisation the load rule uses, the
     YAML block folding a newline onto the text the rubric declares.
@@ -204,6 +202,38 @@ def test_a_shipped_candidacy_declares_the_entry_its_header_points_at(
     assert (
         criterion_shape_disagreement(entry.was, expected.was, over=EVERY_DECLARED_FIELD) is None
     ), entry.was.description
+
+
+def test_a_by_spanning_the_packs_two_routes_is_refused(tmp_path: Path):
+    """``cache_debug`` is the pack the rule is about: its two grounded-claim checks sit one
+    per route, because no single read is common to both diagnostic routes. A trial is scored
+    on the route it took, so a conjunction over the pair has no verdict for one of its ids on
+    every trial and could never be measured — which is what the refusal names, both ids with
+    the route each sits in."""
+    with pytest.raises(ValueError) as refused:
+        _inspect(tmp_path, _CACHE_DEBUG, _cache_debug_candidacy())
+
+    written = str(refused.value)
+    assert (
+        "the_note_quotes_the_value_the_served_read_returned in route "
+        "'divergence_between_the_api_layers'" in written
+    ), written
+    assert (
+        "the_note_quotes_the_value_the_cache_held in route 'divergence_against_the_cache'"
+        in written
+    ), written
+
+
+def test_a_by_naming_one_routes_grounded_claim_check_loads(tmp_path: Path):
+    """The accepting direction against the same block: one route's check is decided on every
+    trial that route won, so the rule refuses the span rather than the route scope."""
+    declaration = _inspect(
+        tmp_path,
+        _CACHE_DEBUG,
+        _cache_debug_candidacy(by=["the_note_quotes_the_value_the_cache_held"]),
+    )
+    assert declaration is not None
+    assert declaration.migrations[0].by == ["the_note_quotes_the_value_the_cache_held"]
 
 
 def test_a_candidate_carrying_a_residual_is_refused(tmp_path: Path):

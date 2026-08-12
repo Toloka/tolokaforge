@@ -87,7 +87,7 @@ its load-time refusals are in [GRADING.md § Trace Checks](GRADING.md#trace-chec
 | Field | Its role in the bar |
 |---|---|
 | `criterion` | Which recorded judge verdict is the reference label. |
-| `by` | The constraints recomputed as the candidate label — a **conjunction**: all of them must pass. |
+| `by` | The constraints recomputed as the candidate label — a **conjunction**: all of them must pass. Its route-scoped ids all sit in **one** route, since a trial is scored on the route it took; shared ids accompany any route's. |
 | `was` | The pre-migration criterion shape, verified against the rubric each bundle recorded. |
 | `mode` | `candidate` / `narrowed` / `retired`. Decides which disagreement directions are tolerated. |
 | `residual` | The author's claim about what remains. Rendered, never graded. |
@@ -133,6 +133,15 @@ bundle was readable. A `candidate` entry's verdict is reported and gates nothing
 nothing, retires nothing and changes no grade.
 
 ### What an entry is refused for
+
+Before any of these, at load: **a `by` whose route-scoped ids sit in different `alternatives`
+routes.** A trial is scored on the route it took, so the verdicts a reconciliation recomputes
+carry the shared constraints and the winning route's alone; a conjunction over two routes has
+no verdict for one of its ids on every trial and reaches no observation on any corpus. The
+refusal names both ids with the route each sits in. What a claim about two routes would need
+instead is **#1057**.
+
+Then, against the corpus:
 
 1. **An unacknowledged disagreement in a direction the mode does not tolerate.**
 2. **A stale acknowledgement** — a waiver whose disagreement is gone.

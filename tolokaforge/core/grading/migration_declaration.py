@@ -4,7 +4,7 @@ A task directory may carry a ``migration.yaml`` beside its ``grading.yaml``, nam
 rubric criterion its trace constraints are a candidate for, have narrowed, or have
 replaced. Nothing about grading reads the file: it records the author's claim so
 ``tolokaforge reconcile`` can check that claim against recorded judge verdicts, and so the
-two hazards a migration carries are refused at authoring time rather than discovered in a
+hazards a migration carries are refused at authoring time rather than discovered in a
 report.
 
 A sidecar rather than a ``grading.yaml`` key because :class:`GradingConfig` is
@@ -12,7 +12,7 @@ A sidecar rather than a ``grading.yaml`` key because :class:`GradingConfig` is
 key needs a ``GRADING_KEYS`` manifest entry, whose every ``KeyKind`` describes score
 production, which this metadata must never do.
 
-The two hazards, both measured:
+The hazards, each measured:
 
 * **A lost veto.** A ``required: true`` criterion is a trial-level veto carrying no score
   share, so retiring one moves the judge score not at all; only the veto goes. Such a
@@ -29,6 +29,10 @@ The two hazards, both measured:
   declare ``combine_weights``, the post-migration map the freed share lands in —
   unconditionally, since an author who shifts nothing declares the **identity map**, and an
   explicit identity map is read in the diff where an implied claim is invisible.
+* **A claim no corpus can decide.** ``by`` is a conjunction over constraints recomputed per
+  trial, and a trial is scored on the route it took, so ids from two different ``alternatives``
+  routes are never both decided on one trial. Such an entry reaches no observation on any
+  corpus, where the point of declaring one is to be measured.
 """
 
 from __future__ import annotations
@@ -460,6 +464,7 @@ def _pack_rejections(
             _declared_shape_rejection(entry, criteria),
             _narrowed_conversion_rejection(entry, criteria),
             _unknown_constraint_rejection(entry, constraints),
+            _route_span_rejection(entry, constraints),
             _veto_rejection(entry, constraints),
         )
         if message is not None
@@ -611,6 +616,34 @@ def _unknown_constraint_rejection(
         f"'by' names {unknown}, which the pack's trace_checks block does not declare "
         f"(declared: {sorted(constraints) or 'none'}). A migration is by the checks that "
         "replace the criterion, so every id resolves in the same pack"
+    )
+
+
+def _route_span_rejection(
+    entry: MigrationEntry, constraints: Mapping[str, _DeclaredConstraint]
+) -> str | None:
+    """The route-scoped ids one entry is ``by`` must all sit in the same route.
+
+    A trial is scored on the route it took, so the verdicts a reconciliation recomputes carry
+    the shared constraints and the winning route's alone. ``by`` is a conjunction, so an entry
+    naming ids from two routes has no verdict for one of them on every trial and reaches no
+    observation on any corpus. Shared ids are decided whichever route won, so they accompany
+    any route's.
+    """
+    scoped = {
+        name: constraints[name].route
+        for name in entry.by
+        if name in constraints and constraints[name].route is not None
+    }
+    if len(set(scoped.values())) < 2:
+        return None
+    written = ", ".join(f"{name} in route {route!r}" for name, route in scoped.items())
+    return (
+        f"'by' names constraints from more than one route ({written}). A trial is scored on "
+        "the route it took, so a reconciliation recomputes the shared constraints and the "
+        "winning route's alone — and 'by' is a conjunction, so an entry spanning two routes "
+        "has no verdict for one of its ids on every trial and can never reach an observation. "
+        "Name one route's constraints, with any shared ones beside them"
     )
 
 
