@@ -144,6 +144,17 @@ class ServiceDefinition(BaseModel):
         default="latest",
         description="Tag for prebuilt image",
     )
+    published_image_repo: str | None = Field(
+        default=None,
+        description=(
+            "Docker Hub repository that publishes this service's images, e.g. "
+            "'tolokasoft1/tolokaforge-runner'. When set, the pull-vs-build "
+            "policy on EngineStack.config.image_source can resolve to pulling "
+            "'{published_image_repo}:{engine_version}' instead of building "
+            "locally. When None, only the build path is available for this "
+            "service (task-declared services, third-party images, etc.)."
+        ),
+    )
     context_files: list[str | tuple[str, str]] = Field(
         default_factory=list,
         description="Explicit list of files/dirs to include in build context. "
@@ -320,12 +331,30 @@ class EngineStack(BaseModel):
         return images
 
     def _build_one_image(self, svc: ServiceDefinition, force: bool = False) -> Image | None:
-        """Build (or fetch) a single service's image.
+        """Build (or pull, or fetch) a single service's image.
 
-        Honors ``svc.context_files`` by assembling an isolated temp build
-        directory and cleaning it up after the build. Returns ``None`` only
-        when the service has neither a dockerfile nor a prebuilt image (a
-        misconfiguration the caller logs and skips).
+        Order of resolution:
+
+        1. ``use_prebuilt_image=True`` — third-party images the engine does
+           not own (``dind``, ``typesense``). Stubbed via ``Image(...,
+           context_hash="prebuilt")``; Docker pulls implicitly at
+           ``docker run`` time.
+        2. Pull path (only when ``force=False`` and the pull-policy
+           resolves to ``"pull"``). Requires ``svc.published_image_repo``
+           and a concrete engine version. On success returns an
+           :class:`Image` with ``context_hash="pulled"`` and the pulled
+           image already resident in the daemon. On failure in ``auto``
+           mode, falls through to the build path with a
+           ``logger.warning`` naming the failure kind; in explicit
+           ``pull`` mode, re-raises.
+        3. Local build via :meth:`Image.build` or the shared
+           :class:`ImageRegistry` cache (content-hash keyed).
+
+        Honors ``svc.context_files`` on the build path by assembling an
+        isolated temp build directory and cleaning it up after the build.
+        Returns ``None`` only when the service has neither a dockerfile
+        nor a prebuilt image (a misconfiguration the caller logs and
+        skips).
         """
         if svc.use_prebuilt_image:
             logger.info(
@@ -341,6 +370,14 @@ class EngineStack(BaseModel):
                 context=svc.context,
                 context_hash="prebuilt",
             )
+
+        # Pull path — resolved against DockerConfig.image_source and the
+        # service's declared published repo. ``force=True`` skips it
+        # unconditionally: the caller explicitly wants a fresh build.
+        if not force:
+            pulled = self._maybe_pull_service_image(svc)
+            if pulled is not None:
+                return pulled
 
         if not svc.dockerfile:
             logger.warning(
@@ -391,6 +428,71 @@ class EngineStack(BaseModel):
             context=svc.context,
             build_args=svc.build_args,
         )
+
+    def _maybe_pull_service_image(self, svc: ServiceDefinition) -> Image | None:
+        """Resolve the pull-vs-build policy for one service and try to pull.
+
+        Returns:
+            An :class:`Image` if the pull path resolved to ``"pull"`` AND
+            the pull actually succeeded. ``None`` when the caller should
+            fall through to the build path — either because the policy
+            resolved to ``"build"``, or because ``"pull"`` was tried and
+            failed under ``auto`` mode (fallback), so a warning was
+            emitted and control is being returned to the build path.
+
+        Raises:
+            ImagePullError: When the config resolves to explicit
+                ``"pull"`` mode and the pull attempt failed. The explicit
+                mode is a "pull or die" contract; hard-fail is the whole
+                point of choosing it.
+        """
+        # No published-repo declaration → no pull target. Task-declared
+        # services, third-party images, and any first-party service not
+        # yet wired up all take this branch.
+        if svc.published_image_repo is None:
+            return None
+
+        import tolokaforge
+        from tolokaforge.docker.builder import repo_root
+        from tolokaforge.docker.image import ImagePullError
+        from tolokaforge.docker.image_source_policy import resolve_image_source
+
+        engine_version = tolokaforge.__version__
+        is_wheel_install = not (repo_root() / "pyproject.toml").is_file()
+
+        resolved = resolve_image_source(
+            request=self.config.image_source,
+            is_wheel_install=is_wheel_install,
+            engine_version=engine_version,
+        )
+        if resolved == "build":
+            return None
+
+        published_ref = f"{svc.published_image_repo}:{engine_version}"
+        logger.info(
+            "Pulling published image '%s' for service '%s' (policy: %s%s)",
+            published_ref,
+            svc.name,
+            self.config.image_source,
+            "" if self.config.image_source != "auto" else f", wheel_install={is_wheel_install}",
+        )
+        try:
+            return Image.pull(name=svc.published_image_repo, tag=engine_version)
+        except ImagePullError as exc:
+            if self.config.image_source == "pull":
+                # Explicit pull mode: hard-fail. The escape hatch means
+                # "I want the published image; refuse anything else."
+                raise
+            # auto mode: log-loud with the specific reason so an operator
+            # can act (e.g. add Docker Hub auth on 'rate_limited'), then
+            # fall through to the build path.
+            logger.warning(
+                "Pull of '%s' failed [%s]: %s. Falling back to local build.",
+                published_ref,
+                exc.kind,
+                exc,
+            )
+            return None
 
     # ── Network Management ──────────────────────────────────────────────
 
