@@ -22,17 +22,37 @@ fail() {
 [ -n "$PACKAGE" ] || fail "no npm package given (argument 1)"
 [ -n "$VERSION" ] || fail "no version given for '${PACKAGE}' (argument 2); the agent version is part of a benchmark result and must be pinned"
 
-if ! command -v npm >/dev/null 2>&1; then
+# Modern coding-harness CLIs (claude-code, codex, gemini-cli) use optional
+# chaining and other ES2020+ syntax in their install scripts. Ubuntu 22.04's
+# apt `nodejs` package ships Node 12, which parses those as SyntaxError. Pull
+# Node 20 LTS from NodeSource so the build succeeds regardless of what the
+# task's base image ships.
+NODE_MAJOR=20
+
+need_node() {
+    command -v node >/dev/null 2>&1 || return 0
+    node -e "process.exit(parseInt(process.versions.node.split('.')[0]) >= 18 ? 0 : 1)" 2>/dev/null || return 0
+    return 1
+}
+
+if need_node; then
     if command -v apt-get >/dev/null 2>&1; then
         DEBIAN_FRONTEND=noninteractive
         export DEBIAN_FRONTEND
         apt-get update
-        apt-get install -y --no-install-recommends nodejs npm
+        apt-get install -y --no-install-recommends ca-certificates curl gnupg
+        mkdir -p /etc/apt/keyrings
+        curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+            | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+        echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_${NODE_MAJOR}.x nodistro main" \
+            > /etc/apt/sources.list.d/nodesource.list
+        apt-get update
+        apt-get install -y --no-install-recommends nodejs
         rm -rf /var/lib/apt/lists/*
     elif command -v apk >/dev/null 2>&1; then
-        apk add --no-cache nodejs npm
+        apk add --no-cache "nodejs~${NODE_MAJOR}" npm
     else
-        fail "npm is absent and neither apt-get nor apk is available to install it"
+        fail "Node ${NODE_MAJOR}+ is required and neither apt-get nor apk is available to install it"
     fi
 fi
 
