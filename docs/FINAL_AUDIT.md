@@ -23,9 +23,9 @@ This audit reviews all code written for the Docker Runner architecture against t
 | E. Mocking in Tests (Rule 5) | ✅ PASS | 0 | 0 | 0 |
 | F. Duplicate Tests (Rule 6) | ✅ PASS | 0 | 0 | 1 |
 | G. Integration Gaps | ✅ PASS | 0 | 0 | 1 |
-| H. Dockerfile/Infrastructure | ✅ PASS | 0 | 0 | 1 |
+| H. Dockerfile/Infrastructure | ✅ PASS | 0 | 0 | 0 |
 
-**Total Issues:** 0 Critical, 1 Major, 10 Minor
+**Total Issues:** 0 Critical, 1 Major, 9 Minor
 
 ---
 
@@ -308,33 +308,32 @@ class MockAsyncClient:
 
 ## Category H: Dockerfile and Infrastructure
 
-### H.1 [MINOR] Missing Health Check for RAG Service Embedding Model
+### H.1 ✅ PASS - RAG Service Embedding Model Health Check
 
-**File:** [`docker/rag.Dockerfile`](../docker/rag.Dockerfile) (referenced in docker-compose.yaml)
+**File:** [`tolokaforge/docker/dockerfiles/rag.Dockerfile`](../tolokaforge/docker/dockerfiles/rag.Dockerfile)
 
-**Issue:** The RAG service health check only verifies HTTP endpoint, not embedding model readiness.
-
-**Current:**
-```yaml
-healthcheck:
-  test: ["CMD", "curl", "-f", "http://localhost:8001/health"]
-```
-
-**Recommendation:** The `/health` endpoint should verify embedding model is loaded:
+**Assessment:** The rag-service image self-reports Docker health through its own `HEALTHCHECK`,
+which probes `/health` — `deploy/standalone/docker-compose.yaml` never re-declares a healthcheck of
+its own. `/health` answers for the semantic backend the service actually has:
 
 ```python
-# In rag_service/app.py
-@app.get("/health")
-async def health_check() -> HealthResponse:
-    return HealthResponse(
-        status="healthy",
-        version=SERVICE_VERSION,
-        active_indices=len(state.indices),
-        faiss_available=FAISS_AVAILABLE and state.embedding_model is not None,  # ✅ Already done
-    )
+# In tolokaforge/env/rag_service/app.py
+verdict = evaluate_health(
+    semantic_backend_installed=FAISS_AVAILABLE,
+    model_loaded=state.embedding_model is not None,
+    model_name=state.embedding_model_name,
+    load_error=state.embedding_load_error,
+)
+response.status_code = verdict.status_code
 ```
 
-**Verdict:** Already implemented correctly. No fix needed.
+A build without `sentence-transformers` is an honest BM25-only build and answers `200 "healthy"`. A
+build that has it but whose embedding model did not load answers `503 "degraded"` with a `reason`
+naming the model and the load failure, so the image `HEALTHCHECK`, `compose up --wait`, the
+testcontainers wait strategy and `RAGClient.is_healthy()` all reject a service that would otherwise
+serve BM25-only results under a semantic contract.
+
+**Verdict:** ✅ PASS - Health covers embedding model readiness.
 
 ---
 

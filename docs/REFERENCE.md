@@ -530,9 +530,11 @@ Base URL: `http://rag-service:8001`
 
 | Endpoint | Method | Description |
 |----------|--------|-------------|
-| `/search` | POST | Search documents (body: `{query, top_k}`) |
-| `/index` | POST | Build index (body: `{corpus_dir}`) |
-| `/health` | GET | Health check |
+| `/trials/{trial_id}/index` | POST | Index a trial's documents (body: `{trial_id, domain_name, documents}`) |
+| `/trials/{trial_id}/search` | POST | Search a trial's index (body: `{query, top_k, alpha}`) |
+| `/trials/{trial_id}/index` | DELETE | Drop a trial's index |
+| `/search` | POST | Search the `global` trial's index (body: `{query, top_k, alpha}`) |
+| `/health` | GET | Health check — `503 "degraded"` when the embedding model failed to load |
 
 ### Mock Web API
 
