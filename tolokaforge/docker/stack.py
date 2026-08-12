@@ -476,8 +476,18 @@ class EngineStack(BaseModel):
             self.config.image_source,
             "" if self.config.image_source != "auto" else f", wheel_install={is_wheel_install}",
         )
+        # Published tolokaforge-* images are linux/amd64 only. On arm64
+        # hosts (Apple Silicon), docker refuses to pull a manifest that
+        # doesn't declare arm64 unless a platform override is passed —
+        # matches the deploy/standalone/docker-compose.yaml pin at
+        # ``platform: ${TOLOKAFORGE_PLATFORM:-linux/amd64}``. amd64 hosts
+        # get the same image without emulation.
         try:
-            return Image.pull(name=svc.published_image_repo, tag=engine_version)
+            return Image.pull(
+                name=svc.published_image_repo,
+                tag=engine_version,
+                platform="linux/amd64",
+            )
         except ImagePullError as exc:
             if self.config.image_source == "pull":
                 # Explicit pull mode: hard-fail. The escape hatch means

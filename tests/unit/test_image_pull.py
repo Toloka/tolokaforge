@@ -74,6 +74,22 @@ class TestImagePullHappyPath:
 
         client.images.pull.assert_called_once_with(NAME, tag=TAG)
 
+    def test_platform_kwarg_is_forwarded_when_set(self) -> None:
+        """Published tolokaforge-* images are linux/amd64 only. On an
+        arm64 host a bare ``docker pull`` fails with 'no matching
+        manifest for linux/arm64'; the caller passes an explicit
+        platform so both amd64 hosts (native) and arm64 hosts (under
+        emulation) land the same amd64 image."""
+        from tolokaforge.docker.image import Image
+
+        pulled = MagicMock()
+        pulled.id = "sha256:xyz"
+        client = _mock_client(pull_result=pulled)
+
+        Image.pull(name=NAME, tag=TAG, platform="linux/amd64", client=client)
+
+        client.images.pull.assert_called_once_with(NAME, tag=TAG, platform="linux/amd64")
+
 
 class TestImagePullCacheHit:
     def test_skips_pull_when_local_daemon_already_has_image(self) -> None:

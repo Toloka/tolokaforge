@@ -477,6 +477,7 @@ class Image(BaseModel):
         cls,
         name: str,
         tag: str,
+        platform: str | None = None,
         client: DockerClient | None = None,
     ) -> Image:
         """Pull an image reference from a Docker registry.
@@ -500,6 +501,14 @@ class Image(BaseModel):
         Args:
             name: The repository, e.g. ``"tolokasoft1/tolokaforge-runner"``.
             tag: The tag, e.g. ``"0.18.0"``.
+            platform: Optional Docker platform spec (e.g.
+                ``"linux/amd64"``). Required on hosts whose native
+                architecture is not covered by the published manifest —
+                the tolokaforge-* images ship ``linux/amd64`` only, so an
+                Apple-Silicon host pulling them must pass
+                ``platform="linux/amd64"`` to get the amd64 variant
+                under emulation instead of a "no matching manifest for
+                linux/arm64" error.
             client: Optional Docker client (for testing / mocking).
 
         Returns:
@@ -569,9 +578,19 @@ class Image(BaseModel):
             ),
         )
         def _pull_with_retry() -> DockerImage:
-            logger.info("Pulling image '%s'...", full_tag)
+            if platform is None:
+                logger.info("Pulling image '%s'...", full_tag)
+            else:
+                logger.info("Pulling image '%s' (platform: %s)...", full_tag, platform)
             # docker-py returns a single Image when tag is specified.
-            return cast("DockerImage", client.images.pull(name, tag=tag))
+            return cast(
+                "DockerImage",
+                (
+                    client.images.pull(name, tag=tag, platform=platform)
+                    if platform is not None
+                    else client.images.pull(name, tag=tag)
+                ),
+            )
 
         try:
             pulled = _pull_with_retry()

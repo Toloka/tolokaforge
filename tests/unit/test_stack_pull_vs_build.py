@@ -148,7 +148,9 @@ class TestAutoModeWheelInstall:
 
         assert image is not None
         assert image.context_hash == "pulled"
-        pull_mock.assert_called_once_with(name=PUBLISHED_REPO, tag="0.18.0")
+        # ``linux/amd64`` is the published-images platform axis; the caller
+        # passes it explicitly so arm64 hosts can pull the amd64 variant.
+        pull_mock.assert_called_once_with(name=PUBLISHED_REPO, tag="0.18.0", platform="linux/amd64")
         assert registry.calls == []  # build path never taken
 
     def test_tag_missing_fallback_to_build_with_warning(
