@@ -43,6 +43,7 @@ from tenacity import (
 from tenacity.wait import wait_base
 
 from tolokaforge.core.actors.actor import Actor
+from tolokaforge.core.actors.reply_guard import UserReplyGuard
 from tolokaforge.core.llm.capabilities import ModelCapabilities
 from tolokaforge.core.llm.gateway_route import fetch_gateway_catalog, resolve_gateway_route
 from tolokaforge.core.llm.litellm_params import allowed_openai_params
@@ -58,6 +59,7 @@ from tolokaforge.core.models import (
     MessageRole,
     ModelConfig,
     RateLimitProbeConfig,
+    ReplyDefect,
     ToolCall,
 )
 from tolokaforge.core.pricing import estimate_cost
@@ -530,6 +532,10 @@ class GenerationResult:
         self.reasoning = reasoning
         # Final system prompt after policy enrichment
         self.effective_system_prompt = effective_system_prompt
+        # Defects of the attempts discarded before this reply was accepted.
+        # Stamped only by ``UserSimulator._llm_reply``; every other producer
+        # of a result leaves it empty.
+        self.guard_rejections: tuple[ReplyDefect, ...] = ()
 
 
 class LLMClient:
@@ -2232,6 +2238,7 @@ class UserSimulator(Actor):
         # simulators stay ``None`` forever. Callers (``TrialRunner``) capture
         # this after the first user turn and thread it onto ``Trajectory``.
         self.last_system_prompt: str | None = None
+        self._reply_guard = UserReplyGuard()
 
     def reply(
         self,
@@ -2346,9 +2353,19 @@ Rules:
         *,
         observation: LLMCallObservation | None = None,
     ) -> GenerationResult:
-        """Generate LLM-based user reply - tau-bench compatible with tool calling."""
+        """Generate LLM-based user reply - tau-bench compatible with tool calling.
+
+        Every generation passes through
+        :class:`~tolokaforge.core.actors.reply_guard.UserReplyGuard`, which
+        regenerates a frame-breaking reply rather than editing it and raises
+        :class:`~tolokaforge.core.actors.reply_guard.UserReplyRefused` once the
+        attempt budget is spent. The returned text is exactly what the accepted
+        generation produced; the discarded attempts' defects ride back on
+        ``guard_rejections``.
+        """
         if not self.llm_client:
             raise RuntimeError("LLM client not initialized for LLM mode")
+        llm_client = self.llm_client
 
         # The simulator converses from the customer's seat: its own past
         # messages replay as ``assistant`` turns and the agent's as ``user``
@@ -2410,40 +2427,25 @@ Rules:
         system_prompt = self._build_system_prompt()
         self.last_system_prompt = system_prompt
 
-        result = self.llm_client.generate(
-            system=system_prompt,
-            messages=sim_context,
-            tools=self.tool_schemas if self.tool_schemas else None,
-            tool_choice="auto" if self.tool_schemas else None,
-            temperature=0.2,
-            observation=observation,
+        def generate() -> GenerationResult:
+            result = llm_client.generate(
+                system=system_prompt,
+                messages=sim_context,
+                tools=self.tool_schemas if self.tool_schemas else None,
+                tool_choice="auto" if self.tool_schemas else None,
+                temperature=0.2,
+                observation=observation,
+            )
+            if result.tool_calls and not result.text.strip():
+                result.text = "Let me check that."
+            return result
+
+        # The guard logs under its own logger name, so the trial identity has to
+        # travel as record context; ``observation`` is where the trial already
+        # hands this call site its identity.
+        result, rejected = self._reply_guard.enforce(
+            generate,
+            log_extra=None if observation is None else {"trial_id": observation.trial_id},
         )
-
-        if result.tool_calls and not result.text.strip():
-            result.text = "Let me check that."
-
-        if result.text:
-            result.text = self._sanitize_user_text(result.text)
-
+        result.guard_rejections = rejected
         return result
-
-    @staticmethod
-    def _sanitize_user_text(text: str) -> str:
-        banned = re.compile(
-            r"\b(simulation|simulate|simulated|simulating|benchmark|prompt|ai|model|llm)\b",
-            re.IGNORECASE,
-        )
-        if not text.strip():
-            return text
-        sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-        cleaned_sentences: list[str] = []
-        for sentence in sentences:
-            if banned.search(sentence):
-                stripped = banned.sub("", sentence)
-                stripped = re.sub(r"\s{2,}", " ", stripped).strip()
-                if re.search(r"[A-Za-z]", stripped):
-                    cleaned_sentences.append(stripped)
-            else:
-                cleaned_sentences.append(sentence)
-        cleaned = " ".join(cleaned_sentences).strip()
-        return cleaned or "Okay."

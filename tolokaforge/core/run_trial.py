@@ -312,11 +312,12 @@ def _build_run_config(
 def _probe_episode_s(probe: RateLimitProbeConfig) -> int:
     """Episode budget wide enough for *probe*'s per-turn 429 handling to fit inside.
 
-    Twice ``turn_wall_ceiling_s`` — both per-call budgets, which one turn spends
-    back to back, plus the overshoot each of those calls can add — floored at the
-    mode's minimum. Doubling the *ceiling* rather than the bare budget is what
-    makes :func:`validate_rate_limit_probe_budget` pass by construction for any
-    legal block, including one with a large ``retry_interval_s``.
+    Twice ``turn_wall_ceiling_s`` — the agent's per-call budget plus one per
+    user-reply attempt, which one turn spends back to back, plus the overshoot
+    each of those calls can add — floored at the mode's minimum. Doubling the
+    *ceiling* rather than the bare budget is what makes
+    :func:`validate_rate_limit_probe_budget` pass by construction for any legal
+    block, including one with a large ``retry_interval_s``.
     """
     return max(
         int(probe.turn_wall_ceiling_s * 2) + 1,

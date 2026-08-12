@@ -4,7 +4,8 @@ Everything the runner produces as a per-trial record lives here: the
 message trace (:class:`Message`, :class:`ToolCall`), status/termination
 enums, the :class:`Metrics` accounting block, the rate-limit-probe
 census (:class:`RateLimitProbeRoleMetrics`,
-:class:`RateLimitProbeBucketMetrics`), and the composite
+:class:`RateLimitProbeBucketMetrics`), the user-reply guard's findings
+(:class:`ReplyDefect`, :class:`UserReplyGuardEvent`), and the composite
 :class:`Trajectory` that carries them.
 """
 
@@ -27,17 +28,21 @@ from tolokaforge.core.models.grade import Grade
 from tolokaforge.runner.models import RecordedToolCall
 
 __all__ = [
+    "REPLY_DEFECT_EXCERPT_MAX_CHARS",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",
     "Metrics",
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
+    "ReplyDefect",
     "TerminationReason",
     "ToolCall",
     "ToolUsage",
     "Trajectory",
     "TrialStatus",
+    "UserReplyGuardEvent",
+    "UserReplyOutcome",
 ]
 
 
@@ -441,6 +446,80 @@ class Metrics(BaseModel):
         }
 
 
+REPLY_DEFECT_EXCERPT_MAX_CHARS = 200
+"""Longest matched span a :class:`ReplyDefect` may carry, in characters.
+
+The excerpt is model-authored text persisted into the trial bundle as the
+evidence for a discarded reply, so it is bounded rather than free-length."""
+
+
+class ReplyDefect(BaseModel):
+    """One detector's finding on one generated user reply.
+
+    Produced by the user-reply guard
+    (:mod:`tolokaforge.core.actors.reply_guard`) and carried on the
+    :class:`~tolokaforge.core.llm.client.GenerationResult` of the turn whose
+    earlier attempts it describes.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    detector: str
+    """``name`` of the detector that produced this finding."""
+
+    reason: str
+    """Stable machine code for the shape that was matched, e.g.
+    ``self_identified_as_model``. Consumers group on this, not on
+    :attr:`excerpt`."""
+
+    excerpt: str = Field(max_length=REPLY_DEFECT_EXCERPT_MAX_CHARS)
+    """The matched span of the discarded reply, truncated to the bound.
+
+    ``max_length`` documents the bound in the schema; the before-validator
+    below applies it, so no value ever reaches the constraint too long."""
+
+    @field_validator("excerpt", mode="before")
+    @classmethod
+    def _bound_excerpt(cls, value: Any) -> Any:
+        """Truncate rather than refuse: an overlong span is still evidence, and
+        refusing it would take the reply out of the guard as a crash."""
+        return value[:REPLY_DEFECT_EXCERPT_MAX_CHARS] if isinstance(value, str) else value
+
+
+class UserReplyOutcome(str, Enum):
+    """The reply guard's verdict on one dispatched user turn."""
+
+    DELIVERED = "delivered"  # A later attempt passed the guard
+    REFUSED = "refused"  # The attempt budget was spent; the trial fails
+
+
+class UserReplyGuardEvent(BaseModel):
+    """What one user turn cost when it cost more than one generation.
+
+    A turn whose first generation passed the guard records no event, so a trial
+    that never broke frame carries an empty list rather than a row per turn.
+    """
+
+    model_config = {"extra": "forbid"}
+
+    message_index: int
+    """Position in :attr:`Trajectory.messages` this turn was dispatched at.
+
+    The index the turn's USER message occupies, *or would have occupied had one
+    been appended*. A reply the guard accepts can still be a bare ``###STOP###``,
+    which terminates the dialogue and puts the loop's SYSTEM termination message
+    at this index instead; a refused turn does the same. Nothing may assume the
+    message here is user-role."""
+
+    outcome: UserReplyOutcome
+    """The guard's verdict, not the runner's subsequent disposition of the reply."""
+
+    rejected: list[ReplyDefect] = Field(min_length=1)
+    """One entry per discarded attempt, in the order they were generated.
+
+    Never empty: a turn that discarded nothing records no event at all."""
+
+
 class Trajectory(BaseModel):
     """Complete trial trajectory.
 
@@ -465,6 +544,11 @@ class Trajectory(BaseModel):
     # bootstrapped, and for a bundle written before the key existed.
     first_user_message_source: FirstUserMessageSource | None = None
     messages: list[Message]
+    # One entry per user turn that cost more than one generation, so a run's
+    # frame-breaking replies — and the trials refused because none was clean —
+    # are diagnosable from the bundle. Empty on a trial where every user turn
+    # passed the guard on its first attempt.
+    user_reply_guard_events: list[UserReplyGuardEvent] = Field(default_factory=list)
     final_env_state: dict[str, Any] = Field(default_factory=dict)
     metrics: Metrics = Field(default_factory=Metrics)
     # The trial's ordered tool-call record, one entry per call across every

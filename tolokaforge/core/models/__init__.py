@@ -45,6 +45,7 @@ from tolokaforge.core.models.run_config import (
     LEGACY_DOCKER_RUNTIME_ALIAS,
     RATE_LIMIT_PROBE_ATTEMPT_CEILING_S,
     RATE_LIMIT_PROBE_MIN_EPISODE_S,
+    USER_REPLY_MAX_ATTEMPTS,
     ComputeConfig,
     EngineConfig,
     EvaluationConfig,
@@ -99,17 +100,21 @@ from tolokaforge.core.models.task_config import (
     UserSimulatorConfig,
 )
 from tolokaforge.core.models.trajectory import (
+    REPLY_DEFECT_EXCERPT_MAX_CHARS,
     FirstUserMessageSource,
     Message,
     MessageRole,
     Metrics,
     RateLimitProbeBucketMetrics,
     RateLimitProbeRoleMetrics,
+    ReplyDefect,
     TerminationReason,
     ToolCall,
     ToolUsage,
     Trajectory,
     TrialStatus,
+    UserReplyGuardEvent,
+    UserReplyOutcome,
 )
 
 # Cross-package wire types re-exported so callers reach one module for
@@ -181,17 +186,21 @@ __all__ = [
     "JudgeStatus",
     "JudgeUsage",
     # Trajectory concern
+    "REPLY_DEFECT_EXCERPT_MAX_CHARS",
     "FirstUserMessageSource",
     "Message",
     "MessageRole",
     "Metrics",
     "RateLimitProbeBucketMetrics",
     "RateLimitProbeRoleMetrics",
+    "ReplyDefect",
     "TerminationReason",
     "ToolCall",
     "ToolUsage",
     "Trajectory",
     "TrialStatus",
+    "UserReplyGuardEvent",
+    "UserReplyOutcome",
     # Model config
     "ModelConfig",
     "OpenRouterConfig",
@@ -223,6 +232,7 @@ __all__ = [
     "TimeoutConfig",
     "TracingConfig",
     "TypeSenseConfig",
+    "USER_REPLY_MAX_ATTEMPTS",
     "validate_rate_limit_probe_budget",
     # Task config
     "ActorSpec",

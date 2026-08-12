@@ -441,7 +441,7 @@ corruption observed in the post-PR-#88 production run:
 See [`plans/eval_post_pr88_schema_sanitizer_diagnosis.md`](../plans/eval_post_pr88_schema_sanitizer_diagnosis.md)
 for the full evidence trail.
 
-## `UserSimulator` context construction
+## `UserSimulator` request and reply contract
 
 The LLM user simulator converses from the customer's seat: before each
 generation it role-flips the shared transcript (its own past USER turns
@@ -470,6 +470,91 @@ The greeting exists only in the simulator's private request; it never
 enters the shared transcript or `trajectory.yaml`. Context-shape revisions
 bump `Trajectory.simulator_schema_version` (see
 [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § Schema Version Stamps).
+
+### The reply guard
+
+A generated user turn reaches the agent carrying exactly the words the model
+wrote, or it does not reach the agent at all. Every generation inside
+`_llm_reply` passes through `UserReplyGuard`
+([`reply_guard.py`](../tolokaforge/core/actors/reply_guard.py)), which runs a
+list of `ReplyDetector`s over the reply text:
+
+- A flagged reply is **discarded whole and regenerated**. No text is edited,
+  excised, truncated or substituted — the engine has no path that can put words
+  into a turn the model did not write.
+- Every discarded attempt logs at `WARNING` with the detector, the reason code,
+  the matched excerpt and the `trial_id` that paid for it, and rides back on
+  `GenerationResult.guard_rejections`. The guard logs under its own logger name,
+  so `_llm_reply` hands it the trial identity the call's `LLMCallObservation`
+  carries.
+- A generation that *fails* after one or more discards re-raises with the
+  discarded reason codes attached as an exception note — the provider's error is
+  what the trial reports, and those attempts are otherwise lost with the call.
+- When `USER_REPLY_MAX_ATTEMPTS` generations have all been flagged, the guard
+  raises `UserReplyRefused`. The trial terminates `reason=error` and is counted
+  as a `harness_error` — our defect, in the denominator, never the agent's. The
+  exception names the detectors, the reason codes and the attempt count and
+  deliberately quotes none of the reply: `classify_loop_error` reads an
+  exception's prose, so a quoted reply mentioning a provider would re-attribute
+  the failure away from us.
+- Those extra generations are a term in the rate-limit-probe budget invariant,
+  not an unaccounted multiplier on it (see [`CONFIG.md`](CONFIG.md) §
+  `rate_limit_probe`).
+
+What it records, and where: the runner appends one `user_reply_guard_events`
+entry to `trajectory.yaml` per user turn the guard did not accept on its first
+generation — `message_index` (the position in `messages` the turn was dispatched
+at), `outcome` (`delivered` | `refused`), and one `{detector, reason, excerpt}`
+per discarded attempt. Both dispatch sites record, the bootstrap turn and every
+mid-conversation turn, and the refused path records **before** re-raising so a
+trial that died on the guard still carries the evidence for why. A trial whose
+every turn was clean carries `[]`. Field reference in
+[`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `trajectory.yaml`.
+
+`DEFAULT_REPLY_DETECTORS` is the registration list every guard runs unless
+constructed with another; `FourthWallDetector` (`name = "fourth_wall"`) is its
+one member, and the name a defect is recorded under is the registered detector's.
+It matches **attributed frames**, not vocabulary: a pattern fires only when the
+meta-concept is attributed to a conversational party or to the exercise itself
+*and* the noun carrying it heads its own phrase. Two families:
+
+| family | reason codes | example detection |
+|---|---|---|
+| the speaker identifies itself as a machine, or denies being human | `self_identified_as_model`, `denied_being_human` | `As an AI language model, I cannot do that.` |
+| the exercise is named as an exercise, or a party's prompt or persona is named | `named_the_exercise`, `named_a_party_prompt`, `named_own_instructions` | `This is a simulation of the task.` |
+
+Bare `ai`, `model`, `prompt`, `benchmark`, `simulation` and `llm` are ordinary
+support vocabulary and never trigger on their own, and neither does a noun used
+attributively (`I'm an AI engineer at a fintech startup`, `a benchmark index
+fund`, `not a real person of interest`, `your system prompt caching feature`). A
+false positive costs the whole attempt budget and then the trial, so precision
+outranks recall — and where a demonstrative head cannot separate the two senses,
+the frame is given up rather than the support turn. `exercise` and `evaluation`
+are exercise nouns only in their compounds (`roleplay exercise`, `training
+exercise`, `evaluation exercise`), `benchmark` only under the prepositional frame
+(`in this benchmark`), and `test scenario` / `test case` no longer match in any
+frame. The prepositional frame itself matches only when the speaker claims a role
+inside the exercise (`In this benchmark, I am playing a frustrated customer.`),
+because `During the simulation, the app froze and I lost my mesh.` and `In the
+simulation I get an error at step 4.` are what a customer of simulation software
+says — a first-person subject alone does not separate them. So `This exercise is
+not showing up in my activity ring.` passes, and a bare `This benchmark tests
+performance.` is missed.
+The module's docstring carries the full list of the recall given up and why.
+
+The `named_a_party_prompt` family matches the agent's prompt two ways: as a noun
+heading its phrase (`Your system prompt is confusing.`), and as the subject of a
+verb reciting what it says (`Your system prompt says to be concise.`). The second
+is the family's least ambiguous break — a customer quoting the agent's own
+instructions — and no anchor built for nouns can see it, so it is its own branch.
+`requires` is not one of those verbs: `Your system prompt requires a role field,
+but the docs disagree.` is an API question, not a recitation.
+
+The user describing the **agent** as a machine (`You are chatting with an
+internal AI agent, right?`) is in frame and passes by design; only the simulator
+describing **itself** is a defect. Scripted replies and a task's pinned
+`initial_user_message` are authored content delivered verbatim — neither is
+generated, so neither passes through the guard.
 
 ## litellm OpenRouter routing caveat
 
@@ -1576,7 +1661,10 @@ composes a `ModelCapabilities` and wraps litellm's `completion()`.
 See § `usage` above for the full Usage schema and accumulation contract.
 
 `UserSimulator` wraps `LLMClient` for tau-bench-style user simulation with
-`scripted` or `llm` modes.
+`scripted` or `llm` modes. An `llm`-mode reply is delivered only if it survives
+the guard described in § `UserSimulator` request and reply contract;
+`GenerationResult.guard_rejections` carries the defects of the attempts
+discarded before it, and is empty everywhere else.
 
 ### Outer retry controllers
 

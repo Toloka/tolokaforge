@@ -134,6 +134,9 @@ class OutputWriter:
                 else None
             ),
             "messages": [msg.model_dump(mode="json") for msg in trajectory.messages],
+            "user_reply_guard_events": [
+                event.model_dump(mode="json") for event in trajectory.user_reply_guard_events
+            ],
         }
 
         with open(self.output_dir / "trajectory.yaml", "w") as f:
