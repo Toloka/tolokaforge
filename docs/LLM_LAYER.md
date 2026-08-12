@@ -512,17 +512,22 @@ every turn was clean carries `[]`. Field reference in
 [`OUTPUT_FORMAT.md`](OUTPUT_FORMAT.md) § `trajectory.yaml`.
 
 `DEFAULT_REPLY_DETECTORS` is the registration list every guard runs unless
-constructed with another; `FourthWallDetector` (`name = "fourth_wall"`) is its
-one member, and the name a defect is recorded under is the registered detector's.
-It matches **attributed frames**, not vocabulary: a pattern fires only when the
-meta-concept is attributed to a conversational party or to the exercise itself
-*and* the noun carrying it heads its own phrase. Two families:
+constructed with another, and the name a defect is recorded under is the
+registered detector's. Two detectors are registered, and the tuple order is the
+inspection order: `FourthWallDetector` (`name = "fourth_wall"`) first, then
+`ScratchpadDetector` (`name = "scratchpad"`). The first detector to flag a reply
+owns it, so a detector added at the end of the list cannot move the reason code
+recorded for any reply an earlier one already claims.
 
-| family | reason codes | example detection |
-|---|---|---|
-| the speaker identifies itself as a machine, or denies being human | `self_identified_as_model`, `denied_being_human` | `As an AI language model, I cannot do that.` |
-| the exercise is named as an exercise, or a party's prompt or persona is named | `named_the_exercise`, `named_a_party_prompt`, `named_own_instructions` | `This is a simulation of the task.` |
+| detector | family | reason codes | example detection |
+|---|---|---|---|
+| `fourth_wall` | the speaker identifies itself as a machine, or denies being human | `self_identified_as_model`, `denied_being_human` | `As an AI language model, I cannot do that.` |
+| `fourth_wall` | the exercise is named as an exercise, or a party's prompt or persona is named | `named_the_exercise`, `named_a_party_prompt`, `named_own_instructions` | `This is a simulation of the task.` |
+| `scratchpad` | the model's own reasoning delimiter survives into the reply | `think_tag` | `</think>` beginning the reply, or beginning a line |
 
+`FourthWallDetector` matches **attributed frames**, not vocabulary: a pattern
+fires only when the meta-concept is attributed to a conversational party or to
+the exercise itself *and* the noun carrying it heads its own phrase.
 Bare `ai`, `model`, `prompt`, `benchmark`, `simulation` and `llm` are ordinary
 support vocabulary and never trigger on their own, and neither does a noun used
 attributively (`I'm an AI engineer at a fintech startup`, `a benchmark index
@@ -549,6 +554,35 @@ is the family's least ambiguous break — a customer quoting the agent's own
 instructions — and no anchor built for nouns can see it, so it is its own branch.
 `requires` is not one of those verbs: `Your system prompt requires a role field,
 but the docs disagree.` is an API question, not a recitation.
+
+`ScratchpadDetector` matches a think tag only at a **structural position** —
+beginning the reply, or beginning a line. Every real leak is structural: the
+delimiter is emitted at a channel boundary, never mid-sentence, so a tag
+mentioned inside a sentence (`My parser chokes on </think> tags in the streamed
+output`) is an ordinary support ticket and passes. Anchoring on the start of the
+*string* would miss the shape the measurement reports as dominant — planning
+prose, then a lone `</think>` on its own line, then the reply. Its recall is
+bounded in one large way and one small one: the **untagged** half of the leak,
+plain planning prose carrying no delimiter, is the larger half and is not
+separable from ordinary support English by any pattern set (the two-round
+measurement that retired five candidate families is #1095); and a pasted
+multi-line log whose quoted content starts a line with a think tag is a false
+positive, which costs that trial and fails loudly, carrying the matched excerpt,
+rather than silently.
+
+The tag is **not stripped**, here or anywhere else on the user path. The user
+simulator can be asked again, and a defect curable by regenerating must not be
+cured by editing the words the model wrote. The **agent** path carries the same
+leak into `trajectory.yaml` and the judge's evidence and cannot regenerate —
+re-rolling an agent turn re-rolls the thing being measured — so stripping there
+belongs in `AssistantTextPolicy`, tracked as #1094.
+
+What the exposure figure describes: roughly one **opening** message in six on
+one reasoning simulator carried a scratchpad, about half of them tagged. It is
+an opening-turn rate. A task that pins `initial_user_message` has no generated
+opening turn at all, so that surface is absent for it (see
+[`TASKS.md`](TASKS.md) § Authoring the opening turn), and the mid-conversation
+rate is unmeasured.
 
 The user describing the **agent** as a machine (`You are chatting with an
 internal AI agent, right?`) is in frame and passes by design; only the simulator
