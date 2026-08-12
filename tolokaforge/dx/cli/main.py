@@ -20,6 +20,7 @@ from tolokaforge.core.budgets import LimitHitMarker, make_budget
 from tolokaforge.core.dry_run import load_tasks_for_dry_run, materialize_dry_run_sample
 from tolokaforge.core.duration import parse_duration
 from tolokaforge.core.engine_run_state import read_persisted_presets_file
+from tolokaforge.core.grading.corpus_curation import CurationError, curate_corpus
 from tolokaforge.core.grading.replay import (
     KnowledgeSearchMode,
     ReplayOutcomeStatus,
@@ -33,7 +34,9 @@ from tolokaforge.core.grading.replay_layout import JUDGE_REPLAY_DIRNAME
 from tolokaforge.core.grading.rubric_migration import (
     DEFAULT_PACKS_ROOT,
     ReconcileError,
+    ReconcileReport,
     reconcile_corpus,
+    reconcile_declared_corpora,
     reconcile_root,
 )
 from tolokaforge.core.grading.trace_replay import (
@@ -86,6 +89,7 @@ from tolokaforge.dx.banners import (
     print_run_end_banner,
     print_run_start_banner,
 )
+from tolokaforge.dx.curation_render import render_curation
 from tolokaforge.dx.dry_run_render import render_dry_run
 from tolokaforge.dx.live_panel import LiveRunDisplay
 from tolokaforge.dx.rubric_migration_render import render_reconcile_report
@@ -210,6 +214,7 @@ class _GroupedCommandsGroup(click.Group):
         "status": "Runs",
         "analyze": "Runs",
         "browse": "Runs",
+        "curate": "Runs",
         "reconcile": "Runs",
         "rejudge": "Runs",
         "retrace": "Runs",
@@ -1172,14 +1177,126 @@ def retrace(
         raise SystemExit(1)
 
 
+def _named_exclusions(
+    ctx: click.Context, param: click.Parameter, value: tuple[str, ...]
+) -> dict[Path, str]:
+    """Parse ``--exclude <bundle-dir>=<reason>`` into the paths and the reasons given."""
+    exclusions: dict[Path, str] = {}
+    for item in value:
+        directory, separator, reason = item.partition("=")
+        if not (separator and directory and reason.strip()):
+            raise click.BadParameter(
+                f"{item!r} is not <bundle-dir>=<reason>. An exclusion is the author's own "
+                "judgment about one bundle, and the corpus records the reason beside the path",
+                ctx=ctx,
+                param=param,
+            )
+        exclusions[Path(directory)] = reason.strip()
+    return exclusions
+
+
+@cli.command(name="curate")
+@click.option(
+    "--source",
+    "sources",
+    required=True,
+    multiple=True,
+    type=click.Path(exists=True, file_okay=False),
+    help=(
+        "Recorded run dir (trials/<task>/<idx> subtree) or a single bundle dir; repeatable, "
+        "because a corpus is often assembled from several runs. A directory is a bundle iff "
+        "it directly contains trajectory.yaml."
+    ),
+)
+@click.option(
+    "--into",
+    required=True,
+    type=click.Path(file_okay=False),
+    help="Corpus directory to write. A multi-part corpus is a directory of corpora: one "
+    "invocation per part, each with its own --into.",
+)
+@click.option(
+    "--criterion",
+    required=True,
+    help="Rubric criterion id the corpus carries the judge's recorded verdicts for.",
+)
+@click.option(
+    "--exclude",
+    "exclusions",
+    multiple=True,
+    metavar="DIR=REASON",
+    callback=_named_exclusions,
+    help="Reject one discovered bundle by the author's own judgment, recorded in the "
+    "manifest as 'by: author' with this reason; repeatable. It does not cover a bundle "
+    "that cannot be read: an unreadable one aborts the run before any exclusion applies.",
+)
+@click.option(
+    "--replace",
+    is_flag=True,
+    help="Rewrite the whole --into directory. Without it, a destination that already holds "
+    "a corpus.yaml is an error.",
+)
+@click.option(
+    "--dry-run",
+    is_flag=True,
+    help="Classify every discovered bundle and report what would be curated, writing nothing.",
+)
+def curate(
+    sources: tuple[str, ...],
+    into: str,
+    criterion: str,
+    exclusions: dict[Path, str],
+    replace: bool,
+    dry_run: bool,
+):
+    """Write a judge-labelled corpus from recorded runs, spending nothing.
+
+    A bundle enters the corpus iff it carries task.yaml, trajectory.yaml and grade.yaml,
+    its judge completed, its criterion_results holds a verdict for --criterion, and it is
+    not environment-dead — carrying a tool-call record whose calls all failed. Every trial
+    that does not enter is named with its reason, and both halves are written into the
+    corpus's own corpus.yaml, so the composition outlives the run directories it came from.
+
+    A bundle whose artifacts cannot be read aborts the run naming the file, and --exclude
+    does not reach it: classification reads the bundle, so there is nothing to exclude it
+    on. Point --source at the directories that survive instead.
+
+    Exits non-zero when no bundle is admitted. See docs/RUBRIC_MIGRATION.md.
+    """
+    source_paths = [Path(source) for source in sources]
+    console.print(
+        f"[bold blue]Curating {criterion} from {len(source_paths)} source(s)...[/bold blue]"
+    )
+    try:
+        outcome = curate_corpus(
+            sources=source_paths,
+            into=Path(into),
+            criterion=criterion,
+            exclusions=exclusions,
+            replace=replace,
+            dry_run=dry_run,
+        )
+    except CurationError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    render_curation(outcome, dry_run=dry_run, console=console)
+    if not outcome.manifest.bundles:
+        raise click.ClickException(
+            f"no bundle under {', '.join(str(source) for source in source_paths)} is admissible "
+            f"evidence for {criterion} — a corpus of nothing is evidence of nothing"
+        )
+
+
 @cli.command(name="reconcile")
 @click.option(
     "--source",
-    required=True,
+    default=None,
     type=click.Path(exists=True, file_okay=False),
     help=(
         "Corpus of recorded trial bundles the migration's evidence comes from — a run dir, "
-        "a flat collection of bundle dirs, or a single bundle dir."
+        "a flat collection of bundle dirs, or a single bundle dir. Omitted, every migration "
+        "declared under --packs is reconciled over the corpus its own declaration names, "
+        "which writes nothing and so needs --dry-run and takes no --replay-id."
     ),
 )
 @click.option(
@@ -1187,9 +1304,10 @@ def retrace(
     multiple=True,
     type=click.Path(exists=True, file_okay=False),
     help=(
-        "Directory searched recursively for the pack each bundle's task_id names; repeatable. "
-        f"A task_id resolving in none of them, or in more than one, is an error naming the id "
-        f"and the roots searched. Default: {DEFAULT_PACKS_ROOT}."
+        "Directory searched recursively for the pack each bundle's task_id names, and for the "
+        "declarations the sweep reconciles; repeatable. A task_id resolving in none of them, "
+        f"or in more than one, is an error naming the id and the roots searched. "
+        f"Default: {DEFAULT_PACKS_ROOT}."
     ),
 )
 @click.option(
@@ -1204,7 +1322,7 @@ def retrace(
     is_flag=True,
     help="Reconcile and report, writing no artifact.",
 )
-def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
+def reconcile(source: str | None, packs: tuple[str, ...], replay_id: str | None, dry_run: bool):
     """Check a pack's declared rubric migration against recorded judge verdicts.
 
     For every criterion a pack's migration.yaml declares, recomputes the trace constraints
@@ -1213,36 +1331,82 @@ def reconcile(source: str, packs: tuple[str, ...], replay_id: str | None, dry_ru
     with the judge's own justification. Spends nothing — no agent, no judge, no containers —
     and edits no pack whatever the verdict.
 
+    With no --source, every migration declared under --packs is reconciled over the corpus
+    its own declaration names, which is the invocation CI runs: it writes nothing, and there
+    the declared evidence must match the measurement exactly rather than bound it.
+
     Exits zero only when every narrowed/retired entry reaches `no_counter_evidence`: an
     undefined κ (`insufficient_evidence`) and a refusal both exit non-zero, as does an
     unreadable bundle. A `candidate` entry's verdict is reported and gates nothing. See
     docs/RUBRIC_MIGRATION.md.
     """
-    source_path = Path(source)
-    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    roots = [Path(root) for root in packs] or None
+    reports = (
+        _every_declaration_reconciled(roots, replay_id=replay_id, dry_run=dry_run)
+        if source is None
+        else (_one_corpus_reconciled(Path(source), roots, replay_id=replay_id, dry_run=dry_run),)
+    )
+    blocking = [reason for report in reports for reason in report.blocking]
+    if not blocking:
+        return
+    for reason in blocking:
+        console.print(f"[error]blocks the migration[/error] {reason}")
+    raise SystemExit(1)
 
-    console.print(f"[bold blue]Reconciling declared migrations under {source_path}...[/bold blue]")
+
+def _one_corpus_reconciled(
+    source: Path, roots: list[Path] | None, *, replay_id: str | None, dry_run: bool
+) -> ReconcileReport:
+    """The corpus somebody pointed at, against every declaration its trials reach."""
+    replay_id = replay_id or f"reconcile_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    console.print(f"[bold blue]Reconciling declared migrations under {source}...[/bold blue]")
     try:
         report = reconcile_corpus(
-            source_path,
-            replay_id=replay_id,
-            packs=[Path(root) for root in packs] or None,
-            dry_run=dry_run,
+            source, replay_id=replay_id, packs=roots, dry_run=dry_run, corpus_base=Path.cwd()
         )
     except ReconcileError as exc:
         raise click.ClickException(str(exc)) from exc
 
     render_reconcile_report(
         report,
-        artifacts_dir=None if dry_run else reconcile_root(source_path, replay_id),
+        artifacts_dir=None if dry_run else reconcile_root(source, replay_id),
         console=console,
     )
-    blocking = report.blocking
-    if not blocking:
-        return
-    for reason in blocking:
-        console.print(f"[error]blocks the migration[/error] {reason}")
-    raise SystemExit(1)
+    return report
+
+
+def _every_declaration_reconciled(
+    roots: list[Path] | None, *, replay_id: str | None, dry_run: bool
+) -> tuple[ReconcileReport, ...]:
+    """Every declaration under the searched packs, over the corpus each of them names.
+
+    The two invocations this mode cannot honour are refused rather than ignored: it writes
+    nothing at all, so a name for an artifact and a request to keep one are both about a
+    report that will not exist.
+    """
+    if replay_id is not None:
+        raise click.ClickException(
+            "--replay-id names the subdirectory a report is written to, and reconciling every "
+            "declaration writes none: the corpora are committed, so a report inside one would "
+            "dirty the tree. Drop --replay-id, or pass --source to reconcile one corpus"
+        )
+    if not dry_run:
+        raise click.ClickException(
+            "reconciling every declaration writes nothing, because a report lands under the "
+            "corpus it read and every corpus here is committed. Pass --dry-run to say so, or "
+            "pass --source to reconcile one corpus and keep its report"
+        )
+    console.print(
+        "[bold blue]Reconciling every declared migration over the corpus it names...[/bold blue]"
+    )
+    try:
+        reports = reconcile_declared_corpora(packs=roots, corpus_base=Path.cwd())
+    except ReconcileError as exc:
+        raise click.ClickException(str(exc)) from exc
+
+    for report in reports:
+        render_reconcile_report(report, artifacts_dir=None, console=console)
+    return reports
 
 
 @cli.command(name="prepare")
@@ -1578,7 +1742,9 @@ def validate(tasks: str):
                 )
                 # Only here, and deliberately not in the pre-run gate: a migration
                 # declaration cannot affect a grade, so a run must not abort on it.
-                inspect_migration_declaration(source.path)
+                # The base each entry's corpus resolves against is this layer's to
+                # supply: the loader takes it as a parameter and reads no ambient state.
+                inspect_migration_declaration(source.path, corpus_base=Path.cwd())
             console.print(f"[green]✓ {task_file}[/green]")
             for skip in report.unchecked:
                 console.print(f"[yellow]  ? {skip.where} not checked: {skip.reason}[/yellow]")

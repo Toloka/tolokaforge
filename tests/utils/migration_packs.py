@@ -11,16 +11,22 @@ A ``task_id`` writes the ``task.yaml`` beside them, which is what makes the pack
 *resolvable*: ``tolokaforge reconcile`` finds a pack by the id a recorded bundle
 carries, so a pack written without one is reachable by the load-time gate and by
 nothing that reads a corpus.
+
+:func:`write_corpus_directory` writes what an entry's ``corpus`` has to resolve to,
+so a fixture pack's pointer is a real directory rather than a nominal path — the
+load refuses one that is not.
 """
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
+from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
 import yaml
 
+from tolokaforge.core.grading.corpus_curation import CORPUS_MANIFEST_FILENAME, CorpusManifest
 from tolokaforge.core.grading.migration_declaration import MIGRATION_FILENAME
 
 
@@ -58,3 +64,36 @@ def write_migration_pack(
             )
         )
     return grading_path
+
+
+def write_corpus_directory(directory: Path, *, criterion: str, parts: Sequence[str] = ()) -> Path:
+    """Write a corpus at ``directory`` holding no bundle; return it.
+
+    What makes a directory a corpus is the ``corpus.yaml`` ``tolokaforge curate`` writes,
+    so the fixture writes a real manifest — of a curation that admitted nothing, which is
+    the whole of what resolving a pointer reads. ``parts`` writes the multi-part shape
+    instead: one corpus per named subdirectory, the parent carrying no manifest of its own.
+    """
+    directory.mkdir(parents=True, exist_ok=True)
+    if not parts:
+        (directory / CORPUS_MANIFEST_FILENAME).write_text(_manifest(criterion))
+        return directory
+    for part in parts:
+        half = directory / part
+        half.mkdir(parents=True, exist_ok=True)
+        (half / CORPUS_MANIFEST_FILENAME).write_text(_manifest(criterion))
+    return directory
+
+
+def _manifest(criterion: str) -> str:
+    return yaml.safe_dump(
+        CorpusManifest(
+            criterion=criterion,
+            task_ids=[],
+            curated_from=[],
+            curated_at=datetime(2026, 1, 1, tzinfo=timezone.utc),
+            bundles=[],
+            excluded=[],
+        ).model_dump(mode="json"),
+        sort_keys=False,
+    )

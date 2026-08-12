@@ -108,7 +108,8 @@ tests/
 │   ├── transcript_parity/   # transcript_rules differential packs; own glob, may author two keys
 │   ├── projects/            # Full project snapshots (food_delivery_2, tau_retail_mini)
 │   ├── grading_bundles/     # Authored grading bundles the verdict pins read; each README says it was not recorded
-│   ├── migration_corpora/   # Judge-labelled trial bundles reconcile reads (notes_duplicate_check)
+│   ├── curation_runs/       # Recorded runs curate builds a corpus from; one record-carrying, one not
+│   ├── migration_corpora/   # Judge-labelled trial bundles reconcile reads; each half curate wrote carries its corpus.yaml
 │   ├── migration_packs/     # Migration declarations reconcile resolves; shipped task_ids, never a default root
 │   └── configs/             # Config fixtures
 └── utils/                   # Shared test utilities
@@ -130,7 +131,7 @@ tests/
     ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
     ├── five_shape_run.py     # One run dir holding every trial shape the harness writes; corpus for both offline commands
     ├── provision_failure.py  # The task-less bundle a provisioning failure leaves, written through the production executor path
-    ├── migration_packs.py    # A task directory a migration declaration is read out of
+    ├── migration_packs.py    # A task directory a migration declaration is read out of, and the corpus its entry names
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     ├── golden_source_shapes.py  # Non-list golden_actions shapes every reading surface must refuse
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering

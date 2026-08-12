@@ -1,0 +1,110 @@
+latency_total_s: 9.9721999168396
+turns: 5
+api_calls: 5
+usage:
+  prompt_tokens: 3376
+  completion_tokens: 318
+  reasoning_tokens: 0
+  cached_tokens: 0
+  cache_creation_input_tokens: 0
+  cache_read_input_tokens: 0
+  provider_raw:
+    completion_tokens: 30
+    prompt_tokens: 917
+    total_tokens: 947
+    completion_tokens_details:
+      accepted_prediction_tokens: null
+      audio_tokens: 0
+      reasoning_tokens: 0
+      rejected_prediction_tokens: null
+      text_tokens: null
+      image_tokens: 0
+      video_tokens: null
+    prompt_tokens_details:
+      audio_tokens: 0
+      cache_write_tokens: 0
+      cached_tokens: 0
+      text_tokens: null
+      image_tokens: null
+      video_tokens: 0
+    cost: 0.00015555
+    is_byok: false
+    cost_details:
+      upstream_inference_cost: 0.00015555
+      upstream_inference_prompt_cost: 0.00013755
+      upstream_inference_completions_cost: 1.8e-05
+  calls:
+  - prompt_tokens: 414
+    completion_tokens: 28
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 7.89e-05
+    cost_source: litellm
+    latency_s: 1.2263381481170654
+  - prompt_tokens: 530
+    completion_tokens: 58
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 0.0001143
+    cost_source: litellm
+    latency_s: 1.382563829421997
+  - prompt_tokens: 674
+    completion_tokens: 150
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 0.0001911
+    cost_source: litellm
+    latency_s: 3.9034242630004883
+  - prompt_tokens: 841
+    completion_tokens: 52
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 0.00015735
+    cost_source: litellm
+    latency_s: 1.1144416332244873
+  - prompt_tokens: 917
+    completion_tokens: 30
+    cached_tokens: 0
+    reasoning_tokens: 0
+    cache_creation_input_tokens: 0
+    cache_read_input_tokens: 0
+    cost_usd: 0.00015555
+    cost_source: litellm
+    latency_s: 0.8887152671813965
+cost_usd: 0.0006972
+tool_calls: 3
+tool_success_rate: 1.0
+stuck_detected: false
+tool_usage:
+- tool_name: http_request
+  call_count: 2
+  success_count: 2
+  error_count: 0
+  total_duration_s: 0.041552066802978516
+- tool_name: write_file
+  call_count: 1
+  success_count: 1
+  error_count: 0
+  total_duration_s: 0.001791238784790039
+rate_limit_retries: 0
+rate_limit_wait_s: 0.0
+rate_limit_first_ts: null
+rate_limit_last_ts: null
+rate_limit_by_role_model: []
+probe_successful_calls: 0
+probe_success_duration_s: 0.0
+probe_prompt_tokens: 0
+probe_completion_tokens: 0
+probe_bucket_width_s: 0
+probe_dropped_buckets: 0
+probe_buckets: []
+schema_version: 4
+provisioning_duration_s: 0.0
