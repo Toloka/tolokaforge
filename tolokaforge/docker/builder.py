@@ -260,6 +260,14 @@ def _runner_definition() -> dict[str, Any]:
         packaged / "scripts",  # dir -> build_dir/scripts (holds hatch/)
         pkg_dir,  # dir -> build_dir/tolokaforge
         (pkg_dir / "_python_version.txt", ".python-version"),
+        # The runner Dockerfile builds tolokaforge-models wheel in-container
+        # too. The base wheel ships a copy of its source tree at
+        # `tolokaforge/_subset_build/tolokaforge_models/` (via the
+        # force-include entries in the workspace-root pyproject.toml). Its
+        # basename already matches what the Dockerfile expects at
+        # `COPY tolokaforge_models/ /src/tolokaforge_models/`, so a plain
+        # absolute-path entry lands the directory under the right name.
+        packaged / "tolokaforge_models",
     ]
     missing = [
         str(e[0] if isinstance(e, tuple) else e)
