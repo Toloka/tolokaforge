@@ -11,7 +11,7 @@ handle failures per the ADR-0010 contract.
 
 ``copy_compose_context`` and the materialisation transforms are left real, so
 every ``provision()`` here writes a compose file carrying the credential
-payload; ``_pin_fake_secrets`` pins the manager that supplies it.
+payload; the package-level ``_pin_fake_secrets`` pins the manager supplying it.
 """
 
 from __future__ import annotations
@@ -41,14 +41,6 @@ from tolokaforge.runner.models import ReadinessSpec, ResetSpec, ServiceSpec
 from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR
 
 pytestmark = pytest.mark.canonical
-
-
-@pytest.fixture(autouse=True)
-def _pin_fake_secrets(installed_fake_secrets: dict[str, str]) -> None:
-    """Every test here materialises a compose file for real, and materialisation
-    injects the process ``SecretManager``'s payload into the runner service.
-    Unpinned, the suite would write the host's own credentials into temp compose
-    files and take the empty-vs-populated branch by machine."""
 
 
 _FIXTURES = Path(__file__).parent / "fixtures" / "environment_manifest"
@@ -438,7 +430,7 @@ class TestProvision:
         assert handle.temp_dir.is_dir()
 
     def test_the_materialised_compose_file_gives_only_the_runner_the_payload(
-        self, patched_backend: PerTrialRuntimeBackend, installed_fake_secrets: dict[str, str]
+        self, patched_backend: PerTrialRuntimeBackend
     ) -> None:
         """Asserted on the file ``docker compose`` reads, not on a spy: the
         runner service of the materialised stack carries the credential entry

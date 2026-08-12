@@ -58,16 +58,16 @@ def test_the_runner_container_reads_back_the_exact_payload(
 
     project_dir = make_project_temp_dir("credential-delivery")
     compose_file = project_dir / "docker-compose.yml"
-    copy_compose_context(source_dir / "docker-compose.yml", project_dir)
-    apply_network_policy_to_compose_file(
-        compose_file, NetworkPolicy.NO_INTERNET, RUNNER_SERVICE, []
-    )
-    inject_runner_credentials(compose_file, RUNNER_SERVICE)
-
-    expected = container_secrets_env()[CONTAINER_SECRETS_ENV_VAR]
-    assert "$" in expected, "the fake payload lost its $-bearing value; this test stops biting"
-
     try:
+        copy_compose_context(source_dir / "docker-compose.yml", project_dir)
+        apply_network_policy_to_compose_file(
+            compose_file, NetworkPolicy.NO_INTERNET, RUNNER_SERVICE, []
+        )
+        inject_runner_credentials(compose_file, RUNNER_SERVICE)
+
+        expected = container_secrets_env()[CONTAINER_SECRETS_ENV_VAR]
+        assert "$" in expected, "the fake payload lost its $-bearing value; this test stops biting"
+
         result = subprocess.run(
             _compose_command(
                 compose_file,

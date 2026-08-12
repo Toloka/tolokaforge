@@ -23,6 +23,7 @@ from tolokaforge.docker.mount import Mount
 from tolokaforge.docker.policy import Capability, ResourcePolicy
 from tolokaforge.docker.ports import PortConfig
 from tolokaforge.docker.stack import EngineStack, ServiceDefinition
+from tolokaforge.secrets import container_secrets_env
 
 
 @dataclass(frozen=True)
@@ -199,8 +200,6 @@ def core_stack(
     # bootstraps its own SecretManager singleton from it. Credentials cross
     # the host→container boundary only inside this payload — never via build
     # args, mounts, or image bake-in.
-    from tolokaforge.secrets import container_secrets_env
-
     runner_env.update(container_secrets_env())
 
     # The runner Dockerfile is a multi-stage build: its wheel-builder stage

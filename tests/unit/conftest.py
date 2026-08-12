@@ -14,6 +14,7 @@ from unittest.mock import patch
 
 import pytest
 
+from tests.utils.secret_state import cold_secret_manager
 from tolokaforge.docker.wheel_resolver import WheelArtifact
 
 
@@ -46,19 +47,8 @@ def isolated_secret_manager():
     leaks a credential into every test that runs after it — and a second
     registration of the same name with a different value raises.
     """
-    from tolokaforge.secrets import log_filter as log_filter_module
-    from tolokaforge.secrets import manager as manager_module
-
-    saved_manager = manager_module._default_manager
-    saved_cached_manager = log_filter_module._cached_manager
-    saved_cached_values = log_filter_module._cached_values
-    manager_module._default_manager = None
-    log_filter_module._cached_manager = None
-    log_filter_module._cached_values = frozenset()
-    yield
-    manager_module._default_manager = saved_manager
-    log_filter_module._cached_manager = saved_cached_manager
-    log_filter_module._cached_values = saved_cached_values
+    with cold_secret_manager():
+        yield
 
 
 @pytest.fixture(autouse=True)

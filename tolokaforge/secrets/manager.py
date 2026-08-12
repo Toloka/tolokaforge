@@ -389,11 +389,36 @@ def get_default() -> SecretManager:
     return _default_manager
 
 
+def get_default_or_none() -> SecretManager | None:
+    """Return the default SecretManager iff already initialized, else ``None``.
+
+    Unlike :func:`get_default`, this never triggers lazy-init from
+    ``SecretConfig.default()`` — safe to call from a logging filter that
+    fires on records emitted before the runner bootstrap completes.
+    """
+    return _default_manager
+
+
 CONTAINER_SECRETS_ENV_VAR = "TOLOKAFORGE_SECRETS_JSON"
 """Environment variable carrying the serialised credential payload from the
 host to a container. Spelled once: the engine-built core stack and the
 materialised task-declared compose stack both inject it, and the runner
 bootstrap reads it back."""
+
+
+def compose_escaped(value: str) -> str:
+    """Return ``value`` as it must be written into a Docker Compose
+    ``environment:`` value, with ``$`` doubled.
+
+    Compose interpolates a single ``$``, so an unescaped credential containing
+    one is silently truncated. Deliberately *not* applied inside
+    :func:`container_secrets_env`: the engine-built stack hands its value to the
+    Docker SDK, which interpolates nothing, and would deliver doubled dollars.
+    Two consumers spell the rule through here — the materialisation transform
+    that writes the value, and the log redactor, whose scrub set must hold the
+    written form or a compose error quoting the file back leaks it.
+    """
+    return value.replace("$", "$$")
 
 
 def container_secrets_env() -> dict[str, str]:
@@ -409,16 +434,6 @@ def container_secrets_env() -> dict[str, str]:
     if not payload:
         return {}
     return {CONTAINER_SECRETS_ENV_VAR: json.dumps(payload)}
-
-
-def get_default_or_none() -> SecretManager | None:
-    """Return the default SecretManager iff already initialized, else ``None``.
-
-    Unlike :func:`get_default`, this never triggers lazy-init from
-    ``SecretConfig.default()`` — safe to call from a logging filter that
-    fires on records emitted before the runner bootstrap completes.
-    """
-    return _default_manager
 
 
 def init_default_from(manager: SecretManager) -> SecretManager:

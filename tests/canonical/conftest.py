@@ -11,6 +11,19 @@ SNAPSHOT_DIR = Path(__file__).parent / "snapshots"
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 
 
+@pytest.fixture(autouse=True)
+def _pin_fake_secrets(installed_fake_secrets: dict[str, str]) -> None:
+    """Pin the process SecretManager for every canonical test.
+
+    Several modules here materialise a compose file for real, and
+    materialisation injects the manager's payload into the runner service.
+    Unpinned, those tests write the host's own credentials into temp compose
+    files and take the empty-vs-populated branch by machine. Pinning the whole
+    package rather than the modules that happen to reach it today keeps the
+    next such test deterministic without anyone having to notice.
+    """
+
+
 def pytest_addoption(parser):
     parser.addoption(
         "--update-canon",

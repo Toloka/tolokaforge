@@ -28,7 +28,7 @@ import subprocess
 import tempfile
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Any
 
 import yaml
@@ -44,7 +44,12 @@ from tolokaforge.core.netpolicy_constants import (
 )
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
-from tolokaforge.secrets import CONTAINER_SECRETS_ENV_VAR, container_secrets_env
+from tolokaforge.runner.models import bind_mount_source
+from tolokaforge.secrets import (
+    CONTAINER_SECRETS_ENV_VAR,
+    compose_escaped,
+    container_secrets_env,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -225,7 +230,7 @@ def _merge_service_env(existing: Any, values: Mapping[str, str]) -> Any:
     """
     if isinstance(existing, list):
         return [*existing, *(f"{key}={value}" for key, value in values.items())]
-    if isinstance(existing, dict):
+    if isinstance(existing, Mapping):
         return {**existing, **values}
     return dict(values)
 
@@ -365,6 +370,11 @@ def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> 
     when ``_run_needs_docker_cli`` fires), but the socket is a runtime bind mount
     the task-declared compose file does not supply — materialisation injects it
     here on the same trigger. Idempotent: an existing socket mount is left as-is.
+
+    The extended list is assigned, never appended to in place: ``yaml.safe_load``
+    resolves a YAML alias to the same object, so an anchored ``volumes:`` list
+    shared with a sibling service would otherwise hand that sibling the socket
+    too.
     """
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
@@ -372,13 +382,12 @@ def mount_docker_socket_into_runner(compose_file: Path, runner_service: str) -> 
     volumes = service.get("volumes") or []
     if _volumes_mount_docker_socket(volumes):
         return
-    volumes.append(f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}")
-    service["volumes"] = volumes
+    service["volumes"] = [*volumes, f"{DOCKER_SOCKET_PATH}:{DOCKER_SOCKET_PATH}"]
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
 
 
-MATERIALISED_COMPOSE_MODE = 0o600
+CREDENTIALLED_COMPOSE_MODE = 0o600
 """Mode the materialised compose file is left at once it carries the credential
 payload in cleartext. ``copy_compose_context`` uses ``shutil.copy2``, which
 carries the repo file's mode in; the temp project dir is already ``0700``."""
@@ -397,6 +406,44 @@ def _service_declares_env_var(environment: Any, name: str) -> bool:
     return False
 
 
+def _exposing_bind_mount(volumes: Iterable[Any], compose_file_name: str) -> str | None:
+    """Return the first bind-mount source that reaches the credentialled compose
+    file — the project context root, or the file itself — or ``None``.
+
+    Sources are relative to the context dir; absolute sources and ``..``
+    segments are already refused by ``EnvironmentManifest`` validation, so
+    normalising is enough to recognise both shapes (``.``, ``./`` and
+    ``./<compose file>`` all collapse here)."""
+    for entry in volumes:
+        source = bind_mount_source(entry)
+        if source is None:
+            continue
+        if PurePosixPath(source).parts in ((), (compose_file_name,)):
+            return source
+    return None
+
+
+def _refuse_credential_exposure(services: Mapping[str, Any], compose_file: Path) -> None:
+    """Raise ``ValueError`` on a compose doc no service may receive the payload
+    under: one declaring the engine-owned variable itself, or one whose bind
+    mount would read the credentialled file out of the project context dir."""
+    for service_name, service in services.items():
+        if _service_declares_env_var(service.get("environment"), CONTAINER_SECRETS_ENV_VAR):
+            raise ValueError(
+                f"compose service {service_name!r} declares {CONTAINER_SECRETS_ENV_VAR}; "
+                f"the variable is engine-owned and supplied at materialisation — "
+                f"delete the entry from the compose file."
+            )
+        exposing = _exposing_bind_mount(service.get("volumes") or [], compose_file.name)
+        if exposing is not None:
+            raise ValueError(
+                f"compose service {service_name!r} bind-mounts {exposing!r}, which reaches "
+                f"the materialised compose file — that file carries the engine's credential "
+                f"payload. Mount the specific paths the service needs from a subdirectory "
+                f"instead of the project context root."
+            )
+
+
 def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
     """Give ``runner_service`` the host's credential payload, in place.
 
@@ -409,25 +456,28 @@ def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
     in ``environment`` values, so a credential containing one is otherwise
     silently truncated. The escape belongs to this path alone — the
     engine-built stack hands its value to the Docker SDK, which interpolates
-    nothing.
+    nothing. The written value is therefore *not* the value the log redactor
+    holds, so it does not scrub out of a compose error surfaced verbatim; the
+    redactor snapshot carries the doubled form too (see
+    ``tolokaforge.secrets.log_filter``).
 
-    Raises ``ValueError`` when any service declares
+    Raises ``ValueError`` on a compose doc that would defeat "only the runner
+    holds the payload": any service declaring
     :data:`~tolokaforge.secrets.CONTAINER_SECRETS_ENV_VAR` itself (the variable
     is engine-owned; a pack declaring it either commits a credential or shadows
-    the engine's payload) or when ``runner_service`` is absent from the compose
-    doc. Nothing is written in either case. A host that resolves no secrets
-    leaves the file byte-identical.
+    the engine's payload), and any service bind-mounting the project context
+    root or the compose file, which would read the payload back off disk.
+    Also raises when ``runner_service`` is absent from the compose doc —
+    unreachable through :class:`EnvironmentManifest`, whose validator
+    guarantees the service exists, and kept so an internal inconsistency is
+    loud rather than silently credential-less. Nothing is written on any
+    refusal, and a host that resolves no secrets leaves the file
+    byte-identical.
     """
     with compose_file.open() as f:
         doc = yaml.safe_load(f)
     services: dict[str, Any] = doc["services"]
-    for service_name, service in services.items():
-        if _service_declares_env_var(service.get("environment"), CONTAINER_SECRETS_ENV_VAR):
-            raise ValueError(
-                f"compose service {service_name!r} declares {CONTAINER_SECRETS_ENV_VAR}; "
-                f"the variable is engine-owned and supplied at materialisation — "
-                f"delete the entry from the compose file."
-            )
+    _refuse_credential_exposure(services, compose_file)
     if runner_service not in services:
         raise ValueError(
             f"runner_service {runner_service!r} is not declared in the compose file "
@@ -436,13 +486,13 @@ def inject_runner_credentials(compose_file: Path, runner_service: str) -> None:
     payload = container_secrets_env()
     if not payload:
         return
-    escaped = {key: value.replace("$", "$$") for key, value in payload.items()}
+    escaped = {key: compose_escaped(value) for key, value in payload.items()}
     services[runner_service]["environment"] = _merge_service_env(
         services[runner_service].get("environment"), escaped
     )
     with compose_file.open("w") as f:
         yaml.safe_dump(doc, f, sort_keys=False)
-    compose_file.chmod(MATERIALISED_COMPOSE_MODE)
+    compose_file.chmod(CREDENTIALLED_COMPOSE_MODE)
 
 
 # ---------------------------------------------------------------------------

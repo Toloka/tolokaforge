@@ -7,6 +7,7 @@ from pathlib import Path
 import pytest
 import yaml
 
+from tests.utils.secret_state import secret_manager_state_restored
 from tolokaforge.core.llm.presets import set_overlay_path
 
 
@@ -57,19 +58,13 @@ def installed_fake_secrets(request: pytest.FixtureRequest) -> Iterator[dict[str,
     """
     from tolokaforge.secrets import SecretManager, init_default_from
     from tolokaforge.secrets import log_filter as log_filter_module
-    from tolokaforge.secrets import manager as manager_module
 
     payload: dict[str, str] = getattr(request, "param", FAKE_CONTAINER_SECRETS)
-    saved_manager = manager_module._default_manager
-    saved_cached_manager = log_filter_module._cached_manager
-    saved_cached_values = log_filter_module._cached_values
-    init_default_from(SecretManager.from_dict(dict(payload)))
-    log_filter_module._cached_manager = None
-    log_filter_module._cached_values = frozenset()
-    yield payload
-    manager_module._default_manager = saved_manager
-    log_filter_module._cached_manager = saved_cached_manager
-    log_filter_module._cached_values = saved_cached_values
+    with secret_manager_state_restored():
+        init_default_from(SecretManager.from_dict(dict(payload)))
+        log_filter_module._cached_manager = None
+        log_filter_module._cached_values = frozenset()
+        yield payload
 
 
 @pytest.fixture

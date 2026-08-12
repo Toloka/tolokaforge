@@ -103,6 +103,10 @@ def test_the_typesense_api_key_is_never_an_environment_literal(
     log-redaction set. Handing it to a container as its own environment entry
     would transport it just as well and redact nothing, so this sweep runs
     over *every* service definition rather than over the runner alone.
+
+    The unconditional subscript at the end doubles as the regression lock that
+    the engine-built stack injects the payload at all: drop the injection and
+    this test raises ``KeyError`` rather than passing vacuously.
     """
     register_runtime_secret("TYPESENSE_API_KEY", GENERATED_API_KEY)
 
@@ -115,14 +119,6 @@ def test_the_typesense_api_key_is_never_an_environment_literal(
 
     payload = json.loads(_runner_def(stack).environment["TOLOKAFORGE_SECRETS_JSON"])
     assert payload["TYPESENSE_API_KEY"] == GENERATED_API_KEY
-
-
-def test_the_core_stack_runner_still_carries_the_secrets_payload(installed_fake_secrets) -> None:
-    """The engine-built stack's runner gets the credential entry at all.
-
-    Blunt on purpose: the cross-site comparison below would still pass if both
-    sites stopped injecting together."""
-    assert CONTAINER_SECRETS_ENV_VAR in _runner_def(core_stack()).environment
 
 
 def test_both_injection_sites_deliver_the_same_payload(

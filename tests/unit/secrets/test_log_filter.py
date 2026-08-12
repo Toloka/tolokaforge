@@ -7,9 +7,8 @@ import logging
 
 import pytest
 
+from tests.utils.secret_state import cold_secret_manager
 from tolokaforge.secrets import SecretManager
-from tolokaforge.secrets import log_filter as log_filter_module
-from tolokaforge.secrets import manager as manager_module
 from tolokaforge.secrets.log_filter import (
     PLACEHOLDER,
     RedactingFilter,
@@ -22,19 +21,11 @@ pytestmark = pytest.mark.unit
 
 @pytest.fixture(autouse=True)
 def _reset_singleton():
-    original = manager_module._default_manager
-    manager_module._default_manager = None
-    # Also reset the log-filter cache so tests start from a clean slate. The
-    # cache is identity-keyed, so leaking it between tests is functionally
-    # harmless, but resetting makes the cache hit/miss tests below assertable.
-    saved_cached_manager = log_filter_module._cached_manager
-    saved_cached_values = log_filter_module._cached_values
-    log_filter_module._cached_manager = None
-    log_filter_module._cached_values = frozenset()
-    yield
-    manager_module._default_manager = original
-    log_filter_module._cached_manager = saved_cached_manager
-    log_filter_module._cached_values = saved_cached_values
+    # The cache is identity-keyed, so leaking it between tests is functionally
+    # harmless, but starting cold makes the cache hit/miss tests below
+    # assertable.
+    with cold_secret_manager():
+        yield
 
 
 @pytest.fixture
@@ -108,6 +99,24 @@ def test_filter_redacts_known_secret_value() -> None:
     assert RedactingFilter().filter(record) is True
     rendered = record.getMessage()
     assert "supersecretvalue123" not in rendered
+    assert PLACEHOLDER in rendered
+
+
+def test_filter_redacts_the_compose_escaped_form_of_a_secret() -> None:
+    """A credential also travels ``$``-doubled, in a materialised compose file.
+
+    That form is not the value the manager holds, so a compose failure that
+    quotes the file back — a ``ProvisionError`` reason, a captured service log —
+    would print it verbatim if the scrub set carried only the raw value.
+    """
+    init_default_from(SecretManager.from_dict({"API_KEY": "sk-secret-a$bc-value"}))
+    record = _make_record("compose up failed on %s", "sk-secret-a$$bc-value")
+
+    assert RedactingFilter().filter(record) is True
+
+    rendered = record.getMessage()
+    assert "sk-secret-a$$bc-value" not in rendered
+    assert "sk-secret-a$bc-value" not in rendered
     assert PLACEHOLDER in rendered
 
 

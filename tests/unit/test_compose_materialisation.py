@@ -893,6 +893,31 @@ class TestMountDockerSocketIntoRunner:
         volumes = yaml.safe_load(compose.read_text())["services"]["runner"]["volumes"]
         assert volumes.count("/var/run/docker.sock:/var/run/docker.sock") == 1
 
+    def test_a_service_aliasing_the_runner_volumes_does_not_gain_the_socket(
+        self, tmp_path: Path
+    ) -> None:
+        """An anchored ``volumes:`` list is one object after ``yaml.safe_load``,
+        so appending in place would hand the docker socket to every service
+        aliasing it — a far wider grant than the runner's."""
+        import yaml
+
+        compose = tmp_path / "compose.yaml"
+        compose.write_text(
+            "services:\n"
+            "  runner:\n"
+            "    image: r:local\n"
+            "    volumes: &shared\n"
+            "      - ./data:/data\n"
+            "  sibling:\n"
+            "    image: s:local\n"
+            "    volumes: *shared\n"
+        )
+        mount_docker_socket_into_runner(compose, "runner")
+
+        services = yaml.safe_load(compose.read_text())["services"]
+        assert "/var/run/docker.sock:/var/run/docker.sock" in services["runner"]["volumes"]
+        assert services["sibling"]["volumes"] == ["./data:/data"]
+
     def test_idempotent_for_long_form_socket_mount(self, tmp_path: Path) -> None:
         import yaml
 
@@ -1101,6 +1126,51 @@ class TestInjectRunnerCredentials:
 
         with pytest.raises(ValueError, match=CONTAINER_SECRETS_ENV_VAR):
             inject_runner_credentials(compose_file, "runner")
+
+    @pytest.mark.parametrize("service", ["runner", "app-service"], ids=["runner", "sibling"])
+    @pytest.mark.parametrize(
+        "mount",
+        [
+            ".:/ctx:ro",
+            "./:/ctx",
+            "./environment.compose.yaml:/etc/stack.yaml:ro",
+            {"type": "bind", "source": ".", "target": "/ctx"},
+            {"type": "bind", "source": "environment.compose.yaml", "target": "/etc/stack.yaml"},
+        ],
+        ids=["dot", "dot-slash", "the-file", "long-form-dot", "long-form-file"],
+    )
+    def test_a_bind_mount_that_would_read_the_payload_back_is_refused(
+        self, tmp_path: Path, installed_fake_secrets, service: str, mount
+    ) -> None:
+        """The payload rests in the compose file inside the project context dir,
+        so a service mounting that dir — or the file — reads it regardless of
+        which service the entry was written on. ``EnvironmentManifest``'s own
+        bind-mount validator accepts these: they are relative, carry no ``..``,
+        and stay inside the pack."""
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services[service]["volumes"] = [mount]
+        compose_file = _write_compose(tmp_path, services)
+        before = compose_file.read_text()
+
+        with pytest.raises(ValueError) as exc:
+            inject_runner_credentials(compose_file, "runner")
+
+        assert service in str(exc.value)
+        assert compose_file.read_text() == before
+
+    def test_a_bind_mount_below_the_context_root_is_accepted(
+        self, tmp_path: Path, installed_fake_secrets
+    ) -> None:
+        """The refusal is scoped to what reaches the compose file. Mounting a
+        named path under a subdirectory — what every shipped pack does — still
+        materialises."""
+        services = copy.deepcopy(_LOT_OPS_SHAPED_SERVICES)
+        services["app-db"]["volumes"] = ["./fixtures/seed.sql:/docker-entrypoint-initdb.d/s.sql:ro"]
+        compose_file = _write_compose(tmp_path, services)
+
+        inject_runner_credentials(compose_file, "runner")
+
+        assert CONTAINER_SECRETS_ENV_VAR in _runner_environment(compose_file)
 
     def test_a_runner_service_absent_from_the_doc_is_refused(
         self, tmp_path: Path, installed_fake_secrets
