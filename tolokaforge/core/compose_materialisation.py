@@ -44,6 +44,7 @@ from tolokaforge.core.netpolicy_constants import (
 )
 from tolokaforge.core.run_display_events import ContainerSnapshot
 from tolokaforge.core.trial import EnvEndpoints, NetworkPolicy
+from tolokaforge.runner.compose_naming import compose_trial_slug
 
 logger = logging.getLogger(__name__)
 
@@ -377,10 +378,61 @@ def make_project_temp_dir(prefix_slug: str) -> Path:
     Docker Compose auto-generates a project name from the context
     directory basename; encoding a caller-supplied slug (a trial id for
     per-trial, a run id for shared) into that basename gives each
-    materialisation a unique compose project.
+    materialisation a unique compose project. Sanitisation delegates to
+    :func:`compose_trial_slug` so the host-side project name and the
+    runner-side compose-exec container resolver share one definition.
     """
-    safe = "".join(c if c.isalnum() or c in ("-", "_") else "_" for c in prefix_slug)
-    return Path(tempfile.mkdtemp(prefix=f"tolokaforge-{safe}-"))
+    return Path(tempfile.mkdtemp(prefix=f"tolokaforge-{compose_trial_slug(prefix_slug)}-"))
+
+
+# ---------------------------------------------------------------------------
+# Per-trial compose variables (docker compose ``.env``)
+# ---------------------------------------------------------------------------
+
+
+TOLOKAFORGE_ENV_PREFIX = "TOLOKAFORGE_"
+"""Reserved prefix for engine-authored variables written into the per-trial
+``.env``. Task-declared ``stack_inputs`` keys that begin with this prefix are
+rejected before provision starts — a task overriding an engine-reserved
+variable would be silent shadowing."""
+
+TOLOKAFORGE_TRIAL_SLUG_ENV = "TOLOKAFORGE_TRIAL_SLUG"
+"""Reserved compose variable that resolves to :func:`compose_trial_slug` of the
+trial id. Task compose files interpolate ``${TOLOKAFORGE_TRIAL_SLUG}`` into
+``container_name:`` to make container names per-trial unique — the same slug
+the per-trial temp-dir basename embeds, so the wrapper's exec targets the
+container the stack actually brought up."""
+
+
+def write_compose_env_file(
+    context_dir: Path, *, trial_id: str, stack_inputs: Mapping[str, str]
+) -> None:
+    """Write the per-trial compose ``.env`` into ``context_dir``.
+
+    Docker Compose reads ``<project-dir>/.env`` automatically on every command
+    invoked with that project directory as its context. Content order (later
+    entries win, per compose's own ``.env`` resolution):
+
+    1. any ``.env`` already copied into ``context_dir`` from the task-authored
+       compose folder — preserved verbatim so task defaults survive;
+    2. ``stack_inputs`` — the manifest's task-declared variables;
+    3. the engine-reserved block — currently just
+       :data:`TOLOKAFORGE_TRIAL_SLUG_ENV`.
+
+    Values are written with the raw shell-safe form ``KEY=value``; validation
+    of the reserved-prefix rule runs at the call site
+    (:class:`PerTrialRuntimeBackend.provision`) *before* the compose
+    lifecycle's ``try`` block, so a violation reads as a manifest error not
+    a compose-up failure.
+    """
+    lines: list[str] = []
+    existing = context_dir / ".env"
+    if existing.exists():
+        lines.append(existing.read_text().rstrip("\n"))
+    for key, value in stack_inputs.items():
+        lines.append(f"{key}={value}")
+    lines.append(f"{TOLOKAFORGE_TRIAL_SLUG_ENV}={compose_trial_slug(trial_id)}")
+    existing.write_text("\n".join(lines) + "\n")
 
 
 def copy_compose_context(compose_file: Path, dest_dir: Path) -> None:

@@ -92,26 +92,29 @@ exit codes are surfaced as an `[exit code: <n>]` suffix.
   the runaway command may briefly survive as an in-container orphan.
 
 The compose variant resolves its target container as
-`<compose_project_prefix><trial_id>_<service>`, with any `:` in the trial id
-replaced by `_`; both compose tools share this resolution so they target the
-identical container.
+`<compose_project_prefix><sanitised-trial-id>_<service>`, where the trial id is
+sanitised through the shared `compose_trial_slug` (ASCII alphanumerics and
+`-` / `_` preserved; every other character — including `:`, `/`, `.` —
+collapses to `_`). Both compose tools call the same resolver, and the
+per-trial runtime brings the stack up under a project name derived from the
+same slug, so the wrapper's `docker exec` targets the container the runtime
+brought up.
+
+The task-declared compose file makes the container name per-trial unique by
+pinning `container_name: <prefix>${TOLOKAFORGE_TRIAL_SLUG}_<service>` on the
+target service. `TOLOKAFORGE_TRIAL_SLUG` is the reserved compose variable the
+per-trial runtime writes into the trial's `.env` (see
+[MULTI_CONTAINER_GUIDE.md](MULTI_CONTAINER_GUIDE.md)); its value is the same
+slug the wrapper uses at resolve time, so the two sides cannot disagree.
 
 The runner reaches that sibling container's daemon over the host docker socket.
 Materialisation bind-mounts `/var/run/docker.sock` into the runner service
-automatically whenever a task routes a shipped tool through the compose variant
-— the same trigger that bakes the docker CLI into the runner image — so the
-task-declared compose file does not need to (and should not) supply it.
-
-> **Compose runtime seam.** A default `docker compose up` names containers
-> `<project>-<service>-<N>` (hyphens plus an ordinal index) — that scheme does
-> not match the wrapper's `<compose_project_prefix><trial_id>_<service>`
-> resolution, so a generic per-trial runtime brings up containers the compose
-> tools cannot reach. Until this reconciles, a task pack enabling the compose
-> variant must pin `container_name:` on the target service to exactly what the
-> wrapper resolves, or the first `docker exec` fails with a no-such-container
-> error. Tracked as
-> [#585](https://github.com/Toloka/tolokaforge/issues/585). The local variants
-> are unaffected.
+automatically whenever the run needs the docker CLI baked into the runner image
+— today: the `terminal_bench` adapter (which shells out to docker directly
+against the host daemon) or any task routing a shipped tool through the compose
+variant (`tools.agent.<tool>.service`). The same predicate decides both — CLI
+without socket, or socket without CLI, are both useless — so the task-declared
+compose file does not need to (and should not) supply the socket bind.
 
 **When to use.** Prefer `bash_session` for multi-step workflows that need a
 persistent cwd, environment, or shell functions across turns. Use the legacy

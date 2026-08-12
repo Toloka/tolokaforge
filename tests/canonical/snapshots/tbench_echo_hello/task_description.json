@@ -20,20 +20,8 @@
       "source": {
         "class_name": "bash",
         "extra": {
-          "compose_file": "docker-compose.yaml",
-          "env_vars": {
-            "CPUS": "1",
-            "MEMORY": "512M",
-            "T_BENCH_CONTAINER_AGENT_LOGS_PATH": "/logs/agent",
-            "T_BENCH_CONTAINER_LOGS_PATH": "/logs",
-            "T_BENCH_TASK_AGENT_LOGS_PATH": "/tmp/tolokaforge-tbench-logs/agent_logs/echo-hello",
-            "T_BENCH_TASK_DOCKER_CLIENT_CONTAINER_NAME": "tbench_echo-hello_main",
-            "T_BENCH_TASK_DOCKER_CLIENT_IMAGE_NAME": "tbench_echo-hello",
-            "T_BENCH_TASK_LOGS_PATH": "/tmp/tolokaforge-tbench-logs/logs/echo-hello",
-            "T_BENCH_TEST_DIR": "/tests"
-          },
-          "service": "main",
-          "task_dir": "<ROOT>/tests/data/terminal_bench_tasks/echo-hello"
+          "compose_project_prefix": "tbench_",
+          "service": "main"
         },
         "invocation_style": "docker_compose_exec",
         "mcp_server_script": null,
@@ -46,7 +34,40 @@
   ],
   "category": "terminal",
   "description": "Create a file /tmp/hello.txt containing the text \"Hello, World!\".\n",
-  "environment_manifest": null,
+  "environment_manifest": {
+    "compose_file": "<STAGING>/echo-hello/docker-compose.tolokaforge.yaml",
+    "db_port": null,
+    "db_service": null,
+    "initial_state": {},
+    "limited_internet_allowlist": [],
+    "network_policy": "full_internet",
+    "rag_port": null,
+    "rag_service": null,
+    "runner_port": 50051,
+    "runner_service": "runner",
+    "security_context_defaults": null,
+    "services": {
+      "db-service": {
+        "isolation": "ephemeral",
+        "network_access": "default",
+        "readiness": null,
+        "reset": null
+      },
+      "main": {
+        "isolation": "ephemeral",
+        "network_access": "default",
+        "readiness": null,
+        "reset": null
+      },
+      "runner": {
+        "isolation": "ephemeral",
+        "network_access": "default",
+        "readiness": null,
+        "reset": null
+      }
+    },
+    "stack_inputs": {}
+  },
   "generated_at": null,
   "grading": {
     "combine_method": "weighted",

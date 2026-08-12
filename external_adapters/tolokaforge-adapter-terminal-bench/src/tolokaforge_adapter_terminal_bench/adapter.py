@@ -1,16 +1,26 @@
 """Terminal-bench adapter for tolokaforge.
 
-Maps terminal-bench task directories (docker-compose.yaml + task.yaml/task.toml)
-to the tolokaforge adapter interface.  All Docker Compose lifecycle management
-is delegated to the Runner via ``DockerComposeExecToolWrapper``.
+Emits an :class:`~tolokaforge.runner.models.EnvironmentPatch` on every
+``TaskConfig`` and the resolved :class:`~tolokaforge.runner.models.EnvironmentManifest`
+on every ``TaskDescription``. The synthesised compose file lives in a
+staging directory materialised by
+:mod:`tolokaforge_adapter_terminal_bench.compose_synthesis`; the
+orchestrator's per-trial runtime brings the stack up and the runner-side
+bash tool only ``docker exec``s into the already-running agent container.
 """
 
 from __future__ import annotations
 
+import tempfile
 from pathlib import Path
 from typing import Any
 
-from tolokaforge.adapters.base import AdapterEnvironment, BaseAdapter, DockerStackRequirements
+from tolokaforge.adapters.base import (
+    AdapterEnvironment,
+    BaseAdapter,
+    ComposeImageBuild,
+    DockerStackRequirements,
+)
 from tolokaforge.core.models import (
     Grade,
     GradeComponents,
@@ -21,66 +31,77 @@ from tolokaforge.core.models import (
     ToolsConfig,
     Trajectory,
 )
+from tolokaforge.core.project_loader import resolve as resolve_environment_patch
 from tolokaforge.runner.models import (
     AdapterType,
+    EnvironmentPatch,
     InvocationStyle,
+    NetworkPolicy,
     RunnerGradingConfig,
     RunnerInitialStateConfig,
     RunnerUserSimulatorConfig,
+    StackPatch,
     TaskDescription,
     ToolSchema,
     ToolSource,
 )
-from tolokaforge_adapter_terminal_bench.compose_env import (
-    bundle_task_artifacts,
-    resolve_tbench_env_vars,
+from tolokaforge_adapter_terminal_bench.compose_synthesis import (
+    PROJECT_PREFIX,
+    MaterialisedEnvironment,
+    materialise_task_environment,
 )
 from tolokaforge_adapter_terminal_bench.task_parser import (
     TerminalBenchTask,
     discover_tasks,
 )
 
+_REMOVED_PARAMS: dict[str, str] = {
+    "runner_task_dir": (
+        "task files are staged under `staging_root` (default: a "
+        "`tolokaforge-tbench` directory under the system temp dir); "
+        "the runner reads them through the synthesised compose file's "
+        "relative bind mounts, not through a runner-side path"
+    ),
+    "logs_host_root": (
+        "per-trial log directories are created inside the staging dir "
+        "(`_logs/verifier`, `_logs/agent`) and bind-mounted into the "
+        "agent service via relative volumes; no host-daemon path is required"
+    ),
+}
+
 
 class TerminalBenchAdapter(BaseAdapter):
-    """Adapter that runs terminal-bench tasks inside Docker Compose stacks."""
-
-    # Per-task log root for host-socket runs.  Bind-mounted into the Runner so
-    # ``docker compose`` inside the Runner (talking to the host daemon via
-    # socket passthrough) and the daemon itself resolve the same paths.
-    LOGS_HOST_ROOT = "/tmp/tolokaforge-tbench-logs"
+    """Adapter that runs terminal-bench tasks through
+    :class:`~tolokaforge.core.per_trial_runtime.PerTrialRuntimeBackend`.
+    """
 
     def __init__(self, params: dict[str, Any]):
+        for removed, replacement in _REMOVED_PARAMS.items():
+            if removed in params:
+                raise ValueError(
+                    f"terminal-bench adapter: param {removed!r} was removed — {replacement}."
+                )
         super().__init__(params)
-        # When task_packs is configured but discovery / runner paths aren't,
-        # default them to the first pack so the host-socket setup resolves
-        # identical paths inside Runner and on the host daemon.
         first_pack = self.task_packs[0] if self.task_packs else None
         first_pack_str = str(first_pack) if first_pack else None
 
         self.terminal_bench_dir = Path(params.get("terminal_bench_dir") or first_pack_str or ".")
         self.image_registry: str | None = params.get("image_registry")
+        self.image_tag: str = params.get("image_tag", "local")
         self.task_id_filter: list[str] | None = params.get("task_ids")
-        # Path where Runner container sees tasks (if different from host path)
-        self.runner_task_dir: str | None = params.get("runner_task_dir") or first_pack_str
-        # Root for per-task log bind-mounts on the Docker daemon's filesystem.
-        # Defaults to LOGS_HOST_ROOT (host-socket).  Pass /workspace for DinD.
-        self.logs_host_root: str = params.get("logs_host_root", self.LOGS_HOST_ROOT)
-        self._tasks: dict[str, TerminalBenchTask] = {}
-
-    # -- Docker stack requirements -------------------------------------------
-
-    def docker_stack_requirements(self) -> DockerStackRequirements:
-        """Host-socket mode: bind every task pack at the same path on the
-        Runner and on the host daemon, share a log directory, mount the
-        Docker socket. The Runner inside the stack uses ``docker compose``
-        against the host daemon, so paths must resolve identically.
-        """
-        existing_packs: list[Path] = [pack for pack in self.task_packs if pack.exists()]
-        return DockerStackRequirements(
-            task_pack_mounts=existing_packs,
-            extra_runner_binds=[(Path(self.LOGS_HOST_ROOT), self.LOGS_HOST_ROOT)],
-            mount_docker_socket=True,
+        self.network_policy = NetworkPolicy(
+            params.get("network_policy", NetworkPolicy.FULL_INTERNET.value)
         )
+        self.prebuild_images: bool = params.get("prebuild_images", True)
+        staging_root = params.get("staging_root")
+        self.staging_root: Path = (
+            Path(staging_root).expanduser().resolve()
+            if staging_root
+            else Path(tempfile.gettempdir()) / "tolokaforge-tbench"
+        )
+
+        self._tasks: dict[str, TerminalBenchTask] = {}
+        self._environments: dict[str, MaterialisedEnvironment] = {}
 
     # -- discovery ------------------------------------------------------------
 
@@ -99,16 +120,47 @@ class TerminalBenchAdapter(BaseAdapter):
         self._ensure_discovered()
         return self._tasks[task_id].task_dir
 
+    def _environment(self, task_id: str) -> MaterialisedEnvironment:
+        """Materialise this task's environment once and cache it.
+
+        Both :meth:`get_task` and :meth:`to_task_description` route through
+        here, so the two surfaces describe the exact same staging path and
+        agent service — no divergence is possible.
+        """
+        cached = self._environments.get(task_id)
+        if cached is not None:
+            return cached
+        self._ensure_discovered()
+        env = materialise_task_environment(
+            self._tasks[task_id],
+            staging_root=self.staging_root,
+            image_registry=self.image_registry,
+            image_tag=self.image_tag,
+        )
+        self._environments[task_id] = env
+        return env
+
+    # -- Docker stack requirements -------------------------------------------
+
+    def docker_stack_requirements(self) -> DockerStackRequirements:
+        """Declare the per-task agent images the orchestrator builds once per run.
+
+        Skipped under ``prebuild_images: false``, for callers pre-warming
+        images themselves.
+        """
+        if not self.prebuild_images:
+            return DockerStackRequirements()
+        builds = []
+        for task_id in self.get_task_ids():
+            env = self._environment(task_id)
+            builds.append(
+                ComposeImageBuild(compose_file=env.compose_file, service=env.agent_service)
+            )
+        return DockerStackRequirements(image_builds=builds)
+
     # -- task loading ---------------------------------------------------------
 
     def get_task(self, task_id: str) -> TaskConfig:
-        # ``environment_manifest`` is intentionally left unset: this
-        # adapter synthesises ``TaskConfig`` from ``TerminalBenchTask``
-        # metadata (no user-authored ``task.yaml``), and terminal-bench
-        # tasks bring their own compose flow via ``adapter_settings.
-        # compose_file`` — not the ``PerTrialRuntimeBackend`` provisioning
-        # path. Tasks that want ``environment_manifest`` semantics go
-        # through the ``native`` adapter.
         self._ensure_discovered()
         meta = self._tasks[task_id]
         return TaskConfig(
@@ -125,12 +177,18 @@ class TerminalBenchAdapter(BaseAdapter):
             ),
             grading="__adapter__",
             system_prompt="__adapter__",
+            environment_manifest=self._environment_patch(task_id),
             adapter_settings={
-                "compose_file": str(meta.compose_file),
-                "task_dir": str(meta.task_dir),
                 "difficulty": meta.difficulty,
                 "tags": meta.tags,
             },
+        )
+
+    def _environment_patch(self, task_id: str) -> EnvironmentPatch:
+        env = self._environment(task_id)
+        return EnvironmentPatch(
+            stack=StackPatch(compose_file=env.compose_file, runner_service="runner"),
+            network_policy=self.network_policy,
         )
 
     # -- environment ----------------------------------------------------------
@@ -177,19 +235,8 @@ class TerminalBenchAdapter(BaseAdapter):
     def to_task_description(self, task_id: str) -> TaskDescription:
         self._ensure_discovered()
         meta = self._tasks[task_id]
-        env_vars = resolve_tbench_env_vars(meta, self.image_registry, self.logs_host_root)
-
-        # Decide task_dir strategy
-        if self.image_registry:
-            artifacts = bundle_task_artifacts(meta)
-            task_dir_value = "__artifacts__"
-        else:
-            artifacts = {}
-            # Use runner_task_dir if set (for Docker: runner sees a different mount path)
-            if self.runner_task_dir:
-                task_dir_value = f"{self.runner_task_dir}/{meta.task_id}"
-            else:
-                task_dir_value = str(meta.task_dir)
+        env = self._environment(task_id)
+        manifest = resolve_environment_patch(None, self._environment_patch(task_id))
 
         return TaskDescription(
             task_id=task_id,
@@ -198,6 +245,7 @@ class TerminalBenchAdapter(BaseAdapter):
             description=meta.instruction[:500] if meta.instruction else task_id,
             adapter_type=AdapterType.TERMINAL_BENCH,
             system_prompt=self.get_system_prompt(task_id),
+            environment_manifest=manifest,
             agent_tools=[
                 ToolSchema(
                     name="bash",
@@ -220,10 +268,8 @@ class TerminalBenchAdapter(BaseAdapter):
                         class_name="bash",
                         invocation_style=InvocationStyle.DOCKER_COMPOSE_EXEC,
                         extra={
-                            "compose_file": "docker-compose.yaml",
-                            "task_dir": task_dir_value,
-                            "service": "main",
-                            "env_vars": env_vars,
+                            "service": env.agent_service,
+                            "compose_project_prefix": PROJECT_PREFIX,
                         },
                     ),
                 )
@@ -239,7 +285,6 @@ class TerminalBenchAdapter(BaseAdapter):
                 # The runner dispatches on this method, not on the adapter name.
                 grading_method="test_execution",
             ),
-            tool_artifacts=artifacts,
             metadata={
                 "difficulty": meta.difficulty,
                 "tags": meta.tags,

@@ -40,6 +40,7 @@ from testcontainers.compose import DockerCompose
 from tolokaforge.core.compose_materialisation import (
     DB_SERVICE_DEFAULT,
     DB_SERVICE_PORT_DEFAULT,
+    TOLOKAFORGE_ENV_PREFIX,
     LogCaptureConfig,
     apply_network_policy_to_compose_file,
     capture_compose_service_logs,
@@ -56,6 +57,7 @@ from tolokaforge.core.compose_materialisation import (
     shutdown_compose,
     trial_services_dir,
     write_capture_manifest,
+    write_compose_env_file,
 )
 from tolokaforge.core.models import SeedRef
 from tolokaforge.core.plugin_registry import load_readiness_probe
@@ -251,10 +253,24 @@ class PerTrialRuntimeBackend:
             )
 
         service_names = tuple(manifest.load_compose()["services"])
+        reserved = sorted(k for k in manifest.stack_inputs if k.startswith(TOLOKAFORGE_ENV_PREFIX))
+        if reserved:
+            raise ProvisionError(
+                trial_id=spec.trial_id,
+                stage="provision",
+                reason=(
+                    f"stack_inputs key {reserved[0]!r} uses the reserved "
+                    f"{TOLOKAFORGE_ENV_PREFIX} prefix (engine-authored compose "
+                    "variables); rename or remove it from the manifest"
+                ),
+            )
         temp_dir = make_project_temp_dir(spec.trial_id)
         compose: DockerCompose | None = None
         try:
             copy_compose_context(manifest.compose_file, temp_dir)
+            write_compose_env_file(
+                temp_dir, trial_id=spec.trial_id, stack_inputs=manifest.stack_inputs
+            )
             apply_network_policy_to_compose_file(
                 temp_dir / manifest.compose_file.name,
                 manifest.network_policy,

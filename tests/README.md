@@ -250,6 +250,21 @@ family, `test_helpdesk_workflow_end_to_end.py` for `state_checks.db_probes`,
 resolves each nodeid without importing it, so renaming one of those test functions
 fails the canonical tier naming the manifest entry.
 
+`tests/integration/docker/test_terminal_bench_per_trial.py` is the end-to-end
+lock for the terminal-bench per-trial substrate: it materialises the
+`fix-billing-holds` staging directory, builds the engine images with the docker
+CLI baked in and aliases them as `tolokaforge-{runner,db-service}:local`, runs
+the adapter-declared `docker compose build` for the agent image, then drives
+`PerTrialRuntimeBackend.provision` → `register_trial` → `execute_tool` (probing
+`/tests/test.sh` + `/logs/{verifier,agent}` inside the container) → `grade_trial`
+→ `teardown`. Prerequisites: a running Docker daemon and the
+`examples/terminal_bench/fix-billing-holds` task pack. No LLM key required — the
+test drives the substrate directly, not the CLI. `make docker-build-core` warms
+the engine-image cache but is not strictly required: the fixture rebuilds them
+with `enable_docker_cli=True` because the plain `docker-build-core` runner ships
+without the docker CLI the bash tool needs. First run takes a few minutes for
+the task's Dockerfile (PostgreSQL + FastAPI); subsequent runs hit the cache.
+
 Two members of this tier are **Docker-free and keyless** (they need only the `uv`
 CLI): `test_plugin_discovery.py` and `test_external_harness_e2e.py`. Both install
 the out-of-tree `tests/fixtures/tolokaforge_plugin_fixture` package into an

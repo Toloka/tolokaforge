@@ -120,3 +120,28 @@ Common causes:
 - Invalid YAML
 - Missing required fields
 - Tool name not in built-in list
+
+## A Task Did Not Appear In The Run
+
+**Symptom.** `tolokaforge run` finishes without running trials for a task
+that discovery lists; the summary shows a shorter task set than the
+config selected. The orchestrator log carries a single
+`Failed to load task task_id=... error=...` line at error level.
+
+**Cause.** By default the adapter's `get_task()` failure for one task id
+is logged and the loader moves on to the next id — a design that keeps
+partial-set runs going when one pack in a large glob is broken.
+
+**Fix.** Turn the log line into a startup failure with the task id:
+
+```yaml
+orchestrator:
+  strict_task_load: true
+```
+
+The exception propagates naming the offending task, so the run refuses
+to start rather than proceeding with a silently shorter task list.
+`--dry-run` already surfaces the same error regardless of the flag
+(that path has no exception handling), so a dry run is the fastest way
+to inspect the failure before you commit to the flag. See
+[CONFIG.md § orchestrator.strict_task_load](CONFIG.md#run-configuration-runyaml).

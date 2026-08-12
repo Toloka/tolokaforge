@@ -96,7 +96,7 @@ class InvocationStyle(str, Enum):
     TAU_SYNC = "tau_sync"  # Tau: Tool.invoke(data, **kwargs)
     MCP_ASYNC = "mcp_async"  # TlkMcpCore: asyncio.run(tool.run(db, kwargs))
     MCP_SERVER = "mcp_server"  # Native: MCP server subprocess
-    DOCKER_COMPOSE_EXEC = "docker_compose_exec"  # Terminal-bench: docker compose exec
+    DOCKER_COMPOSE_EXEC = "docker_compose_exec"
 
 
 # =============================================================================

@@ -40,10 +40,27 @@ scripts/with_env.sh uv run tolokaforge run --config examples/terminal_bench/run_
 
 - **Discovery** — `TerminalBenchAdapter` scans this directory for subfolders
   that contain both `docker-compose.yaml` and `task.yaml` / `task.toml`.
-- **Execution** — for each trial the Runner starts the compose stack with a
-  trial-unique project name (`tbench_<trial_id>`), copies `tests/` and
-  `run-tests.sh` into `/tests/`, and exposes a single `bash` tool pointed at
-  the `main` service.
+- **Environment synthesis** — for each discovered task the adapter
+  materialises a staging directory holding a copy of the task pack, a
+  `tests/test.sh` script, empty `_logs/` mountpoints, and a synthesised
+  `docker-compose.tolokaforge.yaml` that resolves the terminal-bench
+  variable set at synthesis time and injects engine `runner` +
+  `db-service` services. The adapter emits an
+  `EnvironmentPatch(stack.compose_file=…, stack.runner_service="runner")`
+  on `TaskConfig`; every compose service resolves to
+  `ServiceSpec(isolation="ephemeral")`, so the orchestrator selects
+  `PerTrialRuntimeBackend` automatically.
+- **Image pre-build** — the adapter declares one
+  `ComposeImageBuild` per task on `docker_stack_requirements()`; the
+  orchestrator runs `docker compose -f <synthesised> build <agent-service>`
+  once per run, before any trial provisions.
+- **Provision** — `PerTrialRuntimeBackend.provision` copies the staging
+  directory into a per-trial context, writes a `.env` with
+  `TOLOKAFORGE_TRIAL_SLUG=<sanitised trial-id>`, and runs
+  `docker compose up -d --wait`. The synthesised compose file pins the
+  agent container as `tbench_${TOLOKAFORGE_TRIAL_SLUG}_<agent-service>`.
+- **Execution** — the runner-side `bash` tool `docker exec`s into that
+  container by name; no compose lifecycle runs inside the tool.
 - **Grading** — after the agent finishes, the Runner executes
   `cd /tests && bash test.sh`, then reads `/logs/verifier/reward.txt`. The
   float value (0.0–1.0) is the final score; `binary_pass = reward >= 0.5`.
@@ -80,7 +97,7 @@ reward printed to stdout.
 
 ## Runtime compatibility
 
-Terminal-bench tasks run under `--runtime shared` only. `TerminalBenchAdapter` synthesises `TaskConfig` from `TerminalBenchTask` metadata and leaves `environment_manifest` unset by design — the per-task compose stack lives on `adapter_settings.compose_file` and is materialised through the `bash` tool's `DOCKER_COMPOSE_EXEC` invocation style, not through `PerTrialRuntimeBackend`. Pointing `--runtime per_trial` at terminal-bench tasks raises `ProvisionError` at provision time (fail-loud, no silent fallback). See `docs/RUNTIME_BACKENDS.md` "Adapter compatibility with `per_trial`" for the boundary rationale and the follow-up to unify the two paths.
+Terminal-bench tasks run under `PerTrialRuntimeBackend`. Backend selection is task-driven: the manifest the adapter emits declares every compose service as `ephemeral`, so `Orchestrator._select_backend_from_tasks()` returns `per_trial` and every trial gets its own compose project — no config change is required. `TrialExecutor`'s `provision → await_ready → endpoints → teardown` bracket, per-trial network isolation, and `PROVISION_ERROR` attribution all apply. See `docs/RUNTIME_BACKENDS.md` § "Adapter compatibility with `per_trial`".
 
 ## Related docs
 
