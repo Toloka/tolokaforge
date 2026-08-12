@@ -323,7 +323,7 @@ the rule could reach.
 `grade.yaml`, `tools_schemas.yaml`, `metrics.yaml` — **plus `tool_log.yaml` wherever the
 source bundle had one**. A corpus is record-carrying exactly when its sources were, which is
 what a constraint reading `status`, `executor` or `latency_seconds` needs (see
-[The committed corpus](#the-committed-corpus)). Bundle directories are named
+[The committed corpora](#the-committed-corpora)). Bundle directories are named
 `<run-id>_trial<index>`, uniformly; one run's two tasks share a trial index, so curating both
 into one corpus is refused rather than silently collapsed.
 
@@ -337,7 +337,14 @@ own invocation with its own `--into`. Nothing in the command knows about halves:
 discovers bundles recursively, so pointing it at the parent or at one part both work, and a
 one-sided part stays a corpus a reader can point a command at on its own.
 
-## The committed corpus
+## The committed corpora
+
+Two corpora ship, one per declared migration, and they reach opposite verdicts. The notes
+corpus is evidence a narrow rests on; the `lot_ops` corpus refuses the candidacy it was
+generated for. Both are written by `tolokaforge curate` and re-verified in CI over the packs
+a reviewer reads.
+
+### `notes_duplicate_check` — the narrow's evidence
 
 `tests/data/migration_corpora/notes_duplicate_check/` is the repo's judge-labelled corpus:
 seventeen recorded trials of the notes duplicate-check criterion, in two halves, committed with
@@ -440,6 +447,61 @@ reads neither `status` nor `result`, so the not-met half blocks nothing; a migra
 constraint reads either needs a corpus that is record-carrying throughout, which is a property
 of the runs it is curated from.
 
+### `lot_ops_names_lot` — a candidacy its own corpus refuses
+
+`tests/data/migration_corpora/lot_ops_names_lot/` holds ten recorded trials of `lot_ops_01`,
+generated for the `names_lot` candidacy and **refusing it**. Both source runs are committed
+run configs under `examples/native/multi_service_lot_ops/run_configs/`, one per arm:
+`corpus_generation_haiku.yaml` (agent `anthropic/claude-haiku-4-5`) and
+`corpus_generation_gpt_4o_mini.yaml` (agent `openai/gpt-4o-mini`), five repeats each, judge
+`anthropic/claude-sonnet-4-6`, ten turns. An arm *is* a config file, because `RunConfig.models`
+holds one model per role and `tolokaforge run` has no agent-model override.
+
+**The independent variable is the agent model and nothing else, so the variation is organic.**
+No arm's prompt instructs the behaviour the constraint measures — buying a label that way is
+what the [design limitation](#reading-the-evidence) below describes, and it would make the
+corpus evidence about the prompt rather than about the criterion.
+
+| what | measured |
+|---|---|
+| observations | 10, five per arm, every bundle record-carrying |
+| the judge's `names_lot` | met on all ten |
+| `the_lot_was_read_before_the_action_was_opened` | failed on all ten |
+| table | all ten in `judge_met_constraint_failed`, every other cell `0` |
+| accuracy / κ | `0.000` / `0.000` |
+| verdict | `refused` — and the command still exits `0` |
+
+**Every observation is a strict disagreement, which no mode tolerates.** The judge found the
+criterion met where the constraint failed, so the constraint is not even a necessary condition
+of it. The reason is in the transcripts rather than in the corpus: each trial issued exactly
+two HTTP calls — the reason-code catalog, then the POST — and never read the lot, because the
+user's own message supplies `lot_id 7` and the task's guidance asks only for the catalog. The
+constraint measures a step this task never asks for.
+
+**A refused `candidate` is the bar working, not a build break.** A candidate converts nothing,
+retires nothing and changes no grade, so its verdict is reported and gates nothing: the
+reconciliation exits `0` while naming the refusal. Making a shipped candidacy fail the build
+the moment its evidence arrived would be the opposite of what declaring one is for. What the
+declaration should become — a different `by`, or none — is a decision for the pack's author,
+and the corpus is what that decision now has to answer to.
+
+**This pack's counterfactual carries no row at all.** Its grade includes a `state_checks`
+component, which the runner folds from several sources and no single recorded field holds, so
+the recomposition cannot reproduce the verdict the runner already reached. All ten trials are
+listed under `unrecomputed_trials` with that reason, and no before/after projection exists —
+the structural consequence, for a substrate-graded pack, of the rule that
+[a projection is never believed](#the-counterfactual-what-the-migration-does-to-each-trials-verdict)
+over a composition that cannot reproduce the recorded verdict.
+
+Reproducible by command, over runs under the gitignored `results/`:
+
+```bash
+tolokaforge curate --criterion names_lot \
+  --source results/lot_ops_corpus_haiku_20260812_132740 \
+  --source results/lot_ops_corpus_gpt_4o_mini_20260812_133234 \
+  --into tests/data/migration_corpora/lot_ops_names_lot --replace
+```
+
 ## Reading the evidence
 
 The 2×2 table is required rather than optional, and it is the part to read first. A corpus
@@ -464,10 +526,11 @@ structurally by set-equality over its field names rather than by prose — an as
 **And the experimental-design limitation, stated rather than left to be noticed:** a corpus
 whose met half was produced by a prompt instructing exactly what the constraint measures
 cannot distinguish "the constraint matches the criterion" from "the agents did what they were
-told." That is precisely how the [`met/` half](#the-committed-corpus) was produced, so the κ of
-`1.0` it yields is a property of the design as much as of the criterion. A corpus of
-organically-varying trials would be stronger evidence and does not exist for any shipped pack
-yet (#793).
+told." That is precisely how the [`met/` half](#notes_duplicate_check--the-narrows-evidence)
+was produced, so the κ of `1.0` it yields is a property of the design as much as of the
+criterion. The [`lot_ops` corpus](#lot_ops_names_lot--a-candidacy-its-own-corpus-refuses) buys
+no label that way — its two arms differ in the agent model alone — and it is the corpus that
+refuses its claim, which is the shape of evidence that can.
 
 ## From Python
 

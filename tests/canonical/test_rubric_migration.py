@@ -1,4 +1,8 @@
-"""The committed corpus, and what the bar says about each half of it and about the union.
+"""The committed corpora, and what the bar says about each of them.
+
+Two corpora are locked here. ``notes_duplicate_check/`` carries a narrow whose evidence the
+bar accepts; ``lot_ops_names_lot/`` carries a candidacy the bar **refuses**, which is the same
+mechanism reaching the opposite verdict over trials nobody designed to agree with it.
 
 ``tests/data/migration_corpora/notes_duplicate_check/`` holds seventeen recorded trials in two
 halves, each written by its own ``tolokaforge curate`` invocation and carrying the manifest
@@ -54,9 +58,11 @@ from pydantic import BaseModel
 from tolokaforge.core.grading.corpus_curation import CorpusManifest
 from tolokaforge.core.grading.rubric_migration import (
     MigrationCounterfactual,
+    RecomputationGap,
     ReconciledEntry,
     ReconcileReport,
     ReconcileVerdict,
+    RefusalKind,
     TrialCounterfactual,
     reconcile_corpus,
 )
@@ -853,3 +859,214 @@ def test_the_differential_reaches_neither_an_llm_client_nor_the_judge() -> None:
     assert "tolokaforge.core.grading.trace_checks" in footprint
     assert "tolokaforge.core.llm.client" not in footprint
     assert "tolokaforge.core.grading.judge" not in footprint
+
+
+# ---------------------------------------------------------------------------
+# lot_ops_names_lot: a candidacy its own corpus refuses
+# ---------------------------------------------------------------------------
+
+_LOT_OPS_CORPUS = _REPO / "tests/data/migration_corpora/lot_ops_names_lot"
+_LOT_OPS_PACK = _REPO / "examples/native/multi_service_lot_ops"
+_LOT_OPS_DECLARATION = _LOT_OPS_PACK / "dataset/tasks/lot_ops_01/migration.yaml"
+
+#: The two committed run configs the corpus was generated from, and the agent each names.
+#: One file per arm because ``RunConfig.models`` holds one model per role, so an arm *is* a
+#: config; asserting the pair here is what keeps the corpus reproducible from what ships.
+_LOT_OPS_ARMS = {
+    "corpus_generation_haiku.yaml": "anthropic/claude-haiku-4-5",
+    "corpus_generation_gpt_4o_mini.yaml": "openai/gpt-4o-mini",
+}
+
+#: Five trials per arm, named so a bundle added to or dropped from the corpus reds here
+#: rather than silently moving the observation count below.
+_LOT_OPS_BUNDLES = {f"lot_ops_corpus_haiku_20260812_132740_trial{index}" for index in range(5)} | {
+    f"lot_ops_corpus_gpt_4o_mini_20260812_133234_trial{index}" for index in range(5)
+}
+
+#: The candidate constraint, and the criterion it claims to be able to replace.
+_LOT_OPS_CRITERION = "names_lot"
+_LOT_OPS_CONSTRAINT = "the_lot_was_read_before_the_action_was_opened"
+
+
+def _lot_ops_entry(tmp_path: Path) -> ReconciledEntry:
+    (entry,) = reconcile_corpus(
+        _copied(_LOT_OPS_CORPUS, tmp_path),
+        replay_id="canon",
+        packs=[_SHIPPED_PACKS],
+        dry_run=True,
+    ).entries
+    return entry
+
+
+def test_the_lot_ops_corpus_is_exactly_the_ten_record_carrying_bundles() -> None:
+    """Two sources for the corpus's membership and shape: the tree, and this literal.
+
+    Every bundle carries its tool-call record, because both source runs did — which is what
+    lets the constraint below be recomputed over ``args`` at all, and what makes the
+    all-failed column a reading of the transcripts rather than of a missing file.
+    """
+    assert {bundle.name for bundle in _bundles(_LOT_OPS_CORPUS)} == _LOT_OPS_BUNDLES
+    for bundle in _bundles(_LOT_OPS_CORPUS):
+        assert {path.name for path in bundle.iterdir()} == _RETAINED_FILES | {_TOOL_LOG}
+
+
+def test_the_corpus_carries_five_trials_of_each_committed_arm() -> None:
+    """The generation's independent variable, read back off the corpus.
+
+    The two arms differ in the agent model and in nothing else, so a corpus holding an
+    uneven split, or a model neither config names, would be measuring something other than
+    the experiment the committed configs describe. Both sources are read: each config's
+    declared agent, and each bundle's own recorded ``model_config``.
+    """
+    configs = {
+        name: yaml.safe_load((_LOT_OPS_PACK / "run_configs" / name).read_text())
+        for name in _LOT_OPS_ARMS
+    }
+    assert {name: config["models"]["agent"]["name"] for name, config in configs.items()} == (
+        _LOT_OPS_ARMS
+    )
+    for config in configs.values():
+        assert config["orchestrator"]["repeats"] == 5
+        assert config["models"]["judge"]["name"] == "anthropic/claude-sonnet-4-6"
+
+    recorded = [
+        yaml.safe_load((bundle / "task.yaml").read_text())["model_config"]["agent"]["name"]
+        for bundle in _bundles(_LOT_OPS_CORPUS)
+    ]
+    assert {model: recorded.count(model) for model in set(recorded)} == dict.fromkeys(
+        _LOT_OPS_ARMS.values(), 5
+    )
+
+
+def test_no_trial_in_the_corpus_ever_read_the_lot_it_opened_the_action_against() -> None:
+    """Why the constraint column is all-failed, measured from the transcripts.
+
+    The refusal below is only honest if the constraint failed because the behaviour never
+    happened rather than because the corpus is unreadable. Each trial issued exactly two HTTP
+    calls — the reason-code catalog and the POST — and never a ``GET`` of the lot URL the POST
+    names, on both models and all ten trials. The task hands the agent ``lot_id 7`` in the
+    user's own message and its guidance asks only for the catalog, so a compliant agent has
+    no reason to read the lot: the constraint measures a step this task never asks for.
+    """
+    for bundle in _bundles(_LOT_OPS_CORPUS):
+        calls = yaml.safe_load((bundle / _TOOL_LOG).read_text())
+        requests = [
+            (call["arguments"]["method"], call["arguments"]["url"])
+            for call in calls
+            if call["tool_name"] == "http_request"
+        ]
+        assert [method for method, _ in requests] == ["GET", "POST"], bundle.name
+        assert not [url for method, url in requests if method == "GET" and "/lots/" in url]
+
+
+def test_the_corpus_refuses_the_candidacy_in_the_strict_direction(tmp_path: Path) -> None:
+    """The measured verdict, cell by cell: ten observations, all in one cell, and refused.
+
+    Every trial is a **strict** disagreement — the judge found ``names_lot`` met where the
+    candidate constraint failed — which is the one direction no mode tolerates, because a
+    constraint that fails where the criterion holds is not even a necessary condition of it.
+    The table is asserted cell by cell rather than through the accuracy number, which is
+    ``0.0`` here and says nothing about *which* cell the mass sits in.
+
+    κ is reported beside the verdict, never thresholded: both labels are constant and in
+    opposite directions, so there is no agreement to measure and the value carries no
+    evidence either way.
+    """
+    entry = _lot_ops_entry(tmp_path)
+
+    assert entry.criterion == _LOT_OPS_CRITERION
+    assert entry.task_ids == ["lot_ops_01"]
+    assert entry.observations == 10
+    assert entry.accuracy == 0.0
+    assert entry.kappa == 0.0
+    assert entry.contingency.model_dump() == {
+        "judge_met_constraint_passed": 0,
+        "judge_met_constraint_failed": 10,
+        "judge_not_met_constraint_passed": 0,
+        "judge_not_met_constraint_failed": 0,
+    }
+    assert len(entry.strict_disagreements) == 10
+    assert entry.permissive_disagreements == []
+    assert entry.excluded_trials == []
+    assert entry.verdict is ReconcileVerdict.REFUSED
+    assert [refusal.kind for refusal in entry.refusals] == [RefusalKind.UNACKNOWLEDGED_DISAGREEMENT]
+
+
+def test_the_refused_candidacy_still_exits_zero_because_it_converts_nothing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A ``candidate``'s verdict is reported and gates nothing, refused included.
+
+    This is the distinction the exit code exists to make: the entry is refused *and* the
+    command exits ``0``, because a candidate converts nothing, retires nothing and changes no
+    grade. A run that exited non-zero here would make every shipped candidacy a build break
+    the moment its evidence arrived, which is the opposite of what declaring one is for.
+    """
+    monkeypatch.chdir(_REPO)
+
+    result = _reconcile_cli("--source", str(_copied(_LOT_OPS_CORPUS, tmp_path)), "--dry-run")
+
+    assert result.exit_code == 0, result.output
+    assert "refused over 10 observations" in result.output
+    assert "a candidate converts nothing, so its verdict gates nothing" in result.output
+    assert "does not tolerate a strict disagreement" in result.output
+
+
+def test_the_counterfactual_reports_no_row_for_a_substrate_graded_pack(tmp_path: Path) -> None:
+    """Every trial is named as unrecomputed, and the projection is empty rather than guessed.
+
+    This pack's grade carries a ``state_checks`` component, which the runner folds from
+    several sources and no single recorded field holds, so the recomposition cannot reproduce
+    the verdict the runner already reached — and a projection built on a composition that
+    cannot do that would say nothing trustworthy about the migration. Every one of the ten
+    trials lands in ``unrecomputed_trials`` for that one reason, so **no** before/after row
+    exists here, and none of the veto or score columns the notes corpus locks is available
+    for a substrate-graded pack.
+    """
+    counterfactual = _lot_ops_entry(tmp_path).counterfactual
+
+    assert counterfactual.trials == []
+    assert {Path(row.trial).name for row in counterfactual.unrecomputed_trials} == _LOT_OPS_BUNDLES
+    assert {row.gap for row in counterfactual.unrecomputed_trials} == {
+        RecomputationGap.COMPOSED_COMPONENT_HAS_NO_RUNNER_FIELD
+    }
+
+
+def test_the_lot_ops_manifest_names_exactly_the_bundles_on_disk_and_their_labels() -> None:
+    """The corpus's own account of itself, checked against the tree in both directions.
+
+    A bundle on disk the manifest does not name entered the evidence unrecorded; a manifest
+    entry with no directory is a corpus claiming a trial it lost. Each ``met`` is re-read off
+    the bundle's own ``grade.yaml``, so a manifest transcribed from the invocation rather than
+    from the trials reds — and every label being ``True`` is what makes the judge's side of
+    the table one column.
+    """
+    manifest = _manifest(_LOT_OPS_CORPUS)
+
+    assert manifest.criterion == _LOT_OPS_CRITERION
+    assert {entry.directory for entry in manifest.bundles} == _LOT_OPS_BUNDLES
+    assert {bundle.name for bundle in _bundles(_LOT_OPS_CORPUS)} == _LOT_OPS_BUNDLES
+    assert manifest.excluded == []
+    for entry in manifest.bundles:
+        grade = yaml.safe_load((_LOT_OPS_CORPUS / entry.directory / "grade.yaml").read_text())
+        (recorded,) = [
+            result for result in grade["criterion_results"] if result["id"] == _LOT_OPS_CRITERION
+        ]
+        assert entry.met is recorded["met"] is True, entry.directory
+        assert entry.record_carried is True, entry.directory
+
+
+def test_the_declaration_names_the_constraint_the_corpus_measured() -> None:
+    """The corpus is evidence about *this* claim, so the claim is read from the pack.
+
+    ``by`` is what the differential recomputes, and ``required: true`` is why a strict
+    disagreement matters here at all — the criterion carries a trial-level veto, so a
+    constraint that fails where it holds would retire a veto the evidence says it cannot
+    stand in for. Both are read off the shipped declaration rather than restated.
+    """
+    declared = yaml.safe_load(_LOT_OPS_DECLARATION.read_text())["migrations"][0]
+
+    assert declared["criterion"] == _LOT_OPS_CRITERION
+    assert declared["mode"] == "candidate"
+    assert declared["by"] == [_LOT_OPS_CONSTRAINT]
+    assert declared["was"]["required"] is True

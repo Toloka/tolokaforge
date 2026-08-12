@@ -1,0 +1,79 @@
+criterion: names_lot
+task_ids:
+- lot_ops_01
+curated_from:
+- lot_ops_corpus_gpt_4o_mini_20260812_133234
+- lot_ops_corpus_haiku_20260812_132740
+curated_at: '2026-08-12T13:36:18.934593Z'
+bundles:
+- directory: lot_ops_corpus_haiku_20260812_132740_trial0
+  source_run: lot_ops_corpus_haiku_20260812_132740
+  task_id: lot_ops_01
+  agent_model: anthropic/claude-haiku-4-5
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_haiku_20260812_132740_trial1
+  source_run: lot_ops_corpus_haiku_20260812_132740
+  task_id: lot_ops_01
+  agent_model: anthropic/claude-haiku-4-5
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_haiku_20260812_132740_trial2
+  source_run: lot_ops_corpus_haiku_20260812_132740
+  task_id: lot_ops_01
+  agent_model: anthropic/claude-haiku-4-5
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_haiku_20260812_132740_trial3
+  source_run: lot_ops_corpus_haiku_20260812_132740
+  task_id: lot_ops_01
+  agent_model: anthropic/claude-haiku-4-5
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_haiku_20260812_132740_trial4
+  source_run: lot_ops_corpus_haiku_20260812_132740
+  task_id: lot_ops_01
+  agent_model: anthropic/claude-haiku-4-5
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_gpt_4o_mini_20260812_133234_trial0
+  source_run: lot_ops_corpus_gpt_4o_mini_20260812_133234
+  task_id: lot_ops_01
+  agent_model: openai/gpt-4o-mini
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_gpt_4o_mini_20260812_133234_trial1
+  source_run: lot_ops_corpus_gpt_4o_mini_20260812_133234
+  task_id: lot_ops_01
+  agent_model: openai/gpt-4o-mini
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_gpt_4o_mini_20260812_133234_trial2
+  source_run: lot_ops_corpus_gpt_4o_mini_20260812_133234
+  task_id: lot_ops_01
+  agent_model: openai/gpt-4o-mini
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_gpt_4o_mini_20260812_133234_trial3
+  source_run: lot_ops_corpus_gpt_4o_mini_20260812_133234
+  task_id: lot_ops_01
+  agent_model: openai/gpt-4o-mini
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+- directory: lot_ops_corpus_gpt_4o_mini_20260812_133234_trial4
+  source_run: lot_ops_corpus_gpt_4o_mini_20260812_133234
+  task_id: lot_ops_01
+  agent_model: openai/gpt-4o-mini
+  judge_model: anthropic/claude-sonnet-4-6
+  met: true
+  record_carried: true
+excluded: []
