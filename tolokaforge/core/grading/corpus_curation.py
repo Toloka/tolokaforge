@@ -49,7 +49,7 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from pydantic import BaseModel
+from pydantic import BaseModel, model_validator
 
 from tolokaforge.core.grading.replay_layout import discover_trial_bundles
 from tolokaforge.core.grading.trace_replay import (
@@ -148,6 +148,26 @@ class RejectedTrial(BaseModel):
     observation: str
 
     model_config = {"extra": "forbid"}
+
+    @model_validator(mode="after")
+    def _require_the_authority_the_reason_carries(self) -> RejectedTrial:
+        """``author_excluded`` is the author's judgment and every other reason is a rule's,
+        in both directions.
+
+        The manifest is what outlives the gitignored runs behind a corpus, so it is read as
+        the account of why a trial is missing. Unchecked, a hand-edited entry could claim a
+        rule found a bundle environment-dead when an author dropped it, or credit the author
+        with a measurement they never made — and nothing on disk would contradict either.
+        """
+        by_the_author = self.reason is CurationRejection.AUTHOR_EXCLUDED
+        if by_the_author is (self.by is RejectionAuthority.AUTHOR):
+            return self
+        raise ValueError(
+            f"reason: {self.reason.value} is recorded by: {self.by.value}. "
+            f"{CurationRejection.AUTHOR_EXCLUDED.value} is the one rejection an author makes "
+            "and every other is a rule's, so a corpus recording the pair the other way round "
+            "attributes a judgment to whoever did not make it"
+        )
 
 
 class CorpusManifest(BaseModel):
@@ -276,12 +296,13 @@ def _classified(bundle: Path, *, criterion: str) -> CuratedBundle | RejectedTria
         return _rule_rejection(
             bundle, CurationRejection.JUDGE_INCOMPLETE, f"judge_status: {judge_status!r}"
         )
-    met = _recorded_verdict(grade, criterion)
-    if met is None:
+    row = _recorded_row(grade, criterion)
+    met = row.get("met") if row is not None else None
+    if not isinstance(met, bool):
         return _rule_rejection(
             bundle,
             CurationRejection.CRITERION_NOT_JUDGED,
-            f"criteria judged: {_judged_criteria(grade)}",
+            _why_the_criterion_carries_no_verdict(grade, criterion, row),
         )
 
     calls, record_carried = _recorded_tool_calls(bundle)
@@ -324,14 +345,25 @@ def _recorded_tool_calls(bundle: Path) -> tuple[list[RecordedToolCall], bool]:
         raise CurationError(f"{bundle} carries an unreadable tool-call record: {exc}") from exc
 
 
-def _recorded_verdict(grade: Mapping[str, Any], criterion: str) -> bool | None:
-    """The judge's ``met`` for *criterion*, ``None`` where it judged no such criterion."""
+def _recorded_row(grade: Mapping[str, Any], criterion: str) -> Mapping[str, Any] | None:
+    """The judge's row for *criterion*, ``None`` where it judged no such criterion."""
     for result in grade.get("criterion_results") or []:
-        if not isinstance(result, Mapping) or result.get("id") != criterion:
-            continue
-        met = result.get("met")
-        return met if isinstance(met, bool) else None
+        if isinstance(result, Mapping) and result.get("id") == criterion:
+            return result
     return None
+
+
+def _why_the_criterion_carries_no_verdict(
+    grade: Mapping[str, Any], criterion: str, row: Mapping[str, Any] | None
+) -> str:
+    """Two states share the rejection and not the observation.
+
+    A row that is *there* and holds a non-boolean ``met`` would otherwise be reported by
+    listing the criteria judged — which includes the very criterion the reason says was not.
+    """
+    if row is None:
+        return f"criteria judged: {_judged_criteria(grade)}"
+    return f"{criterion} recorded met: {row.get('met')!r}, which is not a verdict"
 
 
 def _judged_criteria(grade: Mapping[str, Any]) -> str:

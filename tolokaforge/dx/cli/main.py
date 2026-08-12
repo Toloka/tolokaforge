@@ -1227,7 +1227,8 @@ def _named_exclusions(
     metavar="DIR=REASON",
     callback=_named_exclusions,
     help="Reject one discovered bundle by the author's own judgment, recorded in the "
-    "manifest as 'by: author' with this reason; repeatable.",
+    "manifest as 'by: author' with this reason; repeatable. It does not cover a bundle "
+    "that cannot be read: an unreadable one aborts the run before any exclusion applies.",
 )
 @click.option(
     "--replace",
@@ -1255,6 +1256,10 @@ def curate(
     not environment-dead — carrying a tool-call record whose calls all failed. Every trial
     that does not enter is named with its reason, and both halves are written into the
     corpus's own corpus.yaml, so the composition outlives the run directories it came from.
+
+    A bundle whose artifacts cannot be read aborts the run naming the file, and --exclude
+    does not reach it: classification reads the bundle, so there is nothing to exclude it
+    on. Point --source at the directories that survive instead.
 
     Exits non-zero when no bundle is admitted. See docs/RUBRIC_MIGRATION.md.
     """

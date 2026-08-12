@@ -131,7 +131,7 @@ tests/
     ├── trace_overrides.py    # A supplied constraint block, written to a file and loaded back
     ├── five_shape_run.py     # One run dir holding every trial shape the harness writes; corpus for both offline commands
     ├── provision_failure.py  # The task-less bundle a provisioning failure leaves, written through the production executor path
-    ├── migration_packs.py    # A task directory a migration declaration is read out of
+    ├── migration_packs.py    # A task directory a migration declaration is read out of, and the corpus its entry names
     ├── combine_method_verdicts.py  # The combine.method answer table both tiers hold
     ├── golden_source_shapes.py  # Non-list golden_actions shapes every reading surface must refuse
     ├── wire_grades.py        # A wire Grade driven through the real gRPC client lowering

@@ -140,18 +140,22 @@ orchestrator does that before handing a :class:`TrialRunner` to the
 conductor, and the runner-side wire protocol carries only the resolved
 per-turn artefacts.
 
-Seven grading-side files (``core.grading.combine``,
-``core.grading.corpus_curation``, ``core.grading.replay``,
-``core.grading.rubric_migration``, ``core.grading.state_checks``,
-``core.grading.trace_replay``, ``core.tools.user_tools``) reach
-orchestrator-only siblings (``core.output.artifacts``, ``core.output_writer``,
+Eight grading-side files (``core.grading.combine``,
+``core.grading.corpus_curation``, ``core.grading.migration_declaration``,
+``core.grading.replay``, ``core.grading.rubric_migration``,
+``core.grading.state_checks``, ``core.grading.trace_replay``,
+``core.tools.user_tools``) reach orchestrator-only siblings
+(``core.output.artifacts``, ``core.output_writer``,
 ``core.utils.diff``, ``core.env_state``, ``adapters._task_loader``) —
 including any of these in
 the subset would drag those orchestrator-only surfaces along with them, or
-fail at import time inside the runner container. The remaining six
+fail at import time inside the runner container. ``migration_declaration``
+reaches ``core.output.artifacts`` and ``core.output_writer`` indirectly, through
+the ``corpus_curation`` import that resolves an entry's declared corpus against
+the manifest ``tolokaforge curate`` writes. The remaining five
 (``core.grading.agreement``, ``core.grading.config_validation``,
-``core.grading.migration_declaration``, ``core.grading.replay_layout``,
-``core.grading.unknown_keys``, ``core.llm.fallback_client``) have only
+``core.grading.replay_layout``, ``core.grading.unknown_keys``,
+``core.llm.fallback_client``) have only
 shared-spine imports — ``replay_layout`` imports nothing outside the standard
 library — but are consumed exclusively by orchestrator-side code: the pre-run
 authoring gate, the rubric-to-trace-check migration and the offline replay

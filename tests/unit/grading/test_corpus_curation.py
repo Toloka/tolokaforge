@@ -24,6 +24,9 @@ The admission rule, one test per row:
 8. **The manifest names the models the trial recorded** — the agent model is the one a
    trial cannot lack, and a snapshot recording no judge is admitted with a null judge
    model rather than refused.
+9. **A rejection is credited to the judgment that made it** — ``author_excluded`` is the
+   author's and every other reason is a rule's, refused in both directions, because the
+   manifest is the only surviving account of a trial the corpus does not hold.
 
 The console is the shared stderr one, so ``CliRunner`` captures it in ``result.output``.
 """
@@ -37,6 +40,7 @@ from typing import Any
 import pytest
 import yaml
 from click.testing import CliRunner, Result
+from pydantic import ValidationError
 
 from tests.utils.recorded_calls import recorded_call
 from tolokaforge.core.grading.corpus_curation import (
@@ -557,3 +561,73 @@ class TestTheAuthorsExclusion:
 
         assert result.exit_code == 2
         assert "<bundle-dir>=<reason>" in result.output
+
+
+@pytest.mark.parametrize(
+    ("reason", "by"),
+    [("environment_dead", "author"), ("author_excluded", "rule")],
+    ids=["a-rule's-measurement-credited-to-the-author", "the-author's-call-credited-to-a-rule"],
+)
+def test_a_manifest_crediting_a_rejection_to_the_wrong_judgment_is_refused(
+    tmp_path: Path, reason: str, by: str
+) -> None:
+    """The manifest is read, not only written, and this is the one claim it makes that no
+    surviving artifact can contradict.
+
+    The runs behind a corpus are gitignored, so ``excluded`` is the whole record of why a
+    trial is missing. Both directions are refused: a rule's measurement attributed to the
+    author reads as taste where a rule ran, and the author's own call dressed as a rule reads
+    as a measurement nobody made. Driven through :class:`CorpusManifest` rather than the
+    command, because what is on trial is a manifest somebody edited after curation wrote it.
+    """
+    corpus = _curated_corpus(tmp_path)
+    manifest = yaml.safe_load((corpus / CORPUS_MANIFEST_FILENAME).read_text())
+    (rejection,) = manifest["excluded"]
+
+    assert CorpusManifest.model_validate(manifest)
+
+    with pytest.raises(ValidationError, match="attributes a judgment to whoever did not make it"):
+        CorpusManifest.model_validate(
+            manifest | {"excluded": [rejection | {"reason": reason, "by": by}]}
+        )
+
+
+def _curated_corpus(tmp_path: Path) -> Path:
+    """A corpus one real curation wrote, holding one admitted bundle and one rejection."""
+    run = _run_dir(tmp_path / "results", "policy_demo_20260803_063010")
+    _write_bundle(run / "0", calls=[recorded_call("list_notes")])
+    _write_bundle(run / "1", calls=_failed_calls(3))
+    corpus = tmp_path / "corpus"
+
+    result = _curate(
+        "--source", str(tmp_path / "results"), "--into", str(corpus), "--criterion", _CRITERION
+    )
+
+    assert result.exit_code == 0, result.output
+    return corpus
+
+
+def test_a_criterion_recorded_without_a_verdict_names_what_its_row_holds(tmp_path: Path) -> None:
+    """Two states share ``criterion_not_judged`` and must not share its observation.
+
+    Where the grade holds no row for the criterion, the useful answer is which criteria it did
+    judge. Where the row is there and its ``met`` is not a verdict, that same answer would list
+    the very criterion the reason says was not judged. ``CriterionResult.met`` is typed, so this
+    reaches the corpus only from a hand-edited ``grade.yaml`` — which is what the manifest is
+    read against.
+    """
+    run = _run_dir(tmp_path / "results", "policy_demo_20260803_063010")
+    _write_bundle(run / "0", calls=[recorded_call("list_notes")])
+    edited = _write_bundle(run / "1", calls=[recorded_call("list_notes")])
+    grade = yaml.safe_load((edited / "grade.yaml").read_text())
+    grade["criterion_results"][0]["met"] = None
+    (edited / "grade.yaml").write_text(yaml.safe_dump(grade))
+    corpus = tmp_path / "corpus"
+
+    result = _curate(
+        "--source", str(tmp_path / "results"), "--into", str(corpus), "--criterion", _CRITERION
+    )
+
+    assert result.exit_code == 0, result.output
+    rejected = _rejection(_manifest(corpus), "criterion_not_judged")
+    assert rejected.observation == f"{_CRITERION} recorded met: None, which is not a verdict"

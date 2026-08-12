@@ -2018,7 +2018,7 @@ def _declarations_by_corpus(
                 "the file whose rubric it migrates. Point the task's grading field at the file "
                 "the sidecar sits beside, or move the sidecar"
             )
-        for corpus, entries in _entries_by_corpus(pack, corpus_base).items():
+        for corpus, entries in _entries_by_corpus(pack, corpus_base=corpus_base).items():
             filed.setdefault(corpus, {})[task_id] = replace(pack, entries=entries)
     return filed
 
@@ -2057,10 +2057,10 @@ def _task_id_declaring(sidecar: Path) -> str:
 
 
 def _entries_by_corpus(
-    pack: _ResolvedPack, corpus_base: Path | None
+    pack: _ResolvedPack, *, corpus_base: Path | None
 ) -> dict[Path, tuple[MigrationEntry, ...]]:
     """One pack's entries grouped by the corpus directory each of them names."""
-    base = corpus_base_for(pack.grading_path, corpus_base)
+    base = corpus_base_for(pack.grading_path, corpus_base=corpus_base)
     grouped: dict[Path, list[MigrationEntry]] = {}
     for entry in pack.entries:
         grouped.setdefault(base / entry.corpus, []).append(entry)

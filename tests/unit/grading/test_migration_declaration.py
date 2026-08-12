@@ -632,6 +632,23 @@ def test_a_corpus_resolving_to_no_corpus_directory_is_refused(tmp_path: Path):
     assert f"read against {tmp_path / 'case'}" in written, written
 
 
+def test_an_absolute_corpus_is_refused_because_it_would_ignore_the_base(tmp_path: Path):
+    """An absolute value wins ``base / corpus`` outright, so it resolves to itself whatever
+    base the caller supplied — and the refusal for a corpus that does not resolve would go on
+    naming a base it never consulted.
+
+    Written against a corpus that **is** on disk, so what is refused is the shape rather than
+    a path nothing could have found.
+    """
+    written = write_corpus_directory(tmp_path / "case" / _CORPUS, criterion="checked_first")
+
+    with pytest.raises(ValidationError) as refused:
+        _inspect(tmp_path, _narrowing(corpus=str(written)))
+
+    assert "is an absolute path" in str(refused.value)
+    assert _inspect(tmp_path, _narrowing(corpus=_CORPUS)) is not None
+
+
 def test_a_multi_part_corpus_resolves_through_its_parent(tmp_path: Path):
     """The shape ``tolokaforge curate`` writes for a two-arm corpus: each half a corpus of
     its own, the parent a directory of them. ``reconcile`` discovers bundles recursively, so

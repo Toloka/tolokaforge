@@ -239,6 +239,22 @@ class MigrationEntry(BaseModel):
 
     model_config = {"extra": "forbid"}
 
+    @field_validator("corpus")
+    @classmethod
+    def _require_a_path_the_base_decides(cls, value: str) -> str:
+        """``corpus`` is read against a base the caller supplies, and an absolute value wins
+        that join outright — resolving to itself whatever base was passed, while the refusal
+        for a corpus that does not resolve still names the base it claims to have used."""
+        if not Path(value).is_absolute():
+            return value
+        raise ValueError(
+            f"corpus: {value} is an absolute path, and the value is read against a base the "
+            "command supplies — the repository root for a shipped pack, the declaration's own "
+            "directory for one that travels. An absolute value ignores that base, so the "
+            "corpus a run reads stops being a property of the declaration. Write the path "
+            "relative to the base the corpus is committed under"
+        )
+
     @model_validator(mode="after")
     def _require_the_residual_its_mode_claims(self) -> MigrationEntry:
         """Zero disagreements satisfies ``retired``'s evidence condition and ``narrowed``'s
@@ -359,7 +375,7 @@ class _DeclaredConstraint:
         return self.route is None and self.severity is TraceConstraintSeverity.GATE
 
 
-def corpus_base_for(grading_path: Path, corpus_base: Path | None) -> Path:
+def corpus_base_for(grading_path: Path, *, corpus_base: Path | None) -> Path:
     """The directory an entry's ``corpus`` is read against.
 
     The base the caller supplied, or the declaration's own directory where it supplied none,
@@ -429,7 +445,7 @@ def inspect_migration_declaration(
 
     criteria = _rubric_criteria(grading_data)
     constraints = _declared_constraints(grading_data)
-    base = corpus_base_for(grading_path, corpus_base)
+    base = corpus_base_for(grading_path, corpus_base=corpus_base)
     rejected = [
         message
         for entry in declaration.migrations

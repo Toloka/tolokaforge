@@ -112,12 +112,18 @@ its load-time refusals are in [GRADING.md § Trace Checks](GRADING.md#trace-chec
 **The corpus resolves, or the declaration is refused at load.** A value names a directory
 carrying the `corpus.yaml` [`tolokaforge curate`](#building-a-corpus) writes, or one whose
 immediate subdirectories all do — exactly one level, which is the multi-part shape that
-command can write. It is read against a **base the caller supplies**: unset, the
-declaration's own directory, so a corpus travels with an external pack;
-`tolokaforge validate` and `tolokaforge reconcile` pass the working directory, which is what
-the shipped repository-root-relative values are written from. The refusal names the resolved
-path and the base separately, so a run from the wrong directory says so rather than reporting
-a corpus nobody wrote.
+command can write. The value is **relative**, and an absolute one is refused: it would win the
+join outright and resolve to itself whatever base was supplied, which would stop the corpus a
+run reads from being a property of the declaration.
+
+It is read against a **base the caller supplies**: unset, the declaration's own directory, so
+a corpus travels with an external pack; `tolokaforge validate` and `tolokaforge reconcile`
+pass the working directory, which is what the shipped repository-root-relative values are
+written from. The refusal names the resolved path and the base separately, so a run from the
+wrong directory says so rather than reporting a corpus nobody wrote. **The residue:** both
+shipped commands override the default, so a pack whose `corpus` is written relative to its own
+directory has no shipped invocation that resolves it today — the default is what a Python
+caller gets, and what a command giving an external pack its own base would need.
 
 ## The bar
 

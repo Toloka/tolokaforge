@@ -47,6 +47,7 @@ import hashlib
 import shutil
 import subprocess
 import sys
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -61,6 +62,7 @@ from tolokaforge.core.grading.rubric_migration import (
     MigrationCounterfactual,
     RecomputationGap,
     ReconciledEntry,
+    ReconcileError,
     ReconcileReport,
     ReconcileVerdict,
     RefusalKind,
@@ -1160,6 +1162,20 @@ def test_the_sweep_exits_zero_over_the_shipped_tree_and_names_every_verdict(
     assert "a candidate converts nothing, so its verdict gates nothing" in result.output
 
 
+def _copied_tree(tmp_path: Path, *corpora: Path) -> tuple[Path, Path]:
+    """A repository-shaped copy: the fixture packs and the named corpora, each under the
+    relative path the declarations already write. Returns the base and the pack root.
+
+    The copy is what lets ``corpus_base`` point a whole resolution at ``tmp_path`` — the
+    committed tree is never read for write and never mutated by these tests.
+    """
+    root = tmp_path / "tree"
+    shutil.copytree(_PACKS, root / _PACKS.relative_to(_REPO))
+    for corpus in corpora:
+        shutil.copytree(corpus, root / corpus.relative_to(_REPO))
+    return root, root / _PACKS.relative_to(_REPO)
+
+
 @pytest.mark.parametrize(
     ("dropped", "observations", "kinds", "names"),
     [
@@ -1196,11 +1212,8 @@ def test_a_corpus_short_of_its_declared_count_is_refused_where_the_source_is_tha
     declaration already names, and the declaration is copied byte-unchanged — so ``corpus_base``
     points the whole resolution at the copy, and the fixture writes nothing anywhere else.
     """
-    root = tmp_path / "tree"
-    packs = root / "tests/data/migration_packs"
+    root, packs = _copied_tree(tmp_path, _CORPUS)
     corpus = root / _CORPUS.relative_to(_REPO)
-    shutil.copytree(_PACKS, packs)
-    shutil.copytree(_CORPUS, corpus)
     assert (packs / _DECLARATION.relative_to(_PACKS)).read_bytes() == _DECLARATION.read_bytes()
     if dropped is not None:
         shutil.rmtree(corpus / dropped / sorted(_MET_BUNDLES)[0])
@@ -1258,11 +1271,8 @@ def test_each_entry_of_a_pack_is_measured_over_the_corpus_that_entry_names(
     is about is which corpus each entry reaches, and a hand-copied criterion would only add a
     second way for it to fail.
     """
-    root = tmp_path / "tree"
-    packs = root / "tests/data/migration_packs"
+    root, packs = _copied_tree(tmp_path, _CORPUS)
     corpus = root / _CORPUS.relative_to(_REPO)
-    shutil.copytree(_PACKS, packs)
-    shutil.copytree(_CORPUS, corpus)
     policy = packs / _POLICY_DECLARATION.relative_to(_PACKS)
     grading = yaml.safe_load((policy.parent / "grading.yaml").read_text())
     (saved,) = [
@@ -1302,3 +1312,81 @@ def test_each_entry_of_a_pack_is_measured_over_the_corpus_that_entry_names(
         ),
         (corpus / "met", saved["id"], 12, ["notes_add_note_duplicate_check_policy"]),
     ]
+
+
+def _point_a_declaration_at_another_packs_corpus(root: Path, packs: Path) -> None:
+    """The gated arm's entry re-pointed at the ``lot_ops`` corpus — a real corpus, holding
+    no trial of the task whose criterion the entry is about."""
+    declaration = packs / _DECLARATION.relative_to(_PACKS)
+    declared = yaml.safe_load(declaration.read_text())
+    declared["migrations"][0]["corpus"] = str(_LOT_OPS_CORPUS.relative_to(_REPO))
+    declaration.write_text(yaml.safe_dump(declared, sort_keys=False))
+
+
+def _move_the_grading_file_out_from_under_the_sidecar(root: Path, packs: Path) -> None:
+    """The pack's ``grading:`` re-pointed into a subdirectory, leaving the sidecar beside a
+    file the loader no longer resolves — so nothing reads the declaration."""
+    pack = (packs / _DECLARATION.relative_to(_PACKS)).parent
+    (pack / "elsewhere").mkdir()
+    (pack / "grading.yaml").rename(pack / "elsewhere" / "grading.yaml")
+    task = yaml.safe_load((pack / "task.yaml").read_text())
+    (pack / "task.yaml").write_text(yaml.safe_dump(task | {"grading": "elsewhere/grading.yaml"}))
+
+
+def _remove_the_task_file_beside_a_sidecar(root: Path, packs: Path) -> None:
+    (packs / _DECLARATION.relative_to(_PACKS)).parent.joinpath("task.yaml").unlink()
+
+
+def _blank_the_task_id_beside_a_sidecar(root: Path, packs: Path) -> None:
+    task_file = (packs / _DECLARATION.relative_to(_PACKS)).parent / "task.yaml"
+    declared = yaml.safe_load(task_file.read_text())
+    task_file.write_text(yaml.safe_dump({k: v for k, v in declared.items() if k != "task_id"}))
+
+
+@pytest.mark.parametrize(
+    ("break_the_tree", "names"),
+    [
+        (_point_a_declaration_at_another_packs_corpus, "holds no trial of it"),
+        (_move_the_grading_file_out_from_under_the_sidecar, "is not beside the grading.yaml"),
+        (_remove_the_task_file_beside_a_sidecar, "no task.yaml sits beside it"),
+        (_blank_the_task_id_beside_a_sidecar, "declares no task_id"),
+    ],
+    ids=[
+        "a-corpus-holding-no-trial-of-the-task-that-names-it",
+        "a-sidecar-the-pack-it-sits-in-never-reads",
+        "a-sidecar-beside-no-task",
+        "a-task-naming-no-id",
+    ],
+)
+def test_the_sweep_refuses_a_tree_it_could_not_measure_a_declaration_over(
+    tmp_path: Path, break_the_tree: Callable[[Path, Path], None], names: str
+) -> None:
+    """Four ways a declaration reaches no evidence, each an error naming the tree rather than
+    a row reporting nothing.
+
+    All four are silent by default: a corpus with no trial of the declaring task, a sidecar
+    the loader never reaches, one beside no ``task.yaml`` and one whose ``task.yaml`` names no
+    id would each drop a declaration out of the sweep — and a sweep that skips a declaration
+    reports a clean pass over the ones it happened to read.
+
+    The same copied tree as the equality lock above, broken one way per case, so what is on
+    trial is the break and not the fixture.
+    """
+    root, packs = _copied_tree(tmp_path, _CORPUS, _LOT_OPS_CORPUS)
+    break_the_tree(root, packs)
+
+    with pytest.raises(ReconcileError, match=names):
+        reconcile_declared_corpora(packs=[packs], corpus_base=root)
+
+
+def test_the_sweep_refuses_a_pack_root_that_declares_no_migration(tmp_path: Path) -> None:
+    """Nothing to reconcile is an error naming the roots searched, not exit zero.
+
+    A `--packs` that has drifted off the packs it was written for otherwise reports a clean
+    sweep of nothing, which is the same failure `validate`'s empty-glob rule exists for.
+    """
+    empty = tmp_path / "packs"
+    empty.mkdir()
+
+    with pytest.raises(ReconcileError, match="declares a migration"):
+        reconcile_declared_corpora(packs=[empty], corpus_base=tmp_path)
