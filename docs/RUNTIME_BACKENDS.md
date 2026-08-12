@@ -183,6 +183,52 @@ sequenceDiagram
 
 Every step above is a single method call in `tolokaforge/core/per_trial_runtime.py`.
 
+## Trials whose task brings its own agent
+
+The `execute_tool` step above normally repeats once per tool call the LLM turn
+loop decides to make. Some tasks instead ship a **coding-harness CLI** — an
+agent that runs inside the trial's container and does its own planning,
+editing, and tool use. Driving the engine's turn loop over one of those stacks
+a second agent on the first: two planners, two token bills, and a trajectory
+that describes neither.
+
+`InProcessConductor._run_agent_loop` takes a different branch for such a task.
+The signal is one metadata key:
+
+```python
+harness_command = spec.task.metadata.get("agent_harness_command")
+if harness_command:
+    return self._run_harness_trial(spec, task_config, setup, harness_command)
+```
+
+`_run_harness_trial` calls `TrialRunner.run_harness`, which makes exactly one
+`execute_tool` call carrying that command, records it, and finalises the
+trajectory — no `ToolCallingLoop`, no LLM generation, no user turn. The
+trajectory holds the task instruction as the user message and the CLI's output
+as the agent's single reply; `tool_log` carries the invocation so a post-mortem
+can read back what ran.
+
+Two properties make this a narrow branch rather than a second execution model:
+
+- **The engine names no CLI.** The command string arrives fully formed on
+  `TaskDescription.metadata`, built by whichever adapter owns the task format.
+  Adding a harness is an adapter change, never an engine change.
+- **Grading is untouched.** `_grade` reads the trajectory and the trial's env
+  state, not how they were produced, so the same graders score harness and
+  turn-loop trials alike. For terminal-bench that is `test_execution` — the
+  reference test suite run in the container.
+
+The deadline is `min(tool.timeout_s, orchestrator.timeouts.episode_s)`, passed
+as the RPC's `timeout_seconds` and enforced runner-side by the service's
+`asyncio.wait_for`. The task's sole agent tool is the one the command runs
+through; a task declaring more than one is refused, since one exec is the whole
+trial.
+
+The terminal-bench adapter is the first producer of this metadata — see
+[`external_adapters/tolokaforge-adapter-terminal-bench/README.md`](../external_adapters/tolokaforge-adapter-terminal-bench/README.md)
+§ "Harness mode" for the image layering and credential wire that make the CLI
+runnable inside the container.
+
 ## Deep-dive — `provision()`
 
 Eleven steps, in order. Failure at any step raises `ProvisionError(stage="provision")` and cleans up whatever ran successfully before the raise.

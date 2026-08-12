@@ -635,7 +635,14 @@ class InProcessConductor:
         downstream for prompt/logger access during artifact write), and the
         system prompt string (used by :meth:`_grade` when the runner has
         not yet populated its ``effective_system_prompt``).
+
+        A task whose metadata carries ``agent_harness_command`` brings its own
+        agent and takes the :meth:`_run_harness_trial` branch instead.
         """
+        harness_command = spec.task.metadata.get("agent_harness_command")
+        if harness_command:
+            return self._run_harness_trial(spec, task_config, setup, harness_command)
+
         task = task_config
         user_config = spec.user_model_config
 
@@ -750,6 +757,65 @@ class InProcessConductor:
         initial_message = task.initial_user_message if task.initial_user_message else ""
         trajectory = runner.run(system_prompt, initial_message)
 
+        return trajectory, runner, system_prompt
+
+    def _run_harness_trial(
+        self,
+        spec: TrialSpec,
+        task_config: TaskConfig,
+        setup: _TrialSetup,
+        harness_command: str,
+    ) -> tuple[Trajectory, TrialRunner, str]:
+        """Run the trial as one invocation of the task's own coding-harness CLI.
+
+        The CLI plans and edits inside the trial's container on its own, so
+        driving the engine's turn loop on top of it would stack a second agent
+        on the first. This branch runs the declared command once and records
+        what it did; everything downstream is unchanged, because
+        :meth:`_grade` reads the trajectory and the trial's env state rather
+        than how they were produced.
+
+        The engine holds no knowledge of any particular CLI: the command
+        arrives fully formed on ``TaskDescription.metadata``, and the tool it
+        runs through is the task's sole agent tool.
+        """
+        agent_tools = spec.task.agent_tools
+        if len(agent_tools) != 1:
+            raise RuntimeError(
+                f"harness trial {setup.trial_id}: the task declares "
+                f"{len(agent_tools)} agent tools ({[t.name for t in agent_tools]!r}); "
+                "a harness CLI runs through exactly one"
+            )
+        tool = agent_tools[0]
+
+        # The tool's own timeout is the harness budget the adapter sized for
+        # this task; the run-level episode cap still bounds it, and the runner
+        # enforces whichever the conductor asks for.
+        timeout_s = min(
+            tool.timeout_s or DEFAULT_TOOL_TIMEOUT_S,
+            float(self.config.orchestrator.timeouts.episode_s),
+        )
+
+        system_prompt = self._build_system_prompt(task_config, setup.tool_schemas, setup.task_dir)
+        runner = TrialRunner(
+            task_id=task_config.task_id,
+            trial_index=setup.trial_idx,
+            agent_client=self.agent_client,
+            user_simulator=None,
+            tool_executor=setup.tool_executor,
+            tool_schemas=setup.tool_schemas,
+            episode_timeout_s=int(timeout_s),
+            verbose=self.verbose,
+            strict=self.strict,
+            events=self.events,
+            interaction_mode=task_config.interaction_mode,
+        )
+        trajectory = runner.run_harness(
+            tool_name=tool.name,
+            command=harness_command,
+            instruction=task_config.initial_user_message or task_config.description,
+            timeout_s=timeout_s,
+        )
         return trajectory, runner, system_prompt
 
     def _capture_final_state(
